@@ -5935,23 +5935,31 @@ function resolveAheadCountFromGit(root, baseVersion) {
   }
 }
 
+// Read version from pyproject.toml — always a literal string, unambiguous.
+function resolveVersionFromPyproject(root) {
+  try {
+    const pyprojectPath = path.join(root, 'pyproject.toml')
+    if (!fileExists(pyprojectPath)) return null
+    const raw = fs.readFileSync(pyprojectPath, 'utf8')
+    const match = raw.match(/^version\s*=\s*"([^"]+)"/m)
+    return match ? match[1] : null
+  } catch {
+    return null
+  }
+}
+
 // Resolve canonical Hermes version for About/status.
 // Priority:
-//  1) hermes_cli/__init__.py fallback version (authoritative for this fork)
+//  1) pyproject.toml version (always a literal — authoritative for this fork)
 //     + ahead-commit count from git describe against that exact tag
 //  2) Electron app package version
 function resolveHermesVersion() {
   try {
     const root = resolveUpdateRoot()
-    const initPath = path.join(root, 'hermes_cli', '__init__.py')
-    if (fileExists(initPath)) {
-      const raw = fs.readFileSync(initPath, 'utf8')
-      const match = raw.match(/__version__\s*=\s*["']([^"']+)["']/)
-      if (match) {
-        const base = match[1]
-        const ahead = resolveAheadCountFromGit(root, base)
-        return ahead > 0 ? `${base}+${ahead}` : base
-      }
+    const base = resolveVersionFromPyproject(root)
+    if (base) {
+      const ahead = resolveAheadCountFromGit(root, base)
+      return ahead > 0 ? `${base}+${ahead}` : base
     }
   } catch {
     // Fall through to the Electron app version below.

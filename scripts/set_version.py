@@ -84,6 +84,17 @@ def _patch_init(version: str, release_date: str) -> None:
         print(f"  hermes_cli/__init__.py: version -> {version!r}, date -> {release_date!r}")
 
 
+def _patch_desktop_package_json(version: str) -> None:
+    path = ROOT / "apps" / "desktop" / "package.json"
+    data = json.loads(path.read_text())
+    if data.get("version") == version:
+        print(f"  desktop/package.json: already {version!r}, no change")
+        return
+    data["version"] = version
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    print(f"  desktop/package.json: version -> {version!r}")
+
+
 def _patch_installer_package_json(version: str) -> None:
     path = ROOT / "apps" / "bootstrap-installer" / "package.json"
     data = json.loads(path.read_text())
@@ -129,6 +140,7 @@ def main() -> None:
     print(f"Setting version to {version!r} (release date: {release_date})")
     _patch_pyproject(version)
     _patch_init(version, release_date)
+    _patch_desktop_package_json(version)
     _patch_installer_package_json(version)
     _patch_installer_tauri_conf(version)
     _patch_installer_cargo_toml(version)
