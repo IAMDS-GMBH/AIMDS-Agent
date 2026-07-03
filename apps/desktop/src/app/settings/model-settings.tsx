@@ -136,7 +136,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   }, [refresh])
 
   const providerOptions = providers.length
-    ? providers.filter(p => p.slug === 'iamds-litellm')
+    ? providers.filter(p => /^iamds-litellm(?:-|$)/.test(String(p.slug || '').toLowerCase()))
     : NO_PROVIDERS
 
   const selectedProviderRow = useMemo(
