@@ -59,6 +59,7 @@ export function AboutSettings() {
   const [mcpServers, setMcpServers] = useState<McpServerSummary[]>([])
   const [localConnectivityLoading, setLocalConnectivityLoading] = useState(false)
   const [localConnectivityError, setLocalConnectivityError] = useState('')
+  const [localCheckedAt, setLocalCheckedAt] = useState<null | number>(null)
 
   // The version atom is loaded once at app boot, which makes About show a
   // stale number after a self-update (the running binary is current, the
@@ -85,8 +86,10 @@ export function AboutSettings() {
       const [statusPayload, mcpPayload] = await Promise.all([getStatus(), getMcpServers()])
       setLocalStatus(statusPayload)
       setMcpServers(mcpPayload.servers ?? [])
+      setLocalCheckedAt(Date.now())
     } catch (error) {
       setLocalConnectivityError(error instanceof Error ? error.message : String(error))
+      setLocalCheckedAt(Date.now())
     } finally {
       setLocalConnectivityLoading(false)
     }
@@ -144,7 +147,7 @@ export function AboutSettings() {
   const enabledMcpServers = mcpServers.filter(server => server.enabled)
   const localSeverity = localConnectivityError
     ? 'critical'
-    : localStatus?.gateway_running
+    : localStatus
       ? 'healthy'
       : 'warning'
   const localToneClass =
@@ -153,7 +156,7 @@ export function AboutSettings() {
       : localSeverity === 'warning'
         ? 'border-amber-500/35 bg-amber-500/10 text-foreground'
         : 'border-border/70 bg-muted/20 text-foreground'
-  const localChecked = localStatus?.gateway_updated_at ? new Date(localStatus.gateway_updated_at).toLocaleString() : 'n/a'
+  const localChecked = localCheckedAt ? new Date(localCheckedAt).toLocaleString() : 'n/a'
 
   return (
     <SettingsContent>
@@ -242,7 +245,7 @@ export function AboutSettings() {
                   {localConnectivityError
                     ? `Status: ${localConnectivityError}`
                     : localStatus
-                      ? `Status: ${localStatus.gateway_running ? 'healthy' : 'warning'}`
+                      ? 'Status: healthy'
                       : 'Status: unknown'}
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -270,8 +273,8 @@ export function AboutSettings() {
                 </div>
                 <div className="flex items-center justify-between rounded border border-border/60 bg-background/40 px-2 py-1 text-xs">
                   <span className="truncate">Gateway process</span>
-                  <span className={cn(localStatus.gateway_running ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive')}>
-                    {localStatus.gateway_running ? 'up' : 'down'}
+                  <span className={cn(localStatus.gateway_running ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground')}>
+                    {localStatus.gateway_running ? 'up' : 'optional (not running)'}
                   </span>
                 </div>
                 <div className="flex items-center justify-between rounded border border-border/60 bg-background/40 px-2 py-1 text-xs">
