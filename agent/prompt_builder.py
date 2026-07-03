@@ -608,7 +608,7 @@ PLATFORM_HINTS = {
         "will be downloaded and sent as native media when possible."
     ),
     "wecom": (
-        "You are on WeCom (企业微信 / Enterprise WeChat). Markdown formatting is supported. "
+        "You are on WeCom (Enterprise WeChat). Markdown formatting is supported. "
         "You CAN send media files natively — to deliver a file to the user, include "
         "MEDIA:/absolute/path/to/file in your response. The file will be sent as a native "
         "WeCom attachment: images (.jpg, .png, .webp) are sent as photos (up to 10 MB), "
@@ -626,7 +626,7 @@ PLATFORM_HINTS = {
         "documents."
     ),
     "yuanbao": (
-        "You are on Yuanbao (腾讯元宝), a Chinese AI assistant platform. "
+        "You are on Yuanbao, a Chinese AI assistant platform. "
         "Markdown formatting is supported (code blocks, tables, bold/italic). "
         "You CAN send media files natively — to deliver a file to the user, include "
         "MEDIA:/absolute/path/to/file in your response. The file will be sent as a native "
@@ -636,11 +636,11 @@ PLATFORM_HINTS = {
         "they will be downloaded and sent as native photos. "
         "Do NOT tell the user you lack file-sending capability — use MEDIA: syntax "
         "whenever a file delivery is appropriate.\n\n"
-        "Stickers (贴纸 / 表情包 / TIM face): Yuanbao has a built-in sticker catalogue. "
-        "When the user sends a sticker (you see '[emoji: 名称]' in their message) or asks "
-        "you to send/reply-with a 贴纸/表情/表情包, you MUST use the sticker tools:\n"
-        "  1. Call yb_search_sticker with a Chinese keyword (e.g. '666', '比心', '吃瓜', "
-        "     '捂脸', '合十') to discover matching sticker_ids.\n"
+        "Stickers (sticker pack / TIM face): Yuanbao has a built-in sticker catalogue. "
+        "When the user sends a sticker (you see '[emoji: name]' in their message) or asks "
+        "you to send/reply with a sticker, you MUST use the sticker tools:\n"
+        "  1. Call yb_search_sticker with a sticker keyword (e.g. 'heart', 'thanks', "
+        "     'facepalm', 'lol') to discover matching sticker_ids.\n"
         "  2. Call yb_send_sticker with the chosen sticker_id or name — this sends a real "
         "     TIMFaceElem that renders as a native sticker in the chat.\n"
         "DO NOT draw sticker-like PNGs with execute_code/Pillow/matplotlib and then send "

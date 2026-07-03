@@ -528,7 +528,7 @@ TOOLSETS = {
     },
 
     "hermes-yuanbao": {
-        "description": "Yuanbao Bot 元宝消息平台工具集 - 群信息、成员查询、私聊、贴纸表情",
+        "description": "Yuanbao Bot toolset - group info, member lookup, direct messages, stickers",
         "tools": _HERMES_CORE_TOOLS + [
             "yb_query_group_info",
             "yb_query_group_members",
