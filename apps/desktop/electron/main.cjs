@@ -5915,48 +5915,42 @@ ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   return { branch }
 })
 
-function resolveHermesVersionFromGit(root) {
+// Given a base version string (e.g. "0.2.3") and a git root, returns the
+// number of commits ahead of the matching tag (v0.2.3), or 0 if the tag
+// doesn't exist or git describe fails. Ignores unrelated upstream tags.
+function resolveAheadCountFromGit(root, baseVersion) {
   try {
-    const described = execFileSync(resolveGitBinary(), ['describe', '--tags', '--long', '--abbrev=12', '--match', 'v[0-9]*'], {
+    const tag = `v${baseVersion}`
+    const described = execFileSync(resolveGitBinary(), ['describe', '--tags', '--long', '--abbrev=12', '--match', tag], {
       cwd: root,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore']
     }).trim()
-    // v0.2.3-7-g82fe624cb228 => 0.2.3+7
-    // v0.2.3-0-g82fe624cb228 => 0.2.3
-    const match = described.match(/^v?([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)-([0-9]+)-g[0-9a-f]+$/i)
-    if (!match) {
-      return null
-    }
-    const base = match[1]
-    const ahead = Number.parseInt(match[2], 10)
-    if (!Number.isFinite(ahead) || ahead <= 0) {
-      return base
-    }
-    return `${base}+${ahead}`
+    // v0.2.3-7-g82fe624cb228 => 7
+    const match = described.match(/^v?[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?-([0-9]+)-g[0-9a-f]+$/i)
+    if (!match) return 0
+    return Number.parseInt(match[1], 10) || 0
   } catch {
-    return null
+    return 0
   }
 }
 
 // Resolve canonical Hermes version for About/status.
 // Priority:
-//  1) git describe formatted as SemVer+ahead (X.Y.Z+N)
-//  2) hermes_cli/__init__.py fallback version
-//  3) Electron app package version
+//  1) hermes_cli/__init__.py fallback version (authoritative for this fork)
+//     + ahead-commit count from git describe against that exact tag
+//  2) Electron app package version
 function resolveHermesVersion() {
   try {
     const root = resolveUpdateRoot()
-    const fromGit = resolveHermesVersionFromGit(root)
-    if (fromGit) {
-      return fromGit
-    }
     const initPath = path.join(root, 'hermes_cli', '__init__.py')
     if (fileExists(initPath)) {
       const raw = fs.readFileSync(initPath, 'utf8')
       const match = raw.match(/__version__\s*=\s*["']([^"']+)["']/)
       if (match) {
-        return match[1]
+        const base = match[1]
+        const ahead = resolveAheadCountFromGit(root, base)
+        return ahead > 0 ? `${base}+${ahead}` : base
       }
     }
   } catch {
