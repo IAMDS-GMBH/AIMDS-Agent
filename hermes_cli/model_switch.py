@@ -1434,7 +1434,14 @@ def list_authenticated_providers(
 
         slug = hermes_id
         pinfo = _mdev_pinfo(mdev_id)
-        display_name = pinfo.name if pinfo else mdev_id
+        # Prefer Hermes auth-registry display names for built-ins so labels are
+        # stable/humanized (e.g. "IAMDS LiteLLM" instead of "iamds-litellm").
+        _pcfg = PROVIDER_REGISTRY.get(hermes_id)
+        display_name = (
+            (_pcfg.name if _pcfg and getattr(_pcfg, "name", "") else "")
+            or (pinfo.name if pinfo else "")
+            or hermes_id
+        )
 
         results.append({
             "slug": slug,

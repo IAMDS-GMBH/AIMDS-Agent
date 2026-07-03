@@ -115,8 +115,8 @@ class TestBashCredentialConsumption:
             "Base URL env var substitution missing"
         assert 'base_url' in content, \
             "base_url substitution not found"
-        assert 'provider: iamds-litellm' in content, \
-            "iamds-litellm provider pinning missing for bootstrap base_url"
+        assert 'selected_provider_slug' in content and 'provider:' in content, \
+            "selected endpoint provider pinning missing for bootstrap base_url"
     
     def test_mcp_servers_block_added(self):
         """Verify mcp_servers block is added when Memory API URL provided."""
@@ -214,8 +214,8 @@ class TestPowerShellCredentialConsumption:
             "Base URL env var substitution missing"
         assert 'base_url' in content, \
             "base_url substitution not found"
-        assert 'provider: iamds-litellm' in content, \
-            "iamds-litellm provider pinning missing for bootstrap base_url"
+        assert '$selectedProviderSlug' in content and 'provider:' in content, \
+            "selected endpoint provider pinning missing for bootstrap base_url"
     
     def test_mcp_servers_block_added(self):
         """Verify mcp_servers block is added when Memory API URL provided."""

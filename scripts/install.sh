@@ -1794,6 +1794,7 @@ apply_bootstrap_credentials() {
     ensure_bootstrap_tool_config
 
     local selected_endpoint
+    local selected_provider_slug
     local effective_api_key
     local effective_base_url
     local main_base_url
@@ -1811,15 +1812,18 @@ apply_bootstrap_credentials() {
 
     case "$selected_endpoint" in
         staging)
+            selected_provider_slug="iamds-litellm-staging"
             effective_api_key="$staging_api_key"
             effective_base_url="$staging_base_url"
             ;;
         dev)
+            selected_provider_slug="iamds-litellm-dev"
             effective_api_key="$dev_api_key"
             effective_base_url="$dev_base_url"
             ;;
         *)
             selected_endpoint="main"
+            selected_provider_slug="iamds-litellm"
             effective_api_key="${HERMES_BOOTSTRAP_API_KEY:-}"
             effective_base_url="$main_base_url"
             ;;
@@ -1828,6 +1832,7 @@ apply_bootstrap_credentials() {
     # Fallback to main endpoint if selected variant is incomplete.
     if [ -z "${effective_api_key:-}" ] || [ -z "${effective_base_url:-}" ]; then
         selected_endpoint="main"
+        selected_provider_slug="iamds-litellm"
         effective_api_key="${HERMES_BOOTSTRAP_API_KEY:-}"
         effective_base_url="$main_base_url"
     fi
@@ -1859,7 +1864,7 @@ apply_bootstrap_credentials() {
                 mcp_server_url="${HERMES_BOOTSTRAP_MEMORY_API_URL%/}"
             fi
 
-            sed -i.bak 's/^  provider: .*/  provider: iamds-litellm/' "$HERMES_HOME/config.yaml" || true
+            sed -i.bak "s/^  provider: .*/  provider: ${selected_provider_slug}/" "$HERMES_HOME/config.yaml" || true
             # Escape URL for sed (forward slashes need escaping)
             escaped_url=$(printf '%s\n' "${llm_gateway_url}" | sed 's/[\/&]/\\&/g')
             sed -i.bak "s|  base_url: .*|  base_url: ${escaped_url}|" "$HERMES_HOME/config.yaml" || true

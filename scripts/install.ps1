@@ -2297,6 +2297,7 @@ function Apply-BootstrapCredentials {
     $devApiKey = $env:HERMES_BOOTSTRAP_DEV_API_KEY
     $bootstrapModel = $env:HERMES_BOOTSTRAP_MODEL
     $selectedEndpoint = "$($env:HERMES_BOOTSTRAP_SELECTED_ENDPOINT)".ToLowerInvariant()
+    $selectedProviderSlug = "iamds-litellm"
     if ([string]::IsNullOrWhiteSpace($selectedEndpoint)) {
         $selectedEndpoint = "main"
     }
@@ -2307,17 +2308,21 @@ function Apply-BootstrapCredentials {
     $effectiveBaseUrl = $mainBaseUrl
 
     if ($selectedEndpoint -eq "staging") {
+        $selectedProviderSlug = "iamds-litellm-staging"
         $effectiveApiKey = $stagingApiKey
         $effectiveBaseUrl = $stagingBaseUrl
     } elseif ($selectedEndpoint -eq "dev") {
+        $selectedProviderSlug = "iamds-litellm-dev"
         $effectiveApiKey = $devApiKey
         $effectiveBaseUrl = $devBaseUrl
     } else {
         $selectedEndpoint = "main"
+        $selectedProviderSlug = "iamds-litellm"
     }
 
     if ([string]::IsNullOrWhiteSpace($effectiveApiKey) -or [string]::IsNullOrWhiteSpace($effectiveBaseUrl)) {
         $selectedEndpoint = "main"
+        $selectedProviderSlug = "iamds-litellm"
         $effectiveApiKey = $bootstrapApiKey
         $effectiveBaseUrl = $mainBaseUrl
     }
@@ -2357,7 +2362,7 @@ function Apply-BootstrapCredentials {
             # Exact 2-space prefix so only model-section keys are replaced here.
             # skills.litellm_hub.base_url (4-space) is handled separately in
             # Ensure-BootstrapToolConfig which reads HERMES_BOOTSTRAP_BASE_URL directly.
-            $config = $config -replace '(?m)^  provider:.*$', '  provider: iamds-litellm'
+            $config = $config -replace '(?m)^  provider:.*$', "  provider: $selectedProviderSlug"
             $escapedUrl = $llmGatewayUrl -replace '([\\])', '$1$1' # Escape backslashes for regex
             $config = $config -replace '(?m)^  base_url:.*$', "  base_url: $escapedUrl"
 
