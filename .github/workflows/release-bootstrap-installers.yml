@@ -75,7 +75,7 @@ jobs:
             echo "installer_version=$clean" >> "$GITHUB_OUTPUT"
             echo "Using explicit version: $clean"
           else
-            current="$(python -c 'import tomllib, pathlib; data = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8")); print(str(data["project"]["version"]).strip())')"
+            current="$(awk -F'"' '/^version[[:space:]]*=[[:space:]]*"/ { print $2; exit }' pyproject.toml)"
             if [[ ! "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               echo "::error::Current pyproject version '$current' is not x.y.z"
               exit 1
@@ -375,7 +375,7 @@ jobs:
               exit 1
             fi
           else
-            current="$(python -c 'import tomllib, pathlib; data = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8")); print(str(data["project"]["version"]).strip())')"
+            current="$(awk -F'"' '/^version[[:space:]]*=[[:space:]]*"/ { print $2; exit }' pyproject.toml)"
             if [[ ! "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               echo "::error::Current pyproject version '$current' is not x.y.z"
               exit 1
@@ -406,13 +406,25 @@ jobs:
           set -euo pipefail
           python scripts/set_version.py "$VERSION"
           echo "target_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          if git diff --quiet -- pyproject.toml hermes_cli/__init__.py; then
+          if git diff --quiet -- \
+            pyproject.toml \
+            hermes_cli/__init__.py \
+            apps/desktop/package.json \
+            apps/bootstrap-installer/package.json \
+            apps/bootstrap-installer/src-tauri/tauri.conf.json \
+            apps/bootstrap-installer/src-tauri/Cargo.toml; then
             echo "Version files already up to date"
             exit 0
           fi
           git config user.name "$ACTOR"
           git config user.email "$ACTOR@users.noreply.github.com"
-          git add pyproject.toml hermes_cli/__init__.py
+          git add \
+            pyproject.toml \
+            hermes_cli/__init__.py \
+            apps/desktop/package.json \
+            apps/bootstrap-installer/package.json \
+            apps/bootstrap-installer/src-tauri/tauri.conf.json \
+            apps/bootstrap-installer/src-tauri/Cargo.toml
           git commit -m "chore: bump version to $VERSION"
           git push origin HEAD:main
           echo "target_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
