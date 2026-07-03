@@ -111,8 +111,15 @@ function shouldRemoveAppBundle(isPackaged, appPath) {
 /**
  * Build a POSIX cleanup shell script (macOS / Linux). It:
  *   1. waits (bounded ~30s) for the desktop PID to exit (venv/bundle unlock),
- *   2. runs the Python uninstall module with the mode,
- *   3. removes the app bundle if one was resolved.
+ *   2. runs the Python uninstall module with the mode from a safe working directory,
+ *   3. removes the app bundle if one was resolved,
+ *   4. removes ~/.hermes/ if full uninstall.
+ *
+ * The working directory must NOT be inside the tree being deleted (e.g., not in
+ * ~/.hermes/hermes-agent) because on macOS/Linux, a running Python interpreter
+ * inside that tree can prevent rmtree() of parent directories. We cd to / or $HOME
+ * (outside the deletion tree) so the Python process can exit cleanly without
+ * holding file locks on the parent.
  *
  * `pythonExe` should be a Python OUTSIDE the venv for lite/full (the venv is
  * being deleted); `pythonPath` is prepended to PYTHONPATH so `import hermes_cli`
@@ -149,7 +156,7 @@ function buildPosixCleanupScript({
     lines.push(`export PYTHONPATH=${q(pythonPath)}\${PYTHONPATH:+:$PYTHONPATH}`)
   }
   lines.push(
-    `cd ${q(agentRoot)} 2>/dev/null || true`,
+    `cd / 2>/dev/null || cd $HOME 2>/dev/null || true`,
     `${q(pythonExe)} ${uninstallArgs.map(q).join(' ')} || true`
   )
   if (appPath) {
@@ -168,7 +175,11 @@ function buildPosixCleanupScript({
 }
 
 /**
- * Build a Windows cleanup batch script. Same three steps, cmd.exe flavored.
+ * Build a Windows cleanup batch script. Same steps, cmd.exe flavored.
+ *
+ * Working directory: same issue as POSIX — running Python inside the tree being
+ * deleted can cause rmdir failures on Windows. We cd to %TEMP% (outside the tree)
+ * so the Python process exits cleanly.
  *
  * Finding 3 (venv self-deletion): for lite/full the agent uninstall rmtree's
  * the venv that contains `python.exe`. A running .exe is mandatory-locked on
@@ -224,7 +235,7 @@ function buildWindowsCleanupScript({
     'timeout /t 1 /nobreak >nul',
     'goto waitloop',
     ':waited_done',
-    `cd /d ${q(agentRoot)}`,
+    `cd /d %TEMP% || cd %SystemRoot%\\Temp || cd %SystemRoot% || cd C:\\`,
     `${q(pythonExe)} ${uninstallArgs.map(q).join(' ')}`
   )
   if (appPath) {
