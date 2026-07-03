@@ -27,7 +27,7 @@ describe('LanguageSwitcher', () => {
 
   it('persists language changes through display.language config', async () => {
     const saveConfig = vi.fn().mockResolvedValue({ ok: true })
-    const latestConfig: HermesConfigRecord = { display: { language: 'en', skin: 'slate' } }
+    const latestConfig: HermesConfigRecord = { display: { language: 'de', skin: 'slate' } }
 
     const configClient: I18nConfigClient = {
       getConfig: vi.fn().mockResolvedValue(latestConfig),
@@ -41,13 +41,13 @@ describe('LanguageSwitcher', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Switch language' }).hasAttribute('disabled')).toBe(false)
+      expect(screen.getByRole('button').hasAttribute('disabled')).toBe(false)
     })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Switch language' }))
-    fireEvent.click(screen.getByRole('option', { name: /日本語/i }))
+    fireEvent.click(screen.getByRole('button'))
+    fireEvent.click(screen.getByRole('option', { name: /English/i }))
 
     await waitFor(() => expect(saveConfig).toHaveBeenCalledTimes(1))
-    expect(saveConfig).toHaveBeenCalledWith({ display: { language: 'ja', skin: 'slate' } })
+    expect(saveConfig).toHaveBeenCalledWith({ display: { language: 'en', skin: 'slate' } })
   })
 })

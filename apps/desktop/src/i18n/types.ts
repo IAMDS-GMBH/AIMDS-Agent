@@ -5,7 +5,7 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
-export type Locale = 'de' | 'en' | 'zh' | 'zh-hant' | 'ja'
+export type Locale = 'de' | 'en'
 
 interface ModeOptionCopy {
   label: string
