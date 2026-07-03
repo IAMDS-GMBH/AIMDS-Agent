@@ -2293,14 +2293,41 @@ function Apply-BootstrapCredentials {
     # Apply credentials from bootstrap env vars (HERMES_BOOTSTRAP_API_KEY, etc.)
     # Called during config setup when installer was launched with credentials.
     $bootstrapApiKey = $env:HERMES_BOOTSTRAP_API_KEY
+    $stagingApiKey = $env:HERMES_BOOTSTRAP_STAGING_API_KEY
+    $devApiKey = $env:HERMES_BOOTSTRAP_DEV_API_KEY
     $bootstrapModel = $env:HERMES_BOOTSTRAP_MODEL
+    $selectedEndpoint = "$($env:HERMES_BOOTSTRAP_SELECTED_ENDPOINT)".ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($selectedEndpoint)) {
+        $selectedEndpoint = "main"
+    }
+    $mainBaseUrl = $env:HERMES_BOOTSTRAP_BASE_URL
+    $stagingBaseUrl = $env:HERMES_BOOTSTRAP_STAGING_BASE_URL
+    $devBaseUrl = $env:HERMES_BOOTSTRAP_DEV_BASE_URL
+    $effectiveApiKey = $bootstrapApiKey
+    $effectiveBaseUrl = $mainBaseUrl
 
-    # If no API key provided, skip - use interactive mode or defaults
-    if ([string]::IsNullOrWhiteSpace($bootstrapApiKey)) {
+    if ($selectedEndpoint -eq "staging") {
+        $effectiveApiKey = $stagingApiKey
+        $effectiveBaseUrl = $stagingBaseUrl
+    } elseif ($selectedEndpoint -eq "dev") {
+        $effectiveApiKey = $devApiKey
+        $effectiveBaseUrl = $devBaseUrl
+    } else {
+        $selectedEndpoint = "main"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($effectiveApiKey) -or [string]::IsNullOrWhiteSpace($effectiveBaseUrl)) {
+        $selectedEndpoint = "main"
+        $effectiveApiKey = $bootstrapApiKey
+        $effectiveBaseUrl = $mainBaseUrl
+    }
+
+    # If no usable API key provided, skip - use interactive mode or defaults
+    if ([string]::IsNullOrWhiteSpace($effectiveApiKey)) {
         return
     }
 
-    Write-Info "Configuring from bootstrap credentials..."
+    Write-Info "Configuring from bootstrap credentials (selected endpoint: $selectedEndpoint)..."
 
     # Update config.yaml with substituted values
     $configPath = "$HermesHome\config.yaml"
@@ -2312,9 +2339,9 @@ function Apply-BootstrapCredentials {
             $config = $config -replace '(?m)^  default:.*$', "  default: $bootstrapModel"
         }
 
-        # Replace model.base_url from base URL root
-        if (-not [string]::IsNullOrWhiteSpace($env:HERMES_BOOTSTRAP_BASE_URL)) {
-            $baseRoot = $env:HERMES_BOOTSTRAP_BASE_URL.TrimEnd('/')
+        # Replace model.base_url from selected endpoint root
+        if (-not [string]::IsNullOrWhiteSpace($effectiveBaseUrl)) {
+            $baseRoot = $effectiveBaseUrl.TrimEnd('/')
             if ($baseRoot.EndsWith('/litellm/v1')) {
                 $baseRoot = $baseRoot.Substring(0, $baseRoot.Length - '/litellm/v1'.Length)
             } elseif ($baseRoot.EndsWith('/litellm/mcp')) {
@@ -2391,22 +2418,97 @@ function Apply-BootstrapCredentials {
         # Write config back
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::WriteAllText($configPath, $config, $utf8NoBom)
+
+        # Upsert staging/dev named providers only when their keys are set.
+        # This keeps model provider dropdown free of unconfigured variants.
+        $cfgPythonForProviders = if (-not $NoVenv) { "$InstallDir\venv\Scripts\python.exe" } else { "python" }
+        if ((-not (Test-Path $cfgPythonForProviders)) -and $cfgPythonForProviders -ne "python") {
+            $cfgPythonForProviders = "python"
+        }
+        try {
+            & $cfgPythonForProviders - $configPath "$stagingBaseUrl" "$devBaseUrl" "$stagingApiKey" "$devApiKey" @'
+import sys
+
+config_path, staging_base, dev_base, staging_key, dev_key = sys.argv[1:6]
+
+try:
+    from hermes_cli.config import load_config, save_config
+except Exception:
+    raise SystemExit(0)
+
+cfg = load_config() or {}
+providers = cfg.get("providers")
+if not isinstance(providers, dict):
+    providers = {}
+
+def normalize_base(raw: str) -> str:
+    base = (raw or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if base.endswith("/litellm/v1"):
+        return base
+    if base.endswith("/litellm/mcp"):
+        return base[: -len("/litellm/mcp")] + "/litellm/v1"
+    return base + "/litellm/v1"
+
+def set_provider(slug: str, label: str, base: str, key_env: str, key_value: str) -> None:
+    normalized = normalize_base(base)
+    if not normalized or not (key_value or "").strip():
+        providers.pop(slug, None)
+        return
+    existing = providers.get(slug) if isinstance(providers.get(slug), dict) else {}
+    existing.update(
+        {
+            "name": label,
+            "base_url": normalized,
+            "key_env": key_env,
+            "transport": "codex_responses",
+        }
+    )
+    providers[slug] = existing
+
+set_provider(
+    "iamds-litellm-staging",
+    "IAMDS LiteLLM (Staging)",
+    staging_base,
+    "IAMDS_LITELLM_STAGING_API_KEY",
+    staging_key,
+)
+set_provider(
+    "iamds-litellm-dev",
+    "IAMDS LiteLLM (Dev)",
+    dev_base,
+    "IAMDS_LITELLM_DEV_API_KEY",
+    dev_key,
+)
+
+cfg["providers"] = providers
+save_config(cfg)
+'@
+        } catch {}
+
         Write-Success "Updated $configPath with bootstrap credentials"
     }
 
     # Update .env with bootstrap credentials/runtime endpoints.
-    # On update/reinstall flows bootstrapApiKey can be empty; appending
+    # On update/reinstall flows effectiveApiKey can be empty; appending
     # OPENAI_API_KEY= would shadow the user's existing key with a blank value.
     $envPath = "$HermesHome\.env"
-    if ((Test-Path $envPath) -and (-not [string]::IsNullOrWhiteSpace($bootstrapApiKey))) {
+    if ((Test-Path $envPath) -and (-not [string]::IsNullOrWhiteSpace($effectiveApiKey))) {
         $envLines = @(
             "# Added by bootstrap installer"
-            "IAMDS_LITELLM_API_KEY=$bootstrapApiKey"
+            "IAMDS_LITELLM_API_KEY=$effectiveApiKey"
         )
         # OPENAI_BASE_URL drives iamds-litellm model discovery/runtime routing.
         # Without this, picker discovery falls back to api.openai.com.
         if (-not [string]::IsNullOrWhiteSpace($llmGatewayUrl)) {
             $envLines += "OPENAI_BASE_URL=$llmGatewayUrl"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($stagingApiKey)) {
+            $envLines += "IAMDS_LITELLM_STAGING_API_KEY=$stagingApiKey"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($devApiKey)) {
+            $envLines += "IAMDS_LITELLM_DEV_API_KEY=$devApiKey"
         }
         $envContent = ($envLines -join "`n") + "`n"
         
@@ -2414,7 +2516,7 @@ function Apply-BootstrapCredentials {
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::AppendAllText($envPath, $envContent, $utf8NoBom)
         Write-Success "Configured $envPath with bootstrap API key/base URL"
-    } elseif ([string]::IsNullOrWhiteSpace($bootstrapApiKey)) {
+    } elseif ([string]::IsNullOrWhiteSpace($effectiveApiKey)) {
         Write-Info "Bootstrap API key not provided; keeping existing IAMDS_LITELLM_API_KEY in $envPath"
     }
 

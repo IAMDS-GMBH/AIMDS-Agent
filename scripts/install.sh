@@ -1793,12 +1793,51 @@ apply_bootstrap_credentials() {
     # no API key was supplied.
     ensure_bootstrap_tool_config
 
-    # If no API key provided, skip — use interactive mode or defaults
-    if [ -z "${HERMES_BOOTSTRAP_API_KEY:-}" ]; then
+    local selected_endpoint
+    local effective_api_key
+    local effective_base_url
+    local main_base_url
+    local staging_base_url
+    local dev_base_url
+    local staging_api_key
+    local dev_api_key
+
+    selected_endpoint="$(printf '%s' "${HERMES_BOOTSTRAP_SELECTED_ENDPOINT:-main}" | tr '[:upper:]' '[:lower:]')"
+    main_base_url="${HERMES_BOOTSTRAP_BASE_URL:-}"
+    staging_base_url="${HERMES_BOOTSTRAP_STAGING_BASE_URL:-}"
+    dev_base_url="${HERMES_BOOTSTRAP_DEV_BASE_URL:-}"
+    staging_api_key="${HERMES_BOOTSTRAP_STAGING_API_KEY:-}"
+    dev_api_key="${HERMES_BOOTSTRAP_DEV_API_KEY:-}"
+
+    case "$selected_endpoint" in
+        staging)
+            effective_api_key="$staging_api_key"
+            effective_base_url="$staging_base_url"
+            ;;
+        dev)
+            effective_api_key="$dev_api_key"
+            effective_base_url="$dev_base_url"
+            ;;
+        *)
+            selected_endpoint="main"
+            effective_api_key="${HERMES_BOOTSTRAP_API_KEY:-}"
+            effective_base_url="$main_base_url"
+            ;;
+    esac
+
+    # Fallback to main endpoint if selected variant is incomplete.
+    if [ -z "${effective_api_key:-}" ] || [ -z "${effective_base_url:-}" ]; then
+        selected_endpoint="main"
+        effective_api_key="${HERMES_BOOTSTRAP_API_KEY:-}"
+        effective_base_url="$main_base_url"
+    fi
+
+    # If no usable API key provided, skip — use interactive mode or defaults
+    if [ -z "${effective_api_key:-}" ]; then
         return 0
     fi
 
-    log_info "Configuring from bootstrap credentials..."
+    log_info "Configuring from bootstrap credentials (selected endpoint: ${selected_endpoint})..."
 
     # Update config.yaml with substituted values
     if [ -f "$HERMES_HOME/config.yaml" ]; then
@@ -1807,9 +1846,9 @@ apply_bootstrap_credentials() {
             sed -i.bak "s/^  default: .*/  default: ${HERMES_BOOTSTRAP_MODEL}/" "$HERMES_HOME/config.yaml" || true
         fi
 
-        # Replace model.base_url from base URL root
-        if [ -n "${HERMES_BOOTSTRAP_BASE_URL:-}" ]; then
-            base_root="${HERMES_BOOTSTRAP_BASE_URL%/}"
+        # Replace model.base_url from selected endpoint root
+        if [ -n "${effective_base_url:-}" ]; then
+            base_root="${effective_base_url%/}"
             case "$base_root" in
                 */litellm/v1) base_root="${base_root%/litellm/v1}" ;;
                 */litellm/mcp) base_root="${base_root%/litellm/mcp}" ;;
@@ -1842,7 +1881,7 @@ except Exception:
 PYEOF
 )"
             mcp_server_name="${mcp_server_name:-memory}"
-            "$cfg_python" - "$HERMES_HOME/config.yaml" "${mcp_server_url}" "${HERMES_BOOTSTRAP_API_KEY}" "${mcp_server_name}" <<'PYEOF'
+            "$cfg_python" - "$HERMES_HOME/config.yaml" "${mcp_server_url}" "${effective_api_key}" "${mcp_server_name}" <<'PYEOF'
 import re
 import sys
 
@@ -1883,6 +1922,66 @@ else:
 
 open(path, "w", encoding="utf-8").write(text)
 PYEOF
+
+            # Upsert staging/dev named providers only when their keys are set.
+            # This keeps model provider dropdown free of unconfigured variants.
+            "$cfg_python" - "$HERMES_HOME/config.yaml" "${staging_base_url:-}" "${dev_base_url:-}" "${staging_api_key:-}" "${dev_api_key:-}" <<'PYEOF'
+import sys
+
+config_path, staging_base, dev_base, staging_key, dev_key = sys.argv[1:6]
+
+try:
+    from hermes_cli.config import load_config, save_config
+except Exception:
+    raise SystemExit(0)
+
+cfg = load_config() or {}
+providers = cfg.get("providers")
+if not isinstance(providers, dict):
+    providers = {}
+
+def _normalize_base(raw: str) -> str:
+    base = (raw or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if base.endswith("/litellm/v1"):
+        return base
+    if base.endswith("/litellm/mcp"):
+        return base[: -len("/litellm/mcp")] + "/litellm/v1"
+    return base + "/litellm/v1"
+
+def _set_provider(slug: str, label: str, base: str, key_env: str, key_value: str) -> None:
+    normalized = _normalize_base(base)
+    if not normalized or not (key_value or "").strip():
+        providers.pop(slug, None)
+        return
+    existing = providers.get(slug) if isinstance(providers.get(slug), dict) else {}
+    existing.update({
+        "name": label,
+        "base_url": normalized,
+        "key_env": key_env,
+        "transport": "codex_responses",
+    })
+    providers[slug] = existing
+
+_set_provider(
+    "iamds-litellm-staging",
+    "IAMDS LiteLLM (Staging)",
+    staging_base,
+    "IAMDS_LITELLM_STAGING_API_KEY",
+    staging_key,
+)
+_set_provider(
+    "iamds-litellm-dev",
+    "IAMDS LiteLLM (Dev)",
+    dev_base,
+    "IAMDS_LITELLM_DEV_API_KEY",
+    dev_key,
+)
+
+cfg["providers"] = providers
+save_config(cfg)
+PYEOF
         fi
 
         # Clean up backup file
@@ -1913,22 +2012,28 @@ PYEOF
     fi
 
     # Update .env with bootstrap credentials/runtime endpoints.
-    # On update/reinstall flows HERMES_BOOTSTRAP_API_KEY may be empty; appending
+    # On update/reinstall flows the effective API key may be empty; appending
     # OPENAI_API_KEY= would shadow the user's existing key with a blank value.
-    if [ -n "${HERMES_BOOTSTRAP_API_KEY:-}" ] && [ -f "$HERMES_HOME/.env" ]; then
+    if [ -n "${effective_api_key:-}" ] && [ -f "$HERMES_HOME/.env" ]; then
         # Write API key
         {
             echo "# Added by bootstrap installer"
-            echo "IAMDS_LITELLM_API_KEY=${HERMES_BOOTSTRAP_API_KEY}"
+            echo "IAMDS_LITELLM_API_KEY=${effective_api_key}"
             # OPENAI_BASE_URL drives iamds-litellm model discovery/runtime routing.
             # Without this, picker discovery falls back to api.openai.com.
             if [ -n "${llm_gateway_url:-}" ]; then
                 echo "OPENAI_BASE_URL=${llm_gateway_url}"
             fi
+            if [ -n "${staging_api_key:-}" ]; then
+                echo "IAMDS_LITELLM_STAGING_API_KEY=${staging_api_key}"
+            fi
+            if [ -n "${dev_api_key:-}" ]; then
+                echo "IAMDS_LITELLM_DEV_API_KEY=${dev_api_key}"
+            fi
         } >> "$HERMES_HOME/.env"
 
         log_success "Configured .env with bootstrap API key/base URL"
-    elif [ -z "${HERMES_BOOTSTRAP_API_KEY:-}" ]; then
+    elif [ -z "${effective_api_key:-}" ]; then
         log_info "Bootstrap API key not provided; keeping existing IAMDS_LITELLM_API_KEY in ~/.hermes/.env"
     fi
 }

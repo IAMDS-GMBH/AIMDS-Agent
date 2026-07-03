@@ -14,21 +14,27 @@ export const PROVIDER_VIEWS = ['accounts', 'keys'] as const
 export type ProviderView = (typeof PROVIDER_VIEWS)[number]
 
 function buildIamdsLiteLlmKeyGroup(vars: Record<string, EnvVarInfo>): ProviderKeyGroup[] {
-  const key = 'IAMDS_LITELLM_API_KEY'
-  const info = vars[key]
+  const mainKey = 'IAMDS_LITELLM_API_KEY'
+  const mainInfo = vars[mainKey]
 
-  if (!info) {
+  if (!mainInfo) {
     return []
   }
 
+  const advanced: [string, EnvVarInfo][] = []
+  const stagingInfo = vars.IAMDS_LITELLM_STAGING_API_KEY
+  const devInfo = vars.IAMDS_LITELLM_DEV_API_KEY
+  if (stagingInfo?.is_set) advanced.push(['IAMDS_LITELLM_STAGING_API_KEY', stagingInfo])
+  if (devInfo?.is_set) advanced.push(['IAMDS_LITELLM_DEV_API_KEY', devInfo])
+
   return [
     {
-      advanced: [],
+      advanced,
       description: 'IAMDS LiteLLM gateway key from ~/.hermes/.env',
       docsUrl: '',
-      hasAnySet: info.is_set,
+      hasAnySet: mainInfo.is_set || advanced.some(([, info]) => info.is_set),
       name: 'IAMDS LiteLLM',
-      primary: [key, info],
+      primary: [mainKey, mainInfo],
       priority: 0
     }
   ]

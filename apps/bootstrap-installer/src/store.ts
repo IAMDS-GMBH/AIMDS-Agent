@@ -23,6 +23,11 @@ export interface CredentialsData {
   baseUrl: string
   modelName: string
   modelNames?: string[]
+  selectedEndpoint?: 'dev' | 'main' | 'staging'
+  stagingApiKey?: string
+  devApiKey?: string
+  stagingBaseUrl?: string
+  devBaseUrl?: string
 }
 
 export interface StageInfo {
@@ -314,7 +319,12 @@ export async function startInstall(opts?: { branch?: string; credentials?: Crede
           base_url: normalizedBaseUrl,
           api_key: opts.credentials.apiKey,
           model_name: opts.credentials.modelName,
-          model_names: opts.credentials.modelNames ?? null
+          model_names: opts.credentials.modelNames ?? null,
+          selected_endpoint: opts.credentials.selectedEndpoint ?? null,
+          staging_api_key: opts.credentials.stagingApiKey?.trim() || null,
+          dev_api_key: opts.credentials.devApiKey?.trim() || null,
+          staging_base_url: opts.credentials.stagingBaseUrl?.trim() || null,
+          dev_base_url: opts.credentials.devBaseUrl?.trim() || null
         }
       : null
 

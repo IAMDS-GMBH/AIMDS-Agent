@@ -2588,6 +2588,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": False,
     },
+    "IAMDS_LITELLM_STAGING_API_KEY": {
+        "description": "IAMDS LiteLLM staging API key",
+        "prompt": "IAMDS LiteLLM staging API key",
+        "url": None,
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "IAMDS_LITELLM_DEV_API_KEY": {
+        "description": "IAMDS LiteLLM dev API key",
+        "prompt": "IAMDS LiteLLM dev API key",
+        "url": None,
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
     "NOUS_BASE_URL": {
         "description": "Nous Portal base URL override",
         "prompt": "Nous Portal base URL (leave empty for default)",

@@ -65,6 +65,31 @@ pub async fn run_script(
         cmd.env("HERMES_BOOTSTRAP_API_KEY", &creds.api_key);
         cmd.env("HERMES_BOOTSTRAP_BASE_URL", &creds.base_url);
         cmd.env("HERMES_BOOTSTRAP_MODEL", &creds.model_name);
+        if let Some(endpoint) = &creds.selected_endpoint {
+            if !endpoint.trim().is_empty() {
+                cmd.env("HERMES_BOOTSTRAP_SELECTED_ENDPOINT", endpoint);
+            }
+        }
+        if let Some(staging_key) = &creds.staging_api_key {
+            if !staging_key.trim().is_empty() {
+                cmd.env("HERMES_BOOTSTRAP_STAGING_API_KEY", staging_key);
+            }
+        }
+        if let Some(dev_key) = &creds.dev_api_key {
+            if !dev_key.trim().is_empty() {
+                cmd.env("HERMES_BOOTSTRAP_DEV_API_KEY", dev_key);
+            }
+        }
+        if let Some(staging_base_url) = &creds.staging_base_url {
+            if !staging_base_url.trim().is_empty() {
+                cmd.env("HERMES_BOOTSTRAP_STAGING_BASE_URL", staging_base_url);
+            }
+        }
+        if let Some(dev_base_url) = &creds.dev_base_url {
+            if !dev_base_url.trim().is_empty() {
+                cmd.env("HERMES_BOOTSTRAP_DEV_BASE_URL", dev_base_url);
+            }
+        }
         if let Some(model_names) = &creds.model_names {
             if !model_names.is_empty() {
                 if let Ok(models_json) = serde_json::to_string(model_names) {

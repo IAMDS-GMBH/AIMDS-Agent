@@ -89,6 +89,12 @@ class TestBashCredentialConsumption:
         # Check that function reads the env var
         assert 'HERMES_BOOTSTRAP_API_KEY' in content, \
             "HERMES_BOOTSTRAP_API_KEY env var not used"
+        assert 'HERMES_BOOTSTRAP_SELECTED_ENDPOINT' in content, \
+            "HERMES_BOOTSTRAP_SELECTED_ENDPOINT env var not used"
+        assert 'HERMES_BOOTSTRAP_STAGING_API_KEY' in content, \
+            "HERMES_BOOTSTRAP_STAGING_API_KEY env var not used"
+        assert 'HERMES_BOOTSTRAP_DEV_API_KEY' in content, \
+            "HERMES_BOOTSTRAP_DEV_API_KEY env var not used"
         assert '${HERMES_BOOTSTRAP_API_KEY:-}' in content or \
                'HERMES_BOOTSTRAP_API_KEY:-' in content, \
             "API key env var not being read correctly"
@@ -181,6 +187,12 @@ class TestPowerShellCredentialConsumption:
         
         assert '$env:HERMES_BOOTSTRAP_API_KEY' in content, \
             "HERMES_BOOTSTRAP_API_KEY env var not used in PowerShell"
+        assert '$env:HERMES_BOOTSTRAP_SELECTED_ENDPOINT' in content, \
+            "HERMES_BOOTSTRAP_SELECTED_ENDPOINT env var not used in PowerShell"
+        assert '$env:HERMES_BOOTSTRAP_STAGING_API_KEY' in content, \
+            "HERMES_BOOTSTRAP_STAGING_API_KEY env var not used in PowerShell"
+        assert '$env:HERMES_BOOTSTRAP_DEV_API_KEY' in content, \
+            "HERMES_BOOTSTRAP_DEV_API_KEY env var not used in PowerShell"
         assert 'IsNullOrWhiteSpace' in content, \
             "Empty env var check not found"
     
@@ -277,6 +289,12 @@ class TestTauriCredentialsThreading:
             "base_url field missing from CredentialsData"
         assert 'model_name' in content, \
             "model_name field missing from CredentialsData"
+        assert 'selected_endpoint' in content, \
+            "selected_endpoint field missing from CredentialsData"
+        assert 'staging_api_key' in content, \
+            "staging_api_key field missing from CredentialsData"
+        assert 'dev_api_key' in content, \
+            "dev_api_key field missing from CredentialsData"
     
     def test_env_vars_set_before_script_execution(self):
         """Verify env vars set before subprocess call."""
@@ -320,6 +338,12 @@ class TestReactCredentialsForm:
             "CredentialsData interface not found"
         assert 'apiKey' in content or 'api_key' in content, \
             "API key field missing"
+        assert 'selectedEndpoint' in content, \
+            "selectedEndpoint field missing"
+        assert 'stagingApiKey' in content, \
+            "stagingApiKey field missing"
+        assert 'devApiKey' in content, \
+            "devApiKey field missing"
 
 
 class TestConfigurationGeneration:

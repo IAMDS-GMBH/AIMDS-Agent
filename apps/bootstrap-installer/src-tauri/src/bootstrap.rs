@@ -37,6 +37,11 @@ pub struct CredentialsData {
     pub model_name: String,
     pub model_names: Option<Vec<String>>,
     pub memory_api_url: Option<String>,
+    pub selected_endpoint: Option<String>,
+    pub staging_api_key: Option<String>,
+    pub dev_api_key: Option<String>,
+    pub staging_base_url: Option<String>,
+    pub dev_base_url: Option<String>,
 }
 
 /// Frontend → Rust: kick off the install.
