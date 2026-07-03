@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { Button } from '../components/button'
 import { joinInstallerBaseUrl, normalizeInstallerBaseUrl, startInstall } from '../store'
 import { AlertCircle, Loader, Check } from 'lucide-react'
@@ -12,54 +12,14 @@ export interface CredentialsData {
   modelName: string
   modelNames?: string[]
   selectedEndpoint?: EndpointVariant
-  stagingApiKey?: string
-  devApiKey?: string
-  stagingBaseUrl?: string
-  devBaseUrl?: string
 }
 
-interface VariantUrls {
-  dev: string
-  main: string
-  staging: string
-}
-
-const DEV_UNLOCK_CLICKS = 10
-
-function buildVariantBaseUrls(baseUrl: string): VariantUrls {
-  const normalized = normalizeInstallerBaseUrl(baseUrl)
-  if (!normalized) {
-    return { dev: '', main: '', staging: '' }
-  }
-  try {
-    const parsed = new URL(normalized)
-    const rootHost = parsed.hostname.replace(/^(staging|dev)\./i, '')
-    const buildForHost = (host: string) => {
-      const next = new URL(normalized)
-      next.hostname = host
-      return normalizeInstallerBaseUrl(next.toString())
-    }
-    return {
-      main: buildForHost(rootHost),
-      staging: buildForHost(`staging.${rootHost}`),
-      dev: buildForHost(`dev.${rootHost}`)
-    }
-  } catch {
-    return { dev: '', main: '', staging: '' }
-  }
-}
-
-function computeFetchFingerprint(formData: CredentialsData, variantsEnabled: boolean): string {
-  const variants = buildVariantBaseUrls(formData.baseUrl)
-  const selected = variantsEnabled ? (formData.selectedEndpoint ?? 'staging') : 'main'
+function computeFetchFingerprint(formData: CredentialsData): string {
+  const mainBaseUrl = normalizeInstallerBaseUrl(formData.baseUrl)
   return [
-    selected,
-    variants.main,
-    variants.staging,
-    variants.dev,
-    formData.apiKey.trim(),
-    (formData.stagingApiKey ?? '').trim(),
-    (formData.devApiKey ?? '').trim()
+    'main',
+    mainBaseUrl,
+    formData.apiKey.trim()
   ].join('|')
 }
 
@@ -68,9 +28,7 @@ export default function Credentials() {
     apiKey: '',
     baseUrl: '',
     modelName: '',
-    selectedEndpoint: 'staging',
-    stagingApiKey: '',
-    devApiKey: ''
+    selectedEndpoint: 'main'
   })
 
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -79,19 +37,9 @@ export default function Credentials() {
   const [modelsFetched, setModelsFetched] = useState(false)
   const [fetchedFingerprint, setFetchedFingerprint] = useState('')
   const [modelError, setModelError] = useState<string | null>(null)
-  const [providerLabelClicks, setProviderLabelClicks] = useState(0)
-  const [variantsEnabled, setVariantsEnabled] = useState(false)
-
-  const variantUrls = useMemo(() => buildVariantBaseUrls(formData.baseUrl), [formData.baseUrl])
-  const selectedEndpoint: EndpointVariant = variantsEnabled ? (formData.selectedEndpoint ?? 'staging') : 'main'
-  const selectedApiKey =
-    selectedEndpoint === 'main'
-      ? formData.apiKey
-      : selectedEndpoint === 'staging'
-        ? (formData.stagingApiKey ?? '')
-        : (formData.devApiKey ?? '')
-  const selectedBaseUrl = variantUrls[selectedEndpoint]
-  const selectedEndpointLabel = selectedEndpoint === 'main' ? 'Main' : selectedEndpoint === 'staging' ? 'Staging' : 'Dev'
+  const selectedEndpoint: EndpointVariant = 'main'
+  const selectedApiKey = formData.apiKey
+  const selectedBaseUrl = normalizeInstallerBaseUrl(formData.baseUrl)
 
   const validateForm = (): boolean => {
     const newErrors: Record<string, string> = {}
@@ -106,15 +54,9 @@ export default function Credentials() {
       newErrors.modelName = 'Model name is required'
     }
 
-    if (variantsEnabled) {
-      if (!selectedApiKey.trim()) {
-        newErrors[selectedEndpoint === 'main' ? 'apiKey' : selectedEndpoint === 'staging' ? 'stagingApiKey' : 'devApiKey'] =
-          `${selectedEndpointLabel} API Key is required`
-      }
-    } else if (!formData.apiKey.trim()) {
+    if (!formData.apiKey.trim()) {
       newErrors.apiKey = 'API Key is required'
     }
-
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
   }
@@ -126,7 +68,7 @@ export default function Credentials() {
       setErrors({ ...errors, modelName: 'Please fetch and select a model first' })
       return
     }
-    const currentFingerprint = computeFetchFingerprint(formData, variantsEnabled)
+    const currentFingerprint = computeFetchFingerprint(formData)
     if (currentFingerprint !== fetchedFingerprint) {
       setModelsFetched(false)
       setErrors({ ...errors, modelName: 'Inputs changed. Please fetch models again' })
@@ -145,14 +87,7 @@ export default function Credentials() {
       modelName: formData.modelName.trim(),
       modelNames: [...availableModels]
     }
-
-    if (variantsEnabled) {
-      cleaned.selectedEndpoint = selectedEndpoint
-      cleaned.stagingApiKey = (formData.stagingApiKey ?? '').trim()
-      cleaned.devApiKey = (formData.devApiKey ?? '').trim()
-      cleaned.stagingBaseUrl = variantUrls.staging
-      cleaned.devBaseUrl = variantUrls.dev
-    }
+    cleaned.selectedEndpoint = selectedEndpoint
 
     await startInstall({ credentials: cleaned })
   }
@@ -170,8 +105,8 @@ export default function Credentials() {
 
     if (modelsFetched) {
       const next = { ...previous, [field]: value }
-      const previousFingerprint = computeFetchFingerprint(previous, variantsEnabled)
-      const nextFingerprint = computeFetchFingerprint(next, variantsEnabled)
+      const previousFingerprint = computeFetchFingerprint(previous)
+      const nextFingerprint = computeFetchFingerprint(next)
       if (previousFingerprint !== nextFingerprint) {
         invalidateFetchedModels()
       }
@@ -183,18 +118,6 @@ export default function Credentials() {
         delete next[field]
         return next
       })
-    }
-  }
-
-  const handleProviderLabelClick = () => {
-    const next = providerLabelClicks + 1
-    setProviderLabelClicks(next)
-    if (!variantsEnabled && next >= DEV_UNLOCK_CLICKS) {
-      setVariantsEnabled(true)
-      setFormData((prev) => ({ ...prev, selectedEndpoint: 'staging' }))
-      if (modelsFetched) {
-        invalidateFetchedModels()
-      }
     }
   }
 
@@ -214,7 +137,7 @@ export default function Credentials() {
         return
       }
       if (!selectedApiKey.trim()) {
-        setModelError(`${selectedEndpointLabel} API Key is required`)
+        setModelError('API Key is required')
         setIsLoadingModels(false)
         return
       }
@@ -226,7 +149,7 @@ export default function Credentials() {
 
       setAvailableModels(models)
       setModelsFetched(true)
-      setFetchedFingerprint(computeFetchFingerprint(formData, variantsEnabled))
+      setFetchedFingerprint(computeFetchFingerprint(formData))
       setFormData((prev) => ({ ...prev, modelName: models[0] }))
 
       try {
@@ -255,19 +178,13 @@ export default function Credentials() {
           Configuration
         </h1>
         <p className="mb-8 text-sm text-muted-foreground">
-          Enter your KI provider credentials. The installer will derive the endpoints from your Base URL.
+          Enter your KI provider credentials.
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-6">
           <fieldset className="rounded-lg border border-border bg-muted/20 p-4">
             <legend className="mb-4 block text-sm font-medium text-foreground">
-              <button
-                type="button"
-                onClick={handleProviderLabelClick}
-                className="cursor-default"
-              >
-                KI Provider
-              </button>
+              KI Provider
             </legend>
 
             <div className="space-y-4">
@@ -300,112 +217,25 @@ export default function Credentials() {
                 )}
               </div>
 
-              {variantsEnabled ? (
-                <>
-                  <div className="space-y-2 rounded border border-border bg-background/70 p-3">
-                    <p className="text-xs font-medium text-foreground">Endpoint selection</p>
-                    {(['main', 'staging', 'dev'] as EndpointVariant[]).map((endpoint) => {
-                      const label = endpoint === 'main' ? 'Main' : endpoint === 'staging' ? 'Staging' : 'Dev'
-                      const url = variantUrls[endpoint]
-                      return (
-                        <label key={endpoint} className="flex items-start gap-2 text-xs text-foreground">
-                          <input
-                            type="radio"
-                            name="selectedEndpoint"
-                            checked={selectedEndpoint === endpoint}
-                            onChange={() => handleChange('selectedEndpoint', endpoint)}
-                            className="mt-0.5"
-                          />
-                          <span>
-                            <span className="block font-medium">{label}</span>
-                            <span className="text-muted-foreground">{url || 'Invalid base URL'}</span>
-                          </span>
-                        </label>
-                      )
-                    })}
-                  </div>
-
-                  <div>
-                    <label htmlFor="apiKeyMain" className="block text-sm font-medium text-foreground">
-                      Main API Key
-                    </label>
-                    <input
-                      id="apiKeyMain"
-                      type="password"
-                      value={formData.apiKey}
-                      onChange={(e) => handleChange('apiKey', e.target.value)}
-                      placeholder="sk-..."
-                      className="mt-1 w-full rounded border border-input bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                    />
-                    {errors.apiKey && (
-                      <p className="mt-1 flex items-center gap-1 text-xs text-red-500">
-                        <AlertCircle className="h-3 w-3" />
-                        {errors.apiKey}
-                      </p>
-                    )}
-                  </div>
-
-                  <div>
-                    <label htmlFor="apiKeyStaging" className="block text-sm font-medium text-foreground">
-                      Staging API Key
-                    </label>
-                    <input
-                      id="apiKeyStaging"
-                      type="password"
-                      value={formData.stagingApiKey ?? ''}
-                      onChange={(e) => handleChange('stagingApiKey', e.target.value)}
-                      placeholder="sk-..."
-                      className="mt-1 w-full rounded border border-input bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                    />
-                    {errors.stagingApiKey && (
-                      <p className="mt-1 flex items-center gap-1 text-xs text-red-500">
-                        <AlertCircle className="h-3 w-3" />
-                        {errors.stagingApiKey}
-                      </p>
-                    )}
-                  </div>
-
-                  <div>
-                    <label htmlFor="apiKeyDev" className="block text-sm font-medium text-foreground">
-                      Dev API Key
-                    </label>
-                    <input
-                      id="apiKeyDev"
-                      type="password"
-                      value={formData.devApiKey ?? ''}
-                      onChange={(e) => handleChange('devApiKey', e.target.value)}
-                      placeholder="sk-..."
-                      className="mt-1 w-full rounded border border-input bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                    />
-                    {errors.devApiKey && (
-                      <p className="mt-1 flex items-center gap-1 text-xs text-red-500">
-                        <AlertCircle className="h-3 w-3" />
-                        {errors.devApiKey}
-                      </p>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div>
-                  <label htmlFor="apiKey" className="block text-sm font-medium text-foreground">
-                    API Key <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    id="apiKey"
-                    type="password"
-                    value={formData.apiKey}
-                    onChange={(e) => handleChange('apiKey', e.target.value)}
-                    placeholder="sk-..."
-                    className="mt-1 w-full rounded border border-input bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                  />
-                  {errors.apiKey && (
-                    <p className="mt-1 flex items-center gap-1 text-xs text-red-500">
-                      <AlertCircle className="h-3 w-3" />
-                      {errors.apiKey}
-                    </p>
-                  )}
-                </div>
-              )}
+              <div>
+                <label htmlFor="apiKey" className="block text-sm font-medium text-foreground">
+                  API Key <span className="text-red-500">*</span>
+                </label>
+                <input
+                  id="apiKey"
+                  type="password"
+                  value={formData.apiKey}
+                  onChange={(e) => handleChange('apiKey', e.target.value)}
+                  placeholder="sk-..."
+                  className="mt-1 w-full rounded border border-input bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+                {errors.apiKey && (
+                  <p className="mt-1 flex items-center gap-1 text-xs text-red-500">
+                    <AlertCircle className="h-3 w-3" />
+                    {errors.apiKey}
+                  </p>
+                )}
+              </div>
 
               <div>
                 <label htmlFor="modelName" className="block text-sm font-medium text-foreground">
@@ -452,7 +282,7 @@ export default function Credentials() {
                         Fetched ({availableModels.length} models)
                       </>
                     ) : (
-                      `Fetch Models (${selectedEndpointLabel})`
+                      'Fetch Models'
                     )}
                   </button>
                 </div>
@@ -470,7 +300,7 @@ export default function Credentials() {
                 )}
                 {!modelsFetched && availableModels.length === 0 && (
                   <p className="mt-1 text-xs text-muted-foreground">
-                    If endpoint selection, Base URL, or any API key changes, fetch models again before install.
+                    If Base URL or API key changes, fetch models again before install.
                   </p>
                 )}
               </div>
