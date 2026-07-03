@@ -3,8 +3,9 @@ import { useEffect, useState } from 'react'
 
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
+import { getRemoteHealthStatus } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
-import { CheckCircle2, ExternalLink, Loader2, RefreshCw, Sparkles } from '@/lib/icons'
+import { CheckCircle2, ExternalLink, Globe, Loader2, RefreshCw, Sparkles } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
   $desktopVersion,
@@ -15,6 +16,7 @@ import {
   openUpdatesWindow,
   refreshDesktopVersion
 } from '@/store/updates'
+import type { RemoteHealthResponse } from '@/types/hermes'
 
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
 import { UninstallSection } from './uninstall-section'
@@ -51,6 +53,8 @@ export function AboutSettings() {
   const apply = useStore($updateApply)
   const checking = useStore($updateChecking)
   const [justChecked, setJustChecked] = useState(false)
+  const [remoteHealth, setRemoteHealth] = useState<null | RemoteHealthResponse>(null)
+  const [remoteHealthLoading, setRemoteHealthLoading] = useState(false)
 
   // The version atom is loaded once at app boot, which makes About show a
   // stale number after a self-update (the running binary is current, the
@@ -58,6 +62,20 @@ export function AboutSettings() {
   // reflects the running build.
   useEffect(() => {
     void refreshDesktopVersion()
+  }, [])
+
+  const refreshRemoteHealth = async () => {
+    setRemoteHealthLoading(true)
+    try {
+      const payload = await getRemoteHealthStatus()
+      setRemoteHealth(payload)
+    } finally {
+      setRemoteHealthLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void refreshRemoteHealth()
   }, [])
 
   const behind = status?.behind ?? 0
@@ -90,6 +108,17 @@ export function AboutSettings() {
   } else {
     statusLine = a.tapCheck
   }
+
+  const remoteSeverity = remoteHealth?.severity ?? (remoteHealth?.ok ? 'healthy' : 'critical')
+  const remoteToneClass =
+    remoteSeverity === 'critical'
+      ? 'border-destructive/35 bg-destructive/5 text-destructive'
+      : remoteSeverity === 'warning'
+        ? 'border-amber-500/35 bg-amber-500/10 text-foreground'
+        : 'border-border/70 bg-muted/20 text-foreground'
+  const remoteChecked = remoteHealth?.checked_at
+    ? new Date(remoteHealth.checked_at).toLocaleString()
+    : 'n/a'
 
   return (
     <SettingsContent>
@@ -168,6 +197,46 @@ export function AboutSettings() {
           hint={a.branchCommit(status?.branch ?? 'unknown', status?.currentSha?.slice(0, 7) ?? 'unknown')}
           title={a.automaticUpdates}
         />
+
+        <div className="mt-5">
+          <SectionHeading icon={Globe} title="Remote connectivity" />
+          <div className={cn('rounded-xl border px-4 py-3 text-sm', remoteToneClass)}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-medium">
+                  {remoteHealth?.ok
+                    ? `Status: ${remoteHealth.overall_status ?? 'unknown'}`
+                    : (remoteHealth?.error ?? 'Remote health check failed')}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {remoteHealth?.health_url ? `Endpoint: ${remoteHealth.health_url}` : 'Endpoint: not configured'}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">Checked at: {remoteChecked}</p>
+              </div>
+              <Button disabled={remoteHealthLoading} onClick={() => void refreshRemoteHealth()} size="sm" variant="text">
+                {remoteHealthLoading ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+                {remoteHealthLoading ? 'Checking…' : 'Refresh'}
+              </Button>
+            </div>
+
+            {remoteHealth?.ok && (
+              <div className="mt-3 grid gap-1">
+                <p className="text-xs font-medium text-foreground">Critical services</p>
+                {(remoteHealth.critical_services ?? []).map(service => (
+                  <div
+                    className="flex items-center justify-between rounded border border-border/60 bg-background/40 px-2 py-1 text-xs"
+                    key={`${service.name}-${service.tier}`}
+                  >
+                    <span className="truncate">{service.name}</span>
+                    <span className={cn(service.is_up ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive')}>
+                      {service.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
 
         <UninstallSection />
       </div>

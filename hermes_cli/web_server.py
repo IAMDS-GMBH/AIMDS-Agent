@@ -902,6 +902,129 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     return False, None
 
 
+_REMOTE_HEALTH_CRITICAL_NAMES = {
+    "LiteLLM Gateway",
+    "LangGraph API",
+    "Keycloak SSO",
+}
+
+
+def _is_service_up(status: Any) -> bool:
+    return str(status or "").strip().lower() in {"healthy", "ok", "up"}
+
+
+def _derive_remote_health_target(config: dict[str, Any]) -> tuple[str, str]:
+    """Return (provider_slug, uptime_health_url) for the active model provider."""
+    model_cfg = config.get("model")
+    if not isinstance(model_cfg, dict):
+        return "", ""
+
+    provider = str(model_cfg.get("provider") or "").strip()
+    base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+
+    if not base_url and provider:
+        providers_cfg = config.get("providers")
+        if isinstance(providers_cfg, dict):
+            entry = providers_cfg.get(provider)
+            if isinstance(entry, dict):
+                base_url = str(entry.get("base_url") or "").strip().rstrip("/")
+
+    if not base_url:
+        return provider, ""
+
+    if base_url.endswith("/litellm/v1"):
+        base_url = base_url[: -len("/litellm/v1")]
+    elif base_url.endswith("/litellm/mcp"):
+        base_url = base_url[: -len("/litellm/mcp")]
+
+    return provider, f"{base_url}/uptime/health"
+
+
+def _fetch_remote_health(url: str, timeout: float = 8.0) -> tuple[dict | None, int | None, str | None]:
+    """Blocking HTTP GET for the remote uptime health endpoint."""
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read())
+            if not isinstance(body, dict):
+                return None, resp.status, "Health endpoint returned non-JSON object payload."
+            return body, resp.status, None
+    except urllib.error.HTTPError as exc:
+        return None, exc.code, f"Health endpoint returned HTTP {exc.code}."
+    except Exception:
+        return None, None, f"Could not reach {url}."
+
+
+def _summarize_remote_health(payload: dict[str, Any]) -> dict[str, Any]:
+    details_raw = payload.get("details")
+    details = details_raw if isinstance(details_raw, list) else []
+    critical_services: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        tier = str(item.get("tier") or "").strip()
+        status = str(item.get("status") or "").strip()
+        if not name:
+            continue
+        is_mcp = tier.lower() == "mcp"
+        is_named_critical = name in _REMOTE_HEALTH_CRITICAL_NAMES
+        if not is_mcp and not is_named_critical:
+            continue
+        seen_names.add(name)
+        critical_services.append(
+            {
+                "name": name,
+                "tier": tier,
+                "status": status or "unknown",
+                "is_up": _is_service_up(status),
+                "missing": False,
+            }
+        )
+
+    for required_name in _REMOTE_HEALTH_CRITICAL_NAMES:
+        if required_name in seen_names:
+            continue
+        critical_services.append(
+            {
+                "name": required_name,
+                "tier": "core" if required_name != "Keycloak SSO" else "components",
+                "status": "missing",
+                "is_up": False,
+                "missing": True,
+            }
+        )
+
+    has_critical_failure = False
+    has_warning = False
+    for svc in critical_services:
+        if svc["tier"].lower() == "mcp" and not svc["is_up"]:
+            has_critical_failure = True
+        if svc["name"] in {"LiteLLM Gateway", "LangGraph API"} and not svc["is_up"]:
+            has_critical_failure = True
+        if svc["name"] == "Keycloak SSO" and not svc["is_up"]:
+            has_warning = True
+
+    severity = "healthy"
+    if has_critical_failure:
+        severity = "critical"
+    elif has_warning:
+        severity = "warning"
+
+    services = payload.get("services")
+    tier_summary = services if isinstance(services, dict) else {}
+
+    return {
+        "checked_at": payload.get("checked_at"),
+        "critical_services": critical_services,
+        "overall_status": str(payload.get("status") or "unknown"),
+        "severity": severity,
+        "tier_summary": tier_summary,
+    }
+
+
 # Image MIME types this endpoint will serve. Extension-allowlisted so an
 # authenticated caller can't pull non-image files through it.
 _MEDIA_CONTENT_TYPES = {
@@ -1389,6 +1512,44 @@ async def get_status():
         "active_sessions": active_sessions,
         "auth_required": auth_required,
         "auth_providers": auth_providers,
+    }
+
+
+@app.get("/api/debug/remote-health")
+async def get_remote_health(profile: Optional[str] = None):
+    with _profile_scope(profile):
+        config = load_config() or {}
+
+    provider, health_url = _derive_remote_health_target(config)
+    if not health_url:
+        return {
+            "ok": False,
+            "provider": provider,
+            "health_url": "",
+            "error": "No base URL configured for the active provider.",
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    loop = asyncio.get_running_loop()
+    payload, http_status, error = await loop.run_in_executor(None, _fetch_remote_health, health_url)
+    if error or payload is None:
+        return {
+            "ok": False,
+            "provider": provider,
+            "health_url": health_url,
+            "http_status": http_status,
+            "error": error or "Unknown remote health error.",
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    summary = _summarize_remote_health(payload)
+    return {
+        "ok": True,
+        "provider": provider,
+        "health_url": health_url,
+        "http_status": http_status,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        **summary,
     }
 
 

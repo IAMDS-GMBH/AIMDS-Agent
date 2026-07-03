@@ -603,6 +603,28 @@ export interface StatusResponse {
   version: string
 }
 
+export interface RemoteHealthServiceStatus {
+  is_up: boolean
+  missing: boolean
+  name: string
+  status: string
+  tier: string
+}
+
+export interface RemoteHealthResponse {
+  checked_at?: string
+  critical_services?: RemoteHealthServiceStatus[]
+  error?: string
+  fetched_at: string
+  health_url: string
+  http_status?: number
+  ok: boolean
+  overall_status?: string
+  provider?: string
+  severity?: 'critical' | 'healthy' | 'warning'
+  tier_summary?: Record<string, unknown>
+}
+
 export interface ActionResponse {
   name: string
   ok: boolean

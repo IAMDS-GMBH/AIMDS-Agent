@@ -33,6 +33,7 @@ import type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  RemoteHealthResponse,
   SessionInfo,
   SessionMessagesResponse,
   SessionSearchResponse,
@@ -101,6 +102,7 @@ export type {
   SessionSearchResult,
   SkillInfo,
   StaleAuxAssignment,
+  RemoteHealthResponse,
   StatusResponse,
   TodoItem,
   TodoListResponse,
@@ -257,6 +259,13 @@ export function getGlobalModelInfo(): Promise<ModelInfoResponse> {
 export function getStatus(): Promise<StatusResponse> {
   return window.hermesDesktop.api<StatusResponse>({
     path: '/api/status'
+  })
+}
+
+export function getRemoteHealthStatus(): Promise<RemoteHealthResponse> {
+  return window.hermesDesktop.api<RemoteHealthResponse>({
+    ...profileScoped(),
+    path: '/api/debug/remote-health'
   })
 }
 
