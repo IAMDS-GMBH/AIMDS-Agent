@@ -356,9 +356,6 @@ pub fn parse_manifest(stdout: &str) -> Option<crate::events::Manifest> {
     None
 }
 
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
-
 #[cfg(test)]
 mod tests {
     use super::*;

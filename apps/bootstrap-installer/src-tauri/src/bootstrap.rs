@@ -197,7 +197,6 @@ pub async fn launch_hermes_desktop(
     let mut cmd = desktop_launch_command(&exe_path, &install_root);
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
         // DETACHED_PROCESS = 0x00000008
         cmd.creation_flags(0x0000_0008);
     }
@@ -245,6 +244,7 @@ pub(crate) fn resolve_hermes_desktop_exe(install_root: &std::path::Path) -> Opti
     None
 }
 
+#[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))]
 pub(crate) fn resolve_hermes_desktop_app(install_root: &std::path::Path) -> Option<PathBuf> {
     let exe = resolve_hermes_desktop_exe(install_root)?;
     #[cfg(target_os = "macos")]
@@ -267,7 +267,7 @@ pub(crate) fn resolve_hermes_desktop_app(install_root: &std::path::Path) -> Opti
 /// launchable desktop app exists on disk. Used by the installer's launcher fast
 /// path so a bare re-open just opens Hermes instead of re-running setup.
 pub(crate) fn hermes_is_installed(install_root: &std::path::Path) -> bool {
-    install_root.join(".hermes-bootstrap-complete").exists()
+    crate::paths::likely_bootstrap_marker(install_root).exists()
         && resolve_hermes_desktop_exe(install_root).is_some()
 }
 
@@ -281,7 +281,6 @@ pub(crate) fn spawn_installed_desktop(install_root: &std::path::Path) -> std::io
     let mut cmd = desktop_launch_command_std(&exe, install_root);
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
         // DETACHED_PROCESS = 0x00000008 — keep the desktop alive after the
         // installer exits, mirroring launch_hermes_desktop. Kept correct here
         // even though the only caller is macOS-gated today, so future reuse on

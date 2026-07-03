@@ -513,7 +513,6 @@ async fn run_streamed(
 
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
         // CREATE_NO_WINDOW = 0x08000000 — no flashing console behind the GUI.
         cmd.creation_flags(0x0800_0000);
     }
@@ -751,6 +750,7 @@ async fn install_macos_app_update(
 /// bundle — either the original (rolled back from `old`) or untouched — and we
 /// never delete the running app with no replacement in place. The staged `tmp`
 /// copy is cleaned up on failure.
+#[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))]
 async fn swap_in_new_bundle(tmp: &Path, target: &Path, old: &Path) -> Result<()> {
     let moved_old = if target.exists() {
         if let Err(err) = tokio::fs::rename(target, old).await {
@@ -788,6 +788,7 @@ async fn install_macos_app_update(
     Ok(target_app.to_path_buf())
 }
 
+#[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))]
 async fn remove_dir_if_exists(path: &Path) {
     if path.exists() {
         let _ = tokio::fs::remove_dir_all(path).await;
