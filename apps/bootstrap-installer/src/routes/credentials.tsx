@@ -22,6 +22,7 @@ export default function Credentials() {
   const [availableModels, setAvailableModels] = useState<string[]>([])
   const [isLoadingModels, setIsLoadingModels] = useState(false)
   const [modelsFetched, setModelsFetched] = useState(false)
+  const [fetchedFingerprint, setFetchedFingerprint] = useState('')
   const [modelError, setModelError] = useState<string | null>(null)
 
   const validateForm = (): boolean => {
@@ -50,6 +51,12 @@ export default function Credentials() {
       setErrors({ ...errors, modelName: 'Please fetch and select a model first' })
       return
     }
+    const currentFingerprint = `${normalizeInstallerBaseUrl(formData.baseUrl)}|${formData.apiKey.trim()}`
+    if (currentFingerprint !== fetchedFingerprint) {
+      setModelsFetched(false)
+      setErrors({ ...errors, modelName: 'Inputs changed. Please fetch models again' })
+      return
+    }
 
     // Clean up optional empty fields
     const normalizedBaseUrl = normalizeInstallerBaseUrl(formData.baseUrl)
@@ -68,7 +75,23 @@ export default function Credentials() {
   }
 
   const handleChange = (field: keyof CredentialsData, value: string) => {
+    const previous = formData
     setFormData((prev) => ({ ...prev, [field]: value }))
+
+    // Changing provider inputs invalidates fetched model catalog.
+    if ((field === 'baseUrl' || field === 'apiKey') && modelsFetched) {
+      const previousFingerprint = `${normalizeInstallerBaseUrl(previous.baseUrl)}|${previous.apiKey.trim()}`
+      const nextFingerprint = `${normalizeInstallerBaseUrl(
+        field === 'baseUrl' ? value : previous.baseUrl
+      )}|${(field === 'apiKey' ? value : previous.apiKey).trim()}`
+      if (previousFingerprint !== nextFingerprint) {
+        setModelsFetched(false)
+        setAvailableModels([])
+        setFetchedFingerprint('')
+        setFormData((prev) => ({ ...prev, modelName: '' }))
+      }
+    }
+
     if (errors[field]) {
       setErrors((prev) => {
         const next = { ...prev }
@@ -107,6 +130,7 @@ export default function Credentials() {
       
       setAvailableModels(models)
       setModelsFetched(true)
+      setFetchedFingerprint(`${normalizedBaseUrl}|${formData.apiKey.trim()}`)
       setFormData((prev) => ({ ...prev, modelName: models[0] }))
       
       // Write provider models cache for later use during install
@@ -261,6 +285,11 @@ export default function Credentials() {
                   <p className="mt-1 flex items-center gap-1 text-xs text-red-500">
                     <AlertCircle className="h-3 w-3" />
                     {errors.modelName}
+                  </p>
+                )}
+                {!modelsFetched && availableModels.length === 0 && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    If Base URL or API key changes, fetch models again before install.
                   </p>
                 )}
               </div>
