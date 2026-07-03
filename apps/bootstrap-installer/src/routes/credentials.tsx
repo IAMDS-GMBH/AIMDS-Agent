@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Button } from '../components/button'
-import { startInstall } from '../store'
+import { joinInstallerBaseUrl, normalizeInstallerBaseUrl, startInstall } from '../store'
 import { AlertCircle, Loader, Check } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -32,6 +32,8 @@ export default function Credentials() {
     }
     if (!formData.baseUrl.trim()) {
       newErrors.baseUrl = 'Base URL is required'
+    } else if (!normalizeInstallerBaseUrl(formData.baseUrl)) {
+      newErrors.baseUrl = 'Base URL is invalid'
     }
     if (!formData.modelName.trim()) {
       newErrors.modelName = 'Model name is required'
@@ -50,9 +52,14 @@ export default function Credentials() {
     }
 
     // Clean up optional empty fields
+    const normalizedBaseUrl = normalizeInstallerBaseUrl(formData.baseUrl)
+    if (!normalizedBaseUrl) {
+      setErrors({ ...errors, baseUrl: 'Base URL is invalid' })
+      return
+    }
     const cleaned: CredentialsData = {
       apiKey: formData.apiKey.trim(),
-      baseUrl: formData.baseUrl.trim(),
+      baseUrl: normalizedBaseUrl,
       modelName: formData.modelName.trim(),
       modelNames: [...availableModels]
     }
@@ -81,6 +88,12 @@ export default function Credentials() {
         setIsLoadingModels(false)
         return
       }
+      const normalizedBaseUrl = normalizeInstallerBaseUrl(formData.baseUrl)
+      if (!normalizedBaseUrl) {
+        setModelError('Base URL is invalid')
+        setIsLoadingModels(false)
+        return
+      }
       if (!formData.apiKey.trim()) {
         setModelError('API Key is required')
         setIsLoadingModels(false)
@@ -88,7 +101,7 @@ export default function Credentials() {
       }
 
       const models = await invoke<string[]>('fetch_models', {
-        baseUrl: formData.baseUrl,
+        baseUrl: normalizedBaseUrl,
         apiKey: formData.apiKey
       })
       
@@ -145,11 +158,17 @@ export default function Credentials() {
                   type="text"
                   value={formData.baseUrl}
                   onChange={(e) => handleChange('baseUrl', e.target.value)}
+                  onBlur={() => {
+                    const normalized = normalizeInstallerBaseUrl(formData.baseUrl)
+                    if (normalized) {
+                      handleChange('baseUrl', normalized)
+                    }
+                  }}
                   placeholder="https://suite.example.com"
                   className="mt-1 w-full rounded border border-input bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Uses {formData.baseUrl.trim() || 'BASE_URL'}/litellm/v1 for LLM and {formData.baseUrl.trim() || 'BASE_URL'}/litellm/mcp for MCP.
+                  Uses {joinInstallerBaseUrl(formData.baseUrl, 'litellm/v1') || 'https://BASE_URL/litellm/v1'} for LLM and {joinInstallerBaseUrl(formData.baseUrl, 'litellm/mcp') || 'https://BASE_URL/litellm/mcp'} for MCP.
                 </p>
                 {errors.baseUrl && (
                   <p className="mt-1 flex items-center gap-1 text-xs text-red-500">

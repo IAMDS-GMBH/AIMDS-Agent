@@ -3,6 +3,42 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+fn normalize_bootstrap_base_url(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("Base URL is required".to_string());
+    }
+
+    let candidate = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    };
+
+    let mut parsed = reqwest::Url::parse(&candidate)
+        .map_err(|_| "Base URL is invalid".to_string())?;
+
+    if parsed.host_str().is_none() {
+        return Err("Base URL is invalid".to_string());
+    }
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("Base URL must be http(s)".to_string());
+    }
+
+    parsed
+        .set_scheme("https")
+        .map_err(|_| "Could not force https for Base URL".to_string())?;
+    parsed.set_fragment(None);
+    let path = parsed.path().trim_end_matches('/').to_string();
+    if path.is_empty() || path == "/" {
+        parsed.set_path("");
+    } else {
+        parsed.set_path(&path);
+    }
+
+    Ok(parsed.to_string().trim_end_matches('/').to_string())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ModelInfo {
     pub id: String,
@@ -37,7 +73,7 @@ pub struct ProviderModelsCache {
 /// fetch on the Rust side and returning the results to the frontend.
 #[tauri::command]
 pub async fn fetch_models(base_url: String, api_key: String) -> Result<Vec<String>, String> {
-    let normalized_url = base_url.trim().trim_end_matches('/');
+    let normalized_url = normalize_bootstrap_base_url(&base_url)?;
     let endpoint = format!("{}/litellm/v1/models", normalized_url);
 
     tracing::info!("Fetching models from: {}", endpoint);

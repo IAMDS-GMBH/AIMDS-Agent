@@ -81,6 +81,42 @@ export const $logPath = atom<string | null>(null)
 export const $hermesHome = atom<string | null>(null)
 export const $credentials = atom<CredentialsData | null>(null)
 
+const URL_SCHEME_RE = /^[a-z][a-z\d+.-]*:\/\//i
+
+// Normalize installer-provided provider URL:
+// - force https
+// - strip trailing slash
+// - keep optional path/query
+export function normalizeInstallerBaseUrl(input: string): string {
+  const trimmed = input.trim()
+  if (!trimmed) return ''
+
+  const candidate = URL_SCHEME_RE.test(trimmed) ? trimmed : `https://${trimmed}`
+  let parsed: URL
+  try {
+    parsed = new URL(candidate)
+  } catch {
+    return ''
+  }
+
+  if (!parsed.hostname || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+    return ''
+  }
+
+  parsed.protocol = 'https:'
+  parsed.hash = ''
+  const path = parsed.pathname.replace(/\/+$/, '')
+  const safePath = path === '/' ? '' : path
+
+  return `${parsed.origin}${safePath}${parsed.search}`.replace(/\/+$/, '')
+}
+
+export function joinInstallerBaseUrl(baseUrl: string, suffix: string): string {
+  const normalized = normalizeInstallerBaseUrl(baseUrl)
+  if (!normalized) return ''
+  return `${normalized}/${suffix.replace(/^\/+/, '')}`
+}
+
 export const $progress = computed($bootstrap, (b) => {
   const total = b.stageOrder.length
   if (total === 0) return { done: 0, total: 0, fraction: 0 }
@@ -266,10 +302,17 @@ export async function startInstall(opts?: { branch?: string; credentials?: Crede
   $bootstrap.set(INITIAL)
   $route.set('progress')
   try {
+    const normalizedBaseUrl = opts?.credentials
+      ? normalizeInstallerBaseUrl(opts.credentials.baseUrl)
+      : ''
+    if (opts?.credentials && !normalizedBaseUrl) {
+      throw new Error('Base URL is invalid')
+    }
+
     const credentials = opts?.credentials
       ? {
+          base_url: normalizedBaseUrl,
           api_key: opts.credentials.apiKey,
-          base_url: opts.credentials.baseUrl,
           model_name: opts.credentials.modelName,
           model_names: opts.credentials.modelNames ?? null
         }
