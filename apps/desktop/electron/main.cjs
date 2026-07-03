@@ -5915,14 +5915,42 @@ ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   return { branch }
 })
 
-// Resolve the canonical Hermes version (the one `release.py` bumps in
-// hermes_cli/__init__.py + pyproject.toml) so the desktop About panel shows the
-// real Hermes version instead of the Electron app's own package.json version,
-// which historically drifted (stuck at 0.0.2). Falls back to app.getVersion()
-// when the source tree can't be read (e.g. a packaged build without the repo).
+function resolveHermesVersionFromGit(root) {
+  try {
+    const described = execFileSync(resolveGitBinary(), ['describe', '--tags', '--long', '--abbrev=12', '--match', 'v[0-9]*'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim()
+    // v0.2.3-7-g82fe624cb228 => 0.2.3+7
+    // v0.2.3-0-g82fe624cb228 => 0.2.3
+    const match = described.match(/^v?([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)-([0-9]+)-g[0-9a-f]+$/i)
+    if (!match) {
+      return null
+    }
+    const base = match[1]
+    const ahead = Number.parseInt(match[2], 10)
+    if (!Number.isFinite(ahead) || ahead <= 0) {
+      return base
+    }
+    return `${base}+${ahead}`
+  } catch {
+    return null
+  }
+}
+
+// Resolve canonical Hermes version for About/status.
+// Priority:
+//  1) git describe formatted as SemVer+ahead (X.Y.Z+N)
+//  2) hermes_cli/__init__.py fallback version
+//  3) Electron app package version
 function resolveHermesVersion() {
   try {
     const root = resolveUpdateRoot()
+    const fromGit = resolveHermesVersionFromGit(root)
+    if (fromGit) {
+      return fromGit
+    }
     const initPath = path.join(root, 'hermes_cli', '__init__.py')
     if (fileExists(initPath)) {
       const raw = fs.readFileSync(initPath, 'utf8')

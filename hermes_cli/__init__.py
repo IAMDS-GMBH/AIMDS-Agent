@@ -13,9 +13,43 @@ Provides subcommands for:
 
 import os
 import sys
+import subprocess
+from pathlib import Path
 
 __version__: str
 __release_date__: str
+
+
+def _get_version_from_git() -> str | None:
+    """Try to read version from git tags in the source tree."""
+    try:
+        # Find the repo root by walking up from this file's directory
+        current = Path(__file__).parent
+        for _ in range(5):  # Limit search depth
+            git_dir = current / ".git"
+            if git_dir.exists():
+                # Found repo root, try git describe
+                result = subprocess.run(
+                    ["git", "describe", "--tags", "--always"],
+                    cwd=current,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                if result.returncode == 0:
+                    tag = result.stdout.strip()
+                    # Parse tag format: v0.2.3-7-g82fe624cb -> 0.2.3
+                    if tag.startswith("v"):
+                        tag = tag[1:]
+                    if "-" in tag:
+                        tag = tag.split("-")[0]
+                    if tag:
+                        return tag
+            current = current.parent
+    except Exception:
+        pass
+    return None
+
 
 try:
     from importlib.metadata import metadata as _pkg_metadata, PackageNotFoundError as _PNF
@@ -24,8 +58,9 @@ try:
     __release_date__ = _meta.get("X-Release-Date") or "unknown"
 except Exception:
     # Fallback for editable installs or environments where metadata isn't available.
-    __version__ = "0.16.0"
-    __release_date__ = "2026.6.26"
+    # Try git tags first, then hardcoded version.
+    __version__ = _get_version_from_git() or "0.2.3"
+    __release_date__ = "unknown"
 
 
 def _ensure_utf8():

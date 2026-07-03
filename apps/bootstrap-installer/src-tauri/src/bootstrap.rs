@@ -42,10 +42,10 @@ pub struct CredentialsData {
 /// Frontend → Rust: kick off the install.
 #[derive(Debug, Deserialize, Clone)]
 pub struct StartBootstrapArgs {
-    /// Optional override for the commit pin. Defaults to the build-time
-    /// pin baked in via `BUILD_PIN_COMMIT`.
+    /// Optional override for the commit pin. Used as fallback when branch
+    /// tracking fails.
     pub commit: Option<String>,
-    /// Optional override for the branch pin. Defaults to `BUILD_PIN_BRANCH`.
+    /// Optional override for the branch pin. Defaults to `main`.
     pub branch: Option<String>,
     /// Include Stage-Desktop (build apps/desktop) in the manifest. The
     /// signed bootstrap installer passes true; the deprecated Electron-side
@@ -360,7 +360,10 @@ async fn run_bootstrap(
 
     let pin = Pin {
         commit: args.commit.or_else(|| option_env_string("BUILD_PIN_COMMIT")),
-        branch: args.branch.or_else(|| option_env_string("BUILD_PIN_BRANCH")),
+        branch: args
+            .branch
+            .or_else(|| option_env_string("BUILD_PIN_BRANCH"))
+            .or_else(|| Some("main".to_string())),
     };
 
     tracing::info!(
@@ -421,7 +424,9 @@ async fn run_bootstrap(
     // the manifest comes back missing the desktop stage and we never run
     // it. The per-stage call below also passes -IncludeDesktop to keep
     // the contracts identical.
-    let manifest_args = build_pin_args(&script);
+    // Primary path is branch-tracking (main/latest). Commit pin is only retry
+    // fallback for repository stage when branch path fails.
+    let manifest_args = build_pin_args(&script, false);
     let mut manifest_args_full = vec!["-Manifest".to_string()];
     manifest_args_full.extend(manifest_args.clone());
     if args.include_desktop {
@@ -536,7 +541,7 @@ async fn run_bootstrap(
         // in run_script consumes it. Take/return through the Arc<Mutex>.
         let local_cancel_rx = cancel_rx_holder.lock().await.take();
 
-        let stage_result = run_install_script(
+        let mut stage_result = run_install_script(
             &app,
             &script.path,
             &stage_args,
@@ -547,7 +552,7 @@ async fn run_bootstrap(
         )
         .await?;
 
-        let duration_ms = started.elapsed().as_millis() as u64;
+        let mut duration_ms = started.elapsed().as_millis() as u64;
 
         if stage_result.killed {
             emit_event(
@@ -570,7 +575,63 @@ async fn run_bootstrap(
             return Err(anyhow!("cancelled by user"));
         }
 
-        let result_frame = powershell::parse_stage_result(&stage_result.stdout);
+        let mut result_frame = powershell::parse_stage_result(&stage_result.stdout);
+
+        // Branch-first install policy: if repository stage fails and we have a
+        // build-time commit pin, retry once pinned to commit.
+        let can_retry_with_commit = stage.name.eq_ignore_ascii_case("repository")
+            && script.commit.is_some()
+            && !stage_args.iter().any(|arg| arg == "-Commit");
+        let needs_retry = match &result_frame {
+            None => true,
+            Some(frame) => !frame.ok,
+        };
+        if can_retry_with_commit && needs_retry {
+            if let Some(commit) = script.commit.clone() {
+                emit_log(&format!(
+                    "[bootstrap] repository stage failed on branch pin; retrying with commit fallback {}",
+                    commit
+                ));
+                let retry_started = Instant::now();
+                let mut retry_args = stage_args.clone();
+                retry_args.push("-Commit".to_string());
+                retry_args.push(commit);
+                stage_result = run_install_script(
+                    &app,
+                    &script.path,
+                    &retry_args,
+                    args.hermes_home.as_deref(),
+                    None,
+                    Some(stage.name.clone()),
+                    args.credentials.as_ref(),
+                )
+                .await?;
+                duration_ms = retry_started.elapsed().as_millis() as u64;
+
+                if stage_result.killed {
+                    emit_event(
+                        &app,
+                        BootstrapEvent::Stage {
+                            name: stage.name.clone(),
+                            state: StageState::Failed,
+                            duration_ms: Some(duration_ms),
+                            result: None,
+                            error: Some("cancelled by user".into()),
+                        },
+                    );
+                    emit_event(
+                        &app,
+                        BootstrapEvent::Failed {
+                            stage: Some(stage.name.clone()),
+                            error: "cancelled by user".into(),
+                        },
+                    );
+                    return Err(anyhow!("cancelled by user"));
+                }
+
+                result_frame = powershell::parse_stage_result(&stage_result.stdout);
+            }
+        }
 
         match result_frame {
             None => {
@@ -757,15 +818,17 @@ async fn run_install_script(
         })
 }
 
-fn build_pin_args(script: &install_script::ResolvedScript) -> Vec<String> {
+fn build_pin_args(script: &install_script::ResolvedScript, include_commit: bool) -> Vec<String> {
     let mut out = Vec::new();
-    if let Some(c) = &script.commit {
-        out.push("-Commit".to_string());
-        out.push(c.clone());
-    }
     if let Some(b) = &script.branch {
         out.push("-Branch".to_string());
         out.push(b.clone());
+    }
+    if include_commit {
+        if let Some(c) = &script.commit {
+            out.push("-Commit".to_string());
+            out.push(c.clone());
+        }
     }
     out
 }
