@@ -17,6 +17,7 @@ import type {
   HermesConfig,
   HermesConfigRecord,
   LogsResponse,
+  McpServersResponse,
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
@@ -74,6 +75,8 @@ export type {
   HermesConfig,
   HermesConfigRecord,
   LogsResponse,
+  McpServerSummary,
+  McpServersResponse,
   MessagingEnvVarInfo,
   MessagingHomeChannel,
   MessagingPlatformInfo,
@@ -266,6 +269,13 @@ export function getRemoteHealthStatus(): Promise<RemoteHealthResponse> {
   return window.hermesDesktop.api<RemoteHealthResponse>({
     ...profileScoped(),
     path: '/api/debug/remote-health'
+  })
+}
+
+export function getMcpServers(): Promise<McpServersResponse> {
+  return window.hermesDesktop.api<McpServersResponse>({
+    ...profileScoped(),
+    path: '/api/mcp/servers'
   })
 }
 

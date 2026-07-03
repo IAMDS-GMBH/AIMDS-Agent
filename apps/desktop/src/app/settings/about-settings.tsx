@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
-import { getRemoteHealthStatus } from '@/hermes'
+import { getMcpServers, getRemoteHealthStatus, getStatus } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { CheckCircle2, ExternalLink, Globe, Loader2, RefreshCw, Sparkles } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -16,7 +16,7 @@ import {
   openUpdatesWindow,
   refreshDesktopVersion
 } from '@/store/updates'
-import type { RemoteHealthResponse } from '@/types/hermes'
+import type { McpServerSummary, RemoteHealthResponse, StatusResponse } from '@/types/hermes'
 
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
 import { UninstallSection } from './uninstall-section'
@@ -55,6 +55,10 @@ export function AboutSettings() {
   const [justChecked, setJustChecked] = useState(false)
   const [remoteHealth, setRemoteHealth] = useState<null | RemoteHealthResponse>(null)
   const [remoteHealthLoading, setRemoteHealthLoading] = useState(false)
+  const [localStatus, setLocalStatus] = useState<null | StatusResponse>(null)
+  const [mcpServers, setMcpServers] = useState<McpServerSummary[]>([])
+  const [localConnectivityLoading, setLocalConnectivityLoading] = useState(false)
+  const [localConnectivityError, setLocalConnectivityError] = useState('')
 
   // The version atom is loaded once at app boot, which makes About show a
   // stale number after a self-update (the running binary is current, the
@@ -74,8 +78,26 @@ export function AboutSettings() {
     }
   }
 
+  const refreshLocalConnectivity = async () => {
+    setLocalConnectivityLoading(true)
+    setLocalConnectivityError('')
+    try {
+      const [statusPayload, mcpPayload] = await Promise.all([getStatus(), getMcpServers()])
+      setLocalStatus(statusPayload)
+      setMcpServers(mcpPayload.servers ?? [])
+    } catch (error) {
+      setLocalConnectivityError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setLocalConnectivityLoading(false)
+    }
+  }
+
   useEffect(() => {
     void refreshRemoteHealth()
+  }, [])
+
+  useEffect(() => {
+    void refreshLocalConnectivity()
   }, [])
 
   const behind = status?.behind ?? 0
@@ -119,6 +141,19 @@ export function AboutSettings() {
   const remoteChecked = remoteHealth?.checked_at
     ? new Date(remoteHealth.checked_at).toLocaleString()
     : 'n/a'
+  const enabledMcpServers = mcpServers.filter(server => server.enabled)
+  const localSeverity = localConnectivityError
+    ? 'critical'
+    : localStatus?.gateway_running
+      ? 'healthy'
+      : 'warning'
+  const localToneClass =
+    localSeverity === 'critical'
+      ? 'border-destructive/35 bg-destructive/5 text-destructive'
+      : localSeverity === 'warning'
+        ? 'border-amber-500/35 bg-amber-500/10 text-foreground'
+        : 'border-border/70 bg-muted/20 text-foreground'
+  const localChecked = localStatus?.gateway_updated_at ? new Date(localStatus.gateway_updated_at).toLocaleString() : 'n/a'
 
   return (
     <SettingsContent>
@@ -197,6 +232,60 @@ export function AboutSettings() {
           hint={a.branchCommit(status?.branch ?? 'unknown', status?.currentSha?.slice(0, 7) ?? 'unknown')}
           title={a.automaticUpdates}
         />
+
+        <div className="mt-5">
+          <SectionHeading icon={Globe} title="Local connectivity" />
+          <div className={cn('rounded-xl border px-4 py-3 text-sm', localToneClass)}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-medium">
+                  {localConnectivityError
+                    ? `Status: ${localConnectivityError}`
+                    : localStatus
+                      ? `Status: ${localStatus.gateway_running ? 'healthy' : 'warning'}`
+                      : 'Status: unknown'}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Endpoint: Hermes local API ({localStatus?.gateway_health_url ?? 'embedded'})
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">Checked at: {localChecked}</p>
+              </div>
+              <Button
+                disabled={localConnectivityLoading}
+                onClick={() => void refreshLocalConnectivity()}
+                size="sm"
+                variant="text"
+              >
+                {localConnectivityLoading ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+                {localConnectivityLoading ? 'Checking…' : 'Refresh'}
+              </Button>
+            </div>
+
+            {localStatus && !localConnectivityError && (
+              <div className="mt-3 grid gap-1">
+                <p className="text-xs font-medium text-foreground">Runtime checks</p>
+                <div className="flex items-center justify-between rounded border border-border/60 bg-background/40 px-2 py-1 text-xs">
+                  <span className="truncate">Hermes local API</span>
+                  <span className="text-emerald-600 dark:text-emerald-400">up</span>
+                </div>
+                <div className="flex items-center justify-between rounded border border-border/60 bg-background/40 px-2 py-1 text-xs">
+                  <span className="truncate">Gateway process</span>
+                  <span className={cn(localStatus.gateway_running ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive')}>
+                    {localStatus.gateway_running ? 'up' : 'down'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between rounded border border-border/60 bg-background/40 px-2 py-1 text-xs">
+                  <span className="truncate">Dashboard auth gate</span>
+                  <span>{localStatus.auth_required ? `enabled (${(localStatus.auth_providers ?? []).join(', ') || 'configured'})` : 'disabled'}</span>
+                </div>
+                <div className="flex items-center justify-between rounded border border-border/60 bg-background/40 px-2 py-1 text-xs">
+                  <span className="truncate">Configured MCP servers</span>
+                  <span>{enabledMcpServers.length}/{mcpServers.length}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
 
         <div className="mt-5">
           <SectionHeading icon={Globe} title="Remote connectivity" />

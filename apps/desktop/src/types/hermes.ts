@@ -587,6 +587,8 @@ export interface PlatformStatus {
 
 export interface StatusResponse {
   active_sessions: number
+  auth_providers?: string[]
+  auth_required?: boolean
   config_path: string
   config_version: number
   env_path: string
@@ -601,6 +603,22 @@ export interface StatusResponse {
   latest_config_version: number
   release_date: string
   version: string
+}
+
+export interface McpServerSummary {
+  args: string[]
+  auth?: string
+  command?: string
+  enabled: boolean
+  env: Record<string, string>
+  name: string
+  tools?: string[] | null
+  transport: string
+  url?: string
+}
+
+export interface McpServersResponse {
+  servers: McpServerSummary[]
 }
 
 export interface RemoteHealthServiceStatus {
