@@ -1294,6 +1294,7 @@ export interface Translations {
   }
 
   assistant: {
+    introBody: string
     thread: {
       loadingSession: string
       loadingResponse: string

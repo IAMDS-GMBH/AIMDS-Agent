@@ -1730,6 +1730,7 @@ export const zhHant = defineLocale({
   },
 
   assistant: {
+    introBody: '提個問題、描述你的需求，或分享背景資訊。我會一步一步幫你推進。',
     thread: {
       loadingSession: '正在載入工作階段',
       loadingResponse: 'Hermes 正在載入回覆',

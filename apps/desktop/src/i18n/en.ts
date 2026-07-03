@@ -1637,6 +1637,7 @@ export const en: Translations = {
   },
 
   assistant: {
+    introBody: 'Ask a question, describe what you need, or share context. I can help you move forward step by step.',
     thread: {
       loadingSession: 'Loading session',
       loadingResponse: 'Hermes is loading a response',

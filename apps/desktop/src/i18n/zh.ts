@@ -1815,6 +1815,7 @@ export const zh: Translations = {
   },
 
   assistant: {
+    introBody: '提个问题，描述你的需求，或分享背景信息。我会一步一步帮你推进。',
     thread: {
       loadingSession: '正在加载会话',
       loadingResponse: 'Hermes 正在加载回复',

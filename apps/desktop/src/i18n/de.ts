@@ -1638,6 +1638,7 @@ export const de
   },
 
   assistant: {
+    introBody: 'Stell eine Frage, beschreibe dein Anliegen oder teile den Kontext. Ich helfe dir Schritt für Schritt weiter.',
     thread: {
       loadingSession: 'Sitzung wird geladen',
       loadingResponse: 'Hermes lädt eine Antwort',

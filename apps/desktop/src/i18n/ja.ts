@@ -1769,6 +1769,7 @@ export const ja = defineLocale({
   },
 
   assistant: {
+    introBody: '質問したり、やりたいことや背景を共有してください。順を追って進めます。',
     thread: {
       loadingSession: 'セッションを読み込み中',
       loadingResponse: 'Hermes が応答を読み込み中',

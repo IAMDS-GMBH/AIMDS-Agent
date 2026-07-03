@@ -1,5 +1,7 @@
 import { type CSSProperties, useState } from 'react'
 
+import { useI18n } from '@/i18n'
+
 import introCopyJsonl from './intro-copy.jsonl?raw'
 
 type IntroCopy = {
@@ -156,7 +158,11 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
 
 export function Intro({ personality, seed }: IntroProps) {
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
+  const { t } = useI18n()
+  const personalityKey = normalizeKey(personality)
   const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
+  const isNeutral = NEUTRAL_PERSONALITIES.has(personalityKey)
+  const body = isNeutral ? t.assistant.introBody : copy.body
 
   return (
     <div
@@ -175,7 +181,7 @@ export function Intro({ personality, seed }: IntroProps) {
           <span aria-hidden="true">{WORDMARK}</span>
         </p>
 
-        <p className="m-0 text-center leading-normal tracking-tight">{copy.body}</p>
+        <p className="m-0 text-center leading-normal tracking-tight">{body}</p>
       </div>
     </div>
   )
