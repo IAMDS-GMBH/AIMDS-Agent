@@ -3829,8 +3829,6 @@ if ($IncludeDesktop) {
 $InstallStages += @(
     @{ Name = "path";             Title = "Adding Hermes to PATH";                Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-Path" }
     @{ Name = "config-templates"; Title = "Writing configuration templates";      Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-ConfigTemplates" }
-    @{ Name = "mcp-check";        Title = "Checking configured MCP servers";      Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-McpCheck" }
-    @{ Name = "mcp-reload";       Title = "Reloading configured MCP servers";     Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-McpReload" }
     @{ Name = "platform-sdks";    Title = "Installing messaging platform SDKs";   Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-PlatformSdks" }
     @{ Name = "bootstrap-marker"; Title = "Marking install complete";              Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-BootstrapMarker" }
     # Interactive stages.  In non-interactive mode these become no-ops; the
