@@ -21,23 +21,45 @@ function buildIamdsLiteLlmKeyGroup(vars: Record<string, EnvVarInfo>): ProviderKe
     return []
   }
 
-  const advanced: [string, EnvVarInfo][] = []
-  const stagingInfo = vars.IAMDS_LITELLM_STAGING_API_KEY
-  const devInfo = vars.IAMDS_LITELLM_DEV_API_KEY
-  if (stagingInfo?.is_set) advanced.push(['IAMDS_LITELLM_STAGING_API_KEY', stagingInfo])
-  if (devInfo?.is_set) advanced.push(['IAMDS_LITELLM_DEV_API_KEY', devInfo])
-
-  return [
+  const groups: ProviderKeyGroup[] = [
     {
-      advanced,
+      advanced: [],
       description: 'IAMDS LiteLLM gateway key from ~/.hermes/.env',
       docsUrl: '',
-      hasAnySet: mainInfo.is_set || advanced.some(([, info]) => info.is_set),
+      hasAnySet: mainInfo.is_set,
       name: 'IAMDS LiteLLM',
       primary: [mainKey, mainInfo],
       priority: 0
     }
   ]
+
+  const stagingInfo = vars.IAMDS_LITELLM_STAGING_API_KEY
+  if (stagingInfo?.is_set) {
+    groups.push({
+      advanced: [],
+      description: 'IAMDS LiteLLM staging key from ~/.hermes/.env',
+      docsUrl: '',
+      hasAnySet: true,
+      name: 'IAMDS LiteLLM (Staging)',
+      primary: ['IAMDS_LITELLM_STAGING_API_KEY', stagingInfo],
+      priority: 1
+    })
+  }
+
+  const devInfo = vars.IAMDS_LITELLM_DEV_API_KEY
+  if (devInfo?.is_set) {
+    groups.push({
+      advanced: [],
+      description: 'IAMDS LiteLLM dev key from ~/.hermes/.env',
+      docsUrl: '',
+      hasAnySet: true,
+      name: 'IAMDS LiteLLM (Dev)',
+      primary: ['IAMDS_LITELLM_DEV_API_KEY', devInfo],
+      priority: 2
+    })
+  }
+
+  return groups
 }
 
 function IamdsAccountPanel({ onWantApiKey }: { onWantApiKey: () => void }) {

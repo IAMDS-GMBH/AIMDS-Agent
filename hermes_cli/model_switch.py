@@ -1750,7 +1750,21 @@ def list_authenticated_providers(
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
-                api_key = os.environ.get(key_env, "").strip() if key_env else ""
+                if key_env:
+                    try:
+                        from hermes_cli.config import get_env_value
+                        api_key = (get_env_value(key_env) or os.environ.get(key_env, "")).strip()
+                    except Exception:
+                        api_key = os.environ.get(key_env, "").strip()
+                else:
+                    api_key = ""
+
+            # IAMDS variant providers should only surface in model view when
+            # they are fully configured: both endpoint URL and credential.
+            # Main IAMDS provider remains visible via canonical/provider flows.
+            if ep_name.lower() in {"iamds-litellm-staging", "iamds-litellm-dev"}:
+                if not str(api_url or "").strip() or not str(api_key or "").strip():
+                    continue
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
