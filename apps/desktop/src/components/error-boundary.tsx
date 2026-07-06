@@ -1,8 +1,9 @@
-import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { Component, type ErrorInfo, type ReactNode, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
 import { useI18n } from '@/i18n'
+import { notify, notifyError } from '@/store/notifications'
 
 export interface ErrorBoundaryFallbackProps {
   error: Error
@@ -54,6 +55,32 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
 function RootErrorFallback({ error, reset }: ErrorBoundaryFallbackProps) {
   const { t } = useI18n()
+  const [sending, setSending] = useState(false)
+
+  const sendSupportLogs = async () => {
+    setSending(true)
+    try {
+      const result = await window.hermesDesktop?.sendSupportLogs?.({ reason: 'renderer_error_boundary' })
+      if (result?.ok) {
+        const reference = result.reference_id || result.referenceId
+        notify({
+          kind: 'success',
+          title: 'Support logs sent',
+          message: reference ? `Reference: ${reference}` : 'Diagnostic logs were uploaded for support.'
+        })
+      } else {
+        notify({
+          kind: 'warning',
+          title: 'Support log upload failed',
+          message: result?.error || 'Could not upload support logs.'
+        })
+      }
+    } catch (err) {
+      notifyError(err, 'Support log upload failed')
+    } finally {
+      setSending(false)
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-[1500] grid place-items-center bg-(--ui-chat-surface-background) p-6">
@@ -70,6 +97,9 @@ function RootErrorFallback({ error, reset }: ErrorBoundaryFallbackProps) {
         </Button>
         <Button onClick={() => void window.hermesDesktop?.revealLogs()?.catch(() => undefined)} variant="text">
           {t.errors.openLogs}
+        </Button>
+        <Button disabled={sending} onClick={() => void sendSupportLogs()} variant="text">
+          {sending ? 'Sending support logs…' : 'Send support logs'}
         </Button>
       </ErrorState>
     </div>

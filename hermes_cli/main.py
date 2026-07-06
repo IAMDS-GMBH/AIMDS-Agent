@@ -290,6 +290,7 @@ from hermes_cli.subcommands.uninstall import build_uninstall_parser
 from hermes_cli.subcommands.dashboard import build_dashboard_parser
 from hermes_cli.subcommands.gui import build_gui_parser
 from hermes_cli.subcommands.logs import build_logs_parser
+from hermes_cli.subcommands.support import build_support_parser
 from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
 from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
@@ -10511,6 +10512,15 @@ def cmd_logs(args):
         since=getattr(args, "since", None),
         component=getattr(args, "component", None),
     )
+
+
+def cmd_support(args):
+    """Support utilities (log export/upload)."""
+    from hermes_cli.support_logs import support_command
+
+    code = support_command(args)
+    if code not in (None, 0):
+        sys.exit(int(code))
 # Top-level subcommands that argparse knows about WITHOUT running plugin
 # discovery.  Used to short-circuit eager plugin imports (which can take
 # 500ms+ pulling in google.cloud.pubsub_v1, aiohttp, grpc, etc.) when the
@@ -10529,7 +10539,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "gui", "desktop", "kanban", "litellm-hub", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
         "prompt-size",
-        "send", "sessions", "setup",
+        "send", "sessions", "setup", "support",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
@@ -11914,6 +11924,11 @@ def main():
     # logs command  (parser built in hermes_cli/subcommands/logs.py)
     # =========================================================================
     build_logs_parser(subparsers, cmd_logs=cmd_logs)
+
+    # =========================================================================
+    # support command  (parser built in hermes_cli/subcommands/support.py)
+    # =========================================================================
+    build_support_parser(subparsers, cmd_support=cmd_support)
 
     # =========================================================================
     # prompt-size command  (parser built in hermes_cli/subcommands/prompt_size.py)

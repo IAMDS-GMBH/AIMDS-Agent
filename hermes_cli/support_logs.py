@@ -1,0 +1,298 @@
+"""Support log export/upload flow for ``hermes support send-logs``."""
+
+from __future__ import annotations
+
+import contextlib
+import io
+import json
+import os
+import platform
+import socket
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+from agent.redact import redact_sensitive_text
+from hermes_cli.config import load_config
+from hermes_cli.dump import run_dump
+from hermes_constants import display_hermes_home, get_hermes_home
+
+_LOG_FILES = ("desktop.log", "agent.log", "errors.log", "gateway.log", "gui.log")
+_DEFAULT_MAX_LINES_PER_FILE = 1200
+_DEFAULT_TIMEOUT_SECONDS = 45
+
+
+def _read_last_lines(path: Path, count: int) -> list[str]:
+    if count <= 0:
+        return []
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    if size <= 0:
+        return []
+
+    if size <= 1_048_576:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                return handle.readlines()[-count:]
+        except OSError:
+            return []
+
+    lines: list[bytes] = []
+    pos = size
+    chunk_size = 8192
+    try:
+        with open(path, "rb") as handle:
+            while pos > 0 and len(lines) <= count + 1:
+                read_size = min(chunk_size, pos)
+                pos -= read_size
+                handle.seek(pos)
+                chunk = handle.read(read_size)
+                chunk_lines = chunk.split(b"\n")
+                if lines:
+                    lines[0] = chunk_lines[-1] + lines[0]
+                    lines = chunk_lines[:-1] + lines
+                else:
+                    lines = chunk_lines
+                chunk_size = min(chunk_size * 2, 65_536)
+    except OSError:
+        return []
+
+    out: list[str] = []
+    for raw in lines:
+        if not raw:
+            continue
+        out.append(raw.decode("utf-8", errors="replace") + "\n")
+    return out[-count:]
+
+
+def _capture_dump_text() -> str:
+    stream = io.StringIO()
+    with contextlib.redirect_stdout(stream):
+        run_dump(SimpleNamespace(show_keys=False))
+    return stream.getvalue()
+
+
+def _support_config() -> dict[str, Any]:
+    cfg = load_config()
+    support = cfg.get("support", {})
+    return support if isinstance(support, dict) else {}
+
+
+def _collect_payload(*, include_dump: bool, max_lines_per_file: int) -> tuple[dict[str, str], dict[str, Any]]:
+    hermes_home = get_hermes_home()
+    log_dir = hermes_home / "logs"
+    files: dict[str, str] = {}
+    included_files: list[dict[str, Any]] = []
+
+    for filename in _LOG_FILES:
+        path = log_dir / filename
+        if not path.exists() or not path.is_file():
+            continue
+        lines = _read_last_lines(path, max_lines_per_file)
+        if not lines:
+            continue
+        redacted = "".join(redact_sensitive_text(line, force=True) for line in lines)
+        files[f"logs/{filename}"] = redacted
+        included_files.append(
+            {
+                "name": filename,
+                "lines": len(lines),
+                "bytes": len(redacted.encode("utf-8")),
+            }
+        )
+
+    if include_dump:
+        files["dump.txt"] = redact_sensitive_text(_capture_dump_text(), force=True)
+
+    manifest = {
+        "schema": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "hostname": socket.gethostname(),
+        "platform": platform.platform(),
+        "python": sys.version.split()[0],
+        "hermes_home": display_hermes_home(),
+        "included_files": included_files,
+        "includes_dump": include_dump,
+    }
+    files["manifest.json"] = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+    return files, manifest
+
+
+def _write_bundle(files: dict[str, str], *, keep_path: str | None = None) -> Path:
+    if keep_path:
+        bundle_path = Path(keep_path).expanduser().resolve()
+        bundle_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        fd, tmp_path = tempfile.mkstemp(prefix="hermes-support-", suffix=".zip")
+        os.close(fd)
+        bundle_path = Path(tmp_path)
+
+    with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for rel, body in files.items():
+            zf.writestr(rel, body)
+    return bundle_path
+
+
+def _upload_bundle(
+    *,
+    upload_url: str,
+    api_key: str,
+    bundle_path: Path,
+    timeout_seconds: int,
+    reason: str,
+) -> dict[str, Any]:
+    payload = bundle_path.read_bytes()
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/zip",
+        "User-Agent": "hermes-support-log-export/1",
+        "X-Hermes-Reason": reason or "manual",
+        "X-Hermes-Filename": bundle_path.name,
+    }
+    req = urllib.request.Request(upload_url, data=payload, headers=headers, method="POST")
+    started = time.time()
+    with urllib.request.urlopen(req, timeout=max(5, int(timeout_seconds))) as response:
+        body = response.read().decode("utf-8", errors="replace")
+        elapsed_ms = int((time.time() - started) * 1000)
+        parsed: dict[str, Any] = {}
+        if body:
+            try:
+                parsed = json.loads(body)
+            except json.JSONDecodeError:
+                parsed = {"raw": body}
+
+        reference_id = (
+            parsed.get("reference_id")
+            or parsed.get("case_id")
+            or parsed.get("ticket_id")
+            or parsed.get("id")
+        )
+        return {
+            "status_code": int(getattr(response, "status", 200)),
+            "elapsed_ms": elapsed_ms,
+            "reference_id": reference_id,
+            "server": parsed,
+            "bytes_sent": len(payload),
+        }
+
+
+def run_send_logs(args) -> int:
+    support_cfg = _support_config()
+    upload_url = str(getattr(args, "url", "") or support_cfg.get("upload_url", "") or os.getenv("SUPPORT_UPLOAD_URL", "")).strip()
+    api_key = str(getattr(args, "api_key", "") or support_cfg.get("api_key", "") or os.getenv("SUPPORT_API_KEY", "")).strip()
+    timeout_seconds = int(
+        getattr(args, "timeout", 0)
+        or support_cfg.get("timeout_seconds", _DEFAULT_TIMEOUT_SECONDS)
+        or _DEFAULT_TIMEOUT_SECONDS
+    )
+    max_lines = int(getattr(args, "max_lines", _DEFAULT_MAX_LINES_PER_FILE) or _DEFAULT_MAX_LINES_PER_FILE)
+    include_dump = bool(getattr(args, "include_dump", True))
+    reason = str(getattr(args, "reason", "manual") or "manual").strip()
+    json_mode = bool(getattr(args, "json", False))
+
+    if not upload_url:
+        payload = {
+            "ok": False,
+            "error": (
+                "Missing support.upload_url. Configure it in ~/.hermes/config.yaml "
+                "or pass --url."
+            ),
+        }
+        if json_mode:
+            print(json.dumps(payload))
+        else:
+            print(payload["error"], file=sys.stderr)
+        return 1
+
+    if not api_key:
+        payload = {
+            "ok": False,
+            "error": (
+                "Missing support.api_key. Configure it in ~/.hermes/config.yaml "
+                "or pass --api-key."
+            ),
+        }
+        if json_mode:
+            print(json.dumps(payload))
+        else:
+            print(payload["error"], file=sys.stderr)
+        return 1
+
+    bundle_path: Path | None = None
+    try:
+        files, manifest = _collect_payload(include_dump=include_dump, max_lines_per_file=max_lines)
+        if len(files) <= 1:  # only manifest.json
+            payload = {"ok": False, "error": "No log content available to upload."}
+            if json_mode:
+                print(json.dumps(payload))
+            else:
+                print(payload["error"], file=sys.stderr)
+            return 1
+
+        keep_path = getattr(args, "output", None)
+        bundle_path = _write_bundle(files, keep_path=keep_path)
+        upload = _upload_bundle(
+            upload_url=upload_url,
+            api_key=api_key,
+            bundle_path=bundle_path,
+            timeout_seconds=timeout_seconds,
+            reason=reason,
+        )
+        payload = {
+            "ok": True,
+            "upload_url": upload_url,
+            "bundle_path": str(bundle_path),
+            "bundle_bytes": bundle_path.stat().st_size,
+            "files": manifest.get("included_files", []),
+            "includes_dump": include_dump,
+            "status_code": upload["status_code"],
+            "elapsed_ms": upload["elapsed_ms"],
+            "reference_id": upload.get("reference_id"),
+            "server": upload.get("server"),
+        }
+        if json_mode:
+            print(json.dumps(payload))
+        else:
+            ref = f" (reference: {payload['reference_id']})" if payload.get("reference_id") else ""
+            print(f"Support logs uploaded{ref}.")
+            print(f"Bundle: {payload['bundle_path']} ({payload['bundle_bytes']} bytes)")
+        return 0
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        payload = {"ok": False, "error": f"Support server rejected upload: HTTP {exc.code}", "body": body}
+    except urllib.error.URLError as exc:
+        payload = {"ok": False, "error": f"Could not reach support server: {exc.reason}"}
+    except Exception as exc:
+        payload = {"ok": False, "error": str(exc)}
+    finally:
+        if bundle_path and not getattr(args, "output", None):
+            bundle_path.unlink(missing_ok=True)
+
+    if json_mode:
+        print(json.dumps(payload))
+    else:
+        print(payload["error"], file=sys.stderr)
+    return 1
+
+
+def support_command(args) -> int:
+    action = getattr(args, "support_action", None)
+    if action in {"send-logs", "send_logs"}:
+        return run_send_logs(args)
+
+    print("Usage: hermes support send-logs [--json]", file=sys.stderr)
+    return 2
+

@@ -3,7 +3,8 @@ import { useEffect, useState } from 'react'
 
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
-import { getMcpServers, getRemoteHealthStatus, getStatus } from '@/hermes'
+import { Input } from '@/components/ui/input'
+import { getHermesConfigRecord, getMcpServers, getRemoteHealthStatus, getStatus, saveHermesConfig } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { CheckCircle2, ExternalLink, Globe, Loader2, RefreshCw, Sparkles } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -16,6 +17,7 @@ import {
   openUpdatesWindow,
   refreshDesktopVersion
 } from '@/store/updates'
+import { notify, notifyError } from '@/store/notifications'
 import type { McpServerSummary, RemoteHealthResponse, StatusResponse } from '@/types/hermes'
 
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
@@ -60,6 +62,12 @@ export function AboutSettings() {
   const [localConnectivityLoading, setLocalConnectivityLoading] = useState(false)
   const [localConnectivityError, setLocalConnectivityError] = useState('')
   const [localCheckedAt, setLocalCheckedAt] = useState<null | number>(null)
+  const [sendingSupportLogs, setSendingSupportLogs] = useState(false)
+  const [supportUploadUrl, setSupportUploadUrl] = useState('')
+  const [supportApiKey, setSupportApiKey] = useState('')
+  const [supportConfigLoaded, setSupportConfigLoaded] = useState(false)
+  const [savingSupportConfig, setSavingSupportConfig] = useState(false)
+  const [supportKeyConfigured, setSupportKeyConfigured] = useState(false)
 
   // The version atom is loaded once at app boot, which makes About show a
   // stale number after a self-update (the running binary is current, the
@@ -103,6 +111,32 @@ export function AboutSettings() {
     void refreshLocalConnectivity()
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+    void getHermesConfigRecord()
+      .then(config => {
+        if (cancelled) {
+          return
+        }
+        const support = (config?.support && typeof config.support === 'object'
+          ? (config.support as Record<string, unknown>)
+          : {}) as Record<string, unknown>
+        setSupportUploadUrl(typeof support.upload_url === 'string' ? support.upload_url : '')
+        const existingKey = typeof support.api_key === 'string' ? support.api_key : ''
+        setSupportKeyConfigured(existingKey.trim().length > 0)
+        setSupportConfigLoaded(true)
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSupportConfigLoaded(true)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const behind = status?.behind ?? 0
   const supported = status?.supported !== false
   const applying = apply.applying || apply.stage === 'restart'
@@ -111,6 +145,61 @@ export function AboutSettings() {
     setJustChecked(false)
     const next = await checkUpdates()
     setJustChecked(Boolean(next))
+  }
+
+  const handleSendSupportLogs = async () => {
+    setSendingSupportLogs(true)
+    try {
+      const result = await window.hermesDesktop?.sendSupportLogs?.({ reason: 'on_demand_settings' })
+      if (result?.ok) {
+        const reference = result.reference_id || result.referenceId
+        notify({
+          kind: 'success',
+          title: 'Support logs sent',
+          message: reference ? `Reference: ${reference}` : 'Diagnostic logs were uploaded for support.'
+        })
+      } else {
+        notify({
+          kind: 'warning',
+          title: 'Support log upload failed',
+          message: result?.error || 'Could not upload support logs.'
+        })
+      }
+    } catch (err) {
+      notifyError(err, 'Support log upload failed')
+    } finally {
+      setSendingSupportLogs(false)
+    }
+  }
+
+  const saveSupportConfig = async () => {
+    setSavingSupportConfig(true)
+    try {
+      const config = await getHermesConfigRecord()
+      const currentSupport =
+        config?.support && typeof config.support === 'object' ? (config.support as Record<string, unknown>) : {}
+      const nextApiKey = supportApiKey.trim() ? supportApiKey.trim() : String(currentSupport.api_key ?? '')
+      const nextConfig = {
+        ...config,
+        support: {
+          ...currentSupport,
+          upload_url: supportUploadUrl.trim(),
+          api_key: nextApiKey
+        }
+      }
+      await saveHermesConfig(nextConfig)
+      setSupportKeyConfigured(nextApiKey.length > 0)
+      setSupportApiKey('')
+      notify({
+        kind: 'success',
+        title: 'Support endpoint saved',
+        message: 'Support upload URL and API key settings were saved.'
+      })
+    } catch (err) {
+      notifyError(err, 'Could not save support settings')
+    } finally {
+      setSavingSupportConfig(false)
+    }
   }
 
   let statusLine: string
@@ -157,6 +246,7 @@ export function AboutSettings() {
         ? 'border-amber-500/35 bg-amber-500/10 text-foreground'
         : 'border-border/70 bg-muted/20 text-foreground'
   const localChecked = localCheckedAt ? new Date(localCheckedAt).toLocaleString() : 'n/a'
+  const supportConfigured = supportUploadUrl.trim().length > 0 && (supportKeyConfigured || supportApiKey.trim().length > 0)
 
   return (
     <SettingsContent>
@@ -213,6 +303,15 @@ export function AboutSettings() {
               </Button>
             )}
 
+            <Button
+              disabled={sendingSupportLogs || !supportConfigured}
+              onClick={() => void handleSendSupportLogs()}
+              size="sm"
+              variant="text"
+            >
+              {sendingSupportLogs ? 'Sending support logs…' : 'Send support logs'}
+            </Button>
+
             <Button asChild className="ml-auto" size="sm" variant="text">
               <a
                 href={RELEASE_NOTES_URL}
@@ -227,6 +326,35 @@ export function AboutSettings() {
                 {a.releaseNotes}
               </a>
             </Button>
+          </div>
+          {!supportConfigured && supportConfigLoaded && (
+            <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+              Support logs are not configured yet. Set upload URL and API key below.
+            </p>
+          )}
+          <div className="mt-3 grid gap-2 rounded-lg border border-border/70 bg-background/40 p-3">
+            <p className="text-xs font-medium">Support log upload settings</p>
+            <Input
+              onChange={event => setSupportUploadUrl(event.target.value)}
+              placeholder="https://support.example.com/api/log-upload"
+              value={supportUploadUrl}
+            />
+            <Input
+              onChange={event => setSupportApiKey(event.target.value)}
+              placeholder={supportKeyConfigured ? 'API key already set (enter to replace)' : 'Bearer API key'}
+              type="password"
+              value={supportApiKey}
+            />
+            <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+              <span>{supportKeyConfigured ? 'API key is currently configured.' : 'API key not configured.'}</span>
+              <Button
+                disabled={savingSupportConfig || !supportUploadUrl.trim() || (!supportKeyConfigured && !supportApiKey.trim())}
+                onClick={() => void saveSupportConfig()}
+                size="sm"
+              >
+                {savingSupportConfig ? 'Saving…' : 'Save support settings'}
+              </Button>
+            </div>
           </div>
         </div>
 

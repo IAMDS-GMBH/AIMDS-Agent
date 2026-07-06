@@ -14,7 +14,7 @@ import { $desktopOnboarding } from '@/store/onboarding'
 import type { RemoteReauth } from './boot-failure-reauth'
 import { deriveProviderShape, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
 
-type BusyAction = 'local' | 'repair' | 'retry' | 'signin' | null
+type BusyAction = 'local' | 'repair' | 'retry' | 'signin' | 'support' | null
 
 // A remote gateway whose access cookie has lapsed (e.g. the dashboard
 // restarted on the remote box) boots into this overlay with a reauth-shaped
@@ -164,6 +164,30 @@ export function BootFailureOverlay() {
   }
 
   const openLogs = () => void window.hermesDesktop?.revealLogs().catch(() => undefined)
+  const sendSupportLogs = async () => {
+    setBusy('support')
+    try {
+      const result = await window.hermesDesktop?.sendSupportLogs?.({ reason: 'boot_failure' })
+      if (result?.ok) {
+        const reference = result.reference_id || result.referenceId
+        notify({
+          kind: 'success',
+          title: 'Support logs sent',
+          message: reference ? `Reference: ${reference}` : 'Diagnostic logs were uploaded for support.'
+        })
+      } else {
+        notify({
+          kind: 'warning',
+          title: 'Support log upload failed',
+          message: result?.error || 'Could not upload support logs.'
+        })
+      }
+    } catch (err) {
+      notifyError(err, 'Support log upload failed')
+    } finally {
+      setBusy(null)
+    }
+  }
   const copy = t.boot.failure
 
   const label = signInLabel(remoteReauth, {
@@ -218,6 +242,10 @@ export function BootFailureOverlay() {
               <Button onClick={openLogs} variant="ghost">
                 <FileText />
                 {copy.openLogs}
+              </Button>
+              <Button disabled={Boolean(busy)} onClick={() => void sendSupportLogs()} variant="ghost">
+                {busy === 'support' ? <Loader2 className="animate-spin" /> : <FileText />}
+                Send support logs
               </Button>
             </div>
             <p className="text-xs text-muted-foreground">

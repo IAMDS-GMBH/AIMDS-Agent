@@ -63,6 +63,7 @@ declare global {
       }
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
+      sendSupportLogs: (payload?: { reason?: string; maxLines?: number }) => Promise<DesktopSupportLogSendResult>
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
       terminal: {
@@ -148,6 +149,15 @@ export interface DesktopVersionInfo {
   nodeVersion: string
   platform: string
   hermesRoot: string
+}
+
+export interface DesktopSupportLogSendResult {
+  ok: boolean
+  error?: string
+  reference_id?: string
+  referenceId?: string
+  status_code?: number
+  elapsed_ms?: number
 }
 
 export type DesktopUninstallMode = 'full' | 'gui' | 'lite'

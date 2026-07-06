@@ -1750,6 +1750,14 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
+    # Support log export/upload target. Used by `hermes support send-logs`
+    # and desktop support-log upload actions.
+    "support": {
+        "upload_url": "",
+        "api_key": "",
+        "timeout_seconds": 45,
+    },
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all

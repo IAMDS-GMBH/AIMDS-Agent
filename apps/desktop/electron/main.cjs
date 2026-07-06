@@ -5620,6 +5620,101 @@ ipcMain.handle('hermes:setting:defaultProjectDir:pick', async () => {
 
 ipcMain.handle('hermes:fetchLinkTitle', (_event, url) => fetchLinkTitle(url))
 
+async function runSupportLogUpload(rawPayload = {}) {
+  const payload = rawPayload && typeof rawPayload === 'object' ? rawPayload : {}
+  const py = uninstallVenvPython()
+  if (!fileExists(py)) {
+    return { ok: false, error: 'hermes runtime unavailable (missing venv python)' }
+  }
+
+  const args = ['-m', 'hermes_cli.main', 'support', 'send-logs', '--json']
+  if (typeof payload.reason === 'string' && payload.reason.trim()) {
+    args.push('--reason', payload.reason.trim())
+  }
+  if (Number.isFinite(payload.maxLines) && payload.maxLines > 0) {
+    args.push('--max-lines', String(Math.floor(payload.maxLines)))
+  }
+
+  return new Promise(resolve => {
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    let timeoutId = null
+
+    const done = result => {
+      if (settled) return
+      settled = true
+      if (timeoutId) clearTimeout(timeoutId)
+      resolve(result)
+    }
+
+    try {
+      const child = spawn(
+        py,
+        args,
+        hiddenWindowsChildOptions({
+          cwd: directoryExists(ACTIVE_HERMES_ROOT) ? ACTIVE_HERMES_ROOT : HERMES_HOME,
+          env: { ...process.env, HERMES_HOME, NO_COLOR: '1' },
+          stdio: ['ignore', 'pipe', 'pipe']
+        })
+      )
+
+      child.stdout.on('data', chunk => {
+        stdout += chunk.toString()
+      })
+      child.stderr.on('data', chunk => {
+        stderr += chunk.toString()
+      })
+
+      child.on('error', error => {
+        done({ ok: false, error: error.message || 'failed to start support upload command' })
+      })
+
+      child.on('exit', code => {
+        const line = stdout
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .pop()
+
+        if (!line) {
+          done({
+            ok: false,
+            error: stderr.trim() || `support upload command exited with code ${code}`
+          })
+          return
+        }
+
+        try {
+          const parsed = JSON.parse(line)
+          if (parsed && typeof parsed === 'object') {
+            done(parsed)
+            return
+          }
+        } catch {
+          // fall through
+        }
+
+        done({
+          ok: false,
+          error: stderr.trim() || line || `support upload command exited with code ${code}`
+        })
+      })
+
+      timeoutId = setTimeout(() => {
+        try {
+          child.kill()
+        } catch {
+          void 0
+        }
+        done({ ok: false, error: 'support upload timed out' })
+      }, 120000)
+    } catch (error) {
+      done({ ok: false, error: error.message || 'support upload failed' })
+    }
+  })
+}
+
 ipcMain.handle('hermes:logs:reveal', async () => {
   try {
     await fs.promises.mkdir(path.dirname(DESKTOP_LOG_PATH), { recursive: true })
@@ -5634,6 +5729,7 @@ ipcMain.handle('hermes:logs:reveal', async () => {
 })
 
 ipcMain.handle('hermes:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, lines: hermesLog.slice(-200) }))
+ipcMain.handle('hermes:support:sendLogs', async (_event, payload) => runSupportLogUpload(payload))
 
 function isExecutableFile(filePath) {
   if (!filePath || !path.isAbsolute(filePath)) {
