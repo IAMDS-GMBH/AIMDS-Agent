@@ -5446,6 +5446,12 @@ def _run_prompt_submit(
             try:
                 if "task_id" in inspect.signature(agent.run_conversation).parameters:
                     run_kwargs["task_id"] = session["session_key"]
+                if (
+                    isinstance(display_text, str)
+                    and display_text.strip()
+                    and "persist_user_message" in inspect.signature(agent.run_conversation).parameters
+                ):
+                    run_kwargs["persist_user_message"] = display_text.strip()
             except (TypeError, ValueError):
                 pass
             result = agent.run_conversation(run_message, **run_kwargs)

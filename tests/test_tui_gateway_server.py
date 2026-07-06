@@ -5746,6 +5746,53 @@ def test_prompt_submit_persists_display_text_in_history_when_provided(monkeypatc
     assert history[-2]["content"] == "/grill-me focus on risks"
 
 
+def test_prompt_submit_passes_display_text_as_persist_user_message(monkeypatch):
+    """When supported by the agent runtime, display_text should be passed
+    through persist_user_message so persistence never stores expanded payload."""
+
+    class _Agent:
+        def __init__(self):
+            self.persist_user_message = None
+
+        def run_conversation(
+            self,
+            prompt,
+            conversation_history=None,
+            stream_callback=None,
+            persist_user_message=None,
+        ):
+            self.persist_user_message = persist_user_message
+            return {
+                "final_response": "Done.",
+                "messages": [
+                    {"role": "user", "content": "/grill-me focus on risks"},
+                    {"role": "assistant", "content": "Done."},
+                ],
+            }
+
+    agent = _Agent()
+    server._sessions["sid"] = _session(agent=agent)
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server.handle_request(
+        {
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "sid",
+                "text": '[IMPORTANT: The user has invoked the "grill-me" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
+                "display_text": "/grill-me focus on risks",
+            },
+        }
+    )
+
+    assert agent.persist_user_message == "/grill-me focus on risks"
+
+
 def test_prompt_submit_skips_auto_title_when_interrupted(monkeypatch):
     """maybe_auto_title must NOT be called when the agent was interrupted."""
 
