@@ -15,11 +15,15 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt as _;
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{mpsc, Mutex};
+#[cfg(target_os = "windows")]
+use tokio::process::windows::CommandExt as _;
 
 use crate::events::{BootstrapEvent, LogStream, Manifest, StageState};
 use crate::install_script::{self, Pin, ScriptKind, ScriptSource};
