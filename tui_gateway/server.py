@@ -9987,6 +9987,8 @@ def _(rid, params: dict) -> dict:
         skill_id = (params.get("skill_id") or "").strip()
         skill_name = (params.get("skill_name") or "").strip()
         source = params.get("source", "")
+        install_run_id = str(params.get("install_run_id") or "").strip()
+        event_sid = str(params.get("session_id") or "").strip()
 
         source_raw = ""
         source_path = ""
@@ -10060,6 +10062,39 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 5034, f"Invalid GitHub repo format: {source_raw}")
 
         busy_message = "Server busy, try again later."
+
+        def _emit_set_progress(
+            *,
+            set_name: str,
+            total: int,
+            completed: int,
+            installed: int,
+            skipped: int,
+            conflicts: int,
+            failed: int,
+            status: str,
+            message: str,
+            item: str = "",
+        ) -> None:
+            if not install_run_id:
+                return
+            _emit(
+                "litellm_hub.skill_install.progress",
+                event_sid,
+                {
+                    "install_run_id": install_run_id,
+                    "set_name": set_name,
+                    "total": total,
+                    "completed": completed,
+                    "installed": installed,
+                    "skipped": skipped,
+                    "conflicts": conflicts,
+                    "failed": failed,
+                    "status": status,
+                    "item": item,
+                    "message": message,
+                },
+            )
 
         def _is_rate_limited(resp: Any) -> bool:
             status = int(getattr(resp, "status_code", 0) or 0)
@@ -10219,12 +10254,28 @@ def _(rid, params: dict) -> dict:
             if not md_items:
                 return None
 
+            md_items = sorted(md_items, key=lambda i: str(i.get("name") or "").lower())
             set_root = hub_skills_dir / "from_skill_hub" / _norm_skill_token(folder)
+            set_name = _norm_skill_token(folder)
             set_root.mkdir(parents=True, exist_ok=True)
             installed_names: list[str] = []
             skipped_names: list[str] = []
             warning_conflicts: list[str] = []
             warning_failed: list[str] = []
+            total_items = len(md_items)
+            completed_items = 0
+
+            _emit_set_progress(
+                set_name=folder,
+                total=total_items,
+                completed=completed_items,
+                installed=0,
+                skipped=0,
+                conflicts=0,
+                failed=0,
+                status="starting",
+                message=f"Installing set '{folder}' (0/{total_items})",
+            )
 
             for item in md_items:
                 rel_path = str(item.get("path") or "").strip()
@@ -10239,12 +10290,29 @@ def _(rid, params: dict) -> dict:
                 if file_resp.status_code != 200:
                     if file_resp.status_code == 409:
                         warning_conflicts.append(rel_path)
+                        status = "conflict"
+                        status_text = "conflict"
                     else:
                         warning_failed.append(rel_path)
+                        status = "failed"
+                        status_text = f"HTTP {file_resp.status_code}"
                     logger.info(
                         "[LiteLLM Hub] set install: GET %s → HTTP %d (skipped)",
                         dl_url,
                         file_resp.status_code,
+                    )
+                    completed_items += 1
+                    _emit_set_progress(
+                        set_name=folder,
+                        total=total_items,
+                        completed=completed_items,
+                        installed=len(installed_names),
+                        skipped=len(skipped_names),
+                        conflicts=len(warning_conflicts),
+                        failed=len(warning_failed),
+                        status=status,
+                        item=rel_path,
+                        message=f"[{completed_items}/{total_items}] {Path(rel_path).name}: {status_text}",
                     )
                     continue
 
@@ -10257,6 +10325,19 @@ def _(rid, params: dict) -> dict:
                     try:
                         if lock.get_installed(install_name):
                             skipped_names.append(install_name)
+                            completed_items += 1
+                            _emit_set_progress(
+                                set_name=folder,
+                                total=total_items,
+                                completed=completed_items,
+                                installed=len(installed_names),
+                                skipped=len(skipped_names),
+                                conflicts=len(warning_conflicts),
+                                failed=len(warning_failed),
+                                status="skipped",
+                                item=rel_path,
+                                message=f"[{completed_items}/{total_items}] {install_name}: already installed",
+                            )
                             continue
                     except Exception:
                         pass
@@ -10285,6 +10366,7 @@ def _(rid, params: dict) -> dict:
                                 "resolved_url": dl_url,
                                 "found_path": rel_path,
                                 "set_name": folder,
+                                "dependency_of": set_name,
                             },
                         )
                     except Exception as set_lock_err:
@@ -10294,14 +10376,41 @@ def _(rid, params: dict) -> dict:
                             set_lock_err,
                         )
                 installed_names.append(install_name)
+                completed_items += 1
+                _emit_set_progress(
+                    set_name=folder,
+                    total=total_items,
+                    completed=completed_items,
+                    installed=len(installed_names),
+                    skipped=len(skipped_names),
+                    conflicts=len(warning_conflicts),
+                    failed=len(warning_failed),
+                    status="installed",
+                    item=rel_path,
+                    message=f"[{completed_items}/{total_items}] {install_name}: installed",
+                )
 
             if not installed_names:
                 if warning_conflicts and not warning_failed:
+                    _emit_set_progress(
+                        set_name=folder,
+                        total=total_items,
+                        completed=completed_items,
+                        installed=len(installed_names),
+                        skipped=len(skipped_names),
+                        conflicts=len(warning_conflicts),
+                        failed=len(warning_failed),
+                        status="complete",
+                        message=(
+                        f"Completed set '{folder}' with conflicts only: "
+                        f"{len(warning_conflicts)} conflict(s)."
+                        ),
+                    )
                     return _ok(
                         rid,
                         {
-                            "success": True,
-                            "warning": True,
+                        "success": True,
+                        "warning": True,
                             "message": (
                                 f"No new skills installed from set '{folder}' "
                                 f"({len(warning_conflicts)} conflict(s), already present upstream)."
@@ -10313,6 +10422,17 @@ def _(rid, params: dict) -> dict:
                             "failed_skills": warning_failed,
                         },
                     )
+                _emit_set_progress(
+                    set_name=folder,
+                    total=total_items,
+                    completed=completed_items,
+                    installed=len(installed_names),
+                    skipped=len(skipped_names),
+                    conflicts=len(warning_conflicts),
+                    failed=len(warning_failed),
+                    status="complete",
+                    message=f"No installable skills found in set '{folder}'.",
+                )
                 return _err(
                     rid,
                     5038,
@@ -10325,6 +10445,53 @@ def _(rid, params: dict) -> dict:
                 warning_suffix += f" ({len(warning_conflicts)} conflict warning(s))"
             if warning_failed:
                 warning_suffix += f" ({len(warning_failed)} failed download(s))"
+
+            _emit_set_progress(
+                set_name=folder,
+                total=total_items,
+                completed=completed_items,
+                installed=len(installed_names),
+                skipped=len(skipped_names),
+                conflicts=len(warning_conflicts),
+                failed=len(warning_failed),
+                status="complete",
+                message=(
+                    f"Completed set '{folder}': {len(installed_names)} installed"
+                    + (f", {len(skipped_names)} skipped" if skipped_names else "")
+                    + (f", {len(warning_conflicts)} conflicts" if warning_conflicts else "")
+                    + (f", {len(warning_failed)} failed" if warning_failed else "")
+                ),
+            )
+
+            if lock:
+                try:
+                    import hashlib
+
+                    manifest_hash = hashlib.sha256("\n".join(sorted(installed_names)).encode()).hexdigest()
+                    lock.record_install(
+                        name=set_name,
+                        source=f"github:{owner}/{repo}",
+                        identifier=f"litellm_hub:{owner}/{repo}/{set_name}",
+                        trust_level="community",
+                        scan_verdict="unscanned",
+                        skill_hash=manifest_hash,
+                        install_path=str(set_root.relative_to(hub_skills_dir)),
+                        files=[],
+                        metadata={
+                            "plugin_name": skill_name,
+                            "skill_id": skill_id,
+                            "set_name": folder,
+                            "set_members": installed_names,
+                            "source_path": folder,
+                        },
+                    )
+                except Exception as set_marker_err:
+                    logger.warning(
+                        "[LiteLLM Hub] set install: failed lock record for set marker %s: %s",
+                        set_name,
+                        set_marker_err,
+                    )
+
             return _ok(
                 rid,
                 {
@@ -10335,7 +10502,7 @@ def _(rid, params: dict) -> dict:
                         + (f" ({len(skipped_names)} already installed)" if skipped_names else "")
                         + warning_suffix
                     ),
-                    "set_name": folder,
+                    "set_name": set_name,
                     "installed_skills": installed_names,
                     "skipped_skills": skipped_names,
                     "conflict_skills": warning_conflicts,
@@ -10641,14 +10808,51 @@ def _(rid, params: dict) -> dict:
     """Uninstall a skill (recursive) via Hub lock metadata."""
     try:
         skill_name = (params.get("skill_name") or "").strip()
+        skill_id = (params.get("skill_id") or "").strip()
         if not skill_name:
             return _err(rid, 5040, "skill_name is required")
-        from tools.skills_hub import uninstall_skill
+        from tools.skills_hub import HubLockFile, uninstall_skill
 
         ok, message = uninstall_skill(skill_name)
-        if not ok:
-            return _err(rid, 5041, message)
-        return _ok(rid, {"success": True, "message": message, "skill_name": skill_name})
+        if ok:
+            return _ok(rid, {"success": True, "message": message, "skill_name": skill_name})
+
+        # Backward-compatible cleanup path for older set installs where the
+        # UI points to one member skill and the rest were recorded under the
+        # same metadata.skill_id.
+        if skill_id:
+            lock = HubLockFile()
+            installed = lock.list_installed()
+            target_names = [
+                str(entry.get("name") or "").strip()
+                for entry in installed
+                if str((entry.get("metadata") or {}).get("skill_id") or "").strip() == skill_id
+            ]
+            target_names = [n for n in target_names if n]
+            if target_names:
+                removed: list[str] = []
+                failed: list[str] = []
+                for name in sorted(set(target_names), key=len, reverse=True):
+                    ok2, msg2 = uninstall_skill(name)
+                    if ok2:
+                        removed.append(name)
+                    else:
+                        failed.append(f"{name}: {msg2}")
+                if removed:
+                    warn = f" ({len(failed)} failed)" if failed else ""
+                    return _ok(
+                        rid,
+                        {
+                            "success": True,
+                            "warning": bool(failed),
+                            "message": f"Uninstalled {len(removed)} set skills for skill_id '{skill_id}'{warn}",
+                            "skill_name": skill_name,
+                            "removed_skills": removed,
+                            "failed_skills": failed,
+                        },
+                    )
+
+        return _err(rid, 5041, message)
     except Exception as e:
         return _err(rid, 5042, str(e))
 

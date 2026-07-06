@@ -1308,6 +1308,157 @@ def test_litellm_hub_install_division_set_conflict_409_is_warning(monkeypatch, t
         reset_hermes_home_override(token)
 
 
+def test_litellm_hub_install_division_set_emits_progress_from_zero(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    token = set_hermes_home_override(home)
+    try:
+        class _Resp:
+            def __init__(self, status_code: int, text: str = "", payload: dict | None = None):
+                self.status_code = status_code
+                self.text = text
+                self._payload = payload or {}
+
+            def json(self):
+                return self._payload
+
+        ok_md = "---\nname: Engineering Architect\n---\n# Engineering Architect\n"
+
+        def _fake_get(url, *args, **kwargs):
+            if url == "https://api.github.com/repos/owner/repo":
+                return _Resp(200, payload={"default_branch": "main"})
+            if url == "https://api.github.com/repos/owner/repo/contents/engineering":
+                return _Resp(
+                    200,
+                    payload=[
+                        {
+                            "type": "file",
+                            "name": "engineering-architect.md",
+                            "path": "engineering/engineering-architect.md",
+                            "download_url": "https://raw.githubusercontent.com/owner/repo/main/engineering/engineering-architect.md",
+                        },
+                        {
+                            "type": "file",
+                            "name": "engineering-conflict.md",
+                            "path": "engineering/engineering-conflict.md",
+                            "download_url": "https://raw.githubusercontent.com/owner/repo/main/engineering/engineering-conflict.md",
+                        },
+                    ],
+                )
+            if url.endswith("/engineering/engineering-architect.md"):
+                return _Resp(200, text=ok_md)
+            if url.endswith("/engineering/engineering-conflict.md"):
+                return _Resp(409, text="Conflict")
+            return _Resp(404, text="")
+
+        monkeypatch.setitem(sys.modules, "requests", types.SimpleNamespace(get=_fake_get))
+
+        import tools.skills_hub as hub
+
+        monkeypatch.setattr(
+            hub, "GitHubAuth", lambda: types.SimpleNamespace(get_headers=lambda: {})
+        )
+        monkeypatch.setattr(hub, "SKILLS_DIR", home / "skills")
+
+        class _Lock:
+            def __init__(self):
+                self.entries = {}
+
+            def get_installed(self, name):
+                return self.entries.get(name)
+
+            def record_install(
+                self,
+                name,
+                source,
+                identifier,
+                trust_level,
+                scan_verdict,
+                skill_hash,
+                install_path,
+                files,
+                metadata=None,
+            ):
+                self.entries[name] = {
+                    "source": source,
+                    "identifier": identifier,
+                    "install_path": install_path,
+                    "metadata": metadata or {},
+                }
+
+        monkeypatch.setattr(hub, "HubLockFile", lambda *args, **kwargs: _Lock())
+
+        emitted: list[tuple[str, str, dict]] = []
+        monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload or {})))
+
+        resp = server._methods["litellm_hub.skill_install"](
+            "litellm-install",
+            {
+                "skill_id": "engineering-set",
+                "skill_name": "engineering",
+                "source": {
+                    "source": "set",
+                    "url": "https://github.com/owner/repo",
+                    "path": "engineering",
+                },
+                "install_run_id": "run-123",
+                "session_id": "session-1",
+            },
+        )
+
+        assert "result" in resp
+        progress = [e for e in emitted if e[0] == "litellm_hub.skill_install.progress"]
+        assert len(progress) >= 4
+        assert progress[0][1] == "session-1"
+        assert progress[0][2]["install_run_id"] == "run-123"
+        assert progress[0][2]["completed"] == 0
+        assert progress[0][2]["total"] == 2
+        assert progress[-1][2]["status"] == "complete"
+        assert progress[-1][2]["completed"] == 2
+        assert progress[-1][2]["conflicts"] == 1
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_litellm_hub_skill_uninstall_falls_back_to_skill_id_set_cleanup(monkeypatch):
+    import tools.skills_hub as hub
+
+    class _Lock:
+        def list_installed(self):
+            return [
+                {"name": "engineering", "metadata": {"skill_id": "set-123"}},
+                {"name": "engineering-architect", "metadata": {"skill_id": "set-123", "dependency_of": "engineering"}},
+                {"name": "engineering-qa-lead", "metadata": {"skill_id": "set-123", "dependency_of": "engineering"}},
+            ]
+
+    removed: list[str] = []
+
+    def _fake_uninstall(name: str):
+        if name == "engineering-architect":
+            removed.append(name)
+            return True, "ok"
+        if name == "engineering-qa-lead":
+            removed.append(name)
+            return True, "ok"
+        if name == "engineering":
+            return False, "'engineering' is not a hub-installed skill (may be a builtin)"
+        return False, f"unexpected {name}"
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda *args, **kwargs: _Lock())
+    monkeypatch.setattr(hub, "uninstall_skill", _fake_uninstall)
+
+    resp = server._methods["litellm_hub.skill_uninstall"](
+        "litellm-uninstall",
+        {"skill_name": "engineering", "skill_id": "set-123"},
+    )
+
+    assert "result" in resp
+    result = resp["result"]
+    assert result["success"] is True
+    assert set(result["removed_skills"]) == {"engineering-architect", "engineering-qa-lead"}
+    assert set(removed) == {"engineering-architect", "engineering-qa-lead"}
+
+
 def test_history_to_messages_preserves_tool_calls_for_resume_display():
     history = [
         {"role": "user", "content": "first prompt"},

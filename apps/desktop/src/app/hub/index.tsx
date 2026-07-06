@@ -1,5 +1,6 @@
 import type * as React from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Badge } from '@/components/ui/badge'
@@ -7,6 +8,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { useGatewayRequest } from '../gateway/hooks/use-gateway-request'
 
@@ -129,6 +131,7 @@ interface HubViewProps extends React.ComponentProps<'section'> {}
 export function HubView({ ...props }: HubViewProps) {
   const { t } = useI18n()
   const { requestGateway } = useGatewayRequest()
+  const gateway = useStore($gateway)
   const [mode, setMode] = useRouteEnumParam('tab', HUB_MODES, 'agents')
 
   const [query, setQuery] = useState('')
@@ -144,8 +147,52 @@ export function HubView({ ...props }: HubViewProps) {
     percent: null,
     level: 'info',
   })
+  const installRunIdRef = useRef<string | null>(null)
+  const installProgressRef = useRef<InstallProgressState>(installProgress)
   const [installedSkillIds, setInstalledSkillIds] = useState<Set<string>>(new Set())
   const [togglingAgent, setTogglingAgent] = useState<string | null>(null)
+
+  useEffect(() => {
+    installProgressRef.current = installProgress
+  }, [installProgress])
+
+  useEffect(() => {
+    if (!gateway) {
+      return
+    }
+    return gateway.onEvent(event => {
+      if (event.type !== 'litellm_hub.skill_install.progress') {
+        return
+      }
+      const payload = (event.payload as Record<string, unknown>) || {}
+      const runId = typeof payload.install_run_id === 'string' ? payload.install_run_id : ''
+      if (!runId || installRunIdRef.current !== runId) {
+        return
+      }
+
+      const total = Number(payload.total) || 0
+      const completed = Number(payload.completed) || 0
+      const failed = Number(payload.failed) || 0
+      const conflicts = Number(payload.conflicts) || 0
+      const hasFailures = failed > 0 || conflicts > 0
+      const message =
+        typeof payload.message === 'string' && payload.message.trim()
+          ? payload.message
+          : `Installing skills... (${Math.max(0, completed)}/${Math.max(0, total)})`
+
+      let percent = total > 0 ? Math.max(0, Math.min(100, Math.round((completed / total) * 100))) : 0
+      if (hasFailures) {
+        percent = Math.min(95, percent)
+      }
+
+      setInstallProgress(prev => ({
+        ...prev,
+        message,
+        percent,
+        level: hasFailures ? 'warning' : 'info',
+      }))
+    })
+  }, [gateway])
 
   // Refresh handlers
   const refresh = async () => {
@@ -218,11 +265,24 @@ export function HubView({ ...props }: HubViewProps) {
   }
 
   const handleInstallSkill = async (skill: LiteLLMSkill) => {
+    const installRunId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    installRunIdRef.current = installRunId
+    const isSetInstall =
+      typeof skill.sourceRaw === 'object' &&
+      skill.sourceRaw !== null &&
+      typeof (skill.sourceRaw as Record<string, unknown>).path === 'string'
+
     setInstalling({ id: skill.id, skill })
-    setInstallProgress({ message: 'Starting installation...', percent: 5, level: 'info' })
+    setInstallProgress({
+      message: isSetInstall ? 'Preparing skill set installation...' : 'Starting installation...',
+      percent: 0,
+      level: 'info',
+    })
 
     try {
-      setInstallProgress({ message: 'Downloading skill from GitHub...', percent: 35, level: 'info' })
+      if (!isSetInstall) {
+        setInstallProgress({ message: 'Downloading skill from GitHub...', percent: 35, level: 'info' })
+      }
       const sourceParam = skill.sourceRaw ?? skill.source
       const result = await requestGateway<{
         success: boolean
@@ -236,12 +296,16 @@ export function HubView({ ...props }: HubViewProps) {
       }>('litellm_hub.skill_install', {
         skill_id: skill.id,
         skill_name: skill.name,
-        source: sourceParam
+        source: sourceParam,
+        install_run_id: installRunId,
       })
 
       if (result?.success) {
         const warning = Boolean(result.warning)
         const conflicts = Array.isArray(result.conflict_skills) ? result.conflict_skills.length : 0
+        const failed = Array.isArray(result.failed_skills) ? result.failed_skills.length : 0
+        const hasFailures = conflicts > 0 || failed > 0
+        const finalPercent = hasFailures ? Math.min(95, installProgressRef.current.percent ?? 95) : 100
         if (Array.isArray(result.installed_skills) && result.installed_skills.length > 0) {
           const skipped = Array.isArray(result.skipped_skills) ? result.skipped_skills.length : 0
           const suffix = skipped > 0 ? ` (${skipped} already installed)` : ''
@@ -249,24 +313,26 @@ export function HubView({ ...props }: HubViewProps) {
           const warnSuffix = conflicts > 0 ? ` (${conflicts} conflict warning${conflicts > 1 ? 's' : ''})` : ''
           setInstallProgress({
             message: `${base}${warnSuffix}`,
-            percent: 100,
+            percent: finalPercent,
             level: warning ? 'warning' : 'success',
           })
         } else {
           setInstallProgress({
             message: `${warning ? '⚠' : '✓'} ${result.message || `Successfully installed: ${skill.name}`}`,
-            percent: 100,
+            percent: finalPercent,
             level: warning ? 'warning' : 'success',
           })
         }
         setInstalledSkillIds(prev => new Set(prev).add(skill.id))
+        installRunIdRef.current = null
         setTimeout(() => setInstalling(null), 2000)
       } else {
         setInstallProgress({
           message: `✗ Installation failed: ${result?.message || 'Unknown error'}`,
-          percent: 100,
+          percent: Math.min(95, installProgressRef.current.percent ?? 95),
           level: 'error',
         })
+        installRunIdRef.current = null
       }
 
     } catch (err) {
@@ -274,7 +340,12 @@ export function HubView({ ...props }: HubViewProps) {
       const friendlyMessage = /(?:^|\\b)(429|rate limit|too many requests|server busy)(?:\\b|$)/i.test(message)
         ? 'Server busy, try again later.'
         : message
-      setInstallProgress({ message: `✗ Error: ${friendlyMessage}`, percent: 100, level: 'error' })
+      setInstallProgress({
+        message: `✗ Error: ${friendlyMessage}`,
+        percent: Math.min(95, installProgressRef.current.percent ?? 95),
+        level: 'error'
+      })
+      installRunIdRef.current = null
       notifyError(err, `Failed to install ${skill.name}`)
     }
   }
@@ -284,6 +355,7 @@ export function HubView({ ...props }: HubViewProps) {
     try {
       await requestGateway<{ success: boolean; message: string }>('litellm_hub.skill_uninstall', {
         skill_name: uninstallName,
+        skill_id: skill.id,
       })
       setInstalledSkillIds(prev => {
         const next = new Set(prev)
@@ -415,7 +487,10 @@ export function HubView({ ...props }: HubViewProps) {
           <SkillInstallModal
             skill={installing.skill}
             progress={installProgress}
-            onClose={() => setInstalling(null)}
+            onClose={() => {
+              installRunIdRef.current = null
+              setInstalling(null)
+            }}
           />
         )}
       </PageSearchShell>
@@ -597,7 +672,7 @@ function SkillInstallModal({ skill, progress, onClose }: SkillInstallModalProps)
                         : 'bg-red-500'
                     : 'bg-blue-500'
                 )}
-                style={{ width: `${Math.max(5, Math.min(100, percent))}%` }}
+                style={{ width: `${Math.max(0, Math.min(100, percent))}%` }}
               />
             ) : (
               <div className="h-full w-1/3 bg-blue-500 animate-pulse" />
