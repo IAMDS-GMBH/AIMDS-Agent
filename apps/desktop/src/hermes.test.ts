@@ -46,4 +46,38 @@ describe('Hermes REST session helpers', () => {
       })
     )
   })
+
+  it('filters malformed session rows without ids in single-profile list', async () => {
+    api.mockResolvedValueOnce({
+      limit: 10,
+      offset: 0,
+      total: 3,
+      sessions: [
+        { id: '', title: 'Untitled Session' },
+        { id: '   ', title: 'Whitespace id' },
+        { id: 'sess-1', title: 'Valid session' }
+      ]
+    })
+
+    const result = await listSessions(10, 1)
+
+    expect(result.sessions.map(session => session.id)).toEqual(['sess-1'])
+  })
+
+  it('filters malformed session rows without ids in all-profile list', async () => {
+    api.mockResolvedValueOnce({
+      limit: 10,
+      offset: 0,
+      total: 3,
+      sessions: [
+        { id: null, title: 'Null id' },
+        { id: undefined, title: 'Undefined id' },
+        { id: 'sess-2', title: 'Valid session' }
+      ]
+    })
+
+    const result = await listAllProfileSessions(10, 1)
+
+    expect(result.sessions.map(session => session.id)).toEqual(['sess-2'])
+  })
 })

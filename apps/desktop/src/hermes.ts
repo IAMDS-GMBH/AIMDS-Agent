@@ -141,6 +141,10 @@ function profileScoped(): { profile?: string } {
   return _apiProfile ? { profile: _apiProfile } : {}
 }
 
+function sanitizeSessionRows(sessions: SessionInfo[], limit: number): SessionInfo[] {
+  return sessions.filter(session => typeof session.id === 'string' && session.id.trim().length > 0).slice(0, limit)
+}
+
 export async function listSessions(
   limit = 40,
   minMessages = 0,
@@ -154,7 +158,7 @@ export async function listSessions(
 
   return {
     ...result,
-    sessions: result.sessions.slice(0, limit),
+    sessions: sanitizeSessionRows(result.sessions, limit),
     offset: 0
   }
 }
@@ -195,7 +199,7 @@ export async function listAllProfileSessions(
 
   return {
     ...result,
-    sessions: result.sessions.slice(0, limit),
+    sessions: sanitizeSessionRows(result.sessions, limit),
     offset: 0
   }
 }
