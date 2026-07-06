@@ -185,7 +185,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="IAMDS LiteLLM",
         auth_type="api_key",
         api_key_env_vars=("IAMDS_LITELLM_API_KEY",),
-        base_url_env_var="OPENAI_BASE_URL",
+        base_url_env_var="IAMDS_LITELLM_BASE_URL",
     ),
     "openai-api": ProviderConfig(
         id="openai-api",
@@ -5785,6 +5785,18 @@ def get_xai_oauth_auth_status() -> Dict[str, Any]:
         }
 
 
+def _resolve_provider_base_url_env(provider_id: str, pconfig: ProviderConfig) -> str:
+    """Resolve base URL env var for a provider with backward-compatible aliases."""
+    env_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
+    if env_url:
+        return env_url
+    if provider_id == "iamds-litellm":
+        # Backward compatibility: keep reading OPENAI_BASE_URL if the new
+        # IAMDS_LITELLM_BASE_URL variable is not set.
+        return os.getenv("OPENAI_BASE_URL", "").strip()
+    return ""
+
+
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
@@ -5795,9 +5807,7 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     key_source = ""
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
 
-    env_url = ""
-    if pconfig.base_url_env_var:
-        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+    env_url = _resolve_provider_base_url_env(provider_id, pconfig)
 
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
@@ -5984,9 +5994,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
         key_source = key_source or "default"
 
-    env_url = ""
-    if pconfig.base_url_env_var:
-        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+    env_url = _resolve_provider_base_url_env(provider_id, pconfig)
 
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)

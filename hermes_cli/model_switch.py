@@ -1304,12 +1304,15 @@ def list_authenticated_providers(
     try:
         from hermes_cli.config import get_env_value
 
+        _iamds_env_base = str(get_env_value("IAMDS_LITELLM_BASE_URL") or "").strip()
         _openai_env_base = str(get_env_value("OPENAI_BASE_URL") or "").strip()
     except Exception:
+        _iamds_env_base = str(os.environ.get("IAMDS_LITELLM_BASE_URL") or "").strip()
         _openai_env_base = str(os.environ.get("OPENAI_BASE_URL") or "").strip()
     _litellm_base_candidates = (
         _current_base_norm,
         _norm_url(_openai_provider_cfg_base),
+        _norm_url(_iamds_env_base),
         _norm_url(_openai_env_base),
     )
     _litellm_gateway_configured = any(

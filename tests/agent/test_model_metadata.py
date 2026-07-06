@@ -1029,6 +1029,49 @@ class TestBedrockContextResolution:
         assert mock_fetch.called
 
 
+class TestIAMDSLiteLLMContextResolution:
+    @patch("agent.model_metadata.requests.get")
+    def test_reads_context_from_model_info_endpoint(self, mock_get):
+        import agent.model_metadata as mm
+
+        mm._litellm_model_info_cache = {}
+        mm._litellm_model_info_cache_time = {}
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "data": [
+                {
+                    "model_name": "AIMDS-Suite-Auto",
+                    "model_info": {"max_input_tokens": 200000},
+                }
+            ]
+        }
+        mock_get.return_value = mock_response
+
+        ctx = mm._resolve_litellm_model_info_context_length(
+            "AIMDS-Suite-Auto",
+            "https://staging.suite.iamds.com/litellm/v1",
+            api_key="sk-test",
+        )
+        assert ctx == 200000
+
+    @patch("agent.model_metadata._resolve_litellm_model_info_context_length")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_iamds_provider_skips_custom_probe_fallback(self, mock_fetch_endpoint, mock_resolve_litellm):
+        mock_fetch_endpoint.return_value = {}
+        mock_resolve_litellm.return_value = 200000
+
+        ctx = get_model_context_length(
+            "AIMDS-Suite-Auto",
+            provider="iamds-litellm",
+            base_url="https://staging.suite.iamds.com/litellm/v1",
+            api_key="sk-test",
+        )
+        assert ctx == 200000
+        mock_fetch_endpoint.assert_not_called()
+
+
 # =========================================================================
 # _strip_provider_prefix — Ollama model:tag vs provider:model
 # =========================================================================

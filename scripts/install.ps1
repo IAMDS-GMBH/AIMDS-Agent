@@ -2504,9 +2504,10 @@ save_config(cfg)
             "# Added by bootstrap installer"
             "IAMDS_LITELLM_API_KEY=$effectiveApiKey"
         )
-        # OPENAI_BASE_URL drives iamds-litellm model discovery/runtime routing.
-        # Without this, picker discovery falls back to api.openai.com.
+        # IAMDS_LITELLM_BASE_URL is the canonical iamds-litellm endpoint var.
+        # Keep OPENAI_BASE_URL in sync for backward compatibility.
         if (-not [string]::IsNullOrWhiteSpace($llmGatewayUrl)) {
+            $envLines += "IAMDS_LITELLM_BASE_URL=$llmGatewayUrl"
             $envLines += "OPENAI_BASE_URL=$llmGatewayUrl"
         }
         if (-not [string]::IsNullOrWhiteSpace($stagingApiKey)) {

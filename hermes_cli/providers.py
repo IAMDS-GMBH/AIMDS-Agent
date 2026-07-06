@@ -61,7 +61,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     ),
     "iamds-litellm": HermesOverlay(
         transport="codex_responses",
-        base_url_env_var="OPENAI_BASE_URL",
+        base_url_env_var="IAMDS_LITELLM_BASE_URL",
     ),
     "openai-api": HermesOverlay(
         transport="codex_responses",

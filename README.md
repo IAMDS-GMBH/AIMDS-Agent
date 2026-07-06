@@ -78,6 +78,40 @@ Click the model name in the bottom-right status bar to open the model selector. 
 
 ---
 
+### Support log upload (AIS-117)
+
+Hermes Desktop can now send a redacted support-log bundle directly to your support endpoint.
+
+1. Open **Settings → About**.
+2. In **Support log upload settings**, set:
+   - **Upload URL** (for example `https://support.example.com/upload`)
+   - **API key** (Bearer token)
+3. Click **Save support settings**.
+4. Use **Send support logs** to upload on demand.
+
+If URL/API key are missing, the Desktop UI shows a warning and disables sending until values are configured. The same send action is available in failure/crash screens to simplify support handoff.
+
+CLI equivalent:
+
+```bash
+hermes support send-logs --json
+```
+
+Local test server (gitignored helper script):
+
+```bash
+uv run uvicorn tmp.support_stub:app --host 127.0.0.1 --port 8787
+```
+
+Then set:
+
+- Upload URL: `http://127.0.0.1:8787/upload`
+- API key: `local-test-key`
+
+Received test uploads are written to `/tmp/hermes-support-uploads`.
+
+---
+
 ### Skills & Tools
 
 Open **Skills & Tools** in the left sidebar to enable or disable individual skills. Skills are grouped by category. Toggle the switch on the right of each skill to activate or deactivate it.

@@ -2024,9 +2024,10 @@ PYEOF
         {
             echo "# Added by bootstrap installer"
             echo "IAMDS_LITELLM_API_KEY=${effective_api_key}"
-            # OPENAI_BASE_URL drives iamds-litellm model discovery/runtime routing.
-            # Without this, picker discovery falls back to api.openai.com.
+            # IAMDS_LITELLM_BASE_URL is the canonical iamds-litellm endpoint var.
+            # Keep OPENAI_BASE_URL in sync for backward compatibility.
             if [ -n "${llm_gateway_url:-}" ]; then
+                echo "IAMDS_LITELLM_BASE_URL=${llm_gateway_url}"
                 echo "OPENAI_BASE_URL=${llm_gateway_url}"
             fi
             if [ -n "${staging_api_key:-}" ]; then
@@ -3431,7 +3432,8 @@ def resolve_litellm_hub_settings() -> Dict[str, Any]:
     Resolution order for base_url:
     1. skills.litellm_hub.base_url (explicit hub override)
     2. LITELLM_PROXY_URL env var
-    3. OPENAI_BASE_URL env var
+    3. IAMDS_LITELLM_BASE_URL env var
+    4. OPENAI_BASE_URL env var (legacy fallback)
     4. First provider entry with a base_url (the model provider is usually LiteLLM)
     """
     from hermes_cli.config import load_config
@@ -3443,6 +3445,7 @@ def resolve_litellm_hub_settings() -> Dict[str, Any]:
     base_url = str(
         hub_cfg.get("base_url")
         or os.getenv("LITELLM_PROXY_URL")
+        or os.getenv("IAMDS_LITELLM_BASE_URL")
         or os.getenv("OPENAI_BASE_URL")
         or _first_provider_base_url(cfg)
         or ""

@@ -109,6 +109,8 @@ _novita_metadata_cache_time: float = 0
 _MODEL_CACHE_TTL = 3600
 _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
+_litellm_model_info_cache: Dict[str, Dict[str, int]] = {}
+_litellm_model_info_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
 
 # Descending tiers for context length probing when the model is unknown.
@@ -351,6 +353,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.anthropic.com": "anthropic",
     "api.z.ai": "zai",
     "open.bigmodel.cn": "zai",
+    "suite.iamds.com": "iamds-litellm",
     "api.moonshot.ai": "kimi-coding",
     "api.moonshot.cn": "kimi-coding-cn",
     "api.kimi.com": "kimi-coding",
@@ -820,6 +823,91 @@ def _resolve_endpoint_context_length(
         context_length = matched.get("context_length")
         if isinstance(context_length, int):
             return context_length
+    return None
+
+
+def _fetch_litellm_model_info_contexts(
+    base_url: str,
+    api_key: str = "",
+    force_refresh: bool = False,
+) -> Dict[str, int]:
+    """Fetch context lengths from LiteLLM ``/model/info``.
+
+    LiteLLM aliases often omit context metadata on ``/v1/models`` but expose
+    it on ``/model/info`` as ``model_info.max_input_tokens``.
+    """
+    normalized = _normalize_base_url(base_url)
+    if not normalized:
+        return {}
+
+    if not force_refresh:
+        cached = _litellm_model_info_cache.get(normalized)
+        cached_at = _litellm_model_info_cache_time.get(normalized, 0)
+        if cached is not None and (time.time() - cached_at) < _ENDPOINT_MODEL_CACHE_TTL:
+            return cached
+
+    candidates = [normalized.rstrip("/") + "/model/info"]
+    if normalized.endswith("/v1"):
+        root_candidate = normalized[:-3].rstrip("/") + "/model/info"
+        if root_candidate not in candidates:
+            candidates.append(root_candidate)
+
+    headers = _auth_headers(api_key)
+    contexts: Dict[str, int] = {}
+    last_error: Optional[Exception] = None
+    for url in candidates:
+        try:
+            response = requests.get(url, headers=headers, timeout=10, verify=_resolve_requests_verify())
+            response.raise_for_status()
+            payload = response.json()
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(data, list):
+                continue
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                model_name = item.get("model_name") or item.get("id")
+                if not isinstance(model_name, str) or not model_name.strip():
+                    continue
+                info = item.get("model_info")
+                ctx = _extract_context_length(info) if isinstance(info, dict) else None
+                if ctx is None:
+                    ctx = _extract_context_length(item)
+                if not isinstance(ctx, int) or ctx <= 0:
+                    continue
+                canonical = model_name.strip()
+                for alias in {canonical, canonical.lower()}:
+                    contexts[alias] = ctx
+                if "/" in canonical:
+                    bare = canonical.split("/", 1)[1]
+                    contexts.setdefault(bare, ctx)
+                    contexts.setdefault(bare.lower(), ctx)
+            if contexts:
+                break
+        except Exception as exc:
+            last_error = exc
+
+    if not contexts and last_error is not None:
+        logger.debug("Failed to fetch LiteLLM model info from %s/model/info: %s", normalized, last_error)
+
+    _litellm_model_info_cache[normalized] = contexts
+    _litellm_model_info_cache_time[normalized] = time.time()
+    return contexts
+
+
+def _resolve_litellm_model_info_context_length(
+    model: str,
+    base_url: str,
+    api_key: str = "",
+) -> Optional[int]:
+    """Resolve one model's context length from LiteLLM ``/model/info``."""
+    contexts = _fetch_litellm_model_info_contexts(base_url, api_key=api_key)
+    if not contexts:
+        return None
+    stripped = _strip_provider_prefix(model).strip()
+    for key in (model.strip(), stripped, model.strip().lower(), stripped.lower()):
+        if key in contexts:
+            return contexts[key]
     return None
 
 
@@ -1687,7 +1775,11 @@ def get_model_context_length(
     # /models endpoint may report a provider-imposed limit (e.g. Copilot
     # returns 128k) instead of the model's full context (400k).  models.dev
     # has the correct per-provider values and is checked at step 5+.
-    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
+    if (
+        _is_custom_endpoint(base_url)
+        and not _is_known_provider_base_url(base_url)
+        and not str(provider or "").strip().lower().startswith("iamds-litellm")
+    ):
         context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if context_length is not None:
             return context_length
@@ -1768,6 +1860,12 @@ def get_model_context_length(
                 return ctx
         except Exception:
             pass  # Fall through to models.dev
+
+    if effective_provider.startswith("iamds-litellm") and base_url:
+        litellm_ctx = _resolve_litellm_model_info_context_length(model, base_url, api_key=api_key)
+        if litellm_ctx:
+            save_context_length(model, base_url, litellm_ctx)
+            return litellm_ctx
 
     if effective_provider == "nous":
         ctx, source = _resolve_nous_context_length(
