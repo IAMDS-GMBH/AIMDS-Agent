@@ -1041,6 +1041,63 @@ name: grill-me
         reset_hermes_home_override(token)
 
 
+def test_litellm_hub_install_returns_friendly_message_on_429(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    token = set_hermes_home_override(home)
+    try:
+        class _Resp:
+            def __init__(self, status_code: int, text: str = "", payload: dict | None = None):
+                self.status_code = status_code
+                self.text = text
+                self._payload = payload or {}
+
+            def json(self):
+                return self._payload
+
+        def _fake_get(url, *args, **kwargs):
+            if url.endswith("/skills/grill-me/SKILL.md"):
+                return _Resp(429, text="Too Many Requests")
+            return _Resp(200, payload={"default_branch": "main", "tree": []})
+
+        monkeypatch.setitem(sys.modules, "requests", types.SimpleNamespace(get=_fake_get))
+
+        import tools.skills_hub as hub
+
+        monkeypatch.setattr(
+            hub,
+            "find_skill_md_in_repo",
+            lambda owner, repo, skill_id_hint=None, plugin_name=None: (
+                "https://raw.githubusercontent.com/owner/repo/main/skills/grill-me/SKILL.md",
+                "skills/grill-me/SKILL.md",
+            ),
+        )
+        monkeypatch.setattr(
+            hub, "GitHubAuth", lambda: types.SimpleNamespace(get_headers=lambda: {})
+        )
+        monkeypatch.setattr(hub, "SKILLS_DIR", home / "skills")
+
+        class _Lock:
+            def get_installed(self, name):
+                return None
+
+        monkeypatch.setattr(hub, "HubLockFile", lambda *args, **kwargs: _Lock())
+
+        resp = server._methods["litellm_hub.skill_install"](
+            "litellm-install",
+            {
+                "skill_id": "skills/grill-me",
+                "skill_name": "grill-me",
+                "source": "github:owner/repo",
+            },
+        )
+
+        assert "error" in resp
+        assert resp["error"]["message"] == "Server busy, try again later."
+    finally:
+        reset_hermes_home_override(token)
+
+
 def test_history_to_messages_preserves_tool_calls_for_resume_display():
     history = [
         {"role": "user", "content": "first prompt"},

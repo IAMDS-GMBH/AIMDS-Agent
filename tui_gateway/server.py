@@ -10056,6 +10056,15 @@ def _(rid, params: dict) -> dict:
         if not owner or not repo:
             return _err(rid, 5034, f"Invalid GitHub repo format: {source_raw}")
 
+        busy_message = "Server busy, try again later."
+
+        def _is_rate_limited(resp: Any) -> bool:
+            status = int(getattr(resp, "status_code", 0) or 0)
+            if status == 429:
+                return True
+            text = str(getattr(resp, "text", "") or "").lower()
+            return status == 403 and ("rate limit" in text or "too many requests" in text)
+
         def _norm_skill_token(value: str) -> str:
             return value.strip().strip("`\"'.,:;!?()[]{}").lower().replace("_", "-")
 
@@ -10192,6 +10201,8 @@ def _(rid, params: dict) -> dict:
                 logger.info("[LiteLLM Hub] skill_install: tree discovery found %s → %s", found_path, skill_md_url)
                 resp = requests.get(skill_md_url, timeout=30)
                 logger.info("[LiteLLM Hub] skill_install: GET %s → HTTP %d", skill_md_url, resp.status_code)
+                if _is_rate_limited(resp):
+                    return _err(rid, 5037, busy_message)
                 if resp.status_code != 200:
                     logger.warning("[LiteLLM Hub] skill_install: tree URL returned HTTP %d, falling back to candidates", resp.status_code)
                     tree_result = None
@@ -10208,6 +10219,8 @@ def _(rid, params: dict) -> dict:
                     resp = requests.get(skill_md_url, timeout=30)
                     last_status = resp.status_code
                     logger.info("[LiteLLM Hub] skill_install: GET %s → HTTP %d", candidate, last_status)
+                    if _is_rate_limited(resp):
+                        return _err(rid, 5037, busy_message)
                     if resp.status_code == 200:
                         break
                     if resp.status_code not in (404, 301, 302):
@@ -10302,6 +10315,8 @@ def _(rid, params: dict) -> dict:
                     if dep_path:
                         dep_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{default_branch}/{dep_path}"
                         dep_resp = requests.get(dep_url, timeout=30)
+                        if _is_rate_limited(dep_resp):
+                            return _err(rid, 5037, busy_message)
                     else:
                         fallback_paths = [
                             f"skills/{dep_name}/SKILL.md",
@@ -10310,6 +10325,8 @@ def _(rid, params: dict) -> dict:
                         for fp in fallback_paths:
                             trial_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{default_branch}/{fp}"
                             trial_resp = requests.get(trial_url, timeout=30)
+                            if _is_rate_limited(trial_resp):
+                                return _err(rid, 5037, busy_message)
                             logger.info(
                                 "[LiteLLM Hub] skill_install: dependency fallback GET %s → HTTP %d",
                                 trial_url,

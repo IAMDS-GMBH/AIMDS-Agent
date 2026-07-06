@@ -230,7 +230,10 @@ export function HubView({ ...props }: HubViewProps) {
 
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      setInstallProgress(`✗ Error: ${message}`)
+      const friendlyMessage = /(?:^|\\b)(429|rate limit|too many requests|server busy)(?:\\b|$)/i.test(message)
+        ? 'Server busy, try again later.'
+        : message
+      setInstallProgress(`✗ Error: ${friendlyMessage}`)
       notifyError(err, `Failed to install ${skill.name}`)
     }
   }
