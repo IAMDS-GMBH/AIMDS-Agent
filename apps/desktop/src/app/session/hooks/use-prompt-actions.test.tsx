@@ -357,7 +357,8 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(createSession).toHaveBeenCalledTimes(1)
     expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
       session_id: createdId,
-      text: '[IMPORTANT: The user has invoked the "grill-me" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]'
+      text: '[IMPORTANT: The user has invoked the "grill-me" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
+      display_text: '/grill-me focus on risks'
     })
   })
 

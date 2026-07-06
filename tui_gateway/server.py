@@ -5034,6 +5034,7 @@ def _(rid, params: dict) -> dict:
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     sid, text = params.get("session_id", ""), params.get("text", "")
+    display_text = params.get("display_text", "")
     truncate_user_ordinal = params.get("truncate_before_user_ordinal")
     session, err = _sess_nowait(params, rid)
     if err:
@@ -5087,7 +5088,13 @@ def _(rid, params: dict) -> dict:
                 session["running"] = False
                 _clear_inflight_turn(session)
             return
-        _run_prompt_submit(rid, sid, session, text)
+        _run_prompt_submit(
+            rid,
+            sid,
+            session,
+            text,
+            title_user_text=display_text,
+        )
 
     threading.Thread(target=run_after_agent_ready, daemon=True).start()
     return _ok(rid, {"status": "streaming"})
@@ -5284,7 +5291,14 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
-def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+def _run_prompt_submit(
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    *,
+    title_user_text: Any = None,
+) -> None:
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
@@ -5600,7 +5614,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     maybe_auto_title(
                         _turn_db,
                         session.get("session_key") or sid,
-                        text,
+                        (
+                            title_user_text
+                            if isinstance(title_user_text, str) and title_user_text.strip()
+                            else text
+                        ),
                         raw,
                         session.get("history", []),
                         main_runtime=_main_runtime,

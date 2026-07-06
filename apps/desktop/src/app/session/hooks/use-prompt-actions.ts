@@ -668,7 +668,11 @@ export function usePromptActions({
         let submitErr: unknown = null
 
         try {
-          await requestGateway('prompt.submit', { session_id: sessionId, text })
+          await requestGateway('prompt.submit', {
+            session_id: sessionId,
+            text,
+            ...(options?.displayText ? { display_text: options.displayText } : {})
+          })
         } catch (firstErr) {
           if (isSessionNotFoundError(firstErr) && selectedStoredSessionIdRef.current) {
             // Re-register the session in the gateway and get a fresh live ID.
@@ -679,7 +683,11 @@ export function usePromptActions({
 
             if (recoveredId) {
               activeSessionIdRef.current = recoveredId
-              await requestGateway('prompt.submit', { session_id: recoveredId, text })
+              await requestGateway('prompt.submit', {
+                session_id: recoveredId,
+                text,
+                ...(options?.displayText ? { display_text: options.displayText } : {})
+              })
             } else {
               submitErr = firstErr
             }

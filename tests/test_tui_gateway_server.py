@@ -5661,6 +5661,48 @@ def test_prompt_submit_auto_titles_session_on_complete(monkeypatch):
     assert args[3] == "Rome was founded in 753 BC."
 
 
+def test_prompt_submit_auto_title_prefers_display_text_when_provided(monkeypatch):
+    """Auto-title should use display_text (user-visible slash command), not
+    the expanded internal prompt payload."""
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            return {
+                "final_response": "Done.",
+                "messages": [
+                    {"role": "user", "content": "/grill-me focus on risks"},
+                    {"role": "assistant", "content": "Done."},
+                ],
+            }
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    with patch("agent.title_generator.maybe_auto_title") as mock_title:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": '[IMPORTANT: The user has invoked the "grill-me" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
+                    "display_text": "/grill-me focus on risks",
+                },
+            }
+        )
+
+    mock_title.assert_called_once()
+    args = mock_title.call_args.args
+    assert args[2] == "/grill-me focus on risks"
+    assert args[3] == "Done."
+
+
 def test_prompt_submit_skips_auto_title_when_interrupted(monkeypatch):
     """maybe_auto_title must NOT be called when the agent was interrupted."""
 
