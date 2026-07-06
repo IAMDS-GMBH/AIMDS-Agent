@@ -1554,12 +1554,12 @@ class LiteLLMSkillHubSource(SkillSource):
         url = str(source.get("url", "")).strip()
         path = str(source.get("path", "")).strip().strip("/")
         repo = str(source.get("repo", "")).strip().strip("/")
+        parsed_repo, parsed_path = self._parse_github_source(url, path)
 
         bundle: Optional[SkillBundle] = None
         if source_type in {"git-subdir", "github"}:
             candidate_identifiers: List[str] = []
 
-            parsed_repo, parsed_path = self._parse_github_source(url, path)
             if parsed_repo and parsed_path:
                 candidate_identifiers.append(f"{parsed_repo}/{parsed_path}")
 
@@ -1601,6 +1601,17 @@ class LiteLLMSkillHubSource(SkillSource):
                 bundle = self._github.fetch(gh_identifier)
                 if bundle:
                     break
+            if not bundle:
+                target_repo = repo or parsed_repo
+                division_path = path or parsed_path
+                if target_repo and division_path:
+                    discovered_identifier = self._resolve_best_division_skill(
+                        target_repo,
+                        division_path,
+                        entry,
+                    )
+                    if discovered_identifier:
+                        bundle = self._github.fetch(discovered_identifier)
         elif source_type == "url" and url:
             bundle = self._url.fetch(url)
 
@@ -1696,6 +1707,71 @@ class LiteLLMSkillHubSource(SkillSource):
                     parsed_path = "/".join(parts[4:])
                 return repo, (path or parsed_path).strip("/")
         return "", ""
+
+    @staticmethod
+    def _tokenize(value: Any) -> set[str]:
+        if value is None:
+            return set()
+        text = str(value).strip().lower()
+        if not text:
+            return set()
+        return {token for token in re.findall(r"[a-z0-9]+", text) if token}
+
+    def _resolve_best_division_skill(
+        self,
+        repo: str,
+        division_path: str,
+        entry: Dict[str, Any],
+    ) -> Optional[str]:
+        candidates = self._github._find_all_skills_recursive(repo, division_path)
+        if not candidates:
+            return None
+
+        entry_name = str(entry.get("name", "")).strip().lower()
+        division_norm = division_path.strip("/").lower()
+
+        entry_tokens = set()
+        entry_tokens |= self._tokenize(entry_name)
+        entry_tokens |= self._tokenize(entry.get("domain"))
+        entry_tokens |= self._tokenize(entry.get("namespace"))
+        entry_tokens |= self._tokenize(division_norm)
+        keywords = entry.get("keywords")
+        if isinstance(keywords, list):
+            for keyword in keywords:
+                entry_tokens |= self._tokenize(keyword)
+
+        def _score(meta: SkillMeta) -> Tuple[float, str]:
+            score = 0.0
+            candidate_name = (meta.name or "").strip().lower()
+            candidate_path = (meta.path or "").strip().lower()
+            candidate_text = " ".join(
+                [
+                    candidate_name,
+                    candidate_path,
+                    str(meta.description or ""),
+                    " ".join(meta.tags or []),
+                ]
+            )
+            candidate_tokens = self._tokenize(candidate_text)
+
+            if entry_name and candidate_name == entry_name:
+                score += 120.0
+            if entry_name and entry_name in candidate_path.replace("_", "-"):
+                score += 55.0
+
+            if division_norm:
+                if candidate_path.startswith(f"{division_norm}/"):
+                    score += 25.0
+                elif candidate_path == division_norm:
+                    score += 15.0
+
+            score += len(entry_tokens & candidate_tokens) * 5.0
+            score -= candidate_path.count("/") * 0.15
+
+            return score, meta.identifier
+
+        best = max(candidates, key=_score)
+        return best.identifier
 
 
 # ---------------------------------------------------------------------------

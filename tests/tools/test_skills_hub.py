@@ -1448,6 +1448,69 @@ class TestLiteLLMSkillHubSource:
         assert "mattpocock/skills/skills/interviews/grill-me" in attempted
         assert "mattpocock/skills/skills/productivity/grill-me" in attempted
 
+    def test_fetch_division_entry_resolves_best_recursive_skill(self):
+        payload = [
+            {
+                "name": "frontend-developer",
+                "description": "Frontend and UI implementation specialist",
+                "domain": "Engineering",
+                "namespace": "frontend",
+                "keywords": ["react", "ui"],
+                "source": {
+                    "source": "git-subdir",
+                    "url": "https://github.com/msitarzewski/agency-agents",
+                    "path": "engineering",
+                },
+            }
+        ]
+        upstream_bundle = SkillBundle(
+            name="frontend-developer",
+            files={"SKILL.md": "# frontend"},
+            source="github",
+            identifier="msitarzewski/agency-agents/engineering/frontend-developer",
+            trust_level="community",
+        )
+        src = self._source()
+
+        recursive_candidates = [
+            SkillMeta(
+                name="backend-architect",
+                description="Backend systems specialist",
+                source="github",
+                identifier="msitarzewski/agency-agents/engineering/backend-architect",
+                trust_level="community",
+                repo="msitarzewski/agency-agents",
+                path="engineering/backend-architect",
+                tags=["api"],
+            ),
+            SkillMeta(
+                name="frontend-developer",
+                description="Frontend specialist",
+                source="github",
+                identifier="msitarzewski/agency-agents/engineering/platform/frontend-developer",
+                trust_level="community",
+                repo="msitarzewski/agency-agents",
+                path="engineering/platform/frontend-developer",
+                tags=["react", "ui"],
+            ),
+        ]
+
+        def _fetch_side_effect(identifier: str):
+            if identifier == "msitarzewski/agency-agents/engineering/platform/frontend-developer":
+                return upstream_bundle
+            return None
+
+        with patch("tools.skills_hub.fetch_litellm_hub_json", return_value=(payload, None)), \
+             patch.object(src._github, "_find_skill_in_repo_tree", return_value=None), \
+             patch.object(src._github, "_find_all_skills_recursive", return_value=recursive_candidates) as mock_recursive, \
+             patch.object(src._github, "fetch", side_effect=_fetch_side_effect):
+            bundle = src.fetch("litellm-skill-hub/frontend-developer")
+
+        assert bundle is not None
+        assert bundle.source == "litellm-skill-hub"
+        assert bundle.identifier == "litellm-skill-hub/frontend-developer"
+        mock_recursive.assert_called_once_with("msitarzewski/agency-agents", "engineering")
+
 
 # ---------------------------------------------------------------------------
 # HubLockFile
