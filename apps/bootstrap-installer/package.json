@@ -1,7 +1,7 @@
 {
   "name": "@hermes/bootstrap-installer",
   "private": true,
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "Hermes Setup \u2014 signed installer that drives scripts/install.ps1 with a polished native UI.",
   "type": "module",
   "scripts": {
