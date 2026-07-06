@@ -10287,7 +10287,25 @@ def _(rid, params: dict) -> dict:
                     dl_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{default_branch}/{rel_path}"
                 file_resp = requests.get(dl_url, timeout=30)
                 if _is_rate_limited(file_resp):
-                    return _err(rid, 5037, busy_message)
+                    warning_failed.append(rel_path)
+                    logger.info(
+                        "[LiteLLM Hub] set install: GET %s → rate limited (skipped)",
+                        dl_url,
+                    )
+                    completed_items += 1
+                    _emit_set_progress(
+                        set_name=folder,
+                        total=total_items,
+                        completed=completed_items,
+                        installed=len(installed_names),
+                        skipped=len(skipped_names),
+                        conflicts=len(warning_conflicts),
+                        failed=len(warning_failed),
+                        status="failed",
+                        item=rel_path,
+                        message=f"[{completed_items}/{total_items}] {Path(rel_path).name}: {busy_message}",
+                    )
+                    continue
                 if file_resp.status_code != 200:
                     if file_resp.status_code == 409:
                         warning_conflicts.append(rel_path)
@@ -10416,6 +10434,37 @@ def _(rid, params: dict) -> dict:
                             "message": (
                                 f"No new skills installed from set '{folder}' "
                                 f"({len(warning_conflicts)} conflict(s), already present upstream)."
+                            ),
+                            "set_name": folder,
+                            "installed_skills": [],
+                            "skipped_skills": skipped_names,
+                            "conflict_skills": warning_conflicts,
+                            "failed_skills": warning_failed,
+                        },
+                    )
+                if warning_failed:
+                    _emit_set_progress(
+                        set_name=folder,
+                        total=total_items,
+                        completed=completed_items,
+                        installed=len(installed_names),
+                        skipped=len(skipped_names),
+                        conflicts=len(warning_conflicts),
+                        failed=len(warning_failed),
+                        status="complete",
+                        message=(
+                            f"Completed set '{folder}' with no installs: "
+                            f"{len(warning_failed)} failed download(s)."
+                        ),
+                    )
+                    return _ok(
+                        rid,
+                        {
+                            "success": True,
+                            "warning": True,
+                            "message": (
+                                f"No new skills installed from set '{folder}' "
+                                f"({len(warning_failed)} failed download(s))."
                             ),
                             "set_name": folder,
                             "installed_skills": [],
