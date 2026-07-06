@@ -46,11 +46,13 @@ interface HarnessHandle {
   steerPrompt: (text: string) => Promise<boolean>
   submitText: (
     text: string,
-    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }
+    options?: { attachments?: ComposerAttachment[]; displayText?: string; fromQueue?: boolean; sessionId?: string }
   ) => Promise<boolean>
 }
 
 function Harness({
+  activeSessionId = RUNTIME_SESSION_ID,
+  createBackendSessionForSend,
   busyRef,
   onReady,
   onSeedState,
@@ -59,6 +61,8 @@ function Harness({
   resumeStoredSession,
   storedSessionId
 }: {
+  activeSessionId?: string | null
+  createBackendSessionForSend?: (preview?: string | null) => Promise<string | null>
   busyRef?: MutableRefObject<boolean>
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
@@ -67,7 +71,7 @@ function Harness({
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
   storedSessionId?: null | string
 }) {
-  const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+  const activeSessionIdRef: MutableRefObject<string | null> = { current: activeSessionId }
   const selectedStoredSessionIdRef: MutableRefObject<string | null> = {
     current: storedSessionId === undefined ? RUNTIME_SESSION_ID : storedSessionId
   }
@@ -80,11 +84,11 @@ function Harness({
   } as never)
 
   const actions = usePromptActions({
-    activeSessionId: RUNTIME_SESSION_ID,
+    activeSessionId,
     activeSessionIdRef,
     branchCurrentSession: async () => true,
     busyRef: localBusyRef,
-    createBackendSessionForSend: async () => RUNTIME_SESSION_ID,
+    createBackendSessionForSend: createBackendSessionForSend ?? (async () => RUNTIME_SESSION_ID),
     handleSkinCommand: () => '',
     refreshSessions,
     requestGateway,
@@ -317,6 +321,43 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
       session_id: RUNTIME_SESSION_ID,
       text: 'queued message'
+    })
+  })
+
+  it('reuses slash-created session for skill submit (no second session)', async () => {
+    const createdId = 'rt-created-1'
+    const createSession = vi.fn(async () => createdId)
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'slash.exec') {
+        throw new Error('skill command: use command.dispatch')
+      }
+      if (method === 'command.dispatch') {
+        return {
+          type: 'skill',
+          name: 'grill-me',
+          message: '[IMPORTANT: The user has invoked the "grill-me" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]'
+        } as never
+      }
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        createBackendSessionForSend={createSession}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/grill-me focus on risks')
+
+    expect(createSession).toHaveBeenCalledTimes(1)
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+      session_id: createdId,
+      text: '[IMPORTANT: The user has invoked the "grill-me" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]'
     })
   })
 

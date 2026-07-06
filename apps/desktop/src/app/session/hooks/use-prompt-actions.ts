@@ -290,6 +290,7 @@ interface SubmitTextOptions {
   attachments?: ComposerAttachment[]
   displayText?: string
   fromQueue?: boolean
+  sessionId?: string
 }
 
 /** Everything a slash handler needs about the invocation it's serving. */
@@ -620,7 +621,7 @@ export function usePromptActions({
       setAwaitingResponse(true)
       clearNotifications()
 
-      let sessionId: null | string = activeSessionId
+      let sessionId: null | string = options?.sessionId || activeSessionId
 
       if (sessionId) {
         seedOptimistic(sessionId)
@@ -924,7 +925,8 @@ export function usePromptActions({
           }
 
           await submitPromptText(message, {
-            displayText: `/${name}${arg ? ` ${arg}` : ''}`
+            displayText: `/${name}${arg ? ` ${arg}` : ''}`,
+            sessionId,
           })
         } catch (err) {
           renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
