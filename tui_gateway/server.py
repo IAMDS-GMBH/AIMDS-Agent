@@ -10223,6 +10223,8 @@ def _(rid, params: dict) -> dict:
             set_root.mkdir(parents=True, exist_ok=True)
             installed_names: list[str] = []
             skipped_names: list[str] = []
+            warning_conflicts: list[str] = []
+            warning_failed: list[str] = []
 
             for item in md_items:
                 rel_path = str(item.get("path") or "").strip()
@@ -10235,6 +10237,10 @@ def _(rid, params: dict) -> dict:
                 if _is_rate_limited(file_resp):
                     return _err(rid, 5037, busy_message)
                 if file_resp.status_code != 200:
+                    if file_resp.status_code == 409:
+                        warning_conflicts.append(rel_path)
+                    else:
+                        warning_failed.append(rel_path)
                     logger.info(
                         "[LiteLLM Hub] set install: GET %s → HTTP %d (skipped)",
                         dl_url,
@@ -10290,23 +10296,50 @@ def _(rid, params: dict) -> dict:
                 installed_names.append(install_name)
 
             if not installed_names:
+                if warning_conflicts and not warning_failed:
+                    return _ok(
+                        rid,
+                        {
+                            "success": True,
+                            "warning": True,
+                            "message": (
+                                f"No new skills installed from set '{folder}' "
+                                f"({len(warning_conflicts)} conflict(s), already present upstream)."
+                            ),
+                            "set_name": folder,
+                            "installed_skills": [],
+                            "skipped_skills": skipped_names,
+                            "conflict_skills": warning_conflicts,
+                            "failed_skills": warning_failed,
+                        },
+                    )
                 return _err(
                     rid,
                     5038,
                     f"No installable skills found in set '{folder}'.",
                 )
 
+            warning = bool(warning_conflicts or warning_failed)
+            warning_suffix = ""
+            if warning_conflicts:
+                warning_suffix += f" ({len(warning_conflicts)} conflict warning(s))"
+            if warning_failed:
+                warning_suffix += f" ({len(warning_failed)} failed download(s))"
             return _ok(
                 rid,
                 {
                     "success": True,
+                    "warning": warning,
                     "message": (
                         f"Installed {len(installed_names)} skill(s) from set '{folder}'"
                         + (f" ({len(skipped_names)} already installed)" if skipped_names else "")
+                        + warning_suffix
                     ),
                     "set_name": folder,
                     "installed_skills": installed_names,
                     "skipped_skills": skipped_names,
+                    "conflict_skills": warning_conflicts,
+                    "failed_skills": warning_failed,
                 },
             )
 

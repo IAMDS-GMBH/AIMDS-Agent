@@ -36,6 +36,12 @@ interface LiteLLMSkill {
   installedName?: string
 }
 
+interface InstallProgressState {
+  message: string
+  percent: number | null
+  level?: 'info' | 'success' | 'warning' | 'error'
+}
+
 function resolveSkillSource(source: unknown): string | undefined {
   if (!source) {
     return undefined
@@ -133,7 +139,11 @@ export function HubView({ ...props }: HubViewProps) {
   const [rawResponse, setRawResponse] = useState<unknown>(null)
   const [showRaw, setShowRaw] = useState(false)
   const [installing, setInstalling] = useState<{ id: string; skill: LiteLLMSkill } | null>(null)
-  const [installProgress, setInstallProgress] = useState<string>('')
+  const [installProgress, setInstallProgress] = useState<InstallProgressState>({
+    message: '',
+    percent: null,
+    level: 'info',
+  })
   const [installedSkillIds, setInstalledSkillIds] = useState<Set<string>>(new Set())
   const [togglingAgent, setTogglingAgent] = useState<string | null>(null)
 
@@ -209,23 +219,54 @@ export function HubView({ ...props }: HubViewProps) {
 
   const handleInstallSkill = async (skill: LiteLLMSkill) => {
     setInstalling({ id: skill.id, skill })
-    setInstallProgress('Starting installation...')
+    setInstallProgress({ message: 'Starting installation...', percent: 5, level: 'info' })
 
     try {
-      setInstallProgress('Downloading skill from GitHub...')
+      setInstallProgress({ message: 'Downloading skill from GitHub...', percent: 35, level: 'info' })
       const sourceParam = skill.sourceRaw ?? skill.source
-      const result = await requestGateway<{ success: boolean; message: string }>('litellm_hub.skill_install', {
+      const result = await requestGateway<{
+        success: boolean
+        message: string
+        warning?: boolean
+        set_name?: string
+        installed_skills?: string[]
+        skipped_skills?: string[]
+        conflict_skills?: string[]
+        failed_skills?: string[]
+      }>('litellm_hub.skill_install', {
         skill_id: skill.id,
         skill_name: skill.name,
         source: sourceParam
       })
 
       if (result?.success) {
-        setInstallProgress(`✓ Successfully installed: ${skill.name}`)
+        const warning = Boolean(result.warning)
+        const conflicts = Array.isArray(result.conflict_skills) ? result.conflict_skills.length : 0
+        if (Array.isArray(result.installed_skills) && result.installed_skills.length > 0) {
+          const skipped = Array.isArray(result.skipped_skills) ? result.skipped_skills.length : 0
+          const suffix = skipped > 0 ? ` (${skipped} already installed)` : ''
+          const base = `${warning ? '⚠' : '✓'} Installed ${result.installed_skills.length} skills from ${result.set_name || skill.name}${suffix}`
+          const warnSuffix = conflicts > 0 ? ` (${conflicts} conflict warning${conflicts > 1 ? 's' : ''})` : ''
+          setInstallProgress({
+            message: `${base}${warnSuffix}`,
+            percent: 100,
+            level: warning ? 'warning' : 'success',
+          })
+        } else {
+          setInstallProgress({
+            message: `${warning ? '⚠' : '✓'} ${result.message || `Successfully installed: ${skill.name}`}`,
+            percent: 100,
+            level: warning ? 'warning' : 'success',
+          })
+        }
         setInstalledSkillIds(prev => new Set(prev).add(skill.id))
         setTimeout(() => setInstalling(null), 2000)
       } else {
-        setInstallProgress(`✗ Installation failed: ${result?.message || 'Unknown error'}`)
+        setInstallProgress({
+          message: `✗ Installation failed: ${result?.message || 'Unknown error'}`,
+          percent: 100,
+          level: 'error',
+        })
       }
 
     } catch (err) {
@@ -233,7 +274,7 @@ export function HubView({ ...props }: HubViewProps) {
       const friendlyMessage = /(?:^|\\b)(429|rate limit|too many requests|server busy)(?:\\b|$)/i.test(message)
         ? 'Server busy, try again later.'
         : message
-      setInstallProgress(`✗ Error: ${friendlyMessage}`)
+      setInstallProgress({ message: `✗ Error: ${friendlyMessage}`, percent: 100, level: 'error' })
       notifyError(err, `Failed to install ${skill.name}`)
     }
   }
@@ -525,22 +566,63 @@ function SkillsList({ skills, query, onInstall, onUninstall, installedIds }: Ski
 
 interface SkillInstallModalProps {
   skill: LiteLLMSkill
-  progress: string
+  progress: InstallProgressState
   onClose: () => void
 }
 
 function SkillInstallModal({ skill, progress, onClose }: SkillInstallModalProps) {
-  const isDone = progress.startsWith('✓') || progress.startsWith('✗') || progress.startsWith('Error')
+  const isDone = ['success', 'warning', 'error'].includes(progress.level || '')
+  const isSetInstall =
+    typeof skill.sourceRaw === 'object' &&
+    skill.sourceRaw !== null &&
+    typeof (skill.sourceRaw as Record<string, unknown>).path === 'string'
+  const percent = progress.percent
+  const level = progress.level || 'info'
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <div className="bg-background border border-border rounded-lg shadow-lg w-full max-w-md mx-4 p-6">
         <h2 className="text-lg font-semibold mb-4">Installing {skill.name}</h2>
         <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            <div className={cn('w-4 h-4 rounded-full', isDone ? 'bg-muted-foreground' : 'bg-blue-500 animate-pulse')}></div>
-            <p className="text-sm">{progress}</p>
+          <div className="h-2 rounded bg-muted/50 overflow-hidden">
+            {typeof percent === 'number' ? (
+              <div
+                className={cn(
+                  'h-full transition-all duration-300',
+                  isDone
+                    ? level === 'success'
+                      ? 'bg-green-500'
+                      : level === 'warning'
+                        ? 'bg-amber-500'
+                        : 'bg-red-500'
+                    : 'bg-blue-500'
+                )}
+                style={{ width: `${Math.max(5, Math.min(100, percent))}%` }}
+              />
+            ) : (
+              <div className="h-full w-1/3 bg-blue-500 animate-pulse" />
+            )}
           </div>
+          <div className="flex items-center gap-3">
+            <div
+              className={cn(
+                'w-4 h-4 rounded-full',
+                isDone
+                  ? level === 'success'
+                    ? 'bg-green-500'
+                    : level === 'warning'
+                      ? 'bg-amber-500'
+                      : 'bg-red-500'
+                  : 'bg-blue-500 animate-pulse'
+              )}
+            ></div>
+            <p className="text-sm">{progress.message}</p>
+          </div>
+          {isSetInstall && !isDone && (
+            <p className="text-xs text-muted-foreground">
+              Installing a skill set can take a bit longer because multiple skills are fetched.
+            </p>
+          )}
           {isDone && (
             <div className="pt-2">
               <button
