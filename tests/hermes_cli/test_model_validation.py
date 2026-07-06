@@ -8,6 +8,7 @@ from hermes_cli.models import (
     fetch_github_model_catalog,
     curated_models_for_provider,
     fetch_api_models,
+    fetch_litellm_model_info_models,
     fetch_lmstudio_models,
     github_model_reasoning_efforts,
     normalize_copilot_model_id,
@@ -304,6 +305,58 @@ class TestFetchApiModels:
 
         assert catalog is not None
         assert [item["id"] for item in catalog] == ["gpt-5.4"]
+
+    def test_fetch_litellm_model_info_uses_litellm_endpoint_from_root_base(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data":[{"model_name":"gpt-4.1-mini"},{"id":"claude-sonnet-4.6"}]}'
+
+        calls = []
+
+        def _fake_urlopen(req, timeout=5.0):
+            calls.append(req.full_url)
+            return _Resp()
+
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=_fake_urlopen):
+            models = fetch_litellm_model_info_models(
+                "iamds-key",
+                "https://staging.suite.iamds.com",
+            )
+
+        assert calls == ["https://staging.suite.iamds.com/litellm/model/info"]
+        assert models == ["gpt-4.1-mini", "claude-sonnet-4.6"]
+
+    def test_fetch_litellm_model_info_normalizes_litellm_v1_base(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"model_info":{"gpt-5.3-codex":{"litellm_provider":"openai"}}}'
+
+        calls = []
+
+        def _fake_urlopen(req, timeout=5.0):
+            calls.append(req.full_url)
+            return _Resp()
+
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=_fake_urlopen):
+            models = fetch_litellm_model_info_models(
+                "iamds-key",
+                "https://staging.suite.iamds.com/litellm/v1",
+            )
+
+        assert calls == ["https://staging.suite.iamds.com/litellm/model/info"]
+        assert models == ["gpt-5.3-codex"]
 
 
 class TestGithubReasoningEfforts:

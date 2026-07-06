@@ -2239,8 +2239,38 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:
             return live
-    if normalized in ("openai", "openai-api", "iamds-litellm"):
+    if normalized == "iamds-litellm":
         api_key = (os.getenv("IAMDS_LITELLM_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+        base_raw = (
+            os.getenv("IAMDS_LITELLM_BASE_URL")
+            or os.getenv("OPENAI_BASE_URL")
+            or ""
+        ).strip()
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+
+            creds = resolve_api_key_provider_credentials("iamds-litellm")
+            api_key = str(creds.get("api_key") or api_key).strip()
+            base_from_creds = str(creds.get("base_url") or "").strip()
+            if base_from_creds:
+                base_raw = base_from_creds
+        except Exception:
+            pass
+
+        if api_key and base_raw:
+            live = fetch_litellm_model_info_models(api_key, base_raw)
+            if live:
+                return live
+            # Fallback to generic OpenAI-compatible model discovery for
+            # deployments that do not expose /litellm/model/info.
+            live = fetch_api_models(api_key, base_raw)
+            if live:
+                return live
+        # Keep picker usable when IAMDS discovery is temporarily unavailable.
+        return list(_PROVIDER_MODELS.get("openai-api", []))
+
+    if normalized in ("openai", "openai-api"):
+        api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if api_key:
             base_raw = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
             base = base_raw or "https://api.openai.com/v1"
@@ -3414,6 +3444,90 @@ def fetch_api_models(
     be reached (network error, timeout, auth failure, etc.).
     """
     return probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode).get("models")
+
+
+def _extract_model_id_like(entry: Any) -> Optional[str]:
+    """Best-effort model id extraction for heterogeneous discovery payloads."""
+    if isinstance(entry, str):
+        value = entry.strip()
+        return value or None
+    if not isinstance(entry, dict):
+        return None
+    for key in ("id", "model_name", "model", "modelName"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def fetch_litellm_model_info_models(
+    api_key: Optional[str],
+    base_url: Optional[str],
+    timeout: float = 5.0,
+) -> Optional[list[str]]:
+    """Fetch LiteLLM model ids from ``/litellm/model/info``.
+
+    Accepts base URLs in any of these forms and normalizes to the same endpoint:
+    - ``https://host``
+    - ``https://host/litellm``
+    - ``https://host/litellm/v1``
+    """
+    normalized = (base_url or "").strip().rstrip("/")
+    if not normalized:
+        return None
+
+    if normalized.endswith("/litellm/v1"):
+        endpoint = normalized[: -len("/v1")] + "/model/info"
+    elif normalized.endswith("/litellm"):
+        endpoint = normalized + "/model/info"
+    elif "/litellm/" in normalized:
+        prefix = normalized.split("/litellm/", 1)[0].rstrip("/")
+        endpoint = prefix + "/litellm/model/info"
+    else:
+        endpoint = normalized + "/litellm/model/info"
+
+    headers: dict[str, str] = {
+        "Accept": "application/json",
+        "User-Agent": _HERMES_USER_AGENT,
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        request = urllib.request.Request(endpoint, headers=headers)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    except Exception:
+        return None
+
+    candidates: list[Any] = []
+    if isinstance(payload, list):
+        candidates = payload
+    elif isinstance(payload, dict):
+        for key in ("data", "models"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                candidates.extend(value)
+        model_info = payload.get("model_info")
+        if isinstance(model_info, dict):
+            candidates.extend(model_info.values())
+            candidates.extend(list(model_info.keys()))
+        elif isinstance(model_info, list):
+            candidates.extend(model_info)
+
+    seen: set[str] = set()
+    model_ids: list[str] = []
+    for entry in candidates:
+        model_id = _extract_model_id_like(entry)
+        if not model_id or model_id.startswith("_"):
+            continue
+        key = model_id.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        model_ids.append(model_id)
+
+    return model_ids
 
 
 # ---------------------------------------------------------------------------

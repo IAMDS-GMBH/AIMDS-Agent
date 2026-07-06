@@ -94,3 +94,33 @@ def test_custom_openai_compatible_endpoint_keeps_live_list(monkeypatch):
         result = M.provider_model_ids("openai-api", force_refresh=True)
 
     assert result == live
+
+
+def test_iamds_litellm_prefers_model_info_endpoint(monkeypatch):
+    monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "iamds-key")
+    monkeypatch.setenv("IAMDS_LITELLM_BASE_URL", "https://staging.suite.iamds.com")
+
+    with patch.object(
+        M,
+        "fetch_litellm_model_info_models",
+        return_value=["gpt-5.5", "claude-sonnet-5"],
+    ) as mock_model_info, patch.object(M, "fetch_api_models") as mock_generic:
+        result = M.provider_model_ids("iamds-litellm", force_refresh=True)
+
+    assert result == ["gpt-5.5", "claude-sonnet-5"]
+    mock_model_info.assert_called_once_with("iamds-key", "https://staging.suite.iamds.com")
+    mock_generic.assert_not_called()
+
+
+def test_iamds_litellm_falls_back_to_curated_when_discovery_fails(monkeypatch):
+    monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "iamds-key")
+    monkeypatch.setenv("IAMDS_LITELLM_BASE_URL", "https://staging.suite.iamds.com")
+
+    with patch.object(M, "fetch_litellm_model_info_models", return_value=None), patch.object(
+        M,
+        "fetch_api_models",
+        return_value=None,
+    ):
+        result = M.provider_model_ids("iamds-litellm", force_refresh=True)
+
+    assert result == list(M._PROVIDER_MODELS["openai-api"])
