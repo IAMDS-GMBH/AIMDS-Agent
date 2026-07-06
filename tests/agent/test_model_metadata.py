@@ -1071,6 +1071,51 @@ class TestIAMDSLiteLLMContextResolution:
         assert ctx == 200000
         mock_fetch_endpoint.assert_not_called()
 
+    @patch("agent.model_metadata.requests.get")
+    def test_model_info_maps_model_name_and_id_aliases(self, mock_get):
+        import agent.model_metadata as mm
+
+        mm._litellm_model_info_cache = {}
+        mm._litellm_model_info_cache_time = {}
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "data": [
+                {
+                    "model_name": "auto",
+                    "id": "AIMDS-Suite-Auto",
+                    "model_info": {"max_input_tokens": 200000},
+                }
+            ]
+        }
+        mock_get.return_value = mock_response
+
+        by_alias = mm._resolve_litellm_model_info_context_length(
+            "auto", "https://staging.suite.iamds.com/litellm/v1", api_key="sk-test"
+        )
+        by_id = mm._resolve_litellm_model_info_context_length(
+            "AIMDS-Suite-Auto", "https://staging.suite.iamds.com/litellm/v1", api_key="sk-test"
+        )
+        assert by_alias == 200000
+        assert by_id == 200000
+
+    @patch("agent.model_metadata._resolve_litellm_model_info_context_length", return_value=200000)
+    def test_iamds_bypasses_stale_cached_context(self, _mock_resolve, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import importlib
+        import agent.model_metadata as mm
+        importlib.reload(mm)
+        base = "https://staging.suite.iamds.com/litellm/v1"
+        mm.save_context_length("AIMDS-Suite-Auto", base, 256000)
+        ctx = mm.get_model_context_length(
+            "AIMDS-Suite-Auto",
+            provider="iamds-litellm",
+            base_url=base,
+            api_key="sk-test",
+        )
+        assert ctx == 200000
+
 
 # =========================================================================
 # _strip_provider_prefix — Ollama model:tag vs provider:model
