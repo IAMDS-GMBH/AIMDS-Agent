@@ -1100,13 +1100,17 @@ class TestIAMDSLiteLLMContextResolution:
         assert by_alias == 200000
         assert by_id == 200000
 
-    @patch("agent.model_metadata._resolve_litellm_model_info_context_length", return_value=200000)
-    def test_iamds_bypasses_stale_cached_context(self, _mock_resolve, tmp_path, monkeypatch):
+    def test_iamds_bypasses_stale_cached_context(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         import importlib
         import agent.model_metadata as mm
         importlib.reload(mm)
         base = "https://staging.suite.iamds.com/litellm/v1"
+        monkeypatch.setattr(
+            mm,
+            "_resolve_litellm_model_info_context_length",
+            lambda model, base_url, api_key="": 200000,
+        )
         mm.save_context_length("AIMDS-Suite-Auto", base, 256000)
         ctx = mm.get_model_context_length(
             "AIMDS-Suite-Auto",
