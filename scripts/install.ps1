@@ -2499,16 +2499,24 @@ save_config(cfg)
     # On update/reinstall flows effectiveApiKey can be empty; appending
     # IAMDS_LITELLM_API_KEY= would shadow the user's existing key with a blank value.
     $envPath = "$HermesHome\.env"
+    if (Test-Path $envPath) {
+        # Canonical endpoint var is IAMDS_LITELLM_BASE_URL.
+        # Remove legacy OPENAI_BASE_URL entries previously written by bootstrap.
+        $existingEnv = Get-Content -Raw -Encoding UTF8 $envPath
+        $cleanedEnv = [System.Text.RegularExpressions.Regex]::Replace($existingEnv, '(?m)^OPENAI_BASE_URL=.*\r?\n?', '')
+        if ($cleanedEnv -ne $existingEnv) {
+            $utf8NoBomClean = New-Object System.Text.UTF8Encoding($false)
+            [System.IO.File]::WriteAllText($envPath, $cleanedEnv, $utf8NoBomClean)
+        }
+    }
     if ((Test-Path $envPath) -and (-not [string]::IsNullOrWhiteSpace($effectiveApiKey))) {
         $envLines = @(
             "# Added by bootstrap installer"
             "IAMDS_LITELLM_API_KEY=$effectiveApiKey"
         )
         # IAMDS_LITELLM_BASE_URL is the canonical iamds-litellm endpoint var.
-        # Keep OPENAI_BASE_URL in sync for backward compatibility.
         if (-not [string]::IsNullOrWhiteSpace($llmGatewayUrl)) {
             $envLines += "IAMDS_LITELLM_BASE_URL=$llmGatewayUrl"
-            $envLines += "OPENAI_BASE_URL=$llmGatewayUrl"
         }
         if (-not [string]::IsNullOrWhiteSpace($stagingApiKey)) {
             $envLines += "IAMDS_LITELLM_STAGING_API_KEY=$stagingApiKey"
@@ -2686,6 +2694,7 @@ function Copy-ConfigTemplates {
 
     $hermesWorkDir = Join-Path $HOME 'Documents\HermesWorkingDirectory'
     $hermesMemoryDir = Join-Path $HOME 'Documents\HermesMemory'
+    $createdConfig = $false
     
     # Create the HERMES_HOME directory structure ($HermesHome, default %LOCALAPPDATA%\hermes)
     New-Item -ItemType Directory -Force -Path "$HermesHome\cron" | Out-Null
@@ -2733,6 +2742,7 @@ function Copy-ConfigTemplates {
         $examplePath = "$InstallDir\cli-config.yaml.example"
         if (Test-Path $examplePath) {
             Copy-Item $examplePath $configPath
+            $createdConfig = $true
             Write-Success "Created $configPath from template"
         }
     } else {
@@ -2748,6 +2758,19 @@ function Copy-ConfigTemplates {
     if (Test-Path $configPath) {
         $escapedCwd = $hermesWorkDir -replace '([\\])', '$1$1'
         $config = Get-Content $configPath -Raw -Encoding UTF8
+
+        # Keep first desktop launch aligned with installer language defaults.
+        # /api/config merges DEFAULT_CONFIG (display.language=en), so new
+        # installs must persist an explicit language key.
+        if ($createdConfig -and $config -match '(?m)^display:\s*$' -and $config -notmatch '(?m)^[ \t]+language:\s*') {
+            $displayPattern = '(?ms)^display:\s*\r?\n(?<body>(?:^[ \t].*(?:\r?\n|$))*)'
+            if ($config -match $displayPattern) {
+                $displayBody = $Matches['body']
+                $displayBlock = "display:`n  language: de`n$displayBody"
+                $config = [System.Text.RegularExpressions.Regex]::Replace($config, $displayPattern, $displayBlock, 1)
+            }
+        }
+
         $terminalPattern = '(?ms)^terminal:\s*\r?\n(?<body>(?:^[ \t].*(?:\r?\n|$))*)'
         if ($config -match $terminalPattern) {
             $terminalBody = $Matches['body']

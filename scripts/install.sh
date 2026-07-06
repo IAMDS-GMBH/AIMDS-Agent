@@ -2019,16 +2019,20 @@ PYEOF
     # Update .env with bootstrap credentials/runtime endpoints.
     # On update/reinstall flows the effective API key may be empty; appending
     # IAMDS_LITELLM_API_KEY= would shadow the user's existing key with a blank value.
+    if [ -f "$HERMES_HOME/.env" ]; then
+        # Canonical endpoint var is IAMDS_LITELLM_BASE_URL.
+        # Remove legacy OPENAI_BASE_URL entries previously written by bootstrap.
+        sed -i.bak '/^OPENAI_BASE_URL=/d' "$HERMES_HOME/.env" || true
+        rm -f "$HERMES_HOME/.env.bak"
+    fi
     if [ -n "${effective_api_key:-}" ] && [ -f "$HERMES_HOME/.env" ]; then
         # Write API key
         {
             echo "# Added by bootstrap installer"
             echo "IAMDS_LITELLM_API_KEY=${effective_api_key}"
             # IAMDS_LITELLM_BASE_URL is the canonical iamds-litellm endpoint var.
-            # Keep OPENAI_BASE_URL in sync for backward compatibility.
             if [ -n "${llm_gateway_url:-}" ]; then
                 echo "IAMDS_LITELLM_BASE_URL=${llm_gateway_url}"
-                echo "OPENAI_BASE_URL=${llm_gateway_url}"
             fi
             if [ -n "${staging_api_key:-}" ]; then
                 echo "IAMDS_LITELLM_STAGING_API_KEY=${staging_api_key}"
@@ -2169,9 +2173,10 @@ sync_aimds_custom_assets() {
 copy_config_templates() {
     log_info "Setting up configuration files..."
 
-    local hermes_work_dir memory_fs_dir leveldb_dir seed_script
+    local hermes_work_dir memory_fs_dir leveldb_dir seed_script created_config
     hermes_work_dir="$HOME/Documents/HermesWorkingDirectory"
     memory_fs_dir="$HOME/Documents/HermesMemory"
+    created_config=0
 
     # Create ~/.hermes directory structure (config at top level, code in subdir)
     mkdir -p "$HERMES_HOME"/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,skills}
@@ -2206,6 +2211,7 @@ copy_config_templates() {
     if [ ! -f "$HERMES_HOME/config.yaml" ]; then
         if [ -f "$INSTALL_DIR/cli-config.yaml.example" ]; then
             cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
+            created_config=1
             log_success "Created ~/.hermes/config.yaml from template"
         fi
     else
@@ -2219,6 +2225,26 @@ copy_config_templates() {
     # Keep parity with AIMDS installer defaults: use a stable Documents working
     # directory rather than repo-relative ".".
     if [ -f "$HERMES_HOME/config.yaml" ]; then
+        # Keep first desktop launch aligned with installer language defaults.
+        # /api/config merges DEFAULT_CONFIG (display.language=en), so new
+        # installs must persist an explicit language key.
+        if [ "$created_config" -eq 1 ] && grep -qE '^display:[[:space:]]*$' "$HERMES_HOME/config.yaml"; then
+            if ! grep -qE '^[[:space:]]+language:[[:space:]]*' "$HERMES_HOME/config.yaml"; then
+                awk '
+                    BEGIN { inserted=0 }
+                    /^display:[[:space:]]*$/ {
+                        print
+                        if (!inserted) {
+                            print "  language: de"
+                            inserted=1
+                        }
+                        next
+                    }
+                    { print }
+                ' "$HERMES_HOME/config.yaml" > "$HERMES_HOME/config.yaml.tmp" && mv "$HERMES_HOME/config.yaml.tmp" "$HERMES_HOME/config.yaml"
+            fi
+        fi
+
         escaped_cwd=$(printf '%s\n' "$hermes_work_dir" | sed 's/[\/&]/\\&/g')
         if grep -qE '^[[:space:]]+cwd:' "$HERMES_HOME/config.yaml"; then
             sed -i.bak "s|^  cwd: .*|  cwd: $escaped_cwd|" "$HERMES_HOME/config.yaml" || true

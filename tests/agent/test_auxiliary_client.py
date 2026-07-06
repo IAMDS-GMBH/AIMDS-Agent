@@ -2224,6 +2224,25 @@ class TestAuxiliaryTaskExtraBody:
         assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
             "Should NOT warn when OPENAI_BASE_URL is not set"
 
+    def test_main_runtime_base_url_is_forwarded_for_openai_api(self, monkeypatch):
+        import agent.auxiliary_client as mod
+
+        monkeypatch.setattr(mod, "_stale_base_url_warned", True)
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(MagicMock(), "AIMDS-Suite-Auto")) as resolver:
+            _resolve_auto(
+                main_runtime={
+                    "provider": "openai-api",
+                    "model": "AIMDS-Suite-Auto",
+                    "base_url": "https://staging.suite.iamds.com/litellm/v1",
+                    "api_key": "iamds-key",
+                }
+            )
+
+        kwargs = resolver.call_args.kwargs
+        assert kwargs["provider"] == "openai-api"
+        assert kwargs["explicit_base_url"] == "https://staging.suite.iamds.com/litellm/v1"
+        assert kwargs["explicit_api_key"] == "iamds-key"
+
 # ---------------------------------------------------------------------------
 # Anthropic-compatible image block conversion
 # ---------------------------------------------------------------------------
