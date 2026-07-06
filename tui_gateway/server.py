@@ -10257,6 +10257,7 @@ def _(rid, params: dict) -> dict:
             md_items = sorted(md_items, key=lambda i: str(i.get("name") or "").lower())
             set_root = hub_skills_dir / "from_skill_hub" / _norm_skill_token(folder)
             set_name = _norm_skill_token(folder)
+            hub_group_id = skill_id or set_name or folder
             set_root.mkdir(parents=True, exist_ok=True)
             installed_names: list[str] = []
             skipped_names: list[str] = []
@@ -10363,6 +10364,7 @@ def _(rid, params: dict) -> dict:
                             metadata={
                                 "plugin_name": skill_name,
                                 "skill_id": skill_id,
+                                "hub_group_id": hub_group_id,
                                 "resolved_url": dl_url,
                                 "found_path": rel_path,
                                 "set_name": folder,
@@ -10480,6 +10482,7 @@ def _(rid, params: dict) -> dict:
                         metadata={
                             "plugin_name": skill_name,
                             "skill_id": skill_id,
+                            "hub_group_id": hub_group_id,
                             "set_name": folder,
                             "set_members": installed_names,
                             "source_path": folder,
@@ -10631,6 +10634,7 @@ def _(rid, params: dict) -> dict:
                 path_parts = path_parts[1:]
             install_name = path_parts[-1] if path_parts else (skill_name or skill_path_no_prefix)
             install_name_norm = _norm_skill_token(install_name) or install_name
+            hub_group_id = skill_id or install_name_norm
 
             # Always install under the "from_skill_hub" category so these show
             # up grouped as "From Skill Hub" in the Skills & Tools window.
@@ -10658,6 +10662,7 @@ def _(rid, params: dict) -> dict:
                     metadata={
                         "plugin_name": skill_name,
                         "skill_id": skill_id,
+                        "hub_group_id": hub_group_id,
                         "resolved_url": skill_md_url,
                         "found_path": found_path,
                     },
@@ -10753,7 +10758,8 @@ def _(rid, params: dict) -> dict:
                                     files=["SKILL.md"],
                                     metadata={
                                         "plugin_name": dep_name,
-                                        "skill_id": dep_name,
+                                        "skill_id": skill_id or install_name_norm,
+                                        "hub_group_id": hub_group_id,
                                         "resolved_url": dep_url,
                                         "found_path": dep_path,
                                         "dependency_of": install_name_norm,
@@ -10813,6 +10819,43 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 5040, "skill_name is required")
         from tools.skills_hub import HubLockFile, uninstall_skill
 
+        # Prefer grouped uninstall when the hub entry maps to multiple installed
+        # skills (set members and recursive dependencies).
+        if skill_id:
+            lock = HubLockFile()
+            installed = lock.list_installed()
+            target_names = [
+                str(entry.get("name") or "").strip()
+                for entry in installed
+                if (
+                    str((entry.get("metadata") or {}).get("skill_id") or "").strip() == skill_id
+                    or str((entry.get("metadata") or {}).get("hub_group_id") or "").strip() == skill_id
+                )
+            ]
+            target_names = [n for n in target_names if n]
+            if len(set(target_names)) > 1:
+                removed: list[str] = []
+                failed: list[str] = []
+                for name in sorted(set(target_names), key=len, reverse=True):
+                    ok2, msg2 = uninstall_skill(name)
+                    if ok2:
+                        removed.append(name)
+                    else:
+                        failed.append(f"{name}: {msg2}")
+                if removed:
+                    warn = f" ({len(failed)} failed)" if failed else ""
+                    return _ok(
+                        rid,
+                        {
+                            "success": True,
+                            "warning": bool(failed),
+                            "message": f"Uninstalled {len(removed)} skills for skill_id '{skill_id}'{warn}",
+                            "skill_name": skill_name,
+                            "removed_skills": removed,
+                            "failed_skills": failed,
+                        },
+                    )
+
         ok, message = uninstall_skill(skill_name)
         if ok:
             return _ok(rid, {"success": True, "message": message, "skill_name": skill_name})
@@ -10826,7 +10869,10 @@ def _(rid, params: dict) -> dict:
             target_names = [
                 str(entry.get("name") or "").strip()
                 for entry in installed
-                if str((entry.get("metadata") or {}).get("skill_id") or "").strip() == skill_id
+                if (
+                    str((entry.get("metadata") or {}).get("skill_id") or "").strip() == skill_id
+                    or str((entry.get("metadata") or {}).get("hub_group_id") or "").strip() == skill_id
+                )
             ]
             target_names = [n for n in target_names if n]
             if target_names:

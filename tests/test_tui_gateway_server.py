@@ -929,6 +929,8 @@ name: grilling
         assert result["dependencies_installed"] == ["grilling"]
         assert (home / "skills" / "from_skill_hub" / "deps" / "grilling" / "SKILL.md").exists()
         assert lock.entries["grilling"]["install_path"] == "from_skill_hub/deps/grilling"
+        assert lock.entries["grilling"]["metadata"]["skill_id"] == "skills/grill-me"
+        assert lock.entries["grilling"]["metadata"]["hub_group_id"] == "skills/grill-me"
         assert "hidden_from_listing" not in lock.entries["grilling"]["metadata"]
     finally:
         reset_hermes_home_override(token)
@@ -1649,6 +1651,38 @@ def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
         },
         "gpt-5.4",
     )
+
+
+def test_litellm_hub_skill_uninstall_prefers_bulk_group_cleanup(monkeypatch):
+    import tools.skills_hub as hub
+
+    class _Lock:
+        def list_installed(self):
+            return [
+                {"name": "engineering", "metadata": {"skill_id": "set-123", "hub_group_id": "set-123"}},
+                {"name": "engineering-architect", "metadata": {"skill_id": "set-123", "hub_group_id": "set-123"}},
+                {"name": "engineering-qa-lead", "metadata": {"skill_id": "set-123", "hub_group_id": "set-123"}},
+            ]
+
+    called: list[str] = []
+
+    def _fake_uninstall(name: str):
+        called.append(name)
+        return True, "ok"
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda *args, **kwargs: _Lock())
+    monkeypatch.setattr(hub, "uninstall_skill", _fake_uninstall)
+
+    resp = server._methods["litellm_hub.skill_uninstall"](
+        "litellm-uninstall",
+        {"skill_name": "engineering", "skill_id": "set-123"},
+    )
+
+    assert "result" in resp
+    result = resp["result"]
+    assert result["success"] is True
+    assert sorted(result["removed_skills"]) == ["engineering", "engineering-architect", "engineering-qa-lead"]
+    assert sorted(called) == ["engineering", "engineering-architect", "engineering-qa-lead"]
 
 
 def test_status_callback_emits_kind_and_text():
