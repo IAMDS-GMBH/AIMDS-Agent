@@ -31,8 +31,57 @@ interface LiteLLMSkill {
   name: string
   description?: string
   source?: string
+  sourceRaw?: unknown
   installed?: boolean
   installedName?: string
+}
+
+function resolveSkillSource(source: unknown): string | undefined {
+  if (!source) {
+    return undefined
+  }
+
+  if (typeof source === 'string') {
+    const trimmed = source.trim()
+    return trimmed || undefined
+  }
+
+  if (typeof source !== 'object') {
+    return undefined
+  }
+
+  const srcObj = source as Record<string, unknown>
+  const repo =
+    (typeof srcObj.repo === 'string' && srcObj.repo.trim()) ||
+    (typeof srcObj.repository === 'string' && srcObj.repository.trim()) ||
+    undefined
+  if (repo) {
+    return `github:${repo}`
+  }
+
+  const owner =
+    (typeof srcObj.owner === 'string' && srcObj.owner.trim()) ||
+    (typeof srcObj.org === 'string' && srcObj.org.trim()) ||
+    undefined
+  const repoName =
+    (typeof srcObj.name === 'string' && srcObj.name.trim()) ||
+    (typeof srcObj.repo_name === 'string' && srcObj.repo_name.trim()) ||
+    undefined
+  const provider =
+    (typeof srcObj.source === 'string' && srcObj.source.trim().toLowerCase()) ||
+    (typeof srcObj.provider === 'string' && srcObj.provider.trim().toLowerCase()) ||
+    undefined
+  if ((provider === 'github' || provider === 'git') && owner && repoName) {
+    return `github:${owner}/${repoName}`
+  }
+
+  const url =
+    (typeof srcObj.url === 'string' && srcObj.url.trim()) ||
+    (typeof srcObj.html_url === 'string' && srcObj.html_url.trim()) ||
+    (typeof srcObj.raw_url === 'string' && srcObj.raw_url.trim()) ||
+    (typeof srcObj.source_url === 'string' && srcObj.source_url.trim()) ||
+    undefined
+  return url || undefined
 }
 
 function filteredAgents(agents: LiteLLMAgent[], query: string): LiteLLMAgent[] {
@@ -118,18 +167,13 @@ export function HubView({ ...props }: HubViewProps) {
         setRawResponse(data)
         const skillsList = (data?.skills || []).map((skill: unknown) => {
           const s = skill as Record<string, unknown>
-          let sourceStr = undefined
-          if (s.source) {
-            const srcObj = s.source as Record<string, unknown>
-            if (srcObj.source === 'github' && srcObj.repo) {
-              sourceStr = `github:${srcObj.repo}`
-            }
-          }
+          const sourceStr = resolveSkillSource(s.source)
           return {
             id: String(s.id || s.name || ''),
             name: String(s.name || ''),
             description: s.description ? String(s.description) : undefined,
             source: sourceStr,
+            sourceRaw: s.source,
             installed: Boolean(s.installed),
             installedName: s.installed_name ? String(s.installed_name) : undefined,
           }
@@ -169,10 +213,11 @@ export function HubView({ ...props }: HubViewProps) {
 
     try {
       setInstallProgress('Downloading skill from GitHub...')
+      const sourceParam = skill.sourceRaw ?? skill.source
       const result = await requestGateway<{ success: boolean; message: string }>('litellm_hub.skill_install', {
         skill_id: skill.id,
         skill_name: skill.name,
-        source: skill.source
+        source: sourceParam
       })
 
       if (result?.success) {

@@ -9987,14 +9987,45 @@ def _(rid, params: dict) -> dict:
         skill_name = (params.get("skill_name") or "").strip()
         source = params.get("source", "")
 
-        logger.info("[LiteLLM Hub] skill_install: skill_id=%r skill_name=%r source=%r", skill_id, skill_name, source)
+        source_raw = ""
+        source_path = ""
+        if isinstance(source, str):
+            source_raw = source.strip()
+        elif isinstance(source, dict):
+            src = source
+            source_path = str(src.get("path") or src.get("skill_path") or "").strip()
+            repo = str(src.get("repo") or src.get("repository") or "").strip()
+            if repo:
+                source_raw = f"github:{repo}"
+            else:
+                owner = str(src.get("owner") or src.get("org") or "").strip()
+                repo_name = str(src.get("name") or src.get("repo_name") or "").strip()
+                provider = str(src.get("source") or src.get("provider") or "").strip().lower()
+                if owner and repo_name and provider in {"github", "git"}:
+                    source_raw = f"github:{owner}/{repo_name}"
+                else:
+                    source_raw = str(
+                        src.get("url")
+                        or src.get("html_url")
+                        or src.get("raw_url")
+                        or src.get("source_url")
+                        or ""
+                    ).strip()
 
-        if not skill_id or not skill_name or not source:
+        logger.info(
+            "[LiteLLM Hub] skill_install: skill_id=%r skill_name=%r source_type=%s source_raw=%r source_path=%r",
+            skill_id,
+            skill_name,
+            type(source).__name__,
+            source_raw,
+            source_path,
+        )
+
+        if not skill_id or not skill_name or not source_raw:
             return _err(rid, 5032, "skill_id, skill_name, and source are required")
-        if not isinstance(source, str):
+        if not isinstance(source, (str, dict)):
             return _err(rid, 5033, "Invalid source format")
 
-        source_raw = source.strip()
         repo_info = ""
 
         # Accept:
@@ -10131,7 +10162,9 @@ def _(rid, params: dict) -> dict:
             return default_branch, by_name
 
         skills_dir = get_hermes_home() / "skills"
-        skill_path = skill_id.strip("/")
+        skill_path = (source_path or skill_id).strip("/")
+        if skill_path.endswith("/SKILL.md"):
+            skill_path = skill_path[: -len("/SKILL.md")]
         skill_path_no_prefix = (
             skill_path[len("skills/") :] if skill_path.startswith("skills/") else skill_path
         )

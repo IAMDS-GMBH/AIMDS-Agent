@@ -934,6 +934,113 @@ name: grilling
         reset_hermes_home_override(token)
 
 
+def test_litellm_hub_install_accepts_object_source_with_url_and_path(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    token = set_hermes_home_override(home)
+    try:
+        class _Resp:
+            def __init__(self, status_code: int, text: str = "", payload: dict | None = None):
+                self.status_code = status_code
+                self.text = text
+                self._payload = payload or {}
+
+            def json(self):
+                return self._payload
+
+        skill_md = """---
+name: grill-me
+---
+# Grill Me
+"""
+
+        def _fake_get(url, *args, **kwargs):
+            if url == "https://api.github.com/repos/owner/repo":
+                return _Resp(200, payload={"default_branch": "main"})
+            if url == "https://api.github.com/repos/owner/repo/git/trees/main":
+                return _Resp(
+                    200,
+                    payload={"tree": [{"type": "blob", "path": "skills/grill-me/SKILL.md"}]},
+                )
+            if url.endswith("/skills/grill-me/SKILL.md"):
+                return _Resp(200, text=skill_md)
+            return _Resp(404, text="")
+
+        monkeypatch.setitem(sys.modules, "requests", types.SimpleNamespace(get=_fake_get))
+
+        import tools.skills_hub as hub
+
+        hint_seen = {"value": None}
+
+        def _fake_find(owner, repo, skill_id_hint=None, plugin_name=None):
+            hint_seen["value"] = skill_id_hint
+            return (
+                "https://raw.githubusercontent.com/owner/repo/main/skills/grill-me/SKILL.md",
+                "skills/grill-me/SKILL.md",
+            )
+
+        monkeypatch.setattr(hub, "find_skill_md_in_repo", _fake_find)
+        monkeypatch.setattr(
+            hub, "GitHubAuth", lambda: types.SimpleNamespace(get_headers=lambda: {})
+        )
+        monkeypatch.setattr(hub, "SKILLS_DIR", home / "skills")
+
+        class _Lock:
+            def __init__(self):
+                self.entries = {}
+
+            def get_installed(self, name):
+                return self.entries.get(name)
+
+            def record_install(
+                self,
+                name,
+                source,
+                identifier,
+                trust_level,
+                scan_verdict,
+                skill_hash,
+                install_path,
+                files,
+                metadata=None,
+            ):
+                self.entries[name] = {
+                    "source": source,
+                    "identifier": identifier,
+                    "trust_level": trust_level,
+                    "scan_verdict": scan_verdict,
+                    "content_hash": skill_hash,
+                    "install_path": install_path,
+                    "files": files,
+                    "metadata": metadata or {},
+                }
+
+        lock = _Lock()
+        monkeypatch.setattr(hub, "HubLockFile", lambda *args, **kwargs: lock)
+
+        resp = server._methods["litellm_hub.skill_install"](
+            "litellm-install",
+            {
+                "skill_id": "grill-me",
+                "skill_name": "grill-me",
+                "source": {
+                    "source": "github",
+                    "url": "https://github.com/owner/repo",
+                    "path": "skills/grill-me",
+                },
+            },
+        )
+
+        assert "result" in resp
+        result = resp["result"]
+        assert result["success"] is True
+        assert (home / "skills" / "from_skill_hub" / "grill-me" / "SKILL.md").exists()
+        assert lock.entries["grill-me"]["install_path"] == "from_skill_hub/grill-me"
+        assert hint_seen["value"] == "grill-me"
+    finally:
+        reset_hermes_home_override(token)
+
+
 def test_history_to_messages_preserves_tool_calls_for_resume_display():
     history = [
         {"role": "user", "content": "first prompt"},
