@@ -866,8 +866,17 @@ def _fetch_litellm_model_info_contexts(
             for item in data:
                 if not isinstance(item, dict):
                     continue
-                model_name = item.get("model_name") or item.get("id")
-                if not isinstance(model_name, str) or not model_name.strip():
+                names: list[str] = []
+                for candidate in (
+                    item.get("model_name"),
+                    item.get("id"),
+                    (item.get("litellm_params") or {}).get("model")
+                    if isinstance(item.get("litellm_params"), dict)
+                    else None,
+                ):
+                    if isinstance(candidate, str) and candidate.strip():
+                        names.append(candidate.strip())
+                if not names:
                     continue
                 info = item.get("model_info")
                 ctx = _extract_context_length(info) if isinstance(info, dict) else None
@@ -875,13 +884,13 @@ def _fetch_litellm_model_info_contexts(
                     ctx = _extract_context_length(item)
                 if not isinstance(ctx, int) or ctx <= 0:
                     continue
-                canonical = model_name.strip()
-                for alias in {canonical, canonical.lower()}:
-                    contexts[alias] = ctx
-                if "/" in canonical:
-                    bare = canonical.split("/", 1)[1]
-                    contexts.setdefault(bare, ctx)
-                    contexts.setdefault(bare.lower(), ctx)
+                for canonical in names:
+                    for alias in {canonical, canonical.lower()}:
+                        contexts[alias] = ctx
+                    if "/" in canonical:
+                        bare = canonical.split("/", 1)[1]
+                        contexts.setdefault(bare, ctx)
+                        contexts.setdefault(bare.lower(), ctx)
             if contexts:
                 break
         except Exception as exc:
@@ -1740,6 +1749,15 @@ def get_model_context_length(
                     model, base_url,
                 )
                 # Fall through; step 5b reconciles and overwrites if portal responds.
+            elif (
+                str(provider or "").strip().lower().startswith("iamds-litellm")
+                or _infer_provider_from_url(base_url) == "iamds-litellm"
+            ):
+                logger.debug(
+                    "Bypassing persistent cache for %s@%s (IAMDS LiteLLM /model/info authoritative)",
+                    model, base_url,
+                )
+                # Fall through; iamds-litellm branch reconciles from /model/info.
             else:
                 return cached
 
