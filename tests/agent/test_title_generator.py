@@ -111,6 +111,56 @@ class TestGenerateTitle:
         user_content = captured_kwargs["messages"][1]["content"]
         assert len(user_content) < 1100  # 500 + 500 + formatting
 
+    def test_skill_invocation_payload_is_normalized_for_title_input(self):
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Grill Me Risk Review"
+            return resp
+
+        skill_payload = """
+[IMPORTANT: The user has invoked the "grill-me" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]
+
+# grill-me
+... very long markdown ...
+
+The user has provided the following instruction alongside the skill invocation: focus on architecture risks
+"""
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            generate_title(skill_payload, "Sure, let's review this.")
+
+        user_content = captured_kwargs["messages"][1]["content"]
+        assert "User invoked skill 'grill-me'" in user_content
+        assert "Instruction: focus on architecture risks" in user_content
+        assert "full skill content is loaded below" not in user_content
+        assert "very long markdown" not in user_content
+
+    def test_delegated_skill_payload_is_normalized_for_title_input(self):
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Delegated Skill Execution"
+            return resp
+
+        delegated_payload = """
+[IMPORTANT: The user invoked "planner", which delegates execution to the "executor" skill. Follow the delegated skill instructions below for this turn.]
+The user has provided the following instruction alongside the skill invocation: generate a test plan
+"""
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            generate_title(delegated_payload, "Done.")
+
+        user_content = captured_kwargs["messages"][1]["content"]
+        assert "delegated to 'executor'" in user_content
+        assert "Instruction: generate a test plan" in user_content
+
 
 class TestAutoTitleSession:
     """Tests for auto_title_session() — the sync worker function."""

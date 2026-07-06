@@ -288,6 +288,7 @@ interface PromptActionsOptions {
 
 interface SubmitTextOptions {
   attachments?: ComposerAttachment[]
+  displayText?: string
   fromQueue?: boolean
 }
 
@@ -510,7 +511,8 @@ export function usePromptActions({
 
   const submitPromptText = useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
-      const visibleText = rawText.trim()
+      const submittedText = rawText.trim()
+      const visibleText = (options?.displayText ?? rawText).trim()
       const usingComposerAttachments = !options?.attachments
       const attachments = options?.attachments ?? $composerAttachments.get()
 
@@ -530,7 +532,7 @@ export function usePromptActions({
           .join('\n')
 
         return (
-          [contextRefs, terminalContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
+          [contextRefs, terminalContextBlocks, submittedText].filter(Boolean).join('\n\n') ||
           (atts.some(a => a.kind === 'image') ? 'What do you see in this image?' : '')
         )
       }
@@ -539,7 +541,7 @@ export function usePromptActions({
       // from $busy by a separate effect) may still read true — honoring it would
       // bounce the drained send. The drain lock serializes them; the user path
       // keeps the guard so a stray Enter mid-turn can't double-submit.
-      const hasSendable = Boolean(visibleText || terminalContextBlocks || attachments.length || hasImage)
+      const hasSendable = Boolean(submittedText || terminalContextBlocks || attachments.length || hasImage)
       if (!hasSendable || (!options?.fromQueue && busyRef.current)) {
         return false
       }
@@ -921,7 +923,9 @@ export function usePromptActions({
             return
           }
 
-          await submitPromptText(message)
+          await submitPromptText(message, {
+            displayText: `/${name}${arg ? ` ${arg}` : ''}`
+          })
         } catch (err) {
           renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
         }

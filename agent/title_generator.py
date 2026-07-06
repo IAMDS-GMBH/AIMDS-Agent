@@ -5,6 +5,7 @@ adds latency to the user-facing reply.
 """
 
 import logging
+import re
 import threading
 from typing import Callable, Optional
 
@@ -24,6 +25,48 @@ _TITLE_PROMPT = (
     "following exchange. The title should capture the main topic or intent. "
     "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
 )
+
+_SKILL_INVOKE_RE = re.compile(
+    r'\[IMPORTANT:\s+The user has invoked the "([^"]+)" skill.*?full skill content is loaded below\.\]',
+    re.IGNORECASE | re.DOTALL,
+)
+_SKILL_DELEGATE_RE = re.compile(
+    r'\[IMPORTANT:\s+The user invoked "([^"]+)", which delegates execution to the "([^"]+)" skill\.',
+    re.IGNORECASE | re.DOTALL,
+)
+_SKILL_USER_INSTRUCTION_RE = re.compile(
+    r"The user has provided the following instruction alongside the skill invocation:\s*(.+)",
+    re.IGNORECASE,
+)
+
+
+def _normalize_title_input_user_message(user_message: str) -> str:
+    text = (user_message or "").strip()
+    if not text:
+        return ""
+
+    delegated = _SKILL_DELEGATE_RE.search(text)
+    if delegated:
+        root_name = delegated.group(1).strip()
+        delegated_name = delegated.group(2).strip()
+        instruction_match = _SKILL_USER_INSTRUCTION_RE.search(text)
+        instruction = instruction_match.group(1).strip() if instruction_match else ""
+        return (
+            f"User invoked skill '{root_name}' delegated to '{delegated_name}'. "
+            + (f"Instruction: {instruction}" if instruction else "")
+        ).strip()
+
+    invoked = _SKILL_INVOKE_RE.search(text)
+    if invoked:
+        skill_name = invoked.group(1).strip()
+        instruction_match = _SKILL_USER_INSTRUCTION_RE.search(text)
+        instruction = instruction_match.group(1).strip() if instruction_match else ""
+        return (
+            f"User invoked skill '{skill_name}'. "
+            + (f"Instruction: {instruction}" if instruction else "")
+        ).strip()
+
+    return text
 
 
 def generate_title(
@@ -45,7 +88,8 @@ def generate_title(
     of silently accumulating untitled sessions.
     """
     # Truncate long messages to keep the request small
-    user_snippet = user_message[:500] if user_message else ""
+    normalized_user_message = _normalize_title_input_user_message(user_message)
+    user_snippet = normalized_user_message[:500] if normalized_user_message else ""
     assistant_snippet = assistant_response[:500] if assistant_response else ""
 
     messages = [
