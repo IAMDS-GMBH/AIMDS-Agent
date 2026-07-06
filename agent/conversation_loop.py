@@ -49,6 +49,7 @@ from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
+    get_model_context_length,
     get_context_length_from_provider_error,
     parse_available_output_tokens_from_error,
     save_context_length,
@@ -1693,6 +1694,31 @@ def run_conversation(
                         "reasoning_tokens": canonical_usage.reasoning_tokens,
                     }
                     agent.context_compressor.update_from_response(usage_dict)
+
+                    # Keep the live compressor window aligned with the latest
+                    # resolver/cache value so UI usage bars don't stay pinned
+                    # to an older fallback (e.g. 256k) after auto-detect
+                    # discovers the provider's real limit (e.g. 200k).
+                    try:
+                        resolved_ctx = get_model_context_length(
+                            agent.model,
+                            base_url=agent.base_url,
+                            api_key=getattr(agent, "api_key", ""),
+                            provider=agent.provider,
+                            config_context_length=getattr(agent, "_config_context_length", None),
+                        )
+                        current_ctx = getattr(agent.context_compressor, "context_length", 0) or 0
+                        if resolved_ctx and resolved_ctx != current_ctx:
+                            agent.context_compressor.update_model(
+                                model=agent.model,
+                                context_length=resolved_ctx,
+                                base_url=agent.base_url,
+                                api_key=getattr(agent, "api_key", ""),
+                                provider=agent.provider,
+                                api_mode=agent.api_mode,
+                            )
+                    except Exception:
+                        pass
 
                     # Cache discovered context length after successful call.
                     # Only persist limits confirmed by the provider (parsed
