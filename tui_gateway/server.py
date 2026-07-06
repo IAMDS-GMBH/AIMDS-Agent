@@ -9978,6 +9978,7 @@ def _(rid, params: dict) -> dict:
         import requests
         import re
         from collections import deque
+        from pathlib import Path
         from urllib.parse import urlparse
 
         from hermes_constants import get_hermes_home
@@ -9989,10 +9990,12 @@ def _(rid, params: dict) -> dict:
 
         source_raw = ""
         source_path = ""
+        source_style = ""
         if isinstance(source, str):
             source_raw = source.strip()
         elif isinstance(source, dict):
             src = source
+            source_style = str(src.get("source") or src.get("kind") or src.get("type") or "").strip().lower()
             source_path = str(src.get("path") or src.get("skill_path") or "").strip()
             repo = str(src.get("repo") or src.get("repository") or "").strip()
             if repo:
@@ -10000,8 +10003,7 @@ def _(rid, params: dict) -> dict:
             else:
                 owner = str(src.get("owner") or src.get("org") or "").strip()
                 repo_name = str(src.get("name") or src.get("repo_name") or "").strip()
-                provider = str(src.get("source") or src.get("provider") or "").strip().lower()
-                if owner and repo_name and provider in {"github", "git"}:
+                if owner and repo_name:
                     source_raw = f"github:{owner}/{repo_name}"
                 else:
                     source_raw = str(
@@ -10013,10 +10015,11 @@ def _(rid, params: dict) -> dict:
                     ).strip()
 
         logger.info(
-            "[LiteLLM Hub] skill_install: skill_id=%r skill_name=%r source_type=%s source_raw=%r source_path=%r",
+            "[LiteLLM Hub] skill_install: skill_id=%r skill_name=%r source_type=%s source_style=%r source_raw=%r source_path=%r",
             skill_id,
             skill_name,
             type(source).__name__,
+            source_style,
             source_raw,
             source_path,
         )
@@ -10066,7 +10069,9 @@ def _(rid, params: dict) -> dict:
             return status == 403 and ("rate limit" in text or "too many requests" in text)
 
         def _norm_skill_token(value: str) -> str:
-            return value.strip().strip("`\"'.,:;!?()[]{}").lower().replace("_", "-")
+            token = value.strip().strip("`\"'.,:;!?()[]{}").lower().replace("_", "-").replace(" ", "-")
+            token = re.sub(r"-{2,}", "-", token).strip("-")
+            return token
 
         def _extract_skill_refs(
             markdown: str,
@@ -10170,6 +10175,141 @@ def _(rid, params: dict) -> dict:
                     by_name[skill_name_norm] = path
             return default_branch, by_name
 
+        def _install_division_set(
+            *,
+            folder_path: str,
+            lock: Any,
+            hub_skills_dir: Path,
+            headers: dict[str, str],
+            default_branch: str,
+        ) -> Optional[dict]:
+            folder = (folder_path or "").strip("/")
+            if not folder:
+                return None
+            if folder.endswith("/SKILL.md") or folder.lower().endswith(".md"):
+                return None
+            if "/" in folder:
+                # Nested paths are handled by the single-skill resolver.
+                return None
+
+            list_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{folder}"
+            list_resp = requests.get(list_url, headers=headers, timeout=20)
+            if _is_rate_limited(list_resp):
+                return _err(rid, 5037, busy_message)
+            if list_resp.status_code != 200:
+                logger.info(
+                    "[LiteLLM Hub] set install: contents listing for %s returned HTTP %d",
+                    folder,
+                    list_resp.status_code,
+                )
+                return None
+
+            items = list_resp.json()
+            if not isinstance(items, list):
+                return None
+
+            md_items = [
+                i
+                for i in items
+                if isinstance(i, dict)
+                and str(i.get("type") or "").lower() == "file"
+                and str(i.get("name") or "").lower().endswith(".md")
+                and str(i.get("name") or "").lower() not in {"readme.md", "index.md"}
+            ]
+            if not md_items:
+                return None
+
+            set_root = hub_skills_dir / "from_skill_hub" / _norm_skill_token(folder)
+            set_root.mkdir(parents=True, exist_ok=True)
+            installed_names: list[str] = []
+            skipped_names: list[str] = []
+
+            for item in md_items:
+                rel_path = str(item.get("path") or "").strip()
+                if not rel_path:
+                    continue
+                dl_url = str(item.get("download_url") or "").strip()
+                if not dl_url:
+                    dl_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{default_branch}/{rel_path}"
+                file_resp = requests.get(dl_url, timeout=30)
+                if _is_rate_limited(file_resp):
+                    return _err(rid, 5037, busy_message)
+                if file_resp.status_code != 200:
+                    logger.info(
+                        "[LiteLLM Hub] set install: GET %s → HTTP %d (skipped)",
+                        dl_url,
+                        file_resp.status_code,
+                    )
+                    continue
+
+                fm, _ = parse_frontmatter(file_resp.text or "")
+                derived = str(fm.get("name") or Path(rel_path).stem)
+                install_name = _norm_skill_token(derived) or _norm_skill_token(Path(rel_path).stem)
+                if not install_name:
+                    continue
+                if lock:
+                    try:
+                        if lock.get_installed(install_name):
+                            skipped_names.append(install_name)
+                            continue
+                    except Exception:
+                        pass
+
+                skill_dir = set_root / install_name
+                skill_dir.mkdir(parents=True, exist_ok=True)
+                (skill_dir / "SKILL.md").write_text(file_resp.text, encoding="utf-8")
+
+                if lock:
+                    try:
+                        import hashlib
+
+                        content_hash = hashlib.sha256(file_resp.text.encode()).hexdigest()
+                        lock.record_install(
+                            name=install_name,
+                            source=f"github:{owner}/{repo}",
+                            identifier=f"litellm_hub:{owner}/{repo}/{folder}/{install_name}",
+                            trust_level="community",
+                            scan_verdict="unscanned",
+                            skill_hash=content_hash,
+                            install_path=str(skill_dir.relative_to(hub_skills_dir)),
+                            files=["SKILL.md"],
+                            metadata={
+                                "plugin_name": skill_name,
+                                "skill_id": skill_id,
+                                "resolved_url": dl_url,
+                                "found_path": rel_path,
+                                "set_name": folder,
+                            },
+                        )
+                    except Exception as set_lock_err:
+                        logger.warning(
+                            "[LiteLLM Hub] set install: failed lock record for %s: %s",
+                            install_name,
+                            set_lock_err,
+                        )
+                installed_names.append(install_name)
+
+            if not installed_names:
+                return _err(
+                    rid,
+                    5038,
+                    f"No installable skills found in set '{folder}'.",
+                )
+
+            return _ok(
+                rid,
+                {
+                    "success": True,
+                    "message": (
+                        f"Installed {len(installed_names)} skill(s) from set '{folder}'"
+                        + (f" ({len(skipped_names)} already installed)" if skipped_names else "")
+                    ),
+                    "set_name": folder,
+                    "installed_skills": installed_names,
+                    "skipped_skills": skipped_names,
+                },
+            )
+
         skills_dir = get_hermes_home() / "skills"
         skill_path = (source_path or skill_id).strip("/")
         if skill_path.endswith("/SKILL.md"):
@@ -10191,6 +10331,53 @@ def _(rid, params: dict) -> dict:
             # First try tree-based discovery — finds SKILL.md at any depth,
             # scores by plugin name + hint match, skips deprecated paths.
             from tools.skills_hub import find_skill_md_in_repo, HubLockFile, SKILLS_DIR as HUB_SKILLS_DIR
+            headers = {}
+            try:
+                from tools.skills_hub import GitHubAuth
+
+                headers = GitHubAuth().get_headers()
+            except Exception:
+                headers = {}
+            repo_resp = requests.get(
+                f"https://api.github.com/repos/{owner}/{repo}", headers=headers, timeout=20
+            )
+            if _is_rate_limited(repo_resp):
+                return _err(rid, 5037, busy_message)
+            default_branch = "main"
+            if repo_resp.status_code == 200:
+                default_branch = str(repo_resp.json().get("default_branch", "main"))
+            lock = None
+            try:
+                lock = HubLockFile()
+            except Exception:
+                lock = None
+
+            set_result = _install_division_set(
+                folder_path=source_path,
+                lock=lock,
+                hub_skills_dir=HUB_SKILLS_DIR,
+                headers=headers,
+                default_branch=default_branch,
+            )
+            is_set_style = source_style in {
+                "set",
+                "skill_set",
+                "skills_set",
+                "division",
+                "collection",
+                "folder",
+                "directory",
+            }
+            is_single_style = source_style in {
+                "single",
+                "single_skill",
+                "skill",
+                "repo_skill",
+            }
+            should_use_set = bool(source_path) and (is_set_style or (set_result is not None and not is_single_style))
+            if should_use_set and set_result is not None:
+                return set_result
+
             tree_result = find_skill_md_in_repo(
                 owner, repo,
                 skill_id_hint=skill_path_no_prefix,
@@ -10256,9 +10443,9 @@ def _(rid, params: dict) -> dict:
             import hashlib
             content_hash = hashlib.sha256(resp.text.encode()).hexdigest()
             hub_identifier = f"litellm_hub:{owner}/{repo}/{install_name_norm}"
-            lock = None
             try:
-                lock = HubLockFile()
+                if lock is None:
+                    lock = HubLockFile()
                 lock.record_install(
                     name=install_name_norm,
                     source=f"github:{owner}/{repo}",
