@@ -161,6 +161,42 @@ The user has provided the following instruction alongside the skill invocation: 
         assert "delegated to 'executor'" in user_content
         assert "Instruction: generate a test plan" in user_content
 
+    def test_slash_command_is_normalized_for_title_input(self):
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Backend Architecture Review"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            generate_title("/backend-architect", "Let's design your API boundaries.")
+
+        user_content = captured_kwargs["messages"][1]["content"]
+        assert "User invoked slash command 'backend architect'." in user_content
+
+    def test_returns_none_for_unusable_assistant_response(self):
+        with patch("agent.title_generator.call_llm") as mock_call:
+            title = generate_title(
+                "/backend-architect",
+                "It looks like your message got cut off — I only received '/backend-archit...'",
+            )
+        assert title is None
+        mock_call.assert_not_called()
+
+    def test_rejects_unusable_generated_title(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "It looks like your message got cut off — I only received the '/backend-archit...'"
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("/backend-architect", "Let's continue.")
+            assert title is None
+
 
 class TestAutoTitleSession:
     """Tests for auto_title_session() — the sync worker function."""

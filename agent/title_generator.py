@@ -38,6 +38,19 @@ _SKILL_USER_INSTRUCTION_RE = re.compile(
     r"The user has provided the following instruction alongside the skill invocation:\s*(.+)",
     re.IGNORECASE,
 )
+_SLASH_COMMAND_RE = re.compile(r"^/([a-zA-Z0-9_-]+)(?:\s+(.+))?$")
+_UNUSABLE_ASSISTANT_PATTERNS = (
+    "message got cut off",
+    "i only received",
+    "please resend",
+    "session busy",
+    "error:",
+)
+_UNUSABLE_TITLE_PATTERNS = (
+    "message got cut off",
+    "i only received",
+    "please resend",
+)
 
 
 def _normalize_title_input_user_message(user_message: str) -> str:
@@ -66,7 +79,38 @@ def _normalize_title_input_user_message(user_message: str) -> str:
             + (f"Instruction: {instruction}" if instruction else "")
         ).strip()
 
+    slash = _SLASH_COMMAND_RE.match(text)
+    if slash:
+        command = slash.group(1).strip().replace("-", " ")
+        argument = (slash.group(2) or "").strip()
+        if argument:
+            return f"User invoked slash command '{command}'. Argument: {argument}"
+        return f"User invoked slash command '{command}'."
+
     return text
+
+
+def _is_unusable_assistant_response(assistant_response: str) -> bool:
+    text = (assistant_response or "").strip().lower()
+    if not text:
+        return True
+    return any(pattern in text for pattern in _UNUSABLE_ASSISTANT_PATTERNS)
+
+
+def _sanitize_generated_title(title: str) -> Optional[str]:
+    cleaned = (title or "").strip().strip('"\'')
+    if cleaned.lower().startswith("title:"):
+        cleaned = cleaned[6:].strip()
+    if not cleaned:
+        return None
+    lowered = cleaned.lower()
+    if cleaned.startswith("/"):
+        return None
+    if any(pattern in lowered for pattern in _UNUSABLE_TITLE_PATTERNS):
+        return None
+    if len(cleaned) > 80:
+        cleaned = cleaned[:77] + "..."
+    return cleaned or None
 
 
 def generate_title(
@@ -89,6 +133,8 @@ def generate_title(
     """
     # Truncate long messages to keep the request small
     normalized_user_message = _normalize_title_input_user_message(user_message)
+    if _is_unusable_assistant_response(assistant_response):
+        return None
     user_snippet = normalized_user_message[:500] if normalized_user_message else ""
     assistant_snippet = assistant_response[:500] if assistant_response else ""
 
@@ -106,15 +152,8 @@ def generate_title(
             timeout=timeout,
             main_runtime=main_runtime,
         )
-        title = (response.choices[0].message.content or "").strip()
-        # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
-        title = title.strip('"\'')
-        if title.lower().startswith("title:"):
-            title = title[6:].strip()
-        # Enforce reasonable length
-        if len(title) > 80:
-            title = title[:77] + "..."
-        return title if title else None
+        title = response.choices[0].message.content or ""
+        return _sanitize_generated_title(title)
     except Exception as e:
         # Log at WARNING so this shows up in agent.log without debug mode.
         # Full detail at debug level for operators who need the stack.
