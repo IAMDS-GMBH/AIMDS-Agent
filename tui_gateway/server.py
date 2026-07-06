@@ -5066,7 +5066,10 @@ def _(rid, params: dict) -> dict:
                     print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
         session["running"] = True
         session["last_active"] = time.time()
-        _start_inflight_turn(session, text)
+        _start_inflight_turn(
+            session,
+            (display_text if isinstance(display_text, str) and display_text.strip() else text),
+        )
 
     # Persist the DB row lazily, now that the user has actually sent a message.
     _ensure_session_db_row(session)
@@ -5093,6 +5096,7 @@ def _(rid, params: dict) -> dict:
             sid,
             session,
             text,
+            display_text=display_text,
             title_user_text=display_text,
         )
 
@@ -5297,6 +5301,7 @@ def _run_prompt_submit(
     session: dict,
     text: Any,
     *,
+    display_text: Any = None,
     title_user_text: Any = None,
 ) -> None:
     with session["history_lock"]:
@@ -5449,6 +5454,16 @@ def _run_prompt_submit(
             status_note = None
             if isinstance(result, dict):
                 if isinstance(result.get("messages"), list):
+                    if isinstance(display_text, str) and display_text.strip():
+                        # Keep slash-expanded/internal payloads out of persisted
+                        # session history rows (title/preview derive from this),
+                        # while still executing this turn with the expanded text.
+                        for idx in range(len(result["messages"]) - 1, -1, -1):
+                            msg = result["messages"][idx]
+                            if not isinstance(msg, dict) or msg.get("role") != "user":
+                                continue
+                            msg["content"] = display_text.strip()
+                            break
                     with session["history_lock"]:
                         current_version = int(session.get("history_version", 0))
                         if current_version == history_version:
