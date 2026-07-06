@@ -22,8 +22,6 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{mpsc, Mutex};
-#[cfg(target_os = "windows")]
-use tokio::process::windows::CommandExt as _;
 
 use crate::events::{BootstrapEvent, LogStream, Manifest, StageState};
 use crate::install_script::{self, Pin, ScriptKind, ScriptSource};
