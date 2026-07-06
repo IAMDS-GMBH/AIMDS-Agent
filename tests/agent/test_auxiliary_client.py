@@ -918,6 +918,20 @@ class TestGetTextAuxiliaryClient:
         assert mock_openai.call_args.kwargs["base_url"] == "https://api.openai.com/v1"
         assert mock_openai.call_args.kwargs["api_key"] == "sk-test"
 
+    def test_custom_iamds_litellm_endpoint_prefers_iamds_key(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "iamds-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            resolve_provider_client(
+                provider="custom",
+                model="AIMDS-Suite-Auto",
+                explicit_base_url="https://staging.suite.iamds.com/litellm/v1",
+                explicit_api_key="",
+            )
+
+        assert mock_openai.call_args.kwargs["base_url"] == "https://staging.suite.iamds.com/litellm/v1"
+        assert mock_openai.call_args.kwargs["api_key"] == "iamds-key"
+
 
 class TestVisionClientFallback:
     """Vision client auto mode resolves known-good multimodal backends."""

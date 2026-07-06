@@ -440,6 +440,18 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "dummy-lm-api-key"
         assert creds["base_url"] == "http://127.0.0.1:1234/v1"
 
+    def test_openai_api_uses_iamds_key_for_iamds_litellm_url(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://staging.suite.iamds.com/litellm/v1")
+        monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "iamds-secret")
+
+        creds = resolve_api_key_provider_credentials("openai-api")
+
+        assert creds["provider"] == "openai-api"
+        assert creds["api_key"] == "iamds-secret"
+        assert creds["base_url"] == "https://staging.suite.iamds.com/litellm/v1"
+        assert creds["source"] == "IAMDS_LITELLM_API_KEY"
+
     def test_try_gh_cli_token_uses_homebrew_path_when_not_on_path(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.copilot_auth.shutil.which", lambda command: None)
         monkeypatch.setattr(

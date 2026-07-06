@@ -1676,6 +1676,8 @@ def get_model_context_length(
         except Exception:
             pass  # fall through to probing
 
+    _inferred_provider_from_url = _infer_provider_from_url(base_url) if base_url else None
+
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
@@ -1743,7 +1745,7 @@ def get_model_context_length(
             # touching the on-disk file when the portal is unreachable.
             # The in-memory 300s endpoint metadata cache makes the per-call
             # cost amortise to ~0 within a process.
-            elif _infer_provider_from_url(base_url) == "nous":
+            elif _inferred_provider_from_url == "nous":
                 logger.debug(
                     "Bypassing persistent cache for %s@%s (Nous portal authoritative)",
                     model, base_url,
@@ -1751,7 +1753,7 @@ def get_model_context_length(
                 # Fall through; step 5b reconciles and overwrites if portal responds.
             elif (
                 str(provider or "").strip().lower().startswith("iamds-litellm")
-                or _infer_provider_from_url(base_url) == "iamds-litellm"
+                or _inferred_provider_from_url == "iamds-litellm"
             ):
                 logger.debug(
                     "Bypassing persistent cache for %s@%s (IAMDS LiteLLM /model/info authoritative)",
@@ -1797,6 +1799,7 @@ def get_model_context_length(
         _is_custom_endpoint(base_url)
         and not _is_known_provider_base_url(base_url)
         and not str(provider or "").strip().lower().startswith("iamds-litellm")
+        and _inferred_provider_from_url != "iamds-litellm"
     ):
         context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if context_length is not None:
@@ -1879,7 +1882,7 @@ def get_model_context_length(
         except Exception:
             pass  # Fall through to models.dev
 
-    if effective_provider.startswith("iamds-litellm") and base_url:
+    if (effective_provider.startswith("iamds-litellm") or _inferred_provider_from_url == "iamds-litellm") and base_url:
         litellm_ctx = _resolve_litellm_model_info_context_length(model, base_url, api_key=api_key)
         if litellm_ctx:
             save_context_length(model, base_url, litellm_ctx)

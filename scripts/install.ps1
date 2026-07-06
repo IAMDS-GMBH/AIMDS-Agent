@@ -2497,7 +2497,7 @@ save_config(cfg)
 
     # Update .env with bootstrap credentials/runtime endpoints.
     # On update/reinstall flows effectiveApiKey can be empty; appending
-    # OPENAI_API_KEY= would shadow the user's existing key with a blank value.
+    # IAMDS_LITELLM_API_KEY= would shadow the user's existing key with a blank value.
     $envPath = "$HermesHome\.env"
     if ((Test-Path $envPath) -and (-not [string]::IsNullOrWhiteSpace($effectiveApiKey))) {
         $envLines = @(

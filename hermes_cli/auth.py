@@ -6005,6 +6005,21 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     else:
         base_url = pconfig.inference_base_url
 
+    if provider_id == "openai-api" and not api_key:
+        # IAMDS LiteLLM commonly uses provider=openai-api with a custom
+        # /litellm/v1 endpoint. In that deployment, credentials are stored in
+        # IAMDS_LITELLM_API_KEY, not OPENAI_API_KEY.
+        if (
+            "suite.iamds.com" in str(base_url or "").lower()
+            or "/litellm/" in str(base_url or "").lower()
+        ):
+            from hermes_cli.config import get_env_value
+
+            iamds_key = str(get_env_value("IAMDS_LITELLM_API_KEY") or "").strip()
+            if has_usable_secret(iamds_key):
+                api_key = iamds_key
+                key_source = "IAMDS_LITELLM_API_KEY"
+
     return {
         "provider": provider_id,
         "api_key": api_key,

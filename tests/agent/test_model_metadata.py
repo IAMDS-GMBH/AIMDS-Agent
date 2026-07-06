@@ -1120,6 +1120,19 @@ class TestIAMDSLiteLLMContextResolution:
         )
         assert ctx == 200000
 
+    @patch("agent.model_metadata._resolve_litellm_model_info_context_length", return_value=200000)
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_openai_api_provider_uses_iamds_url_inference(self, mock_fetch_endpoint, mock_resolve_litellm):
+        mock_fetch_endpoint.return_value = {}
+        ctx = get_model_context_length(
+            "AIMDS-Suite-Auto",
+            provider="openai-api",
+            base_url="https://staging.suite.iamds.com/litellm/v1",
+            api_key="sk-test",
+        )
+        assert ctx == 200000
+        mock_fetch_endpoint.assert_not_called()
+
 
 # =========================================================================
 # _strip_provider_prefix — Ollama model:tag vs provider:model

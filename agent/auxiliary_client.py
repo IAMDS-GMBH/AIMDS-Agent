@@ -3567,8 +3567,12 @@ def resolve_provider_client(
     if provider == "custom":
         if explicit_base_url:
             custom_base = _to_openai_base_url(explicit_base_url).strip()
+            _looks_like_iamds_litellm = (
+                "suite.iamds.com" in custom_base.lower() or "/litellm/" in custom_base.lower()
+            )
             custom_key = (
                 (explicit_api_key or "").strip()
+                or (os.getenv("IAMDS_LITELLM_API_KEY", "").strip() if _looks_like_iamds_litellm else "")
                 or os.getenv("OPENAI_API_KEY", "").strip()
                 or "no-key-required"  # local servers don't need auth
             )

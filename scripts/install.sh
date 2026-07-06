@@ -2018,7 +2018,7 @@ PYEOF
 
     # Update .env with bootstrap credentials/runtime endpoints.
     # On update/reinstall flows the effective API key may be empty; appending
-    # OPENAI_API_KEY= would shadow the user's existing key with a blank value.
+    # IAMDS_LITELLM_API_KEY= would shadow the user's existing key with a blank value.
     if [ -n "${effective_api_key:-}" ] && [ -f "$HERMES_HOME/.env" ]; then
         # Write API key
         {
@@ -3455,7 +3455,7 @@ def resolve_litellm_hub_settings() -> Dict[str, Any]:
     api_key = str(
         hub_cfg.get("api_key")
         or os.getenv("LITELLM_KEY")
-        or os.getenv("OPENAI_API_KEY")
+        or os.getenv("IAMDS_LITELLM_API_KEY")
         or _first_provider_api_key(cfg)
         or ""
     ).strip()
