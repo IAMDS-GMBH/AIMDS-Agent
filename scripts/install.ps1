@@ -1217,6 +1217,23 @@ function Remove-InstallDirWithProcessCleanup {
 function Install-Repository {
     Write-Info "Installing to $InstallDir..."
 
+    # On reinstall the live hermes.exe (CLI entry point in venv\Scripts\) is
+    # often still running, which causes "file in use" errors when uv tries to
+    # overwrite it or when Remove-Item tries to delete the venv.
+    # Kill any running hermes processes up front, before touching any files.
+    Get-Process -Name "hermes" -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            Stop-Process -Id $_.Id -Force -ErrorAction Stop
+            Write-Warn "Stopped running hermes process (PID $($_.Id)) before reinstall"
+        } catch {}
+    }
+    # Also stop any Python processes running from inside the install dir venv.
+    $killed = @(Stop-ProcessesLockingPath -TargetPath (Join-Path $InstallDir "venv\Scripts"))
+    if ($killed.Count -gt 0) {
+        Write-Warn ("Stopped {0} process(es) locking venv\Scripts before reinstall: {1}" -f $killed.Count, ($killed -join ", "))
+        Start-Sleep -Milliseconds 500
+    }
+
     $didUpdate = $false
 
     if (Test-Path $InstallDir) {
@@ -1569,7 +1586,27 @@ function Install-Venv {
     
     if (Test-Path "venv") {
         Write-Info "Virtual environment already exists, recreating..."
-        Remove-Item -Recurse -Force "venv"
+        # Kill any processes locking files inside the venv (hermes.exe,
+        # python.exe, etc.) before attempting removal; otherwise Remove-Item
+        # fails with "file in use" on the hermes.exe console-script entry point.
+        $venvPath = Join-Path $InstallDir "venv"
+        $killed = @(Stop-ProcessesLockingPath -TargetPath $venvPath)
+        if ($killed.Count -gt 0) {
+            Write-Warn ("Stopped {0} process(es) locking venv before recreation: {1}" -f $killed.Count, ($killed -join ", "))
+        }
+        # Fallback: kill any hermes.exe/hermes process by name that still
+        # hold the file open (covers edge cases where CIM path matching misses
+        # console-script wrappers that were launched from a different working dir).
+        Get-Process -Name "hermes" -ErrorAction SilentlyContinue | ForEach-Object {
+            try { Stop-Process -Id $_.Id -Force -ErrorAction Stop; Write-Warn "Stopped hermes process (PID $($_.Id)) before venv recreation" } catch {}
+        }
+        Start-Sleep -Milliseconds 300
+        Remove-Item -Recurse -Force "venv" -ErrorAction SilentlyContinue
+        if (Test-Path "venv") {
+            Write-Warn "venv still present after process cleanup; retrying removal..."
+            Start-Sleep -Seconds 2
+            Remove-Item -Recurse -Force "venv"
+        }
     }
     
     # uv creates the venv and pins the Python version in one step
