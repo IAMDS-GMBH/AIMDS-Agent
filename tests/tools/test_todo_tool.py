@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import time
+from datetime import datetime
 
 from tools.todo_tool import TodoStore, todo_tool
 
@@ -192,3 +193,20 @@ class TestTodoStoreBounds:
         items = store.read()
         assert [i["content"] for i in items] == ["write the report", "review PR"]
         assert "[truncated]" not in items[0]["content"]
+
+
+class TestTodoTimestamps:
+    def test_write_defaults_timestamp_to_same_day_18(self, monkeypatch):
+        # 2026-07-07 09:34:00 local time
+        base_ts = datetime(2026, 7, 7, 9, 34, 0).timestamp()
+        monkeypatch.setattr(time, "time", lambda: base_ts)
+
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Task", "status": "pending"}])
+        meta = store._store.read_with_meta()  # pylint: disable=protected-access
+
+        created = datetime.fromtimestamp(meta[0]["created_at"])
+        updated = datetime.fromtimestamp(meta[0]["updated_at"])
+
+        assert (created.hour, created.minute, created.second) == (18, 0, 0)
+        assert (updated.hour, updated.minute, updated.second) == (18, 0, 0)

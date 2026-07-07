@@ -5,12 +5,14 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
 
 VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
+DEFAULT_TODO_DAY_HOUR = 18
 
 
 class PersistentTodoStore:
@@ -42,6 +44,16 @@ class PersistentTodoStore:
                     )
                     """
                 )
+
+    @staticmethod
+    def _default_todo_timestamp(now_ts: Optional[float] = None) -> float:
+        """
+        Default todo timestamp when no explicit date is provided.
+
+        Uses local same-day end-of-day at 18:00.
+        """
+        now = datetime.fromtimestamp(now_ts if now_ts is not None else time.time())
+        return now.replace(hour=DEFAULT_TODO_DAY_HOUR, minute=0, second=0, microsecond=0).timestamp()
 
     @staticmethod
     def _normalize(item: Dict[str, Any]) -> Dict[str, str]:
@@ -97,7 +109,7 @@ class PersistentTodoStore:
 
     def write(self, todos: List[Dict[str, Any]], merge: bool = False) -> List[Dict[str, str]]:
         normalized = [self._normalize(t) for t in self._dedupe_by_id(todos)]
-        now = time.time()
+        now = self._default_todo_timestamp()
         with self._lock:
             with self._connect() as conn:
                 if not merge:
@@ -135,7 +147,7 @@ class PersistentTodoStore:
         status_norm = str(status).strip().lower()
         if status_norm not in VALID_STATUSES:
             return None
-        now = time.time()
+        now = self._default_todo_timestamp()
         completed_at = now if status_norm == "completed" else None
         with self._lock:
             with self._connect() as conn:
@@ -159,7 +171,7 @@ class PersistentTodoStore:
         }
 
     def create(self, content: str, status: str = "pending") -> Dict[str, Any]:
-        now = time.time()
+        now = self._default_todo_timestamp()
         status_norm = status.strip().lower()
         if status_norm not in VALID_STATUSES:
             status_norm = "pending"
