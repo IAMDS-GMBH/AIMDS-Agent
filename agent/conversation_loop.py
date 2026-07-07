@@ -800,6 +800,18 @@ def run_conversation(
         for am in api_messages:
             if isinstance(am.get("content"), str):
                 am["content"] = am["content"].strip()
+        # Remove empty-string content from assistant tool-call messages.
+        # LiteLLM proxy replaces content="" with the string literal
+        # "[System: Empty message content to satisfy protocol]", which then
+        # appears in context and gets echoed by the model. Per the OpenAI
+        # spec, content is optional (nullable) when tool_calls are present.
+        for am in api_messages:
+            if (
+                am.get("role") == "assistant"
+                and am.get("tool_calls")
+                and am.get("content") == ""
+            ):
+                am.pop("content", None)
         for am in api_messages:
             tcs = am.get("tool_calls")
             if not tcs:
