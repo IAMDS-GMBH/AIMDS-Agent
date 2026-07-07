@@ -191,6 +191,11 @@ export interface Translations {
     resetConfirm: string
     exportFailed: string
     resetFailed: string
+    advancedWarning: {
+      title: string
+      description: string
+      confirm: string
+    }
     nav: {
       providers: string
       providerAccounts: string

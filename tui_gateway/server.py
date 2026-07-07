@@ -7485,6 +7485,7 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
         "TUI",
     ),
     ("/sessions", "Switch between live TUI sessions", "TUI"),
+    ("/project-path", "Manage project output subfolder routing", "TUI"),
 ]
 
 # Commands that queue messages onto _pending_input in the CLI.
@@ -7499,6 +7500,7 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "plan",
         "goal",
         "undo",
+        "project-path",
     }
 )
 
@@ -7985,6 +7987,90 @@ def _(rid, params: dict) -> dict:
         return _ok(
             rid,
             {"type": "prefill", "message": target_text, "notice": notice},
+        )
+
+    if name == "project-path":
+        if not session:
+            return _err(rid, 4001, "no active session")
+
+        try:
+            from tools.project_output_routing import (
+                clear_project_output_subfolder,
+                get_project_output_subfolder,
+                set_project_output_subfolder,
+            )
+        except Exception as exc:
+            return _err(rid, 5030, f"project-path unavailable: {exc}")
+
+        cwd = _session_cwd(session)
+        arg_clean = (arg or "").strip()
+        lower = arg_clean.lower()
+
+        if not arg_clean or lower == "show":
+            info = get_project_output_subfolder(cwd)
+            subfolder = info.get("subfolder")
+            project_root = info.get("project_root") or cwd
+            if subfolder:
+                return _ok(
+                    rid,
+                    {
+                        "type": "exec",
+                        "output": (
+                            "Project output routing is enabled.\n"
+                            f"Project root: {project_root}\n"
+                            f"Simple relative writes are routed to: {subfolder}/"
+                        ),
+                    },
+                )
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": (
+                        "Project output routing is disabled.\n"
+                        f"Project root: {project_root}\n"
+                        "Use /project-path set <subfolder> to enable it."
+                    ),
+                },
+            )
+
+        if lower in {"clear", "off", "disable"}:
+            info = clear_project_output_subfolder(cwd)
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": (
+                        "Project output routing disabled.\n"
+                        f"Project root: {info.get('project_root') or cwd}"
+                    ),
+                },
+            )
+
+        if lower.startswith("set "):
+            subfolder = arg_clean[4:].strip()
+            if not subfolder:
+                return _err(rid, 4004, "usage: /project-path set <subfolder>")
+            try:
+                info = set_project_output_subfolder(cwd, subfolder)
+            except ValueError as exc:
+                return _err(rid, 4004, f"invalid subfolder: {exc}")
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": (
+                        "Project output routing enabled.\n"
+                        f"Project root: {info.get('project_root') or cwd}\n"
+                        f"Simple relative writes now route to: {info.get('subfolder')}/"
+                    ),
+                },
+            )
+
+        return _err(
+            rid,
+            4004,
+            "usage: /project-path [show|set <subfolder>|clear]",
         )
 
     if name in {"snapshot", "snap"}:

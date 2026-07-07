@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ComposerAttachment } from '@/store/composer'
 
-import { coerceThinkingText, optimisticAttachmentRef } from './chat-runtime'
+import { coerceGatewayText, coerceThinkingText, optimisticAttachmentRef } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 
@@ -50,5 +50,21 @@ describe('coerceThinkingText', () => {
         "◉_◉ processing... I don't see any current rewritten thinking or next thinking to process. Could you provide the thinking content you'd like me to rewrite?"
       )
     ).toBe('')
+  })
+})
+
+describe('coerceGatewayText', () => {
+  it('extracts nested text values from structured output_text content', () => {
+    const value = [
+      {
+        type: 'output_text',
+        text: {
+          value: 'Clean assistant text',
+          annotations: [{ type: 'file_citation', file_id: 'file_123' }]
+        }
+      }
+    ]
+
+    expect(coerceGatewayText(value)).toBe('Clean assistant text')
   })
 })

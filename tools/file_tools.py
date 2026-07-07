@@ -16,6 +16,7 @@ from tools.file_operations import (
     normalize_search_pagination,
 )
 from tools import file_state
+from tools.project_output_routing import route_write_path
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
@@ -1103,11 +1104,14 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     Pass ``True`` after explicit user direction — same shape as ``force``
     on the terminal tool.
     """
-    sensitive_err = _check_sensitive_path(path, task_id)
+    workspace_root = _authoritative_workspace_root(task_id) or str(_resolve_base_dir(task_id))
+    effective_path, routed_subfolder = route_write_path(path, workspace_root)
+
+    sensitive_err = _check_sensitive_path(effective_path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
     if not cross_profile:
-        cross_warning = _check_cross_profile_path(path, task_id)
+        cross_warning = _check_cross_profile_path(effective_path, task_id)
         if cross_warning:
             return tool_error(cross_warning)
     if _is_internal_file_status_text(content):
@@ -1120,18 +1124,22 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         # fall back to the legacy path — write proceeds, per-task staleness
         # check below still runs.
         try:
-            _resolved = str(_resolve_path_for_task(path, task_id))
+            _resolved = str(_resolve_path_for_task(effective_path, task_id))
         except Exception:
             _resolved = None
 
         if _resolved is None:
-            stale_warning = _check_file_staleness(path, task_id)
+            stale_warning = _check_file_staleness(effective_path, task_id)
             file_ops = _get_file_ops(task_id)
-            result = file_ops.write_file(path, content)
+            result = file_ops.write_file(effective_path, content)
             result_dict = result.to_dict()
             if stale_warning:
                 result_dict["_warning"] = stale_warning
-            _update_read_timestamp(path, task_id)
+            if routed_subfolder and path != effective_path:
+                result_dict["requested_path"] = path
+                result_dict["routed_path"] = effective_path
+                result_dict["routed_subfolder"] = routed_subfolder
+            _update_read_timestamp(effective_path, task_id)
             return json.dumps(result_dict, ensure_ascii=False)
 
         # Serialize the read→modify→write region per-path so concurrent
@@ -1141,16 +1149,20 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # Cross-agent staleness wins over per-task warning when both
             # fire — its message names the sibling subagent.
             cross_warning = file_state.check_stale(task_id, _resolved)
-            stale_warning = _check_file_staleness(path, task_id)
+            stale_warning = _check_file_staleness(effective_path, task_id)
             # Workspace-divergence warning: relative path resolving outside the
             # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
-            cwd_warning = _path_resolution_warning(path, Path(_resolved), task_id)
+            cwd_warning = _path_resolution_warning(effective_path, Path(_resolved), task_id)
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(_resolved, content)
             result_dict = result.to_dict()
             effective_warning = cross_warning or stale_warning or cwd_warning
             if effective_warning:
                 result_dict["_warning"] = effective_warning
+            if routed_subfolder and path != effective_path:
+                result_dict["requested_path"] = path
+                result_dict["routed_path"] = effective_path
+                result_dict["routed_subfolder"] = routed_subfolder
             # Always report the ABSOLUTE path actually written, so a wrong-cwd
             # mismatch is visible in the response instead of silently routing
             # the edit to the wrong checkout.
@@ -1159,7 +1171,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 result_dict["files_modified"] = [_resolved]
             # Refresh stamps after the successful write so consecutive
             # writes by this task don't trigger false staleness warnings.
-            _update_read_timestamp(path, task_id)
+            _update_read_timestamp(effective_path, task_id)
             if not result_dict.get("error"):
                 file_state.note_write(task_id, _resolved)
         return json.dumps(result_dict, ensure_ascii=False)

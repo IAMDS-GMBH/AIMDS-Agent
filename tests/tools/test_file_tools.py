@@ -7,6 +7,7 @@ handling without requiring a running terminal environment.
 import json
 import logging
 import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.file_tools import (
@@ -91,6 +92,59 @@ class TestWriteFileHandler:
         assert "read-only" in result["error"]
         assert any("write_file expected denial" in r.getMessage() for r in caplog.records)
         assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+
+    @patch("tools.file_tools._resolve_path_for_task")
+    @patch("tools.file_tools.route_write_path")
+    @patch("tools.file_tools._get_file_ops")
+    def test_routed_simple_relative_write_records_metadata(
+        self, mock_get, mock_route, mock_resolve
+    ):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {
+            "status": "ok",
+            "path": "/tmp/scripts/out.txt",
+            "bytes": 4,
+        }
+        mock_ops.write_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+        mock_route.return_value = ("scripts/out.txt", "scripts")
+        mock_resolve.return_value = Path("/tmp/scripts/out.txt")
+
+        from tools.file_tools import write_file_tool
+
+        result = json.loads(write_file_tool("out.txt", "data"))
+        assert result["status"] == "ok"
+        assert result["requested_path"] == "out.txt"
+        assert result["routed_path"] == "scripts/out.txt"
+        assert result["routed_subfolder"] == "scripts"
+        mock_ops.write_file.assert_called_once_with("/tmp/scripts/out.txt", "data")
+
+    @patch("tools.file_tools._resolve_path_for_task")
+    @patch("tools.file_tools.route_write_path")
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_without_routing_has_no_routing_metadata(
+        self, mock_get, mock_route, mock_resolve
+    ):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {
+            "status": "ok",
+            "path": "/tmp/already/there.txt",
+            "bytes": 4,
+        }
+        mock_ops.write_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+        mock_route.return_value = ("already/there.txt", None)
+        mock_resolve.return_value = Path("/tmp/already/there.txt")
+
+        from tools.file_tools import write_file_tool
+
+        result = json.loads(write_file_tool("already/there.txt", "data"))
+        assert result["status"] == "ok"
+        assert "requested_path" not in result
+        assert "routed_path" not in result
+        assert "routed_subfolder" not in result
 
     @patch("tools.file_tools._get_file_ops")
     def test_unexpected_exception_still_logs_error(self, mock_get, caplog):

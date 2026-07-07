@@ -217,8 +217,8 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
         </OverlayMain>
       </OverlaySplitLayout>
       <ConfirmDialog
-        confirmLabel="I Understand, Continue"
-        description="These settings are intended for developers and advanced users. Incorrect values can break runtime behavior or make Hermes unstable."
+        confirmLabel={t.settings.advancedWarning.confirm}
+        description={t.settings.advancedWarning.description}
         onClose={() => setShowAdvancedWarning(false)}
         onConfirm={() => {
           setAdvancedUnlocked(true)
@@ -226,7 +226,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
           setShowAdvancedWarning(false)
         }}
         open={showAdvancedWarning}
-        title="Advanced settings warning"
+        title={t.settings.advancedWarning.title}
       />
     </OverlayView>
   )

@@ -254,11 +254,17 @@ export const en: Translations = {
     resetConfirm: 'Reset all settings to Hermes defaults?',
     exportFailed: 'Export failed',
     resetFailed: 'Reset failed',
+    advancedWarning: {
+      title: 'Advanced settings warning',
+      description:
+        'These settings are intended for developers and advanced users. Incorrect values can break runtime behavior or make Hermes unstable.',
+      confirm: 'I Understand, Continue'
+    },
     nav: {
       providers: 'Providers',
       providerAccounts: 'Accounts',
       providerApiKeys: 'API keys',
-      gateway: 'Gateway',
+      gateway: 'Diagnose',
       apiKeys: 'Tools & Keys',
       keysTools: 'Tools',
       keysSettings: 'Settings',
@@ -383,7 +389,7 @@ export const en: Translations = {
       loading: 'Loading gateway settings...',
       unavailableTitle: 'Gateway settings unavailable',
       unavailableDesc: 'The desktop IPC bridge does not expose gateway settings.',
-      title: 'Gateway Connection',
+      title: 'Diagnose',
       envOverride: 'env override',
       intro:
         'Hermes Desktop starts its own local gateway by default. Use a remote gateway when you want this app to control an already-running Hermes backend on another machine or behind a trusted proxy. Pick a profile below to give it its own remote host.',
