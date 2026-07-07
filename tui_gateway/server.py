@@ -1674,6 +1674,15 @@ def _load_tool_progress_mode() -> str:
 
 
 def _load_enabled_toolsets() -> list[str] | None:
+    def _with_desktop_todos(enabled: list[str] | None) -> list[str] | None:
+        if enabled is None:
+            return None
+        if (os.getenv("HERMES_DESKTOP") or "").strip().lower() not in {"1", "true", "yes", "on"}:
+            return enabled
+        if "desktop_todos" in enabled:
+            return enabled
+        return [*enabled, "desktop_todos"]
+
     explicit = [
         item.strip()
         for item in os.environ.get("HERMES_TUI_TOOLSETS", "").split(",")
@@ -1694,7 +1703,7 @@ def _load_enabled_toolsets() -> list[str] | None:
 
             selection = coding_selection(platform="tui")
             if selection is not None:
-                return selection
+                return _with_desktop_todos(selection)
         except Exception:
             pass
 
@@ -1732,7 +1741,7 @@ def _load_enabled_toolsets() -> list[str] | None:
             return None
 
         if not unresolved:
-            return built_in
+            return _with_desktop_todos(built_in)
 
         mcp_names: set[str] = set()
         mcp_disabled: set[str] = set()
@@ -1782,7 +1791,7 @@ def _load_enabled_toolsets() -> list[str] | None:
             )
 
         if valid:
-            return valid
+            return _with_desktop_todos(valid)
 
         fallback_notice = (
             "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
@@ -1805,7 +1814,7 @@ def _load_enabled_toolsets() -> list[str] | None:
         )
         if fallback_notice is not None:
             print(fallback_notice, file=sys.stderr, flush=True)
-        return enabled or None
+        return _with_desktop_todos(enabled or None)
     except Exception:
         if fallback_notice is not None:
             print(

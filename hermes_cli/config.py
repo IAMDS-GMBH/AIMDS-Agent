@@ -879,10 +879,11 @@ DEFAULT_CONFIG = {
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
-        # Values: "auto" (default — applies to gpt/codex models), true/false
+        # Values: true (default — applies to all models), "auto" (model-family
+        # based), false
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
-        "tool_use_enforcement": "auto",
+        "tool_use_enforcement": True,
         # Universal "finish the job" guidance — short prompt block applied to
         # all models that targets two cross-family failure modes: (1) stopping
         # after a stub instead of finishing the artifact, (2) fabricating

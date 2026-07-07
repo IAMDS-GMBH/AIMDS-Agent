@@ -668,6 +668,13 @@ def test_load_enabled_toolsets_prefers_tui_env(monkeypatch):
     assert server._load_enabled_toolsets() == ["web", "terminal", "memory"]
 
 
+def test_load_enabled_toolsets_adds_desktop_todos_in_desktop_mode(monkeypatch):
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web")
+
+    assert server._load_enabled_toolsets() == ["web", "desktop_todos"]
+
+
 def test_load_enabled_toolsets_filters_invalid_tui_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web, nope")
     monkeypatch.setitem(
