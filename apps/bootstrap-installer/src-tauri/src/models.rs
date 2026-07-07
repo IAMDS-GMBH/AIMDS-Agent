@@ -139,6 +139,13 @@ pub async fn write_provider_models_cache(
 
     let cache_file = hermes_home_path.join("provider_models_cache.json");
 
+    // Ensure HERMES_HOME exists — on a fresh Windows install it won't be
+    // created until install.ps1 runs later, so we must create it here or the
+    // subsequent write will fail and the model cache won't be written.
+    if let Err(e) = std::fs::create_dir_all(&hermes_home_path) {
+        return Err(format!("Failed to create HERMES_HOME directory: {}", e));
+    }
+
     // Load existing cache so reinstall/update keeps previously discovered
     // provider entries instead of blowing them away.
     let mut providers: std::collections::HashMap<String, ProviderCacheEntry> = if cache_file.exists()

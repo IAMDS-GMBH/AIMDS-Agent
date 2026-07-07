@@ -2615,6 +2615,16 @@ save_config(cfg)
         Write-Info "Bootstrap API key not provided; keeping existing IAMDS_LITELLM_API_KEY in $envPath"
     }
 
+    # Clear any stale provider model cache so the desktop picker rediscovers
+    # the IAMDS LiteLLM models from the live endpoint on next startup.
+    # Cached entries written by an old installer (e.g. pointing at NousResearch)
+    # survive reinstalls and cause the picker to show wrong model lists.
+    $modelCachePath = "$HermesHome\provider_models_cache.json"
+    if (Test-Path $modelCachePath) {
+        Remove-Item $modelCachePath -Force -ErrorAction SilentlyContinue
+        Write-Info "Cleared stale provider model cache ($modelCachePath)"
+    }
+
     # Never patch core Python sources from installer credentials anymore.
     # Previous bootstrap revisions injected custom blocks into models.py /
     # model_switch.py which pinned stale model lists and broke live LiteLLM
