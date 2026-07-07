@@ -188,7 +188,7 @@ while [[ $# -gt 0 ]]; do
             echo "  small and ensures the command is on PATH for all shells."
             echo "  Existing installs at \$HERMES_HOME/hermes-agent are preserved in-place."
             echo "  --ensure DEPS  Install only specified deps (comma-separated)"
-            echo "                   Supported: node, browser, ripgrep, ffmpeg"
+            echo "                   Supported: node, browser, ripgrep, ffmpeg, pandoc"
             echo "                   Does NOT clone repo or create venv"
             echo "  --postinstall  Run post-install setup only (for pip users)"
             echo "                   Installs optional deps + runs hermes setup"
@@ -898,8 +898,10 @@ install_system_packages() {
     # Detect what's missing
     HAS_RIPGREP=false
     HAS_FFMPEG=false
+    HAS_PANDOC=false
     local need_ripgrep=false
     local need_ffmpeg=false
+    local need_pandoc=false
 
     log_info "Checking ripgrep (fast file search)..."
     if command -v rg &> /dev/null; then
@@ -918,6 +920,20 @@ install_system_packages() {
         need_ffmpeg=true
     fi
 
+    log_info "Checking pandoc (document conversion)..."
+    if command -v pandoc &> /dev/null; then
+        local pandoc_ver
+        pandoc_ver="$(pandoc --version 2>/dev/null | head -1 | awk '{print $2}')"
+        if [ -n "$pandoc_ver" ]; then
+            log_success "pandoc $pandoc_ver found"
+        else
+            log_success "pandoc found"
+        fi
+        HAS_PANDOC=true
+    else
+        need_pandoc=true
+    fi
+
     # Termux always needs the Android build toolchain for the tested pip path,
     # even when ripgrep/ffmpeg are already present.
     if [ "$DISTRO" = "termux" ]; then
@@ -928,11 +944,15 @@ install_system_packages() {
         if [ "$need_ffmpeg" = true ]; then
             termux_pkgs+=("ffmpeg")
         fi
+        if [ "$need_pandoc" = true ]; then
+            termux_pkgs+=("pandoc")
+        fi
 
         log_info "Installing Termux packages: ${termux_pkgs[*]}"
         if pkg install -y "${termux_pkgs[@]}" >/dev/null; then
             [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
             [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+            [ "$need_pandoc" = true ]  && HAS_PANDOC=true  && log_success "pandoc installed"
             log_success "Termux build dependencies installed"
             return 0
         fi
@@ -943,7 +963,7 @@ install_system_packages() {
     fi
 
     # Nothing to install — done
-    if [ "$need_ripgrep" = false ] && [ "$need_ffmpeg" = false ]; then
+    if [ "$need_ripgrep" = false ] && [ "$need_ffmpeg" = false ] && [ "$need_pandoc" = false ]; then
         return 0
     fi
 
@@ -958,6 +978,10 @@ install_system_packages() {
         desc_parts+=("ffmpeg for TTS voice messages")
         pkgs+=("ffmpeg")
     fi
+    if [ "$need_pandoc" = true ]; then
+        desc_parts+=("pandoc for document conversion")
+        pkgs+=("pandoc")
+    fi
     local description
     description=$(IFS=" and "; echo "${desc_parts[*]}")
 
@@ -968,6 +992,7 @@ install_system_packages() {
             if brew install "${pkgs[@]}"; then
                 [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
                 [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                [ "$need_pandoc" = true ]  && HAS_PANDOC=true  && log_success "pandoc installed"
                 return 0
             fi
         fi
@@ -998,6 +1023,7 @@ install_system_packages() {
             if $install_cmd; then
                 [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
                 [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                [ "$need_pandoc" = true ]  && HAS_PANDOC=true  && log_success "pandoc installed"
                 return 0
             fi
         # Passwordless sudo — just install
@@ -1006,6 +1032,7 @@ install_system_packages() {
             if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd; then
                 [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
                 [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                [ "$need_pandoc" = true ]  && HAS_PANDOC=true  && log_success "pandoc installed"
                 return 0
             fi
         # sudo needs password — ask once for everything
@@ -1018,6 +1045,7 @@ install_system_packages() {
                     if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd; then
                         [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
                         [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                        [ "$need_pandoc" = true ]  && HAS_PANDOC=true  && log_success "pandoc installed"
                         return 0
                     fi
                 fi
@@ -1034,6 +1062,7 @@ install_system_packages() {
                     if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd < /dev/tty; then
                         [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
                         [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                        [ "$need_pandoc" = true ]  && HAS_PANDOC=true  && log_success "pandoc installed"
                         return 0
                     fi
                 fi
@@ -1063,6 +1092,10 @@ install_system_packages() {
     if [ "$HAS_FFMPEG" = false ] && [ "$need_ffmpeg" = true ]; then
         log_warn "ffmpeg not installed (TTS voice messages will be limited)"
         show_manual_install_hint "ffmpeg"
+    fi
+    if [ "$HAS_PANDOC" = false ] && [ "$need_pandoc" = true ]; then
+        log_warn "pandoc not installed (document conversion skills will be limited)"
+        show_manual_install_hint "pandoc"
     fi
 }
 
@@ -3109,12 +3142,13 @@ ensure_browser() {
         return 1
     fi
 
-    log_info "Installing agent-browser..."
+    log_info "Installing agent-browser and pptxgenjs..."
     local log_file
     log_file="$(mktemp)"
     if ! "$npm_bin" install -g --prefix "$HERMES_HOME/node" --silent --ignore-scripts \
         "agent-browser@^0.26.0" \
         "@askjo/camofox-browser@^1.5.2" \
+        "pptxgenjs@^3" \
         >"$log_file" 2>&1; then
         log_error "npm install failed:"
         cat "$log_file" >&2
@@ -3178,6 +3212,7 @@ ensure_mode() {
                 if ! command -v rg &>/dev/null; then
                     HAS_RIPGREP=false
                     HAS_FFMPEG=true
+                    HAS_PANDOC=true
                     install_system_packages
                 fi
                 ;;
@@ -3185,6 +3220,15 @@ ensure_mode() {
                 if ! command -v ffmpeg &>/dev/null; then
                     HAS_FFMPEG=false
                     HAS_RIPGREP=true
+                    HAS_PANDOC=true
+                    install_system_packages
+                fi
+                ;;
+            pandoc)
+                if ! command -v pandoc &>/dev/null; then
+                    HAS_PANDOC=false
+                    HAS_RIPGREP=true
+                    HAS_FFMPEG=true
                     install_system_packages
                 fi
                 ;;

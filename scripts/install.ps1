@@ -266,7 +266,7 @@ function Install-AgentBrowser {
         throw "npm not found"
     }
 
-    Write-Info "Installing agent-browser via npm -g --prefix..."
+    Write-Info "Installing agent-browser and pptxgenjs via npm -g --prefix..."
     $prefixDir = Join-Path $HermesHome "node"
     if (-not (Test-Path $prefixDir)) {
         New-Item -ItemType Directory -Path $prefixDir -Force | Out-Null
@@ -274,7 +274,7 @@ function Install-AgentBrowser {
     $npmLog = [System.IO.Path]::GetTempFileName()
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & $npm install -g --prefix $prefixDir --silent --ignore-scripts "agent-browser@^0.26.0" "@askjo/camofox-browser@^1.5.2" 2>&1 | Tee-Object -FilePath $npmLog | Out-Null
+    & $npm install -g --prefix $prefixDir --silent --ignore-scripts "agent-browser@^0.26.0" "@askjo/camofox-browser@^1.5.2" "pptxgenjs@^3" 2>&1 | Tee-Object -FilePath $npmLog | Out-Null
     $npmExit = $LASTEXITCODE
     $ErrorActionPreference = $prevEAP
     if ($npmExit -ne 0) {
@@ -981,8 +981,10 @@ function Update-ProcessPathForPackages {
 function Install-SystemPackages {
     $script:HasRipgrep = $false
     $script:HasFfmpeg = $false
+    $script:HasPandoc = $false
     $needRipgrep = $false
     $needFfmpeg = $false
+    $needPandoc = $false
 
     Write-Info "Checking ripgrep (fast file search)..."
     if (Get-Command rg -ErrorAction SilentlyContinue) {
@@ -1001,7 +1003,15 @@ function Install-SystemPackages {
         $needFfmpeg = $true
     }
 
-    if (-not $needRipgrep -and -not $needFfmpeg) { return }
+    Write-Info "Checking pandoc (document conversion)..."
+    if (Get-Command pandoc -ErrorAction SilentlyContinue) {
+        Write-Success "pandoc found"
+        $script:HasPandoc = $true
+    } else {
+        $needPandoc = $true
+    }
+
+    if (-not $needRipgrep -and -not $needFfmpeg -and -not $needPandoc) { return }
 
     # Build description and package lists for each package manager
     $descParts = @()
@@ -1020,6 +1030,12 @@ function Install-SystemPackages {
         $wingetPkgs += "Gyan.FFmpeg"
         $chocoPkgs += "ffmpeg"
         $scoopPkgs += "ffmpeg"
+    }
+    if ($needPandoc) {
+        $descParts += "pandoc for document conversion"
+        $wingetPkgs += "JohnMacFarlane.Pandoc"
+        $chocoPkgs += "pandoc"
+        $scoopPkgs += "pandoc"
     }
 
     $description = $descParts -join " and "
@@ -1090,11 +1106,19 @@ function Install-SystemPackages {
         } elseif ($pkgLogs.ContainsKey("Gyan.FFmpeg")) {
             Write-Warn "winget could not install ffmpeg; details: $($pkgLogs['Gyan.FFmpeg'])"
         }
-        if (-not $needRipgrep -and -not $needFfmpeg) { return }
+        if ($needPandoc -and (Get-Command pandoc -ErrorAction SilentlyContinue)) {
+            Write-Success "pandoc installed"
+            $script:HasPandoc = $true
+            $needPandoc = $false
+            Remove-Item -Path $pkgLogs["JohnMacFarlane.Pandoc"] -ErrorAction SilentlyContinue
+        } elseif ($pkgLogs.ContainsKey("JohnMacFarlane.Pandoc")) {
+            Write-Warn "winget could not install pandoc; details: $($pkgLogs['JohnMacFarlane.Pandoc'])"
+        }
+        if (-not $needRipgrep -and -not $needFfmpeg -and -not $needPandoc) { return }
     }
 
     # Fallback: choco
-    if ($hasChoco -and ($needRipgrep -or $needFfmpeg)) {
+    if ($hasChoco -and ($needRipgrep -or $needFfmpeg -or $needPandoc)) {
         Write-Info "Trying Chocolatey..."
         foreach ($pkg in $chocoPkgs) {
             try { choco install $pkg -y 2>&1 | Out-Null } catch { }
@@ -1110,10 +1134,15 @@ function Install-SystemPackages {
             $script:HasFfmpeg = $true
             $needFfmpeg = $false
         }
+        if ($needPandoc -and (Get-Command pandoc -ErrorAction SilentlyContinue)) {
+            Write-Success "pandoc installed via chocolatey"
+            $script:HasPandoc = $true
+            $needPandoc = $false
+        }
     }
 
     # Fallback: scoop
-    if ($hasScoop -and ($needRipgrep -or $needFfmpeg)) {
+    if ($hasScoop -and ($needRipgrep -or $needFfmpeg -or $needPandoc)) {
         Write-Info "Trying Scoop..."
         foreach ($pkg in $scoopPkgs) {
             try { scoop install $pkg 2>&1 | Out-Null } catch { }
@@ -1129,6 +1158,11 @@ function Install-SystemPackages {
             $script:HasFfmpeg = $true
             $needFfmpeg = $false
         }
+        if ($needPandoc -and (Get-Command pandoc -ErrorAction SilentlyContinue)) {
+            Write-Success "pandoc installed via scoop"
+            $script:HasPandoc = $true
+            $needPandoc = $false
+        }
     }
 
     # Show manual instructions for anything still missing
@@ -1139,6 +1173,10 @@ function Install-SystemPackages {
     if ($needFfmpeg) {
         Write-Warn "ffmpeg not installed (TTS voice messages will be limited)"
         Write-Info "  winget install Gyan.FFmpeg"
+    }
+    if ($needPandoc) {
+        Write-Warn "pandoc not installed (document conversion skills will be limited)"
+        Write-Info "  winget install JohnMacFarlane.Pandoc"
     }
 }
 
@@ -3897,6 +3935,11 @@ function Write-Completion {
         Write-Host "  winget install BurntSushi.ripgrep.MSVC" -ForegroundColor Yellow
         Write-Host ""
     }
+    if (-not $HasPandoc) {
+        Write-Host "Note: pandoc was not installed. Document conversion skills will be limited:" -ForegroundColor Yellow
+        Write-Host "  winget install JohnMacFarlane.Pandoc" -ForegroundColor Yellow
+        Write-Host ""
+    }
 }
 
 # ============================================================================
@@ -3977,7 +4020,7 @@ $InstallStages = @(
     @{ Name = "python";           Title = "Verifying Python $PythonVersion";      Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Python" }
     @{ Name = "git";              Title = "Installing Git";                       Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Git" }
     @{ Name = "node";             Title = "Detecting Node.js";                    Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Node" }
-    @{ Name = "system-packages";  Title = "Installing ripgrep and ffmpeg";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-SystemPackages" }
+    @{ Name = "system-packages";  Title = "Installing ripgrep, ffmpeg, and pandoc"; Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-SystemPackages" }
     @{ Name = "repository";       Title = "Cloning Hermes repository";            Category = "install";      NeedsUserInput = $false; Worker = "Stage-Repository" }
     @{ Name = "venv";             Title = "Creating Python virtual environment";  Category = "install";      NeedsUserInput = $false; Worker = "Stage-Venv" }
     @{ Name = "dependencies";     Title = "Installing Python dependencies";       Category = "install";      NeedsUserInput = $false; Worker = "Stage-Dependencies" }
