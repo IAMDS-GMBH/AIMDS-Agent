@@ -6774,7 +6774,7 @@ def _format_concurrent_instances_message(
 
 
 def _quarantine_running_hermes_exe(
-    scripts_dir: Path, *, max_attempts: int = 4
+    scripts_dir: Path, *, max_attempts: int = 7
 ) -> list[tuple[Path, Path]]:
     """Pre-empt Windows file lock on the running ``hermes.exe``.
 
@@ -6794,7 +6794,10 @@ def _quarantine_running_hermes_exe(
     (won't recover until the user closes it). We mitigate:
 
     1. Retry up to ``max_attempts`` times with exponential backoff
-       (100/250/500/1000 ms). Handles the AV-scanner case.
+       (100/250/500/1000/2000/2000 ms — ~5.85s total). Covers both the
+       quick AV-scanner rescan and the slower case where a just-closed
+       Hermes Desktop app still has a backend child process winding down
+       and releasing its handle on the shim a few seconds later.
     2. If all retries fail, schedule the .exe for replacement on next
        reboot via ``MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)``. This still
        lets uv create a fresh shim at the original path (Windows will keep
@@ -6817,8 +6820,12 @@ def _quarantine_running_hermes_exe(
 
     stamp = int(time.time() * 1000)
     # Backoff schedule: first attempt is immediate, subsequent ones sleep.
-    # 100ms / 250ms / 500ms covers the typical AV scanner re-scan window.
-    backoff_ms = [0, 100, 250, 500, 1000]
+    # 100ms/250ms/500ms covers the typical AV-scanner re-scan window; the
+    # trailing 1000ms/2000ms/2000ms steps give a just-closed Hermes Desktop
+    # app's backend child process time to fully exit and release its handle
+    # on the shim (Windows process teardown + Node/Electron event-loop
+    # drain commonly takes 1-5s, longer than the original ~850ms budget).
+    backoff_ms = [0, 100, 250, 500, 1000, 2000, 2000]
     attempts = max(1, min(max_attempts, len(backoff_ms)))
 
     for shim in _hermes_exe_shims(scripts_dir):
@@ -6876,6 +6883,75 @@ def _quarantine_running_hermes_exe(
     return moved
 
 
+def _enable_se_restore_privilege() -> bool:
+    """Best-effort enable ``SeRestorePrivilege`` on the current process token.
+
+    ``MoveFileExW`` with ``MOVEFILE_DELAY_UNTIL_REBOOT`` requires this
+    privilege to be *enabled* (not just held) on the caller's token. Admin
+    tokens are granted the privilege but it is disabled by default — every
+    process must explicitly turn it on via ``AdjustTokenPrivileges`` before
+    the call, otherwise ``MoveFileExW`` fails with ``ERROR_PRIVILEGE_NOT_HELD``
+    (1314) even when running elevated. Non-admin tokens never have this
+    privilege at all; enabling it there fails harmlessly and we fall through
+    to the plain ``MoveFileExW`` attempt (which will also fail, but no worse
+    off than before).
+
+    Returns ``True`` if the privilege was successfully enabled, ``False``
+    otherwise. Never raises.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        advapi32 = ctypes.windll.advapi32
+        kernel32 = ctypes.windll.kernel32
+
+        TOKEN_ADJUST_PRIVILEGES = 0x0020
+        TOKEN_QUERY = 0x0008
+        SE_PRIVILEGE_ENABLED = 0x00000002
+
+        class LUID(ctypes.Structure):
+            _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
+
+        class LUID_AND_ATTRIBUTES(ctypes.Structure):
+            _fields_ = [("Luid", LUID), ("Attributes", wintypes.DWORD)]
+
+        class TOKEN_PRIVILEGES(ctypes.Structure):
+            _fields_ = [
+                ("PrivilegeCount", wintypes.DWORD),
+                ("Privileges", LUID_AND_ATTRIBUTES * 1),
+            ]
+
+        h_token = wintypes.HANDLE()
+        if not advapi32.OpenProcessToken(
+            kernel32.GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            ctypes.byref(h_token),
+        ):
+            return False
+
+        luid = LUID()
+        if not advapi32.LookupPrivilegeValueW(
+            None, "SeRestorePrivilege", ctypes.byref(luid)
+        ):
+            return False
+
+        tp = TOKEN_PRIVILEGES()
+        tp.PrivilegeCount = 1
+        tp.Privileges[0].Luid = luid
+        tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED
+
+        ok = advapi32.AdjustTokenPrivileges(
+            h_token, False, ctypes.byref(tp), 0, None, None
+        )
+        # AdjustTokenPrivileges can return nonzero (success) yet still leave
+        # ERROR_NOT_ALL_ASSIGNED (1300) in GetLastError when the token simply
+        # doesn't hold the privilege (non-admin) — treat that as failure too.
+        return bool(ok) and kernel32.GetLastError() == 0
+    except Exception:
+        return False
+
+
 def _schedule_replace_on_reboot(shim: Path, quarantine_target: Path) -> bool:
     """Schedule ``shim`` -> ``quarantine_target`` via PendingFileRenameOperations.
 
@@ -6884,6 +6960,11 @@ def _schedule_replace_on_reboot(shim: Path, quarantine_target: Path) -> bool:
     ``HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\
     PendingFileRenameOperations`` and applies it before any user-mode code
     runs on next boot — at which point no process can hold the .exe.
+
+    Before attempting the move we try to enable ``SeRestorePrivilege`` on our
+    own token (see :func:`_enable_se_restore_privilege`) — without it,
+    ``MOVEFILE_DELAY_UNTIL_REBOOT`` fails even for elevated/admin installs,
+    silently defeating this entire fallback.
 
     Returns ``True`` if the schedule call succeeded, ``False`` otherwise
     (non-Windows, ctypes failure, lack of privilege, etc.). Never raises.
@@ -6896,6 +6977,11 @@ def _schedule_replace_on_reboot(shim: Path, quarantine_target: Path) -> bool:
 
         MOVEFILE_REPLACE_EXISTING = 0x1
         MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
+
+        # Best-effort; MoveFileExW is attempted regardless of the outcome —
+        # non-admin tokens never have this privilege and will still fail
+        # below, exactly as before this change.
+        _enable_se_restore_privilege()
 
         MoveFileExW = ctypes.windll.kernel32.MoveFileExW
         MoveFileExW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
