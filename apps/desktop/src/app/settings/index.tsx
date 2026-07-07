@@ -1,6 +1,7 @@
 import { IconDownload, IconRefresh, IconUpload } from '@tabler/icons-react'
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -37,6 +38,8 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
 export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const { t } = useI18n()
   const [activeView, setActiveView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
+  const [showAdvancedWarning, setShowAdvancedWarning] = useState(false)
+  const [advancedUnlocked, setAdvancedUnlocked] = useState(false)
   // Providers subnav (Accounts vs API keys) lives in its own param so each
   // sub-view is deep-linkable and survives a refresh.
   const [providerView, setProviderView] = useRouteEnumParam<ProviderView>('pview', PROVIDER_VIEWS, 'accounts')
@@ -48,6 +51,18 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
   }
 
   const importInputRef = useRef<HTMLInputElement | null>(null)
+
+  const openSection = (sectionId: string) => {
+    const view = `config:${sectionId}` as SettingsViewId
+
+    if (sectionId === 'advanced' && !advancedUnlocked && activeView !== view) {
+      triggerHaptic('warning')
+      setShowAdvancedWarning(true)
+      return
+    }
+
+    setActiveView(view)
+  }
 
   const exportConfig = async () => {
     try {
@@ -92,7 +107,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
                 icon={s.icon}
                 key={s.id}
                 label={t.settings.sections[s.id] ?? s.label}
-                onClick={() => setActiveView(view)}
+                onClick={() => openSection(s.id)}
               />
             )
           })}
@@ -201,6 +216,18 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
           )}
         </OverlayMain>
       </OverlaySplitLayout>
+      <ConfirmDialog
+        confirmLabel="I Understand, Continue"
+        description="These settings are intended for developers and advanced users. Incorrect values can break runtime behavior or make Hermes unstable."
+        onClose={() => setShowAdvancedWarning(false)}
+        onConfirm={() => {
+          setAdvancedUnlocked(true)
+          setActiveView('config:advanced')
+          setShowAdvancedWarning(false)
+        }}
+        open={showAdvancedWarning}
+        title="Advanced settings warning"
+      />
     </OverlayView>
   )
 }
