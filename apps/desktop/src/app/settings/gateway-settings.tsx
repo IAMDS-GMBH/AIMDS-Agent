@@ -5,13 +5,13 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { getHermesConfigRecord, getMcpServers, getRemoteHealthStatus, getStatus, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { AlertCircle, FileText, Globe, Loader2, RefreshCw } from '@/lib/icons'
+import { AlertCircle, Globe, Loader2, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $profiles, refreshActiveProfile } from '@/store/profile'
 import type { McpServerSummary, RemoteHealthResponse, StatusResponse } from '@/types/hermes'
 
-import { EmptyState, ListRow, LoadingState, Pill, SectionHeading, SettingsContent } from './primitives'
+import { EmptyState, LoadingState, Pill, SectionHeading, SettingsContent } from './primitives'
 
 interface GatewaySettingsState {
   envOverride: boolean
@@ -288,35 +288,22 @@ export function GatewaySettings() {
         </div>
       ) : null}
 
-      <div className="mt-2 grid gap-1">
-        <ListRow
-          action={
-            <Button onClick={() => void window.hermesDesktop?.revealLogs()} size="sm" variant="textStrong">
-              <FileText />
-              {g.openLogs}
-            </Button>
-          }
-          description={g.diagnosticsDesc}
-          title={g.diagnostics}
-        />
-      </div>
-
       <div className="mt-5">
-        <SectionHeading icon={Globe} title="Local connectivity" />
+        <SectionHeading icon={Globe} title={g.localConnTitle} />
         <div className={cn('rounded-xl border px-4 py-3 text-sm', localToneClass)}>
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="font-medium">
                 {localConnectivityError
-                  ? `Status: ${localConnectivityError}`
+                  ? g.statusError(localConnectivityError)
                   : localStatus
-                    ? 'Status: healthy'
-                    : 'Status: unknown'}
+                    ? g.statusHealthy
+                    : g.statusUnknown}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Endpoint: Hermes local API ({localStatus?.gateway_health_url ?? 'embedded'})
+                {g.endpointLocal(localStatus?.gateway_health_url ?? 'embedded')}
               </p>
-              <p className="mt-1 text-xs text-muted-foreground">Checked at: {localChecked}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{g.checkedAt(localChecked)}</p>
             </div>
             <Button
               disabled={localConnectivityLoading}
@@ -325,29 +312,29 @@ export function GatewaySettings() {
               variant="text"
             >
               {localConnectivityLoading ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
-              {localConnectivityLoading ? 'Checking…' : 'Refresh'}
+              {localConnectivityLoading ? g.checking : g.refresh}
             </Button>
           </div>
 
           {localStatus && !localConnectivityError && (
             <div className="mt-3 grid gap-1">
-              <p className="text-xs font-medium text-foreground">Runtime checks</p>
+              <p className="text-xs font-medium text-foreground">{g.runtimeChecks}</p>
               <div className="flex items-center justify-between rounded border border-border/60 bg-background/40 px-2 py-1 text-xs">
-                <span className="truncate">Hermes local API</span>
-                <span className="text-emerald-600 dark:text-emerald-400">up</span>
+                <span className="truncate">{g.hermesLocalApi}</span>
+                <span className="text-emerald-600 dark:text-emerald-400">{g.statusUp}</span>
               </div>
               <div className="flex items-center justify-between rounded border border-border/60 bg-background/40 px-2 py-1 text-xs">
-                <span className="truncate">Gateway process</span>
+                <span className="truncate">{g.gatewayProcess}</span>
                 <span className={cn(localStatus.gateway_running ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground')}>
-                  {localStatus.gateway_running ? 'up' : 'optional (not running)'}
+                  {localStatus.gateway_running ? g.statusUp : g.gatewayOptional}
                 </span>
               </div>
               <div className="flex items-center justify-between rounded border border-border/60 bg-background/40 px-2 py-1 text-xs">
-                <span className="truncate">Dashboard auth gate</span>
-                <span>{localStatus.auth_required ? `enabled (${(localStatus.auth_providers ?? []).join(', ') || 'configured'})` : 'disabled'}</span>
+                <span className="truncate">{g.dashboardAuthGate}</span>
+                <span>{localStatus.auth_required ? g.authGateEnabled((localStatus.auth_providers ?? []).join(', ') || 'configured') : g.authGateDisabled}</span>
               </div>
               <div className="flex items-center justify-between rounded border border-border/60 bg-background/40 px-2 py-1 text-xs">
-                <span className="truncate">Configured MCP servers</span>
+                <span className="truncate">{g.configuredMcp}</span>
                 <span>{enabledMcpServers.length}/{mcpServers.length}</span>
               </div>
             </div>
@@ -356,29 +343,29 @@ export function GatewaySettings() {
       </div>
 
       <div className="mt-5">
-        <SectionHeading icon={Globe} title="Remote connectivity" />
+        <SectionHeading icon={Globe} title={g.remoteConnTitle} />
         <div className={cn('rounded-xl border px-4 py-3 text-sm', remoteToneClass)}>
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="font-medium">
                 {remoteHealth?.ok
-                  ? `Status: ${remoteHealth.overall_status ?? 'unknown'}`
-                  : (remoteHealth?.error ?? 'Remote health check failed')}
+                  ? g.statusError(remoteHealth.overall_status ?? 'unknown')
+                  : (remoteHealth?.error ?? g.remoteHealthFailed)}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                {remoteHealth?.health_url ? `Endpoint: ${remoteHealth.health_url}` : 'Endpoint: not configured'}
+                {remoteHealth?.health_url ? g.endpointRemote(remoteHealth.health_url) : g.endpointNotConfigured}
               </p>
-              <p className="mt-1 text-xs text-muted-foreground">Checked at: {remoteChecked}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{g.checkedAt(remoteChecked)}</p>
             </div>
             <Button disabled={remoteHealthLoading} onClick={() => void refreshRemoteHealth()} size="sm" variant="text">
               {remoteHealthLoading ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
-              {remoteHealthLoading ? 'Checking…' : 'Refresh'}
+              {remoteHealthLoading ? g.checking : g.refresh}
             </Button>
           </div>
 
           {remoteHealth?.ok && (
             <div className="mt-3 grid gap-1">
-              <p className="text-xs font-medium text-foreground">Critical services</p>
+              <p className="text-xs font-medium text-foreground">{g.criticalServices}</p>
               {(remoteHealth.critical_services ?? []).map(service => (
                 <div
                   className="flex items-center justify-between rounded border border-border/60 bg-background/40 px-2 py-1 text-xs"
@@ -397,42 +384,42 @@ export function GatewaySettings() {
 
       <div className="mt-5 rounded-xl border border-border/70 bg-muted/20 p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <p className="text-sm font-medium">Support</p>
+          <p className="text-sm font-medium">{g.supportTitle}</p>
           <Button
             disabled={sendingSupportLogs || !supportConfigured}
             onClick={() => void handleSendSupportLogs()}
             size="sm"
             variant="text"
           >
-            {sendingSupportLogs ? 'Sending support logs…' : 'Send support logs'}
+            {sendingSupportLogs ? g.sendingSupportLogs : g.sendSupportLogs}
           </Button>
         </div>
         {!supportConfigured && supportConfigLoaded && (
           <p className="mb-3 text-xs text-amber-700 dark:text-amber-300">
-            Support logs are not configured yet. Set upload URL and API key below.
+            {g.supportNotConfigured}
           </p>
         )}
         <div className="grid gap-2 rounded-lg border border-border/70 bg-background/40 p-3">
-          <p className="text-xs font-medium">Support log upload settings</p>
+          <p className="text-xs font-medium">{g.supportLogSettings}</p>
           <Input
             onChange={event => setSupportUploadUrl(event.target.value)}
-            placeholder="https://support.example.com/api/log-upload"
+            placeholder={g.supportUploadUrlPlaceholder}
             value={supportUploadUrl}
           />
           <Input
             onChange={event => setSupportApiKey(event.target.value)}
-            placeholder={supportKeyConfigured ? 'API key already set (enter to replace)' : '****** key'}
+            placeholder={supportKeyConfigured ? g.apiKeySetPlaceholder : g.apiKeyPlaceholder}
             type="password"
             value={supportApiKey}
           />
           <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-            <span>{supportKeyConfigured ? 'API key is currently configured.' : 'API key not configured.'}</span>
+            <span>{supportKeyConfigured ? g.apiKeyConfigured : g.apiKeyNotConfigured}</span>
             <Button
               disabled={savingSupportConfig || !supportUploadUrl.trim() || (!supportKeyConfigured && !supportApiKey.trim())}
               onClick={() => void saveSupportConfig()}
               size="sm"
             >
-              {savingSupportConfig ? 'Saving…' : 'Save support settings'}
+              {savingSupportConfig ? g.savingLabel : g.saveSupportSettings}
             </Button>
           </div>
         </div>

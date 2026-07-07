@@ -339,6 +339,40 @@ export interface Translations {
       diagnostics: string
       diagnosticsDesc: string
       openLogs: string
+      localConnTitle: string
+      remoteConnTitle: string
+      statusHealthy: string
+      statusUnknown: string
+      statusError: (msg: string) => string
+      endpointLocal: (url: string) => string
+      endpointNotConfigured: string
+      endpointRemote: (url: string) => string
+      checkedAt: (time: string) => string
+      checking: string
+      refresh: string
+      runtimeChecks: string
+      hermesLocalApi: string
+      statusUp: string
+      gatewayProcess: string
+      gatewayOptional: string
+      dashboardAuthGate: string
+      authGateEnabled: (providers: string) => string
+      authGateDisabled: string
+      configuredMcp: string
+      criticalServices: string
+      remoteHealthFailed: string
+      supportTitle: string
+      sendSupportLogs: string
+      sendingSupportLogs: string
+      supportNotConfigured: string
+      supportLogSettings: string
+      supportUploadUrlPlaceholder: string
+      apiKeyPlaceholder: string
+      apiKeySetPlaceholder: string
+      apiKeyConfigured: string
+      apiKeyNotConfigured: string
+      saveSupportSettings: string
+      savingLabel: string
       incompleteTitle: string
       incompleteSignIn: string
       incompleteToken: string
