@@ -249,6 +249,11 @@ export const zh: Translations = {
     resetConfirm: '将所有设置恢复为 Hermes 默认值？',
     exportFailed: '导出失败',
     resetFailed: '重置失败',
+    advancedWarning: {
+      title: '高级设置警告',
+      description: '这些设置面向开发者和高级用户。错误的配置可能导致运行行为异常，或让 Hermes 变得不稳定。',
+      confirm: '我已了解，继续'
+    },
     nav: {
       providers: '提供方',
       providerAccounts: '账号',

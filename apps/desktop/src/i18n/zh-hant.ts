@@ -162,6 +162,11 @@ export const zhHant = defineLocale({
     resetConfirm: '要將所有設定恢復為 Hermes 預設值嗎？',
     exportFailed: '匯出失敗',
     resetFailed: '重設失敗',
+    advancedWarning: {
+      title: '進階設定警告',
+      description: '這些設定是為開發者與進階使用者準備的。錯誤設定可能導致執行行為異常，或使 Hermes 不穩定。',
+      confirm: '我已了解，繼續'
+    },
     nav: {
       providers: '提供方',
       providerAccounts: '帳號',

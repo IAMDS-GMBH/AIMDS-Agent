@@ -254,6 +254,12 @@ export const en: Translations = {
     resetConfirm: 'Reset all settings to Hermes defaults?',
     exportFailed: 'Export failed',
     resetFailed: 'Reset failed',
+    advancedWarning: {
+      title: 'Advanced settings warning',
+      description:
+        'These settings are intended for developers and advanced users. Incorrect values can break runtime behavior or make Hermes unstable.',
+      confirm: 'I Understand, Continue'
+    },
     nav: {
       providers: 'Providers',
       providerAccounts: 'Accounts',

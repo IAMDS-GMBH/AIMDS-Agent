@@ -167,6 +167,12 @@ export const ja = defineLocale({
     resetConfirm: 'すべての設定を Hermes のデフォルトに戻しますか？',
     exportFailed: '書き出しに失敗しました',
     resetFailed: 'リセットに失敗しました',
+    advancedWarning: {
+      title: '詳細設定の警告',
+      description:
+        'これらの設定は開発者や上級ユーザー向けです。不適切な値を設定すると、実行時の動作が壊れたり、Hermes が不安定になる可能性があります。',
+      confirm: '理解しました。続行'
+    },
     nav: {
       providers: 'プロバイダー',
       providerAccounts: 'アカウント',

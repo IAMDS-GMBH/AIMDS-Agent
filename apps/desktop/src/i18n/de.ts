@@ -255,6 +255,12 @@ export const de
     resetConfirm: 'Alle Einstellungen auf Hermes-Standardwerte zurücksetzen?',
     exportFailed: 'Export fehlgeschlagen',
     resetFailed: 'Zurücksetzen fehlgeschlagen',
+    advancedWarning: {
+      title: 'Warnung zu erweiterten Einstellungen',
+      description:
+        'Diese Einstellungen sind für Entwickler und fortgeschrittene Nutzer gedacht. Falsche Werte können das Laufzeitverhalten beeinträchtigen oder Hermes instabil machen.',
+      confirm: 'Ich verstehe, fortfahren'
+    },
     nav: {
       providers: 'Anbieter',
       providerAccounts: 'Konten',
