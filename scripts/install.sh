@@ -2000,6 +2000,8 @@ def _set_provider(slug: str, label: str, base: str, key_env: str, key_value: str
         "key_env": key_env,
         "transport": "codex_responses",
     })
+    existing.setdefault("stale_timeout_seconds", 300)
+    existing.setdefault("request_timeout_seconds", 900)
     providers[slug] = existing
 
 _set_provider(
@@ -2122,6 +2124,14 @@ if not litellm_hub.get("base_url"):
     litellm_hub["base_url"] = "http://localhost:4000"
 litellm_hub.setdefault("api_key", "")
 litellm_hub.setdefault("timeout", 20)
+
+# Keep IAMDS LiteLLM stream timeouts resilient for long tool-call flows.
+providers = data.setdefault("providers", {})
+if isinstance(providers, dict):
+    iamds = providers.setdefault("iamds-litellm", {})
+    if isinstance(iamds, dict):
+        iamds.setdefault("stale_timeout_seconds", 300)
+        iamds.setdefault("request_timeout_seconds", 900)
 
 with open(path, "w", encoding="utf-8") as fh:
     yaml.safe_dump(data, fh, sort_keys=False, allow_unicode=False)
