@@ -63,6 +63,36 @@ export function sessionTitle(session: SessionInfo): string {
 }
 
 export function coerceGatewayText(value: unknown): string {
+  const nestedText = (input: unknown): string => {
+    if (typeof input === 'string') {
+      return input
+    }
+
+    if (!input || typeof input !== 'object') {
+      return ''
+    }
+
+    const row = input as Record<string, unknown>
+
+    for (const key of ['text', 'output_text', 'content', 'value', 'message', 'error']) {
+      const candidate = row[key]
+
+      if (typeof candidate === 'string' && candidate) {
+        return candidate
+      }
+
+      if (candidate && typeof candidate === 'object') {
+        const nested = nestedText(candidate)
+
+        if (nested) {
+          return nested
+        }
+      }
+    }
+
+    return ''
+  }
+
   if (typeof value === 'string') {
     return value
   }
@@ -79,14 +109,10 @@ export function coerceGatewayText(value: unknown): string {
         }
 
         if (item && typeof item === 'object') {
-          const row = item as Record<string, unknown>
+          const extracted = nestedText(item)
 
-          if (typeof row.text === 'string') {
-            return row.text
-          }
-
-          if (typeof row.output_text === 'string') {
-            return row.output_text
+          if (extracted) {
+            return extracted
           }
         }
 
@@ -96,21 +122,7 @@ export function coerceGatewayText(value: unknown): string {
   }
 
   if (typeof value === 'object') {
-    const row = value as Record<string, unknown>
-
-    if (typeof row.text === 'string') {
-      return row.text
-    }
-
-    if (typeof row.output_text === 'string') {
-      return row.output_text
-    }
-
-    try {
-      return JSON.stringify(value)
-    } catch {
-      return ''
-    }
+    return nestedText(value)
   }
 
   return String(value)

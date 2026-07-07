@@ -3447,18 +3447,32 @@ def run_conversation(
             # of a plain string, which crashes downstream .strip() calls.
             if assistant_message.content is not None and not isinstance(assistant_message.content, str):
                 raw = assistant_message.content
+                def _extract_textish(value):
+                    if isinstance(value, str):
+                        return value
+                    if isinstance(value, dict):
+                        for key in ("text", "output_text", "content", "value", "message", "error"):
+                            candidate = value.get(key)
+                            if isinstance(candidate, str) and candidate:
+                                return candidate
+                            if isinstance(candidate, dict):
+                                nested = _extract_textish(candidate)
+                                if nested:
+                                    return nested
+                        return ""
+                    return ""
                 if isinstance(raw, dict):
-                    assistant_message.content = raw.get("text", "") or raw.get("content", "") or json.dumps(raw)
+                    assistant_message.content = _extract_textish(raw) or json.dumps(raw)
                 elif isinstance(raw, list):
                     # Multimodal content list — extract text parts
                     parts = []
                     for part in raw:
                         if isinstance(part, str):
                             parts.append(part)
-                        elif isinstance(part, dict) and part.get("type") == "text":
-                            parts.append(part.get("text", ""))
-                        elif isinstance(part, dict) and "text" in part:
-                            parts.append(str(part["text"]))
+                        elif isinstance(part, dict):
+                            extracted = _extract_textish(part)
+                            if extracted:
+                                parts.append(extracted)
                     assistant_message.content = "\n".join(parts)
                 else:
                     assistant_message.content = str(raw)
