@@ -115,3 +115,54 @@ def test_slash_exec_rejects_project_path_routes_to_command_dispatch(server, sess
 
 def test_pending_input_commands_includes_project_path(server):
     assert "project-path" in server._PENDING_INPUT_COMMANDS
+
+
+def test_auto_project_path_sets_scripts_for_project_prompt(server, session):
+    sid, s = session
+    from tools.project_output_routing import (
+        clear_project_output_subfolder,
+        get_project_output_subfolder,
+    )
+
+    clear_project_output_subfolder(s["cwd"])
+    server._maybe_auto_set_project_output_subfolder(
+        s,
+        "Please implement this feature in this project and generate helper scripts.",
+        sid,
+    )
+    info = get_project_output_subfolder(s["cwd"])
+    assert info["subfolder"] == "scripts"
+
+
+def test_auto_project_path_keeps_root_for_normal_project_tasks(server, session):
+    sid, s = session
+    from tools.project_output_routing import (
+        clear_project_output_subfolder,
+        get_project_output_subfolder,
+    )
+
+    clear_project_output_subfolder(s["cwd"])
+    server._maybe_auto_set_project_output_subfolder(
+        s,
+        "Set this up for project Atlas-UI and implement the API feature.",
+        sid,
+    )
+    info = get_project_output_subfolder(s["cwd"])
+    assert info["subfolder"] is None
+
+
+def test_auto_project_path_does_not_override_existing_mapping(server, session):
+    sid, s = session
+    from tools.project_output_routing import (
+        get_project_output_subfolder,
+        set_project_output_subfolder,
+    )
+
+    set_project_output_subfolder(s["cwd"], "scripts/custom")
+    server._maybe_auto_set_project_output_subfolder(
+        s,
+        "Implement this in project Hermes and generate scripts.",
+        sid,
+    )
+    info = get_project_output_subfolder(s["cwd"])
+    assert info["subfolder"] == "scripts/custom"

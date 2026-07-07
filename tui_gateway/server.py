@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -1106,6 +1107,166 @@ def _session_cwd(session: dict | None) -> str:
     if session and session.get("cwd"):
         return str(session["cwd"])
     return _completion_cwd()
+
+
+_PROJECT_AUTOROUTE_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "the",
+        "this",
+        "that",
+        "my",
+        "our",
+        "new",
+        "current",
+        "latest",
+        "project",
+        "repo",
+        "repository",
+        "codebase",
+        "and",
+        "for",
+        "with",
+        "from",
+        "into",
+        "using",
+        "please",
+        "help",
+        "feature",
+        "task",
+        "scripts",
+    }
+)
+
+_EXTRA_GENERATED_ARTIFACT_MARKERS: frozenset[str] = frozenset(
+    {
+        "tmp",
+        "temp",
+        "temporary",
+        "intermediate",
+        "scratch",
+        "staging",
+        "helper",
+        "script",
+        "scripts",
+        "generated",
+        "generate",
+        "conversion",
+        "convert",
+        "transform",
+    }
+)
+
+
+def _slugify_project_name(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", (value or "").strip().lower()).strip("-")
+    return slug[:48]
+
+
+def _extract_project_slug(text: str) -> str | None:
+    if not isinstance(text, str):
+        return None
+    patterns = (
+        r"\bproject\s*[:=\-]?\s*([A-Za-z0-9][A-Za-z0-9._-]{1,63})\b",
+        r"\bfor\s+([A-Za-z0-9][A-Za-z0-9._-]{1,63})\s+project\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        raw = match.group(1).strip().strip(".,;:!?")
+        slug = _slugify_project_name(raw)
+        if not slug or slug in _PROJECT_AUTOROUTE_STOPWORDS:
+            continue
+        return slug
+    return None
+
+
+def _is_project_related_prompt(text: str) -> bool:
+    if not isinstance(text, str):
+        return False
+    lower = text.lower()
+    if _extract_project_slug(text):
+        return True
+    project_markers = {"project", "repo", "repository", "codebase"}
+    action_markers = {
+        "implement",
+        "build",
+        "fix",
+        "debug",
+        "refactor",
+        "test",
+        "create",
+        "generate",
+        "script",
+        "module",
+        "feature",
+    }
+    words = set(re.findall(r"[a-zA-Z0-9_]+", lower))
+    if words & project_markers and words & action_markers:
+        return True
+    if re.search(r"\b[\w.-]+\.(py|ts|tsx|js|jsx|go|java|rs|md|json|ya?ml|toml|sh)\b", lower):
+        return True
+    if "/" in lower and any(k in words for k in {"file", "folder", "path", "src"}):
+        return True
+    return False
+
+
+def _auto_project_subfolder_for_prompt(text: str) -> str | None:
+    if not isinstance(text, str):
+        return None
+    lower = text.lower()
+    words = set(re.findall(r"[a-zA-Z0-9_]+", lower))
+    # Default behavior stays at workspace root. We only auto-route when the
+    # prompt itself indicates extra/generated intermediary artifacts.
+    if not (words & _EXTRA_GENERATED_ARTIFACT_MARKERS):
+        return None
+    if not any(
+        token in lower
+        for token in (
+            "temp",
+            "tmp",
+            "intermediate",
+            "helper script",
+            "generated script",
+            "convert",
+            "transform",
+            "staging",
+            "scratch",
+        )
+    ):
+        return None
+    return "scripts"
+
+
+def _maybe_auto_set_project_output_subfolder(
+    session: dict, user_text: str | None, sid: str
+) -> None:
+    if not isinstance(user_text, str) or not user_text.strip():
+        return
+    desired = _auto_project_subfolder_for_prompt(user_text)
+    if not desired:
+        return
+    try:
+        from tools.project_output_routing import (
+            get_project_output_subfolder,
+            set_project_output_subfolder,
+        )
+    except Exception:
+        return
+    cwd = _session_cwd(session)
+    try:
+        existing = get_project_output_subfolder(cwd).get("subfolder")
+        if existing:
+            return
+        info = set_project_output_subfolder(cwd, desired)
+    except Exception:
+        logger.debug("Auto project-path setup failed", exc_info=True)
+        return
+    _emit(
+        "status.update",
+        sid,
+        {"message": f"Auto-enabled project output routing: {info.get('subfolder')}/"},
+    )
 
 
 def _register_session_cwd(session: dict | None) -> None:
@@ -5351,6 +5512,8 @@ def _run_prompt_submit(
             cols = session.get("cols", 80)
             streamer = make_stream_renderer(cols)
             prompt = text
+            auto_text = display_text if isinstance(display_text, str) else prompt
+            _maybe_auto_set_project_output_subfolder(session, auto_text, sid)
 
             if isinstance(prompt, str) and "@" in prompt:
                 from agent.context_references import preprocess_context_references
