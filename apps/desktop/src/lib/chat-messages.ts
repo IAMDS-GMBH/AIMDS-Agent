@@ -309,9 +309,6 @@ function findToolPartIndex(
     // Some live streams start without an id, then complete with one. Fall
     // through to pending same-name/context matching so the completion updates
     // the synthetic live row instead of appending a duplicate completed row.
-    if (phase === 'running' && !matchValues.length) {
-      return -1
-    }
   }
 
   const pendingIndices = parts
@@ -349,6 +346,13 @@ function findToolPartIndex(
   }
 
   if (stableId) {
+    // For stable-id running events with no matching context/query/preview,
+    // only rebind when there is a single pending same-name row. Multiple rows
+    // are ambiguous (parallel calls), so avoid a potentially wrong merge.
+    if (phase === 'running' && !matchValues.length) {
+      return pendingIndices.length === 1 ? pendingIndices[0] : -1
+    }
+
     return pendingIndices[0]
   }
 

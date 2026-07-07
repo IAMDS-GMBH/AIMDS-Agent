@@ -586,6 +586,33 @@ describe('upsertToolPart', () => {
     expect(webParts[0].toolCallId).toBe('search-reykjavik')
   })
 
+  it('reuses id-less generating rows when a stable-id start arrives without context', () => {
+    const generating = upsertToolPart(
+      [],
+      {
+        name: 'mcp_remotemcp_mcp_memory_memory_context'
+      },
+      'running'
+    )
+
+    const started = upsertToolPart(
+      generating,
+      {
+        name: 'mcp_remotemcp_mcp_memory_memory_context',
+        tool_id: 'memctx-1'
+      },
+      'running'
+    )
+
+    const parts = started.filter(
+      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> =>
+        part.type === 'tool-call' && part.toolName === 'mcp_remotemcp_mcp_memory_memory_context'
+    )
+
+    expect(parts).toHaveLength(1)
+    expect(parts[0].toolCallId).toBe('memctx-1')
+  })
+
   it('reconciles preview-first progress rows with later stable-id starts', () => {
     const progressA = upsertToolPart(
       [],
