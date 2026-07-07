@@ -108,6 +108,7 @@ class TestRemoteMcpMemoryPrompt:
         stable = _stable_prompt(agent)
         assert "# Memory Context (mandatory)" in stable
         assert f"FIRST action in this session must be a call to `{self._PREF_MCP_CONTEXT}`" in stable
+        assert "Do not emit pre-tool filler text" in stable
         assert "including `skill_view` and any memory read/list/search tools" in stable
         assert "asks for their name" in stable
         assert "primary source and call it before using any other memory tool" in stable
