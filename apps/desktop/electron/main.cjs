@@ -235,7 +235,32 @@ if (INSTALL_STAMP) {
 // HERMES_HOME beneath the throwaway userData dir so a fresh-install run never
 // touches the user's real ~/.hermes / %LOCALAPPDATA%\hermes.
 function resolveHermesHome() {
-  if (process.env.HERMES_HOME) return path.resolve(process.env.HERMES_HOME)
+  if (process.env.HERMES_HOME) {
+    const candidate = path.resolve(process.env.HERMES_HOME)
+    // Guard against accidental "Desktop as install root" user-env drift on
+    // packaged Windows installs. This has shown up as a stray Desktop\hermes-agent
+    // checkout after reinstall/update runs. Keep honoring explicit custom
+    // locations, but reject Desktop-rooted homes which are almost always
+    // accidental and unsafe for managed installs.
+    if (IS_PACKAGED && IS_WINDOWS) {
+      try {
+        const desktop = path.resolve(app.getPath('desktop'))
+        const isDesktopRoot = candidate === desktop
+        const isInsideDesktop = candidate.startsWith(desktop + path.sep)
+        if (isDesktopRoot || isInsideDesktop) {
+          console.warn(
+            `[hermes] ignoring HERMES_HOME=${candidate} because it points to Desktop; falling back to managed default`
+          )
+        } else {
+          return candidate
+        }
+      } catch {
+        return candidate
+      }
+    } else {
+      return candidate
+    }
+  }
   if (USER_DATA_OVERRIDE) return path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')
   if (IS_WINDOWS && process.env.LOCALAPPDATA) {
     const localappdata = path.join(process.env.LOCALAPPDATA, 'hermes')

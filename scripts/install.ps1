@@ -1146,6 +1146,74 @@ function Install-SystemPackages {
 # Installation
 # ============================================================================
 
+function Stop-ProcessesLockingPath {
+    param([string]$TargetPath)
+
+    if (-not $TargetPath -or -not (Test-Path -LiteralPath $TargetPath)) { return @() }
+
+    $resolved = $null
+    try {
+        $resolved = (Resolve-Path -LiteralPath $TargetPath).Path
+    } catch {
+        return @()
+    }
+    if (-not $resolved) { return @() }
+
+    $resolved = [System.IO.Path]::GetFullPath($resolved).TrimEnd('\')
+    $escaped = [Regex]::Escape($resolved)
+    $killed = @()
+
+    $procs = @()
+    try {
+        $procs = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+    } catch {
+        return @()
+    }
+
+    foreach ($proc in $procs) {
+        try {
+            $procId = [int]$proc.ProcessId
+            if ($procId -eq $PID) { continue }
+
+            $exe = [string]$proc.ExecutablePath
+            $cmd = [string]$proc.CommandLine
+            $matchesTarget = $false
+
+            if ($exe -and $exe -match "^$escaped([\\]|$)") {
+                $matchesTarget = $true
+            } elseif ($cmd -and $cmd -match $escaped) {
+                $matchesTarget = $true
+            }
+
+            if ($matchesTarget) {
+                Stop-Process -Id $procId -Force -ErrorAction Stop
+                $killed += $procId
+            }
+        } catch {}
+    }
+
+    if ($killed.Count -gt 0) {
+        Start-Sleep -Milliseconds 500
+    }
+    return @($killed | Select-Object -Unique)
+}
+
+function Remove-InstallDirWithProcessCleanup {
+    param([string]$TargetPath)
+
+    if (-not (Test-Path -LiteralPath $TargetPath)) { return }
+    try {
+        Remove-Item -LiteralPath $TargetPath -Recurse -Force -ErrorAction Stop
+        return
+    } catch {
+        $killed = @(Stop-ProcessesLockingPath -TargetPath $TargetPath)
+        if ($killed.Count -gt 0) {
+            Write-Warn ("Stopped {0} process(es) locking {1}: {2}" -f $killed.Count, $TargetPath, ($killed -join ", "))
+        }
+        Remove-Item -LiteralPath $TargetPath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Install-Repository {
     Write-Info "Installing to $InstallDir..."
 
@@ -1338,10 +1406,23 @@ function Install-Repository {
             try {
                 Move-Item -LiteralPath $InstallDir -Destination $backupDir -ErrorAction Stop
             } catch {
-                Write-Err "Could not move $InstallDir aside : $_"
-                Write-Info "Close any programs that might be using files in $InstallDir (editors,"
-                Write-Info "terminals, running hermes processes) and try again."
-                throw
+                $killed = @(Stop-ProcessesLockingPath -TargetPath $InstallDir)
+                if ($killed.Count -gt 0) {
+                    Write-Warn ("Stopped {0} process(es) locking {1}: {2}" -f $killed.Count, $InstallDir, ($killed -join ", "))
+                    try {
+                        Move-Item -LiteralPath $InstallDir -Destination $backupDir -ErrorAction Stop
+                    } catch {
+                        Write-Err "Could not move $InstallDir aside after stopping lock holders: $_"
+                        Write-Info "Close any programs that might be using files in $InstallDir (editors,"
+                        Write-Info "terminals, running hermes processes) and try again."
+                        throw
+                    }
+                } else {
+                    Write-Err "Could not move $InstallDir aside : $_"
+                    Write-Info "Close any programs that might be using files in $InstallDir (editors,"
+                    Write-Info "terminals, running hermes processes) and try again."
+                    throw
+                }
             }
         }
     }
@@ -1369,7 +1450,7 @@ function Install-Repository {
         $env:GIT_SSH_COMMAND = $null
 
         if (-not $cloneSuccess) {
-            if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
+            if (Test-Path $InstallDir) { Remove-InstallDirWithProcessCleanup -TargetPath $InstallDir }
             Write-Info "SSH failed, trying HTTPS..."
             try {
                 git -c windows.appendAtomically=false -c core.autocrlf=false clone --depth 1 --branch $Branch $RepoUrlHttps $InstallDir
@@ -1379,7 +1460,7 @@ function Install-Repository {
 
         # Fallback: download ZIP archive (bypasses git file I/O issues entirely)
         if (-not $cloneSuccess) {
-            if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
+            if (Test-Path $InstallDir) { Remove-InstallDirWithProcessCleanup -TargetPath $InstallDir }
             Write-Warn "Git clone failed -- downloading ZIP archive instead..."
             try {
                 # Pick the ZIP URL for the most-specific ref the caller asked
@@ -1520,7 +1601,7 @@ function Install-Dependencies {
     # before the package is installed so importlib.metadata returns the correct
     # release tag at runtime.
     try {
-        # Shallow clones don't fetch tags — fetch the nearest tag explicitly.
+        # Shallow clones don't fetch tags -- fetch the nearest tag explicitly.
         & git -C $InstallDir fetch --tags --depth=1 origin 2>$null
         $gitTag = & git -C $InstallDir describe --tags --abbrev=0 2>$null
         if ($LASTEXITCODE -eq 0 -and $gitTag) {
