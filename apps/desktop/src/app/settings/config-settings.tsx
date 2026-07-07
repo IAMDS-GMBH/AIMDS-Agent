@@ -2,7 +2,10 @@ import type { ChangeEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
+import { Button } from '@/components/ui/button'
+import { Command, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command'
 import { Input } from '@/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
@@ -14,6 +17,7 @@ import {
   saveHermesConfig
 } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { Check, ChevronDown } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
@@ -23,6 +27,193 @@ import { fieldCopyForSchemaKey } from './field-copy'
 import { enumOptionsFor, getNested, prettyName, setNested } from './helpers'
 import { ModelSettings } from './model-settings'
 import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
+
+const FALLBACK_TIMEZONES = [
+  'UTC',
+  'Europe/Berlin',
+  'Europe/Paris',
+  'Europe/Amsterdam',
+  'Europe/Madrid',
+  'Europe/Rome',
+  'Europe/Vienna',
+  'Europe/Zurich',
+  'Europe/Prague',
+  'Europe/Warsaw',
+  'Europe/Bucharest',
+  'Europe/Helsinki',
+  'Europe/London',
+  'America/New_York',
+  'America/Los_Angeles',
+  'Asia/Tokyo',
+  'Asia/Singapore',
+  'Australia/Sydney'
+] as const
+
+const PREFERRED_TIMEZONES = [
+  'UTC',
+  'Europe/Berlin',
+  'Europe/Paris',
+  'Europe/Amsterdam',
+  'Europe/Madrid',
+  'Europe/Rome',
+  'Europe/Vienna',
+  'Europe/Zurich',
+  'Europe/Prague',
+  'Europe/Warsaw',
+  'Europe/London',
+  'America/New_York',
+  'Asia/Tokyo'
+] as const
+
+function detectSystemTimezone(): string {
+  try {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone?.trim()
+    if (timezone) {
+      return timezone
+    }
+  } catch {
+    // Fall back to UTC.
+  }
+  return 'UTC'
+}
+
+function getSupportedTimezones(): string[] {
+  const intl = Intl as unknown as {
+    supportedValuesOf?: (key: string) => string[]
+  }
+
+  const raw = intl.supportedValuesOf?.('timeZone')
+  if (!raw || raw.length === 0) {
+    return [...FALLBACK_TIMEZONES]
+  }
+
+  return [...new Set(raw)].sort((a, b) => a.localeCompare(b))
+}
+
+function TimezoneField({
+  value,
+  onChange,
+  placeholder
+}: {
+  value: string
+  onChange: (value: string) => void
+  placeholder: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const systemTimezone = useMemo(() => detectSystemTimezone(), [])
+
+  const { preferred, all } = useMemo(() => {
+    const allTimezones = getSupportedTimezones()
+    const timezonesSet = new Set(allTimezones)
+    const normalizedCurrent = value.trim()
+
+    if (normalizedCurrent && !timezonesSet.has(normalizedCurrent)) {
+      allTimezones.unshift(normalizedCurrent)
+      timezonesSet.add(normalizedCurrent)
+    }
+
+    if (!timezonesSet.has(systemTimezone)) {
+      allTimezones.unshift(systemTimezone)
+      timezonesSet.add(systemTimezone)
+    }
+
+    const preferredTimezones = [systemTimezone, ...PREFERRED_TIMEZONES].filter(
+      (tz, index, list) => timezonesSet.has(tz) && list.indexOf(tz) === index
+    )
+
+    const preferredSet = new Set(preferredTimezones)
+    const orderedAll = allTimezones.filter(tz => !preferredSet.has(tz))
+
+    return {
+      preferred: preferredTimezones,
+      all: orderedAll
+    }
+  }, [systemTimezone, value])
+
+  const query = search.trim().toLowerCase()
+  const filterByQuery = (tz: string) => !query || tz.toLowerCase().includes(query)
+  const filteredPreferred = preferred.filter(filterByQuery)
+  const filteredAll = all.filter(filterByQuery)
+
+  const selected = value.trim()
+  const selectedLabel = selected || `System (${systemTimezone})`
+
+  return (
+    <Popover onOpenChange={setOpen} open={open}>
+      <PopoverTrigger asChild>
+        <Button
+          className={cn(CONTROL_TEXT, 'w-full justify-between font-normal')}
+          type="button"
+          variant="outline"
+        >
+          <span className="truncate text-left">{selectedLabel || placeholder}</span>
+          <ChevronDown className="ml-2 size-3.5 shrink-0 opacity-70" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-[var(--radix-popover-trigger-width)] p-0">
+        <Command className="bg-transparent" shouldFilter={false}>
+          <CommandInput
+            autoFocus
+            onValueChange={setSearch}
+            placeholder="Search timezone..."
+            value={search}
+          />
+          <CommandList className="max-h-80 p-1">
+            <CommandItem
+              onSelect={() => {
+                onChange('')
+                setOpen(false)
+              }}
+              value="__system__"
+            >
+              <Check className={cn('size-3.5 shrink-0 text-primary', selected ? 'invisible' : '')} />
+              <span className="min-w-0 flex-1 truncate">System ({systemTimezone})</span>
+            </CommandItem>
+
+            {filteredPreferred.length > 0 && <CommandSeparator />}
+
+            {filteredPreferred.map(timezone => {
+              const isSelected = selected === timezone
+              return (
+                <CommandItem
+                  key={`preferred-${timezone}`}
+                  onSelect={() => {
+                    onChange(timezone)
+                    setOpen(false)
+                  }}
+                  value={timezone}
+                >
+                  <Check className={cn('size-3.5 shrink-0 text-primary', !isSelected && 'invisible')} />
+                  <span className="min-w-0 flex-1 truncate">{timezone}</span>
+                </CommandItem>
+              )
+            })}
+
+            {filteredAll.length > 0 && filteredPreferred.length > 0 && <CommandSeparator />}
+
+            {filteredAll.map(timezone => {
+              const isSelected = selected === timezone
+              return (
+                <CommandItem
+                  key={timezone}
+                  onSelect={() => {
+                    onChange(timezone)
+                    setOpen(false)
+                  }}
+                  value={timezone}
+                >
+                  <Check className={cn('size-3.5 shrink-0 text-primary', !isSelected && 'invisible')} />
+                  <span className="min-w-0 flex-1 truncate">{timezone}</span>
+                </CommandItem>
+              )
+            })}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
 
 function ConfigField({
   schemaKey,
@@ -72,6 +263,16 @@ function ConfigField({
       <div className="flex items-center justify-end">
         <Switch checked={Boolean(value)} onCheckedChange={onChange} />
       </div>
+    )
+  }
+
+  if (schemaKey === 'timezone') {
+    return row(
+      <TimezoneField
+        onChange={next => onChange(next)}
+        placeholder={c.notSet}
+        value={String(value ?? '')}
+      />
     )
   }
 
