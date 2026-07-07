@@ -122,6 +122,16 @@ export function joinInstallerBaseUrl(baseUrl: string, suffix: string): string {
   return `${normalized}/${suffix.replace(/^\/+/, '')}`
 }
 
+function detectInstallerTimezone(): string {
+  try {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone?.trim()
+    if (timezone) return timezone
+  } catch {
+    // Fall through to UTC default.
+  }
+  return 'UTC'
+}
+
 export const $progress = computed($bootstrap, (b) => {
   const total = b.stageOrder.length
   if (total === 0) return { done: 0, total: 0, fraction: 0 }
@@ -334,6 +344,7 @@ export async function startInstall(opts?: { branch?: string; credentials?: Crede
         branch: opts?.branch ?? null,
         include_desktop: true,
         hermes_home: null,
+        timezone: detectInstallerTimezone(),
         credentials
       }
     })

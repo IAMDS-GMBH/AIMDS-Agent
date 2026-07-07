@@ -62,6 +62,9 @@ pub struct StartBootstrapArgs {
     /// Optional override for HERMES_HOME. Tests use this; production
     /// almost always falls back to the OS default.
     pub hermes_home: Option<String>,
+    /// Installer-detected IANA timezone (e.g. "Europe/Berlin").
+    /// Passed to install.ps1 as HERMES_BOOTSTRAP_TIMEZONE.
+    pub timezone: Option<String>,
     /// Setup credentials collected from the UI (only during install mode).
     pub credentials: Option<CredentialsData>,
 }
@@ -362,6 +365,11 @@ async fn run_bootstrap(
     args: StartBootstrapArgs,
     cancel_rx_holder: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
 ) -> Result<String> {
+    let bootstrap_timezone = args
+        .timezone
+        .as_deref()
+        .map(str::trim)
+        .filter(|tz| !tz.is_empty());
     let kind = ScriptKind::for_current_os();
 
     let pin = Pin {
@@ -444,6 +452,7 @@ async fn run_bootstrap(
         &script.path,
         &manifest_args_full,
         args.hermes_home.as_deref(),
+        bootstrap_timezone,
         None,
         Some("__manifest__".to_string()),
         args.credentials.as_ref(),
@@ -552,6 +561,7 @@ async fn run_bootstrap(
             &script.path,
             &stage_args,
             args.hermes_home.as_deref(),
+            bootstrap_timezone,
             local_cancel_rx,
             Some(stage.name.clone()),
             args.credentials.as_ref(),
@@ -607,6 +617,7 @@ async fn run_bootstrap(
                     &script.path,
                     &retry_args,
                     args.hermes_home.as_deref(),
+                    bootstrap_timezone,
                     None,
                     Some(stage.name.clone()),
                     args.credentials.as_ref(),
@@ -764,6 +775,7 @@ async fn run_install_script(
     script_path: &std::path::Path,
     args: &[String],
     hermes_home_override: Option<&str>,
+    bootstrap_timezone: Option<&str>,
     cancel_rx: Option<mpsc::Receiver<()>>,
     stage_name: Option<String>,
     credentials: Option<&CredentialsData>,
@@ -816,7 +828,15 @@ async fn run_install_script(
         }),
     };
 
-    powershell::run_script(script_path, args, sink, hermes_home_override, cancel_rx, credentials)
+    powershell::run_script(
+        script_path,
+        args,
+        sink,
+        hermes_home_override,
+        bootstrap_timezone,
+        cancel_rx,
+        credentials,
+    )
         .await
         .map_err(|e| {
             tracing::error!(?e, "install script invocation failed");

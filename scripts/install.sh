@@ -2245,6 +2245,17 @@ copy_config_templates() {
             fi
         fi
 
+        # Persist installer-provided timezone when config doesn't already set one.
+        # Source: HERMES_BOOTSTRAP_TIMEZONE from bootstrap-installer frontend
+        # (Intl.DateTimeFormat().resolvedOptions().timeZone) with UTC fallback.
+        bootstrap_timezone="$(printf '%s' "${HERMES_BOOTSTRAP_TIMEZONE:-}" | xargs)"
+        if [ -n "$bootstrap_timezone" ] && ! grep -qE '^timezone:[[:space:]]*' "$HERMES_HOME/config.yaml"; then
+            {
+                printf '\n'
+                printf 'timezone: %s\n' "$bootstrap_timezone"
+            } >> "$HERMES_HOME/config.yaml"
+        fi
+
         escaped_cwd=$(printf '%s\n' "$hermes_work_dir" | sed 's/[\/&]/\\&/g')
         if grep -qE '^[[:space:]]+cwd:' "$HERMES_HOME/config.yaml"; then
             sed -i.bak "s|^  cwd: .*|  cwd: $escaped_cwd|" "$HERMES_HOME/config.yaml" || true

@@ -43,6 +43,7 @@ pub async fn run_script(
     args: &[String],
     sink: StreamSink,
     hermes_home_override: Option<&str>,
+    bootstrap_timezone: Option<&str>,
     mut cancel_rx: Option<CancelRx>,
     credentials: Option<&CredentialsData>,
 ) -> Result<ScriptResult> {
@@ -58,6 +59,12 @@ pub async fn run_script(
 
     if let Some(home) = hermes_home_override {
         cmd.env("HERMES_HOME", home);
+    }
+    if let Some(timezone) = bootstrap_timezone {
+        let timezone = timezone.trim();
+        if !timezone.is_empty() {
+            cmd.env("HERMES_BOOTSTRAP_TIMEZONE", timezone);
+        }
     }
 
     // Set credentials as env vars for the install script

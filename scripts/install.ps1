@@ -2771,6 +2771,17 @@ function Copy-ConfigTemplates {
             }
         }
 
+        # Persist installer-provided timezone when config doesn't already set one.
+        # Source: HERMES_BOOTSTRAP_TIMEZONE from bootstrap-installer frontend
+        # (Intl.DateTimeFormat().resolvedOptions().timeZone) with UTC fallback.
+        $bootstrapTimezone = "$($env:HERMES_BOOTSTRAP_TIMEZONE)".Trim()
+        if (
+            -not [string]::IsNullOrWhiteSpace($bootstrapTimezone) -and
+            $config -notmatch '(?m)^timezone:\s*'
+        ) {
+            $config = $config.TrimEnd() + "`n`ntimezone: $bootstrapTimezone`n"
+        }
+
         $terminalPattern = '(?ms)^terminal:\s*\r?\n(?<body>(?:^[ \t].*(?:\r?\n|$))*)'
         if ($config -match $terminalPattern) {
             $terminalBody = $Matches['body']
