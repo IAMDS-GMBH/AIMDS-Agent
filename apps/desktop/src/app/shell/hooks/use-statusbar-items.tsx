@@ -405,7 +405,7 @@ export function useStatusbarItems({
       },
       {
         className: cn('px-1', yoloActive && 'bg-(--chrome-action-hover)'),
-        hidden: !showYoloToggle,
+        hidden: true,
         icon: yoloActive ? (
           <ZapFilled className="size-3.5 shrink-0" />
         ) : (
@@ -449,7 +449,7 @@ export function useStatusbarItems({
       },
       {
         className: `w-7 justify-center px-0${terminalTakeover ? ' bg-accent/55 text-foreground' : ''}`,
-        hidden: !chatOpen,
+        hidden: true,
         icon: <Terminal className="size-3.5" />,
         id: 'terminal',
         onSelect: () => setTerminalTakeover(!$terminalTakeover.get()),
