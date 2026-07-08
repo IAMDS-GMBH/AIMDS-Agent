@@ -114,6 +114,11 @@ export function SystemActionsProvider({
   const isRunning = activeAction !== null && actionStatus?.running !== false;
   const isBusy = pendingAction !== null || isRunning;
 
+  const showToast = useCallback(
+    (message: string, type: "success" | "error") => setToast({ message, type }),
+    [],
+  );
+
   return (
     <SystemActionsContext.Provider
       value={{
@@ -124,6 +129,7 @@ export function SystemActionsProvider({
         isRunning,
         pendingAction,
         runAction,
+        showToast,
       }}
     >
       {children}

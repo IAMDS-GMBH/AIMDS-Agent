@@ -15,4 +15,5 @@ export interface SystemActionsState {
   isRunning: boolean;
   pendingAction: SystemAction | null;
   runAction: (action: SystemAction) => Promise<void>;
+  showToast: (message: string, type: "success" | "error") => void;
 }
