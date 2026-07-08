@@ -33,6 +33,7 @@ import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { Toast } from "@nous-research/ui/ui/components/toast";
 
 const PERIODS = [
   { label: "7d", days: 7 },
@@ -698,7 +699,7 @@ function ModelSettingsPanel({
 }) {
   const [auxModalOpen, setAuxModalOpen] = useState(false);
   const [picker, setPicker] = useState<PickerTarget | null>(null);
-  const { showToast } = useToast();
+  const { showToast, toast } = useToast();
   const mainModel = aux?.main.model ?? "";
 
   const applyAssignment = async ({
@@ -825,6 +826,7 @@ function ModelSettingsPanel({
           />
         )}
       </CardContent>
+      <Toast toast={toast} />
     </Card>
   );
 }
