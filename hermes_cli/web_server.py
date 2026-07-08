@@ -3165,28 +3165,26 @@ def _apply_model_assignment_sync(
         save_config(cfg)
 
         # When switching the main provider to an IAMDS LiteLLM variant, update
-        # any MCP servers tagged ``provider: iamds`` in config.yaml so that the
-        # next gateway startup (or a running gateway's own reload) picks up the
-        # correct endpoint URL and API key.  We only persist the config here —
-        # live-reconnect for running sessions is handled by tui_gateway's own
-        # model-switch hook.
+        # any MCP servers tagged ``provider: iamds`` in config.yaml AND
+        # reconnect them live.  The web server and the in-process tui_gateway
+        # share the same tools.mcp_tool module state (_servers, _mcp_loop), so
+        # reload_provider_mcp_servers() works here exactly as it does in the
+        # gateway's own model-switch hook.  This runs in a worker thread
+        # (asyncio.to_thread), so blocking on the MCP shutdown/reconnect is fine.
         try:
-            from tools.mcp_tool import _IAMDS_PROVIDER_SLUGS, _persist_iamds_mcp_config
+            from tools.mcp_tool import _IAMDS_PROVIDER_SLUGS, reload_provider_mcp_servers
             if provider.strip().lower() in _IAMDS_PROVIDER_SLUGS:
                 from hermes_cli.runtime_provider import resolve_runtime_provider
                 _runtime = resolve_runtime_provider(requested=provider, target_model=model)
                 _new_base_url = _runtime.get("base_url", "") or base_url or ""
                 _new_api_key = _runtime.get("api_key", "") or ""
-                # Re-load config to pick up what was just saved, then update MCP.
-                _updated_cfg = load_config()
-                for _sname, _scfg in (_updated_cfg.get("mcp_servers") or {}).items():
-                    if isinstance(_scfg, dict):
-                        from tools.mcp_tool import _IAMDS_MCP_TAGS
-                        _tag = str(_scfg.get("provider") or "").strip().lower()
-                        if _tag in _IAMDS_MCP_TAGS and _scfg.get("url"):
-                            _persist_iamds_mcp_config(_sname, _new_base_url, _new_api_key)
+                reload_provider_mcp_servers(
+                    provider=provider.strip().lower(),
+                    new_base_url=_new_base_url,
+                    new_api_key=_new_api_key,
+                )
         except Exception:
-            _log.debug("IAMDS MCP config update failed after model assignment", exc_info=True)
+            _log.debug("IAMDS MCP reload failed after model assignment", exc_info=True)
 
         # Surface auxiliary slots still pinned to a *different* provider than
         # the new main one. Switching the main model does NOT touch aux pins
