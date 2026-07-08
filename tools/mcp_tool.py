@@ -2641,8 +2641,8 @@ def _build_provider_aware_mcp_config(
 
     Applies env-var interpolation to *raw_cfg*, then overrides:
     - ``url``: rebuilt from *new_base_url* via ``_build_iamds_mcp_url``
-    - ``headers.Authorization``: replaced with ``Bearer <new_api_key>`` when
-      an Authorization header is already present and *new_api_key* is non-empty.
+    - ``headers.Authorization``: set to ``Bearer <new_api_key>`` when an
+      Authorization header is already present and *new_api_key* is non-empty.
     """
     cfg = _interpolate_env_vars(raw_cfg)
     if new_base_url and isinstance(cfg.get("url"), str):
@@ -2662,14 +2662,14 @@ def _build_provider_aware_mcp_config(
 def _persist_iamds_mcp_config(
     server_name: str,
     new_base_url: str,
-    provider: str,
+    new_api_key: str,
 ) -> None:
-    """Write the updated URL and Authorization placeholder back to config.yaml.
+    """Write the updated URL and API key back to config.yaml.
 
     Only ``url`` and ``headers.Authorization`` are touched so that other
     per-server settings (timeouts, trusted, etc.) are preserved.
-    The API key is written as a ``${ENV_VAR}`` placeholder -- never the raw
-    secret -- so the file stays portable across machines and profiles.
+    The API key written is the actual resolved key for the active provider,
+    mirroring what the installer writes on first setup.
     """
     try:
         from hermes_cli.config import load_config, save_config
@@ -2686,11 +2686,10 @@ def _persist_iamds_mcp_config(
             if new_url and new_url != entry["url"]:
                 entry["url"] = new_url
                 changed = True
-        key_env_var = _IAMDS_KEY_ENV_VAR.get(provider.lower(), "")
-        if key_env_var and isinstance(entry.get("headers"), dict):
+        if new_api_key and isinstance(entry.get("headers"), dict):
             for hname in list(entry["headers"]):
                 if hname.lower() == "authorization":
-                    new_val = f"Bearer ${{{key_env_var}}}"
+                    new_val = f"Bearer {new_api_key}"
                     if entry["headers"][hname] != new_val:
                         entry["headers"][hname] = new_val
                         changed = True
@@ -2699,8 +2698,8 @@ def _persist_iamds_mcp_config(
             config["mcp_servers"][server_name] = entry
             save_config(config)
             logger.debug(
-                "MCP provider reload: persisted updated config for '%s' (provider: %s)",
-                server_name, provider,
+                "MCP provider reload: persisted updated config for '%s'",
+                server_name,
             )
     except Exception as exc:
         logger.debug("MCP provider reload: failed to persist config for '%s': %s", server_name, exc)
@@ -2782,7 +2781,7 @@ def reload_provider_mcp_servers(
     # Persist updated URL + key placeholder to config.yaml, then reconnect
     # with the fully-resolved runtime config (interpolated env vars + new key).
     for name in tagged:
-        _persist_iamds_mcp_config(name, new_base_url, provider)
+        _persist_iamds_mcp_config(name, new_base_url, new_api_key)
 
     # Re-read config after persistence so the interpolated env vars are fresh.
     try:
