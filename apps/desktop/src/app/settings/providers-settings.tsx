@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { getHermesConfigRecord, saveHermesConfig } from '@/hermes'
+import { getHermesConfigRecord, keycloakLogin, saveHermesConfig, setEnvVar } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { ChevronRight, KeyRound } from '@/lib/icons'
+import { ChevronRight, KeyRound, Loader2, Check, AlertCircle, ShieldCheck } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 import type { EnvVarInfo } from '@/types/hermes'
 
@@ -16,6 +16,11 @@ import { LoadingState, SettingsContent } from './primitives'
 export const PROVIDER_VIEWS = ['accounts', 'keys'] as const
 
 export type ProviderView = (typeof PROVIDER_VIEWS)[number]
+
+// Enterprise defaults baked in at packaging time (see vite.config.ts).
+const DEFAULT_BASE_URL: string = import.meta.env.VITE_DEFAULT_BASE_URL ?? ''
+const DEFAULT_REALM: string = import.meta.env.VITE_DEFAULT_KEYCLOAK_REALM ?? 'master'
+const DEFAULT_REDIRECT_URI: string = import.meta.env.VITE_DEFAULT_KEYCLOAK_REDIRECT_URI ?? ''
 
 function buildIamdsLiteLlmKeyGroup(vars: Record<string, EnvVarInfo>): ProviderKeyGroup[] {
   const mainKey = 'IAMDS_LITELLM_API_KEY'
@@ -219,12 +224,92 @@ function IamdsExtraProvidersPanel() {
   )
 }
 
-function IamdsAccountPanel({ onWantApiKey }: { onWantApiKey: () => void }) {
+function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () => void; onRefreshCreds?: () => void }) {
   const { t } = useI18n()
+  const [isKeycloakLoading, setIsKeycloakLoading] = useState(false)
+  const [keycloakConnected, setKeycloakConnected] = useState(false)
+  const [keycloakError, setKeycloakError] = useState<string | null>(null)
+
+  const handleKeycloakLogin = async () => {
+    setKeycloakError(null)
+    setIsKeycloakLoading(true)
+    setKeycloakConnected(false)
+
+    const baseUrl = DEFAULT_BASE_URL.trim()
+    if (!baseUrl) {
+      setKeycloakError('Set VITE_DEFAULT_BASE_URL in the enterprise bundle to enable Keycloak SSO')
+      setIsKeycloakLoading(false)
+      return
+    }
+
+    try {
+      const result = await keycloakLogin({
+        baseUrl,
+        realm: DEFAULT_REALM,
+        redirectUri: DEFAULT_REDIRECT_URI || `${baseUrl}/oauth/oidc/callback`,
+      })
+
+      await setEnvVar('IAMDS_LITELLM_API_KEY', result.apiKey)
+      setKeycloakConnected(true)
+      notify({ kind: 'success', message: 'API key obtained via Keycloak SSO', title: 'Connected' })
+      onRefreshCreds?.()
+    } catch (err) {
+      setKeycloakError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setIsKeycloakLoading(false)
+    }
+  }
 
   return (
     <section className="mb-5 grid gap-2">
       <SettingsCategoryHeading icon={KeyRound} title={t.settings.providers.connectAccount} />
+
+      {/* Keycloak SSO — primary when DEFAULT_BASE_URL is baked in */}
+      {DEFAULT_BASE_URL && (
+        <div className="rounded-[8px] border border-border bg-muted/20 p-3">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-[length:var(--conversation-text-font-size)] font-semibold">IAMDS LiteLLM</span>
+            <span className="inline-flex items-center gap-1.5 bg-primary px-2 py-0.5 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-primary-foreground">
+              <span aria-hidden="true" className="dither inline-block size-2 shrink-0" />
+              {t.onboarding.recommended}
+            </span>
+          </div>
+          <p className="mb-3 text-xs leading-5 text-muted-foreground">
+            Sign in with your organisation account to automatically obtain an API key.
+          </p>
+          <button
+            type="button"
+            onClick={() => void handleKeycloakLogin()}
+            disabled={isKeycloakLoading}
+            className="flex w-full items-center justify-center gap-2 rounded border border-primary bg-primary/10 px-4 py-2 text-sm font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+          >
+            {isKeycloakLoading ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Connecting…
+              </>
+            ) : keycloakConnected ? (
+              <>
+                <Check className="h-4 w-4 text-green-500" />
+                Connected via Keycloak
+              </>
+            ) : (
+              <>
+                <ShieldCheck className="h-4 w-4" />
+                Connect with Keycloak
+              </>
+            )}
+          </button>
+          {keycloakError && (
+            <p className="mt-2 flex items-center gap-1 text-xs text-red-500">
+              <AlertCircle className="h-3 w-3 shrink-0" />
+              {keycloakError}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Manual API key — always available as secondary path */}
       <button
         className="group relative flex w-full items-center justify-between gap-4 rounded-[8px] bg-primary/[0.06] px-3 py-2.5 text-left transition-colors hover:bg-primary/10"
         onClick={onWantApiKey}
@@ -236,13 +321,17 @@ function IamdsAccountPanel({ onWantApiKey }: { onWantApiKey: () => void }) {
             <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
               IAMDS LiteLLM
             </span>
-            <span className="inline-flex items-center gap-1.5 bg-primary px-2 py-0.5 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-primary-foreground">
-              <span aria-hidden="true" className="dither inline-block size-2 shrink-0" />
-              {t.onboarding.recommended}
-            </span>
+            {!DEFAULT_BASE_URL && (
+              <span className="inline-flex items-center gap-1.5 bg-primary px-2 py-0.5 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-primary-foreground">
+                <span aria-hidden="true" className="dither inline-block size-2 shrink-0" />
+                {t.onboarding.recommended}
+              </span>
+            )}
           </div>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            Configure your API key to access IAMDS-hosted models
+            {DEFAULT_BASE_URL
+              ? 'Configure your API key manually instead of using SSO'
+              : 'Configure your API key to access IAMDS-hosted models'}
           </p>
         </div>
         <ChevronRight className="size-4 shrink-0 text-primary transition group-hover:translate-x-0.5" />
@@ -253,7 +342,7 @@ function IamdsAccountPanel({ onWantApiKey }: { onWantApiKey: () => void }) {
 
 export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps) {
   const { t } = useI18n()
-  const { rowProps, vars } = useEnvCredentials()
+  const { rowProps, vars, refetch } = useEnvCredentials()
   const [openProvider, setOpenProvider] = useState<null | string>(null)
 
   if (!vars) {
@@ -290,7 +379,7 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
 
   return (
     <SettingsContent>
-      <IamdsAccountPanel onWantApiKey={() => onViewChange('keys')} />
+      <IamdsAccountPanel onWantApiKey={() => onViewChange('keys')} onRefreshCreds={() => void refetch()} />
     </SettingsContent>
   )
 }

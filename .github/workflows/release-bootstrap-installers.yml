@@ -25,6 +25,15 @@ on:
         description: "Release changelog/notes. Use \\n for line breaks."
         required: false
         type: string
+      base_url:
+        description: "IAMDS ecosystem base URL baked into the installer for Keycloak SSO (e.g. https://suite.example.com). Leave empty for a generic build without a pre-configured endpoint."
+        required: false
+        type: string
+      keycloak_realm:
+        description: "Keycloak realm name for SSO (default: master). Only used when base_url is set."
+        required: false
+        default: master
+        type: string
       create_release:
         description: "Create/update a GitHub Release and upload artifacts"
         required: false
@@ -225,6 +234,9 @@ jobs:
           echo "Resolved pins: branch=main, commit=$main_head"
 
       - name: Build bootstrap installer
+        env:
+          VITE_DEFAULT_BASE_URL: ${{ github.event.inputs.base_url }}
+          VITE_DEFAULT_KEYCLOAK_REALM: ${{ github.event.inputs.keycloak_realm || 'master' }}
         run: npm run tauri:build
         working-directory: apps/bootstrap-installer
 

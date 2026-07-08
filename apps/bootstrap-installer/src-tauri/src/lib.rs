@@ -11,6 +11,7 @@
 mod bootstrap;
 mod events;
 mod install_script;
+mod keycloak;
 mod powershell;
 mod paths;
 mod update;
@@ -184,6 +185,8 @@ pub fn run() {
             // Model discovery
             models::fetch_models,
             models::write_provider_models_cache,
+            // Keycloak SSO
+            keycloak::keycloak_login,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Hermes Setup");

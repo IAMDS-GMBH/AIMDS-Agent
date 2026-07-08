@@ -21,6 +21,14 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src')
     }
   },
+  // Expose enterprise bundle defaults baked in at packaging time.
+  // Set VITE_DEFAULT_BASE_URL in CI/packaging env to pre-fill the installer
+  // credentials screen and promote Keycloak SSO as the primary login path.
+  define: {
+    'import.meta.env.VITE_DEFAULT_BASE_URL': JSON.stringify(process.env.VITE_DEFAULT_BASE_URL ?? ''),
+    'import.meta.env.VITE_DEFAULT_KEYCLOAK_REALM': JSON.stringify(process.env.VITE_DEFAULT_KEYCLOAK_REALM ?? 'master'),
+    'import.meta.env.VITE_DEFAULT_KEYCLOAK_REDIRECT_URI': JSON.stringify(process.env.VITE_DEFAULT_KEYCLOAK_REDIRECT_URI ?? ''),
+  },
   clearScreen: false,
   server: {
     port: 5175,

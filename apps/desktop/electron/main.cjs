@@ -3815,7 +3815,189 @@ function openOauthLoginWindow(baseUrl) {
   })
 }
 
-// JSON request routed through the OAuth session partition so the HttpOnly
+// ---------------------------------------------------------------------------
+// Keycloak SSO login for IAMDS providers.
+//
+// Opens a BrowserWindow to the Keycloak OIDC auth page for the `open-webui`
+// client, intercepts the authorization-code redirect, exchanges the code for
+// an access token, and extracts the LiteLLM virtual key from the JWT "key"
+// claim — no static API key entry required.
+//
+// The redirect URI is derived from base_url by default
+// ({base_url}/oauth/oidc/callback) since that is what Open-WebUI registers
+// for its Keycloak OIDC client.  The IPC caller can override via redirectUri.
+// ---------------------------------------------------------------------------
+
+/**
+ * Decode a JWT payload (base64url middle section) and return the parsed object.
+ * @param {string} token
+ * @returns {object}
+ */
+function decodeJwtPayload(token) {
+  const parts = token.split('.')
+  if (parts.length < 2) throw new Error('Invalid JWT: expected header.payload.signature')
+  const b64url = parts[1]
+  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/')
+  const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4)
+  const json = Buffer.from(padded, 'base64').toString('utf8')
+  return JSON.parse(json)
+}
+
+/**
+ * Exchange a Keycloak authorization code for an access token.
+ * @param {string} tokenUrl
+ * @param {string} code
+ * @param {string} redirectUri
+ * @returns {Promise<object>} parsed token response
+ */
+function exchangeKeycloakCode(tokenUrl, code, redirectUri) {
+  return new Promise((resolve, reject) => {
+    const body = new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: 'open-webui',
+      code,
+      redirect_uri: redirectUri
+    }).toString()
+
+    const req = electronNet.request({ method: 'POST', url: tokenUrl })
+    req.setHeader('Content-Type', 'application/x-www-form-urlencoded')
+    req.setHeader('Content-Length', Buffer.byteLength(body).toString())
+
+    let responseData = ''
+    req.on('response', response => {
+      response.on('data', chunk => { responseData += chunk.toString() })
+      response.on('end', () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(`Keycloak token endpoint returned HTTP ${response.statusCode}: ${responseData}`))
+          return
+        }
+        try {
+          resolve(JSON.parse(responseData))
+        } catch (err) {
+          reject(new Error(`Failed to parse Keycloak token response: ${err.message}`))
+        }
+      })
+    })
+    req.on('error', err => reject(new Error(`Keycloak token request failed: ${err.message}`)))
+    req.write(body)
+    req.end()
+  })
+}
+
+/**
+ * Open a Keycloak login window for the `open-webui` client, intercept the
+ * authorization-code redirect, exchange for an access token, and return the
+ * LiteLLM virtual key extracted from the JWT "key" claim.
+ *
+ * @param {string} baseUrl   IAMDS ecosystem base URL
+ * @param {string} realm     Keycloak realm name (default: "master")
+ * @param {string} redirectUri  OAuth redirect URI registered for open-webui
+ *                           (default: {baseUrl}/oauth/oidc/callback)
+ * @returns {Promise<{ apiKey: string, baseUrl: string }>}
+ */
+function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
+  return new Promise((resolve, reject) => {
+    if (!app.isReady()) {
+      reject(new Error('Desktop is not ready to start a Keycloak login.'))
+      return
+    }
+
+    const effectiveRealm = (realm || 'master').trim()
+    const effectiveRedirectUri = (redirectUri || `${baseUrl}/oauth/oidc/callback`).trim()
+    const tokenUrl = `${baseUrl}/auth/realms/${effectiveRealm}/protocol/openid-connect/token`
+
+    const authParams = new URLSearchParams({
+      client_id: 'open-webui',
+      response_type: 'code',
+      scope: 'openid',
+      redirect_uri: effectiveRedirectUri
+    })
+    const authUrl = `${baseUrl}/auth/realms/${effectiveRealm}/protocol/openid-connect/auth?${authParams}`
+
+    let settled = false
+    let win = null
+
+    const finish = (err, result) => {
+      if (settled) return
+      settled = true
+      try {
+        if (win && !win.isDestroyed()) win.destroy()
+      } catch {
+        // window already gone
+      }
+      if (err) reject(err)
+      else resolve(result)
+    }
+
+    try {
+      win = new BrowserWindow({
+        width: 500,
+        height: 660,
+        title: 'Sign in with Keycloak',
+        autoHideMenuBar: true,
+        webPreferences: {
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+          webSecurity: true
+        }
+      })
+    } catch (error) {
+      finish(error instanceof Error ? error : new Error(String(error)))
+      return
+    }
+
+    win.on('closed', () => {
+      if (!settled) finish(new Error('Login window closed before authentication completed.'))
+    })
+
+    // Intercept the Keycloak redirect to capture the authorization code.
+    // We preventDefault so the redirect URL is never actually fetched.
+    win.webContents.on('will-navigate', (event, url) => {
+      if (!url.startsWith(effectiveRedirectUri)) return
+      event.preventDefault()
+
+      let parsed
+      try { parsed = new URL(url) } catch {
+        finish(new Error('Keycloak returned an invalid callback URL.'))
+        return
+      }
+
+      const errorParam = parsed.searchParams.get('error_description') || parsed.searchParams.get('error')
+      if (errorParam) {
+        finish(new Error(`Keycloak authentication error: ${errorParam}`))
+        return
+      }
+
+      const code = parsed.searchParams.get('code')
+      if (!code) {
+        finish(new Error('No authorization code in Keycloak callback URL.'))
+        return
+      }
+
+      // Exchange code for token and extract the virtual key
+      exchangeKeycloakCode(tokenUrl, code, effectiveRedirectUri)
+        .then(tokenData => {
+          const accessToken = tokenData.access_token
+          if (!accessToken) throw new Error('No access_token in Keycloak response.')
+          const payload = decodeJwtPayload(accessToken)
+          const apiKey = payload.key
+          if (!apiKey) {
+            throw new Error(
+              "No 'key' claim found in Keycloak JWT. " +
+              'Ensure the LiteLLM virtual key is mapped as a token claim in Keycloak.'
+            )
+          }
+          finish(null, { apiKey, baseUrl })
+        })
+        .catch(err => finish(err instanceof Error ? err : new Error(String(err))))
+    })
+
+    win.loadURL(authUrl).catch(error => {
+      finish(error instanceof Error ? error : new Error(String(error)))
+    })
+  })
+}
 // session cookie is attached automatically by Electron's net stack. Used for
 // authed REST against a gated gateway, including minting WS tickets.
 function fetchJsonViaOauthSession(url, options = {}) {
@@ -5264,6 +5446,14 @@ ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) =
   // (AT-or-RT) so a logout that left any session cookie behind is reflected
   // as still-connected rather than silently signed-out.
   return { ok: true, connected: baseUrl ? await hasLiveOauthSession(baseUrl) : false }
+})
+
+ipcMain.handle('hermes:providers:keycloak-login', async (_event, { baseUrl, realm, redirectUri } = {}) => {
+  if (!baseUrl || typeof baseUrl !== 'string') {
+    throw new Error('keycloak-login: baseUrl is required')
+  }
+  const result = await openKeycloakLoginWindow(baseUrl.trim(), realm, redirectUri)
+  return { ok: true, ...result }
 })
 ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   const config = coerceDesktopConnectionConfig(payload)

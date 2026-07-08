@@ -368,6 +368,14 @@ export function setEnvVar(key: string, value: string): Promise<{ ok: boolean }> 
   })
 }
 
+export function keycloakLogin(params: {
+  baseUrl: string
+  realm?: string
+  redirectUri?: string
+}): Promise<{ ok: boolean; apiKey: string; baseUrl: string }> {
+  return window.hermesDesktop.keycloakLogin(params)
+}
+
 export function validateProviderCredential(
   key: string,
   value: string

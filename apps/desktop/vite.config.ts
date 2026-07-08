@@ -6,6 +6,14 @@ import path from 'path'
 export default defineConfig({
   base: './',
   plugins: [react(), tailwindcss()],
+  // Expose enterprise bundle defaults baked in at packaging time.
+  // Set VITE_DEFAULT_BASE_URL in CI/packaging env to pre-fill the providers
+  // screen and promote Keycloak SSO as the primary login path.
+  define: {
+    'import.meta.env.VITE_DEFAULT_BASE_URL': JSON.stringify(process.env.VITE_DEFAULT_BASE_URL ?? ''),
+    'import.meta.env.VITE_DEFAULT_KEYCLOAK_REALM': JSON.stringify(process.env.VITE_DEFAULT_KEYCLOAK_REALM ?? 'master'),
+    'import.meta.env.VITE_DEFAULT_KEYCLOAK_REDIRECT_URI': JSON.stringify(process.env.VITE_DEFAULT_KEYCLOAK_REDIRECT_URI ?? ''),
+  },
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and

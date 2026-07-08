@@ -78,6 +78,15 @@ export function useEnvCredentials(): UseEnvCredentials {
     return () => void (cancelled = true)
   }, [])
 
+  async function refetchVars() {
+    try {
+      const next = await getEnvVars()
+      setVars(next)
+    } catch (err) {
+      notifyError(err, t.settings.keys.failedLoad)
+    }
+  }
+
   function patchVar(key: string, patch: Partial<Pick<EnvVarInfo, 'is_set' | 'redacted_value'>>) {
     setVars(c => (c ? { ...c, [key]: { ...c[key], ...patch } } : c))
   }
@@ -173,6 +182,7 @@ export function useEnvCredentials(): UseEnvCredentials {
   return {
     saveValue,
     vars,
+    refetch: refetchVars,
     rowProps: {
       edits,
       revealed,
@@ -192,6 +202,7 @@ interface CategoryHeadingProps {
 }
 
 interface UseEnvCredentials {
+  refetch: () => Promise<void>
   rowProps: Omit<EnvRowProps, 'varKey' | 'info'>
   saveValue: (key: string, value: string) => Promise<{ message?: string; ok: boolean }>
   vars: Record<string, EnvVarInfo> | null
