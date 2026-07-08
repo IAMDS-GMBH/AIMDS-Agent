@@ -3890,7 +3890,7 @@ function exchangeKeycloakCode(tokenUrl, code, redirectUri) {
  * LiteLLM virtual key extracted from the JWT "key" claim.
  *
  * @param {string} baseUrl   IAMDS ecosystem base URL
- * @param {string} realm     Keycloak realm name (default: "master")
+ * @param {string} realm     Keycloak realm name (default: "aimds")
  * @param {string} redirectUri  OAuth redirect URI registered for open-webui
  *                           (default: {baseUrl}/oauth/oidc/callback)
  * @returns {Promise<{ apiKey: string, baseUrl: string }>}
@@ -3902,7 +3902,7 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
       return
     }
 
-    const effectiveRealm = (realm || 'master').trim()
+    const effectiveRealm = (realm || 'aimds').trim()
     const effectiveRedirectUri = (redirectUri || `${baseUrl}/oauth/oidc/callback`).trim()
     const tokenUrl = `${baseUrl}/auth/realms/${effectiveRealm}/protocol/openid-connect/token`
 

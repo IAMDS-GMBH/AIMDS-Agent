@@ -83,6 +83,36 @@ npm run pack         # unpacked app under release/ (no installer)
 
 Installers are built and uploaded to GitHub Releases manually. macOS/Windows signing & notarization happen automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
 
+### Keycloak SSO — enterprise provider setup
+
+The desktop app supports **Keycloak SSO** as an alternative to manual Base URL / API key entry. When a Keycloak-enabled installer is used, users see a **Connect with Keycloak** button in the IAMDS provider panel. Clicking it opens a browser window to the Keycloak OIDC login page; after authentication the LiteLLM virtual key is extracted from the JWT `"key"` claim and written to the environment automatically.
+
+**Auth flow:**
+1. A `BrowserWindow` opens to `{base_url}/auth/realms/{realm}/protocol/openid-connect/auth?client_id=open-webui&response_type=code&...`
+2. The user authenticates in Keycloak (realm: `aimds`, client: `open-webui`).
+3. Keycloak redirects to the registered callback URI (`{base_url}/oauth/oidc/callback?code=…`).
+4. Electron intercepts the `will-navigate` event before the redirect loads, extracts the `code` parameter, and closes the window.
+5. Electron exchanges the code for a JWT access token via the token endpoint.
+6. The JWT payload's `"key"` field is written as `LITELLM_API_KEY` (and `BASE_URL` if not already set).
+
+**Pre-baking the base URL at build time** (for enterprise distributions):
+
+Set the following environment variables when building to lock in defaults — users will see the Keycloak button without having to type a URL:
+
+| Variable | Description | Default |
+|---|---|---|
+| `VITE_DEFAULT_BASE_URL` | Pre-filled IAMDS base URL | *(empty — user must enter manually)* |
+| `VITE_DEFAULT_KEYCLOAK_REALM` | Keycloak realm | `aimds` |
+| `VITE_DEFAULT_KEYCLOAK_REDIRECT_URI` | OAuth redirect URI | `{base_url}/oauth/oidc/callback` |
+
+Example:
+
+```bash
+VITE_DEFAULT_BASE_URL=https://ai.example.com npm run dist:mac
+```
+
+**Without `VITE_DEFAULT_BASE_URL`:** the Keycloak button is still shown in the provider panel but the user must enter the base URL manually before clicking it. This is fully backward-compatible — existing manual-key setups are unaffected.
+
 ### How it works
 
 The packaged app ships only the Electron shell. On first launch it installs the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — the **same layout a CLI install uses**, so the two are interchangeable. The renderer (React, in `src/`) talks to a `hermes dashboard` backend over the standard gateway APIs and reuses the embedded TUI rather than reimplementing chat. The install, backend-resolution, and self-update logic all live in `electron/main.cjs`.

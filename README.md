@@ -35,7 +35,10 @@ For scripted/manual Windows installs, use `scripts/install.ps1`.
   <img src="assets/installer-welcome.png" alt="Installer welcome screen" width="75%">
 </p>
 
-**2. Configuration** — enter your **Base URL** and **API Key** (provided by your IAMDS administrator), then click **Fetch Models** to load the available models.
+**2. Configuration** — authenticate and configure your connection to the IAMDS backend.
+
+- **Connect with Keycloak (recommended)** — if the installer was built with an IAMDS base URL, click **Connect with Keycloak** to open a browser login window. After you log in, your API key is extracted automatically and the Base URL is pre-filled. No copy-pasting required.
+- **Manual entry** — enter your **Base URL** and **API Key** directly (provided by your IAMDS administrator), then click **Fetch Models** to load the available models.
 
 <p align="center">
   <img src="assets/installer-configuration.png" alt="Installer configuration screen" width="75%">

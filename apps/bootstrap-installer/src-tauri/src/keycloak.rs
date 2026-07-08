@@ -36,7 +36,7 @@ pub struct KeycloakLoginResult {
 ///
 /// Parameters:
 /// - `base_url`     — IAMDS ecosystem base URL, e.g. `https://suite.example.com`
-/// - `realm`        — Keycloak realm name (default: `"master"`)
+/// - `realm`        — Keycloak realm name (default: `"aimds"`)
 /// - `redirect_uri` — OAuth redirect URI registered for the `open-webui` client;
 ///                    defaults to `{base_url}/oauth/oidc/callback` when empty
 #[tauri::command]
@@ -47,7 +47,7 @@ pub async fn keycloak_login(
     redirect_uri: String,
 ) -> Result<KeycloakLoginResult, String> {
     let base = base_url.trim_end_matches('/').to_string();
-    let realm = if realm.trim().is_empty() { "master".to_string() } else { realm.trim().to_string() };
+    let realm = if realm.trim().is_empty() { "aimds".to_string() } else { realm.trim().to_string() };
 
     // Derive the redirect URI from base_url when not explicitly provided.
     // Open-WebUI registers this path for its Keycloak OIDC client by default.
@@ -336,7 +336,7 @@ mod tests {
         assert!(url.contains("client_id=open-webui"));
         assert!(url.contains("response_type=code"));
         assert!(url.contains("scope=openid"));
-        assert!(url.contains("/auth/realms/master/protocol/openid-connect/auth"));
+        assert!(url.contains("/auth/realms/aimds/protocol/openid-connect/auth"));
     }
 
     // Helper for test: standard base64 encode
