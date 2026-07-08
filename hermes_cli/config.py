@@ -4958,10 +4958,11 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 print("  Set later with: hermes config set <key> <value>")
 
     # ── Version 29 → 30: migrate IAMDS MCP server entries ──
-    # Renames the legacy "remoteMCP" server key to "IAMDS", and tags any HTTP
-    # MCP server whose URL host matches the IAMDS LiteLLM base URL with
-    # ``provider: iamds`` so the provider-aware reconnect feature picks it up
-    # automatically when switching between normal / staging / dev variants.
+    # Renames known legacy server keys (remoteMCP, remote, memory) to "IAMDS"
+    # when their URL host matches the IAMDS LiteLLM base URL, and tags any
+    # matching HTTP MCP server with ``provider: iamds`` so the provider-aware
+    # reconnect feature picks it up automatically when switching between
+    # normal / staging / dev variants.
     if current_ver < 30:
         try:
             config = load_config()
@@ -4985,42 +4986,52 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     except Exception:
                         pass
 
+                # Legacy names that should be renamed to IAMDS when their URL
+                # matches the IAMDS host. "remote" was used by custom installs;
+                # "remoteMCP" was the previous constant value; "memory" is the
+                # install-script fallback name.
+                _LEGACY_IAMDS_NAMES = {"remoteMCP", "remote", "memory"}
+
                 updated_servers: Dict[str, Any] = {}
                 touched_mcp = False
+                old_renamed: list = []
                 for sname, scfg in mcp_servers.items():
                     new_name = sname
-                    if sname == "remoteMCP":
-                        new_name = SINGLE_MCP_SERVER_NAME  # "IAMDS"
-                        touched_mcp = True
-                    if not isinstance(scfg, dict):
-                        updated_servers[new_name] = scfg
-                        continue
-                    new_cfg = dict(scfg)
-                    # Tag with provider: iamds if:
-                    # (a) still untagged, and
-                    # (b) this is an HTTP server whose host matches the IAMDS base URL
-                    if not new_cfg.get("provider") and new_cfg.get("url") and iamds_host:
+                    new_cfg = dict(scfg) if isinstance(scfg, dict) else scfg
+
+                    # Determine if this server's URL host matches IAMDS.
+                    srv_host = ""
+                    if isinstance(new_cfg, dict) and new_cfg.get("url") and iamds_host:
                         try:
                             srv_host = _urlparse(str(new_cfg["url"])).hostname or ""
                         except Exception:
-                            srv_host = ""
-                        if srv_host and srv_host == iamds_host:
-                            new_cfg["provider"] = "iamds"
-                            touched_mcp = True
+                            pass
+                    is_iamds_url = bool(srv_host and srv_host == iamds_host)
+
+                    # Rename legacy names when URL matches IAMDS host.
+                    if sname in _LEGACY_IAMDS_NAMES and is_iamds_url and SINGLE_MCP_SERVER_NAME not in mcp_servers:
+                        new_name = SINGLE_MCP_SERVER_NAME  # "IAMDS"
+                        old_renamed.append(sname)
+                        touched_mcp = True
+
+                    # Tag with provider: iamds if untagged and URL matches.
+                    if isinstance(new_cfg, dict) and not new_cfg.get("provider") and is_iamds_url:
+                        new_cfg["provider"] = "iamds"
+                        touched_mcp = True
+
                     updated_servers[new_name] = new_cfg
 
                 if touched_mcp:
                     config["mcp_servers"] = updated_servers
                     save_config(config)
                     if not quiet:
-                        renamed = "remoteMCP" in mcp_servers and SINGLE_MCP_SERVER_NAME not in mcp_servers
+                        parts = []
+                        if old_renamed:
+                            parts.append(f"renamed {', '.join(old_renamed)} → {SINGLE_MCP_SERVER_NAME}")
                         tagged = sum(
                             1 for s in updated_servers.values()
                             if isinstance(s, dict) and s.get("provider") == "iamds"
                         )
-                        parts = []
-                        if renamed:
-                            parts.append(f"renamed remoteMCP → {SINGLE_MCP_SERVER_NAME}")
                         if tagged:
                             parts.append(f"tagged {tagged} server(s) with provider: iamds")
                         if parts:

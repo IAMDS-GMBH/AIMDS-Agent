@@ -2522,7 +2522,7 @@ function Apply-BootstrapCredentials {
             $escapedUrl = $llmGatewayUrl -replace '([\\])', '$1$1' # Escape backslashes for regex
             $config = $config -replace '(?m)^  base_url:.*$', "  base_url: $escapedUrl"
 
-            # Upsert mcp_servers.remoteMCP with Bearer auth using API key.
+            # Upsert mcp_servers.IAMDS with the MCP URL and API key.
             # Keep other existing MCP servers untouched; the active key comes from config.py.
             $mcpServerName = "memory"
             # Reuse the same interpreter resolution pattern used by other
