@@ -2157,6 +2157,22 @@ def _apply_model_switch(
         }
     if persist_global:
         _persist_model_switch(result)
+
+    # When switching to an IAMDS LiteLLM provider variant, reconnect any
+    # MCP servers tagged with ``provider: iamds-litellm`` (or a variant
+    # slug) so they use the new host and API key immediately.
+    if getattr(result, "provider_changed", False):
+        try:
+            from tools.mcp_tool import reload_provider_mcp_servers, _IAMDS_PROVIDER_SLUGS
+            if result.target_provider.lower() in _IAMDS_PROVIDER_SLUGS:
+                reload_provider_mcp_servers(
+                    provider=result.target_provider,
+                    new_base_url=result.base_url or "",
+                    new_api_key=result.api_key or "",
+                )
+        except Exception:
+            logger.debug("MCP provider reload failed after model switch", exc_info=True)
+
     return {
         "value": result.new_model,
         "warning": result.warning_message or "",

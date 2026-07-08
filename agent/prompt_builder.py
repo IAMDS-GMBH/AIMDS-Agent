@@ -1443,7 +1443,7 @@ def _resolve_memory_context_tool_name(valid_tool_names: "set[str] | None") -> st
 
     Supports native and prefixed names. Canonical MCP naming is:
     ``mcp_{hermes_mcp_name}_{server_name}_{tool}`` (for example
-    ``mcp_remoteMCP_mcp_memory_memory_context``).
+    ``mcp_IAMDS_mcp_memory_memory_context``).
 
     Supported patterns include:
     - ``memory_context``

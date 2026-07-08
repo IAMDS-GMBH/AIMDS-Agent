@@ -91,7 +91,7 @@ import threading
 import time
 from datetime import datetime
 from typing import Any, Coroutine, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
 
@@ -2581,6 +2581,159 @@ def _interpolate_env_vars(value):
     if isinstance(value, list):
         return [_interpolate_env_vars(v) for v in value]
     return value
+
+
+# ---------------------------------------------------------------------------
+# IAMDS provider-aware MCP server helpers
+# ---------------------------------------------------------------------------
+
+# Canonical slugs for all IAMDS LiteLLM provider variants. When the active
+# provider is one of these, provider-tagged MCP servers are reconnected with
+# the new base URL and API key.
+_IAMDS_PROVIDER_SLUGS: frozenset = frozenset({
+    "iamds-litellm",
+    "iamds-litellm-staging",
+    "iamds-litellm-dev",
+})
+
+# Values accepted in the ``provider`` field of an ``mcp_servers`` entry to
+# mark a server as IAMDS-aware. ``iamds`` / ``IAMDS`` is the preferred short
+# form; the full provider slugs are accepted as aliases for backward compat.
+_IAMDS_MCP_TAGS: frozenset = frozenset({
+    "iamds",
+    "iamds-litellm",
+    "iamds-litellm-staging",
+    "iamds-litellm-dev",
+})
+
+
+def _replace_url_base(mcp_url: str, provider_base_url: str) -> str:
+    """Replace the scheme+netloc of *mcp_url* with those from *provider_base_url*.
+
+    The path, query, and fragment of *mcp_url* are preserved so only the host
+    (and scheme/port) changes when switching between IAMDS provider variants.
+    Returns *mcp_url* unchanged on any parse error.
+    """
+    try:
+        mcp_parts = urlparse(mcp_url)
+        base_parts = urlparse(provider_base_url)
+        if not base_parts.netloc:
+            return mcp_url
+        return urlunparse((
+            base_parts.scheme or mcp_parts.scheme,
+            base_parts.netloc,
+            mcp_parts.path,
+            mcp_parts.params,
+            mcp_parts.query,
+            mcp_parts.fragment,
+        ))
+    except Exception:
+        return mcp_url
+
+
+def _build_provider_aware_mcp_config(
+    raw_cfg: dict,
+    new_base_url: str,
+    new_api_key: str,
+) -> dict:
+    """Build an updated config dict for a provider-aware MCP server.
+
+    Applies env-var interpolation to *raw_cfg*, then overrides:
+    - ``url``: the scheme+netloc is replaced with that of *new_base_url*
+    - ``headers.Authorization``: replaced with ``Bearer <new_api_key>`` when
+      an Authorization header is already present and *new_api_key* is non-empty.
+    """
+    cfg = _interpolate_env_vars(raw_cfg)
+    if new_base_url and isinstance(cfg.get("url"), str):
+        cfg["url"] = _replace_url_base(cfg["url"], new_base_url)
+    if new_api_key and isinstance(cfg.get("headers"), dict):
+        headers = dict(cfg["headers"])
+        for hname in list(headers):
+            if hname.lower() == "authorization":
+                headers[hname] = f"Bearer {new_api_key}"
+                break
+        cfg["headers"] = headers
+    return cfg
+
+
+def reload_provider_mcp_servers(
+    provider: str,
+    new_base_url: str,
+    new_api_key: str,
+) -> List[str]:
+    """Reconnect MCP servers tagged for an IAMDS LiteLLM provider variant.
+
+    When the active IAMDS provider changes (e.g. normal → staging → dev),
+    HTTP MCP servers whose ``mcp_servers`` config entry contains
+    ``provider: iamds-litellm`` (or any IAMDS variant slug) are shut down
+    and reconnected with:
+
+    - URL host replaced by the host extracted from *new_base_url*
+    - ``headers.Authorization`` updated to ``Bearer <new_api_key>``
+
+    Stdio (``command``-based) servers are skipped — their credentials are
+    passed via environment variables and do not need a reconnect.
+
+    Returns the list of MCP tool names available after reconnecting the
+    tagged servers (same contract as ``register_mcp_servers``).
+    """
+    if provider.lower() not in _IAMDS_PROVIDER_SLUGS:
+        return []
+
+    try:
+        from hermes_cli.config import load_config
+        raw_servers = (load_config().get("mcp_servers") or {})
+    except Exception:
+        return []
+
+    # Collect HTTP servers explicitly tagged with an IAMDS provider slug.
+    tagged: Dict[str, dict] = {}
+    for name, cfg in raw_servers.items():
+        if not isinstance(cfg, dict):
+            continue
+        srv_provider = str(cfg.get("provider") or "").strip().lower()
+        if srv_provider not in _IAMDS_PROVIDER_SLUGS:
+            continue
+        if not cfg.get("url"):
+            # Stdio servers don't need a host/key update.
+            continue
+        tagged[name] = cfg
+
+    if not tagged:
+        return []
+
+    # Shut down the existing connections for the tagged servers.
+    with _lock:
+        to_shutdown = {n: _servers.pop(n) for n in tagged if n in _servers}
+
+    if to_shutdown:
+        async def _do_shutdown():
+            await asyncio.gather(
+                *(srv.shutdown() for srv in to_shutdown.values()),
+                return_exceptions=True,
+            )
+
+        with _lock:
+            loop = _mcp_loop
+        if loop is not None and loop.is_running():
+            from agent.async_utils import safe_schedule_threadsafe
+            fut = safe_schedule_threadsafe(
+                _do_shutdown(), loop,
+                logger=logger,
+                log_message="MCP provider reload: shutdown failed to schedule",
+            )
+            if fut is not None:
+                try:
+                    fut.result(timeout=10)
+                except Exception as exc:
+                    logger.debug("MCP provider reload: shutdown error: %s", exc)
+
+    # Rebuild configs with updated base URL and API key, then reconnect.
+    updated_cfgs = {
+        name: _build_provider_aware_mcp_config(raw_cfg, new_base_url, new_api_key)
+        for name, raw_cfg in tagged.items()
+    }
+    return register_mcp_servers(updated_cfgs)
 
 
 def _load_mcp_config() -> Dict[str, dict]:

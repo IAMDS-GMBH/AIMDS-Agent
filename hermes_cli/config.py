@@ -238,7 +238,7 @@ _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 _CONFIG_LOCK = threading.RLock()
 
 # Canonical name for Hermes' single managed MCP server entry.
-SINGLE_MCP_SERVER_NAME = "remoteMCP"
+SINGLE_MCP_SERVER_NAME = "IAMDS"
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
@@ -2562,7 +2562,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 29,
+    "_config_version": 30,
 }
 
 # =============================================================================
@@ -4956,7 +4956,78 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     print()
             else:
                 print("  Set later with: hermes config set <key> <value>")
-    
+
+    # ── Version 29 → 30: migrate IAMDS MCP server entries ──
+    # Renames the legacy "remoteMCP" server key to "IAMDS", and tags any HTTP
+    # MCP server whose URL host matches the IAMDS LiteLLM base URL with
+    # ``provider: iamds`` so the provider-aware reconnect feature picks it up
+    # automatically when switching between normal / staging / dev variants.
+    if current_ver < 30:
+        try:
+            config = load_config()
+            mcp_servers = config.get("mcp_servers")
+            if isinstance(mcp_servers, dict) and mcp_servers:
+                from urllib.parse import urlparse as _urlparse
+
+                # Resolve the configured IAMDS base URL host for URL matching.
+                iamds_base = ""
+                try:
+                    iamds_base = (
+                        get_env_value("IAMDS_LITELLM_BASE_URL")
+                        or os.environ.get("IAMDS_LITELLM_BASE_URL", "")
+                    ).strip()
+                except Exception:
+                    iamds_base = os.environ.get("IAMDS_LITELLM_BASE_URL", "").strip()
+                iamds_host = ""
+                if iamds_base:
+                    try:
+                        iamds_host = _urlparse(iamds_base).hostname or ""
+                    except Exception:
+                        pass
+
+                updated_servers: Dict[str, Any] = {}
+                touched_mcp = False
+                for sname, scfg in mcp_servers.items():
+                    new_name = sname
+                    if sname == "remoteMCP":
+                        new_name = SINGLE_MCP_SERVER_NAME  # "IAMDS"
+                        touched_mcp = True
+                    if not isinstance(scfg, dict):
+                        updated_servers[new_name] = scfg
+                        continue
+                    new_cfg = dict(scfg)
+                    # Tag with provider: iamds if:
+                    # (a) still untagged, and
+                    # (b) this is an HTTP server whose host matches the IAMDS base URL
+                    if not new_cfg.get("provider") and new_cfg.get("url") and iamds_host:
+                        try:
+                            srv_host = _urlparse(str(new_cfg["url"])).hostname or ""
+                        except Exception:
+                            srv_host = ""
+                        if srv_host and srv_host == iamds_host:
+                            new_cfg["provider"] = "iamds"
+                            touched_mcp = True
+                    updated_servers[new_name] = new_cfg
+
+                if touched_mcp:
+                    config["mcp_servers"] = updated_servers
+                    save_config(config)
+                    if not quiet:
+                        renamed = "remoteMCP" in mcp_servers and SINGLE_MCP_SERVER_NAME not in mcp_servers
+                        tagged = sum(
+                            1 for s in updated_servers.values()
+                            if isinstance(s, dict) and s.get("provider") == "iamds"
+                        )
+                        parts = []
+                        if renamed:
+                            parts.append(f"renamed remoteMCP → {SINGLE_MCP_SERVER_NAME}")
+                        if tagged:
+                            parts.append(f"tagged {tagged} server(s) with provider: iamds")
+                        if parts:
+                            print(f"  ✓ MCP server migration: {', '.join(parts)}")
+        except Exception as _mcp_exc:
+            results["warnings"].append(f"MCP server migration (v30) failed: {_mcp_exc}")
+
     # Check for missing config fields
     missing_config = get_missing_config_fields()
     
