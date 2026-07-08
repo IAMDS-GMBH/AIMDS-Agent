@@ -88,8 +88,8 @@ Installers are built and uploaded to GitHub Releases manually. macOS/Windows sig
 The desktop app supports **Keycloak SSO** as an alternative to manual Base URL / API key entry. When a Keycloak-enabled installer is used, users see a **Connect with Keycloak** button in the IAMDS provider panel. Clicking it opens a browser window to the Keycloak OIDC login page; after authentication the LiteLLM virtual key is extracted from the JWT `"key"` claim and written to the environment automatically.
 
 **Auth flow:**
-1. A `BrowserWindow` opens to `{base_url}/auth/realms/{realm}/protocol/openid-connect/auth?client_id=open-webui&response_type=code&...`
-2. The user authenticates in Keycloak (realm: `aimds`, client: `open-webui`).
+1. A `BrowserWindow` opens to `{base_url}/auth/realms/{realm}/protocol/openid-connect/auth?client_id=account&response_type=code&...`
+2. The user authenticates in Keycloak (realm: `aimds`, client: `account`).
 3. Keycloak redirects to the registered callback URI (`{base_url}/oauth/oidc/callback?code=…`).
 4. Electron intercepts the `will-navigate` event before the redirect loads, extracts the `code` parameter, and closes the window.
 5. Electron exchanges the code for a JWT access token via the token endpoint.

@@ -3819,13 +3819,10 @@ function openOauthLoginWindow(baseUrl) {
 // Keycloak SSO login for IAMDS providers.
 //
 // Opens a BrowserWindow to the Keycloak OIDC auth page for the `open-webui`
-// client, intercepts the authorization-code redirect, exchanges the code for
-// an access token, and extracts the LiteLLM virtual key from the JWT "key"
-// claim — no static API key entry required.
-//
-// The redirect URI is derived from base_url by default
-// ({base_url}/oauth/oidc/callback) since that is what Open-WebUI registers
-// for its Keycloak OIDC client.  The IPC caller can override via redirectUri.
+// client, intercepts the authorization-code redirect via on_navigation before
+// Open-WebUI loads, exchanges the code for a token, and extracts the LiteLLM
+// virtual key from the JWT "key" claim. No Keycloak config changes needed —
+// the open-webui client's redirect URI is already registered.
 // ---------------------------------------------------------------------------
 
 /**
@@ -3886,13 +3883,13 @@ function exchangeKeycloakCode(tokenUrl, code, redirectUri) {
 
 /**
  * Open a Keycloak login window for the `open-webui` client, intercept the
- * authorization-code redirect, exchange for an access token, and return the
- * LiteLLM virtual key extracted from the JWT "key" claim.
+ * authorization-code redirect via will-navigate (before Open-WebUI loads),
+ * exchange for an access token, and return the LiteLLM virtual key from JWT.
+ * No Keycloak config changes needed — uses the already-registered redirect URI.
  *
- * @param {string} baseUrl   IAMDS ecosystem base URL
- * @param {string} realm     Keycloak realm name (default: "aimds")
- * @param {string} redirectUri  OAuth redirect URI registered for open-webui
- *                           (default: {baseUrl}/oauth/oidc/callback)
+ * @param {string} baseUrl      IAMDS ecosystem base URL
+ * @param {string} realm        Keycloak realm name (default: "aimds")
+ * @param {string} redirectUri  OAuth redirect URI (default: {baseUrl}/oauth/oidc/callback)
  * @returns {Promise<{ apiKey: string, baseUrl: string }>}
  */
 function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
@@ -3920,11 +3917,7 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
     const finish = (err, result) => {
       if (settled) return
       settled = true
-      try {
-        if (win && !win.isDestroyed()) win.destroy()
-      } catch {
-        // window already gone
-      }
+      try { if (win && !win.isDestroyed()) win.destroy() } catch { /* ignore */ }
       if (err) reject(err)
       else resolve(result)
     }
@@ -3951,8 +3944,7 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
       if (!settled) finish(new Error('Login window closed before authentication completed.'))
     })
 
-    // Intercept the Keycloak redirect to capture the authorization code.
-    // We preventDefault so the redirect URL is never actually fetched.
+    // Intercept Keycloak's redirect to the callback URI before Open-WebUI loads it.
     win.webContents.on('will-navigate', (event, url) => {
       if (!url.startsWith(effectiveRedirectUri)) return
       event.preventDefault()
@@ -3975,7 +3967,6 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
         return
       }
 
-      // Exchange code for token and extract the virtual key
       exchangeKeycloakCode(tokenUrl, code, effectiveRedirectUri)
         .then(tokenData => {
           const accessToken = tokenData.access_token

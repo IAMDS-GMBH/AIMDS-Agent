@@ -1,13 +1,15 @@
 //! Keycloak SSO authentication for the IAMDS ecosystem.
 //!
 //! Opens a Tauri WebviewWindow to the Keycloak OIDC login page, intercepts the
-//! OAuth2 authorization-code redirect, exchanges the code for an access token,
-//! and extracts the LiteLLM virtual key from the JWT `"key"` claim — all without
-//! the user ever manually entering an API key.
+//! OAuth2 authorization-code redirect via Tauri's `on_navigation` hook (before
+//! the page loads), exchanges the code for an access token, and extracts the
+//! LiteLLM virtual key from the JWT `"key"` claim.
 //!
 //! ## Flow
 //! 1. Open WebviewWindow → `{base_url}/auth/realms/{realm}/protocol/openid-connect/auth`
-//! 2. Intercept navigation to `redirect_uri` (default: `{base_url}/oauth/oidc/callback`)
+//!    using client_id=open-webui and redirect_uri=`{base_url}/oauth/oidc/callback`
+//!    (already registered in Keycloak for the open-webui client — no config change needed)
+//! 2. `on_navigation` intercepts the redirect to the callback URL before it loads
 //! 3. Exchange `?code=` for tokens at the Keycloak token endpoint
 //! 4. Decode JWT payload (base64url) → read `"key"` claim → return as `api_key`
 
@@ -37,8 +39,8 @@ pub struct KeycloakLoginResult {
 /// Parameters:
 /// - `base_url`     — IAMDS ecosystem base URL, e.g. `https://suite.example.com`
 /// - `realm`        — Keycloak realm name (default: `"aimds"`)
-/// - `redirect_uri` — OAuth redirect URI registered for the `open-webui` client;
-///                    defaults to `{base_url}/oauth/oidc/callback` when empty
+/// - `redirect_uri` — OAuth redirect URI; defaults to `{base_url}/oauth/oidc/callback`
+///                    which is already registered for the `open-webui` Keycloak client
 #[tauri::command]
 pub async fn keycloak_login(
     app: AppHandle,
@@ -49,8 +51,8 @@ pub async fn keycloak_login(
     let base = base_url.trim_end_matches('/').to_string();
     let realm = if realm.trim().is_empty() { "aimds".to_string() } else { realm.trim().to_string() };
 
-    // Derive the redirect URI from base_url when not explicitly provided.
-    // Open-WebUI registers this path for its Keycloak OIDC client by default.
+    // Use the Open-WebUI OIDC callback path — already registered in Keycloak
+    // for the open-webui client. on_navigation blocks it before Open-WebUI loads.
     let redirect_uri = if redirect_uri.trim().is_empty() {
         format!("{base}/oauth/oidc/callback")
     } else {
@@ -61,17 +63,16 @@ pub async fn keycloak_login(
 
     tracing::info!(realm, %redirect_uri, "Starting Keycloak SSO login");
 
-    // oneshot channel: navigation hook → async command
+    // oneshot channel: navigation hook / window-close → async command
     let (tx, rx) = oneshot::channel::<Result<String, String>>();
     let tx_shared = Arc::new(Mutex::new(Some(tx)));
-
     let tx_nav = tx_shared.clone();
+    let tx_close = tx_shared.clone();
     let redirect_prefix = redirect_uri.clone();
 
     // Unique window label so parallel logins don't collide.
     let win_label = format!("keycloak-auth-{}", uuid::Uuid::new_v4().simple());
     let win_label_close = win_label.clone();
-    let tx_close = tx_shared.clone();
 
     let parsed_url = auth_url
         .parse::<tauri::Url>()
@@ -84,7 +85,8 @@ pub async fn keycloak_login(
         .on_navigation(move |url| {
             let url_str = url.as_str();
 
-            // Intercept when Keycloak redirects to the registered redirect URI.
+            // Intercept when Keycloak redirects to the registered callback URI.
+            // Return false to block the page from loading — Open-WebUI never sees the code.
             if url_str.starts_with(&redirect_prefix) {
                 let code = url
                     .query_pairs()
@@ -92,7 +94,6 @@ pub async fn keycloak_login(
                     .map(|(_, v)| v.into_owned());
 
                 let result = code.ok_or_else(|| {
-                    // Could also be an error= param in the redirect
                     let err = url
                         .query_pairs()
                         .find(|(k, _)| k == "error_description")
@@ -108,10 +109,10 @@ pub async fn keycloak_login(
                         let _ = sender.send(result);
                     }
                 }
-                return false; // Block loading the redirect page — we own the response
+                return false; // block — do not load the redirect page
             }
 
-            true // Allow all other navigations (Keycloak login pages)
+            true // allow all other navigations (Keycloak login pages)
         })
         .build()
         .map_err(|e| format!("Failed to open Keycloak auth window: {e}"))?;
@@ -231,7 +232,8 @@ fn build_auth_url(base_url: &str, realm: &str, redirect_uri: &str) -> Result<Str
     ))
 }
 
-/// Percent-encode a string for use as a URI query parameter value (RFC 3986).
+
+
 fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
     for b in s.bytes() {
@@ -334,7 +336,7 @@ mod tests {
 
     #[test]
     fn build_auth_url_contains_required_params() {
-        let url = build_auth_url("https://suite.example.com", "master", "https://suite.example.com/oauth/oidc/callback").unwrap();
+        let url = build_auth_url("https://suite.example.com", "aimds", "http://127.0.0.1:12345/callback").unwrap();
         assert!(url.contains("client_id=open-webui"));
         assert!(url.contains("response_type=code"));
         assert!(url.contains("scope=openid"));
