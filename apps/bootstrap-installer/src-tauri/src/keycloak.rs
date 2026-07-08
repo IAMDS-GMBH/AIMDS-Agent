@@ -54,7 +54,7 @@ pub async fn keycloak_login(
     // Use the Open-WebUI OIDC callback path — already registered in Keycloak
     // for the open-webui client. on_navigation blocks it before Open-WebUI loads.
     let redirect_uri = if redirect_uri.trim().is_empty() {
-        format!("{base}/oauth/oidc/callback")
+        format!("{base}/assistant/oauth/oidc/callback")
     } else {
         redirect_uri.trim().to_string()
     };

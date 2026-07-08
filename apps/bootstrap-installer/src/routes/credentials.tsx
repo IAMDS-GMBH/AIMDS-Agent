@@ -200,7 +200,7 @@ export default function Credentials() {
       const result = await invoke<KeycloakLoginResult>('keycloak_login', {
         baseUrl,
         realm: DEFAULT_REALM,
-        redirectUri: DEFAULT_REDIRECT_URI || `${baseUrl}/oauth/oidc/callback`
+        redirectUri: DEFAULT_REDIRECT_URI || `${baseUrl}/assistant/oauth/oidc/callback`
       })
 
       // Populate the form with the SSO-obtained key so the user can proceed
@@ -232,40 +232,41 @@ export default function Credentials() {
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-6">
-          {/* Keycloak SSO — primary path when DEFAULT_BASE_URL is set */}
+          {/* Base URL — always first */}
+          <div>
+            <label htmlFor="baseUrl" className="block text-sm font-medium text-foreground">
+              Base URL <span className="text-red-500">*</span>
+            </label>
+            <input
+              id="baseUrl"
+              type="text"
+              value={formData.baseUrl}
+              onChange={(e) => handleChange('baseUrl', e.target.value)}
+              onBlur={() => {
+                const normalized = normalizeInstallerBaseUrl(formData.baseUrl)
+                if (normalized) handleChange('baseUrl', normalized)
+              }}
+              placeholder="https://suite.example.com"
+              className="mt-1 w-full rounded border border-input bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Uses {joinInstallerBaseUrl(selectedBaseUrl || formData.baseUrl, 'litellm/v1') || 'https://BASE_URL/litellm/v1'} for LLM.
+            </p>
+            {errors.baseUrl && (
+              <p className="mt-1 flex items-center gap-1 text-xs text-red-500">
+                <AlertCircle className="h-3 w-3" />
+                {errors.baseUrl}
+              </p>
+            )}
+          </div>
+
+          {/* Keycloak SSO */}
           <fieldset className="rounded-lg border border-border bg-muted/20 p-4">
             <legend className="mb-3 block text-sm font-medium text-foreground">
               Single Sign-On
             </legend>
 
             <div className="space-y-3">
-              <div>
-                <label htmlFor="baseUrl" className="block text-sm font-medium text-foreground">
-                  Base URL <span className="text-red-500">*</span>
-                </label>
-                <input
-                  id="baseUrl"
-                  type="text"
-                  value={formData.baseUrl}
-                  onChange={(e) => handleChange('baseUrl', e.target.value)}
-                  onBlur={() => {
-                    const normalized = normalizeInstallerBaseUrl(formData.baseUrl)
-                    if (normalized) handleChange('baseUrl', normalized)
-                  }}
-                  placeholder="https://suite.example.com"
-                  className="mt-1 w-full rounded border border-input bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                />
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Uses {joinInstallerBaseUrl(selectedBaseUrl || formData.baseUrl, 'litellm/v1') || 'https://BASE_URL/litellm/v1'} for LLM.
-                </p>
-                {errors.baseUrl && (
-                  <p className="mt-1 flex items-center gap-1 text-xs text-red-500">
-                    <AlertCircle className="h-3 w-3" />
-                    {errors.baseUrl}
-                  </p>
-                )}
-              </div>
-
               <button
                 type="button"
                 onClick={() => void handleKeycloakLogin()}
