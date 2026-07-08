@@ -3171,6 +3171,8 @@ def _apply_model_assignment_sync(
         # reload_provider_mcp_servers() works here exactly as it does in the
         # gateway's own model-switch hook.  This runs in a worker thread
         # (asyncio.to_thread), so blocking on the MCP shutdown/reconnect is fine.
+        mcp_reloaded = False
+        mcp_message = ""
         try:
             from tools.mcp_tool import _IAMDS_PROVIDER_SLUGS, reload_provider_mcp_servers
             if provider.strip().lower() in _IAMDS_PROVIDER_SLUGS:
@@ -3183,6 +3185,8 @@ def _apply_model_assignment_sync(
                     new_base_url=_new_base_url,
                     new_api_key=_new_api_key,
                 )
+                mcp_reloaded = True
+                mcp_message = "MCP server reconnected"
         except Exception:
             _log.debug("IAMDS MCP reload failed after model assignment", exc_info=True)
 
@@ -3223,6 +3227,8 @@ def _apply_model_assignment_sync(
             "base_url": model_cfg.get("base_url", ""),
             "gateway_tools": gateway_tools,
             "stale_aux": stale_aux,
+            "mcp_reloaded": mcp_reloaded,
+            "mcp_message": mcp_message,
         }
 
     # scope == "auxiliary"

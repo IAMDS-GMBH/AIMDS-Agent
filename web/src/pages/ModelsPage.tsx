@@ -32,6 +32,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
 
 const PERIODS = [
   { label: "7d", days: 7 },
@@ -697,8 +698,7 @@ function ModelSettingsPanel({
 }) {
   const [auxModalOpen, setAuxModalOpen] = useState(false);
   const [picker, setPicker] = useState<PickerTarget | null>(null);
-
-  const mainProv = aux?.main.provider ?? "";
+  const { showToast } = useToast();
   const mainModel = aux?.main.model ?? "";
 
   const applyAssignment = async ({
@@ -721,7 +721,12 @@ function ModelSettingsPanel({
       provider,
       model,
     });
-    if (!result.confirm_required) onSaved();
+    if (!result.confirm_required) {
+      onSaved();
+      if (result.mcp_reloaded) {
+        showToast(result.mcp_message || "MCP server reconnected", "success");
+      }
+    }
     return result;
   };
 
