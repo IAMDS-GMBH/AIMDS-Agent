@@ -2796,7 +2796,22 @@ def reload_provider_mcp_servers(
         )
         for name, raw_cfg in tagged.items()
     }
-    return register_mcp_servers(updated_cfgs)
+
+    # Live-reconnect via the MCP event loop.  When called from the web-server
+    # worker thread (e.g. POST /api/model/set), the MCP loop may not be
+    # running yet (it is started lazily when the first MCP tool call comes in,
+    # or by the TUI gateway).  In that case we skip the live reconnect
+    # gracefully — the config was already persisted to disk above, so the
+    # correct URL/key will be picked up on the next initialisation.
+    try:
+        return register_mcp_servers(updated_cfgs)
+    except RuntimeError as exc:
+        if "not running" in str(exc).lower() or "unavailable" in str(exc).lower():
+            logger.debug(
+                "MCP provider reload: live reconnect skipped (loop not running): %s", exc
+            )
+            return list(tagged.keys())
+        raise
 
 
 def _load_mcp_config() -> Dict[str, dict]:
