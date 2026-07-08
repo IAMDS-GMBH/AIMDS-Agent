@@ -6741,22 +6741,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         else:
             _cprint("    (session only — add --global to persist)")
 
-        # When switching to an IAMDS LiteLLM provider variant, reconnect any
-        # MCP servers tagged with ``provider: iamds-litellm`` (or a variant
-        # slug) so they use the new host and API key immediately.
-        if result.provider_changed:
-            try:
-                from tools.mcp_tool import reload_provider_mcp_servers, _IAMDS_PROVIDER_SLUGS
-                if result.target_provider.lower() in _IAMDS_PROVIDER_SLUGS:
-                    mcp_tools = reload_provider_mcp_servers(
-                        provider=result.target_provider,
-                        new_base_url=result.base_url or "",
-                        new_api_key=result.api_key or "",
-                    )
-                    if mcp_tools:
-                        _cprint(f"    🔄 MCP servers reconnected ({len(mcp_tools)} tool(s))")
-            except Exception as exc:
-                logger.debug("MCP provider reload failed: %s", exc)
+        # When the active provider is an IAMDS LiteLLM variant, ensure any
+        # MCP servers tagged with ``provider: iamds`` (or a variant slug) use
+        # the correct host and API key.  This fires on every switch to an IAMDS
+        # provider — not only when the provider *changes* — so a renamed or
+        # freshly-tagged server is repaired even when the user is already on
+        # that provider.
+        try:
+            from tools.mcp_tool import reload_provider_mcp_servers, _IAMDS_PROVIDER_SLUGS
+            if result.target_provider.lower() in _IAMDS_PROVIDER_SLUGS:
+                mcp_tools = reload_provider_mcp_servers(
+                    provider=result.target_provider,
+                    new_base_url=result.base_url or "",
+                    new_api_key=result.api_key or "",
+                )
+                if mcp_tools:
+                    _cprint(f"    🔄 MCP servers reconnected ({len(mcp_tools)} tool(s))")
+        except Exception as exc:
+            logger.debug("MCP provider reload failed: %s", exc)
 
     def _handle_model_picker_selection(self, persist_global: bool = False) -> None:
         state = self._model_picker_state
