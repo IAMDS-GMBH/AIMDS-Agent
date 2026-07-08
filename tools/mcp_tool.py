@@ -2615,28 +2615,21 @@ _IAMDS_KEY_ENV_VAR: Dict[str, str] = {
 }
 
 
-def _replace_url_base(mcp_url: str, provider_base_url: str) -> str:
-    """Replace the scheme+netloc of *mcp_url* with those from *provider_base_url*.
+def _build_iamds_mcp_url(provider_base_url: str) -> str:
+    """Derive the IAMDS MCP server URL from a provider base URL.
 
-    The path, query, and fragment of *mcp_url* are preserved so only the host
-    (and scheme/port) changes when switching between IAMDS provider variants.
-    Returns *mcp_url* unchanged on any parse error.
+    Mirrors the installer logic: strip known suffixes (``/litellm/v1``,
+    ``/litellm/mcp``, ``/v1``) to reach the service root, then append
+    ``/litellm/mcp``.  Returns ``""`` if *provider_base_url* is empty.
     """
-    try:
-        mcp_parts = urlparse(mcp_url)
-        base_parts = urlparse(provider_base_url)
-        if not base_parts.netloc:
-            return mcp_url
-        return urlunparse((
-            base_parts.scheme or mcp_parts.scheme,
-            base_parts.netloc,
-            mcp_parts.path,
-            mcp_parts.params,
-            mcp_parts.query,
-            mcp_parts.fragment,
-        ))
-    except Exception:
-        return mcp_url
+    base = provider_base_url.rstrip("/")
+    if not base:
+        return ""
+    for suffix in ("/litellm/v1", "/litellm/mcp", "/v1"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    return f"{base}/litellm/mcp"
 
 
 def _build_provider_aware_mcp_config(
@@ -2647,13 +2640,15 @@ def _build_provider_aware_mcp_config(
     """Build an updated runtime config dict for a provider-aware MCP server.
 
     Applies env-var interpolation to *raw_cfg*, then overrides:
-    - ``url``: scheme+netloc replaced with those from *new_base_url*
+    - ``url``: rebuilt from *new_base_url* via ``_build_iamds_mcp_url``
     - ``headers.Authorization``: replaced with ``Bearer <new_api_key>`` when
       an Authorization header is already present and *new_api_key* is non-empty.
     """
     cfg = _interpolate_env_vars(raw_cfg)
     if new_base_url and isinstance(cfg.get("url"), str):
-        cfg["url"] = _replace_url_base(cfg["url"], new_base_url)
+        new_url = _build_iamds_mcp_url(new_base_url)
+        if new_url:
+            cfg["url"] = new_url
     if new_api_key and isinstance(cfg.get("headers"), dict):
         headers = dict(cfg["headers"])
         for hname in list(headers):
@@ -2673,8 +2668,8 @@ def _persist_iamds_mcp_config(
 
     Only ``url`` and ``headers.Authorization`` are touched so that other
     per-server settings (timeouts, trusted, etc.) are preserved.
-    The API key is written as a ``${ENV_VAR}`` placeholder — never the raw
-    secret — so the file stays portable across machines and profiles.
+    The API key is written as a ``${ENV_VAR}`` placeholder -- never the raw
+    secret -- so the file stays portable across machines and profiles.
     """
     try:
         from hermes_cli.config import load_config, save_config
@@ -2687,8 +2682,8 @@ def _persist_iamds_mcp_config(
             return
         changed = False
         if new_base_url and isinstance(entry.get("url"), str):
-            new_url = _replace_url_base(entry["url"], new_base_url)
-            if new_url != entry["url"]:
+            new_url = _build_iamds_mcp_url(new_base_url)
+            if new_url and new_url != entry["url"]:
                 entry["url"] = new_url
                 changed = True
         key_env_var = _IAMDS_KEY_ENV_VAR.get(provider.lower(), "")

@@ -4987,10 +4987,25 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         pass
 
                 # Legacy names that should be renamed to IAMDS when their URL
-                # matches the IAMDS host. "remote" was used by custom installs;
+                # matches an IAMDS host. "remote" was used by custom installs;
                 # "remoteMCP" was the previous constant value; "memory" is the
                 # install-script fallback name.
                 _LEGACY_IAMDS_NAMES = {"remoteMCP", "remote", "memory"}
+
+                # Collect all known IAMDS hosts (prod + staging + dev) so
+                # the migration works even if the user already switched away
+                # from the prod URL before this migration ran.
+                iamds_hosts: set = set()
+                if iamds_host:
+                    iamds_hosts.add(iamds_host)
+                for _env in ("IAMDS_LITELLM_STAGING_BASE_URL", "IAMDS_LITELLM_DEV_BASE_URL"):
+                    try:
+                        _v = (get_env_value(_env) or os.environ.get(_env, "")).strip()
+                        if _v:
+                            iamds_hosts.add(_urlparse(_v).hostname or "")
+                    except Exception:
+                        pass
+                iamds_hosts.discard("")
 
                 updated_servers: Dict[str, Any] = {}
                 touched_mcp = False
@@ -4999,23 +5014,27 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     new_name = sname
                     new_cfg = dict(scfg) if isinstance(scfg, dict) else scfg
 
-                    # Determine if this server's URL host matches IAMDS.
+                    # Determine if this server's URL host matches any IAMDS host.
                     srv_host = ""
-                    if isinstance(new_cfg, dict) and new_cfg.get("url") and iamds_host:
+                    if isinstance(new_cfg, dict) and new_cfg.get("url"):
                         try:
                             srv_host = _urlparse(str(new_cfg["url"])).hostname or ""
                         except Exception:
                             pass
-                    is_iamds_url = bool(srv_host and srv_host == iamds_host)
+                    is_iamds_url = bool(srv_host and (srv_host in iamds_hosts or not iamds_hosts))
 
-                    # Rename legacy names when URL matches IAMDS host.
-                    if sname in _LEGACY_IAMDS_NAMES and is_iamds_url and SINGLE_MCP_SERVER_NAME not in mcp_servers:
+                    # Rename legacy names unconditionally — these names are
+                    # exclusively created by the IAMDS installer, so we don't
+                    # need URL matching to be sure they belong to IAMDS.
+                    if sname in _LEGACY_IAMDS_NAMES and SINGLE_MCP_SERVER_NAME not in mcp_servers:
                         new_name = SINGLE_MCP_SERVER_NAME  # "IAMDS"
                         old_renamed.append(sname)
                         touched_mcp = True
 
-                    # Tag with provider: iamds if untagged and URL matches.
-                    if isinstance(new_cfg, dict) and not new_cfg.get("provider") and is_iamds_url:
+                    # Tag with provider: iamds if untagged and name or URL
+                    # identifies this as an IAMDS server.
+                    is_legacy_name = sname in _LEGACY_IAMDS_NAMES
+                    if isinstance(new_cfg, dict) and not new_cfg.get("provider") and (is_legacy_name or is_iamds_url):
                         new_cfg["provider"] = "iamds"
                         touched_mcp = True
 
