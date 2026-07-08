@@ -929,6 +929,21 @@ def _derive_remote_health_target(config: dict[str, Any]) -> tuple[str, str]:
             if isinstance(entry, dict):
                 base_url = str(entry.get("base_url") or "").strip().rstrip("/")
 
+    # For IAMDS LiteLLM variants, the base URL is resolved from env vars and
+    # may not be present in config.yaml at all — use resolve_runtime_provider
+    # (the same function used when reloading MCP servers) so we always target
+    # the correct host for the active provider.
+    try:
+        from tools.mcp_tool import _IAMDS_PROVIDER_SLUGS
+        if provider.lower() in _IAMDS_PROVIDER_SLUGS:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            runtime = resolve_runtime_provider(requested=provider) or {}
+            resolved_url = str(runtime.get("base_url") or "").strip().rstrip("/")
+            if resolved_url:
+                base_url = resolved_url
+    except Exception:
+        pass
+
     if not base_url:
         return provider, ""
 
