@@ -2597,14 +2597,22 @@ _IAMDS_PROVIDER_SLUGS: frozenset = frozenset({
 })
 
 # Values accepted in the ``provider`` field of an ``mcp_servers`` entry to
-# mark a server as IAMDS-aware. ``iamds`` / ``IAMDS`` is the preferred short
-# form; the full provider slugs are accepted as aliases for backward compat.
+# mark a server as IAMDS-aware. ``iamds`` is the preferred short form; the
+# full provider slugs are accepted as aliases for backward compat.
 _IAMDS_MCP_TAGS: frozenset = frozenset({
     "iamds",
     "iamds-litellm",
     "iamds-litellm-staging",
     "iamds-litellm-dev",
 })
+
+# Maps each IAMDS provider slug to its API key env var so config.yaml is
+# written with a portable ``${VAR}`` placeholder instead of the raw key.
+_IAMDS_KEY_ENV_VAR: Dict[str, str] = {
+    "iamds-litellm":         "IAMDS_LITELLM_API_KEY",
+    "iamds-litellm-staging": "IAMDS_LITELLM_STAGING_API_KEY",
+    "iamds-litellm-dev":     "IAMDS_LITELLM_DEV_API_KEY",
+}
 
 
 def _replace_url_base(mcp_url: str, provider_base_url: str) -> str:
@@ -2636,10 +2644,10 @@ def _build_provider_aware_mcp_config(
     new_base_url: str,
     new_api_key: str,
 ) -> dict:
-    """Build an updated config dict for a provider-aware MCP server.
+    """Build an updated runtime config dict for a provider-aware MCP server.
 
     Applies env-var interpolation to *raw_cfg*, then overrides:
-    - ``url``: the scheme+netloc is replaced with that of *new_base_url*
+    - ``url``: scheme+netloc replaced with those from *new_base_url*
     - ``headers.Authorization``: replaced with ``Bearer <new_api_key>`` when
       an Authorization header is already present and *new_api_key* is non-empty.
     """
@@ -2656,6 +2664,53 @@ def _build_provider_aware_mcp_config(
     return cfg
 
 
+def _persist_iamds_mcp_config(
+    server_name: str,
+    new_base_url: str,
+    provider: str,
+) -> None:
+    """Write the updated URL and Authorization placeholder back to config.yaml.
+
+    Only ``url`` and ``headers.Authorization`` are touched so that other
+    per-server settings (timeouts, trusted, etc.) are preserved.
+    The API key is written as a ``${ENV_VAR}`` placeholder — never the raw
+    secret — so the file stays portable across machines and profiles.
+    """
+    try:
+        from hermes_cli.config import load_config, save_config
+        config = load_config()
+        servers = config.get("mcp_servers")
+        if not isinstance(servers, dict) or server_name not in servers:
+            return
+        entry = servers[server_name]
+        if not isinstance(entry, dict):
+            return
+        changed = False
+        if new_base_url and isinstance(entry.get("url"), str):
+            new_url = _replace_url_base(entry["url"], new_base_url)
+            if new_url != entry["url"]:
+                entry["url"] = new_url
+                changed = True
+        key_env_var = _IAMDS_KEY_ENV_VAR.get(provider.lower(), "")
+        if key_env_var and isinstance(entry.get("headers"), dict):
+            for hname in list(entry["headers"]):
+                if hname.lower() == "authorization":
+                    new_val = f"Bearer ${{{key_env_var}}}"
+                    if entry["headers"][hname] != new_val:
+                        entry["headers"][hname] = new_val
+                        changed = True
+                    break
+        if changed:
+            config["mcp_servers"][server_name] = entry
+            save_config(config)
+            logger.debug(
+                "MCP provider reload: persisted updated config for '%s' (provider: %s)",
+                server_name, provider,
+            )
+    except Exception as exc:
+        logger.debug("MCP provider reload: failed to persist config for '%s': %s", server_name, exc)
+
+
 def reload_provider_mcp_servers(
     provider: str,
     new_base_url: str,
@@ -2663,13 +2718,14 @@ def reload_provider_mcp_servers(
 ) -> List[str]:
     """Reconnect MCP servers tagged for an IAMDS LiteLLM provider variant.
 
-    When the active IAMDS provider changes (e.g. normal → staging → dev),
+    When the active IAMDS provider changes (e.g. normal -> staging -> dev),
     HTTP MCP servers whose ``mcp_servers`` config entry contains
-    ``provider: iamds-litellm`` (or any IAMDS variant slug) are shut down
-    and reconnected with:
+    ``provider: iamds`` (or any IAMDS variant slug) are:
 
-    - URL host replaced by the host extracted from *new_base_url*
-    - ``headers.Authorization`` updated to ``Bearer <new_api_key>``
+    1. Shut down
+    2. config.yaml updated with the new URL and correct ``${KEY_ENV_VAR}``
+       placeholder so the change survives app restarts
+    3. Reconnected with the resolved URL and API key
 
     Stdio (``command``-based) servers are skipped — their credentials are
     passed via environment variables and do not need a reconnect.
@@ -2686,13 +2742,13 @@ def reload_provider_mcp_servers(
     except Exception:
         return []
 
-    # Collect HTTP servers explicitly tagged with an IAMDS provider slug.
+    # Collect HTTP servers explicitly tagged with an IAMDS tag.
     tagged: Dict[str, dict] = {}
     for name, cfg in raw_servers.items():
         if not isinstance(cfg, dict):
             continue
         srv_provider = str(cfg.get("provider") or "").strip().lower()
-        if srv_provider not in _IAMDS_PROVIDER_SLUGS:
+        if srv_provider not in _IAMDS_MCP_TAGS:
             continue
         if not cfg.get("url"):
             # Stdio servers don't need a host/key update.
@@ -2728,9 +2784,22 @@ def reload_provider_mcp_servers(
                 except Exception as exc:
                     logger.debug("MCP provider reload: shutdown error: %s", exc)
 
-    # Rebuild configs with updated base URL and API key, then reconnect.
+    # Persist updated URL + key placeholder to config.yaml, then reconnect
+    # with the fully-resolved runtime config (interpolated env vars + new key).
+    for name in tagged:
+        _persist_iamds_mcp_config(name, new_base_url, provider)
+
+    # Re-read config after persistence so the interpolated env vars are fresh.
+    try:
+        from hermes_cli.config import load_config as _lc
+        updated_raw = (_lc().get("mcp_servers") or {})
+    except Exception:
+        updated_raw = tagged
+
     updated_cfgs = {
-        name: _build_provider_aware_mcp_config(raw_cfg, new_base_url, new_api_key)
+        name: _build_provider_aware_mcp_config(
+            updated_raw.get(name, raw_cfg), new_base_url, new_api_key
+        )
         for name, raw_cfg in tagged.items()
     }
     return register_mcp_servers(updated_cfgs)
