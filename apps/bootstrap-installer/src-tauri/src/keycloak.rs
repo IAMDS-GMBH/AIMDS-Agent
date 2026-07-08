@@ -99,6 +99,7 @@ pub async fn keycloak_login(
                         .or_else(|| url.query_pairs().find(|(k, _)| k == "error"))
                         .map(|(_, v)| v.into_owned())
                         .unwrap_or_else(|| "No authorization code in callback".to_string());
+                    tracing::error!(error = %err, callback_url = %url_str, "Keycloak auth callback returned error");
                     err
                 });
 
@@ -176,6 +177,7 @@ async fn exchange_code_for_key(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
+        tracing::error!(%status, %body, %token_url, realm, "Keycloak token endpoint error");
         return Err(format!("Keycloak token endpoint returned HTTP {status}: {body}"));
     }
 
