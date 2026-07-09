@@ -65,15 +65,16 @@ test('resolveRemovableAppPath finds the .app bundle on macOS', () => {
   )
 })
 
-test('resolveRemovableAppPath: dev-run .app resolves (safety is shouldRemoveAppBundle, not null)', () => {
-  // A dev run from node_modules' Electron DOES resolve to a .app — the real
-  // dev-run safety gate is shouldRemoveAppBundle(isPackaged=false,...), not a
-  // null return here. This test documents that contract.
+test('resolveRemovableAppPath returns null for dev/build .app paths outside Applications', () => {
+  // Running from a release build folder or dev checkout must not be trashable.
+  assert.equal(
+    resolveRemovableAppPath('/Users/x/.hermes/hermes-agent/apps/desktop/release/mac-arm64/Hermes.app/Contents/MacOS/Hermes', 'darwin'),
+    null
+  )
   assert.equal(
     resolveRemovableAppPath('/repo/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron', 'darwin'),
-    '/repo/node_modules/electron/dist/Electron.app'
+    null
   )
-  assert.equal(shouldRemoveAppBundle(false, '/repo/node_modules/electron/dist/Electron.app'), false)
   // A bare path with no .app ancestor → null.
   assert.equal(resolveRemovableAppPath('/usr/bin/electron', 'darwin'), null)
 })

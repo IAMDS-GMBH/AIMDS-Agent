@@ -79,8 +79,14 @@ function resolveRemovableAppPath(execPath, platform, env = {}) {
     const macOsDir = p.dirname(exe) // …/Contents/MacOS
     const contents = p.dirname(macOsDir) // …/Contents
     const appBundle = p.dirname(contents) // …/Hermes.app
-    if (appBundle.endsWith('.app')) return appBundle
-    return null
+    if (!appBundle.endsWith('.app')) return null
+    // Only remove bundles installed under /Applications or ~/Applications.
+    // Running from a dev checkout or a release build folder must not be trashed.
+    const normalised = appBundle.replace(/\/+$/, '')
+    const inSystemApps = normalised.startsWith('/Applications/')
+    const inUserApps = /^\/Users\/[^/]+\/Applications\//.test(normalised)
+    if (!inSystemApps && !inUserApps) return null
+    return appBundle
   }
 
   if (platform === 'win32') {
