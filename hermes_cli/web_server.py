@@ -5135,6 +5135,17 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "docs_url": "https://docs.claude.com/en/docs/claude-code",
         "status_fn": _claude_code_only_status,
     },
+    {
+        "id": "iamds-keycloak",
+        "name": "IAMDS LiteLLM (Keycloak SSO)",
+        "flow": "loopback",
+        "cli_command": "hermes auth add iamds-keycloak",
+        "docs_url": "",
+        "status_fn": None,
+        # hidden=True keeps this out of OAuthProvidersCard — it is surfaced
+        # directly inside the IAMDS LiteLLM ProviderGroupCard instead.
+        "hidden": True,
+    },
 )
 
 
@@ -5202,6 +5213,20 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                 "has_refresh_token": True,
                 "last_refresh": raw.get("last_refresh"),
             }
+        if provider_id == "iamds-keycloak":
+            try:
+                from hermes_cli.config import get_env_value
+                api_key = (get_env_value("IAMDS_LITELLM_API_KEY") or "").strip()
+            except Exception:
+                api_key = os.getenv("IAMDS_LITELLM_API_KEY", "").strip()
+            return {
+                "logged_in": bool(api_key),
+                "source": "iamds_keycloak",
+                "source_label": "IAMDS LiteLLM (Keycloak SSO)",
+                "token_preview": _truncate_token(api_key),
+                "expires_at": None,
+                "has_refresh_token": False,
+            }
     except Exception as e:
         return {"logged_in": False, "error": str(e)}
     return {"logged_in": False}
@@ -5227,6 +5252,8 @@ async def list_oauth_providers():
     """
     providers = []
     for p in _OAUTH_PROVIDER_CATALOG:
+        if p.get("hidden"):
+            continue
         status = _resolve_provider_status(p["id"], p.get("status_fn"))
         providers.append({
             "id": p["id"],
@@ -5270,6 +5297,15 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
         except Exception:
             pass
         _log.info("oauth/disconnect: %s", provider_id)
+        return {"ok": True, "provider": provider_id}
+
+    if provider_id == "iamds-keycloak":
+        try:
+            from hermes_cli.config import save_env_value
+            save_env_value("IAMDS_LITELLM_API_KEY", "")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        _log.info("oauth/disconnect: iamds-keycloak (cleared IAMDS_LITELLM_API_KEY)")
         return {"ok": True, "provider": provider_id}
 
     try:
@@ -5879,6 +5915,230 @@ def _xai_loopback_worker(session_id: str) -> None:
     _log.info("oauth/loopback: xai-oauth login completed (session=%s)", session_id)
 
 
+# ---------------------------------------------------------------------------
+# IAMDS LiteLLM — Keycloak loopback PKCE flow
+# ---------------------------------------------------------------------------
+
+_IAMDS_KEYCLOAK_LOOPBACK_TIMEOUT_SECONDS = 300.0
+_IAMDS_KEYCLOAK_DEFAULT_REALM = "aimds"
+_IAMDS_KEYCLOAK_DEFAULT_CLIENT_ID = "hermes-app"
+
+
+def _iamds_keycloak_base_url() -> str:
+    """Derive the IAMDS suite base URL from IAMDS_LITELLM_BASE_URL.
+
+    Strips the /litellm (or /litellm/v1) suffix so the caller can append
+    Keycloak paths like /auth/realms/{realm}/protocol/openid-connect/auth.
+    Raises RuntimeError if the env var is unset.
+    """
+    try:
+        from hermes_cli.config import get_env_value
+        raw = (get_env_value("IAMDS_LITELLM_BASE_URL") or "").strip().rstrip("/")
+    except Exception:
+        raw = os.getenv("IAMDS_LITELLM_BASE_URL", "").strip().rstrip("/")
+    if not raw:
+        raise RuntimeError(
+            "IAMDS_LITELLM_BASE_URL is not set. "
+            "Configure it in Settings → IAMDS LiteLLM before connecting via Keycloak."
+        )
+    for suffix in ("/litellm/v1", "/litellm"):
+        if raw.endswith(suffix):
+            raw = raw[: -len(suffix)]
+            break
+    return raw.rstrip("/")
+
+
+def _iamds_keycloak_extract_api_key(access_token: str) -> str:
+    """Decode the JWT payload and return the `key` claim (LiteLLM virtual key)."""
+    import base64 as _b64
+    import json as _json
+
+    parts = access_token.split(".")
+    if len(parts) < 2:
+        raise ValueError("Invalid JWT: expected header.payload.signature")
+    padded = parts[1] + "=="
+    payload = _json.loads(_b64.urlsafe_b64decode(padded))
+    key = str(payload.get("key") or "").strip()
+    if not key:
+        raise ValueError(
+            "No 'key' claim in Keycloak JWT. "
+            "Ensure the LiteLLM virtual key is mapped as a 'key' token claim in the realm."
+        )
+    return key
+
+
+def _start_iamds_keycloak_loopback_flow() -> Dict[str, Any]:
+    """Begin the IAMDS Keycloak loopback PKCE flow.
+
+    Derives the Keycloak endpoint from IAMDS_LITELLM_BASE_URL, binds a local
+    callback server, and spawns a background worker. Returns the authorize URL
+    for the client to open in the browser.
+    """
+    from hermes_cli import auth as hauth
+
+    base_url = _iamds_keycloak_base_url()
+    realm = os.getenv("IAMDS_KEYCLOAK_REALM", _IAMDS_KEYCLOAK_DEFAULT_REALM)
+    client_id = os.getenv("IAMDS_KEYCLOAK_CLIENT_ID", _IAMDS_KEYCLOAK_DEFAULT_CLIENT_ID)
+
+    auth_endpoint = (
+        f"{base_url}/auth/realms/{realm}/protocol/openid-connect/auth"
+    )
+    token_endpoint = (
+        f"{base_url}/auth/realms/{realm}/protocol/openid-connect/token"
+    )
+
+    server, thread, callback_result, redirect_uri = hauth._xai_start_callback_server(
+        preferred_port=0  # let OS pick a free port
+    )
+    try:
+        verifier = hauth._oauth_pkce_code_verifier()
+        challenge = hauth._oauth_pkce_code_challenge(verifier)
+        state = secrets.token_hex(16)
+
+        from urllib.parse import urlencode as _urlencode
+        qs = _urlencode({
+            "client_id": client_id,
+            "response_type": "code",
+            "scope": "openid",
+            "redirect_uri": redirect_uri,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "state": state,
+        })
+        authorize_url = f"{auth_endpoint}?{qs}"
+    except Exception:
+        try:
+            server.shutdown()
+            server.server_close()
+        except Exception:
+            pass
+        try:
+            thread.join(timeout=1.0)
+        except Exception:
+            pass
+        raise
+
+    sid, sess = _new_oauth_session("iamds-keycloak", "loopback")
+    sess["server"] = server
+    sess["thread"] = thread
+    sess["callback_result"] = callback_result
+    sess["redirect_uri"] = redirect_uri
+    sess["verifier"] = verifier
+    sess["state"] = state
+    sess["token_endpoint"] = token_endpoint
+    sess["client_id"] = client_id
+    sess["expires_at"] = time.time() + _IAMDS_KEYCLOAK_LOOPBACK_TIMEOUT_SECONDS
+
+    threading.Thread(
+        target=_iamds_keycloak_loopback_worker,
+        args=(sid,),
+        daemon=True,
+        name=f"oauth-iamds-kc-{sid[:6]}",
+    ).start()
+
+    return {
+        "session_id": sid,
+        "flow": "loopback",
+        "auth_url": authorize_url,
+        "expires_in": int(_IAMDS_KEYCLOAK_LOOPBACK_TIMEOUT_SECONDS),
+    }
+
+
+def _iamds_keycloak_loopback_worker(session_id: str) -> None:
+    """Wait for the Keycloak callback, exchange the code, save the API key."""
+    import urllib.request as _req
+    import urllib.parse as _parse
+
+    from hermes_cli import auth as hauth
+
+    with _oauth_sessions_lock:
+        sess = _oauth_sessions.get(session_id)
+    if not sess:
+        return
+
+    def _fail(message: str) -> None:
+        with _oauth_sessions_lock:
+            s = _oauth_sessions.get(session_id)
+            if s is not None:
+                s["status"] = "error"
+                s["error_message"] = message
+
+    def _cancelled() -> bool:
+        with _oauth_sessions_lock:
+            return session_id not in _oauth_sessions
+
+    try:
+        callback = hauth._xai_wait_for_callback(
+            sess["server"],
+            sess["thread"],
+            sess["callback_result"],
+            timeout_seconds=_IAMDS_KEYCLOAK_LOOPBACK_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        _fail(f"Keycloak authorization timed out: {exc}")
+        return
+
+    if _cancelled():
+        return
+
+    if callback.get("error"):
+        detail = callback.get("error_description") or callback["error"]
+        _fail(f"Keycloak authorization failed: {detail}")
+        return
+    if callback.get("state") != sess["state"]:
+        _fail("Keycloak authorization failed: state mismatch.")
+        return
+    code = str(callback.get("code") or "").strip()
+    if not code:
+        _fail("Keycloak authorization failed: missing authorization code.")
+        return
+
+    # Exchange code for tokens
+    try:
+        body = _parse.urlencode({
+            "grant_type": "authorization_code",
+            "client_id": sess["client_id"],
+            "code": code,
+            "redirect_uri": sess["redirect_uri"],
+            "code_verifier": sess["verifier"],
+        }).encode("utf-8")
+        request = _req.Request(
+            sess["token_endpoint"],
+            data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with _req.urlopen(request, timeout=15) as resp:
+            import json as _json
+            token_data = _json.loads(resp.read().decode("utf-8"))
+
+        access_token = str(token_data.get("access_token") or "").strip()
+        if not access_token:
+            _fail("Keycloak token exchange did not return an access_token.")
+            return
+
+        api_key = _iamds_keycloak_extract_api_key(access_token)
+    except Exception as exc:
+        _fail(f"Keycloak token exchange failed: {exc}")
+        return
+
+    if _cancelled():
+        return
+
+    try:
+        from hermes_cli.config import save_env_value
+        save_env_value("IAMDS_LITELLM_API_KEY", api_key)
+    except Exception as exc:
+        _fail(f"Failed to save IAMDS_LITELLM_API_KEY: {exc}")
+        return
+
+    with _oauth_sessions_lock:
+        s = _oauth_sessions.get(session_id)
+        if s is not None:
+            s["status"] = "approved"
+    _log.info("oauth/loopback: iamds-keycloak login completed (session=%s)", session_id)
+
+
 def _add_xai_oauth_pool_entry(
     access_token: str, refresh_token: str, base_url: str, last_refresh: str
 ) -> None:
@@ -6216,6 +6476,10 @@ async def start_oauth_login(provider_id: str, request: Request):
         if catalog_entry["flow"] == "loopback" and provider_id == "xai-oauth":
             return await asyncio.get_running_loop().run_in_executor(
                 None, _start_xai_loopback_flow
+            )
+        if catalog_entry["flow"] == "loopback" and provider_id == "iamds-keycloak":
+            return await asyncio.get_running_loop().run_in_executor(
+                None, _start_iamds_keycloak_loopback_flow
             )
     except HTTPException:
         raise

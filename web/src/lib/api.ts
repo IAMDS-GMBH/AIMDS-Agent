@@ -2026,6 +2026,12 @@ export type OAuthStartResponse =
       verification_url: string;
       expires_in: number;
       poll_interval: number;
+    }
+  | {
+      session_id: string;
+      flow: "loopback";
+      auth_url: string;
+      expires_in: number;
     };
 
 export interface OAuthSubmitResponse {

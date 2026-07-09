@@ -1,18 +1,22 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  Check,
+  ChevronDown,
+  ChevronRight,
   Eye,
   EyeOff,
   ExternalLink,
   KeyRound,
+  Loader,
   MessageSquare,
   Pencil,
   Save,
   Settings,
+  ShieldCheck,
+  ShieldOff,
   Trash2,
   X,
   Zap,
-  ChevronDown,
-  ChevronRight,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { EnvVarInfo } from "@/lib/api";
@@ -64,6 +68,7 @@ const PROVIDER_GROUPS: { prefix: string; name: string; priority: number }[] = [
   { prefix: "OPENCODE_ZEN_", name: "OpenCode Zen", priority: 11 },
   { prefix: "OPENROUTER_", name: "OpenRouter", priority: 12 },
   { prefix: "XIAOMI_", name: "Xiaomi MiMo", priority: 13 },
+  { prefix: "IAMDS_", name: "IAMDS LiteLLM", priority: 14 },
 ];
 
 function getProviderGroup(key: string): string {
@@ -330,6 +335,120 @@ function EnvVarRow({
 }
 
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/*  IAMDS Keycloak SSO inline section                                 */
+/* ------------------------------------------------------------------ */
+
+type SsoPhase = "idle" | "starting" | "awaiting" | "polling" | "approved" | "error";
+
+function IamdsKeycloakSsoSection({ onSuccess }: { onSuccess: () => void }) {
+  const [phase, setPhase] = useState<SsoPhase>("idle");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const isMounted = useRef(true);
+  const pollTimer = useRef<number | null>(null);
+  const sessionRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    isMounted.current = true;
+    return () => {
+      isMounted.current = false;
+      if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
+    };
+  }, []);
+
+  const startLogin = async () => {
+    setPhase("starting");
+    setErrorMsg(null);
+    try {
+      const resp = await api.startOAuthLogin("iamds-keycloak");
+      if (!isMounted.current) return;
+      sessionRef.current = resp.session_id;
+      const authUrl = "auth_url" in resp ? resp.auth_url : null;
+      if (authUrl) window.open(authUrl, "_blank", "noopener,noreferrer");
+      setPhase("awaiting");
+
+      // Poll every 2s for completion
+      pollTimer.current = window.setInterval(async () => {
+        if (!sessionRef.current || !isMounted.current) return;
+        try {
+          const poll = await api.pollOAuthSession("iamds-keycloak", sessionRef.current);
+          if (!isMounted.current) return;
+          if (poll.status === "approved") {
+            window.clearInterval(pollTimer.current!);
+            setPhase("approved");
+            onSuccess();
+          } else if (poll.status !== "pending") {
+            window.clearInterval(pollTimer.current!);
+            setPhase("error");
+            setErrorMsg(poll.error_message || `Login ${poll.status}`);
+          }
+        } catch (e) {
+          window.clearInterval(pollTimer.current!);
+          setPhase("error");
+          setErrorMsg(`Polling failed: ${e}`);
+        }
+      }, 2000);
+    } catch (e) {
+      if (!isMounted.current) return;
+      setPhase("error");
+      setErrorMsg(`Failed to start Keycloak login: ${e}`);
+    }
+  };
+
+  const reset = () => {
+    if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
+    setPhase("idle");
+    setErrorMsg(null);
+    sessionRef.current = null;
+  };
+
+  return (
+    <div className="mb-3 rounded border border-border bg-muted/20 p-3 space-y-2">
+      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        Single Sign-On
+      </p>
+
+      {phase === "approved" ? (
+        <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+          <Check className="h-4 w-4" />
+          Connected via Keycloak — API key saved.
+        </div>
+      ) : phase === "awaiting" || phase === "polling" ? (
+        <div className="flex items-center justify-between gap-2">
+          <span className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader className="h-3.5 w-3.5 animate-spin" />
+            Waiting for Keycloak login…
+          </span>
+          <button onClick={reset} className="text-xs text-muted-foreground hover:text-foreground">
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          disabled={phase === "starting"}
+          onClick={() => void startLogin()}
+          className="flex items-center gap-2 rounded border border-primary bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/20 disabled:opacity-50 transition-colors"
+        >
+          {phase === "starting" ? (
+            <><Loader className="h-3.5 w-3.5 animate-spin" /> Starting…</>
+          ) : (
+            <><ShieldCheck className="h-3.5 w-3.5" /> Connect via Keycloak</>
+          )}
+        </button>
+      )}
+
+      {errorMsg && (
+        <p className="flex items-center gap-1 text-xs text-red-500">
+          <ShieldOff className="h-3 w-3 shrink-0" />
+          {errorMsg}
+          <button onClick={reset} className="ml-1 underline">Retry</button>
+        </p>
+      )}
+    </div>
+  );
+}
+
 /*  ProviderGroupCard — groups API key + base URL per provider         */
 /* ------------------------------------------------------------------ */
 
@@ -423,6 +542,15 @@ function ProviderGroupCard({
 
       {expanded && (
         <div className="border-t border-border px-4 py-3 grid gap-2">
+          {group.name === "IAMDS LiteLLM" && (
+            <IamdsKeycloakSsoSection onSuccess={() => {
+              // Reload env vars so the API key field reflects the newly saved value
+              api.getEnvVars().catch(() => {});
+            }} />
+          )}
+          {(group.name === "IAMDS LiteLLM" && (apiKeys.length > 0 || baseUrls.length > 0 || other.length > 0)) && (
+            <p className="text-xs text-muted-foreground">— or enter manually —</p>
+          )}
           {apiKeys.map(([key, info]) => (
             <EnvVarRow
               key={key}
