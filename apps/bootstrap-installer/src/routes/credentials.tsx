@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Button } from '../components/button'
-import { joinInstallerBaseUrl, normalizeInstallerBaseUrl, startInstall } from '../store'
-import { AlertCircle, Loader, Check, ShieldCheck } from 'lucide-react'
+import { normalizeInstallerBaseUrl, startInstall } from '../store'
+import { AlertCircle, Loader, Check, ShieldCheck, X, RefreshCw } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 
 type EndpointVariant = 'dev' | 'main' | 'staging'
@@ -34,6 +34,44 @@ function computeFetchFingerprint(formData: CredentialsData): string {
   ].join('|')
 }
 
+function LiteLLMHealthBadge({
+  checking,
+  healthy,
+  onRecheck,
+}: {
+  checking: boolean
+  healthy: boolean | null
+  onRecheck: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onRecheck}
+      disabled={checking}
+      className={[
+        'mt-2 inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors',
+        checking
+          ? 'bg-muted text-muted-foreground'
+          : healthy === true
+            ? 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400'
+            : healthy === false
+              ? 'bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-400'
+              : 'bg-muted text-muted-foreground hover:bg-muted/70',
+      ].join(' ')}
+    >
+      {checking ? (
+        <><Loader className="h-3 w-3 animate-spin" /> Checking LiteLLM…</>
+      ) : healthy === true ? (
+        <><Check className="h-3 w-3" /> LiteLLM reachable</>
+      ) : healthy === false ? (
+        <><X className="h-3 w-3" /> LiteLLM unreachable</>
+      ) : (
+        <><RefreshCw className="h-3 w-3" /> Check LiteLLM</>
+      )}
+    </button>
+  )
+}
+
 export default function Credentials() {
   const [formData, setFormData] = useState<CredentialsData>({
     apiKey: '',
@@ -51,9 +89,38 @@ export default function Credentials() {
   const [isKeycloakLoading, setIsKeycloakLoading] = useState(false)
   const [keycloakError, setKeycloakError] = useState<string | null>(null)
   const [keycloakConnected, setKeycloakConnected] = useState(false)
+
   const selectedEndpoint: EndpointVariant = 'main'
   const selectedApiKey = formData.apiKey
   const selectedBaseUrl = normalizeInstallerBaseUrl(formData.baseUrl)
+
+  // LiteLLM health state: null = unchecked, true = healthy, false = unreachable
+  const [litellmHealth, setLitellmHealth] = useState<boolean | null>(null)
+  const [isCheckingHealth, setIsCheckingHealth] = useState(false)
+  const healthDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const checkHealth = useCallback(async (url: string) => {
+    if (!url.trim()) return
+    setIsCheckingHealth(true)
+    try {
+      const ok = await invoke<boolean>('check_litellm_health', { baseUrl: url })
+      setLitellmHealth(ok)
+    } catch {
+      setLitellmHealth(false)
+    } finally {
+      setIsCheckingHealth(false)
+    }
+  }, [])
+
+  // Auto-check on mount and whenever selectedBaseUrl changes (debounced for editable field)
+  useEffect(() => {
+    if (!selectedBaseUrl) return
+    if (healthDebounceRef.current) clearTimeout(healthDebounceRef.current)
+    healthDebounceRef.current = setTimeout(() => checkHealth(selectedBaseUrl), 600)
+    return () => {
+      if (healthDebounceRef.current) clearTimeout(healthDebounceRef.current)
+    }
+  }, [selectedBaseUrl, checkHealth])
 
   const validateForm = (): boolean => {
     const newErrors: Record<string, string> = {}
@@ -234,33 +301,39 @@ export default function Credentials() {
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-6">
-          {/* Base URL — always first */}
-          <div>
-            <label htmlFor="baseUrl" className="block text-sm font-medium text-foreground">
-              Base URL <span className="text-red-500">*</span>
-            </label>
-            <input
-              id="baseUrl"
-              type="text"
-              value={formData.baseUrl}
-              onChange={(e) => handleChange('baseUrl', e.target.value)}
-              onBlur={() => {
-                const normalized = normalizeInstallerBaseUrl(formData.baseUrl)
-                if (normalized) handleChange('baseUrl', normalized)
-              }}
-              placeholder="https://suite.example.com"
-              className="mt-1 w-full rounded border border-input bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-            />
-            <p className="mt-1 text-xs text-muted-foreground">
-              Uses {joinInstallerBaseUrl(selectedBaseUrl || formData.baseUrl, 'litellm/v1') || 'https://BASE_URL/litellm/v1'} for LLM.
-            </p>
-            {errors.baseUrl && (
-              <p className="mt-1 flex items-center gap-1 text-xs text-red-500">
-                <AlertCircle className="h-3 w-3" />
-                {errors.baseUrl}
-              </p>
-            )}
-          </div>
+          {/* Base URL — hidden when baked in at packaging time */}
+          {DEFAULT_BASE_URL ? (
+            <div>
+              <p className="block text-sm font-medium text-foreground">Base URL</p>
+              <p className="mt-1 text-sm text-muted-foreground break-all">{selectedBaseUrl || DEFAULT_BASE_URL}</p>
+              <LiteLLMHealthBadge checking={isCheckingHealth} healthy={litellmHealth} onRecheck={() => checkHealth(selectedBaseUrl || DEFAULT_BASE_URL)} />
+            </div>
+          ) : (
+            <div>
+              <label htmlFor="baseUrl" className="block text-sm font-medium text-foreground">
+                Base URL <span className="text-red-500">*</span>
+              </label>
+              <input
+                id="baseUrl"
+                type="text"
+                value={formData.baseUrl}
+                onChange={(e) => handleChange('baseUrl', e.target.value)}
+                onBlur={() => {
+                  const normalized = normalizeInstallerBaseUrl(formData.baseUrl)
+                  if (normalized) handleChange('baseUrl', normalized)
+                }}
+                placeholder="https://suite.example.com"
+                className="mt-1 w-full rounded border border-input bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <LiteLLMHealthBadge checking={isCheckingHealth} healthy={litellmHealth} onRecheck={() => checkHealth(selectedBaseUrl)} />
+              {errors.baseUrl && (
+                <p className="mt-1 flex items-center gap-1 text-xs text-red-500">
+                  <AlertCircle className="h-3 w-3" />
+                  {errors.baseUrl}
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Keycloak SSO */}
           <fieldset className="rounded-lg border border-border bg-muted/20 p-4">

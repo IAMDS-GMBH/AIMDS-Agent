@@ -112,6 +112,28 @@ pub async fn fetch_models(base_url: String, api_key: String) -> Result<Vec<Strin
     Ok(models)
 }
 
+/// Check whether the LiteLLM endpoint at `{base_url}/litellm/health` is reachable
+/// and returns HTTP 200. Used by the installer UI to show a live status indicator.
+#[tauri::command]
+pub async fn check_litellm_health(base_url: String) -> bool {
+    let normalized = match normalize_bootstrap_base_url(&base_url) {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+    let endpoint = format!("{}/litellm/health", normalized);
+    tracing::debug!("LiteLLM health check: {}", endpoint);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    matches!(
+        client.get(&endpoint).send().await,
+        Ok(r) if r.status().is_success()
+    )
+}
+
 /// Write provider_models_cache.json with fetched LiteLLM models pinned for OpenAI slugs.
 ///
 /// Updates `~/.hermes/provider_models_cache.json` while preserving unrelated

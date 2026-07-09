@@ -185,6 +185,7 @@ pub fn run() {
             // Model discovery
             models::fetch_models,
             models::write_provider_models_cache,
+            models::check_litellm_health,
             // Keycloak SSO
             keycloak::keycloak_login,
         ])
