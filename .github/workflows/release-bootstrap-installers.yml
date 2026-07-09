@@ -229,18 +229,29 @@ jobs:
           echo "HERMES_BUILD_PIN_COMMIT=$main_head" >> "$GITHUB_ENV"
           echo "Resolved pins: branch=main, commit=$main_head"
 
+      - name: Export Apple signing credentials (macOS, skip_signing=false)
+        if: runner.os == 'macOS' && inputs.skip_signing != true
+        shell: bash
+        env:
+          _APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          _APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          _APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          _APPLE_ID: ${{ secrets.APPLE_ID }}
+          _APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          _APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          echo "APPLE_CERTIFICATE=$_APPLE_CERTIFICATE"             >> "$GITHUB_ENV"
+          echo "APPLE_CERTIFICATE_PASSWORD=$_APPLE_CERTIFICATE_PASSWORD" >> "$GITHUB_ENV"
+          echo "APPLE_SIGNING_IDENTITY=$_APPLE_SIGNING_IDENTITY"   >> "$GITHUB_ENV"
+          echo "APPLE_ID=$_APPLE_ID"                               >> "$GITHUB_ENV"
+          echo "APPLE_PASSWORD=$_APPLE_PASSWORD"                   >> "$GITHUB_ENV"
+          echo "APPLE_TEAM_ID=$_APPLE_TEAM_ID"                     >> "$GITHUB_ENV"
+          echo "Apple signing credentials exported."
+
       - name: Build bootstrap installer
         env:
           VITE_DEFAULT_BASE_URL: ${{ github.event.inputs.base_url }}
           VITE_DEFAULT_KEYCLOAK_REALM: ${{ github.event.inputs.keycloak_realm || 'aimds' }}
-          # macOS code signing + notarization (Tauri reads these automatically).
-          # Set skip_signing=true in workflow_dispatch to bypass when Apple notarization API is unreachable.
-          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && github.event.inputs.skip_signing != 'true' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && github.event.inputs.skip_signing != 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && github.event.inputs.skip_signing != 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_ID: ${{ runner.os == 'macOS' && github.event.inputs.skip_signing != 'true' && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ runner.os == 'macOS' && github.event.inputs.skip_signing != 'true' && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && github.event.inputs.skip_signing != 'true' && secrets.APPLE_TEAM_ID || '' }}
         run: npm run tauri:build
         working-directory: apps/bootstrap-installer
 
