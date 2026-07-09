@@ -31,6 +31,11 @@ on:
         required: false
         default: true
         type: boolean
+      skip_signing:
+        description: "Skip Apple code signing and notarization (useful when notarization API is unreachable)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -228,13 +233,14 @@ jobs:
         env:
           VITE_DEFAULT_BASE_URL: ${{ github.event.inputs.base_url }}
           VITE_DEFAULT_KEYCLOAK_REALM: ${{ github.event.inputs.keycloak_realm || 'aimds' }}
-          # macOS code signing + notarization (Tauri reads these automatically)
-          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
+          # macOS code signing + notarization (Tauri reads these automatically).
+          # Set skip_signing=true in workflow_dispatch to bypass when Apple notarization API is unreachable.
+          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && github.event.inputs.skip_signing != 'true' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && github.event.inputs.skip_signing != 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && github.event.inputs.skip_signing != 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && github.event.inputs.skip_signing != 'true' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ runner.os == 'macOS' && github.event.inputs.skip_signing != 'true' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && github.event.inputs.skip_signing != 'true' && secrets.APPLE_TEAM_ID || '' }}
         run: npm run tauri:build
         working-directory: apps/bootstrap-installer
 

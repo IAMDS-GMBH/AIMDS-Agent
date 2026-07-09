@@ -268,6 +268,7 @@ export default function Credentials() {
         baseUrl,
         realm: DEFAULT_REALM,
         clientId: DEFAULT_CLIENT_ID,
+        redirectUri: 'hermes://callback',
       })
 
       // Populate the form with the SSO-obtained key so the user can proceed

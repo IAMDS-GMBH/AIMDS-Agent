@@ -113,6 +113,33 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .manage(Arc::new(AppState::new(mode)))
+        .register_uri_scheme_protocol("hermes", |_app, request| {
+            // Keycloak redirects here after login: hermes://callback?code=...
+            // Extract the auth code and deliver it to the waiting keycloak_login command.
+            let uri = request.uri().to_string();
+            if let Ok(url) = uri.parse::<url::Url>() {
+                if url.host_str() == Some("callback") {
+                    if let Some(code) = url.query_pairs()
+                        .find(|(k, _)| k == "code")
+                        .map(|(_, v)| v.to_string())
+                    {
+                        if let Ok(mut guard) = keycloak::keycloak_callback_state().lock() {
+                            if let Some(tx) = guard.take() {
+                                let _ = tx.send(code);
+                            }
+                        }
+                    }
+                }
+            }
+            tauri::http::Response::builder()
+                .status(200)
+                .header("Content-Type", "text/html; charset=utf-8")
+                .body(b"<html><head><title>Hermes</title></head><body>\
+                       <p style=\"font-family:system-ui;text-align:center;margin-top:2rem\">\
+                       \xe2\x9c\x93 Signed in \xe2\x80\x94 you can close this window.</p>\
+                       </body></html>".to_vec())
+                .expect("failed to build hermes URI response")
+        })
         .setup(move |app| {
             use tauri::Manager;
             // Launcher fast path (macOS only): a bare ("Install") launch when
