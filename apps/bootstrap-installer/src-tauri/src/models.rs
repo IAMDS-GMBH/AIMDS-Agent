@@ -29,6 +29,13 @@ fn normalize_bootstrap_base_url(raw: &str) -> Result<String, String> {
         .set_scheme("https")
         .map_err(|_| "Could not force https for Base URL".to_string())?;
     parsed.set_fragment(None);
+
+    // Lowercase the host — hostnames are case-insensitive per RFC 4343
+    if let Some(host) = parsed.host_str().map(|h| h.to_lowercase()) {
+        parsed.set_host(Some(&host))
+            .map_err(|_| "Failed to normalize hostname case".to_string())?;
+    }
+
     let path = parsed.path().trim_end_matches('/').to_string();
     if path.is_empty() || path == "/" {
         parsed.set_path("");
@@ -112,26 +119,37 @@ pub async fn fetch_models(base_url: String, api_key: String) -> Result<Vec<Strin
     Ok(models)
 }
 
-/// Check whether the LiteLLM endpoint at `{base_url}/litellm/health` is reachable
-/// and returns HTTP 200. Used by the installer UI to show a live status indicator.
+/// Check whether the LiteLLM endpoint is reachable. Tries `/litellm/health`
+/// first; falls back to `/litellm/v1/models` (a 401/403 still means the server
+/// is up). Returns true if either probe gets any HTTP response.
 #[tauri::command]
 pub async fn check_litellm_health(base_url: String) -> bool {
     let normalized = match normalize_bootstrap_base_url(&base_url) {
         Ok(u) => u,
         Err(_) => return false,
     };
-    let endpoint = format!("{}/litellm/health", normalized);
-    tracing::debug!("LiteLLM health check: {}", endpoint);
 
-    let client = reqwest::Client::builder()
+    let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
-        .unwrap_or_default();
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
 
-    matches!(
-        client.get(&endpoint).send().await,
-        Ok(r) if r.status().is_success()
-    )
+    // Primary probe: /litellm/health
+    let health_url = format!("{}/litellm/health", normalized);
+    tracing::debug!("LiteLLM health check (primary): {}", health_url);
+    if let Ok(r) = client.get(&health_url).send().await {
+        if r.status().is_success() {
+            return true;
+        }
+    }
+
+    // Fallback probe: /litellm/v1/models — any HTTP response (even 401) means reachable
+    let models_url = format!("{}/litellm/v1/models", normalized);
+    tracing::debug!("LiteLLM health check (fallback): {}", models_url);
+    matches!(client.get(&models_url).send().await, Ok(_))
 }
 
 /// Write provider_models_cache.json with fetched LiteLLM models pinned for OpenAI slugs.

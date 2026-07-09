@@ -110,6 +110,7 @@ export function normalizeInstallerBaseUrl(input: string): string {
 
   parsed.protocol = 'https:'
   parsed.hash = ''
+  parsed.hostname = parsed.hostname.toLowerCase()
   const path = parsed.pathname.replace(/\/+$/, '')
   const safePath = path === '/' ? '' : path
 
