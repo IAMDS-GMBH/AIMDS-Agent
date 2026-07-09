@@ -3851,7 +3851,7 @@ function exchangeKeycloakCode(tokenUrl, code, redirectUri) {
   return new Promise((resolve, reject) => {
     const body = new URLSearchParams({
       grant_type: 'authorization_code',
-      client_id: 'open-webui',
+      client_id: 'hermes-app',
       code,
       redirect_uri: redirectUri
     }).toString()
@@ -3882,7 +3882,7 @@ function exchangeKeycloakCode(tokenUrl, code, redirectUri) {
 }
 
 /**
- * Open a Keycloak login window for the `open-webui` client, intercept the
+ * Open a Keycloak login window for the `hermes-app` client, intercept the
  * authorization-code redirect via will-navigate (before Open-WebUI loads),
  * exchange for an access token, and return the LiteLLM virtual key from JWT.
  * No Keycloak config changes needed — uses the already-registered redirect URI.
@@ -3900,11 +3900,11 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
     }
 
     const effectiveRealm = (realm || 'aimds').trim()
-    const effectiveRedirectUri = (redirectUri || `${baseUrl}/assistant/oauth/oidc/callback`).trim()
+    const effectiveRedirectUri = (redirectUri || 'hermes://callback').trim()
     const tokenUrl = `${baseUrl}/auth/realms/${effectiveRealm}/protocol/openid-connect/token`
 
     const authParams = new URLSearchParams({
-      client_id: 'open-webui',
+      client_id: 'hermes-app',
       response_type: 'code',
       scope: 'openid',
       redirect_uri: effectiveRedirectUri
