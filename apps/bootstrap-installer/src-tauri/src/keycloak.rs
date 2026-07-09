@@ -1,24 +1,30 @@
 //! Keycloak SSO authentication for the IAMDS ecosystem.
 //!
-//! Opens a Tauri WebviewWindow to the Keycloak OIDC login page, intercepts the
-//! OAuth2 authorization-code redirect via Tauri's `on_navigation` hook (before
-//! the page loads), exchanges the code for an access token, and extracts the
-//! LiteLLM virtual key from the JWT `"key"` claim.
+//! Opens a Tauri WebviewWindow to the Keycloak OIDC login page, captures the
+//! OAuth2 authorization code via a loopback HTTP server (RFC 8252 §7.3), and
+//! exchanges the code for an access token containing the LiteLLM virtual key
+//! in the JWT `"key"` claim.
 //!
 //! ## Flow
-//! 1. Open WebviewWindow → `{base_url}/auth/realms/{realm}/protocol/openid-connect/auth`
-//!    using client_id=hermes-app (dedicated public Keycloak client) and
-//!    redirect_uri=`hermes://oauth/callback` (registered custom URI scheme).
-//!    A PKCE code_challenge (S256) is sent with every authorization request.
-//! 2. `on_navigation` intercepts the redirect to the callback URL before it loads
-//! 3. Exchange `?code=` + `code_verifier` for tokens at the Keycloak token endpoint
-//! 4. Decode JWT payload (base64url) → read `"key"` claim → return as `api_key`
+//! 1. Bind `TcpListener` on `127.0.0.1:0` — OS assigns a free port.
+//! 2. Open WebviewWindow → `{base_url}/auth/realms/{realm}/protocol/openid-connect/auth`
+//!    with `redirect_uri=http://127.0.0.1:{port}/callback` and a PKCE S256 challenge.
+//! 3. Keycloak redirects the embedded browser to the loopback callback URL.
+//! 4. Loopback server reads the HTTP request, extracts `?code=`, responds with
+//!    a success page, and closes the window.
+//! 5. Exchange `code` + `code_verifier` for tokens at the Keycloak token endpoint.
+//! 6. Decode JWT payload (base64url) → read `"key"` claim → return as `api_key`.
+//!
+//! Using a loopback redirect avoids custom URL schemes (`hermes://`) which
+//! macOS WKWebView does not intercept via `on_navigation` — the OS would
+//! instead try to "download" the URL, creating a zero-byte file in Downloads.
 
 use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot;
 
 // ---------------------------------------------------------------------------
@@ -38,30 +44,36 @@ pub struct KeycloakLoginResult {
 /// Open a Keycloak login window and exchange the resulting auth code for an
 /// access token whose `"key"` JWT claim is the user's LiteLLM virtual key.
 ///
+/// Uses a loopback HTTP redirect (RFC 8252 §7.3) so no custom URL scheme is
+/// needed: a random free port on 127.0.0.1 is bound before the window opens,
+/// and Keycloak redirects the browser to `http://127.0.0.1:{port}/callback`
+/// where our local server captures the authorization code.
+///
 /// Parameters:
-/// - `base_url`     — IAMDS ecosystem base URL, e.g. `https://suite.example.com`
-/// - `realm`        — Keycloak realm name (default: `"aimds"`)
-/// - `client_id`    — Keycloak client ID (default: `"hermes-app"`)
-/// - `redirect_uri` — OAuth redirect URI; defaults to `hermes://oauth/callback`
-///                    which must be registered as a valid redirect URI in the
-///                    `hermes-app` Keycloak client. Intercepted via on_navigation
-///                    before the webview loads it.
+/// - `base_url`  — IAMDS ecosystem base URL, e.g. `https://suite.example.com`
+/// - `realm`     — Keycloak realm name (default: `"aimds"`)
+/// - `client_id` — Keycloak client ID (default: `"hermes-app"`)
 #[tauri::command]
 pub async fn keycloak_login(
     app: AppHandle,
     base_url: String,
     realm: String,
     client_id: String,
-    redirect_uri: String,
 ) -> Result<KeycloakLoginResult, String> {
     let base = base_url.trim_end_matches('/').to_string();
     let realm = if realm.trim().is_empty() { "aimds".to_string() } else { realm.trim().to_string() };
     let client_id = if client_id.trim().is_empty() { "hermes-app".to_string() } else { client_id.trim().to_string() };
-    let redirect_uri = if redirect_uri.trim().is_empty() {
-        "hermes://oauth/callback".to_string()
-    } else {
-        redirect_uri.trim().to_string()
-    };
+
+    // Bind a loopback listener on a random free OS port (RFC 8252 §7.3).
+    // This avoids custom URL schemes which macOS WKWebView does not intercept
+    // via on_navigation — it would instead try to download hermes://... as a file.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| format!("Failed to bind loopback callback server: {e}"))?;
+    let port = listener.local_addr()
+        .map_err(|e| format!("Failed to get loopback callback port: {e}"))?
+        .port();
+    let redirect_uri = format!("http://127.0.0.1:{port}/callback");
 
     // Generate PKCE code_verifier (32 random bytes → base64url, RFC 7636 §4.1)
     let code_verifier = generate_code_verifier();
@@ -69,14 +81,13 @@ pub async fn keycloak_login(
 
     let auth_url = build_auth_url(&base, &realm, &client_id, &redirect_uri, &code_challenge)?;
 
-    tracing::info!(realm, client_id, %redirect_uri, "Starting Keycloak SSO login");
+    tracing::info!(realm, client_id, port, "Starting Keycloak SSO login (loopback)");
 
-    // oneshot channel: navigation hook / window-close → async command
+    // oneshot channel: loopback server / window-close → async command
     let (tx, rx) = oneshot::channel::<Result<String, String>>();
     let tx_shared = Arc::new(Mutex::new(Some(tx)));
-    let tx_nav = tx_shared.clone();
+    let tx_server = tx_shared.clone();
     let tx_close = tx_shared.clone();
-    let redirect_prefix = redirect_uri.clone();
 
     // Unique window label so parallel logins don't collide.
     let win_label = format!("keycloak-auth-{}", uuid::Uuid::new_v4().simple());
@@ -90,42 +101,10 @@ pub async fn keycloak_login(
         .title("Sign in with Keycloak")
         .inner_size(500.0, 660.0)
         .center()
-        .on_navigation(move |url| {
-            let url_str = url.as_str();
-
-            // Intercept when Keycloak redirects to the registered callback URI.
-            // Return false to block the page from loading — Open-WebUI never sees the code.
-            if url_str.starts_with(&redirect_prefix) {
-                let code = url
-                    .query_pairs()
-                    .find(|(k, _)| k == "code")
-                    .map(|(_, v)| v.into_owned());
-
-                let result = code.ok_or_else(|| {
-                    let err = url
-                        .query_pairs()
-                        .find(|(k, _)| k == "error_description")
-                        .or_else(|| url.query_pairs().find(|(k, _)| k == "error"))
-                        .map(|(_, v)| v.into_owned())
-                        .unwrap_or_else(|| "No authorization code in callback".to_string());
-                    tracing::error!(error = %err, callback_url = %url_str, "Keycloak auth callback returned error");
-                    err
-                });
-
-                if let Ok(mut guard) = tx_nav.lock() {
-                    if let Some(sender) = guard.take() {
-                        let _ = sender.send(result);
-                    }
-                }
-                return false; // block — do not load the redirect page
-            }
-
-            true // allow all other navigations (Keycloak login pages)
-        })
         .build()
         .map_err(|e| format!("Failed to open Keycloak auth window: {e}"))?;
 
-    // Detect user closing the window without completing login
+    // Detect user closing the window without completing login.
     win.on_window_event(move |event| {
         if let tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed = event {
             if let Ok(mut guard) = tx_close.lock() {
@@ -136,16 +115,27 @@ pub async fn keycloak_login(
         }
     });
 
+    // Spawn loopback server: accepts exactly one HTTP request, extracts the
+    // auth code from the callback URL, serves a success page, then signals.
+    let app_for_close = app.clone();
+    tokio::spawn(async move {
+        let result = accept_one_callback(listener).await;
+        // Close the auth window (best-effort — it may already be closing).
+        if let Some(w) = app_for_close.get_webview_window(&win_label_close) {
+            let _ = w.close();
+        }
+        if let Ok(mut guard) = tx_server.lock() {
+            if let Some(sender) = guard.take() {
+                let _ = sender.send(result);
+            }
+        }
+    });
+
     // Wait for the authorization code (5-minute timeout)
     let code_result = tokio::time::timeout(std::time::Duration::from_secs(300), rx)
         .await
         .map_err(|_| "Keycloak authentication timed out after 5 minutes".to_string())?
         .map_err(|_| "Internal error: auth channel dropped".to_string())?;
-
-    // Close the auth window (best-effort — it may already be closing)
-    if let Some(win_handle) = app.get_webview_window(&win_label_close) {
-        let _ = win_handle.close();
-    }
 
     let code = code_result?;
     tracing::info!("Keycloak auth code received, exchanging for token");
@@ -154,6 +144,98 @@ pub async fn keycloak_login(
     tracing::info!("Keycloak virtual key extracted successfully");
 
     Ok(KeycloakLoginResult { api_key, base_url: base })
+}
+
+// ---------------------------------------------------------------------------
+// Loopback callback server
+// ---------------------------------------------------------------------------
+
+/// Accept one HTTP request on `listener`, extract the `code` query parameter,
+/// and respond with a success page the user sees before the window auto-closes.
+async fn accept_one_callback(listener: tokio::net::TcpListener) -> Result<String, String> {
+    let (mut stream, _) = listener
+        .accept()
+        .await
+        .map_err(|e| format!("Callback server accept error: {e}"))?;
+
+    let mut buf = vec![0u8; 8192];
+    let n = stream
+        .read(&mut buf)
+        .await
+        .map_err(|e| format!("Callback server read error: {e}"))?;
+
+    let request = std::str::from_utf8(&buf[..n])
+        .unwrap_or("")
+        .to_string();
+
+    // First line: "GET /callback?code=xxx&... HTTP/1.1"
+    let first_line = request.lines().next().unwrap_or("");
+    let path = first_line.split_whitespace().nth(1).unwrap_or("");
+    let query = path.splitn(2, '?').nth(1).unwrap_or("");
+
+    // Parse query params for code / error.
+    let mut code: Option<String> = None;
+    let mut error: Option<String> = None;
+    for pair in query.split('&') {
+        let mut kv = pair.splitn(2, '=');
+        let k = kv.next().unwrap_or("");
+        let v = kv.next().unwrap_or("").replace('+', " ");
+        let v = percent_decode(&v);
+        match k {
+            "code" => code = Some(v),
+            "error_description" => error = Some(v),
+            "error" if error.is_none() => error = Some(v),
+            _ => {}
+        }
+    }
+
+    // Send HTTP response before returning so the browser renders the page.
+    let (status, body) = if code.is_some() {
+        ("200 OK", "<html><head><title>Hermes</title>\
+            <style>body{font-family:system-ui;display:flex;align-items:center;\
+            justify-content:center;height:100vh;margin:0;background:#f9fafb}\
+            .card{text-align:center;padding:2rem;border-radius:1rem;\
+            box-shadow:0 4px 24px #0001;background:#fff}\
+            h2{color:#16a34a;margin-bottom:.5rem}p{color:#6b7280}</style></head>\
+            <body><div class=\"card\"><h2>✓ Signed in</h2>\
+            <p>You can close this window — Hermes is finishing the setup.</p>\
+            </div></body></html>")
+    } else {
+        ("400 Bad Request", "<html><body><p>Authentication failed. You may close this window.</p></body></html>")
+    };
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n\
+         Content-Length: {len}\r\nConnection: close\r\n\r\n{body}",
+        len = body.len()
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.flush().await;
+
+    match code {
+        Some(c) => Ok(c),
+        None => Err(error.unwrap_or_else(|| "No authorization code in callback".to_string())),
+    }
+}
+
+/// Minimal percent-decoder for callback query values (handles %XX sequences).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
+                if let Ok(b) = u8::from_str_radix(hex, 16) {
+                    out.push(b as char);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -401,7 +483,7 @@ mod tests {
             "https://suite.example.com",
             "aimds",
             "hermes-app",
-            "hermes://oauth/callback",
+            "http://127.0.0.1:54321/callback",
             "abc123challenge",
         ).unwrap();
         assert!(url.contains("client_id=hermes-app"));
@@ -410,6 +492,7 @@ mod tests {
         assert!(url.contains("code_challenge=abc123challenge"));
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("/auth/realms/aimds/protocol/openid-connect/auth"));
+        assert!(url.contains("127.0.0.1"));
     }
 
     #[test]
