@@ -160,7 +160,24 @@ function buildPosixCleanupScript({
     `${q(pythonExe)} ${uninstallArgs.map(q).join(' ')} || true`
   )
   if (appPath) {
-    lines.push(`rm -rf ${q(appPath)} || true`)
+    // On macOS, apps in /Applications are often root-owned, so plain rm -rf
+    // fails silently. Show a dialog that names the path being removed and lets
+    // the user confirm or cancel; Finder then handles any admin-auth prompt.
+    // On Linux/other, plain rm -rf is sufficient.
+    const qPath = q(appPath)
+    lines.push(
+      `_hermes_bundle=${qPath}`,
+      `if [ "$(uname -s)" = "Darwin" ] && command -v osascript >/dev/null 2>&1; then`,
+      `  osascript \\`,
+      `    -e "set appBundle to \\"$_hermes_bundle\\"" \\`,
+      `    -e 'set msg to "Hermes needs to move the following to the Trash to finish uninstalling:" & return & return & "    " & appBundle & return & return & "You may be prompted for your administrator password."' \\`,
+      `    -e 'display dialog msg with title "Hermes Uninstaller" buttons {"Cancel", "Move to Trash"} default button "Move to Trash" with icon caution' \\`,
+      `    -e 'tell application "Finder" to delete POSIX file appBundle' \\`,
+      `    2>/dev/null || true`,
+      `else`,
+      `  rm -rf ${qPath} || true`,
+      `fi`
+    )
   }
   if (removeHermesHome) {
     lines.push(`rm -rf ${q(hermesHome)} || true`)

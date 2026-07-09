@@ -189,6 +189,27 @@ test('buildPosixCleanupScript omits the bundle rm when appPath is null', () => {
   assert.match(script, /'-m' 'hermes_cli\.uninstall' '--mode' 'lite'/)
 })
 
+test('buildPosixCleanupScript uses osascript dialog on macOS, rm -rf on other platforms', () => {
+  const script = buildPosixCleanupScript({
+    desktopPid: 1,
+    pythonExe: '/usr/bin/python3',
+    pythonPath: null,
+    agentRoot: '/a',
+    uninstallArgs: ['-m', 'hermes_cli.uninstall', '--mode', 'full'],
+    appPath: '/Applications/Hermes.app',
+    hermesHome: '/Users/x/.hermes'
+  })
+  // macOS branch: uname check + osascript dialog naming the app path
+  assert.match(script, /uname -s.*Darwin/)
+  assert.match(script, /osascript/)
+  assert.match(script, /display dialog/)
+  assert.match(script, /Finder.*delete POSIX file/)
+  // rm -rf in the else branch (Linux / other)
+  assert.match(script, /rm -rf '\/Applications\/Hermes\.app'/)
+})
+
+
+
 test('buildPosixCleanupScript single-quote-escapes paths with apostrophes', () => {
   const script = buildPosixCleanupScript({
     desktopPid: 1,

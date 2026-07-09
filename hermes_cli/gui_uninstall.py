@@ -37,6 +37,7 @@ import time so the Electron main process can shell out to
 
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -218,8 +219,25 @@ def _remove_path(path: Path) -> bool:
             path.unlink()
             return True
         if path.is_dir():
-            shutil.rmtree(path)
-            return True
+            try:
+                shutil.rmtree(path)
+                return True
+            except PermissionError:
+                # On macOS, apps in /Applications are often root-owned. Use
+                # osascript to move to Trash via Finder, which handles the
+                # authorization dialog natively.
+                if sys.platform == "darwin":
+                    result = subprocess.run(
+                        [
+                            "osascript", "-e",
+                            f'tell application "Finder" to delete POSIX file "{path}"',
+                        ],
+                        capture_output=True,
+                        timeout=60,
+                    )
+                    if result.returncode == 0:
+                        return True
+                raise
     except Exception as e:
         log_warn(f"Could not remove {path}: {e}")
     return False
