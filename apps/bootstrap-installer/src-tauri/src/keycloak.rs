@@ -7,14 +7,16 @@
 //!
 //! ## Flow
 //! 1. Open WebviewWindow → `{base_url}/auth/realms/{realm}/protocol/openid-connect/auth`
-//!    using client_id=open-webui and redirect_uri=`{base_url}/oauth/oidc/callback`
-//!    (already registered in Keycloak for the open-webui client — no config change needed)
+//!    using client_id=hermes-app (dedicated public Keycloak client) and
+//!    redirect_uri=`hermes://oauth/callback` (registered custom URI scheme).
+//!    A PKCE code_challenge (S256) is sent with every authorization request.
 //! 2. `on_navigation` intercepts the redirect to the callback URL before it loads
-//! 3. Exchange `?code=` for tokens at the Keycloak token endpoint
+//! 3. Exchange `?code=` + `code_verifier` for tokens at the Keycloak token endpoint
 //! 4. Decode JWT payload (base64url) → read `"key"` claim → return as `api_key`
 
 use std::sync::{Arc, Mutex};
 
+use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tokio::sync::oneshot;
@@ -39,29 +41,35 @@ pub struct KeycloakLoginResult {
 /// Parameters:
 /// - `base_url`     — IAMDS ecosystem base URL, e.g. `https://suite.example.com`
 /// - `realm`        — Keycloak realm name (default: `"aimds"`)
-/// - `redirect_uri` — OAuth redirect URI; defaults to `{base_url}/oauth/oidc/callback`
-///                    which is already registered for the `open-webui` Keycloak client
+/// - `client_id`    — Keycloak client ID (default: `"hermes-app"`)
+/// - `redirect_uri` — OAuth redirect URI; defaults to `hermes://oauth/callback`
+///                    which must be registered as a valid redirect URI in the
+///                    `hermes-app` Keycloak client. Intercepted via on_navigation
+///                    before the webview loads it.
 #[tauri::command]
 pub async fn keycloak_login(
     app: AppHandle,
     base_url: String,
     realm: String,
+    client_id: String,
     redirect_uri: String,
 ) -> Result<KeycloakLoginResult, String> {
     let base = base_url.trim_end_matches('/').to_string();
     let realm = if realm.trim().is_empty() { "aimds".to_string() } else { realm.trim().to_string() };
-
-    // Use the Open-WebUI OIDC callback path — already registered in Keycloak
-    // for the open-webui client. on_navigation blocks it before Open-WebUI loads.
+    let client_id = if client_id.trim().is_empty() { "hermes-app".to_string() } else { client_id.trim().to_string() };
     let redirect_uri = if redirect_uri.trim().is_empty() {
-        format!("{base}/assistant/oauth/oidc/callback")
+        "hermes://oauth/callback".to_string()
     } else {
         redirect_uri.trim().to_string()
     };
 
-    let auth_url = build_auth_url(&base, &realm, &redirect_uri)?;
+    // Generate PKCE code_verifier (32 random bytes → base64url, RFC 7636 §4.1)
+    let code_verifier = generate_code_verifier();
+    let code_challenge = compute_code_challenge(&code_verifier);
 
-    tracing::info!(realm, %redirect_uri, "Starting Keycloak SSO login");
+    let auth_url = build_auth_url(&base, &realm, &client_id, &redirect_uri, &code_challenge)?;
+
+    tracing::info!(realm, client_id, %redirect_uri, "Starting Keycloak SSO login");
 
     // oneshot channel: navigation hook / window-close → async command
     let (tx, rx) = oneshot::channel::<Result<String, String>>();
@@ -142,7 +150,7 @@ pub async fn keycloak_login(
     let code = code_result?;
     tracing::info!("Keycloak auth code received, exchanging for token");
 
-    let api_key = exchange_code_for_key(&base, &realm, &code, &redirect_uri).await?;
+    let api_key = exchange_code_for_key(&base, &realm, &client_id, &code, &redirect_uri, &code_verifier).await?;
     tracing::info!("Keycloak virtual key extracted successfully");
 
     Ok(KeycloakLoginResult { api_key, base_url: base })
@@ -155,8 +163,10 @@ pub async fn keycloak_login(
 async fn exchange_code_for_key(
     base_url: &str,
     realm: &str,
+    client_id: &str,
     code: &str,
     redirect_uri: &str,
+    code_verifier: &str,
 ) -> Result<String, String> {
     let token_url = format!(
         "{base_url}/auth/realms/{realm}/protocol/openid-connect/token"
@@ -167,9 +177,10 @@ async fn exchange_code_for_key(
         .post(&token_url)
         .form(&[
             ("grant_type", "authorization_code"),
-            ("client_id", "open-webui"),
+            ("client_id", client_id),
             ("code", code),
             ("redirect_uri", redirect_uri),
+            ("code_verifier", code_verifier),
         ])
         .send()
         .await
@@ -221,15 +232,65 @@ fn decode_jwt_key(token: &str) -> Result<String, String> {
 // URL helpers
 // ---------------------------------------------------------------------------
 
-fn build_auth_url(base_url: &str, realm: &str, redirect_uri: &str) -> Result<String, String> {
+fn build_auth_url(base_url: &str, realm: &str, client_id: &str, redirect_uri: &str, code_challenge: &str) -> Result<String, String> {
     Ok(format!(
         "{base_url}/auth/realms/{realm}/protocol/openid-connect/auth\
-         ?client_id=open-webui\
+         ?client_id={encoded_client_id}\
          &response_type=code\
          &scope=openid\
-         &redirect_uri={encoded_redirect}",
-        encoded_redirect = percent_encode(redirect_uri)
+         &redirect_uri={encoded_redirect}\
+         &code_challenge={code_challenge}\
+         &code_challenge_method=S256",
+        encoded_client_id = percent_encode(client_id),
+        encoded_redirect = percent_encode(redirect_uri),
     ))
+}
+
+/// Generate a PKCE code_verifier: 32 cryptographically random bytes, base64url-encoded
+/// (RFC 7636 §4.1 — output is 43 characters, well within the 43–128 char range).
+fn generate_code_verifier() -> String {
+    let a = uuid::Uuid::new_v4();
+    let b = uuid::Uuid::new_v4();
+    let mut bytes = [0u8; 32];
+    bytes[..16].copy_from_slice(a.as_bytes());
+    bytes[16..].copy_from_slice(b.as_bytes());
+    encode_base64url(&bytes)
+}
+
+/// Compute PKCE code_challenge = BASE64URL(SHA-256(ASCII(code_verifier))) (RFC 7636 §4.2).
+fn compute_code_challenge(code_verifier: &str) -> String {
+    let hash = Sha256::digest(code_verifier.as_bytes());
+    encode_base64url(&hash)
+}
+
+/// Base64url-encode bytes without padding (RFC 4648 §5).
+fn encode_base64url(input: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity((input.len() * 4 + 2) / 3);
+    let mut i = 0;
+    while i + 2 < input.len() {
+        let n = ((input[i] as u32) << 16) | ((input[i + 1] as u32) << 8) | (input[i + 2] as u32);
+        out.push(ALPHABET[((n >> 18) & 63) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 63) as usize] as char);
+        out.push(ALPHABET[((n >> 6) & 63) as usize] as char);
+        out.push(ALPHABET[(n & 63) as usize] as char);
+        i += 3;
+    }
+    match input.len() - i {
+        1 => {
+            let n = (input[i] as u32) << 16;
+            out.push(ALPHABET[((n >> 18) & 63) as usize] as char);
+            out.push(ALPHABET[((n >> 12) & 63) as usize] as char);
+        }
+        2 => {
+            let n = ((input[i] as u32) << 16) | ((input[i + 1] as u32) << 8);
+            out.push(ALPHABET[((n >> 18) & 63) as usize] as char);
+            out.push(ALPHABET[((n >> 12) & 63) as usize] as char);
+            out.push(ALPHABET[((n >> 6) & 63) as usize] as char);
+        }
+        _ => {}
+    }
+    out
 }
 
 
@@ -336,11 +397,35 @@ mod tests {
 
     #[test]
     fn build_auth_url_contains_required_params() {
-        let url = build_auth_url("https://suite.example.com", "aimds", "http://127.0.0.1:12345/callback").unwrap();
-        assert!(url.contains("client_id=open-webui"));
+        let url = build_auth_url(
+            "https://suite.example.com",
+            "aimds",
+            "hermes-app",
+            "hermes://oauth/callback",
+            "abc123challenge",
+        ).unwrap();
+        assert!(url.contains("client_id=hermes-app"));
         assert!(url.contains("response_type=code"));
         assert!(url.contains("scope=openid"));
+        assert!(url.contains("code_challenge=abc123challenge"));
+        assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("/auth/realms/aimds/protocol/openid-connect/auth"));
+    }
+
+    #[test]
+    fn pkce_code_challenge_is_deterministic() {
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        // Known SHA-256 base64url for this verifier (RFC 7636 Appendix B)
+        let challenge = compute_code_challenge(verifier);
+        assert_eq!(challenge, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+    }
+
+    #[test]
+    fn generate_code_verifier_length() {
+        let verifier = generate_code_verifier();
+        // 32 bytes → 43 base64url chars (no padding)
+        assert_eq!(verifier.len(), 43);
+        assert!(verifier.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'));
     }
 
     // Helper for test: standard base64 encode

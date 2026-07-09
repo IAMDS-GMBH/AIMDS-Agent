@@ -9,6 +9,7 @@ type EndpointVariant = 'dev' | 'main' | 'staging'
 // Enterprise defaults baked in at packaging time (see vite.config.ts).
 const DEFAULT_BASE_URL: string = import.meta.env.VITE_DEFAULT_BASE_URL ?? ''
 const DEFAULT_REALM: string = import.meta.env.VITE_DEFAULT_KEYCLOAK_REALM ?? 'aimds'
+const DEFAULT_CLIENT_ID: string = import.meta.env.VITE_DEFAULT_KEYCLOAK_CLIENT_ID ?? 'hermes-app'
 const DEFAULT_REDIRECT_URI: string = import.meta.env.VITE_DEFAULT_KEYCLOAK_REDIRECT_URI ?? ''
 
 interface KeycloakLoginResult {
@@ -200,7 +201,8 @@ export default function Credentials() {
       const result = await invoke<KeycloakLoginResult>('keycloak_login', {
         baseUrl,
         realm: DEFAULT_REALM,
-        redirectUri: DEFAULT_REDIRECT_URI || `${baseUrl}/assistant/oauth/oidc/callback`
+        clientId: DEFAULT_CLIENT_ID,
+        redirectUri: DEFAULT_REDIRECT_URI || 'hermes://oauth/callback'
       })
 
       // Populate the form with the SSO-obtained key so the user can proceed
