@@ -349,7 +349,7 @@ export default function Credentials() {
                 {isKeycloakLoading ? (
                   <>
                     <Loader className="h-4 w-4 animate-spin" />
-                    Connecting to Keycloak…
+                    Waiting for browser login…
                   </>
                 ) : keycloakConnected ? (
                   <>

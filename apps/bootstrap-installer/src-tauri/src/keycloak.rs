@@ -1,31 +1,29 @@
 //! Keycloak SSO authentication for the IAMDS ecosystem.
 //!
-//! Opens a Tauri WebviewWindow to the Keycloak OIDC login page, captures the
-//! OAuth2 authorization code via a loopback HTTP server (RFC 8252 §7.3), and
-//! exchanges the code for an access token containing the LiteLLM virtual key
-//! in the JWT `"key"` claim.
+//! Opens the Keycloak OIDC login page in the user's **system browser** and
+//! captures the OAuth2 authorization code via a loopback HTTP server bound on
+//! a random free port (RFC 8252 §7.3 — the standard approach for native apps).
 //!
 //! ## Flow
 //! 1. Bind `TcpListener` on `127.0.0.1:0` — OS assigns a free port.
-//! 2. Open WebviewWindow → `{base_url}/auth/realms/{realm}/protocol/openid-connect/auth`
-//!    with `redirect_uri=http://127.0.0.1:{port}/callback` and a PKCE S256 challenge.
-//! 3. Keycloak redirects the embedded browser to the loopback callback URL.
-//! 4. Loopback server reads the HTTP request, extracts `?code=`, responds with
-//!    a success page, and closes the window.
-//! 5. Exchange `code` + `code_verifier` for tokens at the Keycloak token endpoint.
-//! 6. Decode JWT payload (base64url) → read `"key"` claim → return as `api_key`.
+//! 2. Build auth URL with `redirect_uri=http://127.0.0.1:{port}/callback` and a
+//!    PKCE S256 challenge.
+//! 3. Open the auth URL in the system browser via `tauri-plugin-opener`.
+//! 4. Keycloak redirects the browser to the loopback callback URL.
+//! 5. Loopback server reads the HTTP request, extracts `?code=`, responds with
+//!    a "you can close this tab" page.
+//! 6. Exchange `code` + `code_verifier` for tokens at the Keycloak token endpoint.
+//! 7. Decode JWT payload → read `"key"` claim → return as `api_key`.
 //!
-//! Using a loopback redirect avoids custom URL schemes (`hermes://`) which
-//! macOS WKWebView does not intercept via `on_navigation` — the OS would
-//! instead try to "download" the URL, creating a zero-byte file in Downloads.
-
-use std::sync::{Arc, Mutex};
+//! Using the system browser avoids all embedded-WebView issues (custom URL
+//! scheme handling, WKWebView navigation policy, App Transport Security) while
+//! matching what GitHub CLI, Stripe CLI, and other native apps do.
 
 use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::AppHandle;
+use tauri_plugin_opener::OpenerExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::oneshot;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -41,13 +39,12 @@ pub struct KeycloakLoginResult {
 // Tauri command
 // ---------------------------------------------------------------------------
 
-/// Open a Keycloak login window and exchange the resulting auth code for an
-/// access token whose `"key"` JWT claim is the user's LiteLLM virtual key.
+/// Open the Keycloak login page in the system browser and capture the
+/// authorization code via a loopback HTTP callback server.
 ///
-/// Uses a loopback HTTP redirect (RFC 8252 §7.3) so no custom URL scheme is
-/// needed: a random free port on 127.0.0.1 is bound before the window opens,
-/// and Keycloak redirects the browser to `http://127.0.0.1:{port}/callback`
-/// where our local server captures the authorization code.
+/// The Keycloak `hermes-app` client must list `http://127.0.0.1` (any port)
+/// as a valid redirect URI — add `http://127.0.0.1` to the client's
+/// "Valid Redirect URIs" in Keycloak once.
 ///
 /// Parameters:
 /// - `base_url`  — IAMDS ecosystem base URL, e.g. `https://suite.example.com`
@@ -64,82 +61,36 @@ pub async fn keycloak_login(
     let realm = if realm.trim().is_empty() { "aimds".to_string() } else { realm.trim().to_string() };
     let client_id = if client_id.trim().is_empty() { "hermes-app".to_string() } else { client_id.trim().to_string() };
 
-    // Bind a loopback listener on a random free OS port (RFC 8252 §7.3).
-    // This avoids custom URL schemes which macOS WKWebView does not intercept
-    // via on_navigation — it would instead try to download hermes://... as a file.
+    // Bind loopback listener on a random free port (RFC 8252 §7.3).
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|e| format!("Failed to bind loopback callback server: {e}"))?;
     let port = listener.local_addr()
-        .map_err(|e| format!("Failed to get loopback callback port: {e}"))?
+        .map_err(|e| format!("Failed to get loopback port: {e}"))?
         .port();
     let redirect_uri = format!("http://127.0.0.1:{port}/callback");
 
-    // Generate PKCE code_verifier (32 random bytes → base64url, RFC 7636 §4.1)
     let code_verifier = generate_code_verifier();
     let code_challenge = compute_code_challenge(&code_verifier);
-
     let auth_url = build_auth_url(&base, &realm, &client_id, &redirect_uri, &code_challenge)?;
 
-    tracing::info!(realm, client_id, port, "Starting Keycloak SSO login (loopback)");
+    tracing::info!(realm, client_id, port, "Opening Keycloak SSO login in system browser");
 
-    // oneshot channel: loopback server / window-close → async command
-    let (tx, rx) = oneshot::channel::<Result<String, String>>();
-    let tx_shared = Arc::new(Mutex::new(Some(tx)));
-    let tx_server = tx_shared.clone();
-    let tx_close = tx_shared.clone();
+    // Open in system browser — avoids all embedded-WebView scheme/navigation issues.
+    app.opener()
+        .open_url(&auth_url, None::<&str>)
+        .map_err(|e| format!("Failed to open browser for Keycloak login: {e}"))?;
 
-    // Unique window label so parallel logins don't collide.
-    let win_label = format!("keycloak-auth-{}", uuid::Uuid::new_v4().simple());
-    let win_label_close = win_label.clone();
+    // Wait up to 5 minutes for the browser to hit our loopback callback.
+    let code = tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        accept_one_callback(listener),
+    )
+    .await
+    .map_err(|_| "Keycloak authentication timed out after 5 minutes".to_string())?
+    .map_err(|e| e)?;
 
-    let parsed_url = auth_url
-        .parse::<tauri::Url>()
-        .map_err(|e| format!("Invalid Keycloak auth URL: {e}"))?;
-
-    let win = WebviewWindowBuilder::new(&app, &win_label, WebviewUrl::External(parsed_url))
-        .title("Sign in with Keycloak")
-        .inner_size(500.0, 660.0)
-        .center()
-        .build()
-        .map_err(|e| format!("Failed to open Keycloak auth window: {e}"))?;
-
-    // Detect user closing the window without completing login.
-    win.on_window_event(move |event| {
-        if let tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed = event {
-            if let Ok(mut guard) = tx_close.lock() {
-                if let Some(sender) = guard.take() {
-                    let _ = sender.send(Err("Login window closed before authentication completed".to_string()));
-                }
-            }
-        }
-    });
-
-    // Spawn loopback server: accepts exactly one HTTP request, extracts the
-    // auth code from the callback URL, serves a success page, then signals.
-    let app_for_close = app.clone();
-    tokio::spawn(async move {
-        let result = accept_one_callback(listener).await;
-        // Close the auth window (best-effort — it may already be closing).
-        if let Some(w) = app_for_close.get_webview_window(&win_label_close) {
-            let _ = w.close();
-        }
-        if let Ok(mut guard) = tx_server.lock() {
-            if let Some(sender) = guard.take() {
-                let _ = sender.send(result);
-            }
-        }
-    });
-
-    // Wait for the authorization code (5-minute timeout)
-    let code_result = tokio::time::timeout(std::time::Duration::from_secs(300), rx)
-        .await
-        .map_err(|_| "Keycloak authentication timed out after 5 minutes".to_string())?
-        .map_err(|_| "Internal error: auth channel dropped".to_string())?;
-
-    let code = code_result?;
     tracing::info!("Keycloak auth code received, exchanging for token");
-
     let api_key = exchange_code_for_key(&base, &realm, &client_id, &code, &redirect_uri, &code_verifier).await?;
     tracing::info!("Keycloak virtual key extracted successfully");
 
@@ -150,8 +101,8 @@ pub async fn keycloak_login(
 // Loopback callback server
 // ---------------------------------------------------------------------------
 
-/// Accept one HTTP request on `listener`, extract the `code` query parameter,
-/// and respond with a success page the user sees before the window auto-closes.
+/// Accept one HTTP request, extract `?code=`, serve a "you can close this
+/// tab" page to the browser, then return the code.
 async fn accept_one_callback(listener: tokio::net::TcpListener) -> Result<String, String> {
     let (mut stream, _) = listener
         .accept()
@@ -164,23 +115,17 @@ async fn accept_one_callback(listener: tokio::net::TcpListener) -> Result<String
         .await
         .map_err(|e| format!("Callback server read error: {e}"))?;
 
-    let request = std::str::from_utf8(&buf[..n])
-        .unwrap_or("")
-        .to_string();
-
-    // First line: "GET /callback?code=xxx&... HTTP/1.1"
-    let first_line = request.lines().next().unwrap_or("");
-    let path = first_line.split_whitespace().nth(1).unwrap_or("");
+    // Parse "GET /callback?code=xxx HTTP/1.1"
+    let request = std::str::from_utf8(&buf[..n]).unwrap_or("");
+    let path = request.lines().next().unwrap_or("").split_whitespace().nth(1).unwrap_or("");
     let query = path.splitn(2, '?').nth(1).unwrap_or("");
 
-    // Parse query params for code / error.
     let mut code: Option<String> = None;
     let mut error: Option<String> = None;
     for pair in query.split('&') {
         let mut kv = pair.splitn(2, '=');
         let k = kv.next().unwrap_or("");
-        let v = kv.next().unwrap_or("").replace('+', " ");
-        let v = percent_decode(&v);
+        let v = percent_decode(kv.next().unwrap_or(""));
         match k {
             "code" => code = Some(v),
             "error_description" => error = Some(v),
@@ -189,19 +134,20 @@ async fn accept_one_callback(listener: tokio::net::TcpListener) -> Result<String
         }
     }
 
-    // Send HTTP response before returning so the browser renders the page.
     let (status, body) = if code.is_some() {
-        ("200 OK", "<html><head><title>Hermes</title>\
-            <style>body{font-family:system-ui;display:flex;align-items:center;\
-            justify-content:center;height:100vh;margin:0;background:#f9fafb}\
-            .card{text-align:center;padding:2rem;border-radius:1rem;\
-            box-shadow:0 4px 24px #0001;background:#fff}\
-            h2{color:#16a34a;margin-bottom:.5rem}p{color:#6b7280}</style></head>\
-            <body><div class=\"card\"><h2>✓ Signed in</h2>\
-            <p>You can close this window — Hermes is finishing the setup.</p>\
-            </div></body></html>")
+        ("200 OK",
+         "<html><head><title>Hermes</title>\
+          <style>body{font-family:system-ui;display:flex;align-items:center;\
+          justify-content:center;height:100vh;margin:0;background:#f9fafb}\
+          .card{text-align:center;padding:2rem;border-radius:1rem;\
+          box-shadow:0 4px 24px #0001;background:#fff}\
+          h2{color:#16a34a;margin-bottom:.5rem}p{color:#6b7280}</style></head>\
+          <body><div class=\"card\"><h2>✓ Signed in</h2>\
+          <p>You can close this tab — Hermes is finishing the setup.</p>\
+          </div></body></html>")
     } else {
-        ("400 Bad Request", "<html><body><p>Authentication failed. You may close this window.</p></body></html>")
+        ("400 Bad Request",
+         "<html><body><p>Authentication failed. You may close this tab.</p></body></html>")
     };
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n\
@@ -217,7 +163,7 @@ async fn accept_one_callback(listener: tokio::net::TcpListener) -> Result<String
     }
 }
 
-/// Minimal percent-decoder for callback query values (handles %XX sequences).
+/// Minimal percent-decoder for callback query values.
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
@@ -232,7 +178,7 @@ fn percent_decode(s: &str) -> String {
                 }
             }
         }
-        out.push(bytes[i] as char);
+        out.push(if bytes[i] == b'+' { ' ' } else { bytes[i] as char });
         i += 1;
     }
     out
