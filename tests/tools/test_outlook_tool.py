@@ -248,33 +248,130 @@ def test_outlook_search_emails_structured_filters_without_query(monkeypatch):
     )
 
 
-def test_build_mail_search_kql_combines_structured_and_free_text():
+def test_build_mail_search_kql_combines_sender_recipient_and_free_text():
     expr = outlook_tool._build_mail_search_kql(
         query="Angebot",
         search_in="both",
         sender="alice@contoso.com",
         recipient="bob@contoso.com",
-        date_from="2026-05-30",
-        date_to="2026-06-05",
     )
     assert 'from:"alice@contoso.com"' in expr
     assert 'to:"bob@contoso.com"' in expr
-    assert "received:2026-05-30..2026-06-05" in expr
     assert '"Angebot"' in expr
+    # Graph's $search does not support date-range KQL for messages —
+    # dates must never leak into this expression.
+    assert "received" not in expr
 
 
-def test_build_mail_search_kql_date_from_only():
-    expr = outlook_tool._build_mail_search_kql(
-        query="", search_in="both", sender="", recipient="", date_from="2026-05-30", date_to="",
+def test_build_received_date_filter_both_bounds():
+    expr = outlook_tool._build_received_date_filter("2026-05-30", "2026-06-05")
+    assert expr == (
+        "receivedDateTime ge 2026-05-30T00:00:00Z and "
+        "receivedDateTime le 2026-06-05T23:59:59Z"
     )
-    assert expr == "received>=2026-05-30"
 
 
-def test_build_mail_search_kql_date_to_only():
-    expr = outlook_tool._build_mail_search_kql(
-        query="", search_in="both", sender="", recipient="", date_from="", date_to="2026-06-05",
+def test_build_received_date_filter_from_only():
+    expr = outlook_tool._build_received_date_filter("2026-05-30", "")
+    assert expr == "receivedDateTime ge 2026-05-30T00:00:00Z"
+
+
+def test_build_received_date_filter_to_only():
+    expr = outlook_tool._build_received_date_filter("", "2026-06-05")
+    assert expr == "receivedDateTime le 2026-06-05T23:59:59Z"
+
+
+def test_search_emails_async_search_expr_wrapped_in_outer_quotes(monkeypatch):
+    """Regression guard for a real production bug: Graph's $search requires
+    the ENTIRE KQL expression to be wrapped in one overall pair of double
+    quotes (with inner quotes escaped) as part of the parameter value itself
+    — not just the individual from:/subject: phrases. Sending
+    'from:"x" "keyword"' unquoted caused a live 400 'character \":\" is not
+    valid' syntax error as soon as more than one term was combined."""
+    captured = {}
+
+    class _FakeClient:
+        async def get_json(self, path, params=None, headers=None):
+            captured["params"] = params
+            captured["headers"] = headers
+            return {"value": []}
+
+    monkeypatch.setattr(outlook_tool, "_new_graph_client", lambda: (_FakeClient(), None))
+
+    import asyncio
+    asyncio.run(
+        outlook_tool._search_emails_async(
+            query="keyword", count=10, search_in="both", folder="inbox",
+            sender="arnim.schmidt@f1rst.ch",
+        )
     )
-    assert expr == "received<=2026-06-05"
+
+    expected_expr = outlook_tool._build_mail_search_kql(
+        "keyword", "both", "arnim.schmidt@f1rst.ch", "",
+    )
+    expected_search_param = '"' + expected_expr.replace('"', '\\"') + '"'
+    assert captured["params"]["$search"] == expected_search_param
+    assert captured["params"]["$count"] == "true"
+    assert captured["headers"]["ConsistencyLevel"] == "eventual"
+
+
+def test_search_emails_async_date_range_uses_filter_not_search(monkeypatch):
+    """Regression guard: date_from/date_to must go through $filter, never
+    into the $search KQL string, since Graph rejects received:/received>=
+    KQL for messages with a 400 syntax error."""
+    captured = {}
+
+    class _FakeClient:
+        async def get_json(self, path, params=None, headers=None):
+            captured["params"] = params
+            return {"value": []}
+
+    monkeypatch.setattr(outlook_tool, "_new_graph_client", lambda: (_FakeClient(), None))
+
+    import asyncio
+    asyncio.run(
+        outlook_tool._search_emails_async(
+            query="", count=10, search_in="both", folder="inbox",
+            sender="arnim.schmidt@f1rst.ch", date_from="2026-06-01", date_to="2026-06-03",
+        )
+    )
+
+    params = captured["params"]
+    assert params["$filter"] == (
+        "receivedDateTime ge 2026-06-01T00:00:00Z and receivedDateTime le 2026-06-03T23:59:59Z"
+    )
+    expected_expr = outlook_tool._build_mail_search_kql("", "both", "arnim.schmidt@f1rst.ch", "")
+    expected_search_param = '"' + expected_expr.replace('"', '\\"') + '"'
+    assert params["$search"] == expected_search_param
+    assert "received" not in expected_expr  # no received: KQL ever built into $search
+
+
+def test_search_emails_async_pure_date_filter_no_search_param(monkeypatch):
+    """When only date filters are given (no query/sender/recipient), no
+    $search parameter should be sent at all — just a plain $filter, exactly
+    like the already-working outlook_get_emails time_range path."""
+    captured = {}
+
+    class _FakeClient:
+        async def get_json(self, path, params=None, headers=None):
+            captured["params"] = params
+            return {"value": []}
+
+    monkeypatch.setattr(outlook_tool, "_new_graph_client", lambda: (_FakeClient(), None))
+
+    import asyncio
+    asyncio.run(
+        outlook_tool._search_emails_async(
+            query="", count=10, search_in="both", folder="inbox",
+            date_from="2026-06-01", date_to="2026-06-03",
+        )
+    )
+
+    assert "$search" not in captured["params"]
+    assert "$count" not in captured["params"]
+    assert captured["params"]["$filter"] == (
+        "receivedDateTime ge 2026-06-01T00:00:00Z and receivedDateTime le 2026-06-03T23:59:59Z"
+    )
 
 
 def test_search_emails_async_folder_all_uses_whole_mailbox(monkeypatch):
@@ -318,6 +415,7 @@ def test_search_emails_async_folder_junk_maps_to_junkemail(monkeypatch):
     )
 
     assert captured["path"] == "/me/mailFolders/junkemail/messages"
+
 
 
 def test_outlook_read_shared_mail_requires_mailbox(monkeypatch):
@@ -612,6 +710,117 @@ def test_extract_signature_candidate_captures_real_closing_line():
     )
     candidate = outlook_tool._extract_signature_candidate(body)
     assert candidate == "Mit freundlichen Grüßen,\nJohannes Huchler"
+
+
+def test_extract_signature_candidate_detects_bare_gruesse_signoff():
+    """Regression test for a real-world sample: the user's actual sent
+    emails close with a bare 'Grüße' (no qualifier like 'Viele'/'Beste'),
+    which the phrase-only marker list never matched, so this user's real
+    signature could never be auto-detected from the sent folder."""
+    body = (
+        "Hallo,\n\nkönnen wir die Domains dort bereits einbinden?\n\n"
+        "Grüße\nJohannes Huchler\nSenior Developer\nIAMDS GmbH\n"
+        "Heininger Str. 6, 94036 Passau\nHRB: 10734 Amtsgericht Passau"
+    )
+    candidate = outlook_tool._extract_signature_candidate(body)
+    assert candidate is not None
+    assert candidate.startswith("Grüße")
+    assert "Johannes Huchler" in candidate
+    assert "IAMDS GmbH" in candidate
+    assert "können wir die Domains" not in candidate
+
+
+def test_extract_signature_candidate_bare_gruss_singular_signoff():
+    body = "Hallo,\n\nDanke dir.\n\nGruß,\nJohannes"
+    candidate = outlook_tool._extract_signature_candidate(body)
+    assert candidate == "Gruß,\nJohannes"
+
+
+def test_extract_signature_candidate_does_not_false_match_begruessen():
+    """'begrüßen'/'begrüßenswert' contain 'grüße' as a raw substring but must
+    NOT be mistaken for the bare 'Grüße' sign-off marker (word-boundary
+    matching only)."""
+    body = (
+        "Hallo,\n\nwir würden Sie gerne im Team begrüßen und freuen uns auf die "
+        "Zusammenarbeit. Das wäre sehr begrüßenswert für alle Beteiligten."
+    )
+    assert outlook_tool._extract_signature_candidate(body) is None
+
+
+def test_extract_signature_html_block_finds_outlook_mobile_marker():
+    """Verified against a real Outlook (OWA/mobile) sent email: the actual
+    client wraps the user's configured signature in
+    <div id="ms-outlook-mobile-signature">...</div> — a structural marker
+    that should be preferred over the closing-phrase heuristic whenever
+    present, since it's exact rather than guessed."""
+    html = (
+        '<div>Hi Bob,</div><div>can we sync tomorrow?</div><br>'
+        '<div id="ms-outlook-mobile-signature" style="color: inherit;">'
+        '<table><tbody><tr><td>'
+        '<div>Max Mustermann <span>Senior Developer</span></div>'
+        '</td></tr><tr><td>'
+        '<div>Example GmbH, Musterstr. 1, 12345 Musterstadt</div>'
+        '</td></tr></tbody></table>'
+        '</div>'
+    )
+    candidate = outlook_tool._extract_signature_html_block(html)
+    assert candidate is not None
+    assert "Max Mustermann" in candidate
+    assert "Senior Developer" in candidate
+    assert "Example GmbH" in candidate
+    assert "can we sync tomorrow" not in candidate  # body text excluded, only the marker div
+
+
+def test_extract_signature_html_block_balances_nested_divs():
+    """The signature container itself has nested <div> children (e.g. a
+    logo cell and a details cell) — the extractor must scan to the correctly
+    MATCHING closing </div>, not the first one it sees."""
+    html = (
+        '<div id="Signature">'
+        '<div class="outer"><div class="inner">Jane Doe</div></div>'
+        '<div>Acme Inc.</div>'
+        '</div>'
+        '<div>Unrelated trailing content that must not be included</div>'
+    )
+    candidate = outlook_tool._extract_signature_html_block(html)
+    assert candidate is not None
+    assert "Jane Doe" in candidate
+    assert "Acme Inc." in candidate
+    assert "Unrelated trailing content" not in candidate
+
+
+def test_extract_signature_html_block_returns_none_without_known_marker():
+    html = "<div>Hi,</div><div>Viele Grüße, Someone</div>"
+    assert outlook_tool._extract_signature_html_block(html) is None
+
+
+def test_detect_signature_from_sent_emails_prefers_html_marker(monkeypatch):
+    """When a sent email's HTML body contains a recognized signature
+    container marker, that structural extraction should be used instead of
+    falling back to the closing-phrase heuristic."""
+    html_body = (
+        '<div>Danke, klingt gut.</div>'
+        '<div id="ms-outlook-mobile-signature">'
+        '<div>Max Mustermann</div><div>Example GmbH</div>'
+        '</div>'
+    )
+
+    async def _fetch_emails_async(count, folder, unread_only, include_body, time_range="today"):
+        return [{"id": "m1"}]
+
+    async def _fetch_email_by_id_async(message_id):
+        return {"body": {"contentType": "html", "content": html_body}}
+
+    monkeypatch.setattr(outlook_tool, "_fetch_emails_async", _fetch_emails_async)
+    monkeypatch.setattr(outlook_tool, "_fetch_email_by_id_async", _fetch_email_by_id_async)
+
+    import asyncio
+    result = asyncio.run(outlook_tool._detect_signature_from_sent_emails_async(sample_size=1))
+
+    assert result is not None
+    assert "Max Mustermann" in result
+    assert "Example GmbH" in result
+    assert "Danke, klingt gut" not in result
 
 
 def test_outlook_write_email_uses_cached_tone_for_new_email(monkeypatch):

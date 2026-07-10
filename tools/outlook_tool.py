@@ -482,6 +482,57 @@ def _save_cached_signature(signature: str, source: str = "sent-folder") -> None:
         pass
 
 
+# Known HTML container markers that Outlook clients themselves wrap around
+# the user's actual configured signature at compose time — a real,
+# structural signal, much more reliable than guessing from closing phrases.
+# Verified against a real Outlook (OWA/mobile) sent email HTML source, which
+# wrapped the signature block in exactly <div id="ms-outlook-mobile-signature">.
+# Other Outlook clients/versions are documented to use similar id/class
+# conventions (e.g. "Signature", "x_signature", "OutlookSignature"); kept as
+# a list since the exact marker varies by client/version.
+_SIGNATURE_HTML_MARKER_RE = re.compile(
+    r'(?is)<div[^>]+(?:id|class)=["\']?'
+    r'(?:ms-outlook-mobile-signature|signature|x_signature|outlooksignature)["\']?[^>]*>'
+)
+
+
+def _extract_signature_html_block(html: str) -> str | None:
+    """Extract the content of a known Outlook signature container div, if
+    present, by balanced-tag scanning from the marker's opening <div> to its
+    matching closing </div>. Returns the stripped-to-text signature content,
+    or None if no known marker is found (caller should fall back to the
+    closing-phrase heuristic in that case)."""
+    if not html:
+        return None
+    match = _SIGNATURE_HTML_MARKER_RE.search(html)
+    if not match:
+        return None
+
+    start = match.end()
+    depth = 1
+    tag_re = re.compile(r"(?is)<div\b[^>]*>|</div\s*>")
+    pos = start
+    end = None
+    for tag_match in tag_re.finditer(html, start):
+        if tag_match.group(0).lower().startswith("</div"):
+            depth -= 1
+        else:
+            depth += 1
+        if depth == 0:
+            end = tag_match.start()
+            break
+    if end is None:
+        end = len(html)
+
+    inner_html = html[start:end]
+    text = _strip_html(inner_html)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if not text or len(text) > 800:
+        return None
+    return text
+
+
 # Markers that indicate quoted/reply history below the user's own new text —
 # cut the body there before looking for a signature so we don't pick up the
 # *other* person's signature from a quoted thread.
@@ -494,11 +545,23 @@ _QUOTE_MARKERS = (
 # of a long closing *paragraph* (e.g. "Vielen Dank erneut für Ihre
 # Unterstützung! Mit freundlichen Grüßen, ...") got cached as the "signature"
 # wholesale, polluting every future email with recycled body prose.
+#
+# Includes bare "Grüße"/"Gruß" (a very common informal German sign-off with
+# no qualifier, e.g. "Grüße\nJohannes Huchler...") in addition to the more
+# formal "Viele/Beste/Liebe/Freundliche Grüße" phrases — a real user's sent
+# emails were found to close with plain "Grüße", which the phrase list alone
+# never matched, so the signature could never be auto-detected from the sent
+# folder for that user. Matched with a word boundary (not plain substring)
+# to avoid false positives on words like "begrüßen"/"begrüßenswert".
 _SIGNATURE_CLOSING_MARKERS = (
     "mit freundlichen grüßen", "mit freundlichem gruß", "mit besten grüßen",
     "viele grüße", "beste grüße", "liebe grüße", "freundliche grüße",
     "best regards", "kind regards", "warm regards", "regards,",
     "sincerely", "best,", "cheers,",
+)
+_SIGNATURE_CLOSING_WORD_MARKERS = (
+    re.compile(r"\bgrüße\b", re.IGNORECASE),
+    re.compile(r"\bgruß\b", re.IGNORECASE),
 )
 
 
@@ -526,6 +589,9 @@ def _extract_signature_candidate(body_text: str) -> str | None:
     for i in range(len(lines) - 1, -1, -1):
         lowered = lines[i].lower()
         if any(marker in lowered for marker in _SIGNATURE_CLOSING_MARKERS):
+            closing_idx = i
+            break
+        if any(pattern.search(lines[i]) for pattern in _SIGNATURE_CLOSING_WORD_MARKERS):
             closing_idx = i
             break
     if closing_idx is None:
@@ -557,8 +623,15 @@ async def _detect_signature_from_sent_emails_async(sample_size: int = 3) -> str 
             continue
         body = full.get("body") or {}
         content = body.get("content", "")
-        text = _strip_html(content) if body.get("contentType", "").lower() == "html" else content
-        candidate = _extract_signature_candidate(text)
+        is_html = body.get("contentType", "").lower() == "html"
+
+        candidate = _extract_signature_html_block(content) if is_html else None
+        if not candidate:
+            # Fall back to the closing-phrase heuristic for plain-text
+            # emails, or HTML emails whose client didn't use a recognized
+            # signature container marker.
+            text = _strip_html(content) if is_html else content
+            candidate = _extract_signature_candidate(text)
         if candidate:
             candidates.append(candidate)
 
@@ -686,19 +759,19 @@ def _build_mail_search_kql(
     search_in: str,
     sender: str,
     recipient: str,
-    date_from: str,
-    date_to: str,
 ) -> str:
-    """Build a proper Outlook/Graph KQL search expression from structured
-    filters instead of relying on free-text keyword matching alone.
+    """Build a Graph $search KQL expression for sender/recipient/free-text
+    filters only. Date filtering is intentionally NOT handled here — Graph's
+    $search does not reliably support a ``received:`` KQL restriction for
+    messages (it returns a 400 syntax error); date ranges must instead be
+    expressed as a $filter on receivedDateTime (see _search_emails_async).
 
     Previously outlook_search_emails only accepted a single free-text
     ``query`` string, which forced attempts at recipient/date filtering to
     be spelled out as literal, human-readable text (e.g. "Datum: 02.06.2026
     Empf\u00e4nger: arnim") that never appears verbatim in any email and so
-    always matched zero messages. Graph's $search actually understands KQL
-    property restrictions (``from:``, ``to:``, ``received:``), so build
-    those explicitly instead.
+    always matched zero messages. This builds real ``from:``/``to:`` KQL
+    restrictions instead.
     """
     parts: list[str] = []
 
@@ -706,15 +779,6 @@ def _build_mail_search_kql(
         parts.append(f'from:"{sender.strip()}"')
     if recipient.strip():
         parts.append(f'to:"{recipient.strip()}"')
-
-    date_from = date_from.strip()
-    date_to = date_to.strip()
-    if date_from and date_to:
-        parts.append(f"received:{date_from}..{date_to}")
-    elif date_from:
-        parts.append(f"received>={date_from}")
-    elif date_to:
-        parts.append(f"received<={date_to}")
 
     query = query.strip()
     if query:
@@ -730,6 +794,20 @@ def _build_mail_search_kql(
     return " ".join(parts)
 
 
+def _build_received_date_filter(date_from: str, date_to: str) -> str:
+    """Build a Graph $filter expression for a receivedDateTime range from
+    plain YYYY-MM-DD dates. Graph's $search does not support date-range KQL
+    for messages, so date filtering must go through $filter instead."""
+    date_from = date_from.strip()
+    date_to = date_to.strip()
+    clauses: list[str] = []
+    if date_from:
+        clauses.append(f"receivedDateTime ge {date_from}T00:00:00Z")
+    if date_to:
+        clauses.append(f"receivedDateTime le {date_to}T23:59:59Z")
+    return " and ".join(clauses)
+
+
 async def _search_emails_async(
     query: str,
     count: int,
@@ -740,9 +818,10 @@ async def _search_emails_async(
     date_from: str = "",
     date_to: str = "",
 ) -> list[dict[str, Any]]:
-    """Search emails via Graph $search, with optional structured sender/
-    recipient/date filters layered in as real KQL restrictions (see
-    _build_mail_search_kql) rather than free text alone."""
+    """Search emails via Graph $search (keyword/from/to) combined with an
+    optional $filter (receivedDateTime range) — see _build_mail_search_kql
+    and _build_received_date_filter for why these are two separate Graph
+    query parameters rather than one combined KQL string."""
     client, _ = _new_graph_client()
 
     select_fields = ["id", "subject", "receivedDateTime", "isRead",
@@ -758,14 +837,29 @@ async def _search_emails_async(
         graph_folder = _FOLDER_MAP.get(normalized_folder, "inbox")
         path = f"/me/mailFolders/{graph_folder}/messages"
 
-    search_expr = _build_mail_search_kql(query, search_in, sender, recipient, date_from, date_to)
+    search_expr = _build_mail_search_kql(query, search_in, sender, recipient)
+    filter_expr = _build_received_date_filter(date_from, date_to)
 
     params: dict[str, Any] = {
-        "$search": search_expr,
         "$top": min(max(1, count), 50),
         "$select": ",".join(select_fields),
     }
     headers = {"ConsistencyLevel": "eventual"}
+
+    if search_expr:
+        # The entire KQL expression itself must be wrapped in one overall
+        # pair of double quotes as part of the $search value (with any
+        # quotes already inside it escaped) — this is Graph's own $search
+        # syntax, not HTTP/URL escaping. Passing e.g.
+        # 'from:"x" "keyword"' unquoted causes a 400 "character ':' is not
+        # valid" syntax error as soon as more than a single bare term is
+        # combined.
+        params["$search"] = '"' + search_expr.replace('"', '\\"') + '"'
+        # Required by Graph whenever $search is combined with $filter (and
+        # harmless otherwise) on the /messages endpoint.
+        params["$count"] = "true"
+    if filter_expr:
+        params["$filter"] = filter_expr
 
     resp = await client.get_json(path, params=params, headers=headers)
     return resp.get("value", [])
