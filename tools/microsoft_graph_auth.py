@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import logging
 import os
+import secrets
+import threading
 import time
+import webbrowser
 from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
@@ -21,6 +28,10 @@ DEFAULT_GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 DEFAULT_DELEGATED_SCOPE = "Mail.Read Mail.Send offline_access"
 DEFAULT_GRAPH_AUTHORITY_URL = "https://login.microsoftonline.com"
 DEFAULT_TOKEN_SKEW_SECONDS = 120
+# Loopback (Authorization Code + PKCE) redirect — Microsoft matches any port
+# on this host at runtime as long as an app registration has a "Mobile and
+# desktop applications" platform with a bare "http://localhost" redirect URI.
+DEFAULT_LOOPBACK_TIMEOUT_SECONDS = 300
 
 
 class MicrosoftGraphAuthError(RuntimeError):
@@ -379,11 +390,20 @@ class GraphDeviceCodeProvider:
         # Notify via callback if provided (e.g., for desktop app modal)
         if self._device_code_callback:
             try:
-                await self._device_code_callback(
-                    verification_uri=verification_uri,
-                    user_code=user_code,
-                    expires_in=expires_in,
-                )
+                try:
+                    await self._device_code_callback(
+                        verification_uri=verification_uri,
+                        user_code=user_code,
+                        expires_in=expires_in,
+                        flow="device_code",
+                    )
+                except TypeError:
+                    # Legacy callback signature without `flow`.
+                    await self._device_code_callback(
+                        verification_uri=verification_uri,
+                        user_code=user_code,
+                        expires_in=expires_in,
+                    )
             except Exception as exc:
                 logger.warning("[Outlook] Device code callback failed: %s", exc)
 
@@ -533,6 +553,357 @@ class GraphDeviceCodeProvider:
                 pass
         except Exception as exc:
             logger.warning("[Outlook] Could not save token cache: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Authorization Code + PKCE via a local loopback redirect (browser sign-in,
+# no manual device code). Standalone, class-independent primitives so both
+# ``GraphLoopbackAuthProvider`` (below, used by the gateway adapter) and the
+# request/poll-style call sites (chat tool, desktop gateway RPC) can share the
+# exact same implementation.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _LoopbackAuthSession:
+    tenant_id: str
+    client_id: str
+    client_secret: str | None
+    scope: str
+    authority_url: str
+    code_verifier: str
+    state: str
+    created_at: float
+    expires_at: float
+    server: HTTPServer | None = None
+    port: int = 0
+    redirect_uri: str = ""
+    thread: threading.Thread | None = None
+    done: bool = False
+    result_code: str | None = None
+    result_error: str | None = None
+
+
+_LOOPBACK_SESSIONS: dict[str, _LoopbackAuthSession] = {}
+_LOOPBACK_SESSIONS_LOCK = threading.Lock()
+
+
+class _LoopbackCallbackHandler(BaseHTTPRequestHandler):
+    """Handles the single browser redirect back to the loopback listener."""
+
+    session: _LoopbackAuthSession  # bound per-instance via a dynamic subclass
+
+    def do_GET(self) -> None:  # noqa: N802 - stdlib method name
+        parsed = urlparse(self.path)
+        if parsed.path not in ("/", "/callback"):
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        params = parse_qs(parsed.query)
+        code = (params.get("code") or [None])[0]
+        state = (params.get("state") or [None])[0]
+        error = (params.get("error_description") or params.get("error") or [None])[0]
+
+        if code and state != self.session.state:
+            error = error or "State mismatch — please retry sign-in."
+
+        if error:
+            self.session.result_error = error
+        elif code:
+            self.session.result_code = code
+        else:
+            self.session.result_error = "No authorization code received."
+        self.session.done = True
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        heading = "Sign-in failed" if error else "Sign-in complete"
+        detail = error if error else "You can close this window and return to Hermes."
+        self.wfile.write(
+            (
+                "<html><body style='font-family:sans-serif;text-align:center;padding-top:4rem'>"
+                f"<h2>{heading}</h2><p>{detail}</p>"
+                "</body></html>"
+            ).encode("utf-8")
+        )
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib signature
+        # Silence BaseHTTPRequestHandler's default stderr access logging.
+        return
+
+
+def _start_loopback_server(session: _LoopbackAuthSession) -> None:
+    """Bind a loopback HTTP listener for ``session``. Raises OSError on failure."""
+    handler_cls = type(
+        "_BoundLoopbackCallbackHandler", (_LoopbackCallbackHandler,), {"session": session}
+    )
+    httpd = HTTPServer(("127.0.0.1", 0), handler_cls)
+    httpd.timeout = 1.0
+    session.server = httpd
+    session.port = httpd.server_address[1]
+    session.redirect_uri = f"http://localhost:{session.port}"
+
+    def _serve() -> None:
+        try:
+            while not session.done and time.time() < session.expires_at:
+                httpd.handle_request()
+        finally:
+            try:
+                httpd.server_close()
+            except Exception:
+                pass
+
+    thread = threading.Thread(
+        target=_serve, daemon=True, name=f"outlook-loopback-{session.port}"
+    )
+    session.thread = thread
+    thread.start()
+
+
+def _generate_pkce_pair() -> tuple[str, str]:
+    verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode("ascii")
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+    return verifier, challenge
+
+
+def start_loopback_auth(
+    tenant_id: str,
+    client_id: str,
+    client_secret: str | None,
+    scope: str,
+    *,
+    authority_url: str = DEFAULT_GRAPH_AUTHORITY_URL,
+    timeout_seconds: int = DEFAULT_LOOPBACK_TIMEOUT_SECONDS,
+    open_browser: bool = True,
+) -> dict[str, Any]:
+    """Start an Authorization Code + PKCE sign-in via a local loopback redirect.
+
+    Returns immediately with an ``auth_url`` to open and a ``request_id`` to
+    pass to :func:`poll_loopback_auth`. Raises ``OSError`` if a local loopback
+    listener cannot be bound — callers should fall back to the device code
+    flow in that case (e.g. headless/remote hosts with no local browser).
+    """
+    verifier, challenge = _generate_pkce_pair()
+    state = secrets.token_urlsafe(16)
+    request_id = secrets.token_urlsafe(16)
+
+    session = _LoopbackAuthSession(
+        tenant_id=tenant_id.strip(),
+        client_id=client_id.strip(),
+        client_secret=(client_secret or None),
+        scope=scope,
+        authority_url=authority_url,
+        code_verifier=verifier,
+        state=state,
+        created_at=time.time(),
+        expires_at=time.time() + timeout_seconds,
+    )
+    _start_loopback_server(session)  # may raise OSError — caller falls back
+
+    with _LOOPBACK_SESSIONS_LOCK:
+        _LOOPBACK_SESSIONS[request_id] = session
+
+    base = authority_url.rstrip("/")
+    query = {
+        "client_id": session.client_id,
+        "response_type": "code",
+        "redirect_uri": session.redirect_uri,
+        "response_mode": "query",
+        "scope": scope,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "state": state,
+    }
+    auth_url = f"{base}/{session.tenant_id}/oauth2/v2.0/authorize?{urlencode(query)}"
+
+    if open_browser:
+        try:
+            webbrowser.open(auth_url)
+        except Exception as exc:
+            logger.debug("[Outlook] Could not auto-open browser for loopback auth: %s", exc)
+
+    return {
+        "request_id": request_id,
+        "auth_url": auth_url,
+        "expires_in_seconds": timeout_seconds,
+        "flow": "loopback",
+    }
+
+
+def _cleanup_loopback_session(request_id: str) -> None:
+    with _LOOPBACK_SESSIONS_LOCK:
+        session = _LOOPBACK_SESSIONS.pop(request_id, None)
+    if session is not None:
+        session.done = True
+        try:
+            if session.server is not None:
+                session.server.server_close()
+        except Exception:
+            pass
+
+
+async def poll_loopback_auth(request_id: str) -> dict[str, Any]:
+    """Poll a loopback sign-in session started by :func:`start_loopback_auth`.
+
+    Returns a dict with ``status`` in ``pending`` | ``success`` | ``error`` |
+    ``expired``. On ``success`` it also carries ``access_token``,
+    ``refresh_token``, ``expires_in`` and ``token_type`` — callers are
+    responsible for persisting these the same way the device-code path does.
+    """
+    with _LOOPBACK_SESSIONS_LOCK:
+        session = _LOOPBACK_SESSIONS.get(request_id)
+
+    if session is None:
+        return {"status": "expired"}
+
+    if not session.done:
+        if time.time() > session.expires_at:
+            _cleanup_loopback_session(request_id)
+            return {"status": "expired"}
+        return {"status": "pending"}
+
+    if session.result_error:
+        _cleanup_loopback_session(request_id)
+        return {"status": "error", "error": session.result_error}
+
+    if not session.result_code:
+        _cleanup_loopback_session(request_id)
+        return {"status": "error", "error": "No authorization code received."}
+
+    token_url = f"{session.authority_url.rstrip('/')}/{session.tenant_id}/oauth2/v2.0/token"
+    data: dict[str, str] = {
+        "grant_type": "authorization_code",
+        "client_id": session.client_id,
+        "code": session.result_code,
+        "redirect_uri": session.redirect_uri,
+        "code_verifier": session.code_verifier,
+        "scope": session.scope,
+    }
+    if session.client_secret:
+        data["client_secret"] = session.client_secret
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+            resp = await client.post(token_url, data=data)
+            result = resp.json()
+    except Exception as exc:
+        _cleanup_loopback_session(request_id)
+        return {"status": "error", "error": f"Token exchange failed: {exc}"}
+
+    error = result.get("error")
+    if error:
+        _cleanup_loopback_session(request_id)
+        return {"status": "error", "error": result.get("error_description", error)}
+
+    access_token = result.get("access_token", "").strip()
+    refresh_token = result.get("refresh_token", "").strip()
+    if not access_token or not refresh_token:
+        _cleanup_loopback_session(request_id)
+        return {"status": "error", "error": "Missing access_token or refresh_token in response."}
+
+    expires_in = int(result.get("expires_in", 3600))
+    _cleanup_loopback_session(request_id)
+    return {
+        "status": "success",
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_in": expires_in,
+        "token_type": result.get("token_type", "Bearer"),
+    }
+
+
+class GraphLoopbackAuthProvider(GraphDeviceCodeProvider):
+    """Delegated Graph token provider using Authorization Code + PKCE via a
+    local loopback redirect — a single click, browser-based sign-in with no
+    manual code entry (closer to a typical OWA/"Sign in with Microsoft" flow).
+
+    Falls back automatically to the device code flow (inherited behavior)
+    when a local loopback listener cannot be bound, e.g. on a headless or
+    remote gateway host with no local browser reachable at the same address.
+    Reuses the base class's token cache, refresh, and callback plumbing —
+    only the interactive step differs.
+    """
+
+    async def _device_code_flow(self) -> tuple[CachedAccessToken, str]:
+        try:
+            return await self._loopback_flow()
+        except OSError as exc:
+            logger.warning(
+                "[Outlook] Loopback listener unavailable (%s) — falling back to device code flow.",
+                exc,
+            )
+            return await super()._device_code_flow()
+
+    async def _loopback_flow(self) -> tuple[CachedAccessToken, str]:
+        info = start_loopback_auth(
+            self.credentials.tenant_id,
+            self.credentials.client_id,
+            self.credentials.client_secret,
+            self.credentials.scope,
+            authority_url=self.credentials.authority_url,
+        )
+        request_id = info["request_id"]
+
+        if self._device_code_callback:
+            try:
+                await self._device_code_callback(
+                    verification_uri=info["auth_url"],
+                    user_code="",
+                    expires_in=info["expires_in_seconds"],
+                    flow="loopback",
+                )
+            except TypeError:
+                # Callback doesn't accept `flow` yet — call the legacy signature.
+                try:
+                    await self._device_code_callback(
+                        verification_uri=info["auth_url"],
+                        user_code="",
+                        expires_in=info["expires_in_seconds"],
+                    )
+                except Exception as exc:
+                    logger.warning("[Outlook] Loopback auth callback failed: %s", exc)
+            except Exception as exc:
+                logger.warning("[Outlook] Loopback auth callback failed: %s", exc)
+
+        msg = (
+            f"\n"
+            f"  ┌─────────────────────────────────────────────────────┐\n"
+            f"  │  📧 Outlook Sign-in Required                         │\n"
+            f"  │                                                      │\n"
+            f"  │  Open this link to sign in with Microsoft:           │\n"
+            f"  │  {info['auth_url']}\n"
+            f"  └─────────────────────────────────────────────────────┘\n"
+        )
+        print(msg, flush=True)
+        logger.info("[Outlook] Loopback auth required — open %s", info["auth_url"])
+
+        deadline = time.time() + info["expires_in_seconds"]
+        while time.time() < deadline:
+            await asyncio.sleep(2)
+            status = await poll_loopback_auth(request_id)
+            if status["status"] == "pending":
+                continue
+            if status["status"] == "success":
+                print("  ✓ Outlook authentication successful.", flush=True)
+                return (
+                    CachedAccessToken(
+                        access_token=status["access_token"],
+                        token_type=status.get("token_type", "Bearer"),
+                        expires_at=time.time() + max(0, status["expires_in"]),
+                    ),
+                    status["refresh_token"],
+                )
+            raise MicrosoftGraphTokenError(
+                f"Loopback sign-in failed: {status.get('error', status['status'])}"
+            )
+
+        raise MicrosoftGraphTokenError("Loopback sign-in timed out.")
 
 
 def _extract_error_detail(response: httpx.Response) -> str:

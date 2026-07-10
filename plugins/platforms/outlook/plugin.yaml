@@ -45,3 +45,12 @@ optional_env:
     description: "Sender email to use as default destination for cron / notification delivery"
     prompt: "Home channel (email address, or empty)"
     password: false
+  - name: OUTLOOK_INTERACTIVE_AUTH_FLOW
+    description: >
+      How interactive sign-in works when a fresh login is needed (Start Auth button, chat tool,
+      gateway restart): "auto" (default, tries a browser sign-in first and falls back to a manual
+      device code if a local browser/listener isn't available), "loopback" (always use browser
+      sign-in; errors out instead of silently falling back), or "device_code" (always use the
+      classic manual code flow — useful for headless/remote gateway hosts).
+    prompt: "Sign-in method (auto/loopback/device_code)"
+    password: false

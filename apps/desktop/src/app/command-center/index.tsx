@@ -74,7 +74,7 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
 }
 
 interface OutlookDeviceCodePrompt {
-  userCode: string
+  userCode?: string
   verificationUri: string
 }
 
@@ -109,7 +109,22 @@ function extractOutlookDeviceCodePrompt(lines: readonly string[]): OutlookDevice
     }
   }
 
-  return verificationUri && userCode ? { verificationUri, userCode } : null
+  if (verificationUri && userCode) {
+    return { verificationUri, userCode }
+  }
+
+  // Loopback (browser sign-in) flow — no user code, just a sign-in link.
+  const signInIndex = lines.findIndex(line => /sign-in required/i.test(line))
+  if (signInIndex >= 0) {
+    for (let i = signInIndex; i < lines.length; i += 1) {
+      const urlMatch = lines[i].match(/(https?:\/\/\S+)/)
+      if (urlMatch) {
+        return { verificationUri: urlMatch[1].replace(/[|)\].,;]+$/g, '') }
+      }
+    }
+  }
+
+  return null
 }
 
 function RowIconButton({
@@ -507,7 +522,9 @@ function OutlookDeviceCodeDialog({
         <DialogHeader>
           <DialogTitle>Outlook authentication required</DialogTitle>
           <DialogDescription>
-            Gateway restart triggered Outlook device login. Open the Microsoft page and enter this code.
+            {prompt?.userCode
+              ? 'Gateway restart triggered Outlook device login. Open the Microsoft page and enter this code.'
+              : 'Gateway restart triggered Outlook sign-in. Open the Microsoft page to sign in — no code needed.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -519,22 +536,24 @@ function OutlookDeviceCodeDialog({
                 Open Microsoft Login
               </a>
             </Button>
-            <div className="flex items-center gap-2">
-              <Input readOnly value={prompt.userCode} className="font-mono text-lg font-bold tracking-widest" />
-              <Button
-                variant="outline"
-                size="sm"
-                className="shrink-0"
-                onClick={() => {
-                  void navigator.clipboard.writeText(prompt.userCode)
-                  setCopied(true)
-                  window.setTimeout(() => setCopied(false), 1500)
-                }}
-              >
-                <Copy className="size-4" />
-                {copied ? 'Copied' : 'Copy'}
-              </Button>
-            </div>
+            {prompt.userCode && (
+              <div className="flex items-center gap-2">
+                <Input readOnly value={prompt.userCode} className="font-mono text-lg font-bold tracking-widest" />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(prompt.userCode ?? '')
+                    setCopied(true)
+                    window.setTimeout(() => setCopied(false), 1500)
+                  }}
+                >
+                  <Copy className="size-4" />
+                  {copied ? 'Copied' : 'Copy'}
+                </Button>
+              </div>
+            )}
           </div>
         )}
 

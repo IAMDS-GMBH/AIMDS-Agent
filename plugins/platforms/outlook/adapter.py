@@ -32,6 +32,7 @@ Configuration via config.yaml:
           client_secret: "..."
           mailbox: "agent@company.com"
           poll_interval: 30
+          interactive_auth_flow: "auto"  # auto | loopback | device_code
 """
 
 from __future__ import annotations
@@ -124,6 +125,7 @@ def _check_outlook_requirements() -> bool:
             GraphCredentials,
             GraphDelegatedCredentials,
             GraphDeviceCodeProvider,
+            GraphLoopbackAuthProvider,
             MicrosoftGraphTokenProvider,
         )
         from tools.microsoft_graph_client import MicrosoftGraphClient  # noqa: F401
@@ -234,13 +236,23 @@ class OutlookAdapter(BasePlatformAdapter):
                 )
                 return False
             try:
-                from tools.microsoft_graph_auth import GraphDelegatedCredentials, GraphDeviceCodeProvider
+                from tools.microsoft_graph_auth import (
+                    GraphDelegatedCredentials,
+                    GraphDeviceCodeProvider,
+                    GraphLoopbackAuthProvider,
+                )
+                from tools.outlook_tool import outlook_interactive_auth_flow
                 creds = GraphDelegatedCredentials(
                     tenant_id=self._tenant_id,
                     client_id=self._client_id,
                     client_secret=self._client_secret,  # Include secret if provided
                 )
-                provider = GraphDeviceCodeProvider(creds)
+                provider_cls = (
+                    GraphDeviceCodeProvider
+                    if outlook_interactive_auth_flow() == "device_code"
+                    else GraphLoopbackAuthProvider
+                )
+                provider = provider_cls(creds)
                 from tools.microsoft_graph_client import MicrosoftGraphClient
                 self._graph = MicrosoftGraphClient(provider, user_agent="Hermes-Outlook/1.0")
                 # Use /me for delegated — mailbox is the signed-in user

@@ -90,6 +90,40 @@ def _check_outlook_tool_requirements() -> bool:
     return bool(creds["tenant_id"] and creds["client_id"])
 
 
+_INTERACTIVE_AUTH_FLOWS = {"auto", "loopback", "device_code"}
+
+
+def outlook_interactive_auth_flow() -> str:
+    """Resolve the configured interactive auth flow: auto | loopback | device_code.
+
+    Resolution order mirrors ``_get_outlook_creds``: ``config.yaml``
+    ``platforms.outlook.extra.interactive_auth_flow`` first, then the
+    ``OUTLOOK_INTERACTIVE_AUTH_FLOW`` env var / ``.env`` value, defaulting to
+    ``"auto"`` (try the loopback browser sign-in first, fall back to device
+    code if a local listener can't be bound).
+    """
+    raw = ""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        extra = cfg.get("platforms", {}).get("outlook", {}).get("extra", {}) or {}
+        raw = str(extra.get("interactive_auth_flow") or "").strip()
+    except Exception:
+        raw = ""
+
+    if not raw:
+        raw = os.getenv("OUTLOOK_INTERACTIVE_AUTH_FLOW", "")
+        if not raw:
+            try:
+                from hermes_cli.config import get_env_value
+                raw = get_env_value("OUTLOOK_INTERACTIVE_AUTH_FLOW") or ""
+            except Exception:
+                raw = ""
+
+    raw = raw.strip().lower() or "auto"
+    return raw if raw in _INTERACTIVE_AUTH_FLOWS else "auto"
+
+
 def _enable_outlook_toolset_for_cli() -> tuple[bool, str | None]:
     """Ensure ``outlook`` toolset is enabled for CLI-surface sessions."""
     try:
@@ -622,28 +656,130 @@ async def _delete_calendar_entry_async(event_id: str) -> dict[str, Any]:
 
 
 def _run_async(coro: Any, timeout: float = 120) -> Any:
-    """Run a coroutine safely regardless of whether a loop is already running."""
+    """Run a coroutine safely regardless of whether a loop is already running.
+
+    Only falls back to ``asyncio.run(coro)`` when there is genuinely no usable
+    event loop yet (``asyncio.get_event_loop()`` itself raising). Errors
+    raised by the coroutine's own body (e.g. AADSTS token-poll failures) must
+    propagate as-is and must never be retried against an already-consumed
+    coroutine object.
+    """
     try:
         loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(asyncio.run, coro).result(timeout=timeout)
-        return loop.run_until_complete(coro)
     except RuntimeError:
         return asyncio.run(coro)
 
+    if loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result(timeout=timeout)
+    return loop.run_until_complete(coro)
+
 
 # ---------------------------------------------------------------------------
-# Shared device-code auth guard (used by every tool handler below)
+# Shared interactive-auth guard (used by every tool handler below)
 # ---------------------------------------------------------------------------
+
+def _save_outlook_token_cache(
+    access_token: str, refresh_token: str, expires_in: int, token_type: str = "Bearer"
+) -> None:
+    """Persist a token to ~/.hermes/outlook_token.json (same schema/location
+    used by the device-code path and by GraphDeviceCodeProvider/
+    GraphLoopbackAuthProvider), so every consumer keeps working unchanged
+    regardless of which interactive auth flow produced the token."""
+    from hermes_constants import get_hermes_home
+
+    cache_path = get_hermes_home() / "outlook_token.json"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(
+        json.dumps({
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": time.time() + max(0, expires_in),
+            "token_type": token_type,
+        }, indent=2),
+        encoding="utf-8",
+    )
+    try:
+        cache_path.chmod(0o600)
+    except Exception:
+        pass
+
+
+def _start_interactive_auth(scope: str | None, label: str, note: str = "") -> dict[str, Any]:
+    """Start a fresh interactive sign-in and return an ``auth_required`` tool
+    response, honoring ``OUTLOOK_INTERACTIVE_AUTH_FLOW`` (auto/loopback/
+    device_code — see ``outlook_interactive_auth_flow()``). ``note`` is
+    prepended to the message, e.g. to explain a previous attempt expired or
+    failed and a new one was started automatically — this is what lets the
+    model recover from an expired/invalid device code (AADSTS7000014 and
+    similar) without dead-ending on a raw error, and without ever having to
+    improvise its own HTTP/curl request.
+    """
+    prefix = f"{note} " if note else ""
+
+    if outlook_interactive_auth_flow() in ("auto", "loopback"):
+        try:
+            from tools.microsoft_graph_auth import start_loopback_auth, DEFAULT_DELEGATED_SCOPE
+            creds = _get_outlook_creds()
+            info = start_loopback_auth(
+                creds["tenant_id"],
+                creds["client_id"],
+                creds["client_secret"] or None,
+                (scope or DEFAULT_DELEGATED_SCOPE).strip() or DEFAULT_DELEGATED_SCOPE,
+            )
+            return {
+                "status": "auth_required",
+                "message": (
+                    f"{prefix}{label} sign-in required. Open this link to sign in with Microsoft: "
+                    f"{info['auth_url']} — there is no code to enter. Show this exact link to the "
+                    "user; do not construct your own sign-in URL or any HTTP/curl request. Once the "
+                    "user confirms they've signed in, call this tool again, unchanged, with the "
+                    f"device_code parameter set to exactly: lb:{info['request_id']}"
+                ),
+                **({"required_scopes": scope} if scope else {}),
+                "verification_uri": info["auth_url"],
+                "user_code": "",
+                "device_code": f"lb:{info['request_id']}",
+                "expires_in_seconds": info["expires_in_seconds"],
+                "flow": "loopback",
+            }
+        except OSError as exc:
+            logger.warning("[Outlook] Loopback bind failed (%s); falling back to device code.", exc)
+            if outlook_interactive_auth_flow() == "loopback":
+                return {"error": f"Loopback sign-in unavailable: {exc}"}
+            # else: auto mode falls through to device code below
+
+    try:
+        info = _run_async(_start_device_code_async(scope), timeout=30)
+    except Exception as exc:
+        return {"error": f"Could not start device code flow: {exc}"}
+    return {
+        "status": "auth_required",
+        "message": (
+            f"{prefix}{label} authentication required. "
+            f"Open {info['verification_uri']} and enter the code: {info['user_code']}. "
+            f"The code expires in {info['expires_in_seconds'] // 60} minutes. Show this exact URL "
+            "and code to the user; never construct your own HTTP/curl request to Microsoft's "
+            "endpoints under any circumstances. Once the user has signed in, call this tool again, "
+            f"unchanged, with the device_code parameter set to exactly: {info['device_code']}"
+        ),
+        **({"required_scopes": scope} if scope else {}),
+        "verification_uri": info["verification_uri"],
+        "user_code": info["user_code"],
+        "device_code": info["device_code"],
+        "expires_in_seconds": info["expires_in_seconds"],
+        "flow": "device_code",
+    }
+
 
 def _outlook_auth_guard(
     device_code: str,
     scope: str | None = None,
     label: str = "Outlook",
 ) -> tuple[dict[str, Any] | None, bool]:
-    """Run the common credential/device-code guard shared by all Outlook tools.
+    """Run the common credential/interactive-auth guard shared by all Outlook
+    tools.
 
     Returns ``(early_response, toolset_enabled)``. If ``early_response`` is not
     ``None`` the caller must return it (json-encoded) immediately without
@@ -661,50 +797,71 @@ def _outlook_auth_guard(
 
     # Best-effort: if auth is already usable, ensure toolset is enabled now.
     # This covers chat/desktop paths where token cache exists before a tool
-    # call and avoids waiting for a fresh device-code round trip.
+    # call and avoids waiting for a fresh sign-in round trip.
     _, pre_enable_error = _auto_enable_outlook_toolset_if_token_ready()
     if pre_enable_error:
         logger.warning("[Outlook] Could not auto-enable outlook toolset: %s", pre_enable_error)
 
     toolset_enabled = False
 
-    # Step 1 — if caller is providing a device_code to poll (user just authed)
+    # Step 1 — if caller is providing a resume id to poll (user just signed in).
+    # `lb:` prefixes a loopback request_id; anything else is a device_code.
     if device_code:
-        try:
-            authed = _run_async(_poll_device_code_async(device_code, scope), timeout=30)
-        except Exception as exc:
-            return {"error": f"Token poll failed: {exc}"}, False
-        if not authed:
-            return {
-                "status": "pending",
-                "message": "Authentication still pending. Please complete sign-in at the URL provided, then try again.",
-            }, False
+        if device_code.startswith("lb:"):
+            request_id = device_code[3:]
+            try:
+                from tools.microsoft_graph_auth import poll_loopback_auth
+                status = _run_async(poll_loopback_auth(request_id), timeout=30)
+            except Exception as exc:
+                return _start_interactive_auth(
+                    scope, label, note=f"Could not check your sign-in status ({exc})."
+                ), False
+            if status["status"] == "pending":
+                return {
+                    "status": "pending",
+                    "message": (
+                        "Authentication still pending. Please complete sign-in in the browser tab, "
+                        "then try again."
+                    ),
+                }, False
+            if status["status"] != "success":
+                # Expired / failed — auto-restart instead of dead-ending on a raw error.
+                return _start_interactive_auth(
+                    scope,
+                    label,
+                    note=f"That sign-in link is no longer valid ({status.get('error', status['status'])}).",
+                ), False
+            _save_outlook_token_cache(
+                status["access_token"],
+                status["refresh_token"],
+                status["expires_in"],
+                status.get("token_type", "Bearer"),
+            )
+        else:
+            try:
+                authed = _run_async(_poll_device_code_async(device_code, scope), timeout=30)
+            except Exception as exc:
+                # e.g. AADSTS7000014 (stale/invalid/expired device code). Auto-restart
+                # sign-in instead of surfacing a raw AADSTS error the model can't act on.
+                return _start_interactive_auth(
+                    scope, label, note=f"That sign-in code is no longer valid ({exc})."
+                ), False
+            if not authed:
+                return {
+                    "status": "pending",
+                    "message": (
+                        "Authentication still pending. Please complete sign-in at the URL "
+                        "provided, then try again."
+                    ),
+                }, False
         toolset_enabled, toolset_error = _auto_enable_outlook_toolset_if_token_ready()
         if toolset_error:
             logger.warning("[Outlook] Could not auto-enable outlook toolset: %s", toolset_error)
         # Fall through — now proceed with the fresh token
 
-    # Step 2 — if no token cached, initiate device code and return prompt
+    # Step 2 — if no token cached, start interactive sign-in and return prompt
     if not _has_valid_token_cache():
-        try:
-            info = _run_async(_start_device_code_async(scope), timeout=30)
-        except Exception as exc:
-            return {"error": f"Could not start device code flow: {exc}"}, False
-        return {
-            "status": "auth_required",
-            "message": (
-                f"{label} authentication required. "
-                f"Open {info['verification_uri']} and enter the code: {info['user_code']}. "
-                f"The code expires in {info['expires_in_seconds'] // 60} minutes. "
-                "Once you have signed in, call this tool again with the device_code parameter "
-                f"set to: {info['device_code']}"
-            ),
-            **({"required_scopes": scope} if scope else {}),
-            "verification_uri": info["verification_uri"],
-            "user_code": info["user_code"],
-            "device_code": info["device_code"],
-            "expires_in_seconds": info["expires_in_seconds"],
-        }, False
+        return _start_interactive_auth(scope, label), False
 
     return None, toolset_enabled
 
@@ -861,9 +1018,17 @@ def outlook_write_email(
     bcc: str = "",
     reply_to_message_id: str = "",
     device_code: str = "",
+    confirm: bool = False,
     task_id: str | None = None,
 ) -> str:
-    """Compose and send a new email, or reply within an existing message thread."""
+    """Compose and send a new email, or reply within an existing message thread.
+
+    Two-step contract: without ``confirm=True`` this returns a preview
+    (to/cc/bcc/subject/body) and does NOT send anything. The caller must show
+    that preview to the user and get explicit approval before calling this
+    tool again with the exact same fields plus ``confirm=True`` to actually
+    send.
+    """
     to_list = [addr.strip() for addr in to.split(",") if addr.strip()] if to else []
     cc_list = [addr.strip() for addr in cc.split(",") if addr.strip()] if cc else []
     bcc_list = [addr.strip() for addr in bcc.split(",") if addr.strip()] if bcc else []
@@ -878,6 +1043,25 @@ def outlook_write_email(
     early, toolset_enabled = _outlook_auth_guard(device_code, label="Outlook")
     if early is not None:
         return json.dumps(early)
+
+    if not confirm:
+        return json.dumps({
+            "status": "confirmation_required",
+            "message": (
+                "Do not send yet. Show this exact preview (To/Cc/Bcc/Subject/Body) to the user and "
+                "ask them to explicitly confirm before sending. Only call outlook_write_email again "
+                "with the same to/subject/body/cc/bcc/reply_to_message_id plus confirm=true after "
+                "they approve — never send without an explicit yes."
+            ),
+            "preview": {
+                "to": to_list,
+                "cc": cc_list,
+                "bcc": bcc_list,
+                "subject": subject,
+                "body": body,
+                "reply_to_message_id": reply_to_message_id,
+            },
+        })
 
     try:
         _run_async(
@@ -896,6 +1080,42 @@ def outlook_write_email(
         "reply_to_message_id": reply_to_message_id,
         "toolset_auto_enabled": bool(device_code and toolset_enabled),
     })
+
+
+async def _get_me_async() -> dict[str, Any]:
+    """Minimal Graph call used purely to verify a delegated token actually
+    works end-to-end — independent of gateway/platform connection state."""
+    client, _ = _new_graph_client()
+    return await client.get_json("/me", params={"$select": "displayName,mail,userPrincipalName"})
+
+
+def outlook_test_connection() -> dict[str, Any]:
+    """Verify the Outlook delegated auth actually works via a real Graph call.
+
+    Unlike the platform "test" endpoint (which only reports gateway/process
+    state), this performs a real ``GET /me`` request using the cached
+    delegated token, so it works regardless of whether the gateway process
+    is running. Does NOT start a new interactive sign-in — if there is no
+    valid cached token, it reports that plainly so the UI can point the user
+    at "Start Auth" instead.
+    """
+    creds = _get_outlook_creds()
+    if not creds["tenant_id"] or not creds["client_id"]:
+        return {"ok": False, "message": "Outlook credentials are not configured yet."}
+
+    if not _has_valid_token_cache():
+        return {
+            "ok": False,
+            "message": "Not signed in yet. Use \"Start Auth\" to sign in with Microsoft first.",
+        }
+
+    try:
+        me = _run_async(_get_me_async(), timeout=30)
+    except Exception as exc:
+        return {"ok": False, "message": f"Connection test failed: {exc}"}
+
+    display = me.get("displayName") or me.get("userPrincipalName") or me.get("mail") or "your mailbox"
+    return {"ok": True, "message": f"Connected as {display}."}
 
 
 def outlook_read_calendar_entries(
@@ -1060,9 +1280,11 @@ def outlook_write_calendar_entries(
 _DEVICE_CODE_PARAM_SCHEMA = {
     "type": "string",
     "description": (
-        "Only set this after an auth_required response. "
-        "Pass back the device_code value from that response "
-        "after the user has completed sign-in at the verification URL."
+        "Only set this after an auth_required response. Pass back the exact "
+        "device_code value from that response, unchanged, after the user has "
+        "completed sign-in at the verification/sign-in URL. Never invent your "
+        "own value here and never make your own HTTP/curl requests to "
+        "Microsoft's endpoints — always rely on this tool's own responses."
     ),
     "default": "",
 }
@@ -1288,8 +1510,11 @@ registry.register(
             "reply to an email. Set reply_to_message_id (from outlook_get_emails/outlook_search_emails/"
             "outlook_read_email) to reply within an existing thread — this keeps the original subject and "
             "recipients. Leave reply_to_message_id empty to compose a brand-new email, in which case "
-            "'to' and 'subject' are required. This tool sends immediately — always confirm the recipient, "
-            "subject, and body with the user before calling it, since sent emails cannot be recalled."
+            "'to' and 'subject' are required. IMPORTANT two-step contract: call this tool WITHOUT "
+            "confirm (or confirm=false) first — it returns a preview and does not send anything. Show "
+            "that exact preview (To/Cc/Bcc/Subject/Body) to the user and only call this tool again with "
+            "confirm=true after they explicitly approve. Never set confirm=true on the first call — "
+            "sent emails cannot be recalled."
         ),
         "parameters": {
             "type": "object",
@@ -1330,6 +1555,15 @@ registry.register(
                     ),
                     "default": "",
                 },
+                "confirm": {
+                    "type": "boolean",
+                    "description": (
+                        "Must be true to actually send. Leave false/unset on the first call to get a "
+                        "preview; only set true after the user has explicitly confirmed that exact "
+                        "preview."
+                    ),
+                    "default": False,
+                },
                 "device_code": _DEVICE_CODE_PARAM_SCHEMA,
             },
             "required": [],
@@ -1343,6 +1577,7 @@ registry.register(
         bcc=str(args.get("bcc", "")),
         reply_to_message_id=str(args.get("reply_to_message_id", "")),
         device_code=str(args.get("device_code", "")),
+        confirm=bool(args.get("confirm", False)),
         task_id=kw.get("task_id"),
     ),
 )

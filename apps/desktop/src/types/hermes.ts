@@ -114,10 +114,12 @@ export interface MessagingEnvVarInfo {
   is_password: boolean
   is_set: boolean
   key: string
+  options?: { label: string; value: string }[] | null
   prompt: string
   redacted_value: null | string
   required: boolean
   url: null | string
+  value?: null | string
 }
 
 export interface MessagingHomeChannel {
@@ -157,6 +159,11 @@ export interface MessagingPlatformTestResponse {
   message: string
   ok: boolean
   state?: null | string
+}
+
+export interface OutlookTestConnectionResponse {
+  message: string
+  ok: boolean
 }
 
 export interface GatewayReadyPayload {

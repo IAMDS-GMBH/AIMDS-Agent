@@ -3727,6 +3727,7 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
             "OUTLOOK_ALLOWED_USERS",
             "OUTLOOK_POLL_INTERVAL",
             "OUTLOOK_HOME_CHANNEL",
+            "OUTLOOK_INTERACTIVE_AUTH_FLOW",
         ),
         "required_env": (
             "OUTLOOK_TENANT_ID",
@@ -3956,6 +3957,20 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
         "prompt": "Home channel email",
         "advanced": True,
     },
+    "OUTLOOK_INTERACTIVE_AUTH_FLOW": {
+        "description": (
+            "How interactive sign-in works when a fresh login is needed (Start Auth, chat tool, "
+            "gateway restart). Automatic tries a browser sign-in first and falls back to a manual "
+            "device code if a local browser/listener isn't available (e.g. headless/remote hosts)."
+        ),
+        "prompt": "Sign-in method",
+        "advanced": True,
+        "options": [
+            {"value": "auto", "label": "Automatic (recommended)"},
+            {"value": "loopback", "label": "Browser sign-in"},
+            {"value": "device_code", "label": "Device code (legacy / headless)"},
+        ],
+    },
 }
 
 
@@ -4123,6 +4138,7 @@ def _messaging_env_info(key: str) -> dict[str, Any]:
         "url": info.get("url"),
         "is_password": info.get("password", False),
         "advanced": info.get("advanced", False),
+        "options": info.get("options"),
     }
 
 
@@ -4150,13 +4166,18 @@ def _messaging_platform_payload(
 
     for key in entry["env_vars"]:
         value = env_on_disk.get(key) or os.getenv(key, "")
+        field_info = _messaging_env_info(key)
         env_vars.append(
             {
                 "key": key,
                 "required": key in entry["required_env"],
                 "is_set": bool(value),
                 "redacted_value": redact_key(value) if value else None,
-                **_messaging_env_info(key),
+                # Non-secret dropdown fields (e.g. auth flow selection) need
+                # the actual current value so the UI can pre-select it —
+                # masking a value like "auto"/"loopback" would be useless.
+                "value": value if field_info.get("options") and not field_info.get("is_password") else None,
+                **field_info,
             }
         )
 
@@ -4769,29 +4790,51 @@ async def test_messaging_platform(platform_id: str):
     }
 
 
+@app.post("/api/messaging/platforms/outlook/test-connection")
+async def test_outlook_connection():
+    """Real Graph API connection check for Outlook, independent of gateway
+    process state — used by the Messaging page's "Test Connection" button."""
+    from tools.outlook_tool import outlook_test_connection
+
+    try:
+        result = await asyncio.to_thread(outlook_test_connection)
+    except Exception as exc:
+        _log.exception("Outlook test-connection failed")
+        return {"ok": False, "message": f"Connection test failed: {exc}"}
+    return result
+
+
 # Store device code auth requests temporarily
 _OUTLOOK_AUTH_REQUESTS: Dict[str, Dict[str, Any]] = {}
 
 
-async def _outlook_device_code_callback(request_id: str, verification_uri: str, user_code: str, expires_in: int) -> None:
-    """Callback invoked when device code is available."""
+async def _outlook_device_code_callback(
+    request_id: str, verification_uri: str, user_code: str, expires_in: int, flow: str = "device_code"
+) -> None:
+    """Callback invoked when a sign-in challenge (device code or loopback link) is available."""
     _OUTLOOK_AUTH_REQUESTS[request_id] = {
         "verification_uri": verification_uri,
         "user_code": user_code,
         "expires_in": expires_in,
         "status": "pending",
         "expires_at": time.time() + expires_in,
+        "flow": flow,
     }
 
 
 @app.post("/api/messaging/outlook/authenticate")
 async def outlook_authenticate_start(body: OutlookAuthStart):
-    """Initiate Outlook device code authentication flow."""
+    """Initiate Outlook sign-in (loopback OAuth by default, device code fallback)."""
     try:
-        from tools.microsoft_graph_auth import GraphDelegatedCredentials, GraphDeviceCodeProvider
+        from tools.microsoft_graph_auth import (
+            GraphDelegatedCredentials,
+            GraphDeviceCodeProvider,
+            GraphLoopbackAuthProvider,
+        )
+        from tools.outlook_tool import outlook_interactive_auth_flow
         import uuid
         
-        logger.info("[Outlook] Initiating device code flow: tenant=%s, client=%s, has_secret=%s",
+        logger.info("[Outlook] Initiating sign-in flow: tenant=%s, client=%s, has_secret=%s",
                    body.tenant_id[:8] + "..." if len(body.tenant_id) > 8 else body.tenant_id,
                    body.client_id[:8] + "..." if len(body.client_id) > 8 else body.client_id,
                    bool(body.client_secret))
@@ -4806,13 +4849,20 @@ async def outlook_authenticate_start(body: OutlookAuthStart):
         
         callback_ready = asyncio.Event()
 
-        # Create callback that stores device code info
-        async def callback(verification_uri: str, user_code: str, expires_in: int) -> None:
-            logger.info("[Outlook] Device code callback triggered for request %s", request_id)
-            await _outlook_device_code_callback(request_id, verification_uri, user_code, expires_in)
+        # Create callback that stores the sign-in challenge (device code or loopback link)
+        async def callback(
+            verification_uri: str, user_code: str, expires_in: int, flow: str = "device_code"
+        ) -> None:
+            logger.info("[Outlook] Sign-in callback triggered for request %s (flow=%s)", request_id, flow)
+            await _outlook_device_code_callback(request_id, verification_uri, user_code, expires_in, flow=flow)
             callback_ready.set()
         
-        provider = GraphDeviceCodeProvider(creds, device_code_callback=callback)
+        provider_cls = (
+            GraphDeviceCodeProvider
+            if outlook_interactive_auth_flow() == "device_code"
+            else GraphLoopbackAuthProvider
+        )
+        provider = provider_cls(creds, device_code_callback=callback)
         # Explicit "authenticate" action should always mint a fresh code.
         provider.clear_cache()
         
@@ -4868,13 +4918,14 @@ async def outlook_authenticate_start(body: OutlookAuthStart):
             )
         
         req = _OUTLOOK_AUTH_REQUESTS[request_id]
-        logger.info("[Outlook] Returning device code info for request %s", request_id)
+        logger.info("[Outlook] Returning sign-in challenge for request %s (flow=%s)", request_id, req.get("flow"))
         return {
             "ok": True,
             "request_id": request_id,
             "verification_uri": req["verification_uri"],
-            "user_code": req["user_code"],
+            "user_code": req.get("user_code", ""),
             "expires_in": req["expires_in"],
+            "flow": req.get("flow", "device_code"),
         }
     except HTTPException:
         raise
