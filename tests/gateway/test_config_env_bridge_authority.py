@@ -47,6 +47,7 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
             "HERMES_GATEWAY_BUSY_INPUT_MODE",
             "HERMES_GATEWAY_BUSY_TEXT_MODE",
             "HERMES_TIMEZONE",
+            "TZ",
         ):
             v = os.environ.get(k)
             if v is not None:
@@ -160,6 +161,23 @@ def test_config_timezone_wins_over_stale_env(hermes_home: Path) -> None:
     env = _run_gateway_import(hermes_home, initial_env={})
 
     assert env.get("HERMES_TIMEZONE") == "America/Los_Angeles"
+
+
+def test_config_timezone_also_exports_real_tz_var(hermes_home: Path) -> None:
+    """A configured timezone must also set the real POSIX ``TZ`` var.
+
+    Subprocesses spawned by the terminal/execute_code tools inherit ``TZ``
+    (not the Hermes-internal ``HERMES_TIMEZONE`` flag) for their own
+    date/time calls, so the ambient container TZ (frequently UTC) would
+    otherwise silently override the user's configured zone in every
+    sandboxed command.
+    """
+    _write_config(hermes_home, timezone="Europe/Berlin")
+    _write_env(hermes_home, {"TZ": "UTC"})
+
+    env = _run_gateway_import(hermes_home, initial_env={})
+
+    assert env.get("TZ") == "Europe/Berlin"
 
 
 def test_env_value_survives_when_config_omits_key(hermes_home: Path) -> None:
