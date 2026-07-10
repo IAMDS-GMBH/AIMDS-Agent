@@ -1,30 +1,29 @@
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 
 import { PageLoader } from '@/components/page-loader'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import {
   getMessagingPlatforms,
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
-  testMessagingPlatform,
+  restartGateway,
+  testOutlookConnection,
   updateMessagingPlatform
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { setComposerDraft } from '@/store/composer'
 import { notify, notifyError } from '@/store/notifications'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PageSearchShell } from '../page-search-shell'
-import { NEW_CHAT_ROUTE } from '../routes'
 import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
 import { ListRow } from '../settings/primitives'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -104,7 +103,6 @@ function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
   const { t } = useI18n()
   const m = t.messaging
-  const navigate = useNavigate()
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   const [edits, setEdits] = useState<EditMap>({})
   const [query, setQuery] = useState('')
@@ -275,6 +273,34 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }
 
+  async function handleRestartGateway() {
+    try {
+      await restartGateway()
+      notify({ kind: 'info', title: 'Restarting gateway…', message: 'Try again in a few seconds.' })
+      window.setTimeout(() => void refreshPlatforms(true), 4000)
+    } catch (err) {
+      notifyError(err, 'Failed to restart gateway')
+    }
+  }
+
+  async function handleTestOutlookConnection(platform: MessagingPlatformInfo) {
+    setSaving(`connection:${platform.id}`)
+
+    try {
+      const result = await testOutlookConnection()
+      setOutlookConnected(result.ok)
+      notify({
+        kind: result.ok ? 'success' : 'warning',
+        title: result.ok ? `${platform.name} connected` : `${platform.name} connection test`,
+        message: result.message
+      })
+    } catch (err) {
+      notifyError(err, `${platform.name} connection test failed`)
+    } finally {
+      setSaving(null)
+    }
+  }
+
   return (
     <PageSearchShell
       {...props}
@@ -322,10 +348,8 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                   saving={saving}
                   onOutlookOpenGuide={() => setOutlookGuideOpen(true)}
                   onOutlookTest={() => setOutlookAuthOpen(true)}
-                  onOutlookReadLatest={() => {
-                    setComposerDraft('Read my latest Outlook emails and summarize priorities with sender + action items.')
-                    navigate(NEW_CHAT_ROUTE)
-                  }}
+                  onOutlookTestConnection={() => void handleTestOutlookConnection(selected)}
+                  onRestartGateway={() => void handleRestartGateway()}
                   outlookConnected={selected.state === 'connected' ? true : outlookConnected}
                 />
                 {selected.id === 'outlook' && (
@@ -339,24 +363,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                     clientSecret={outlookSecretEdit}
                     useSavedEnv={!outlookHasAnyTypedCred}
                     onComplete={async _accessToken => {
-                      // Save the refresh token (if available) to .env
-                      // For now, just close the modal and refresh
+                      // Sign-in only — connection verification is a separate,
+                      // explicit "Test Connection" step, not run automatically here.
                       setOutlookAuthOpen(false)
-                      setSaving(`test:${selected.id}`)
-                      try {
-                        const result = await testMessagingPlatform(selected.id)
-                        setOutlookConnected(Boolean(result.ok && result.state === 'connected'))
-                        notify({
-                          kind: result.ok ? 'success' : 'warning',
-                          title: result.ok ? `${selected.name} connected` : `${selected.name} test result`,
-                          message: result.message
-                        })
-                      } catch (err) {
-                        setOutlookConnected(false)
-                        notifyError(err, `${selected.name} test failed`)
-                      } finally {
-                        setSaving(null)
-                      }
+                      notify({
+                        kind: 'success',
+                        title: `Signed in to ${selected.name}`,
+                        message: 'Use "Test Connection" to verify it works.'
+                      })
                       await refreshPlatforms()
                     }}
                     onCancel={() => setOutlookAuthOpen(false)}
@@ -410,7 +424,8 @@ function PlatformDetail({
   saving,
   onOutlookOpenGuide,
   onOutlookTest,
-  onOutlookReadLatest,
+  onOutlookTestConnection,
+  onRestartGateway,
   outlookConnected
 }: {
   edits: Record<string, string>
@@ -422,7 +437,8 @@ function PlatformDetail({
   saving: string | null
   onOutlookOpenGuide?: () => void
   onOutlookTest?: () => void
-  onOutlookReadLatest?: () => void
+  onOutlookTestConnection?: () => void
+  onRestartGateway?: () => void
   outlookConnected?: boolean | null
 }) {
   const { t } = useI18n()
@@ -438,11 +454,12 @@ function PlatformDetail({
     ? []
     : platform.env_vars.filter(field => !field.required && !fieldCopy(field, m).advanced)
   const advancedFields = outlookOnlyIds
-    ? []
+    ? platform.env_vars.filter(field => field.key === 'OUTLOOK_INTERACTIVE_AUTH_FLOW')
     : platform.env_vars.filter(field => !field.required && fieldCopy(field, m).advanced)
   const hiddenCount = advancedFields.length
   const isSavingEnv = saving === `env:${platform.id}`
   const isTesting = saving === `test:${platform.id}`
+  const isTestingConnection = saving === `connection:${platform.id}`
   const hasOutlookSavedCreds =
     platform.id === 'outlook' &&
     platform.env_vars.some(e => e.key === 'OUTLOOK_TENANT_ID' && e.is_set) &&
@@ -467,7 +484,16 @@ function PlatformDetail({
                 <SetupPill active={platform.configured}>
                   {platform.configured ? m.credentialsSet : m.needsSetup}
                 </SetupPill>
-                {!platform.gateway_running && <SetupPill active={false}>{m.gatewayStopped}</SetupPill>}
+                {!platform.gateway_running && (
+                  <>
+                    <SetupPill active={false}>{m.gatewayStopped}</SetupPill>
+                    {onRestartGateway && (
+                      <Button onClick={onRestartGateway} size="sm" variant="outline">
+                        Restart Gateway
+                      </Button>
+                    )}
+                  </>
+                )}
               </div>
               <PlatformHint platform={platform} />
             </div>
@@ -590,12 +616,17 @@ function PlatformDetail({
                 disabled={isTesting || (!hasOutlookTypedCreds && !hasOutlookSavedCreds)}
               >
                 <ExternalLink className="size-3.5" />
-                {isTesting ? 'Testing...' : 'Test'}
+                {isTesting ? 'Signing in...' : 'Start Auth'}
               </Button>
             )}
-            {platform.id === 'outlook' && onOutlookReadLatest && (
-              <Button onClick={onOutlookReadLatest} size="sm" variant="outline" disabled={!outlookConnected}>
-                Open latest emails
+            {platform.id === 'outlook' && onOutlookTestConnection && (
+              <Button
+                onClick={onOutlookTestConnection}
+                size="sm"
+                variant="outline"
+                disabled={isTestingConnection || (!hasOutlookTypedCreds && !hasOutlookSavedCreds)}
+              >
+                {isTestingConnection ? 'Testing...' : 'Test Connection'}
               </Button>
             )}
             <Button disabled={!hasEdits || isSavingEnv} onClick={onSave} size="sm">
@@ -673,6 +704,30 @@ function MessagingField({
   const m = t.messaging
   const copy = fieldCopy(field, m)
   const fieldId = `messaging-field-${field.key}`
+
+  if (field.options) {
+    const currentValue = edits[field.key] ?? field.value ?? field.options[0]?.value ?? ''
+    return (
+      <ListRow
+        action={
+          <Select onValueChange={next => onEdit(field.key, next)} value={currentValue}>
+            <SelectTrigger className={CREDENTIAL_CONTROL_CLASS} id={fieldId}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {field.options.map(option => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        }
+        description={copy.help}
+        title={<label htmlFor={fieldId}>{copy.label}</label>}
+      />
+    )
+  }
 
   return (
     <ListRow

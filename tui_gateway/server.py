@@ -11314,7 +11314,12 @@ def _(rid, params: dict) -> dict:
     }
 
     try:
-        from tools.microsoft_graph_auth import GraphDelegatedCredentials, GraphDeviceCodeProvider
+        from tools.microsoft_graph_auth import (
+            GraphDelegatedCredentials,
+            GraphDeviceCodeProvider,
+            GraphLoopbackAuthProvider,
+        )
+        from tools.outlook_tool import outlook_interactive_auth_flow
         import asyncio
 
         request_id = str(uuid.uuid4())
@@ -11326,7 +11331,9 @@ def _(rid, params: dict) -> dict:
             client_secret=client_secret,
         )
 
-        def sync_callback(verification_uri: str, user_code: str, expires_in: int) -> None:
+        def sync_callback(
+            verification_uri: str, user_code: str, expires_in: int, flow: str = "device_code"
+        ) -> None:
             with _outlook_auth_lock:
                 _outlook_auth_requests[request_id] = {
                     "status": "pending",
@@ -11334,13 +11341,21 @@ def _(rid, params: dict) -> dict:
                     "user_code": user_code,
                     "expires_in": expires_in,
                     "expires_at": time.time() + expires_in,
+                    "flow": flow,
                 }
             result_event.set()
 
-        async def async_callback(verification_uri: str, user_code: str, expires_in: int) -> None:
-            sync_callback(verification_uri, user_code, expires_in)
+        async def async_callback(
+            verification_uri: str, user_code: str, expires_in: int, flow: str = "device_code"
+        ) -> None:
+            sync_callback(verification_uri, user_code, expires_in, flow=flow)
 
-        provider = GraphDeviceCodeProvider(creds, device_code_callback=async_callback)
+        provider_cls = (
+            GraphDeviceCodeProvider
+            if outlook_interactive_auth_flow() == "device_code"
+            else GraphLoopbackAuthProvider
+        )
+        provider = provider_cls(creds, device_code_callback=async_callback)
         # Explicit "start auth" should always mint a fresh user/device code.
         # Otherwise an existing refresh token can bypass callback emission.
         provider.clear_cache()
@@ -11407,18 +11422,19 @@ def _(rid, params: dict) -> dict:
 
         if req.get("status") == "error":
             return _err(rid, 5032, req.get("error", "Device code request failed"))
-        if not req.get("verification_uri") or not req.get("user_code"):
+        if not req.get("verification_uri"):
             return _err(
                 rid,
                 5036,
-                "Authentication completed but no device code challenge was produced.",
+                "Authentication completed but no sign-in challenge was produced.",
             )
 
         return _ok(rid, {
             "request_id": request_id,
             "verification_uri": req["verification_uri"],
-            "user_code": req["user_code"],
+            "user_code": req.get("user_code", ""),
             "expires_in": req["expires_in"],
+            "flow": req.get("flow", "device_code"),
             "resolved_request_body": resolved_request_body,
         })
     except Exception as e:

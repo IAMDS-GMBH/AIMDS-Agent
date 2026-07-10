@@ -270,7 +270,32 @@ def test_outlook_write_email_requires_subject_for_new_email(monkeypatch):
     assert "subject" in payload["error"]
 
 
-def test_outlook_write_email_happy_path_sends(monkeypatch):
+def test_outlook_write_email_without_confirm_returns_preview(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+
+    async def _send_new_email_async(to, subject, body, cc, bcc, reply_to_message_id):
+        raise AssertionError("must not send before confirm=True")
+
+    monkeypatch.setattr(outlook_tool, "_send_new_email_async", _send_new_email_async)
+
+    payload = json.loads(
+        outlook_tool.outlook_write_email(
+            to="a@example.com,b@example.com", subject="Hi", body="Body text"
+        )
+    )
+
+    assert payload["status"] == "confirmation_required"
+    assert payload["preview"]["to"] == ["a@example.com", "b@example.com"]
+    assert payload["preview"]["subject"] == "Hi"
+
+
+def test_outlook_write_email_happy_path_sends_when_confirmed(monkeypatch):
     monkeypatch.setattr(
         outlook_tool,
         "_get_outlook_creds",
@@ -288,13 +313,244 @@ def test_outlook_write_email_happy_path_sends(monkeypatch):
 
     payload = json.loads(
         outlook_tool.outlook_write_email(
-            to="a@example.com,b@example.com", subject="Hi", body="Body text"
+            to="a@example.com,b@example.com", subject="Hi", body="Body text", confirm=True
         )
     )
 
     assert payload["status"] == "sent"
     assert captured["args"][0] == ["a@example.com", "b@example.com"]
     assert captured["args"][1] == "Hi"
+
+
+def test_auth_guard_no_cached_token_starts_interactive_auth(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: False)
+    monkeypatch.setattr(
+        outlook_tool, "_auto_enable_outlook_toolset_if_token_ready", lambda: (False, None)
+    )
+    monkeypatch.setattr(
+        outlook_tool,
+        "_start_interactive_auth",
+        lambda scope, label, note="": {"status": "auth_required", "message": "sign in", "flow": "loopback"},
+    )
+
+    early, toolset_enabled = outlook_tool._outlook_auth_guard("", label="Outlook")
+
+    assert early == {"status": "auth_required", "message": "sign in", "flow": "loopback"}
+    assert toolset_enabled is False
+
+
+def test_auth_guard_cached_token_skips_interactive_auth(monkeypatch):
+    """Persistent sign-in: a valid cached token must never trigger a fresh
+    interactive flow, for either loopback or device-code call sites."""
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(
+        outlook_tool, "_auto_enable_outlook_toolset_if_token_ready", lambda: (False, None)
+    )
+
+    def _boom(*a, **kw):
+        raise AssertionError("must not start a new interactive auth when a token is cached")
+
+    monkeypatch.setattr(outlook_tool, "_start_interactive_auth", _boom)
+
+    early, toolset_enabled = outlook_tool._outlook_auth_guard("", label="Outlook")
+
+    assert early is None
+    assert toolset_enabled is False
+
+
+def test_auth_guard_loopback_resume_success_saves_token(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(
+        outlook_tool, "_auto_enable_outlook_toolset_if_token_ready", lambda: (True, None)
+    )
+
+    saved = {}
+    monkeypatch.setattr(
+        outlook_tool,
+        "_save_outlook_token_cache",
+        lambda access_token, refresh_token, expires_in, token_type="Bearer": saved.update(
+            access_token=access_token, refresh_token=refresh_token
+        ),
+    )
+
+    async def _poll_loopback_auth(request_id):
+        assert request_id == "abc123"
+        return {
+            "status": "success",
+            "access_token": "at",
+            "refresh_token": "rt",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+        }
+
+    fake_module = types.SimpleNamespace(poll_loopback_auth=_poll_loopback_auth)
+    monkeypatch.setitem(sys.modules, "tools.microsoft_graph_auth", fake_module)
+
+    early, toolset_enabled = outlook_tool._outlook_auth_guard("lb:abc123", label="Outlook")
+
+    assert early is None
+    assert toolset_enabled is True
+    assert saved == {"access_token": "at", "refresh_token": "rt"}
+
+
+def test_auth_guard_loopback_resume_pending(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+
+    async def _poll_loopback_auth(request_id):
+        return {"status": "pending"}
+
+    fake_module = types.SimpleNamespace(poll_loopback_auth=_poll_loopback_auth)
+    monkeypatch.setitem(sys.modules, "tools.microsoft_graph_auth", fake_module)
+
+    early, toolset_enabled = outlook_tool._outlook_auth_guard("lb:abc123", label="Outlook")
+
+    assert early["status"] == "pending"
+    assert toolset_enabled is False
+
+
+def test_auth_guard_loopback_resume_expired_restarts_auth(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+
+    async def _poll_loopback_auth(request_id):
+        return {"status": "expired"}
+
+    fake_module = types.SimpleNamespace(poll_loopback_auth=_poll_loopback_auth)
+    monkeypatch.setitem(sys.modules, "tools.microsoft_graph_auth", fake_module)
+
+    restart_calls = []
+    monkeypatch.setattr(
+        outlook_tool,
+        "_start_interactive_auth",
+        lambda scope, label, note="": restart_calls.append(note)
+        or {"status": "auth_required", "message": "restarted"},
+    )
+
+    early, toolset_enabled = outlook_tool._outlook_auth_guard("lb:abc123", label="Outlook")
+
+    assert early == {"status": "auth_required", "message": "restarted"}
+    assert toolset_enabled is False
+    assert len(restart_calls) == 1
+    assert "no longer valid" in restart_calls[0]
+
+
+def test_auth_guard_device_code_aadsts_error_restarts_auth_instead_of_raw_error(monkeypatch):
+    """Regression test for AADSTS7000014: an invalid/expired device code must
+    trigger an automatic fresh sign-in instead of dead-ending on a raw error
+    the model cannot act on."""
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+
+    async def _poll_device_code_async(device_code, scope=None):
+        raise RuntimeError(
+            "Token poll failed: AADSTS7000014: The provided value for the input "
+            "parameter 'device_code' is not valid."
+        )
+
+    monkeypatch.setattr(outlook_tool, "_poll_device_code_async", _poll_device_code_async)
+
+    restart_calls = []
+    monkeypatch.setattr(
+        outlook_tool,
+        "_start_interactive_auth",
+        lambda scope, label, note="": restart_calls.append(note)
+        or {"status": "auth_required", "message": "restarted", "flow": "device_code"},
+    )
+
+    early, toolset_enabled = outlook_tool._outlook_auth_guard("stale-device-code", label="Outlook")
+
+    assert early == {"status": "auth_required", "message": "restarted", "flow": "device_code"}
+    assert toolset_enabled is False
+    assert len(restart_calls) == 1
+    assert "no longer valid" in restart_calls[0]
+    assert "AADSTS7000014" in restart_calls[0]
+
+
+def test_start_interactive_auth_message_forbids_manual_curl(monkeypatch):
+    monkeypatch.setattr(outlook_tool, "outlook_interactive_auth_flow", lambda: "device_code")
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+
+    async def _start_device_code_async(scope=None):
+        return {
+            "verification_uri": "https://microsoft.com/devicelogin",
+            "user_code": "ABC123",
+            "device_code": "raw-device-code",
+            "expires_in_seconds": 900,
+        }
+
+    monkeypatch.setattr(outlook_tool, "_start_device_code_async", _start_device_code_async)
+
+    response = outlook_tool._start_interactive_auth(None, "Outlook")
+
+    assert response["status"] == "auth_required"
+    assert response["device_code"] == "raw-device-code"
+    assert response["flow"] == "device_code"
+    assert "curl" in response["message"] or "HTTP" in response["message"]
+    assert "never construct" in response["message"].lower()
+
+
+def test_start_interactive_auth_loopback_bind_failure_falls_back_to_device_code(monkeypatch):
+    monkeypatch.setattr(outlook_tool, "outlook_interactive_auth_flow", lambda: "auto")
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+
+    def _start_loopback_auth(*a, **kw):
+        raise OSError("could not bind local listener")
+
+    fake_module = types.SimpleNamespace(
+        start_loopback_auth=_start_loopback_auth, DEFAULT_DELEGATED_SCOPE="Mail.Read Mail.Send"
+    )
+    monkeypatch.setitem(sys.modules, "tools.microsoft_graph_auth", fake_module)
+
+    async def _start_device_code_async(scope=None):
+        return {
+            "verification_uri": "https://microsoft.com/devicelogin",
+            "user_code": "ABC123",
+            "device_code": "raw-device-code",
+            "expires_in_seconds": 900,
+        }
+
+    monkeypatch.setattr(outlook_tool, "_start_device_code_async", _start_device_code_async)
+
+    response = outlook_tool._start_interactive_auth(None, "Outlook")
+
+    assert response["status"] == "auth_required"
+    assert response["flow"] == "device_code"
 
 
 def test_outlook_write_calendar_entries_invalid_action(monkeypatch):

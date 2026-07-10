@@ -29,6 +29,7 @@ import type {
   OAuthProvidersResponse,
   OAuthStartResponse,
   OAuthSubmitResponse,
+  OutlookTestConnectionResponse,
   PaginatedSessions,
   ProfileCreatePayload,
   ProfileSetupCommand,
@@ -88,6 +89,7 @@ export type {
   ModelInfoResponse,
   ModelOptionProvider,
   ModelOptionsResponse,
+  OutlookTestConnectionResponse,
   PaginatedSessions,
   ProfileCreatePayload,
   ProfileInfo,
@@ -529,6 +531,13 @@ export function updateMessagingPlatform(
 export function testMessagingPlatform(platformId: string): Promise<MessagingPlatformTestResponse> {
   return window.hermesDesktop.api<MessagingPlatformTestResponse>({
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}/test`,
+    method: 'POST'
+  })
+}
+
+export function testOutlookConnection(): Promise<OutlookTestConnectionResponse> {
+  return window.hermesDesktop.api<OutlookTestConnectionResponse>({
+    path: '/api/messaging/platforms/outlook/test-connection',
     method: 'POST'
   })
 }

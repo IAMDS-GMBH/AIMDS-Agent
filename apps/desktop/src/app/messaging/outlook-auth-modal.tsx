@@ -19,6 +19,7 @@ interface OutlookAuthStartResult {
   verification_uri: string
   user_code: string
   expires_in: number
+  flow?: 'loopback' | 'device_code'
   resolved_request_body?: Record<string, unknown>
 }
 
@@ -51,6 +52,7 @@ export function OutlookAuthModal({
   const [verificationUri, setVerificationUri] = useState('')
   const [userCode, setUserCode] = useState('')
   const [expiresIn, setExpiresIn] = useState(0)
+  const [flow, setFlow] = useState<'loopback' | 'device_code'>('device_code')
   const [error, setError] = useState('')
   const [requestDebug, setRequestDebug] = useState('')
   const [requestId, setRequestId] = useState('')
@@ -74,6 +76,7 @@ export function OutlookAuthModal({
     setError('')
     setRequestDebug('')
     setRequestId('')
+    setFlow('device_code')
     setCopied(false)
 
     // Initiate device code flow via TUI gateway RPC (only once per open)
@@ -126,6 +129,7 @@ export function OutlookAuthModal({
         setVerificationUri(data.verification_uri)
         setUserCode(data.user_code)
         setExpiresIn(data.expires_in)
+        setFlow(data.flow === 'loopback' ? 'loopback' : 'device_code')
         setStage('waiting')
 
         // Start polling for completion (use request_id from response, not regenerate)
@@ -229,7 +233,22 @@ export function OutlookAuthModal({
               </div>
             )}
 
-            {stage === 'waiting' && (
+            {stage === 'waiting' && flow === 'loopback' && (
+              <>
+                <p>Click the button below to sign in with Microsoft in your browser.</p>
+                <Button onClick={handleOpenBrowser} className="w-full" variant="default">
+                  <ExternalLink className="size-4" />
+                  Open Microsoft Login
+                </Button>
+
+                <p className="text-xs text-muted-foreground">
+                  No code to enter — waiting for you to finish signing in in your browser
+                  (expires in {Math.ceil(expiresIn / 60)} minutes)...
+                </p>
+              </>
+            )}
+
+            {stage === 'waiting' && flow === 'device_code' && (
               <>
                 <p>1. Click the button below to open Microsoft login in your browser</p>
                 <Button onClick={handleOpenBrowser} className="w-full" variant="default">
