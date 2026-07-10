@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
+    CONFIRMATION_REQUIRED_ENFORCEMENT,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
@@ -114,6 +115,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # users who want a leaner prompt can turn it off.
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
+
+    # Universal confirmation_required/clarify enforcement — NOT gated by
+    # model-name pattern matching (unlike TOOL_USE_ENFORCEMENT_GUIDANCE
+    # below), because auto-routed/aliased model names (e.g. a custom LiteLLM
+    # router group) never match TOOL_USE_ENFORCEMENT_MODELS substrings even
+    # when the underlying model needs the same steering. Only requires the
+    # `clarify` tool to be active.
+    if "clarify" in agent.valid_tool_names:
+        stable_parts.append(CONFIRMATION_REQUIRED_ENFORCEMENT)
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []

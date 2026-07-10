@@ -315,6 +315,33 @@ TASK_COMPLETION_GUIDANCE = (
     "is always better than inventing a result."
 )
 
+# Universal (not model-family-gated) enforcement for the "confirmation_required"
+# tool-result pattern used by destructive/irreversible actions (sending email,
+# deleting/updating calendar events or contacts, etc.). Observed in production:
+# models repeatedly print the offered choices as plain text (e.g. "[ ] Ja,
+# senden / [ ] Abbrechen") and end the turn instead of calling `clarify`,
+# leaving the user with nothing clickable — even after the tool result's own
+# message explicitly asked for a `clarify` call. This is model-family
+# independent (also fails behind auto-routed/aliased model names that don't
+# match TOOL_USE_ENFORCEMENT_MODELS substrings), so it must not depend on
+# model-name pattern matching. Only injected when `clarify` is an active tool.
+CONFIRMATION_REQUIRED_ENFORCEMENT = (
+    "# Confirmation-required tool results\n"
+    "Some tools (e.g. sending an email, updating/deleting a calendar event or "
+    "contact) return `\"status\": \"confirmation_required\"` instead of acting, "
+    "specifically so the user gets a real clickable choice before anything "
+    "irreversible happens. When you see that status:\n"
+    "1. Show the preview/change to the user as text.\n"
+    "2. In that SAME response, immediately call the `clarify` tool with the "
+    "question and choices the tool result asked for.\n"
+    "Do NOT print the choices yourself as plain text/checkboxes/emoji (e.g. "
+    "'[ ] Ja, senden / [ ] Abbrechen') and stop — that is not clickable and "
+    "forces the user to type free text. Ending your turn without calling "
+    "`clarify` here is a hard error, not a style choice; only re-call the "
+    "original tool with confirm=true after `clarify` returns an affirmative "
+    "answer."
+)
+
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.

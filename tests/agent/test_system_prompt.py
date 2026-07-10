@@ -160,3 +160,32 @@ class TestTodoPersistenceGuidance:
     def test_still_present_when_todo_tool_missing(self):
         stable = _stable_prompt(_make_agent(valid_tool_names=["read_file"]))
         assert "canonical place to store user todo tasks" in stable
+
+
+class TestConfirmationRequiredEnforcement:
+    """Universal (non-model-gated) clarify enforcement for confirmation_required
+    tool results — see agent/prompt_builder.py::CONFIRMATION_REQUIRED_ENFORCEMENT.
+    """
+
+    def test_emitted_when_clarify_tool_active(self):
+        agent = _make_agent(valid_tool_names=["clarify"], platform="cli")
+        stable = _stable_prompt(agent)
+        assert "# Confirmation-required tool results" in stable
+        assert "call the `clarify` tool" in stable
+
+    def test_not_emitted_when_clarify_tool_missing(self):
+        agent = _make_agent(valid_tool_names=["read_file"], platform="cli")
+        stable = _stable_prompt(agent)
+        assert "# Confirmation-required tool results" not in stable
+
+    def test_emitted_regardless_of_unrecognized_model_alias(self):
+        # A custom LiteLLM auto-router group name (e.g. from a SupraRouter
+        # setup) never matches TOOL_USE_ENFORCEMENT_MODELS substrings, but
+        # this guidance must still fire since it isn't model-gated.
+        agent = _make_agent(
+            valid_tool_names=["clarify"],
+            model="AIMDS-Suite-Auto",
+            platform="cli",
+        )
+        stable = _stable_prompt(agent)
+        assert "# Confirmation-required tool results" in stable
