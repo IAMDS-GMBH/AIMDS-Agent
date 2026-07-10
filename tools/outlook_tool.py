@@ -35,6 +35,11 @@ from tools.registry import registry
 logger = logging.getLogger(__name__)
 
 OUTLOOK_CALENDAR_READ_SCOPE = "Calendars.Read offline_access"
+OUTLOOK_CALENDAR_WRITE_SCOPE = "Calendars.ReadWrite offline_access"
+OUTLOOK_SHARED_MAIL_SCOPE = "Mail.Read.Shared offline_access"
+# Mail.Send is already part of DEFAULT_DELEGATED_SCOPE (Mail.Read Mail.Send
+# offline_access) in tools/microsoft_graph_auth.py, so outlook_write_email
+# can reuse the default delegated scope without requesting anything extra.
 
 # ---------------------------------------------------------------------------
 # Credential helpers (mirrors adapter.py logic, no coupling)
@@ -240,6 +245,61 @@ async def _poll_device_code_async(device_code: str, scope: str | None = None) ->
     return True
 
 
+_FOLDER_MAP = {
+    "inbox": "inbox",
+    "sent": "sentitems",
+    "drafts": "drafts",
+    "deleted": "deleteditems",
+    "archive": "archive",
+}
+
+
+def _time_range_bounds(time_range: str) -> tuple[str, str] | None:
+    """Return (start_iso, end_iso) UTC bounds for a named time_range, or None for 'all'."""
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    normalized = (time_range or "today").strip().lower()
+    if normalized == "today":
+        start = today_start
+        end = now
+    elif normalized == "yesterday":
+        start = today_start - timedelta(days=1)
+        end = today_start
+    elif normalized == "this_week":
+        start = today_start - timedelta(days=today_start.weekday())  # Monday
+        end = now
+    else:
+        return None
+
+    def _fmt(dt: datetime) -> str:
+        return dt.isoformat().replace("+00:00", "Z")
+
+    return _fmt(start), _fmt(end)
+
+
+def _new_graph_client(scope: str | None = None) -> tuple[Any, dict[str, str]]:
+    """Build a (client, creds) pair for a delegated Graph call."""
+    from tools.microsoft_graph_auth import (
+        GraphDelegatedCredentials,
+        GraphDeviceCodeProvider,
+    )
+    from tools.microsoft_graph_client import MicrosoftGraphClient
+
+    creds_raw = _get_outlook_creds()
+    kwargs: dict[str, Any] = {
+        "tenant_id": creds_raw["tenant_id"],
+        "client_id": creds_raw["client_id"],
+        "client_secret": creds_raw["client_secret"] or None,
+    }
+    if scope:
+        kwargs["scope"] = scope
+    creds = GraphDelegatedCredentials(**kwargs)
+    provider = GraphDeviceCodeProvider(creds)
+    client = MicrosoftGraphClient(provider, user_agent="Hermes-Outlook/1.0")
+    return client, creds_raw
+
+
 # ---------------------------------------------------------------------------
 # Core async fetch logic
 # ---------------------------------------------------------------------------
@@ -249,21 +309,96 @@ async def _fetch_emails_async(
     folder: str,
     unread_only: bool,
     include_body: bool,
+    time_range: str = "today",
 ) -> list[dict[str, Any]]:
-    from tools.microsoft_graph_auth import (
-        GraphDelegatedCredentials,
-        GraphDeviceCodeProvider,
-    )
-    from tools.microsoft_graph_client import MicrosoftGraphClient
+    client, _ = _new_graph_client()
 
-    creds_raw = _get_outlook_creds()
-    creds = GraphDelegatedCredentials(
-        tenant_id=creds_raw["tenant_id"],
-        client_id=creds_raw["client_id"],
-        client_secret=creds_raw["client_secret"] or None,
-    )
-    provider = GraphDeviceCodeProvider(creds)
-    client = MicrosoftGraphClient(provider, user_agent="Hermes-Outlook/1.0")
+    select_fields = ["id", "subject", "receivedDateTime", "isRead",
+                     "from", "toRecipients", "hasAttachments", "importance"]
+    if include_body:
+        select_fields.append("bodyPreview")
+
+    filters: list[str] = []
+    if unread_only:
+        filters.append("isRead eq false")
+    bounds = _time_range_bounds(time_range)
+    if bounds is not None:
+        start_iso, end_iso = bounds
+        filters.append(f"receivedDateTime ge {start_iso}")
+        filters.append(f"receivedDateTime le {end_iso}")
+
+    params: dict[str, Any] = {
+        "$top": min(max(1, count), 50),
+        "$orderby": "receivedDateTime desc",
+        "$select": ",".join(select_fields),
+    }
+    if filters:
+        params["$filter"] = " and ".join(filters)
+
+    graph_folder = _FOLDER_MAP.get(folder.lower(), "inbox")
+    path = f"/me/mailFolders/{graph_folder}/messages"
+
+    resp = await client.get_json(path, params=params)
+    return resp.get("value", [])
+
+
+async def _fetch_email_by_id_async(message_id: str) -> dict[str, Any]:
+    """Fetch a single email with its full body (not just a preview)."""
+    client, _ = _new_graph_client()
+    select_fields = [
+        "id", "subject", "receivedDateTime", "isRead", "from", "toRecipients",
+        "ccRecipients", "hasAttachments", "importance", "body", "conversationId",
+        "webLink",
+    ]
+    params = {"$select": ",".join(select_fields)}
+    resp = await client.get_json(f"/me/messages/{message_id}", params=params)
+    return resp
+
+
+async def _search_emails_async(
+    query: str,
+    count: int,
+    search_in: str,
+    folder: str,
+) -> list[dict[str, Any]]:
+    """Search emails by keyword in subject and/or body via Graph $search."""
+    client, _ = _new_graph_client()
+
+    select_fields = ["id", "subject", "receivedDateTime", "isRead",
+                     "from", "toRecipients", "hasAttachments", "importance", "bodyPreview"]
+
+    graph_folder = _FOLDER_MAP.get(folder.lower(), "inbox")
+    path = f"/me/mailFolders/{graph_folder}/messages"
+
+    safe_query = query.replace('"', '\\"')
+    normalized_scope = (search_in or "both").strip().lower()
+    if normalized_scope == "subject":
+        search_expr = f'subject:"{safe_query}"'
+    elif normalized_scope == "body":
+        search_expr = f'body:"{safe_query}"'
+    else:
+        search_expr = f'"{safe_query}"'  # searches subject + body + sender by default
+
+    params: dict[str, Any] = {
+        "$search": search_expr,
+        "$top": min(max(1, count), 50),
+        "$select": ",".join(select_fields),
+    }
+    headers = {"ConsistencyLevel": "eventual"}
+
+    resp = await client.get_json(path, params=params, headers=headers)
+    return resp.get("value", [])
+
+
+async def _fetch_shared_mail_async(
+    mailbox: str,
+    count: int,
+    folder: str,
+    unread_only: bool,
+    include_body: bool,
+) -> list[dict[str, Any]]:
+    """Read messages from a shared mailbox the delegated user has access to."""
+    client, _ = _new_graph_client(scope=OUTLOOK_SHARED_MAIL_SCOPE)
 
     select_fields = ["id", "subject", "receivedDateTime", "isRead",
                      "from", "toRecipients", "hasAttachments", "importance"]
@@ -278,18 +413,58 @@ async def _fetch_emails_async(
     if unread_only:
         params["$filter"] = "isRead eq false"
 
-    folder_map = {
-        "inbox": "inbox",
-        "sent": "sentitems",
-        "drafts": "drafts",
-        "deleted": "deleteditems",
-        "archive": "archive",
-    }
-    graph_folder = folder_map.get(folder.lower(), "inbox")
-    path = f"/me/mailFolders/{graph_folder}/messages"
+    graph_folder = _FOLDER_MAP.get(folder.lower(), "inbox")
+    path = f"/users/{mailbox}/mailFolders/{graph_folder}/messages"
 
     resp = await client.get_json(path, params=params)
     return resp.get("value", [])
+
+
+async def _send_new_email_async(
+    to: list[str],
+    subject: str,
+    body: str,
+    cc: list[str],
+    bcc: list[str],
+    reply_to_message_id: str,
+) -> None:
+    """Send a brand-new email, or reply to an existing message thread."""
+    client, _ = _new_graph_client()
+
+    if reply_to_message_id:
+        payload: dict[str, Any] = {"comment": body}
+        if to or cc or bcc:
+            # Graph's reply endpoint keeps the original recipients unless we
+            # override the message body — only send extra recipients if asked.
+            message: dict[str, Any] = {}
+            if cc:
+                message["ccRecipients"] = [
+                    {"emailAddress": {"address": addr}} for addr in cc
+                ]
+            if bcc:
+                message["bccRecipients"] = [
+                    {"emailAddress": {"address": addr}} for addr in bcc
+                ]
+            if message:
+                payload["message"] = message
+        await client.post_json(
+            f"/me/messages/{reply_to_message_id}/reply", json_body=payload
+        )
+        return
+
+    message = {
+        "subject": subject,
+        "body": {"contentType": "Text", "content": body},
+        "toRecipients": [{"emailAddress": {"address": addr}} for addr in to],
+    }
+    if cc:
+        message["ccRecipients"] = [{"emailAddress": {"address": addr}} for addr in cc]
+    if bcc:
+        message["bccRecipients"] = [{"emailAddress": {"address": addr}} for addr in bcc]
+
+    await client.post_json(
+        "/me/sendMail", json_body={"message": message, "saveToSentItems": True}
+    )
 
 
 def _format_email(msg: dict[str, Any], include_body: bool) -> dict[str, Any]:
@@ -389,6 +564,63 @@ def _format_calendar_entry(entry: dict[str, Any], include_body_preview: bool) ->
     return result
 
 
+# ---------------------------------------------------------------------------
+# Calendar write (create / update / delete) async logic
+# ---------------------------------------------------------------------------
+
+async def _get_calendar_entry_async(event_id: str) -> dict[str, Any]:
+    """Fetch the current state of a single calendar event (for previews/undo)."""
+    client, _ = _new_graph_client(scope=OUTLOOK_CALENDAR_WRITE_SCOPE)
+    return await client.get_json(f"/me/events/{event_id}")
+
+
+def _build_calendar_event_body(
+    subject: str,
+    start_datetime: str,
+    end_datetime: str,
+    timezone_name: str,
+    location: str,
+    body: str,
+    attendees: list[str],
+    is_all_day: bool,
+) -> dict[str, Any]:
+    event: dict[str, Any] = {}
+    if subject:
+        event["subject"] = subject
+    if start_datetime:
+        event["start"] = {"dateTime": start_datetime, "timeZone": timezone_name}
+    if end_datetime:
+        event["end"] = {"dateTime": end_datetime, "timeZone": timezone_name}
+    if location:
+        event["location"] = {"displayName": location}
+    if body:
+        event["body"] = {"contentType": "Text", "content": body}
+    if attendees:
+        event["attendees"] = [
+            {"emailAddress": {"address": addr}, "type": "required"} for addr in attendees
+        ]
+    if is_all_day:
+        event["isAllDay"] = True
+    return event
+
+
+async def _create_calendar_entry_async(event_body: dict[str, Any]) -> dict[str, Any]:
+    client, _ = _new_graph_client(scope=OUTLOOK_CALENDAR_WRITE_SCOPE)
+    return await client.post_json("/me/events", json_body=event_body)
+
+
+async def _update_calendar_entry_async(
+    event_id: str, event_body: dict[str, Any]
+) -> dict[str, Any]:
+    client, _ = _new_graph_client(scope=OUTLOOK_CALENDAR_WRITE_SCOPE)
+    return await client.patch_json(f"/me/events/{event_id}", json_body=event_body)
+
+
+async def _delete_calendar_entry_async(event_id: str) -> dict[str, Any]:
+    client, _ = _new_graph_client(scope=OUTLOOK_CALENDAR_WRITE_SCOPE)
+    return await client.delete(f"/me/events/{event_id}")
+
+
 def _run_async(coro: Any, timeout: float = 120) -> Any:
     """Run a coroutine safely regardless of whether a loop is already running."""
     try:
@@ -403,29 +635,29 @@ def _run_async(coro: Any, timeout: float = 120) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Tool handler
+# Shared device-code auth guard (used by every tool handler below)
 # ---------------------------------------------------------------------------
 
-def outlook_read_emails(
-    count: int = 10,
-    folder: str = "inbox",
-    unread_only: bool = False,
-    include_body: bool = True,
-    device_code: str = "",
-    task_id: str | None = None,
-) -> str:
-    """Fetch recent emails, or handle device-code auth if no token exists."""
-    toolset_enabled = False
+def _outlook_auth_guard(
+    device_code: str,
+    scope: str | None = None,
+    label: str = "Outlook",
+) -> tuple[dict[str, Any] | None, bool]:
+    """Run the common credential/device-code guard shared by all Outlook tools.
 
-    # Guard: creds required before anything else
+    Returns ``(early_response, toolset_enabled)``. If ``early_response`` is not
+    ``None`` the caller must return it (json-encoded) immediately without
+    performing the Graph call. Otherwise the caller may proceed, and
+    ``toolset_enabled`` reflects whether this call just turned the toolset on.
+    """
     creds = _get_outlook_creds()
     if not creds["tenant_id"] or not creds["client_id"]:
-        return json.dumps({
+        return {
             "error": (
                 "Outlook credentials not configured. "
                 "Go to Messaging → Outlook setup and enter your Azure AD Tenant ID and Client ID."
             )
-        })
+        }, False
 
     # Best-effort: if auth is already usable, ensure toolset is enabled now.
     # This covers chat/desktop paths where token cache exists before a tool
@@ -434,47 +666,71 @@ def outlook_read_emails(
     if pre_enable_error:
         logger.warning("[Outlook] Could not auto-enable outlook toolset: %s", pre_enable_error)
 
+    toolset_enabled = False
+
     # Step 1 — if caller is providing a device_code to poll (user just authed)
     if device_code:
         try:
-            authed = _run_async(_poll_device_code_async(device_code), timeout=30)
+            authed = _run_async(_poll_device_code_async(device_code, scope), timeout=30)
         except Exception as exc:
-            return json.dumps({"error": f"Token poll failed: {exc}"})
+            return {"error": f"Token poll failed: {exc}"}, False
         if not authed:
-            return json.dumps({
+            return {
                 "status": "pending",
                 "message": "Authentication still pending. Please complete sign-in at the URL provided, then try again.",
-            })
+            }, False
         toolset_enabled, toolset_error = _auto_enable_outlook_toolset_if_token_ready()
         if toolset_error:
             logger.warning("[Outlook] Could not auto-enable outlook toolset: %s", toolset_error)
-        # Fall through — now fetch emails with the fresh token
+        # Fall through — now proceed with the fresh token
 
     # Step 2 — if no token cached, initiate device code and return prompt
     if not _has_valid_token_cache():
         try:
-            info = _run_async(_start_device_code_async(), timeout=30)
+            info = _run_async(_start_device_code_async(scope), timeout=30)
         except Exception as exc:
-            return json.dumps({"error": f"Could not start device code flow: {exc}"})
-        return json.dumps({
+            return {"error": f"Could not start device code flow: {exc}"}, False
+        return {
             "status": "auth_required",
             "message": (
-                "Outlook authentication required. "
+                f"{label} authentication required. "
                 f"Open {info['verification_uri']} and enter the code: {info['user_code']}. "
                 f"The code expires in {info['expires_in_seconds'] // 60} minutes. "
                 "Once you have signed in, call this tool again with the device_code parameter "
                 f"set to: {info['device_code']}"
             ),
+            **({"required_scopes": scope} if scope else {}),
             "verification_uri": info["verification_uri"],
             "user_code": info["user_code"],
             "device_code": info["device_code"],
             "expires_in_seconds": info["expires_in_seconds"],
-        })
+        }, False
 
-    # Step 3 — fetch emails normally
+    return None, toolset_enabled
+
+
+# ---------------------------------------------------------------------------
+# Tool handlers
+# ---------------------------------------------------------------------------
+
+def outlook_get_emails(
+    count: int = 10,
+    time_range: str = "today",
+    folder: str = "inbox",
+    unread_only: bool = False,
+    include_body: bool = True,
+    device_code: str = "",
+    task_id: str | None = None,
+) -> str:
+    """Fetch a short, time-boxed list of emails, or handle device-code auth if no token exists."""
+    early, toolset_enabled = _outlook_auth_guard(device_code, label="Outlook")
+    if early is not None:
+        return json.dumps(early)
+
     try:
         raw_emails = _run_async(
-            _fetch_emails_async(count, folder, unread_only, include_body), timeout=120
+            _fetch_emails_async(count, folder, unread_only, include_body, time_range),
+            timeout=120,
         )
     except Exception as exc:
         return json.dumps({"error": str(exc)})
@@ -482,9 +738,162 @@ def outlook_read_emails(
     emails = [_format_email(m, include_body) for m in raw_emails]
     return json.dumps({
         "folder": folder,
+        "time_range": time_range,
         "count": len(emails),
         "unread_only": unread_only,
         "emails": emails,
+        "toolset_auto_enabled": bool(device_code and toolset_enabled),
+    })
+
+
+def outlook_read_email(
+    message_id: str,
+    device_code: str = "",
+    task_id: str | None = None,
+) -> str:
+    """Fetch a single email by id with its full body content."""
+    if not message_id:
+        return json.dumps({"error": "message_id is required."})
+
+    early, toolset_enabled = _outlook_auth_guard(device_code, label="Outlook")
+    if early is not None:
+        return json.dumps(early)
+
+    try:
+        raw = _run_async(_fetch_email_by_id_async(message_id), timeout=120)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+    email = _format_email(raw, include_body=False)
+    body = raw.get("body") or {}
+    email["body_content_type"] = body.get("contentType", "")
+    email["body"] = body.get("content", "")
+    email["cc"] = [
+        r.get("emailAddress", {}).get("address", "")
+        for r in raw.get("ccRecipients", [])
+    ]
+    email["conversation_id"] = raw.get("conversationId", "")
+    email["web_link"] = raw.get("webLink", "")
+
+    return json.dumps({
+        "email": email,
+        "toolset_auto_enabled": bool(device_code and toolset_enabled),
+    })
+
+
+def outlook_search_emails(
+    query: str,
+    count: int = 10,
+    search_in: str = "both",
+    folder: str = "inbox",
+    device_code: str = "",
+    task_id: str | None = None,
+) -> str:
+    """Search emails by keyword in subject and/or body."""
+    if not query:
+        return json.dumps({"error": "query is required."})
+
+    early, toolset_enabled = _outlook_auth_guard(device_code, label="Outlook")
+    if early is not None:
+        return json.dumps(early)
+
+    try:
+        raw_emails = _run_async(
+            _search_emails_async(query, count, search_in, folder), timeout=120
+        )
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+    emails = [_format_email(m, include_body=True) for m in raw_emails]
+    return json.dumps({
+        "query": query,
+        "search_in": search_in,
+        "folder": folder,
+        "count": len(emails),
+        "emails": emails,
+        "toolset_auto_enabled": bool(device_code and toolset_enabled),
+    })
+
+
+def outlook_read_shared_mail(
+    mailbox: str,
+    count: int = 10,
+    folder: str = "inbox",
+    unread_only: bool = False,
+    include_body: bool = True,
+    device_code: str = "",
+    task_id: str | None = None,
+) -> str:
+    """Read emails from a shared mailbox the signed-in user has been granted access to."""
+    if not mailbox:
+        return json.dumps({"error": "mailbox is required (e.g. shared@company.com)."})
+
+    early, toolset_enabled = _outlook_auth_guard(
+        device_code, scope=OUTLOOK_SHARED_MAIL_SCOPE, label="Outlook shared mailbox"
+    )
+    if early is not None:
+        return json.dumps(early)
+
+    try:
+        raw_emails = _run_async(
+            _fetch_shared_mail_async(mailbox, count, folder, unread_only, include_body),
+            timeout=120,
+        )
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+    emails = [_format_email(m, include_body) for m in raw_emails]
+    return json.dumps({
+        "mailbox": mailbox,
+        "folder": folder,
+        "count": len(emails),
+        "unread_only": unread_only,
+        "emails": emails,
+        "toolset_auto_enabled": bool(device_code and toolset_enabled),
+    })
+
+
+def outlook_write_email(
+    to: str,
+    subject: str = "",
+    body: str = "",
+    cc: str = "",
+    bcc: str = "",
+    reply_to_message_id: str = "",
+    device_code: str = "",
+    task_id: str | None = None,
+) -> str:
+    """Compose and send a new email, or reply within an existing message thread."""
+    to_list = [addr.strip() for addr in to.split(",") if addr.strip()] if to else []
+    cc_list = [addr.strip() for addr in cc.split(",") if addr.strip()] if cc else []
+    bcc_list = [addr.strip() for addr in bcc.split(",") if addr.strip()] if bcc else []
+
+    if not reply_to_message_id and not to_list:
+        return json.dumps({
+            "error": "Either 'to' (comma-separated recipients) or 'reply_to_message_id' is required."
+        })
+    if not reply_to_message_id and not subject:
+        return json.dumps({"error": "subject is required when composing a new email."})
+
+    early, toolset_enabled = _outlook_auth_guard(device_code, label="Outlook")
+    if early is not None:
+        return json.dumps(early)
+
+    try:
+        _run_async(
+            _send_new_email_async(to_list, subject, body, cc_list, bcc_list, reply_to_message_id),
+            timeout=120,
+        )
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+    return json.dumps({
+        "status": "sent",
+        "to": to_list,
+        "cc": cc_list,
+        "bcc": bcc_list,
+        "subject": subject,
+        "reply_to_message_id": reply_to_message_id,
         "toolset_auto_enabled": bool(device_code and toolset_enabled),
     })
 
@@ -498,64 +907,11 @@ def outlook_read_calendar_entries(
     task_id: str | None = None,
 ) -> str:
     """Fetch calendar entries, or handle device-code auth if no token exists."""
-    toolset_enabled = False
-
-    creds = _get_outlook_creds()
-    if not creds["tenant_id"] or not creds["client_id"]:
-        return json.dumps({
-            "error": (
-                "Outlook credentials not configured. "
-                "Go to Messaging → Outlook setup and enter your Azure AD Tenant ID and Client ID."
-            )
-        })
-
-    # Best-effort: if auth is already usable, ensure toolset is enabled now.
-    _, pre_enable_error = _auto_enable_outlook_toolset_if_token_ready()
-    if pre_enable_error:
-        logger.warning("[Outlook] Could not auto-enable outlook toolset: %s", pre_enable_error)
-
-    if device_code:
-        try:
-            authed = _run_async(
-                _poll_device_code_async(
-                    device_code, OUTLOOK_CALENDAR_READ_SCOPE
-                ),
-                timeout=30,
-            )
-        except Exception as exc:
-            return json.dumps({"error": f"Token poll failed: {exc}"})
-        if not authed:
-            return json.dumps({
-                "status": "pending",
-                "message": "Authentication still pending. Please complete sign-in at the URL provided, then try again.",
-            })
-        toolset_enabled, toolset_error = _auto_enable_outlook_toolset_if_token_ready()
-        if toolset_error:
-            logger.warning("[Outlook] Could not auto-enable outlook toolset: %s", toolset_error)
-
-    if not _has_valid_token_cache():
-        try:
-            info = _run_async(
-                _start_device_code_async(OUTLOOK_CALENDAR_READ_SCOPE),
-                timeout=30,
-            )
-        except Exception as exc:
-            return json.dumps({"error": f"Could not start device code flow: {exc}"})
-        return json.dumps({
-            "status": "auth_required",
-            "message": (
-                "Outlook calendar authentication required. "
-                f"Open {info['verification_uri']} and enter the code: {info['user_code']}. "
-                f"The code expires in {info['expires_in_seconds'] // 60} minutes. "
-                "Once you have signed in, call this tool again with the device_code parameter "
-                f"set to: {info['device_code']}"
-            ),
-            "required_scopes": OUTLOOK_CALENDAR_READ_SCOPE,
-            "verification_uri": info["verification_uri"],
-            "user_code": info["user_code"],
-            "device_code": info["device_code"],
-            "expires_in_seconds": info["expires_in_seconds"],
-        })
+    early, toolset_enabled = _outlook_auth_guard(
+        device_code, scope=OUTLOOK_CALENDAR_READ_SCOPE, label="Outlook calendar"
+    )
+    if early is not None:
+        return json.dumps(early)
 
     try:
         raw_entries = _run_async(
@@ -582,23 +938,308 @@ def outlook_read_calendar_entries(
     })
 
 
+def outlook_write_calendar_entries(
+    action: str,
+    event_id: str = "",
+    subject: str = "",
+    start_datetime: str = "",
+    end_datetime: str = "",
+    timezone_name: str = "UTC",
+    location: str = "",
+    body: str = "",
+    attendees: str = "",
+    is_all_day: bool = False,
+    confirm: bool = False,
+    device_code: str = "",
+    task_id: str | None = None,
+) -> str:
+    """Create, update, or delete a calendar entry.
+
+    ``update`` and ``delete`` are destructive: unless ``confirm=true`` is
+    passed, this tool only returns a preview containing the *current* event
+    state plus the requested change — it does not modify anything. The
+    calling assistant MUST show this preview to the user and get explicit
+    confirmation before calling again with ``confirm=true``.
+    """
+    normalized_action = (action or "").strip().lower()
+    if normalized_action not in ("create", "update", "delete"):
+        return json.dumps({
+            "error": "action must be one of 'create', 'update', or 'delete'."
+        })
+    if normalized_action in ("update", "delete") and not event_id:
+        return json.dumps({"error": "event_id is required for update/delete."})
+    if normalized_action == "create" and (not subject or not start_datetime or not end_datetime):
+        return json.dumps({
+            "error": "subject, start_datetime, and end_datetime are required to create an event."
+        })
+
+    early, toolset_enabled = _outlook_auth_guard(
+        device_code, scope=OUTLOOK_CALENDAR_WRITE_SCOPE, label="Outlook calendar (write)"
+    )
+    if early is not None:
+        return json.dumps(early)
+
+    attendee_list = [a.strip() for a in attendees.split(",") if a.strip()] if attendees else []
+
+    # Destructive actions require an explicit confirm=true. Without it, fetch
+    # and return the current event state as a preview so the assistant can
+    # show the user exactly what would change (and can recover the previous
+    # state from the response if something goes wrong after confirming).
+    if normalized_action in ("update", "delete") and not confirm:
+        try:
+            previous_state = _run_async(_get_calendar_entry_async(event_id), timeout=60)
+        except Exception as exc:
+            return json.dumps({"error": f"Could not load current event state: {exc}"})
+
+        preview: dict[str, Any] = {
+            "status": "confirmation_required",
+            "action": normalized_action,
+            "event_id": event_id,
+            "previous_state": _format_calendar_entry(previous_state, include_body_preview=True),
+            "message": (
+                f"This would {normalized_action} the calendar event above. "
+                "Ask the user to explicitly confirm this change before proceeding. "
+                "Once confirmed, call this tool again with the same arguments plus confirm=true. "
+                "The previous_state above is preserved here so it can be restored manually if needed."
+            ),
+        }
+        if normalized_action == "update":
+            preview["requested_changes"] = _build_calendar_event_body(
+                subject, start_datetime, end_datetime, timezone_name,
+                location, body, attendee_list, is_all_day,
+            )
+        return json.dumps(preview)
+
+    try:
+        if normalized_action == "create":
+            event_body = _build_calendar_event_body(
+                subject, start_datetime, end_datetime, timezone_name,
+                location, body, attendee_list, is_all_day,
+            )
+            result = _run_async(_create_calendar_entry_async(event_body), timeout=120)
+            return json.dumps({
+                "status": "created",
+                "entry": _format_calendar_entry(result, include_body_preview=True),
+                "toolset_auto_enabled": bool(device_code and toolset_enabled),
+            })
+
+        if normalized_action == "update":
+            # Capture the previous state one more time right before applying
+            # the change, so the response always carries a recoverable
+            # snapshot even if the caller skipped the preview step somehow.
+            previous_state = _run_async(_get_calendar_entry_async(event_id), timeout=60)
+            event_body = _build_calendar_event_body(
+                subject, start_datetime, end_datetime, timezone_name,
+                location, body, attendee_list, is_all_day,
+            )
+            result = _run_async(_update_calendar_entry_async(event_id, event_body), timeout=120)
+            return json.dumps({
+                "status": "updated",
+                "previous_state": _format_calendar_entry(previous_state, include_body_preview=True),
+                "entry": _format_calendar_entry(result, include_body_preview=True),
+                "toolset_auto_enabled": bool(device_code and toolset_enabled),
+            })
+
+        # delete
+        previous_state = _run_async(_get_calendar_entry_async(event_id), timeout=60)
+        _run_async(_delete_calendar_entry_async(event_id), timeout=120)
+        return json.dumps({
+            "status": "deleted",
+            "event_id": event_id,
+            "previous_state": _format_calendar_entry(previous_state, include_body_preview=True),
+            "toolset_auto_enabled": bool(device_code and toolset_enabled),
+        })
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
+_DEVICE_CODE_PARAM_SCHEMA = {
+    "type": "string",
+    "description": (
+        "Only set this after an auth_required response. "
+        "Pass back the device_code value from that response "
+        "after the user has completed sign-in at the verification URL."
+    ),
+    "default": "",
+}
+
 registry.register(
-    name="outlook_read_emails",
+    name="outlook_get_emails",
     toolset="outlook",
     schema={
-        "name": "outlook_read_emails",
+        "name": "outlook_get_emails",
         "description": (
-            "Read emails from the Microsoft Outlook / Microsoft 365 mailbox. "
-            "Use this to fetch recent emails, get a briefing, check unread messages, "
-            "or search the inbox. Returns subject, sender, date, and optional body preview."
+            "Get a short, time-boxed list of emails from the Outlook / Microsoft 365 mailbox "
+            "(subject, sender, date, read status, optional body preview). "
+            "Use this for a quick daily/weekly overview or briefing, e.g. 'what emails did I get today'. "
+            "The default limit is intentionally small (10) — if the result looks truncated, narrow the "
+            "time_range or call outlook_search_emails with a keyword instead of raising count blindly. "
+            "Do NOT use this to search by keyword or topic — use outlook_search_emails instead. "
+            "Do NOT use this to read the full content of one specific email — use outlook_read_email "
+            "with its message id instead."
         ),
         "parameters": {
             "type": "object",
             "properties": {
+                "count": {
+                    "type": "integer",
+                    "description": "Number of emails to fetch (1-50). Default 10, kept small on purpose.",
+                    "default": 10,
+                },
+                "time_range": {
+                    "type": "string",
+                    "description": (
+                        "Time window to fetch emails from: 'today' (default), 'yesterday', "
+                        "'this_week' (Monday through now), or 'all' (no date filter)."
+                    ),
+                    "default": "today",
+                    "enum": ["today", "yesterday", "this_week", "all"],
+                },
+                "folder": {
+                    "type": "string",
+                    "description": "Folder to read: inbox, sent, drafts, deleted, archive. Default inbox.",
+                    "default": "inbox",
+                    "enum": ["inbox", "sent", "drafts", "deleted", "archive"],
+                },
+                "unread_only": {
+                    "type": "boolean",
+                    "description": "If true, return only unread messages.",
+                    "default": False,
+                },
+                "include_body": {
+                    "type": "boolean",
+                    "description": "Include body preview (~255 chars) in results.",
+                    "default": True,
+                },
+                "device_code": _DEVICE_CODE_PARAM_SCHEMA,
+            },
+            "required": [],
+        },
+    },
+    handler=lambda args, **kw: outlook_get_emails(
+        count=int(args.get("count", 10)),
+        time_range=str(args.get("time_range", "today")),
+        folder=str(args.get("folder", "inbox")),
+        unread_only=bool(args.get("unread_only", False)),
+        include_body=bool(args.get("include_body", True)),
+        device_code=str(args.get("device_code", "")),
+        task_id=kw.get("task_id"),
+    ),
+)
+
+registry.register(
+    name="outlook_read_email",
+    toolset="outlook",
+    schema={
+        "name": "outlook_read_email",
+        "description": (
+            "Read ONE specific email by its message id, returning the FULL body content "
+            "(not just a preview). Use this after outlook_get_emails or outlook_search_emails "
+            "returned a message id and you need the complete text to answer the user's question. "
+            "Do NOT use this to browse or list multiple emails — use outlook_get_emails or "
+            "outlook_search_emails for that."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message_id": {
+                    "type": "string",
+                    "description": (
+                        "The Graph message id, as returned in the 'id' field by outlook_get_emails "
+                        "or outlook_search_emails."
+                    ),
+                },
+                "device_code": _DEVICE_CODE_PARAM_SCHEMA,
+            },
+            "required": ["message_id"],
+        },
+    },
+    handler=lambda args, **kw: outlook_read_email(
+        message_id=str(args.get("message_id", "")),
+        device_code=str(args.get("device_code", "")),
+        task_id=kw.get("task_id"),
+    ),
+)
+
+registry.register(
+    name="outlook_search_emails",
+    toolset="outlook",
+    schema={
+        "name": "outlook_search_emails",
+        "description": (
+            "Search the Outlook / Microsoft 365 mailbox for emails matching a keyword or phrase. "
+            "Use this whenever the user asks to find an email about a topic, sender, or word "
+            "(e.g. 'find the email about the invoice', 'search for emails from Alice about the contract'). "
+            "By default searches both subject and body content. "
+            "Do NOT use this for a plain time-boxed overview with no keyword — use outlook_get_emails instead."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Keyword or phrase to search for, e.g. 'invoice' or 'quarterly report'.",
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Maximum number of matching emails to return (1-50). Default 10.",
+                    "default": 10,
+                },
+                "search_in": {
+                    "type": "string",
+                    "description": (
+                        "Where to search: 'both' (subject + body, default), 'subject' only, "
+                        "or 'body' only."
+                    ),
+                    "default": "both",
+                    "enum": ["both", "subject", "body"],
+                },
+                "folder": {
+                    "type": "string",
+                    "description": "Folder to search: inbox, sent, drafts, deleted, archive. Default inbox.",
+                    "default": "inbox",
+                    "enum": ["inbox", "sent", "drafts", "deleted", "archive"],
+                },
+                "device_code": _DEVICE_CODE_PARAM_SCHEMA,
+            },
+            "required": ["query"],
+        },
+    },
+    handler=lambda args, **kw: outlook_search_emails(
+        query=str(args.get("query", "")),
+        count=int(args.get("count", 10)),
+        search_in=str(args.get("search_in", "both")),
+        folder=str(args.get("folder", "inbox")),
+        device_code=str(args.get("device_code", "")),
+        task_id=kw.get("task_id"),
+    ),
+)
+
+registry.register(
+    name="outlook_read_shared_mail",
+    toolset="outlook",
+    schema={
+        "name": "outlook_read_shared_mail",
+        "description": (
+            "Read emails from a SHARED mailbox (a different mailbox address the signed-in user has "
+            "been granted full-access delegate permissions on in Exchange), not the user's own inbox. "
+            "Use this only when the user explicitly refers to a shared/team mailbox address. "
+            "Do NOT use this for the signed-in user's own mailbox — use outlook_get_emails or "
+            "outlook_search_emails for that. Requires the Mail.Read.Shared permission; the mailbox "
+            "must already have delegate access granted in Exchange or this call will fail with an "
+            "access-denied error from Graph."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "mailbox": {
+                    "type": "string",
+                    "description": "Email address of the shared mailbox to read, e.g. 'support@company.com'.",
+                },
                 "count": {
                     "type": "integer",
                     "description": "Number of emails to fetch (1-50). Default 10.",
@@ -620,24 +1261,87 @@ registry.register(
                     "description": "Include body preview (~255 chars) in results.",
                     "default": True,
                 },
-                "device_code": {
-                    "type": "string",
-                    "description": (
-                        "Only set this after an auth_required response. "
-                        "Pass back the device_code value from that response "
-                        "after the user has completed sign-in at the verification URL."
-                    ),
-                    "default": "",
-                },
+                "device_code": _DEVICE_CODE_PARAM_SCHEMA,
             },
-            "required": [],
+            "required": ["mailbox"],
         },
     },
-    handler=lambda args, **kw: outlook_read_emails(
+    handler=lambda args, **kw: outlook_read_shared_mail(
+        mailbox=str(args.get("mailbox", "")),
         count=int(args.get("count", 10)),
         folder=str(args.get("folder", "inbox")),
         unread_only=bool(args.get("unread_only", False)),
         include_body=bool(args.get("include_body", True)),
+        device_code=str(args.get("device_code", "")),
+        task_id=kw.get("task_id"),
+    ),
+)
+
+registry.register(
+    name="outlook_write_email",
+    toolset="outlook",
+    schema={
+        "name": "outlook_write_email",
+        "description": (
+            "Compose and send a NEW email from the Outlook / Microsoft 365 mailbox, or reply within an "
+            "existing message thread. Use this whenever the user asks to send, write, forward, or "
+            "reply to an email. Set reply_to_message_id (from outlook_get_emails/outlook_search_emails/"
+            "outlook_read_email) to reply within an existing thread — this keeps the original subject and "
+            "recipients. Leave reply_to_message_id empty to compose a brand-new email, in which case "
+            "'to' and 'subject' are required. This tool sends immediately — always confirm the recipient, "
+            "subject, and body with the user before calling it, since sent emails cannot be recalled."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "string",
+                    "description": (
+                        "Comma-separated recipient email addresses, e.g. 'a@x.com,b@y.com'. "
+                        "Required unless reply_to_message_id is set."
+                    ),
+                    "default": "",
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Email subject. Required when composing a new email (ignored for replies).",
+                    "default": "",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Plain-text email body / reply comment.",
+                    "default": "",
+                },
+                "cc": {
+                    "type": "string",
+                    "description": "Comma-separated Cc recipient email addresses.",
+                    "default": "",
+                },
+                "bcc": {
+                    "type": "string",
+                    "description": "Comma-separated Bcc recipient email addresses.",
+                    "default": "",
+                },
+                "reply_to_message_id": {
+                    "type": "string",
+                    "description": (
+                        "Graph message id to reply to within its existing thread. "
+                        "When set, 'to'/'subject' are not needed — the reply goes to the original sender."
+                    ),
+                    "default": "",
+                },
+                "device_code": _DEVICE_CODE_PARAM_SCHEMA,
+            },
+            "required": [],
+        },
+    },
+    handler=lambda args, **kw: outlook_write_email(
+        to=str(args.get("to", "")),
+        subject=str(args.get("subject", "")),
+        body=str(args.get("body", "")),
+        cc=str(args.get("cc", "")),
+        bcc=str(args.get("bcc", "")),
+        reply_to_message_id=str(args.get("reply_to_message_id", "")),
         device_code=str(args.get("device_code", "")),
         task_id=kw.get("task_id"),
     ),
@@ -650,7 +1354,9 @@ registry.register(
         "name": "outlook_read_calendar_entries",
         "description": (
             "Read Microsoft Outlook / Microsoft 365 calendar entries (read-only). "
-            "Returns upcoming events for the next N days with start/end time, organizer, and location."
+            "Returns upcoming events for the next N days with start/end time, organizer, and location. "
+            "Do NOT use this to create, change, or cancel a meeting — use "
+            "outlook_write_calendar_entries for that."
         ),
         "parameters": {
             "type": "object",
@@ -678,15 +1384,7 @@ registry.register(
                     ),
                     "default": "UTC",
                 },
-                "device_code": {
-                    "type": "string",
-                    "description": (
-                        "Only set this after an auth_required response. "
-                        "Pass back the device_code value from that response "
-                        "after the user has completed sign-in at the verification URL."
-                    ),
-                    "default": "",
-                },
+                "device_code": _DEVICE_CODE_PARAM_SCHEMA,
             },
             "required": [],
         },
@@ -696,6 +1394,118 @@ registry.register(
         days_ahead=int(args.get("days_ahead", 7)),
         include_body_preview=bool(args.get("include_body_preview", False)),
         timezone_name=str(args.get("timezone_name", "UTC")),
+        device_code=str(args.get("device_code", "")),
+        task_id=kw.get("task_id"),
+    ),
+)
+
+registry.register(
+    name="outlook_write_calendar_entries",
+    toolset="outlook",
+    schema={
+        "name": "outlook_write_calendar_entries",
+        "description": (
+            "Create, update, or delete a Microsoft Outlook / Microsoft 365 calendar entry. "
+            "Use action='create' to schedule a new meeting/event (subject, start_datetime, "
+            "end_datetime are required). Use action='update' to change an existing event's time, "
+            "subject, location, body, or attendees (event_id required). Use action='delete' to "
+            "cancel an existing event (event_id required). "
+            "IMPORTANT — update and delete are DESTRUCTIVE: calling them without confirm=true "
+            "only returns a PREVIEW (the event's current state plus the requested change) and makes "
+            "no changes at all. You MUST show this preview to the user and get their explicit "
+            "confirmation before calling this tool again with confirm=true to actually apply it. "
+            "The response always includes previous_state so the prior event details are not lost "
+            "even after the change is applied. "
+            "Do NOT use this for read-only lookups — use outlook_read_calendar_entries instead."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "Operation to perform: 'create', 'update', or 'delete'.",
+                    "enum": ["create", "update", "delete"],
+                },
+                "event_id": {
+                    "type": "string",
+                    "description": "Graph event id. Required for 'update' and 'delete'.",
+                    "default": "",
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Event subject/title. Required for 'create'.",
+                    "default": "",
+                },
+                "start_datetime": {
+                    "type": "string",
+                    "description": (
+                        "Start date/time in ISO-8601 without timezone offset, e.g. "
+                        "'2026-07-10T14:00:00'. Interpreted in timezone_name. Required for 'create'."
+                    ),
+                    "default": "",
+                },
+                "end_datetime": {
+                    "type": "string",
+                    "description": (
+                        "End date/time in ISO-8601 without timezone offset, e.g. "
+                        "'2026-07-10T15:00:00'. Interpreted in timezone_name. Required for 'create'."
+                    ),
+                    "default": "",
+                },
+                "timezone_name": {
+                    "type": "string",
+                    "description": (
+                        "Outlook timezone for start_datetime/end_datetime (IANA/Windows name accepted "
+                        "by Graph, e.g. 'UTC' or 'W. Europe Standard Time'). Default UTC."
+                    ),
+                    "default": "UTC",
+                },
+                "location": {
+                    "type": "string",
+                    "description": "Event location display name, e.g. 'Room A' or 'Microsoft Teams'.",
+                    "default": "",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Plain-text event description/agenda.",
+                    "default": "",
+                },
+                "attendees": {
+                    "type": "string",
+                    "description": "Comma-separated attendee email addresses to invite.",
+                    "default": "",
+                },
+                "is_all_day": {
+                    "type": "boolean",
+                    "description": "Mark the event as an all-day event.",
+                    "default": False,
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": (
+                        "Required to actually apply 'update' or 'delete'. Leave false (default) to "
+                        "get a preview of the current state and requested change without modifying "
+                        "anything. Only set true after the user has explicitly confirmed the change."
+                    ),
+                    "default": False,
+                },
+                "device_code": _DEVICE_CODE_PARAM_SCHEMA,
+            },
+            "required": ["action"],
+        },
+    },
+    handler=lambda args, **kw: outlook_write_calendar_entries(
+        action=str(args.get("action", "")),
+        event_id=str(args.get("event_id", "")),
+        subject=str(args.get("subject", "")),
+        start_datetime=str(args.get("start_datetime", "")),
+        end_datetime=str(args.get("end_datetime", "")),
+        timezone_name=str(args.get("timezone_name", "UTC")),
+        location=str(args.get("location", "")),
+        body=str(args.get("body", "")),
+        attendees=str(args.get("attendees", "")),
+        is_all_day=bool(args.get("is_all_day", False)),
+        confirm=bool(args.get("confirm", False)),
         device_code=str(args.get("device_code", "")),
         task_id=kw.get("task_id"),
     ),

@@ -15,7 +15,7 @@ requires_env:
     url: "https://portal.azure.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/Overview"
     password: false
   - name: OUTLOOK_CLIENT_ID
-    description: "Azure AD application (client) ID with Mail.Read/Mail.Send; add Calendars.Read for calendar tool"
+    description: "Azure AD application (client) ID with Mail.Read/Mail.Send; add Calendars.ReadWrite for the calendar tools and Mail.Read.Shared for shared-mailbox access"
     prompt: "Azure AD application (client) ID"
     url: "https://portal.azure.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/RegisteredApps"
     password: false

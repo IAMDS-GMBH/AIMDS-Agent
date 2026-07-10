@@ -69,7 +69,7 @@ CONFIGURABLE_TOOLSETS = [
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
     ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
-    ("outlook",          "📧 Outlook / Microsoft 365",   "read emails on demand via Microsoft Graph"),
+    ("outlook",          "📧 Outlook / Microsoft 365",   "read/search/send emails and manage calendar via Microsoft Graph"),
     ("litellm_agents",   "🤖 LiteLLM Agents (A2A)",      "call_litellm_agent, list_litellm_active_agents"),
 ]
 
