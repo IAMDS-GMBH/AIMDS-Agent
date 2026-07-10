@@ -15,6 +15,7 @@ crashes due to a bad timezone string.
 
 import logging
 import os
+import platform
 from datetime import datetime
 from hermes_constants import get_config_path
 from typing import Optional
@@ -32,6 +33,10 @@ except ImportError:
 _cached_tz: Optional[ZoneInfo] = None
 _cached_tz_name: Optional[str] = None
 _cache_resolved: bool = False
+
+# Separate cache for the *named* zone used by external APIs (e.g. Microsoft
+# Graph) that require a real zone name rather than a numeric offset.
+_cached_default_tz_name: Optional[str] = None
 
 
 def _resolve_timezone_name() -> str:
@@ -95,10 +100,11 @@ def reset_cache() -> None:
     config edit or ``HERMES_TIMEZONE`` update) to force ``get_timezone()`` /
     ``now()`` to read the new value instead of the value cached at first use.
     """
-    global _cached_tz, _cached_tz_name, _cache_resolved
+    global _cached_tz, _cached_tz_name, _cache_resolved, _cached_default_tz_name
     _cached_tz = None
     _cached_tz_name = None
     _cache_resolved = False
+    _cached_default_tz_name = None
 
 
 def now() -> datetime:
@@ -113,5 +119,90 @@ def now() -> datetime:
         return datetime.now(tz)
     # No timezone configured — use server-local (still tz-aware)
     return datetime.now().astimezone()
+
+
+def _resolve_os_timezone_name() -> str:
+    """Best-effort resolution of the *operating system's* configured
+    timezone name, independent of any Hermes-specific config.
+
+    Used only as the last fallback in ``default_timezone_name()`` before
+    giving up and returning ``"UTC"``. Unlike ``get_timezone()`` (which
+    returns a ``ZoneInfo`` for wall-clock math and is happy to silently fall
+    back to a fixed-offset ``astimezone()`` value), external APIs such as
+    Microsoft Graph's ``dateTimeTimeZone.timeZone`` require an actual *named*
+    zone (IANA or Windows) — a raw UTC offset is not accepted. So we need a
+    real name here, not just an offset.
+    """
+    if platform.system() == "Windows":
+        # Microsoft Graph natively understands Windows timezone key names
+        # (e.g. "W. Europe Standard Time"), so we can read the OS's own
+        # configured zone straight out of the registry and pass it through
+        # unmodified — no extra dependency (e.g. tzlocal) required.
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\TimeZoneInformation",
+            ) as key:
+                name, _ = winreg.QueryValueEx(key, "TimeZoneKeyName")
+                if name:
+                    return str(name).strip()
+        except Exception:
+            logger.debug("Could not read Windows timezone from registry", exc_info=True)
+        return ""
+
+    # POSIX (macOS/Linux): /etc/localtime is conventionally a symlink into
+    # the system zoneinfo database, e.g.
+    # /usr/share/zoneinfo/Europe/Berlin -> IANA name "Europe/Berlin".
+    try:
+        real_path = os.path.realpath("/etc/localtime")
+        marker = "zoneinfo/"
+        idx = real_path.find(marker)
+        if idx != -1:
+            name = real_path[idx + len(marker):]
+            if name:
+                return name
+    except Exception:
+        logger.debug("Could not resolve /etc/localtime symlink", exc_info=True)
+    return ""
+
+
+def default_timezone_name() -> str:
+    """Resolve a real, *named* timezone suitable for external APIs (e.g.
+    Microsoft Graph's ``dateTimeTimeZone.timeZone``) that require a zone
+    name rather than a numeric offset.
+
+    Resolution order (first match wins):
+      1. ``HERMES_TIMEZONE`` env var / ``config.yaml`` ``timezone`` key
+         (same source as ``get_timezone()``), if it resolves to a valid zone.
+      2. The OS's own configured timezone name (Windows registry key name /
+         POSIX ``/etc/localtime`` symlink target).
+      3. ``"UTC"`` — only if every other resolution attempt fails.
+
+    Unlike ``get_timezone()``, this never returns ``None`` — callers that
+    need to hand a zone name to a third-party API always get *something*
+    usable back.
+    """
+    global _cached_default_tz_name
+    if _cached_default_tz_name is not None:
+        return _cached_default_tz_name
+
+    configured_name = _resolve_timezone_name()
+    if configured_name and _get_zoneinfo(configured_name) is not None:
+        _cached_default_tz_name = configured_name
+        return configured_name
+
+    os_name = _resolve_os_timezone_name()
+    if os_name:
+        _cached_default_tz_name = os_name
+        return os_name
+
+    logger.warning(
+        "Could not resolve a named local timezone (no HERMES_TIMEZONE/config "
+        "value and no OS timezone detected) — falling back to literal UTC."
+    )
+    _cached_default_tz_name = "UTC"
+    return "UTC"
 
 

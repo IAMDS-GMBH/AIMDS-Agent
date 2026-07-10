@@ -12,12 +12,37 @@ a thin dispatcher that delegates to a platform-provided callback.
 """
 
 import json
+import threading
 from typing import List, Optional, Callable
 
 
 # Maximum number of predefined choices the agent can offer.
 # A 5th "Other (type your answer)" option is always appended by the UI.
 MAX_CHOICES = 4
+
+# Thread-local access to the platform's clarify callback. Set by the tool
+# executor before dispatching *any* tool call (mirroring the
+# tools.environments.base activity-callback pattern) so that other tools
+# (e.g. outlook_write_email) can invoke a real, interactive confirmation
+# synchronously from within their own execution — instead of relying on the
+# model to correctly orchestrate a separate 'clarify' tool call plus a
+# follow-up call repeating all the original arguments. That two-call
+# choreography was proven unreliable in practice (models skipped showing the
+# preview, mangled the follow-up JSON, or resent it with fields missing/
+# empty), so tools with irreversible side effects (sending an email, etc.)
+# should prefer resolving confirmation internally via this callback whenever
+# it's available, only falling back to the multi-call contract when it isn't
+# (e.g. non-interactive contexts).
+_clarify_callback_local = threading.local()
+
+
+def set_clarify_callback(cb: Optional[Callable[[str, Optional[List[str]]], str]]) -> None:
+    """Register the platform's clarify callback for the current thread."""
+    _clarify_callback_local.callback = cb
+
+
+def get_clarify_callback() -> Optional[Callable[[str, Optional[List[str]]], str]]:
+    return getattr(_clarify_callback_local, "callback", None)
 
 
 def clarify_tool(

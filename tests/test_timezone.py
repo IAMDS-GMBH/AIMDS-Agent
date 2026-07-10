@@ -25,6 +25,7 @@ def _reset_hermes_time_cache():
     hermes_time._cached_tz = None
     hermes_time._cached_tz_name = None
     hermes_time._cache_resolved = False
+    hermes_time._cached_default_tz_name = None
 
 
 # =========================================================================
@@ -383,3 +384,62 @@ class TestCronTimezone:
 
         next_run = datetime.fromisoformat(job["next_run_at"])
         assert next_run.tzinfo is not None
+
+
+# =========================================================================
+# hermes_time.default_timezone_name() — real named zone for external APIs
+# (e.g. Microsoft Graph's dateTimeTimeZone.timeZone) that reject a bare
+# numeric offset and require an actual IANA/Windows zone name.
+# =========================================================================
+
+class TestDefaultTimezoneName:
+    """default_timezone_name() must never silently collapse to the literal
+    string 'UTC' just because nothing was explicitly configured — that was
+    the root cause of Outlook calendar events landing at the wrong local
+    wall-clock time (e.g. a requested 13:00 stored as 13:00 UTC = 15:00 CEST)."""
+
+    def setup_method(self):
+        _reset_hermes_time_cache()
+
+    def teardown_method(self):
+        _reset_hermes_time_cache()
+        os.environ.pop("HERMES_TIMEZONE", None)
+
+    def test_configured_timezone_wins(self):
+        """An explicitly configured HERMES_TIMEZONE is used verbatim."""
+        os.environ["HERMES_TIMEZONE"] = "Asia/Kolkata"
+        assert hermes_time.default_timezone_name() == "Asia/Kolkata"
+
+    def test_invalid_configured_timezone_falls_back(self):
+        """An invalid HERMES_TIMEZONE value is not returned as-is — it must
+        fall through to the OS-resolved (or UTC) fallback instead."""
+        os.environ["HERMES_TIMEZONE"] = "Not/A_Real_Zone"
+        result = hermes_time.default_timezone_name()
+        assert result != "Not/A_Real_Zone"
+
+    def test_result_is_cached(self):
+        os.environ["HERMES_TIMEZONE"] = "US/Eastern"
+        first = hermes_time.default_timezone_name()
+        os.environ["HERMES_TIMEZONE"] = "Asia/Kolkata"  # should not be re-read
+        second = hermes_time.default_timezone_name()
+        assert first == second == "US/Eastern"
+
+    def test_never_returns_none(self):
+        result = hermes_time.default_timezone_name()
+        assert isinstance(result, str) and result
+
+    def test_falls_back_to_os_zone_when_unconfigured(self):
+        """With no HERMES_TIMEZONE/config value, resolve the real OS zone
+        (not the literal string 'UTC') whenever the OS reports one."""
+        os.environ.pop("HERMES_TIMEZONE", None)
+        with patch.object(hermes_time, "_resolve_timezone_name", return_value=""), \
+             patch.object(hermes_time, "_resolve_os_timezone_name", return_value="Europe/Vienna"):
+            assert hermes_time.default_timezone_name() == "Europe/Vienna"
+
+    def test_falls_back_to_utc_only_as_last_resort(self):
+        """Only when neither Hermes config nor the OS itself yields a name
+        does this degrade to the literal 'UTC' fallback."""
+        os.environ.pop("HERMES_TIMEZONE", None)
+        with patch.object(hermes_time, "_resolve_timezone_name", return_value=""), \
+             patch.object(hermes_time, "_resolve_os_timezone_name", return_value=""):
+            assert hermes_time.default_timezone_name() == "UTC"

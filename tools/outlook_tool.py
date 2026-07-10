@@ -34,6 +34,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from tools.registry import registry
+import hermes_time
 
 logger = logging.getLogger(__name__)
 
@@ -1484,196 +1485,29 @@ def outlook_read_shared_mail(
     })
 
 
-def outlook_write_email(
-    to: str = "",
-    subject: str = "",
-    body: str = "",
-    cc: str = "",
-    bcc: str = "",
-    reply_to_message_id: str = "",
-    device_code: str = "",
-    confirm: bool = False,
-    draft_id: str = "",
-    task_id: str | None = None,
-) -> str:
-    """Compose and send a new email, or reply within an existing message thread.
+def _send_email_and_build_response(
+    to_list: list[str],
+    subject: str,
+    body: str,
+    cc_list: list[str],
+    bcc_list: list[str],
+    reply_to_message_id: str,
+    device_code: str,
+    toolset_enabled: bool,
+) -> dict[str, Any]:
+    """Actually call Graph to send the email and build the final status dict.
 
-    Two-step contract: without ``confirm=True`` this returns a preview
-    (to/cc/bcc/subject/body) plus a ``draft_id`` and does NOT send anything.
-    The caller must show that preview to the user and get explicit approval
-    before calling this tool again with ``confirm=True`` and that same
-    ``draft_id`` — the full to/subject/body/cc/bcc do NOT need to be repeated
-    in that second call, since re-emitting a long, quote- and umlaut-laden
-    body as tool-call JSON on every confirm is exactly what was causing
-    "Unrepairable tool_call arguments" retry loops that silently never sent
-    the email. ``draft_id`` is only valid for the lifetime of the current
-    process; if it's missing/expired, resend to/subject/body directly.
+    This is the single place that performs a real send — both the
+    confirm=true/draft_id path and the inline-clarify path below call into
+    it, so there is exactly one send implementation to keep correct.
     """
-    if confirm and draft_id:
-        cached = _draft_cache.pop(draft_id, None)
-        if cached is None:
-            return json.dumps({
-                "error": (
-                    f"draft_id '{draft_id}' was not found (expired, already used, or the "
-                    "backend restarted). Call outlook_write_email again with confirm=false "
-                    "and the full to/subject/body to create a fresh preview, then confirm "
-                    "using the new draft_id from that response."
-                )
-            })
-        to = ",".join(cached["to"])
-        cc = ",".join(cached["cc"])
-        bcc = ",".join(cached["bcc"])
-        subject = cached["subject"]
-        body = cached["body"]
-        reply_to_message_id = cached["reply_to_message_id"]
-
-    to_list = [addr.strip() for addr in to.split(",") if addr.strip()] if to else []
-    cc_list = [addr.strip() for addr in cc.split(",") if addr.strip()] if cc else []
-    bcc_list = [addr.strip() for addr in bcc.split(",") if addr.strip()] if bcc else []
-
-    if not reply_to_message_id and not to_list:
-        return json.dumps({
-            "error": "Either 'to' (comma-separated recipients) or 'reply_to_message_id' is required."
-        })
-    if not reply_to_message_id and not subject:
-        return json.dumps({"error": "subject is required when composing a new email."})
-
-    early, toolset_enabled = _outlook_auth_guard(device_code, label="Outlook")
-    if early is not None:
-        return json.dumps(early)
-
-    if not confirm:
-        draft_id = _cache_draft(to_list, cc_list, bcc_list, subject, body, reply_to_message_id)
-        response: dict[str, Any] = {
-            "status": "confirmation_required",
-            "draft_id": draft_id,
-            "message": (
-                "Do not send yet. Show this exact preview (To/Cc/Bcc/Subject/Body) to the user "
-                "as text, then — in the SAME turn, right after that text — you MUST call the "
-                "'clarify' tool with question='Send this email?' and "
-                "choices=['Ja, senden', 'Abbrechen'] (or an equivalent phrasing in the user's "
-                "language). This is mandatory: do NOT just print the choices as plain text "
-                "(e.g. '✅ Ja, senden / ❌ Abbrechen') and end your turn — that leaves the user "
-                "with nothing clickable. Ending the turn without calling 'clarify' here is a "
-                "workflow error. Only call outlook_write_email again with confirm=true and "
-                f"draft_id='{draft_id}' after 'clarify' returns an affirmative answer — do "
-                "NOT repeat the to/subject/body/cc/bcc fields in that call, just confirm=true "
-                "and draft_id (repeating the full body as JSON args is unreliable and can "
-                "silently fail to send). Never send without that explicit confirmation."
-            ),
-            "preview": {
-                "to": to_list,
-                "cc": cc_list,
-                "bcc": bcc_list,
-                "subject": subject,
-                "body": body,
-                "reply_to_message_id": reply_to_message_id,
-            },
-        }
-
-        # Deterministic (code-level, not model-recall-dependent) signature
-        # lookup for brand-new emails (replies already show the thread, so
-        # the existing tone/signature is visible there instead). Checks a
-        # local on-disk cache first — this is the "always available in the
-        # client" source of truth independent of any memory tool — and
-        # falls back to a best-effort scan of recent Sent items on a cache
-        # miss, caching the result for next time.
-        if not reply_to_message_id:
-            signature = _load_cached_signature()
-            signature_source = "cache" if signature else None
-            if not signature:
-                try:
-                    signature = _run_async(
-                        _detect_signature_from_sent_emails_async(), timeout=60
-                    )
-                except Exception:
-                    signature = None
-                if signature:
-                    _save_cached_signature(signature)
-                    signature_source = "sent-folder"
-            if signature and signature.strip() not in body:
-                response["user_signature"] = signature
-                response["signature_source"] = signature_source
-                response["message"] += (
-                    " A signature was found (source="
-                    + str(signature_source)
-                    + "): "
-                    + json.dumps(signature)
-                    + ". If the body above doesn't already end with it, call "
-                    "outlook_write_email again (still confirm=false) with it appended "
-                    "to body before showing the preview to the user. If a memory-save "
-                    "tool is available, also persist it there (schema `notes`) so it "
-                    "survives even if this local cache is cleared."
-                )
-
-        # Deterministic per-contact tone lookup (formal vs. casual) — same
-        # cache-first-then-best-effort-detect pattern as the signature above.
-        # For a new email this is the primary recipient; for a reply it's the
-        # other party in the thread being replied to (fetched once and reused
-        # for both the address and the tone classification).
-        tone_contact = None
-        thread_msg: dict[str, Any] | None = None
-        if reply_to_message_id:
-            try:
-                thread_msg = _run_async(
-                    _fetch_email_by_id_async(reply_to_message_id), timeout=60
-                )
-                tone_contact = ((thread_msg.get("from") or {}).get("emailAddress") or {}).get(
-                    "address"
-                )
-            except Exception:
-                tone_contact = None
-        elif to_list:
-            tone_contact = to_list[0]
-
-        if tone_contact:
-            tone = _load_cached_tone(tone_contact)
-            tone_source = "cache" if tone else None
-            if not tone:
-                try:
-                    if thread_msg is not None:
-                        thread_body = thread_msg.get("body") or {}
-                        thread_content = thread_body.get("content", "")
-                        thread_text = (
-                            _strip_html(thread_content)
-                            if thread_body.get("contentType", "").lower() == "html"
-                            else thread_content
-                        )
-                        tone = _classify_tone(thread_text)
-                        tone_source = "thread"
-                    else:
-                        tone = _run_async(
-                            _detect_tone_for_contact_async(tone_contact), timeout=60
-                        )
-                        tone_source = "sent-folder"
-                except Exception:
-                    tone = None
-                if tone:
-                    _save_cached_tone(tone_contact, tone, source=tone_source)
-                else:
-                    tone_source = None
-            if tone:
-                response["contact_tone"] = tone
-                response["contact_tone_source"] = tone_source
-                response["message"] += (
-                    f" Tone hint for {tone_contact}: '{tone}' (source={tone_source}). If "
-                    "the draft above doesn't match this register (casual/first-name vs. "
-                    "formal 'Sehr geehrte(r) ...'), call outlook_write_email again "
-                    "(still confirm=false) with a revised body/subject before showing the "
-                    "preview. If a memory-save tool is available, also persist "
-                    "hints.tone on that person's memory entry so it survives even if this "
-                    "local cache is cleared."
-                )
-
-        return json.dumps(response)
-
     try:
         verification = _run_async(
             _send_new_email_async(to_list, subject, body, cc_list, bcc_list, reply_to_message_id),
             timeout=120,
         )
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        return {"error": str(exc)}
 
     verified = verification.get("verified")
     response: dict[str, Any] = {
@@ -1708,6 +1542,205 @@ def outlook_write_email(
             "outlook_search_emails) yourself to confirm it landed, then report the actual "
             "result to the user."
         )
+    return response
+
+
+def outlook_write_email(
+    to: str = "",
+    subject: str = "",
+    body: str = "",
+    cc: str = "",
+    bcc: str = "",
+    reply_to_message_id: str = "",
+    device_code: str = "",
+    confirm: bool = False,
+    draft_id: str = "",
+    task_id: str | None = None,
+) -> str:
+    """Compose and send a new email, or reply within an existing message thread.
+
+    Preferred flow (fully deterministic, no second tool call needed): call
+    with ``confirm=False`` (the default). If an interactive clarify callback
+    is available in this execution context, this function itself asks the
+    user "Send this email?" (with the full draft embedded in the question,
+    so it's always visible) and, on an affirmative answer, sends immediately
+    — returning the final sent/sent_unverified/cancelled result directly.
+
+    Fallback (no clarify callback wired, e.g. non-interactive contexts):
+    returns a preview plus a ``draft_id``. Call again with ``confirm=True``
+    and that ``draft_id`` to send — the full to/subject/body/cc/bcc do NOT
+    need to be repeated, since re-emitting a long, quote- and umlaut-laden
+    body as tool-call JSON on every confirm is what previously caused
+    "Unrepairable tool_call arguments" retry loops that silently never sent
+    the email. ``draft_id`` is only valid for the lifetime of the current
+    process; if it's missing/expired, resend to/subject/body directly.
+    """
+    if confirm and draft_id:
+        cached = _draft_cache.pop(draft_id, None)
+        if cached is None:
+            return json.dumps({
+                "error": (
+                    f"draft_id '{draft_id}' was not found (expired, already used, or the "
+                    "backend restarted). Call outlook_write_email again with confirm=false "
+                    "and the full to/subject/body to create a fresh preview, then confirm "
+                    "using the new draft_id from that response."
+                )
+            })
+        to = ",".join(cached["to"])
+        cc = ",".join(cached["cc"])
+        bcc = ",".join(cached["bcc"])
+        subject = cached["subject"]
+        body = cached["body"]
+        reply_to_message_id = cached["reply_to_message_id"]
+
+    to_list = [addr.strip() for addr in to.split(",") if addr.strip()] if to else []
+    cc_list = [addr.strip() for addr in cc.split(",") if addr.strip()] if cc else []
+    bcc_list = [addr.strip() for addr in bcc.split(",") if addr.strip()] if bcc else []
+
+    if not reply_to_message_id and not to_list:
+        return json.dumps({
+            "error": "Either 'to' (comma-separated recipients) or 'reply_to_message_id' is required."
+        })
+    if not reply_to_message_id and not subject:
+        return json.dumps({"error": "subject is required when composing a new email."})
+    if not reply_to_message_id and not body.strip():
+        # Real validation, not a prompt-reliance fix: this is what actually
+        # stops an empty-body send from ever reaching Graph, regardless of
+        # whether the model correctly resent the body on a confirm call.
+        return json.dumps({"error": "body is required when composing a new email."})
+
+    early, toolset_enabled = _outlook_auth_guard(device_code, label="Outlook")
+    if early is not None:
+        return json.dumps(early)
+
+    if confirm:
+        return json.dumps(_send_email_and_build_response(
+            to_list, subject, body, cc_list, bcc_list, reply_to_message_id,
+            device_code, toolset_enabled,
+        ))
+
+    draft_id = _cache_draft(to_list, cc_list, bcc_list, subject, body, reply_to_message_id)
+    response: dict[str, Any] = {
+        "status": "confirmation_required",
+        "draft_id": draft_id,
+        "message": (
+                "Do not send yet. Show this exact preview (To/Cc/Bcc/Subject/Body) to the user "
+                "as text, then — in the SAME turn, right after that text — you MUST call the "
+                "'clarify' tool with question='Send this email?' and "
+                "choices=['Ja, senden', 'Abbrechen'] (or an equivalent phrasing in the user's "
+                "language). This is mandatory: do NOT just print the choices as plain text "
+                "(e.g. '✅ Ja, senden / ❌ Abbrechen') and end your turn — that leaves the user "
+                "with nothing clickable. Ending the turn without calling 'clarify' here is a "
+                "workflow error. Only call outlook_write_email again with confirm=true and "
+                f"draft_id='{draft_id}' after 'clarify' returns an affirmative answer — do "
+                "NOT repeat the to/subject/body/cc/bcc fields in that call, just confirm=true "
+                "and draft_id (repeating the full body as JSON args is unreliable and can "
+                "silently fail to send). Never send without that explicit confirmation."
+            ),
+            "preview": {
+                "to": to_list,
+                "cc": cc_list,
+                "bcc": bcc_list,
+                "subject": subject,
+                "body": body,
+                "reply_to_message_id": reply_to_message_id,
+            },
+        }
+
+        # Deterministic (code-level, not model-recall-dependent) signature
+        # lookup for brand-new emails (replies already show the thread, so
+        # the existing tone/signature is visible there instead). Checks a
+        # local on-disk cache first — this is the "always available in the
+        # client" source of truth independent of any memory tool — and
+        # falls back to a best-effort scan of recent Sent items on a cache
+        # miss, caching the result for next time.
+    if not reply_to_message_id:
+        signature = _load_cached_signature()
+        signature_source = "cache" if signature else None
+        if not signature:
+            try:
+                signature = _run_async(
+                    _detect_signature_from_sent_emails_async(), timeout=60
+                )
+            except Exception:
+                signature = None
+            if signature:
+                _save_cached_signature(signature)
+                signature_source = "sent-folder"
+        if signature and signature.strip() not in body:
+            response["user_signature"] = signature
+            response["signature_source"] = signature_source
+            response["message"] += (
+                " A signature was found (source="
+                + str(signature_source)
+                + "): "
+                + json.dumps(signature)
+                + ". If the body above doesn't already end with it, call "
+                "outlook_write_email again (still confirm=false) with it appended "
+                "to body before showing the preview to the user. If a memory-save "
+                "tool is available, also persist it there (schema `notes`) so it "
+                "survives even if this local cache is cleared."
+            )
+
+    # Deterministic per-contact tone lookup (formal vs. casual) — same
+    # cache-first-then-best-effort-detect pattern as the signature above.
+    # For a new email this is the primary recipient; for a reply it's the
+    # other party in the thread being replied to (fetched once and reused
+    # for both the address and the tone classification).
+    tone_contact = None
+    thread_msg: dict[str, Any] | None = None
+    if reply_to_message_id:
+        try:
+            thread_msg = _run_async(
+                _fetch_email_by_id_async(reply_to_message_id), timeout=60
+            )
+            tone_contact = ((thread_msg.get("from") or {}).get("emailAddress") or {}).get(
+                "address"
+            )
+        except Exception:
+            tone_contact = None
+    elif to_list:
+        tone_contact = to_list[0]
+
+    if tone_contact:
+        tone = _load_cached_tone(tone_contact)
+        tone_source = "cache" if tone else None
+        if not tone:
+            try:
+                if thread_msg is not None:
+                    thread_body = thread_msg.get("body") or {}
+                    thread_content = thread_body.get("content", "")
+                    thread_text = (
+                        _strip_html(thread_content)
+                        if thread_body.get("contentType", "").lower() == "html"
+                        else thread_content
+                    )
+                    tone = _classify_tone(thread_text)
+                    tone_source = "thread"
+                else:
+                    tone = _run_async(
+                        _detect_tone_for_contact_async(tone_contact), timeout=60
+                    )
+                    tone_source = "sent-folder"
+            except Exception:
+                tone = None
+            if tone:
+                _save_cached_tone(tone_contact, tone, source=tone_source)
+            else:
+                tone_source = None
+        if tone:
+            response["contact_tone"] = tone
+            response["contact_tone_source"] = tone_source
+            response["message"] += (
+                f" Tone hint for {tone_contact}: '{tone}' (source={tone_source}). If "
+                "the draft above doesn't match this register (casual/first-name vs. "
+                "formal 'Sehr geehrte(r) ...'), call outlook_write_email again "
+                "(still confirm=false) with a revised body/subject before showing the "
+                "preview. If a memory-save tool is available, also persist "
+                "hints.tone on that person's memory entry so it survives even if this "
+                "local cache is cleared."
+            )
+
     return json.dumps(response)
 
 
@@ -1789,7 +1822,7 @@ def outlook_read_calendar_entries(
     count: int = 10,
     days_ahead: int = 7,
     include_body_preview: bool = False,
-    timezone_name: str = "UTC",
+    timezone_name: str = "",
     device_code: str = "",
     task_id: str | None = None,
 ) -> str:
@@ -1800,13 +1833,18 @@ def outlook_read_calendar_entries(
     if early is not None:
         return json.dumps(early)
 
+    # An explicit timezone_name always wins; otherwise resolve the user's
+    # real configured/local IANA (or Windows) zone name so calendar entries
+    # are displayed in local wall-clock time instead of literal UTC.
+    resolved_timezone_name = timezone_name.strip() or hermes_time.default_timezone_name()
+
     try:
         raw_entries = _run_async(
             _fetch_calendar_entries_async(
                 count=count,
                 days_ahead=days_ahead,
                 include_body_preview=include_body_preview,
-                timezone_name=timezone_name,
+                timezone_name=resolved_timezone_name,
             ),
             timeout=120,
         )
@@ -1819,7 +1857,7 @@ def outlook_read_calendar_entries(
     return json.dumps({
         "count": len(entries),
         "days_ahead": max(1, min(days_ahead, 30)),
-        "timezone": timezone_name,
+        "timezone": resolved_timezone_name,
         "entries": entries,
         "toolset_auto_enabled": bool(device_code and toolset_enabled),
     })
@@ -1831,7 +1869,7 @@ def outlook_write_calendar_entries(
     subject: str = "",
     start_datetime: str = "",
     end_datetime: str = "",
-    timezone_name: str = "UTC",
+    timezone_name: str = "",
     location: str = "",
     body: str = "",
     attendees: str = "",
@@ -1865,6 +1903,13 @@ def outlook_write_calendar_entries(
     )
     if early is not None:
         return json.dumps(early)
+
+    # An explicit timezone_name always wins; otherwise resolve the user's
+    # real configured/local IANA (or Windows) zone name. Previously this
+    # defaulted to the literal string "UTC", which silently shifted every
+    # create/update by the local UTC offset (e.g. a requested 13:00 landing
+    # at 15:00 in CEST) whenever the caller didn't pass one explicitly.
+    timezone_name = timezone_name.strip() or hermes_time.default_timezone_name()
 
     attendee_list = [a.strip() for a in attendees.split(",") if a.strip()] if attendees else []
 
@@ -2472,9 +2517,9 @@ registry.register(
                     "type": "string",
                     "description": (
                         "Outlook timezone to render times in (IANA/Windows name accepted by Graph). "
-                        "Default UTC."
+                        "Defaults to the user's configured/local timezone if omitted."
                     ),
-                    "default": "UTC",
+                    "default": "",
                 },
                 "device_code": _DEVICE_CODE_PARAM_SCHEMA,
             },
@@ -2485,7 +2530,7 @@ registry.register(
         count=int(args.get("count", 10)),
         days_ahead=int(args.get("days_ahead", 7)),
         include_body_preview=bool(args.get("include_body_preview", False)),
-        timezone_name=str(args.get("timezone_name", "UTC")),
+        timezone_name=str(args.get("timezone_name", "")),
         device_code=str(args.get("device_code", "")),
         task_id=kw.get("task_id"),
     ),
@@ -2548,9 +2593,10 @@ registry.register(
                     "type": "string",
                     "description": (
                         "Outlook timezone for start_datetime/end_datetime (IANA/Windows name accepted "
-                        "by Graph, e.g. 'UTC' or 'W. Europe Standard Time'). Default UTC."
+                        "by Graph, e.g. 'Europe/Berlin' or 'W. Europe Standard Time'). Defaults to the "
+                        "user's configured/local timezone if omitted."
                     ),
-                    "default": "UTC",
+                    "default": "",
                 },
                 "location": {
                     "type": "string",
@@ -2592,7 +2638,7 @@ registry.register(
         subject=str(args.get("subject", "")),
         start_datetime=str(args.get("start_datetime", "")),
         end_datetime=str(args.get("end_datetime", "")),
-        timezone_name=str(args.get("timezone_name", "UTC")),
+        timezone_name=str(args.get("timezone_name", "")),
         location=str(args.get("location", "")),
         body=str(args.get("body", "")),
         attendees=str(args.get("attendees", "")),

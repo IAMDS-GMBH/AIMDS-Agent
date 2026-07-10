@@ -1112,6 +1112,97 @@ def test_outlook_write_calendar_entries_create_happy_path(monkeypatch):
     assert payload["entry"]["subject"] == "Kickoff"
 
 
+def test_outlook_write_calendar_entries_default_timezone_is_not_hardcoded_utc(monkeypatch):
+    """Regression test for the 13:00-lands-at-15:00 bug: when the caller
+    doesn't pass timezone_name explicitly, the event body must use a real
+    resolved local zone name, not the literal string 'UTC'."""
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+    monkeypatch.setattr(outlook_tool.hermes_time, "default_timezone_name", lambda: "Europe/Berlin")
+
+    captured_body = {}
+
+    async def _create_calendar_entry_async(event_body):
+        captured_body.update(event_body)
+        return {"id": "evt-new", **event_body, "isAllDay": False}
+
+    monkeypatch.setattr(outlook_tool, "_create_calendar_entry_async", _create_calendar_entry_async)
+
+    payload = json.loads(
+        outlook_tool.outlook_write_calendar_entries(
+            action="create",
+            subject="Kickoff",
+            start_datetime="2026-07-10T13:00:00",
+            end_datetime="2026-07-10T14:00:00",
+        )
+    )
+
+    assert payload["status"] == "created"
+    assert captured_body["start"]["timeZone"] == "Europe/Berlin"
+    assert captured_body["end"]["timeZone"] == "Europe/Berlin"
+
+
+def test_outlook_write_calendar_entries_explicit_timezone_overrides_default(monkeypatch):
+    """An explicit timezone_name argument must still win over the resolved
+    default."""
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+    monkeypatch.setattr(outlook_tool.hermes_time, "default_timezone_name", lambda: "Europe/Berlin")
+
+    captured_body = {}
+
+    async def _create_calendar_entry_async(event_body):
+        captured_body.update(event_body)
+        return {"id": "evt-new", **event_body, "isAllDay": False}
+
+    monkeypatch.setattr(outlook_tool, "_create_calendar_entry_async", _create_calendar_entry_async)
+
+    payload = json.loads(
+        outlook_tool.outlook_write_calendar_entries(
+            action="create",
+            subject="Kickoff",
+            start_datetime="2026-07-10T13:00:00",
+            end_datetime="2026-07-10T14:00:00",
+            timezone_name="Asia/Kolkata",
+        )
+    )
+
+    assert payload["status"] == "created"
+    assert captured_body["start"]["timeZone"] == "Asia/Kolkata"
+
+
+def test_outlook_read_calendar_entries_default_timezone_is_not_hardcoded_utc(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+    monkeypatch.setattr(outlook_tool.hermes_time, "default_timezone_name", lambda: "Europe/Berlin")
+
+    async def _fetch_calendar_entries_async(**kwargs):
+        assert kwargs["timezone_name"] == "Europe/Berlin"
+        return []
+
+    monkeypatch.setattr(
+        outlook_tool, "_fetch_calendar_entries_async", _fetch_calendar_entries_async
+    )
+
+    payload = json.loads(outlook_tool.outlook_read_calendar_entries())
+    assert payload["timezone"] == "Europe/Berlin"
+
+
 def test_outlook_read_contacts_requires_credentials(monkeypatch):
     monkeypatch.setattr(
         outlook_tool,

@@ -485,6 +485,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             set_activity_callback(agent._touch_activity)
         except Exception:
             pass
+        # Same thread-local propagation for the clarify callback so tools
+        # with irreversible side effects (outlook_write_email, etc.) can
+        # resolve a confirmation synchronously in-process instead of relying
+        # on the model to orchestrate a separate 'clarify' call correctly.
+        try:
+            from tools.clarify_tool import set_clarify_callback
+            set_clarify_callback(agent.clarify_callback)
+        except Exception:
+            pass
         # Approval/sudo callbacks (thread-local) and the agent turn's
         # ContextVars are propagated by propagate_context_to_thread() at the
         # submit site below (GHSA-qg5c-hvr5-hjgr, #13617).
@@ -886,6 +895,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             try:
                 from tools.environments.base import set_activity_callback
                 set_activity_callback(agent._touch_activity)
+            except Exception:
+                pass
+            # Same thread-local propagation for the clarify callback — see
+            # the concurrent-execution branch above for the full rationale.
+            try:
+                from tools.clarify_tool import set_clarify_callback
+                set_clarify_callback(agent.clarify_callback)
             except Exception:
                 pass
 
