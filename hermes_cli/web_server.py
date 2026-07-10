@@ -4167,16 +4167,22 @@ def _messaging_platform_payload(
     for key in entry["env_vars"]:
         value = env_on_disk.get(key) or os.getenv(key, "")
         field_info = _messaging_env_info(key)
+        # Non-secret dropdown fields (e.g. auth flow selection) don't need a
+        # masked placeholder — the Select branch renders its own value, and
+        # masking a short value like "auto"/"loopback" would just show dots.
+        is_options_field = bool(field_info.get("options"))
         env_vars.append(
             {
                 "key": key,
                 "required": key in entry["required_env"],
                 "is_set": bool(value),
-                "redacted_value": redact_key(value) if value else None,
+                "redacted_value": (
+                    None if is_options_field else (redact_key(value) if value else None)
+                ),
                 # Non-secret dropdown fields (e.g. auth flow selection) need
                 # the actual current value so the UI can pre-select it —
                 # masking a value like "auto"/"loopback" would be useless.
-                "value": value if field_info.get("options") and not field_info.get("is_password") else None,
+                "value": value if is_options_field and not field_info.get("is_password") else None,
                 **field_info,
             }
         )

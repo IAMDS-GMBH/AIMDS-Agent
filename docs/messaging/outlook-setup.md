@@ -34,8 +34,10 @@ chat — reading mail, sending messages, and working with your calendar.
    http://localhost
    ```
    Microsoft matches this against any local loopback port at runtime, so a single `http://localhost`
-   entry works for every sign-in — no need to register a fixed port. This is only required for the
-   new browser-based (loopback) flow; the device code fallback does not use a redirect URI.
+   entry works for every sign-in — no need to register a fixed port. **This step is required even if
+   you only ever plan to use the device code flow** — Azure AD returns `AADSTS500113: No reply
+   address is registered for the application` for *both* the browser sign-in and device code flows
+   if the app registration has no redirect URI registered at all.
 5. Click **Register**.
 
 After registration, note down:
@@ -197,10 +199,12 @@ to that message to restart it without leaving the page.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `AADSTS7000218: The request body must contain the following parameter: 'client_assertion' or 'client_secret'` | Public client flows not enabled | Enable **Allow public client flows** in the app's Authentication settings (Step 4) |
+| `AADSTS500113: No reply address is registered for the application` (shown on Microsoft's own sign-in page, for *either* browser sign-in or device code) | App registration has no redirect URI at all | Add `http://localhost` under **Mobile and desktop applications** in the app's Authentication settings (Step 1) — required even if you only use the device code flow |
 | `AADSTS50020: User account … does not exist in tenant` | Wrong tenant ID, or user is in a different tenant | Verify the Tenant ID matches the user's Azure AD tenant |
 | `AADSTS65001: The user or administrator has not consented` | Admin consent not granted | Complete Step 3 |
 | Browser sign-in falls back to a device code unexpectedly | No local browser reachable, or the loopback listener couldn't bind (headless/remote host) | Expected behavior — complete the device code flow, or set `OUTLOOK_INTERACTIVE_AUTH_FLOW=device_code` to make this the default and avoid the fallback attempt |
 | Sign-in link or device code expires before authentication completes | Browser session too slow | Click **Start Auth** again to start a fresh sign-in |
 | `Mail.Send` succeeds but emails go to Junk | SPF/DKIM not set for Graph-sent mail | Contact your IT team to allowlist Graph API outbound mail |
+| Sending an email fails (e.g. `ErrorAccessDenied` / `Access is denied`) even though sign-in works | `Mail.Send` permission missing from the app registration (`Mail.ReadWrite` alone does **not** grant sending) | Add `Mail.Send` under **API permissions** (Step 2), then click **Grant admin consent** again |
 | "Gateway is not running" shown on the Messaging page | Gateway process stopped | Click the **Restart Gateway** button next to the message |
 

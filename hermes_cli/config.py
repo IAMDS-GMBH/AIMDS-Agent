@@ -6678,6 +6678,8 @@ def _inject_platform_plugin_env_vars() -> None:
                     "url": meta.get("url") or None,
                     "password": is_secret,
                     "category": meta.get("category") or "messaging",
+                    "advanced": bool(meta.get("advanced", False)),
+                    "options": meta.get("options"),
                 }
     except Exception:
         pass

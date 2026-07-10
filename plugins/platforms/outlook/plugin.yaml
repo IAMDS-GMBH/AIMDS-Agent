@@ -52,5 +52,13 @@ optional_env:
       device code if a local browser/listener isn't available), "loopback" (always use browser
       sign-in; errors out instead of silently falling back), or "device_code" (always use the
       classic manual code flow — useful for headless/remote gateway hosts).
-    prompt: "Sign-in method (auto/loopback/device_code)"
+    prompt: "Sign-in method"
     password: false
+    advanced: true
+    options:
+      - value: auto
+        label: "Automatic (recommended)"
+      - value: loopback
+        label: "Browser sign-in"
+      - value: device_code
+        label: "Device code (legacy / headless)"

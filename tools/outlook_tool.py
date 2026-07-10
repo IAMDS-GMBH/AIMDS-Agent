@@ -826,10 +826,25 @@ def _outlook_auth_guard(
                 }, False
             if status["status"] != "success":
                 # Expired / failed — auto-restart instead of dead-ending on a raw error.
+                # Note: if the user never got redirected back at all (e.g. Azure AD
+                # rejected the request with its own generic error page before ever
+                # calling our loopback listener — the classic symptom of
+                # AADSTS500113 "No reply address is registered for the application"),
+                # this will just say "expired" with no further detail, since we never
+                # receive Microsoft's browser-side error. Surface that possibility
+                # explicitly so the model can tell the user to check the Azure AD app's
+                # redirect URI configuration instead of retrying forever.
                 return _start_interactive_auth(
                     scope,
                     label,
-                    note=f"That sign-in link is no longer valid ({status.get('error', status['status'])}).",
+                    note=(
+                        f"That sign-in link is no longer valid "
+                        f"({status.get('error', status['status'])}). If Microsoft's sign-in page "
+                        "showed 'AADSTS500113: No reply address is registered for the application', "
+                        "this will keep failing until the Azure AD app registration has "
+                        "http://localhost added as a redirect URI under 'Mobile and desktop "
+                        "applications' — tell the user to check this before retrying."
+                    ),
                 ), False
             _save_outlook_token_cache(
                 status["access_token"],
@@ -843,8 +858,20 @@ def _outlook_auth_guard(
             except Exception as exc:
                 # e.g. AADSTS7000014 (stale/invalid/expired device code). Auto-restart
                 # sign-in instead of surfacing a raw AADSTS error the model can't act on.
+                # If Microsoft's own verification page showed AADSTS500113 when the code
+                # was entered, the device code never gets authorized and this poll will
+                # eventually time out with a generic expiry error — call that out
+                # explicitly instead of retrying forever with no useful signal.
                 return _start_interactive_auth(
-                    scope, label, note=f"That sign-in code is no longer valid ({exc})."
+                    scope,
+                    label,
+                    note=(
+                        f"That sign-in code is no longer valid ({exc}). If Microsoft's page showed "
+                        "'AADSTS500113: No reply address is registered for the application' when "
+                        "you entered the code, this will keep failing until the Azure AD app "
+                        "registration has http://localhost added as a redirect URI under 'Mobile "
+                        "and desktop applications' — tell the user to check this before retrying."
+                    ),
                 ), False
             if not authed:
                 return {
