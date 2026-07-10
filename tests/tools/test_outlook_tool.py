@@ -307,6 +307,72 @@ def test_outlook_write_email_without_confirm_returns_preview(monkeypatch):
     # instead of free-text "OK" confirmation.
     assert "clarify" in payload["message"].lower()
     assert "user_signature" not in payload
+    # A draft_id must be issued so the confirm=true call can reference the
+    # cached draft instead of repeating the full body as tool-call JSON.
+    assert payload["draft_id"]
+    assert "draft_id" in payload["message"]
+
+
+def test_outlook_write_email_confirm_with_draft_id_skips_resending_fields(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+    monkeypatch.setattr(outlook_tool, "_load_cached_signature", lambda: None)
+
+    async def _detect_signature_from_sent_emails_async(sample_size=3):
+        return None
+
+    monkeypatch.setattr(
+        outlook_tool,
+        "_detect_signature_from_sent_emails_async",
+        _detect_signature_from_sent_emails_async,
+    )
+
+    sent_args = {}
+
+    async def _send_new_email_async(to, subject, body, cc, bcc, reply_to_message_id):
+        sent_args["call"] = (to, subject, body, cc, bcc, reply_to_message_id)
+        return {"verified": True}
+
+    monkeypatch.setattr(outlook_tool, "_send_new_email_async", _send_new_email_async)
+
+    preview = json.loads(
+        outlook_tool.outlook_write_email(
+            to="a@example.com", subject="Hi", body="Body text"
+        )
+    )
+    draft_id = preview["draft_id"]
+
+    # Confirm using only draft_id — no to/subject/body repeated at all.
+    result = json.loads(outlook_tool.outlook_write_email(confirm=True, draft_id=draft_id))
+
+    assert "error" not in result
+    assert sent_args["call"] == (["a@example.com"], "Hi", "Body text", [], [], "")
+
+    # A draft_id can only be used once.
+    replay = json.loads(outlook_tool.outlook_write_email(confirm=True, draft_id=draft_id))
+    assert "error" in replay
+    assert "draft_id" in replay["error"]
+
+
+def test_outlook_write_email_confirm_with_unknown_draft_id_errors(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+
+    result = json.loads(
+        outlook_tool.outlook_write_email(confirm=True, draft_id="does-not-exist")
+    )
+    assert "error" in result
+    assert "does-not-exist" in result["error"]
 
 
 def test_outlook_write_email_uses_cached_signature(monkeypatch):
@@ -372,6 +438,33 @@ def test_extract_signature_candidate_cuts_at_quote_marker():
     assert candidate is not None
     assert "Johannes" in candidate
     assert "Old message body" not in candidate
+    # Only the sign-off line + what follows should be captured, not the
+    # preceding body prose.
+    assert "Das klingt gut" not in candidate
+
+
+def test_extract_signature_candidate_requires_closing_marker():
+    # Regression test: a long closing *paragraph* without a recognizable
+    # sign-off phrase must NOT be mistaken for a signature — this was the
+    # exact bug that cached an unrelated email's body prose ("...Probleme
+    # mit der Signatur behoben...") as if it were a real signature.
+    body = (
+        "Hallo,\n\nwie besprochen habe ich die Probleme mit der Signatur behoben. "
+        "Die Änderungen sollten jetzt korrekt angezeigt werden. Falls Sie weitere "
+        "Anpassungen benötigen oder weitere Fragen haben, stehe ich gerne zur "
+        "Verfügung.\n\nVielen Dank erneut für Ihre Unterstützung!"
+    )
+    assert outlook_tool._extract_signature_candidate(body) is None
+
+
+def test_extract_signature_candidate_captures_real_closing_line():
+    body = (
+        "Hallo,\n\nwie besprochen habe ich die Probleme behoben.\n\n"
+        "Vielen Dank erneut für Ihre Unterstützung!\n\n"
+        "Mit freundlichen Grüßen,\nJohannes Huchler"
+    )
+    candidate = outlook_tool._extract_signature_candidate(body)
+    assert candidate == "Mit freundlichen Grüßen,\nJohannes Huchler"
 
 
 def test_outlook_write_email_uses_cached_tone_for_new_email(monkeypatch):

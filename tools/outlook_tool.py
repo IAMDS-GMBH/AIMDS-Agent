@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -414,12 +415,36 @@ def _strip_html(text: str) -> str:
     return text
 
 
+# In-process cache for pending (not-yet-confirmed) email drafts, keyed by a
+# short random id. Lets the confirm=true call reference a draft instead of
+# re-emitting the full to/subject/body/cc/bcc as tool-call JSON — repeating a
+# long, quote- and umlaut-laden body on every confirm was the actual cause of
+# "Unrepairable tool_call arguments" retry loops that silently never sent the
+# email. Deliberately ephemeral (lost on backend restart) and capped in size;
+# this is a reliability aid, not a durable store.
+_draft_cache: dict[str, dict[str, Any]] = {}
+_MAX_CACHED_DRAFTS = 50
+
+
+def _cache_draft(to_list, cc_list, bcc_list, subject, body, reply_to_message_id) -> str:
+    if len(_draft_cache) >= _MAX_CACHED_DRAFTS:
+        _draft_cache.pop(next(iter(_draft_cache)), None)  # drop oldest
+    draft_id = uuid.uuid4().hex[:12]
+    _draft_cache[draft_id] = {
+        "to": to_list,
+        "cc": cc_list,
+        "bcc": bcc_list,
+        "subject": subject,
+        "body": body,
+        "reply_to_message_id": reply_to_message_id,
+    }
+    return draft_id
+
+
 def _signature_cache_path():
     from hermes_constants import get_hermes_home
 
     return get_hermes_home() / "outlook_signature.json"
-
-
 def _load_cached_signature() -> str | None:
     """Read the locally cached email signature, if any.
 
@@ -457,11 +482,27 @@ _QUOTE_MARKERS = (
     "From:", "Von:", "-----Original Message-----", "-----Ursprüngliche Nachricht-----",
 )
 
+# Common closing/sign-off phrases. A real signature block starts at one of
+# these lines — requiring one avoids the earlier bug where the last N lines
+# of a long closing *paragraph* (e.g. "Vielen Dank erneut für Ihre
+# Unterstützung! Mit freundlichen Grüßen, ...") got cached as the "signature"
+# wholesale, polluting every future email with recycled body prose.
+_SIGNATURE_CLOSING_MARKERS = (
+    "mit freundlichen grüßen", "mit freundlichem gruß", "mit besten grüßen",
+    "viele grüße", "beste grüße", "liebe grüße", "freundliche grüße",
+    "best regards", "kind regards", "warm regards", "regards,",
+    "sincerely", "best,", "cheers,",
+)
+
 
 def _extract_signature_candidate(body_text: str) -> str | None:
-    """Heuristic: the last few non-empty lines of a sent email, treated as a
-    signature/closing block. Not perfect, but good enough to seed a cache
-    that a human can review/correct once."""
+    """Heuristic: the closing sign-off line (e.g. "Mit freundlichen Grüßen,")
+    plus whatever follows it (name, title, ...), treated as the signature
+    block. Deliberately requires a recognizable closing phrase rather than
+    just grabbing the last few lines — otherwise ordinary body prose that
+    happens to be the tail of the email gets mistaken for a signature. Not
+    perfect, but good enough to seed a cache that a human can review/correct
+    once."""
     if not body_text:
         return None
     for marker in _QUOTE_MARKERS:
@@ -473,8 +514,18 @@ def _extract_signature_candidate(body_text: str) -> str | None:
         lines.pop()
     if not lines:
         return None
-    candidate = "\n".join(lines[-6:]).strip()
-    if not candidate or len(candidate) > 400:
+
+    closing_idx = None
+    for i in range(len(lines) - 1, -1, -1):
+        lowered = lines[i].lower()
+        if any(marker in lowered for marker in _SIGNATURE_CLOSING_MARKERS):
+            closing_idx = i
+            break
+    if closing_idx is None:
+        return None  # no recognizable sign-off — don't guess at body prose
+
+    candidate = "\n".join(lines[closing_idx:]).strip()
+    if not candidate or len(candidate) > 300:
         return None
     return candidate
 
@@ -1434,7 +1485,7 @@ def outlook_read_shared_mail(
 
 
 def outlook_write_email(
-    to: str,
+    to: str = "",
     subject: str = "",
     body: str = "",
     cc: str = "",
@@ -1442,16 +1493,40 @@ def outlook_write_email(
     reply_to_message_id: str = "",
     device_code: str = "",
     confirm: bool = False,
+    draft_id: str = "",
     task_id: str | None = None,
 ) -> str:
     """Compose and send a new email, or reply within an existing message thread.
 
     Two-step contract: without ``confirm=True`` this returns a preview
-    (to/cc/bcc/subject/body) and does NOT send anything. The caller must show
-    that preview to the user and get explicit approval before calling this
-    tool again with the exact same fields plus ``confirm=True`` to actually
-    send.
+    (to/cc/bcc/subject/body) plus a ``draft_id`` and does NOT send anything.
+    The caller must show that preview to the user and get explicit approval
+    before calling this tool again with ``confirm=True`` and that same
+    ``draft_id`` — the full to/subject/body/cc/bcc do NOT need to be repeated
+    in that second call, since re-emitting a long, quote- and umlaut-laden
+    body as tool-call JSON on every confirm is exactly what was causing
+    "Unrepairable tool_call arguments" retry loops that silently never sent
+    the email. ``draft_id`` is only valid for the lifetime of the current
+    process; if it's missing/expired, resend to/subject/body directly.
     """
+    if confirm and draft_id:
+        cached = _draft_cache.pop(draft_id, None)
+        if cached is None:
+            return json.dumps({
+                "error": (
+                    f"draft_id '{draft_id}' was not found (expired, already used, or the "
+                    "backend restarted). Call outlook_write_email again with confirm=false "
+                    "and the full to/subject/body to create a fresh preview, then confirm "
+                    "using the new draft_id from that response."
+                )
+            })
+        to = ",".join(cached["to"])
+        cc = ",".join(cached["cc"])
+        bcc = ",".join(cached["bcc"])
+        subject = cached["subject"]
+        body = cached["body"]
+        reply_to_message_id = cached["reply_to_message_id"]
+
     to_list = [addr.strip() for addr in to.split(",") if addr.strip()] if to else []
     cc_list = [addr.strip() for addr in cc.split(",") if addr.strip()] if cc else []
     bcc_list = [addr.strip() for addr in bcc.split(",") if addr.strip()] if bcc else []
@@ -1468,8 +1543,10 @@ def outlook_write_email(
         return json.dumps(early)
 
     if not confirm:
+        draft_id = _cache_draft(to_list, cc_list, bcc_list, subject, body, reply_to_message_id)
         response: dict[str, Any] = {
             "status": "confirmation_required",
+            "draft_id": draft_id,
             "message": (
                 "Do not send yet. Show this exact preview (To/Cc/Bcc/Subject/Body) to the user "
                 "as text, then — in the SAME turn, right after that text — you MUST call the "
@@ -1478,9 +1555,11 @@ def outlook_write_email(
                 "language). This is mandatory: do NOT just print the choices as plain text "
                 "(e.g. '✅ Ja, senden / ❌ Abbrechen') and end your turn — that leaves the user "
                 "with nothing clickable. Ending the turn without calling 'clarify' here is a "
-                "workflow error. Only call outlook_write_email again with the same "
-                "to/subject/body/cc/bcc/reply_to_message_id plus confirm=true after 'clarify' "
-                "returns an affirmative answer — never send without that explicit confirmation."
+                "workflow error. Only call outlook_write_email again with confirm=true and "
+                f"draft_id='{draft_id}' after 'clarify' returns an affirmative answer — do "
+                "NOT repeat the to/subject/body/cc/bcc fields in that call, just confirm=true "
+                "and draft_id (repeating the full body as JSON args is unreliable and can "
+                "silently fail to send). Never send without that explicit confirmation."
             ),
             "preview": {
                 "to": to_list,
