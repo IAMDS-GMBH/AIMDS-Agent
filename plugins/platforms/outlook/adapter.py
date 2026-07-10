@@ -212,6 +212,24 @@ class OutlookAdapter(BasePlatformAdapter):
             return "/me"
         return f"/users/{self._mailbox}"
 
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """Outlook gates inbound senders at intake via its own allowlist.
+
+        ``_on_new_message`` already applies ``OUTLOOK_ALLOWED_USERS`` /
+        ``OUTLOOK_ALLOW_ALL_USERS`` (default: allow all senders) before an
+        event ever reaches the gateway. Without this flag, the gateway's
+        generic ``_is_user_authorized`` would re-check the sender against the
+        chat-bot pairing store, find every ordinary email correspondent
+        "unauthorized" (they were never meant to be paired bot users), and
+        auto-send them a raw pairing-code reply via ``sendMail`` — invisible
+        to the chat UI and sent to real external contacts. See bug: an
+        inbound reply from a legitimate business contact triggered
+        `Unauthorized user: ... on outlook` and a pairing-code email sent
+        straight out of the user's mailbox.
+        """
+        return True
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------

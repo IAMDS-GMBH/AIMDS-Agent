@@ -474,7 +474,13 @@ async def _verify_sent_email_async(subject: str) -> dict[str, Any]:
         "$top": 1,
         "$select": "id,sentDateTime,webLink",
     }
-    for attempt in range(3):
+    # 5 attempts / 1.5s apart (~7.5s max wait) rather than 3 (~3s): the
+    # Sent Items copy has been observed to lag past the shorter window under
+    # load, producing a false "could not verify" result even though the mail
+    # was actually delivered — the tool would then push a manual "please
+    # check your Sent folder" ask onto the user instead of just confirming
+    # it itself a little later.
+    for attempt in range(5):
         if attempt:
             await asyncio.sleep(1.5)
         try:
@@ -1276,15 +1282,22 @@ def outlook_write_email(
             response["web_link"] = verification["web_link"]
     elif verified is False:
         # Graph accepted the send request (no 4xx/5xx) but the message never
-        # showed up in Sent Items within a few seconds — tell the model not
+        # showed up in Sent Items within the poll window — tell the model not
         # to claim delivery, since this previously happened silently (e.g. a
         # stale/insufficiently-scoped cached token) and was reported to the
-        # user as a confident "email sent successfully".
+        # user as a confident "email sent successfully". The user should NOT
+        # be asked to manually confirm delivery themselves — the model has
+        # the tools to check this on its own: after a short pause, call
+        # outlook_get_emails(folder="sent") (or outlook_search_emails) for
+        # this subject/recipient and report back once it actually knows,
+        # instead of pushing that verification step onto the user.
         response["warning"] = (
             "Graph accepted the send request, but the message could not be confirmed in Sent "
-            "Items yet. Do not tell the user the email was definitely delivered — tell them it "
-            "was submitted but could not be verified, and ask them to check the Sent folder "
-            "themselves before assuming success."
+            "Items within the poll window yet. Do not tell the user the email was definitely "
+            "delivered, and do not ask the user to check the Sent folder themselves — instead, "
+            "wait a few seconds and call outlook_get_emails(folder='sent') (or "
+            "outlook_search_emails) yourself to confirm it landed, then report the actual "
+            "result to the user."
         )
     return json.dumps(response)
 

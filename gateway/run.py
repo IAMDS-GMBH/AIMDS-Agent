@@ -1133,9 +1133,29 @@ if _config_path.exists():
             if "busy_ack_enabled" in _display_cfg:
                 os.environ["HERMES_GATEWAY_BUSY_ACK_ENABLED"] = str(_display_cfg["busy_ack_enabled"])
         # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
+        #
+        # Also export the real POSIX ``TZ`` var (and call time.tzset() so this
+        # process's own libc calls honor it immediately) — not just the
+        # internal HERMES_TIMEZONE flag that only ``hermes_time.now()``
+        # understands. Without this, subprocesses spawned by the terminal and
+        # execute_code tools (which only check HERMES_TIMEZONE, not
+        # config.yaml, and otherwise inherit whatever ambient TZ the host/
+        # container happens to have — frequently UTC) would report the wrong
+        # wall-clock time and silently ignore the user's configured IANA zone
+        # (and its DST rules) even though the rest of Hermes resolved it
+        # correctly. Setting TZ here means every child process in this
+        # process tree — terminal, execute_code, cron — inherits the correct
+        # zone with no extra per-tool plumbing.
         _tz_cfg = _cfg.get("timezone", "")
-        if _tz_cfg and isinstance(_tz_cfg, str):
-            os.environ["HERMES_TIMEZONE"] = _tz_cfg.strip()
+        if _tz_cfg and isinstance(_tz_cfg, str) and _tz_cfg.strip():
+            _tz_cfg = _tz_cfg.strip()
+            os.environ["HERMES_TIMEZONE"] = _tz_cfg
+            os.environ["TZ"] = _tz_cfg
+            if hasattr(time, "tzset"):  # POSIX only; no-op on Windows
+                try:
+                    time.tzset()
+                except Exception:
+                    pass
         # Security settings
         _security_cfg = _cfg.get("security", {})
         if isinstance(_security_cfg, dict):
