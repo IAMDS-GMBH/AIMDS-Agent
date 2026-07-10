@@ -34,12 +34,14 @@ from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
-OUTLOOK_CALENDAR_READ_SCOPE = "Calendars.Read offline_access"
-OUTLOOK_CALENDAR_WRITE_SCOPE = "Calendars.ReadWrite offline_access"
-OUTLOOK_SHARED_MAIL_SCOPE = "Mail.Read.Shared offline_access"
-# Mail.Send is already part of DEFAULT_DELEGATED_SCOPE (Mail.Read Mail.Send
-# offline_access) in tools/microsoft_graph_auth.py, so outlook_write_email
-# can reuse the default delegated scope without requesting anything extra.
+# All Outlook tools now request the same combined scope
+# (``tools.microsoft_graph_auth.DEFAULT_DELEGATED_SCOPE``) so a single
+# sign-in/refresh-token covers mail, shared mailbox, and calendar. These
+# aliases are kept only so any external/legacy references keep working —
+# every call site below passes ``scope=None`` (i.e. the combined default).
+OUTLOOK_CALENDAR_READ_SCOPE = None
+OUTLOOK_CALENDAR_WRITE_SCOPE = None
+OUTLOOK_SHARED_MAIL_SCOPE = None
 
 # ---------------------------------------------------------------------------
 # Credential helpers (mirrors adapter.py logic, no coupling)
@@ -454,6 +456,37 @@ async def _fetch_shared_mail_async(
     return resp.get("value", [])
 
 
+async def _verify_sent_email_async(subject: str) -> dict[str, Any]:
+    """Best-effort check that a just-sent message actually landed in Sent
+    Items. Graph's ``/me/sendMail`` is fire-and-forget (202, empty body) —
+    it gives no confirmation the message was actually delivered/saved, so a
+    stale or insufficiently-scoped cached access token could be silently
+    accepted by Graph's request validation yet fail to actually deliver.
+    Polls briefly since the Sent Items copy can lag the API response by a
+    second or two.
+    """
+    client, _ = _new_graph_client()
+    safe_subject = subject.replace("'", "''")
+    params = {
+        "$filter": f"subject eq '{safe_subject}'",
+        "$orderby": "sentDateTime desc",
+        "$top": 1,
+        "$select": "id,sentDateTime,webLink",
+    }
+    for attempt in range(3):
+        if attempt:
+            await asyncio.sleep(1.5)
+        try:
+            resp = await client.get_json("/me/mailFolders/sentitems/messages", params=params)
+        except Exception as exc:
+            logger.warning("[Outlook] Could not verify Sent Items copy: %s", exc)
+            return {"verified": False, "verification_error": str(exc)}
+        items = resp.get("value") or []
+        if items:
+            return {"verified": True, "sent_item_id": items[0].get("id", ""), "web_link": items[0].get("webLink", "")}
+    return {"verified": False}
+
+
 async def _send_new_email_async(
     to: list[str],
     subject: str,
@@ -461,7 +494,7 @@ async def _send_new_email_async(
     cc: list[str],
     bcc: list[str],
     reply_to_message_id: str,
-) -> None:
+) -> dict[str, Any]:
     """Send a brand-new email, or reply to an existing message thread."""
     client, _ = _new_graph_client()
 
@@ -484,7 +517,9 @@ async def _send_new_email_async(
         await client.post_json(
             f"/me/messages/{reply_to_message_id}/reply", json_body=payload
         )
-        return
+        # Replies don't have a distinct new subject to verify against —
+        # Graph accepting the request without a 4xx is the best signal we have.
+        return {"verified": None}
 
     message = {
         "subject": subject,
@@ -499,6 +534,7 @@ async def _send_new_email_async(
     await client.post_json(
         "/me/sendMail", json_body={"message": message, "saveToSentItems": True}
     )
+    return await _verify_sent_email_async(subject)
 
 
 def _format_email(msg: dict[str, Any], include_body: bool) -> dict[str, Any]:
@@ -717,60 +753,72 @@ def _start_interactive_auth(scope: str | None, label: str, note: str = "") -> di
     improvise its own HTTP/curl request.
     """
     prefix = f"{note} " if note else ""
+    flow_mode = outlook_interactive_auth_flow()
 
-    if outlook_interactive_auth_flow() in ("auto", "loopback"):
+    # Device code (legacy) is only ever used when it was actively/explicitly
+    # selected in Messaging settings — never as a silent automatic fallback.
+    # "auto" (the default) and "loopback" both always use the browser
+    # sign-in flow; if the local loopback listener can't be bound, surface a
+    # clear error asking the user to switch modes themselves instead of
+    # silently downgrading to the legacy flow behind their back.
+    if flow_mode == "device_code":
         try:
-            from tools.microsoft_graph_auth import start_loopback_auth, DEFAULT_DELEGATED_SCOPE
-            creds = _get_outlook_creds()
-            info = start_loopback_auth(
-                creds["tenant_id"],
-                creds["client_id"],
-                creds["client_secret"] or None,
-                (scope or DEFAULT_DELEGATED_SCOPE).strip() or DEFAULT_DELEGATED_SCOPE,
-            )
-            return {
-                "status": "auth_required",
-                "message": (
-                    f"{prefix}{label} sign-in required. Open this link to sign in with Microsoft: "
-                    f"{info['auth_url']} — there is no code to enter. Show this exact link to the "
-                    "user; do not construct your own sign-in URL or any HTTP/curl request. Once the "
-                    "user confirms they've signed in, call this tool again, unchanged, with the "
-                    f"device_code parameter set to exactly: lb:{info['request_id']}"
-                ),
-                **({"required_scopes": scope} if scope else {}),
-                "verification_uri": info["auth_url"],
-                "user_code": "",
-                "device_code": f"lb:{info['request_id']}",
-                "expires_in_seconds": info["expires_in_seconds"],
-                "flow": "loopback",
-            }
-        except OSError as exc:
-            logger.warning("[Outlook] Loopback bind failed (%s); falling back to device code.", exc)
-            if outlook_interactive_auth_flow() == "loopback":
-                return {"error": f"Loopback sign-in unavailable: {exc}"}
-            # else: auto mode falls through to device code below
+            info = _run_async(_start_device_code_async(scope), timeout=30)
+        except Exception as exc:
+            return {"error": f"Could not start device code flow: {exc}"}
+        return {
+            "status": "auth_required",
+            "message": (
+                f"{prefix}{label} authentication required. "
+                f"Open {info['verification_uri']} and enter the code: {info['user_code']}. "
+                f"The code expires in {info['expires_in_seconds'] // 60} minutes. Show this exact URL "
+                "and code to the user; never construct your own HTTP/curl request to Microsoft's "
+                "endpoints under any circumstances. Once the user has signed in, call this tool again, "
+                f"unchanged, with the device_code parameter set to exactly: {info['device_code']}"
+            ),
+            **({"required_scopes": scope} if scope else {}),
+            "verification_uri": info["verification_uri"],
+            "user_code": info["user_code"],
+            "device_code": info["device_code"],
+            "expires_in_seconds": info["expires_in_seconds"],
+            "flow": "device_code",
+        }
 
     try:
-        info = _run_async(_start_device_code_async(scope), timeout=30)
-    except Exception as exc:
-        return {"error": f"Could not start device code flow: {exc}"}
-    return {
-        "status": "auth_required",
-        "message": (
-            f"{prefix}{label} authentication required. "
-            f"Open {info['verification_uri']} and enter the code: {info['user_code']}. "
-            f"The code expires in {info['expires_in_seconds'] // 60} minutes. Show this exact URL "
-            "and code to the user; never construct your own HTTP/curl request to Microsoft's "
-            "endpoints under any circumstances. Once the user has signed in, call this tool again, "
-            f"unchanged, with the device_code parameter set to exactly: {info['device_code']}"
-        ),
-        **({"required_scopes": scope} if scope else {}),
-        "verification_uri": info["verification_uri"],
-        "user_code": info["user_code"],
-        "device_code": info["device_code"],
-        "expires_in_seconds": info["expires_in_seconds"],
-        "flow": "device_code",
-    }
+        from tools.microsoft_graph_auth import start_loopback_auth, DEFAULT_DELEGATED_SCOPE
+        creds = _get_outlook_creds()
+        info = start_loopback_auth(
+            creds["tenant_id"],
+            creds["client_id"],
+            creds["client_secret"] or None,
+            (scope or DEFAULT_DELEGATED_SCOPE).strip() or DEFAULT_DELEGATED_SCOPE,
+        )
+        return {
+            "status": "auth_required",
+            "message": (
+                f"{prefix}{label} sign-in required. Open this link to sign in with Microsoft: "
+                f"{info['auth_url']} — there is no code to enter. Show this exact link to the "
+                "user; do not construct your own sign-in URL or any HTTP/curl request. Once the "
+                "user confirms they've signed in, call this tool again, unchanged, with the "
+                f"device_code parameter set to exactly: lb:{info['request_id']}"
+            ),
+            **({"required_scopes": scope} if scope else {}),
+            "verification_uri": info["auth_url"],
+            "user_code": "",
+            "device_code": f"lb:{info['request_id']}",
+            "expires_in_seconds": info["expires_in_seconds"],
+            "flow": "loopback",
+        }
+    except OSError as exc:
+        logger.warning("[Outlook] Loopback bind failed: %s", exc)
+        return {
+            "error": (
+                f"Loopback sign-in unavailable on this host ({exc}). Device code sign-in is "
+                "only used when explicitly selected — go to Messaging → Outlook setup and set "
+                "'Sign-in method' to 'Device code (legacy)' if this host cannot bind a local "
+                "listener, then try again."
+            )
+        }
 
 
 def _outlook_auth_guard(
@@ -1091,22 +1139,40 @@ def outlook_write_email(
         })
 
     try:
-        _run_async(
+        verification = _run_async(
             _send_new_email_async(to_list, subject, body, cc_list, bcc_list, reply_to_message_id),
             timeout=120,
         )
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
-    return json.dumps({
-        "status": "sent",
+    verified = verification.get("verified")
+    response: dict[str, Any] = {
+        "status": "sent" if verified is not False else "sent_unverified",
         "to": to_list,
         "cc": cc_list,
         "bcc": bcc_list,
         "subject": subject,
         "reply_to_message_id": reply_to_message_id,
         "toolset_auto_enabled": bool(device_code and toolset_enabled),
-    })
+    }
+    if verified is True:
+        response["sent_item_id"] = verification.get("sent_item_id", "")
+        if verification.get("web_link"):
+            response["web_link"] = verification["web_link"]
+    elif verified is False:
+        # Graph accepted the send request (no 4xx/5xx) but the message never
+        # showed up in Sent Items within a few seconds — tell the model not
+        # to claim delivery, since this previously happened silently (e.g. a
+        # stale/insufficiently-scoped cached token) and was reported to the
+        # user as a confident "email sent successfully".
+        response["warning"] = (
+            "Graph accepted the send request, but the message could not be confirmed in Sent "
+            "Items yet. Do not tell the user the email was definitely delivered — tell them it "
+            "was submitted but could not be verified, and ask them to check the Sent folder "
+            "themselves before assuming success."
+        )
+    return json.dumps(response)
 
 
 async def _get_me_async() -> dict[str, Any]:
@@ -1143,6 +1209,44 @@ def outlook_test_connection() -> dict[str, Any]:
 
     display = me.get("displayName") or me.get("userPrincipalName") or me.get("mail") or "your mailbox"
     return {"ok": True, "message": f"Connected as {display}."}
+
+
+def outlook_authenticate(device_code: str = "", task_id: str | None = None) -> str:
+    """Sign in to Outlook, resume a pending sign-in, or confirm an existing
+    sign-in still works — the single dedicated entry point for handling
+    Outlook auth from chat.
+
+    This is what the model should call when the user asks to "log in" /
+    "sign in" / "authenticate" / "connect" Outlook, or to check whether
+    Outlook is currently connected — instead of calling a read/write Outlook
+    tool purely as a side effect to trigger a sign-in prompt, and instead of
+    ever constructing a manual OAuth/device-code HTTP request itself. The
+    entire login workflow (browser sign-in, legacy device code, token
+    caching/refresh) stays inside this plugin — the model never needs to
+    reason about Microsoft's endpoints directly.
+    """
+    early, _ = _outlook_auth_guard(device_code, label="Outlook")
+    if early is not None:
+        return json.dumps(early)
+
+    # Guard returned None: either a valid cached token already existed, or
+    # the device_code/lb: resume id just supplied was successfully
+    # exchanged for one. Confirm it actually works end-to-end before
+    # reporting success, the same way outlook_test_connection does.
+    try:
+        me = _run_async(_get_me_async(), timeout=30)
+    except Exception as exc:
+        return json.dumps({
+            "ok": False,
+            "error": f"Sign-in looked complete but the connection check failed: {exc}",
+        })
+
+    display = me.get("displayName") or me.get("userPrincipalName") or me.get("mail") or "your mailbox"
+    return json.dumps({
+        "ok": True,
+        "status": "authenticated",
+        "message": f"Connected to Outlook as {display}.",
+    })
 
 
 def outlook_read_calendar_entries(
@@ -1315,6 +1419,35 @@ _DEVICE_CODE_PARAM_SCHEMA = {
     ),
     "default": "",
 }
+
+registry.register(
+    name="outlook_authenticate",
+    toolset="outlook",
+    schema={
+        "name": "outlook_authenticate",
+        "description": (
+            "Sign in to Outlook, resume a pending sign-in, or confirm an existing sign-in still "
+            "works. Use this whenever the user asks to log in / sign in / authenticate / connect "
+            "Outlook, or asks whether Outlook is currently connected. This is the ONLY tool that "
+            "should be used to start or check Outlook authentication — never call a read/write "
+            "Outlook tool purely to trigger a sign-in prompt, and never construct your own "
+            "OAuth/device-code HTTP or curl request to Microsoft's endpoints; the entire login "
+            "workflow (browser sign-in, legacy device code, token caching/refresh) is handled "
+            "internally by this tool."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "device_code": _DEVICE_CODE_PARAM_SCHEMA,
+            },
+            "required": [],
+        },
+    },
+    handler=lambda args, **kw: outlook_authenticate(
+        device_code=str(args.get("device_code", "")),
+        task_id=kw.get("task_id"),
+    ),
+)
 
 registry.register(
     name="outlook_get_emails",

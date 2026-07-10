@@ -25,7 +25,18 @@ from hermes_constants import get_hermes_home
 logger = logging.getLogger(__name__)
 
 DEFAULT_GRAPH_SCOPE = "https://graph.microsoft.com/.default"
-DEFAULT_DELEGATED_SCOPE = "Mail.Read Mail.Send offline_access"
+# One combined scope covering every delegated permission any Outlook tool
+# needs (mail read/write/send, shared mailbox, calendar). All Outlook Graph
+# calls and interactive sign-ins request this same scope so a single sign-in
+# covers every tool — requesting narrower, tool-specific scopes previously
+# caused the user to be re-prompted for a fresh interactive sign-in whenever
+# they switched between mail/calendar/shared-mailbox tools, and let a cached
+# access token issued for one scope be silently reused (and rejected with a
+# 403) for a call that needed a different, non-overlapping scope.
+DEFAULT_DELEGATED_SCOPE = (
+    "Mail.Read Mail.Send Mail.ReadWrite Mail.Read.Shared "
+    "Calendars.ReadWrite offline_access"
+)
 DEFAULT_GRAPH_AUTHORITY_URL = "https://login.microsoftonline.com"
 DEFAULT_TOKEN_SKEW_SECONDS = 120
 # Loopback (Authorization Code + PKCE) redirect — Microsoft matches any port
@@ -578,6 +589,7 @@ class _LoopbackAuthSession:
     server: HTTPServer | None = None
     port: int = 0
     redirect_uri: str = ""
+    auth_url: str = ""
     thread: threading.Thread | None = None
     done: bool = False
     result_code: str | None = None
@@ -586,6 +598,15 @@ class _LoopbackAuthSession:
 
 _LOOPBACK_SESSIONS: dict[str, _LoopbackAuthSession] = {}
 _LOOPBACK_SESSIONS_LOCK = threading.Lock()
+# Maps (tenant_id, client_id, scope) -> request_id of the most recently
+# started, still-pending session for that combination. Lets
+# ``start_loopback_auth`` reuse an in-flight sign-in instead of opening a
+# fresh browser tab / local listener every time the guard is re-invoked
+# without a resume id (e.g. the model retrying a tool call before the user
+# has finished the previous sign-in) — previously each retry abandoned the
+# prior session (left to expire unused) and started a brand new one, which
+# looked like "sign-in is required again and again" to the user.
+_ACTIVE_SESSION_BY_KEY: dict[tuple[str, str, str], str] = {}
 
 
 class _LoopbackCallbackHandler(BaseHTTPRequestHandler):
@@ -688,7 +709,26 @@ def start_loopback_auth(
     pass to :func:`poll_loopback_auth`. Raises ``OSError`` if a local loopback
     listener cannot be bound — callers should fall back to the device code
     flow in that case (e.g. headless/remote hosts with no local browser).
+
+    If a still-pending session already exists for the same
+    ``(tenant_id, client_id, scope)`` combination, its existing ``auth_url``/
+    ``request_id`` is returned unchanged instead of starting a second,
+    competing sign-in — this avoids spawning a new browser tab (and
+    abandoning the previous one, which then expires unused) every time this
+    is called again before the user has finished the prior sign-in.
     """
+    key = (tenant_id.strip(), client_id.strip(), scope)
+    with _LOOPBACK_SESSIONS_LOCK:
+        existing_id = _ACTIVE_SESSION_BY_KEY.get(key)
+        existing = _LOOPBACK_SESSIONS.get(existing_id) if existing_id else None
+        if existing is not None and not existing.done and time.time() < existing.expires_at:
+            return {
+                "request_id": existing_id,
+                "auth_url": existing.auth_url,
+                "expires_in_seconds": max(0, int(existing.expires_at - time.time())),
+                "flow": "loopback",
+            }
+
     verifier, challenge = _generate_pkce_pair()
     state = secrets.token_urlsafe(16)
     request_id = secrets.token_urlsafe(16)
@@ -706,9 +746,6 @@ def start_loopback_auth(
     )
     _start_loopback_server(session)  # may raise OSError — caller falls back
 
-    with _LOOPBACK_SESSIONS_LOCK:
-        _LOOPBACK_SESSIONS[request_id] = session
-
     base = authority_url.rstrip("/")
     query = {
         "client_id": session.client_id,
@@ -721,6 +758,11 @@ def start_loopback_auth(
         "state": state,
     }
     auth_url = f"{base}/{session.tenant_id}/oauth2/v2.0/authorize?{urlencode(query)}"
+    session.auth_url = auth_url
+
+    with _LOOPBACK_SESSIONS_LOCK:
+        _LOOPBACK_SESSIONS[request_id] = session
+        _ACTIVE_SESSION_BY_KEY[key] = request_id
 
     if open_browser:
         try:
@@ -739,6 +781,12 @@ def start_loopback_auth(
 def _cleanup_loopback_session(request_id: str) -> None:
     with _LOOPBACK_SESSIONS_LOCK:
         session = _LOOPBACK_SESSIONS.pop(request_id, None)
+        # Drop the active-session pointer too so a subsequent start_loopback_auth
+        # call for the same (tenant, client, scope) starts a fresh session
+        # instead of resolving to this now-removed one.
+        for key, mapped_id in list(_ACTIVE_SESSION_BY_KEY.items()):
+            if mapped_id == request_id:
+                del _ACTIVE_SESSION_BY_KEY[key]
     if session is not None:
         session.done = True
         try:

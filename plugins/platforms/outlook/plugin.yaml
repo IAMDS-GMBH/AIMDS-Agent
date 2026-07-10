@@ -48,10 +48,11 @@ optional_env:
   - name: OUTLOOK_INTERACTIVE_AUTH_FLOW
     description: >
       How interactive sign-in works when a fresh login is needed (Start Auth button, chat tool,
-      gateway restart): "auto" (default, tries a browser sign-in first and falls back to a manual
-      device code if a local browser/listener isn't available), "loopback" (always use browser
-      sign-in; errors out instead of silently falling back), or "device_code" (always use the
-      classic manual code flow — useful for headless/remote gateway hosts).
+      gateway restart): "auto" (default — always uses browser sign-in; reuses any existing valid
+      token/refresh token first and only opens a new sign-in when nothing usable is cached),
+      "loopback" (same browser sign-in, explicitly pinned), or "device_code" (the classic manual
+      code flow — only used when explicitly selected here, e.g. for headless/remote gateway hosts
+      where a local browser/listener isn't available; it is never used as an automatic fallback).
     prompt: "Sign-in method"
     password: false
     advanced: true

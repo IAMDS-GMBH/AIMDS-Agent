@@ -308,6 +308,7 @@ def test_outlook_write_email_happy_path_sends_when_confirmed(monkeypatch):
 
     async def _send_new_email_async(to, subject, body, cc, bcc, reply_to_message_id):
         captured["args"] = (to, subject, body, cc, bcc, reply_to_message_id)
+        return {"verified": True, "sent_item_id": "msg-123"}
 
     monkeypatch.setattr(outlook_tool, "_send_new_email_async", _send_new_email_async)
 
@@ -318,8 +319,119 @@ def test_outlook_write_email_happy_path_sends_when_confirmed(monkeypatch):
     )
 
     assert payload["status"] == "sent"
+    assert payload["sent_item_id"] == "msg-123"
     assert captured["args"][0] == ["a@example.com", "b@example.com"]
     assert captured["args"][1] == "Hi"
+
+
+def test_outlook_write_email_unverified_send_returns_warning(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+
+    async def _send_new_email_async(to, subject, body, cc, bcc, reply_to_message_id):
+        return {"verified": False}
+
+    monkeypatch.setattr(outlook_tool, "_send_new_email_async", _send_new_email_async)
+
+    payload = json.loads(
+        outlook_tool.outlook_write_email(
+            to="a@example.com", subject="Hi", body="Body text", confirm=True
+        )
+    )
+
+    assert payload["status"] == "sent_unverified"
+    assert "warning" in payload
+
+
+def test_outlook_authenticate_returns_auth_required_when_no_token(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: False)
+    monkeypatch.setattr(
+        outlook_tool, "_auto_enable_outlook_toolset_if_token_ready", lambda: (False, None)
+    )
+    monkeypatch.setattr(
+        outlook_tool,
+        "_start_interactive_auth",
+        lambda scope, label, note="": {
+            "status": "auth_required",
+            "message": "sign in please",
+            "flow": "loopback",
+        },
+    )
+
+    payload = json.loads(outlook_tool.outlook_authenticate())
+
+    assert payload["status"] == "auth_required"
+
+
+def test_outlook_authenticate_confirms_already_signed_in(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(
+        outlook_tool, "_auto_enable_outlook_toolset_if_token_ready", lambda: (False, None)
+    )
+
+    async def _get_me_async():
+        return {"displayName": "Jane Doe", "mail": "jane@example.com"}
+
+    monkeypatch.setattr(outlook_tool, "_get_me_async", _get_me_async)
+
+    payload = json.loads(outlook_tool.outlook_authenticate())
+
+    assert payload["ok"] is True
+    assert payload["status"] == "authenticated"
+    assert "Jane Doe" in payload["message"]
+
+
+def test_outlook_authenticate_resumes_pending_loopback_session(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+
+    async def _poll_loopback_auth(request_id):
+        return {
+            "status": "success",
+            "access_token": "tok",
+            "refresh_token": "refresh",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+        }
+
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.microsoft_graph_auth",
+        types.SimpleNamespace(poll_loopback_auth=_poll_loopback_auth),
+    )
+    monkeypatch.setattr(outlook_tool, "_save_outlook_token_cache", lambda *a, **kw: None)
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(
+        outlook_tool, "_auto_enable_outlook_toolset_if_token_ready", lambda: (True, None)
+    )
+
+    async def _get_me_async():
+        return {"displayName": "Jane Doe"}
+
+    monkeypatch.setattr(outlook_tool, "_get_me_async", _get_me_async)
+
+    payload = json.loads(outlook_tool.outlook_authenticate(device_code="lb:req123"))
+
+    assert payload["ok"] is True
+    assert payload["status"] == "authenticated"
 
 
 def test_auth_guard_no_cached_token_starts_interactive_auth(monkeypatch):
@@ -521,7 +633,7 @@ def test_start_interactive_auth_message_forbids_manual_curl(monkeypatch):
     assert "never construct" in response["message"].lower()
 
 
-def test_start_interactive_auth_loopback_bind_failure_falls_back_to_device_code(monkeypatch):
+def test_start_interactive_auth_loopback_bind_failure_returns_error_no_device_code_fallback(monkeypatch):
     monkeypatch.setattr(outlook_tool, "outlook_interactive_auth_flow", lambda: "auto")
     monkeypatch.setattr(
         outlook_tool,
@@ -536,6 +648,28 @@ def test_start_interactive_auth_loopback_bind_failure_falls_back_to_device_code(
         start_loopback_auth=_start_loopback_auth, DEFAULT_DELEGATED_SCOPE="Mail.Read Mail.Send"
     )
     monkeypatch.setitem(sys.modules, "tools.microsoft_graph_auth", fake_module)
+
+    # Device code must NOT be started automatically — it's legacy and only
+    # used when explicitly selected in settings.
+    def _start_device_code_async(scope=None):
+        raise AssertionError("must not silently fall back to device code")
+
+    monkeypatch.setattr(outlook_tool, "_start_device_code_async", _start_device_code_async)
+
+    response = outlook_tool._start_interactive_auth(None, "Outlook")
+
+    assert "error" in response
+    assert "could not bind local listener" in response["error"]
+    assert "device code" in response["error"].lower()
+
+
+def test_start_interactive_auth_device_code_explicit_mode_used_directly(monkeypatch):
+    monkeypatch.setattr(outlook_tool, "outlook_interactive_auth_flow", lambda: "device_code")
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
 
     async def _start_device_code_async(scope=None):
         return {

@@ -3,11 +3,13 @@
 This guide explains how to connect Hermes to Microsoft Outlook via the Microsoft Graph API using
 delegated permissions. By default, sign-in uses a one-click **browser-based OAuth flow** (similar
 to "Sign in with Microsoft" in OWA) — Hermes opens your browser, you sign in, and a local loopback
-redirect completes the flow automatically, with no code to copy. Hermes automatically falls back to
-the classic **device code flow** (open a URL, type a short code) on hosts where a local browser
-can't be reached, e.g. headless/remote gateway servers — and you can also force either flow
-explicitly if you prefer. Once configured, you can interact with Outlook directly from the Hermes
-chat — reading mail, sending messages, and working with your calendar.
+redirect completes the flow automatically, with no code to copy. A single sign-in covers mail
+(read/write/shared) and calendar — you won't be asked to sign in again when switching between
+tools. The classic **device code flow** (open a URL, type a short code) is kept as a legacy option
+for hosts where a local browser can't be reached (e.g. headless/remote gateway servers), but it is
+only ever used when explicitly selected — Hermes never switches to it automatically. Once
+configured, you can interact with Outlook directly from the Hermes chat — reading mail, sending
+messages, and working with your calendar.
 
 ---
 
@@ -131,18 +133,19 @@ Alternatively, add to your `.env` file:
 ```env
 OUTLOOK_TENANT_ID=<your-tenant-id>
 OUTLOOK_CLIENT_ID=<your-client-id>
-# Optional — defaults to "auto" (browser sign-in, falls back to device code)
+# Optional — defaults to "auto" (always browser sign-in; reuses cached auth first)
 OUTLOOK_INTERACTIVE_AUTH_FLOW=auto
 ```
 
 `OUTLOOK_INTERACTIVE_AUTH_FLOW` accepts:
-- `auto` (default) — try the browser-based loopback flow first; fall back to device code
-  automatically if a local listener can't be started (e.g. no local browser reachable, such as a
-  headless/remote gateway host).
-- `loopback` — force the browser-based flow; fails with a clear error instead of silently falling
-  back, useful to confirm the new flow is actually being used.
-- `device_code` — force the classic manual-code flow (recommended for remote/headless gateway
-  hosts where a loopback listener can never work).
+- `auto` (default) — always uses the browser-based loopback flow. Reuses any existing valid
+  token/refresh token first, and only opens a new browser sign-in when nothing usable is cached
+  (or on the rare occasion Microsoft rejects the refresh outright). Never silently switches to
+  device code.
+- `loopback` — same as `auto` today; kept as an explicit, pinned alias.
+- `device_code` — force the classic manual-code flow. Only use this if this specific host cannot
+  bind a local loopback listener (e.g. a remote/headless gateway host with no local browser) —
+  device code is legacy and is never started automatically as a fallback from the other two modes.
 
 ---
 
@@ -155,9 +158,12 @@ Once the Tenant ID and Client ID are saved, you can ask Hermes in the chat:
 > *"Authenticate Outlook"* or *"Connect my Outlook account"*
 
 Hermes will open a Microsoft sign-in link for you — no code to enter — and detect the successful
-authentication automatically. On hosts where the browser-based flow isn't available, it falls back
-to a short device code + verification URL instead, and instructs the model on exactly how to
-continue; Hermes never invents its own manual sign-in steps.
+authentication automatically. Device code sign-in is legacy and only runs if you've explicitly
+selected it as the Sign-in method; Hermes never invents its own manual sign-in steps or silently
+switches flows on you. This whole flow is handled by a single dedicated `outlook_authenticate`
+tool — the model never needs to (and is instructed not to) construct a manual OAuth/device-code
+request itself, or use a read/write Outlook tool just to trigger a sign-in prompt. You can also
+just ask *"is Outlook connected?"* to have Hermes confirm your current sign-in still works.
 
 ### Option B — Via the Start Auth button
 
@@ -166,17 +172,27 @@ continue; Hermes never invents its own manual sign-in steps.
 3. A dialog will appear:
    - Browser sign-in (default): click **"Open Microsoft Login"** and complete sign-in in your
      browser — Hermes detects completion automatically, no code needed.
-   - Device code (fallback or forced): click **"Open Microsoft Login"**, then copy the short code
-     shown and paste it when prompted in the browser.
+   - Device code (legacy, only shown if explicitly selected as the Sign-in method): click **"Open
+     Microsoft Login"**, then copy the short code shown and paste it when prompted in the browser.
 4. Once signed in, click **Test Connection** to confirm Hermes can reach your mailbox. Test
    Connection performs a direct Microsoft Graph check and works independently of whether the
    gateway process is currently running.
+
+### One sign-in covers everything
+
+All Outlook tools (read/write mail, shared mailbox, calendar) request the same combined set of
+permissions and share the same cached refresh token — signing in once is enough for all of them.
+You should not be asked to sign in again just because you switched from reading email to writing a
+calendar entry, for example. If you are, check the Troubleshooting table below.
 
 ### Sending emails
 
 When you ask Hermes to send an email, it always shows a preview (To/CC/Subject/Body) first and
 waits for your explicit confirmation before actually sending — it will never send an email
-speculatively.
+speculatively. After sending, Hermes double-checks that the message actually landed in your Sent
+Items folder (Microsoft Graph's send API only confirms the request was accepted, not that delivery
+succeeded) — if that check doesn't find it within a few seconds, Hermes will tell you it couldn't
+be verified instead of claiming the email was definitely sent.
 
 ### Persistent sign-in
 
@@ -202,9 +218,11 @@ to that message to restart it without leaving the page.
 | `AADSTS500113: No reply address is registered for the application` (shown on Microsoft's own sign-in page, for *either* browser sign-in or device code) | App registration has no redirect URI at all | Add `http://localhost` under **Mobile and desktop applications** in the app's Authentication settings (Step 1) — required even if you only use the device code flow |
 | `AADSTS50020: User account … does not exist in tenant` | Wrong tenant ID, or user is in a different tenant | Verify the Tenant ID matches the user's Azure AD tenant |
 | `AADSTS65001: The user or administrator has not consented` | Admin consent not granted | Complete Step 3 |
-| Browser sign-in falls back to a device code unexpectedly | No local browser reachable, or the loopback listener couldn't bind (headless/remote host) | Expected behavior — complete the device code flow, or set `OUTLOOK_INTERACTIVE_AUTH_FLOW=device_code` to make this the default and avoid the fallback attempt |
-| Sign-in link or device code expires before authentication completes | Browser session too slow | Click **Start Auth** again to start a fresh sign-in |
+| Browser sign-in falls back to a device code unexpectedly | This should no longer happen — device code is never used as an automatic fallback | If you still see this, please report it as a bug |
+| Repeatedly asked to sign in again for different Outlook actions (mail vs. calendar vs. shared mailbox) | Fixed — all Outlook tools now share one combined-scope sign-in | If it still happens, check `~/.hermes/outlook_token.json` exists and is writable, and that only one Hermes profile/gateway is in use |
+| Sign-in link or device code expires before authentication completes | Browser session too slow, or you clicked **Start Auth** again before finishing the previous attempt (that reuses the same still-pending link now instead of starting a new one) | Complete the sign-in shown, or click **Start Auth** again once the previous link has actually expired |
 | `Mail.Send` succeeds but emails go to Junk | SPF/DKIM not set for Graph-sent mail | Contact your IT team to allowlist Graph API outbound mail |
 | Sending an email fails (e.g. `ErrorAccessDenied` / `Access is denied`) even though sign-in works | `Mail.Send` permission missing from the app registration (`Mail.ReadWrite` alone does **not** grant sending) | Add `Mail.Send` under **API permissions** (Step 2), then click **Grant admin consent** again |
+| Hermes reports the email was sent, but it's missing from your Sent folder | The send request was accepted by Graph but never actually verified in Sent Items (stale token, delayed sync, or a genuine delivery failure) | Hermes now checks Sent Items after sending and reports `sent_unverified` with a warning if it can't confirm — if you see a plain "sent" but still can't find it, wait a minute and refresh Sent Items, then re-check permissions (row above) |
 | "Gateway is not running" shown on the Messaging page | Gateway process stopped | Click the **Restart Gateway** button next to the message |
 

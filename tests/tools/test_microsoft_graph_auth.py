@@ -177,3 +177,47 @@ class TestMicrosoftGraphTokenProvider:
         with pytest.raises(MicrosoftGraphTokenError) as exc:
             await provider.get_access_token()
         assert "bad secret" in str(exc.value)
+
+
+class TestLoopbackAuthSessionDedup:
+    """A pending loopback sign-in must be reused, not abandoned+recreated,
+    every time ``start_loopback_auth`` is called again for the same
+    (tenant, client, scope) before the user finishes the previous one — this
+    is what stops the user from being asked to sign in over and over when a
+    tool call retries without a resume id."""
+
+    def test_reuses_pending_session_for_same_key(self):
+        from tools.microsoft_graph_auth import start_loopback_auth, _cleanup_loopback_session
+
+        first = start_loopback_auth("tenant", "client", None, "Mail.Read offline_access")
+        try:
+            second = start_loopback_auth("tenant", "client", None, "Mail.Read offline_access")
+            assert second["request_id"] == first["request_id"]
+            assert second["auth_url"] == first["auth_url"]
+        finally:
+            _cleanup_loopback_session(first["request_id"])
+
+    def test_starts_fresh_session_after_previous_one_is_cleaned_up(self):
+        from tools.microsoft_graph_auth import start_loopback_auth, _cleanup_loopback_session
+
+        first = start_loopback_auth("tenant", "client", None, "Mail.Read offline_access")
+        _cleanup_loopback_session(first["request_id"])
+
+        second = start_loopback_auth("tenant", "client", None, "Mail.Read offline_access")
+        try:
+            assert second["request_id"] != first["request_id"]
+        finally:
+            _cleanup_loopback_session(second["request_id"])
+
+    def test_different_scope_gets_its_own_session(self):
+        from tools.microsoft_graph_auth import start_loopback_auth, _cleanup_loopback_session
+
+        first = start_loopback_auth("tenant", "client", None, "Mail.Read offline_access")
+        try:
+            second = start_loopback_auth("tenant", "client", None, "Calendars.ReadWrite offline_access")
+            try:
+                assert second["request_id"] != first["request_id"]
+            finally:
+                _cleanup_loopback_session(second["request_id"])
+        finally:
+            _cleanup_loopback_session(first["request_id"])
