@@ -1596,6 +1596,84 @@ def build_outlook_memory_guidance(valid_tool_names: "set[str] | None" = None) ->
     )
 
 
+def build_outlook_signature_guidance(valid_tool_names: "set[str] | None" = None) -> str:
+    """Instruct the model to learn (once) and reuse the user's own email
+    signature/style, and to infer the tone actually used with each specific
+    correspondent instead of defaulting to one global register.
+
+    This directly fixes a real mistake observed in production: the assistant
+    opened a reply to a close colleague with a formal "Sehr geehrter ..."
+    salutation, when the existing thread/history with that person was casual.
+    Greeting/register is relationship-specific, not a single global style, so
+    it must be (re-)derived per correspondent — the global part below only
+    covers the user's own signature/closing, which genuinely is constant.
+
+    Only injected when BOTH an Outlook tool and a resolvable ``memory_save``
+    tool are present, for the same reason as ``build_outlook_memory_guidance``:
+    this is a cross-toolset hint that depends on both toolsets being active.
+    """
+    names = set(valid_tool_names or set())
+    if not any(name.startswith("outlook_") for name in names):
+        return ""
+    tool_name = _resolve_memory_save_tool_name(names)
+    if not tool_name:
+        return ""
+
+    return (
+        "# Outlook: signature & per-contact tone\n"
+        "Global signature (derive once, reuse silently): before composing the first new email "
+        "(not a reply — replies already show the existing thread) in a session, check memory for "
+        "a previously saved note about the user's own email signature/closing. If none exists, "
+        "call `outlook_get_emails` with `folder='sent'` on a few recent messages, infer the "
+        "signature/closing the user actually uses, and save it via "
+        f"`{tool_name}` (schema `notes`, e.g. title 'Outlook: email signature'). From then on, "
+        "reuse it automatically — do not ask the user for their signature or re-derive it every time.\n"
+        "Per-contact tone (casual vs. formal): NEVER assume the same greeting/register for every "
+        "recipient. Before writing to or replying to a specific person, check the existing thread "
+        "(when replying) and/or that person's prior sent/received messages for the tone actually "
+        "used with them — first-name/casual vs. formal 'Sehr geehrte(r) ...' — and mirror it. Once "
+        "inferred for a contact, persist it on that person's memory entry "
+        f"(schema `person`, e.g. `hints.tone = \"casual\"` or `\"formal\"`) via `{tool_name}` so it "
+        "doesn't need to be re-derived every time; only re-infer it when no prior thread/history "
+        "exists yet for that contact."
+    )
+
+
+def build_outlook_contact_profiling_guidance(valid_tool_names: "set[str] | None" = None) -> str:
+    """Instruct the model to offer a one-time, opt-in backfill that builds
+    memory ``person`` profiles for frequent correspondents, driven by actual
+    recent mail activity — never by bulk-importing the full Outlook/Org
+    contact directory.
+
+    Only injected when BOTH an Outlook tool and a resolvable ``memory_save``
+    tool are present (same cross-toolset gating as the sibling guidance
+    functions above).
+    """
+    names = set(valid_tool_names or set())
+    if not any(name.startswith("outlook_") for name in names):
+        return ""
+    tool_name = _resolve_memory_save_tool_name(names)
+    if not tool_name:
+        return ""
+
+    return (
+        "# Outlook: opt-in contact profiling\n"
+        "If the user hasn't been asked before (check memory first), offer once — using the "
+        "`clarify` tool with choices like ['Ja', 'Nein'] — whether they want memory `person` "
+        "profiles built for the people they correspond with often. Remember that this was asked "
+        f"(a `notes` entry via `{tool_name}` is enough) so you never ask again.\n"
+        "If they agree: look at the last 14 days of inbox and sent mail (`outlook_get_emails` / "
+        "`outlook_search_emails` with a matching time range), identify correspondents by actual "
+        "interaction frequency, and save each one as a `person` entry (name, email, and "
+        f"organisation inferred from their mail domain) via `{tool_name}`.\n"
+        "Hard rule: NEVER bulk-import the full Outlook/Org contact directory "
+        "(`outlook_read_contacts` without this activity-based filter) into memory — only people "
+        "the user has actually exchanged mail with recently. This is a one-time backfill; new "
+        "frequent correspondents going forward are picked up incrementally by the normal "
+        "save-as-you-go guidance above, not by re-running this scan."
+    )
+
+
 # =========================================================================
 # Context files (SOUL.md, AGENTS.md, .cursorrules)
 # =========================================================================

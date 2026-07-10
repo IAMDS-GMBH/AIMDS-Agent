@@ -119,6 +119,32 @@ def _sanitize_generated_title(title: str) -> Optional[str]:
     return cleaned or None
 
 
+def _heuristic_title_from_user_message(user_message: str) -> Optional[str]:
+    """Derive a best-effort title straight from the user's message.
+
+    Used as a safety net when the aux LLM call for title generation fails
+    (e.g. a LiteLLM model-group routing error) so a session never ends up
+    permanently untitled just because one background call had a transient
+    or infra-level failure. Not as good as an LLM-authored title, but far
+    better than leaving the session blank.
+    """
+    normalized = _normalize_title_input_user_message(user_message)
+    cleaned = (strip_think_blocks(None, normalized) or "").strip()
+    if not cleaned:
+        return None
+    # Collapse whitespace/newlines so multi-line messages don't produce a
+    # ragged title.
+    cleaned = " ".join(cleaned.split())
+    if len(cleaned) > 60:
+        # Prefer breaking on a word boundary near the limit over a hard cut.
+        truncated = cleaned[:60]
+        last_space = truncated.rfind(" ")
+        if last_space > 20:
+            truncated = truncated[:last_space]
+        cleaned = truncated.rstrip(",.;:") + "..."
+    return cleaned or None
+
+
 def generate_title(
     user_message: str,
     assistant_response: str,
@@ -170,7 +196,11 @@ def generate_title(
                 failure_callback("title generation", e)
             except Exception:
                 logger.debug("Title generation failure_callback raised", exc_info=True)
-        return None
+        # The aux LLM call failed (e.g. a LiteLLM model-group routing error
+        # like an unhealthy "_complex" deployment) — fall back to a
+        # heuristic title derived from the user's own message rather than
+        # leaving the session permanently untitled.
+        return _heuristic_title_from_user_message(user_message)
 
 
 def auto_title_session(

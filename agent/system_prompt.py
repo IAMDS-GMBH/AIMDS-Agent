@@ -154,6 +154,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     outlook_memory_guidance = _r.build_outlook_memory_guidance(agent.valid_tool_names)
     if outlook_memory_guidance:
         stable_parts.append(outlook_memory_guidance)
+
+    outlook_signature_guidance = _r.build_outlook_signature_guidance(agent.valid_tool_names)
+    if outlook_signature_guidance:
+        stable_parts.append(outlook_signature_guidance)
+
+    outlook_contact_profiling_guidance = _r.build_outlook_contact_profiling_guidance(
+        agent.valid_tool_names
+    )
+    if outlook_contact_profiling_guidance:
+        stable_parts.append(outlook_contact_profiling_guidance)
     # Tool-use enforcement: tells the model to actually call tools instead
     # of describing intended actions.  Controlled by config.yaml
     # agent.tool_use_enforcement:

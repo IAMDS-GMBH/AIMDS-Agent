@@ -1234,10 +1234,13 @@ def outlook_write_email(
         return json.dumps({
             "status": "confirmation_required",
             "message": (
-                "Do not send yet. Show this exact preview (To/Cc/Bcc/Subject/Body) to the user and "
-                "ask them to explicitly confirm before sending. Only call outlook_write_email again "
-                "with the same to/subject/body/cc/bcc/reply_to_message_id plus confirm=true after "
-                "they approve — never send without an explicit yes."
+                "Do not send yet. Show this exact preview (To/Cc/Bcc/Subject/Body) to the user, "
+                "then call the 'clarify' tool with question='Send this email?' and "
+                "choices=['Ja, senden', 'Abbrechen'] (or an equivalent phrasing in the user's "
+                "language) so they get a real button/choice instead of having to type free-text "
+                "confirmation. Only call outlook_write_email again with the same "
+                "to/subject/body/cc/bcc/reply_to_message_id plus confirm=true after they choose "
+                "to send — never send without that explicit confirmation."
             ),
             "preview": {
                 "to": to_list,
@@ -1460,9 +1463,12 @@ def outlook_write_calendar_entries(
             "previous_state": _format_calendar_entry(previous_state, include_body_preview=True),
             "message": (
                 f"This would {normalized_action} the calendar event above. "
-                "Ask the user to explicitly confirm this change before proceeding. "
-                "Once confirmed, call this tool again with the same arguments plus confirm=true. "
-                "The previous_state above is preserved here so it can be restored manually if needed."
+                "Call the 'clarify' tool with question='Apply this change?' and "
+                "choices=['Ja, bestätigen', 'Abbrechen'] (or an equivalent phrasing in the "
+                "user's language) so they get a real button/choice instead of typing free-text "
+                "confirmation. Once confirmed, call this tool again with the same arguments plus "
+                "confirm=true. The previous_state above is preserved here so it can be restored "
+                "manually if needed."
             ),
         }
         if normalized_action == "update":
@@ -1603,9 +1609,12 @@ def outlook_write_contacts(
             "previous_state": _format_contact(previous_state),
             "message": (
                 f"This would {normalized_action} the contact above. "
-                "Ask the user to explicitly confirm this change before proceeding. "
-                "Once confirmed, call this tool again with the same arguments plus confirm=true. "
-                "The previous_state above is preserved here so it can be restored manually if needed."
+                "Call the 'clarify' tool with question='Apply this change?' and "
+                "choices=['Ja, bestätigen', 'Abbrechen'] (or an equivalent phrasing in the "
+                "user's language) so they get a real button/choice instead of typing free-text "
+                "confirmation. Once confirmed, call this tool again with the same arguments plus "
+                "confirm=true. The previous_state above is preserved here so it can be restored "
+                "manually if needed."
             ),
         }
         if normalized_action == "update":

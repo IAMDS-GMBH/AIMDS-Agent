@@ -23,6 +23,8 @@ from agent.prompt_builder import (
     build_context_files_prompt,
     build_remote_mcp_memory_prompt,
     build_outlook_memory_guidance,
+    build_outlook_signature_guidance,
+    build_outlook_contact_profiling_guidance,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
@@ -1378,6 +1380,76 @@ class TestBuildRemoteMcpMemoryPrompt:
         text = build_remote_mcp_memory_prompt({"memory_context"})
         assert "memory_context" in text
         assert "FIRST action" in text
+
+
+class TestBuildOutlookSignatureGuidance:
+    """build_outlook_signature_guidance() covers both the global signature
+    (derived once from Sent Items) and per-correspondent tone inference —
+    the latter directly fixes the "Sehr geehrter Gonzalo" mismatch where a
+    formal greeting was used with a casual colleague."""
+
+    def test_empty_when_no_outlook_tool(self):
+        assert build_outlook_signature_guidance({"memory_save", "web_search"}) == ""
+
+    def test_empty_when_no_memory_save_tool(self):
+        assert build_outlook_signature_guidance({"outlook_write_email"}) == ""
+
+    def test_empty_when_no_tools_at_all(self):
+        assert build_outlook_signature_guidance(set()) == ""
+        assert build_outlook_signature_guidance(None) == ""
+
+    def test_builds_guidance_when_both_present(self):
+        text = build_outlook_signature_guidance({"outlook_write_email", "memory_save"})
+        assert text
+        assert "memory_save" in text
+        assert "outlook_get_emails" in text
+        assert "folder='sent'" in text
+        assert "signature" in text.lower()
+        # Per-contact tone must be covered, not just the global signature.
+        assert "tone" in text.lower()
+        assert "hints.tone" in text
+        assert "casual" in text.lower()
+        assert "formal" in text.lower()
+
+    def test_resolves_prefixed_memory_save_tool_name(self):
+        text = build_outlook_signature_guidance(
+            {"outlook_write_email", "mcp_IAMDS_mcp_memory_memory_save"}
+        )
+        assert "mcp_IAMDS_mcp_memory_memory_save" in text
+
+
+class TestBuildOutlookContactProfilingGuidance:
+    """build_outlook_contact_profiling_guidance() must be strictly opt-in and
+    activity-driven — it must never instruct a blind bulk import of the full
+    Outlook/Org contact directory."""
+
+    def test_empty_when_no_outlook_tool(self):
+        assert build_outlook_contact_profiling_guidance({"memory_save"}) == ""
+
+    def test_empty_when_no_memory_save_tool(self):
+        assert build_outlook_contact_profiling_guidance({"outlook_read_contacts"}) == ""
+
+    def test_empty_when_no_tools_at_all(self):
+        assert build_outlook_contact_profiling_guidance(set()) == ""
+        assert build_outlook_contact_profiling_guidance(None) == ""
+
+    def test_builds_guidance_when_both_present(self):
+        text = build_outlook_contact_profiling_guidance(
+            {"outlook_read_contacts", "memory_save"}
+        )
+        assert text
+        assert "clarify" in text
+        assert "14 days" in text
+        assert "person" in text
+        # Must explicitly forbid blind bulk import of the full directory.
+        assert "NEVER bulk-import" in text
+        assert "outlook_read_contacts" in text
+
+    def test_resolves_prefixed_memory_save_tool_name(self):
+        text = build_outlook_contact_profiling_guidance(
+            {"outlook_search_emails", "mcp_IAMDS_mcp_memory_memory_save"}
+        )
+        assert "mcp_IAMDS_mcp_memory_memory_save" in text
 
 
 

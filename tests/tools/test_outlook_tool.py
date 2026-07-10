@@ -293,6 +293,9 @@ def test_outlook_write_email_without_confirm_returns_preview(monkeypatch):
     assert payload["status"] == "confirmation_required"
     assert payload["preview"]["to"] == ["a@example.com", "b@example.com"]
     assert payload["preview"]["subject"] == "Hi"
+    # Must steer the model toward the clarify tool (real buttons/choices)
+    # instead of free-text "OK" confirmation.
+    assert "clarify" in payload["message"].lower()
 
 
 def test_outlook_write_email_happy_path_sends_when_confirmed(monkeypatch):

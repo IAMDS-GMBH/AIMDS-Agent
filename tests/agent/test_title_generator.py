@@ -58,9 +58,14 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("question", "answer") is None
 
-    def test_returns_none_on_exception(self):
+    def test_falls_back_to_heuristic_title_on_exception(self):
+        """When the aux LLM call fails (e.g. a LiteLLM model-group routing
+        error like an unhealthy "_complex" deployment), the session must
+        still get a usable title derived from the user's own message rather
+        than being left permanently untitled."""
         with patch("agent.title_generator.call_llm", side_effect=RuntimeError("no provider")):
-            assert generate_title("question", "answer") is None
+            title = generate_title("question about docker setup", "answer")
+            assert title == "question about docker setup"
 
     def test_strips_think_block_before_title(self):
         """Reasoning models sometimes emit their chain-of-thought inline as a
@@ -102,7 +107,9 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", side_effect=exc):
             result = generate_title("question", "answer", failure_callback=_cb)
 
-        assert result is None
+        # The exception still surfaces via failure_callback even though a
+        # heuristic fallback title is returned instead of None.
+        assert result == "question"
         assert len(captured) == 1
         assert captured[0][0] == "title generation"
         assert captured[0][1] is exc
@@ -114,13 +121,26 @@ class TestGenerateTitle:
             raise ValueError("callback bug")
 
         with patch("agent.title_generator.call_llm", side_effect=RuntimeError("nope")):
-            # Should return None without re-raising the callback error
-            assert generate_title("q", "a", failure_callback=_bad_cb) is None
+            # Should return the heuristic fallback title, not raise.
+            assert generate_title("q", "a", failure_callback=_bad_cb) == "q"
 
-    def test_no_callback_matches_legacy_behavior(self):
-        """Omitting failure_callback preserves the silent-None return."""
+    def test_no_callback_uses_heuristic_fallback(self):
+        """Omitting failure_callback still yields the heuristic fallback title."""
         with patch("agent.title_generator.call_llm", side_effect=RuntimeError("nope")):
-            assert generate_title("q", "a") is None
+            assert generate_title("q", "a") == "q"
+
+    def test_heuristic_fallback_returns_none_for_empty_message(self):
+        """No user message to derive a title from -> still no title, no crash."""
+        with patch("agent.title_generator.call_llm", side_effect=RuntimeError("nope")):
+            assert generate_title("", "a") is None
+
+    def test_heuristic_fallback_truncates_long_message(self):
+        long_message = "please help me " + ("debug this very long error message " * 5)
+        with patch("agent.title_generator.call_llm", side_effect=RuntimeError("nope")):
+            title = generate_title(long_message, "answer")
+            assert title is not None
+            assert len(title) <= 63  # 60 chars + "..."
+            assert title.endswith("...")
 
     def test_truncates_long_messages(self):
         """Long user/assistant messages should be truncated in the LLM request."""
