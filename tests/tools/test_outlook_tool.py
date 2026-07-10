@@ -375,6 +375,24 @@ def test_outlook_write_email_confirm_with_unknown_draft_id_errors(monkeypatch):
     assert "does-not-exist" in result["error"]
 
 
+def test_outlook_write_email_confirm_with_nothing_gives_actionable_error(monkeypatch):
+    """Regression test: confirm=true with no draft_id and no to/subject/body
+    previously fell through to the generic 'to is required' validation
+    error, which caused the model to retry blindly several times instead of
+    resending the draft_id. It must now get a specific, actionable error."""
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+
+    result = json.loads(outlook_tool.outlook_write_email(confirm=True))
+    assert "error" in result
+    assert "draft_id" in result["error"]
+
+
 def test_outlook_write_email_uses_cached_signature(monkeypatch):
     monkeypatch.setattr(
         outlook_tool,
@@ -1249,6 +1267,131 @@ def test_outlook_read_contacts_happy_path(monkeypatch):
     assert payload["count"] == 1
     assert payload["contacts"][0]["display_name"] == "Jane Doe"
     assert payload["contacts"][0]["emails"] == ["jane@example.com"]
+
+
+def test_outlook_read_contacts_falls_back_to_org_directory(monkeypatch):
+    """Regression test: a colleague who only exists in the tenant's org
+    directory (never saved as a personal contact) must still be found."""
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+
+    async def _fetch_contacts_async(count, search):
+        return []  # nothing in personal contacts
+
+    raw_org_contacts = [
+        {
+            "id": "org-1",
+            "displayName": "Tobias Hehl",
+            "givenName": "Tobias",
+            "surname": "Hehl",
+            "companyName": "IAMDS",
+            "jobTitle": "",
+            "mail": "tobias.hehl@iamds.com",
+            "proxyAddresses": ["SMTP:tobias.hehl@iamds.com"],
+            "businessPhones": [],
+            "mobilePhone": "",
+        }
+    ]
+
+    async def _fetch_org_contacts_async(count, search):
+        assert search == "Tobias Hehl"
+        return raw_org_contacts
+
+    monkeypatch.setattr(outlook_tool, "_fetch_contacts_async", _fetch_contacts_async)
+    monkeypatch.setattr(outlook_tool, "_fetch_org_contacts_async", _fetch_org_contacts_async)
+
+    payload = json.loads(outlook_tool.outlook_read_contacts(search="Tobias Hehl"))
+
+    assert payload["count"] == 1
+    assert payload["contacts"][0]["display_name"] == "Tobias Hehl"
+    assert payload["contacts"][0]["emails"] == ["tobias.hehl@iamds.com"]
+    assert payload["contacts"][0]["source"] == "org_directory"
+
+
+def test_outlook_read_contacts_dedupes_org_directory_against_personal(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+
+    async def _fetch_contacts_async(count, search):
+        return [{
+            "id": "c-1",
+            "displayName": "Jane Doe",
+            "emailAddresses": [{"address": "jane@example.com"}],
+        }]
+
+    async def _fetch_org_contacts_async(count, search):
+        return [{
+            "id": "org-1",
+            "displayName": "Jane Doe",
+            "mail": "jane@example.com",
+        }]
+
+    monkeypatch.setattr(outlook_tool, "_fetch_contacts_async", _fetch_contacts_async)
+    monkeypatch.setattr(outlook_tool, "_fetch_org_contacts_async", _fetch_org_contacts_async)
+
+    payload = json.loads(outlook_tool.outlook_read_contacts())
+    assert payload["count"] == 1  # org duplicate of the personal contact is dropped
+
+
+def test_outlook_read_contacts_include_org_directory_false_skips_org_search(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+
+    async def _fetch_contacts_async(count, search):
+        return []
+
+    async def _fetch_org_contacts_async(count, search):
+        raise AssertionError("org directory search should not be called")
+
+    monkeypatch.setattr(outlook_tool, "_fetch_contacts_async", _fetch_contacts_async)
+    monkeypatch.setattr(outlook_tool, "_fetch_org_contacts_async", _fetch_org_contacts_async)
+
+    payload = json.loads(outlook_tool.outlook_read_contacts(include_org_directory=False))
+    assert payload["count"] == 0
+
+
+def test_outlook_read_contacts_org_directory_failure_is_non_fatal(monkeypatch):
+    """If the org directory lookup fails (e.g. scope not consented), the
+    personal-contacts result must still be returned, with a warning."""
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+
+    async def _fetch_contacts_async(count, search):
+        return [{
+            "id": "c-1",
+            "displayName": "Jane Doe",
+            "emailAddresses": [{"address": "jane@example.com"}],
+        }]
+
+    async def _fetch_org_contacts_async(count, search):
+        raise RuntimeError("insufficient privileges")
+
+    monkeypatch.setattr(outlook_tool, "_fetch_contacts_async", _fetch_contacts_async)
+    monkeypatch.setattr(outlook_tool, "_fetch_org_contacts_async", _fetch_org_contacts_async)
+
+    payload = json.loads(outlook_tool.outlook_read_contacts())
+    assert payload["count"] == 1
+    assert "org_directory_warning" in payload
 
 
 def test_outlook_write_contacts_invalid_action(monkeypatch):

@@ -1019,6 +1019,68 @@ async def _fetch_contacts_async(count: int, search: str) -> list[dict[str, Any]]
     return resp.get("value", [])
 
 
+_ORG_CONTACT_SELECT_FIELDS = [
+    "id",
+    "displayName",
+    "givenName",
+    "surname",
+    "companyName",
+    "jobTitle",
+    "mail",
+    "proxyAddresses",
+    "businessPhones",
+    "mobilePhone",
+]
+
+
+async def _fetch_org_contacts_async(count: int, search: str) -> list[dict[str, Any]]:
+    """Search the tenant's organizational contacts (admin-managed directory
+    entries synced from on-prem AD / Exchange Online — distinct from the
+    signed-in user's personal ``/me/contacts``) via ``GET /contacts``.
+
+    This uses the ``OrgContact.Read.All`` scope, which is already part of
+    ``DEFAULT_DELEGATED_SCOPE`` but was never actually wired to a Graph call
+    anywhere in this file — colleagues who only exist in the org directory
+    (not the user's personal contacts) were previously unfindable by name,
+    forcing the user to supply their email address manually.
+    """
+    client, _ = _new_graph_client(scope=OUTLOOK_CONTACTS_SCOPE)
+    params: dict[str, Any] = {
+        "$top": min(max(1, count), 100),
+        "$select": ",".join(_ORG_CONTACT_SELECT_FIELDS),
+    }
+    if search:
+        safe_search = search.replace('"', '\\"')
+        params["$search"] = f'"displayName:{safe_search}" OR "mail:{safe_search}"'
+        headers = {"ConsistencyLevel": "eventual"}
+        resp = await client.get_json("/contacts", params=params, headers=headers)
+    else:
+        resp = await client.get_json("/contacts", params=params)
+    return resp.get("value", [])
+
+
+def _format_org_contact(contact: dict[str, Any]) -> dict[str, Any]:
+    emails = [contact.get("mail")] if contact.get("mail") else []
+    for addr in contact.get("proxyAddresses") or []:
+        if addr.lower().startswith("smtp:"):
+            email = addr.split(":", 1)[1]
+            if email not in emails:
+                emails.append(email)
+    return {
+        "id": contact.get("id", ""),
+        "display_name": contact.get("displayName") or "",
+        "given_name": contact.get("givenName") or "",
+        "surname": contact.get("surname") or "",
+        "company_name": contact.get("companyName") or "",
+        "job_title": contact.get("jobTitle") or "",
+        "emails": emails,
+        "business_phones": contact.get("businessPhones") or [],
+        "mobile_phone": contact.get("mobilePhone") or "",
+        "notes": "",
+        "source": "org_directory",
+    }
+
+
 def _format_contact(contact: dict[str, Any]) -> dict[str, Any]:
     emails = contact.get("emailAddresses") or []
     return {
@@ -1032,6 +1094,7 @@ def _format_contact(contact: dict[str, Any]) -> dict[str, Any]:
         "business_phones": contact.get("businessPhones") or [],
         "mobile_phone": contact.get("mobilePhone") or "",
         "notes": contact.get("personalNotes") or "",
+        "source": "personal",
     }
 
 
@@ -1575,6 +1638,26 @@ def outlook_write_email(
     the email. ``draft_id`` is only valid for the lifetime of the current
     process; if it's missing/expired, resend to/subject/body directly.
     """
+    if confirm and not draft_id and not to and not subject and not body:
+        # The model called confirm=true with literally nothing else (no
+        # draft_id and no to/subject/body) — almost certainly it dropped the
+        # draft_id from the previous preview response instead of repeating
+        # it. Returning the generic "'to' is required" error here previously
+        # caused a multi-attempt retry loop (the model kept retrying
+        # confirm=true with different single fields missing instead of the
+        # actual fix), so name the real problem outright instead of making
+        # the model rediscover it field by field.
+        return json.dumps({
+            "error": (
+                "confirm=true was called with no draft_id and no to/subject/body. "
+                "If the previous outlook_write_email response included a draft_id, "
+                "call this again with confirm=true and that exact draft_id (nothing "
+                "else needs to be repeated). If there is no draft_id available "
+                "anymore, call outlook_write_email again with confirm=false and the "
+                "full to/subject/body to get a fresh preview first."
+            )
+        })
+
     if confirm and draft_id:
         cached = _draft_cache.pop(draft_id, None)
         if cached is None:
@@ -1992,28 +2075,66 @@ def outlook_write_calendar_entries(
 def outlook_read_contacts(
     count: int = 20,
     search: str = "",
+    include_org_directory: bool = True,
     device_code: str = "",
     task_id: str | None = None,
 ) -> str:
-    """Read/search Outlook contacts (read-only)."""
+    """Read/search Outlook contacts (read-only).
+
+    Searches the signed-in user's personal contacts (``/me/contacts``) and,
+    by default, also the tenant's organizational directory contacts
+    (``/contacts`` — colleagues/entries managed by an admin, not saved
+    personally by the user). A colleague who has never been saved as a
+    personal contact will still be found this way instead of requiring the
+    user to supply their email address manually. Set
+    ``include_org_directory=false`` to search personal contacts only.
+    """
     early, toolset_enabled = _outlook_auth_guard(
         device_code, scope=OUTLOOK_CONTACTS_SCOPE, label="Outlook contacts"
     )
     if early is not None:
         return json.dumps(early)
 
+    normalized_search = search.strip()
     try:
-        raw_contacts = _run_async(_fetch_contacts_async(count, search.strip()), timeout=120)
+        raw_contacts = _run_async(_fetch_contacts_async(count, normalized_search), timeout=120)
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
     contacts = [_format_contact(c) for c in raw_contacts]
-    return json.dumps({
+
+    org_directory_error = None
+    if include_org_directory:
+        try:
+            raw_org_contacts = _run_async(
+                _fetch_org_contacts_async(count, normalized_search), timeout=120
+            )
+            existing_emails = {
+                email.lower() for c in contacts for email in c["emails"]
+            }
+            for raw in raw_org_contacts:
+                formatted = _format_org_contact(raw)
+                if any(e.lower() in existing_emails for e in formatted["emails"]):
+                    continue  # already present as a personal contact
+                contacts.append(formatted)
+        except Exception as exc:
+            # Org directory lookup is a best-effort addition, not a hard
+            # requirement — a missing/unconsented OrgContact.Read.All grant
+            # (or a tenant with no org contacts configured) should not break
+            # the personal-contacts result the caller already has.
+            org_directory_error = str(exc)
+
+    response: dict[str, Any] = {
         "count": len(contacts),
         "search": search,
         "contacts": contacts,
         "toolset_auto_enabled": bool(device_code and toolset_enabled),
-    })
+    }
+    if org_directory_error:
+        response["org_directory_warning"] = (
+            f"Could not search organizational directory contacts: {org_directory_error}"
+        )
+    return json.dumps(response)
 
 
 def outlook_write_contacts(
@@ -2657,8 +2778,12 @@ registry.register(
         "description": (
             "Read/search Outlook / Microsoft 365 contacts (read-only). Returns name, company, "
             "job title, email addresses, and phone numbers. Use 'search' to find a specific "
-            "contact by name/email/company. Do NOT use this to create, change, or delete a "
-            "contact — use outlook_write_contacts for that."
+            "contact by name/email/company. By default this also searches the tenant's "
+            "organizational directory contacts (colleagues managed by an admin, not saved "
+            "personally), so a colleague's email can usually be found here even if they were "
+            "never added as a personal contact — do NOT ask the user for an email address "
+            "before trying this. Do NOT use this to create, change, or delete a contact — use "
+            "outlook_write_contacts for that."
         ),
         "parameters": {
             "type": "object",
@@ -2676,6 +2801,14 @@ registry.register(
                     ),
                     "default": "",
                 },
+                "include_org_directory": {
+                    "type": "boolean",
+                    "description": (
+                        "Also search the tenant's organizational directory contacts in "
+                        "addition to personal contacts. Default true."
+                    ),
+                    "default": True,
+                },
                 "device_code": _DEVICE_CODE_PARAM_SCHEMA,
             },
             "required": [],
@@ -2684,6 +2817,7 @@ registry.register(
     handler=lambda args, **kw: outlook_read_contacts(
         count=int(args.get("count", 20)),
         search=str(args.get("search", "")),
+        include_org_directory=bool(args.get("include_org_directory", True)),
         device_code=str(args.get("device_code", "")),
         task_id=kw.get("task_id"),
     ),
