@@ -512,6 +512,117 @@ async def _detect_signature_from_sent_emails_async(sample_size: int = 3) -> str 
     return most_common if (freq >= 2 or len(candidates) == 1) else candidates[0]
 
 
+def _contact_tone_cache_path():
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "outlook_contact_tone.json"
+
+
+def _load_cached_tone(email: str) -> str | None:
+    """Read the locally cached per-contact tone (``"casual"``/``"formal"``),
+    keyed by lowercased email address. Same on-disk-first rationale as the
+    signature cache: always available regardless of which memory tool (if
+    any) is active."""
+    if not email:
+        return None
+    try:
+        path = _contact_tone_cache_path()
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text())
+        entry = data.get(email.strip().lower())
+        if isinstance(entry, dict):
+            tone = entry.get("tone")
+            if tone in ("casual", "formal"):
+                return tone
+    except Exception:
+        pass
+    return None
+
+
+def _save_cached_tone(email: str, tone: str, source: str = "sent-folder") -> None:
+    if not email or tone not in ("casual", "formal"):
+        return
+    try:
+        path = _contact_tone_cache_path()
+        data: dict[str, Any] = {}
+        if path.exists():
+            try:
+                data = json.loads(path.read_text())
+            except Exception:
+                data = {}
+        data[email.strip().lower()] = {
+            "tone": tone,
+            "source": source,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        path.write_text(json.dumps(data))
+    except Exception:
+        pass
+
+
+_FORMAL_TONE_MARKERS = (
+    "sehr geehrte", "sehr geehrter", "dear mr", "dear ms", "dear mrs",
+    "to whom it may concern", "sehr geehrte damen und herren",
+)
+_CASUAL_TONE_MARKERS = ("hi ", "hey ", "hallo ", "moin", "servus", "na,")
+
+
+def _classify_tone(body_text: str) -> str | None:
+    """Tiny heuristic classifier: looks at the opening salutation of an email
+    body to guess formal vs. casual register. Best-effort only — ambiguous
+    or unrecognized openings return ``None`` rather than guessing."""
+    if not body_text:
+        return None
+    head = body_text.strip()[:200].lower()
+    if any(marker in head for marker in _FORMAL_TONE_MARKERS):
+        return "formal"
+    if any(marker in head for marker in _CASUAL_TONE_MARKERS):
+        return "casual"
+    return None
+
+
+async def _detect_tone_for_contact_async(email: str, sample_size: int = 5) -> str | None:
+    """Best-effort: scan recent Sent items addressed to this contact and infer
+    the tone/register actually used with them."""
+    email_lower = email.strip().lower()
+    if not email_lower:
+        return None
+    try:
+        raw_list = await _fetch_emails_async(sample_size * 4, "sent", False, False, "all")
+    except Exception:
+        return None
+
+    matches = [
+        msg
+        for msg in raw_list
+        if any(
+            (r.get("emailAddress", {}) or {}).get("address", "").lower() == email_lower
+            for r in (msg.get("toRecipients") or [])
+        )
+    ][:sample_size]
+
+    tones: list[str] = []
+    for msg in matches:
+        msg_id = msg.get("id")
+        if not msg_id:
+            continue
+        try:
+            full = await _fetch_email_by_id_async(msg_id)
+        except Exception:
+            continue
+        body = full.get("body") or {}
+        content = body.get("content", "")
+        text = _strip_html(content) if body.get("contentType", "").lower() == "html" else content
+        tone = _classify_tone(text)
+        if tone:
+            tones.append(tone)
+
+    if not tones:
+        return None
+    return Counter(tones).most_common(1)[0][0]
+
+
 async def _search_emails_async(
     query: str,
     count: int,
@@ -1414,6 +1525,65 @@ def outlook_write_email(
                     "to body before showing the preview to the user. If a memory-save "
                     "tool is available, also persist it there (schema `notes`) so it "
                     "survives even if this local cache is cleared."
+                )
+
+        # Deterministic per-contact tone lookup (formal vs. casual) — same
+        # cache-first-then-best-effort-detect pattern as the signature above.
+        # For a new email this is the primary recipient; for a reply it's the
+        # other party in the thread being replied to (fetched once and reused
+        # for both the address and the tone classification).
+        tone_contact = None
+        thread_msg: dict[str, Any] | None = None
+        if reply_to_message_id:
+            try:
+                thread_msg = _run_async(
+                    _fetch_email_by_id_async(reply_to_message_id), timeout=60
+                )
+                tone_contact = ((thread_msg.get("from") or {}).get("emailAddress") or {}).get(
+                    "address"
+                )
+            except Exception:
+                tone_contact = None
+        elif to_list:
+            tone_contact = to_list[0]
+
+        if tone_contact:
+            tone = _load_cached_tone(tone_contact)
+            tone_source = "cache" if tone else None
+            if not tone:
+                try:
+                    if thread_msg is not None:
+                        thread_body = thread_msg.get("body") or {}
+                        thread_content = thread_body.get("content", "")
+                        thread_text = (
+                            _strip_html(thread_content)
+                            if thread_body.get("contentType", "").lower() == "html"
+                            else thread_content
+                        )
+                        tone = _classify_tone(thread_text)
+                        tone_source = "thread"
+                    else:
+                        tone = _run_async(
+                            _detect_tone_for_contact_async(tone_contact), timeout=60
+                        )
+                        tone_source = "sent-folder"
+                except Exception:
+                    tone = None
+                if tone:
+                    _save_cached_tone(tone_contact, tone, source=tone_source)
+                else:
+                    tone_source = None
+            if tone:
+                response["contact_tone"] = tone
+                response["contact_tone_source"] = tone_source
+                response["message"] += (
+                    f" Tone hint for {tone_contact}: '{tone}' (source={tone_source}). If "
+                    "the draft above doesn't match this register (casual/first-name vs. "
+                    "formal 'Sehr geehrte(r) ...'), call outlook_write_email again "
+                    "(still confirm=false) with a revised body/subject before showing the "
+                    "preview. If a memory-save tool is available, also persist "
+                    "hints.tone on that person's memory entry so it survives even if this "
+                    "local cache is cleared."
                 )
 
         return json.dumps(response)

@@ -374,6 +374,78 @@ def test_extract_signature_candidate_cuts_at_quote_marker():
     assert "Old message body" not in candidate
 
 
+def test_outlook_write_email_uses_cached_tone_for_new_email(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+    monkeypatch.setattr(outlook_tool, "_load_cached_signature", lambda: "Best,\nJohannes")
+    monkeypatch.setattr(outlook_tool, "_load_cached_tone", lambda email: "casual")
+
+    async def _detect_tone_for_contact_async(email, sample_size=5):
+        raise AssertionError("must not re-detect when a tone cache hit exists")
+
+    monkeypatch.setattr(
+        outlook_tool, "_detect_tone_for_contact_async", _detect_tone_for_contact_async
+    )
+
+    payload = json.loads(
+        outlook_tool.outlook_write_email(
+            to="gonzalo@example.com", subject="Hi", body="Sehr geehrter Gonzalo,\n\nBest,\nJohannes"
+        )
+    )
+
+    assert payload["status"] == "confirmation_required"
+    assert payload["contact_tone"] == "casual"
+    assert payload["contact_tone_source"] == "cache"
+
+
+def test_outlook_write_email_detects_tone_on_cache_miss(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+    monkeypatch.setattr(outlook_tool, "_load_cached_signature", lambda: "Best,\nJohannes")
+    monkeypatch.setattr(outlook_tool, "_load_cached_tone", lambda email: None)
+
+    saved = {}
+
+    def _save_cached_tone(email, tone, source="sent-folder"):
+        saved["args"] = (email, tone, source)
+
+    monkeypatch.setattr(outlook_tool, "_save_cached_tone", _save_cached_tone)
+
+    async def _detect_tone_for_contact_async(email, sample_size=5):
+        assert email == "gonzalo@example.com"
+        return "casual"
+
+    monkeypatch.setattr(
+        outlook_tool, "_detect_tone_for_contact_async", _detect_tone_for_contact_async
+    )
+
+    payload = json.loads(
+        outlook_tool.outlook_write_email(
+            to="gonzalo@example.com", subject="Hi", body="Body text"
+        )
+    )
+
+    assert payload["contact_tone"] == "casual"
+    assert payload["contact_tone_source"] == "sent-folder"
+    assert saved["args"] == ("gonzalo@example.com", "casual", "sent-folder")
+
+
+def test_classify_tone_detects_formal_and_casual():
+    assert outlook_tool._classify_tone("Sehr geehrter Herr Müller,\n\nanbei...") == "formal"
+    assert outlook_tool._classify_tone("Hi Gonzalo,\n\nkurze Frage...") == "casual"
+    assert outlook_tool._classify_tone("Ambiguous opening line without markers") is None
+
+
 def test_outlook_write_email_happy_path_sends_when_confirmed(monkeypatch):
     monkeypatch.setattr(
         outlook_tool,
