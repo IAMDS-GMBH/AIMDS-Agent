@@ -292,7 +292,13 @@ _FOLDER_MAP = {
     "drafts": "drafts",
     "deleted": "deleteditems",
     "archive": "archive",
+    "junk": "junkemail",
 }
+# Folder names that mean "search the whole mailbox", not a specific
+# well-known folder. Previously these silently fell through
+# _FOLDER_MAP.get(folder, "inbox") and searched inbox only while still
+# reporting "folder": "all" in the response — a fully silent bug.
+_WHOLE_MAILBOX_FOLDER_NAMES = ("all", "everywhere", "any")
 
 
 def _time_range_bounds(time_range: str) -> tuple[str, str] | None:
@@ -675,29 +681,84 @@ async def _detect_tone_for_contact_async(email: str, sample_size: int = 5) -> st
     return Counter(tones).most_common(1)[0][0]
 
 
+def _build_mail_search_kql(
+    query: str,
+    search_in: str,
+    sender: str,
+    recipient: str,
+    date_from: str,
+    date_to: str,
+) -> str:
+    """Build a proper Outlook/Graph KQL search expression from structured
+    filters instead of relying on free-text keyword matching alone.
+
+    Previously outlook_search_emails only accepted a single free-text
+    ``query`` string, which forced attempts at recipient/date filtering to
+    be spelled out as literal, human-readable text (e.g. "Datum: 02.06.2026
+    Empf\u00e4nger: arnim") that never appears verbatim in any email and so
+    always matched zero messages. Graph's $search actually understands KQL
+    property restrictions (``from:``, ``to:``, ``received:``), so build
+    those explicitly instead.
+    """
+    parts: list[str] = []
+
+    if sender.strip():
+        parts.append(f'from:"{sender.strip()}"')
+    if recipient.strip():
+        parts.append(f'to:"{recipient.strip()}"')
+
+    date_from = date_from.strip()
+    date_to = date_to.strip()
+    if date_from and date_to:
+        parts.append(f"received:{date_from}..{date_to}")
+    elif date_from:
+        parts.append(f"received>={date_from}")
+    elif date_to:
+        parts.append(f"received<={date_to}")
+
+    query = query.strip()
+    if query:
+        safe_query = query.replace('"', '\\"')
+        normalized_scope = (search_in or "both").strip().lower()
+        if normalized_scope == "subject":
+            parts.append(f'subject:"{safe_query}"')
+        elif normalized_scope == "body":
+            parts.append(f'body:"{safe_query}"')
+        else:
+            parts.append(f'"{safe_query}"')  # subject + body + sender by default
+
+    return " ".join(parts)
+
+
 async def _search_emails_async(
     query: str,
     count: int,
     search_in: str,
     folder: str,
+    sender: str = "",
+    recipient: str = "",
+    date_from: str = "",
+    date_to: str = "",
 ) -> list[dict[str, Any]]:
-    """Search emails by keyword in subject and/or body via Graph $search."""
+    """Search emails via Graph $search, with optional structured sender/
+    recipient/date filters layered in as real KQL restrictions (see
+    _build_mail_search_kql) rather than free text alone."""
     client, _ = _new_graph_client()
 
     select_fields = ["id", "subject", "receivedDateTime", "isRead",
                      "from", "toRecipients", "hasAttachments", "importance", "bodyPreview"]
 
-    graph_folder = _FOLDER_MAP.get(folder.lower(), "inbox")
-    path = f"/me/mailFolders/{graph_folder}/messages"
-
-    safe_query = query.replace('"', '\\"')
-    normalized_scope = (search_in or "both").strip().lower()
-    if normalized_scope == "subject":
-        search_expr = f'subject:"{safe_query}"'
-    elif normalized_scope == "body":
-        search_expr = f'body:"{safe_query}"'
+    normalized_folder = (folder or "").strip().lower()
+    if normalized_folder in _WHOLE_MAILBOX_FOLDER_NAMES:
+        # Search the entire mailbox (all folders) instead of silently
+        # falling back to inbox-only, which is what happened before this
+        # fix whenever folder="all"/"junk" wasn't in _FOLDER_MAP.
+        path = "/me/messages"
     else:
-        search_expr = f'"{safe_query}"'  # searches subject + body + sender by default
+        graph_folder = _FOLDER_MAP.get(normalized_folder, "inbox")
+        path = f"/me/mailFolders/{graph_folder}/messages"
+
+    search_expr = _build_mail_search_kql(query, search_in, sender, recipient, date_from, date_to)
 
     params: dict[str, Any] = {
         "$search": search_expr,
@@ -1477,16 +1538,36 @@ def outlook_read_email(
 
 
 def outlook_search_emails(
-    query: str,
+    query: str = "",
     count: int = 10,
     search_in: str = "both",
     folder: str = "inbox",
+    sender: str = "",
+    recipient: str = "",
+    date_from: str = "",
+    date_to: str = "",
     device_code: str = "",
     task_id: str | None = None,
 ) -> str:
-    """Search emails by keyword in subject and/or body."""
-    if not query:
-        return json.dumps({"error": "query is required."})
+    """Search emails by keyword and/or structured sender/recipient/date filters.
+
+    ``query`` is an optional free-text keyword (matched in subject/body/
+    sender depending on ``search_in``). ``sender``/``recipient`` filter by
+    email address or name. ``date_from``/``date_to`` are ISO dates
+    (YYYY-MM-DD) filtering by received date — either can be used alone for
+    an open-ended range. At least one of query/sender/recipient/date_from/
+    date_to must be given. Do NOT encode these as descriptive text inside
+    ``query`` (e.g. "Datum: 2026-06-02 Empfänger: arnim") — that never
+    matches anything; use the dedicated parameters instead.
+    """
+    if not query.strip() and not sender.strip() and not recipient.strip() \
+            and not date_from.strip() and not date_to.strip():
+        return json.dumps({
+            "error": (
+                "At least one of query, sender, recipient, date_from, or date_to is "
+                "required."
+            )
+        })
 
     early, toolset_enabled = _outlook_auth_guard(device_code, label="Outlook")
     if early is not None:
@@ -1494,7 +1575,10 @@ def outlook_search_emails(
 
     try:
         raw_emails = _run_async(
-            _search_emails_async(query, count, search_in, folder), timeout=120
+            _search_emails_async(
+                query, count, search_in, folder, sender, recipient, date_from, date_to,
+            ),
+            timeout=120,
         )
     except Exception as exc:
         return json.dumps({"error": str(exc)})
@@ -1504,6 +1588,10 @@ def outlook_search_emails(
         "query": query,
         "search_in": search_in,
         "folder": folder,
+        "sender": sender,
+        "recipient": recipient,
+        "date_from": date_from,
+        "date_to": date_to,
         "count": len(emails),
         "emails": emails,
         "toolset_auto_enabled": bool(device_code and toolset_enabled),
@@ -2410,24 +2498,34 @@ registry.register(
     schema={
         "name": "outlook_search_emails",
         "description": (
-            "Search the Outlook / Microsoft 365 mailbox for emails matching a keyword or phrase. "
-            "Use this whenever the user asks to find an email about a topic, sender, or word "
-            "(e.g. 'find the email about the invoice', 'search for emails from Alice about the contract'), "
-            "or whenever the user asks if someone has replied yet / if a follow-up arrived "
-            "(e.g. search for the recipient's name or the original subject). "
-            "By default searches both subject and body content. "
-            "Do NOT use this for a plain time-boxed overview with no keyword — use outlook_get_emails instead. "
-            "IMPORTANT: you have direct, live access to this mailbox through this tool — call it YOURSELF "
-            "right now instead of telling the user to search Outlook manually, to run this tool themselves "
-            "later, or offering to 'check periodically' without actually checking. If asked to check for a "
-            "reply, check now and report the real result (found / not found yet)."
+            "Search the Outlook / Microsoft 365 mailbox for emails matching a keyword/phrase "
+            "and/or structured sender, recipient, or date filters. "
+            "Use this whenever the user asks to find an email about a topic, sender/recipient, "
+            "word, or date (e.g. 'find the email about the invoice', 'search for emails from "
+            "Alice about the contract', 'the mail I sent Bob on 2026-06-02'), or whenever the "
+            "user asks if someone has replied yet / if a follow-up arrived. "
+            "IMPORTANT: use the dedicated sender/recipient/date_from/date_to parameters for "
+            "those filters — do NOT spell them out as descriptive text inside 'query' (e.g. "
+            "'Datum: 2026-06-02 Empfänger: arnim'), since that text never appears verbatim in "
+            "any email and will always return zero results. "
+            "Do NOT use this for a plain time-boxed overview with no filters at all — use "
+            "outlook_get_emails instead. "
+            "IMPORTANT: you have direct, live access to this mailbox through this tool — call it "
+            "YOURSELF right now instead of telling the user to search Outlook manually, to run "
+            "this tool themselves later, or offering to 'check periodically' without actually "
+            "checking. If asked to check for a reply, check now and report the real result "
+            "(found / not found yet)."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Keyword or phrase to search for, e.g. 'invoice' or 'quarterly report'.",
+                    "description": (
+                        "Optional keyword or phrase to search for, e.g. 'invoice' or 'quarterly "
+                        "report'. Leave empty if only filtering by sender/recipient/date."
+                    ),
+                    "default": "",
                 },
                 "count": {
                     "type": "integer",
@@ -2437,21 +2535,45 @@ registry.register(
                 "search_in": {
                     "type": "string",
                     "description": (
-                        "Where to search: 'both' (subject + body, default), 'subject' only, "
-                        "or 'body' only."
+                        "Where the free-text 'query' matches: 'both' (subject + body, default), "
+                        "'subject' only, or 'body' only. Has no effect on sender/recipient/date "
+                        "filters."
                     ),
                     "default": "both",
                     "enum": ["both", "subject", "body"],
                 },
                 "folder": {
                     "type": "string",
-                    "description": "Folder to search: inbox, sent, drafts, deleted, archive. Default inbox.",
+                    "description": (
+                        "Folder to search: inbox, sent, drafts, deleted, archive, junk, or "
+                        "'all' to search the entire mailbox across every folder. Default inbox."
+                    ),
                     "default": "inbox",
-                    "enum": ["inbox", "sent", "drafts", "deleted", "archive"],
+                    "enum": ["inbox", "sent", "drafts", "deleted", "archive", "junk", "all"],
+                },
+                "sender": {
+                    "type": "string",
+                    "description": "Filter by sender email address or name, e.g. 'alice@contoso.com'.",
+                    "default": "",
+                },
+                "recipient": {
+                    "type": "string",
+                    "description": "Filter by recipient (To) email address or name.",
+                    "default": "",
+                },
+                "date_from": {
+                    "type": "string",
+                    "description": "Only include emails received on/after this date (YYYY-MM-DD).",
+                    "default": "",
+                },
+                "date_to": {
+                    "type": "string",
+                    "description": "Only include emails received on/before this date (YYYY-MM-DD).",
+                    "default": "",
                 },
                 "device_code": _DEVICE_CODE_PARAM_SCHEMA,
             },
-            "required": ["query"],
+            "required": [],
         },
     },
     handler=lambda args, **kw: outlook_search_emails(
@@ -2459,6 +2581,10 @@ registry.register(
         count=int(args.get("count", 10)),
         search_in=str(args.get("search_in", "both")),
         folder=str(args.get("folder", "inbox")),
+        sender=str(args.get("sender", "")),
+        recipient=str(args.get("recipient", "")),
+        date_from=str(args.get("date_from", "")),
+        date_to=str(args.get("date_to", "")),
         device_code=str(args.get("device_code", "")),
         task_id=kw.get("task_id"),
     ),
@@ -2537,7 +2663,11 @@ registry.register(
             "confirm (or confirm=false) first — it returns a preview and does not send anything. Show "
             "that exact preview (To/Cc/Bcc/Subject/Body) to the user and only call this tool again with "
             "confirm=true after they explicitly approve. Never set confirm=true on the first call — "
-            "sent emails cannot be recalled."
+            "sent emails cannot be recalled. The first (preview) response includes a 'draft_id' — when "
+            "confirming, pass confirm=true together with that SAME draft_id and nothing else (do not "
+            "re-type to/subject/body/cc/bcc); this avoids re-emitting a long body as JSON, which has "
+            "previously caused retry loops that silently never sent the email. If the draft_id is "
+            "missing or expired, call again with confirm=false to get a fresh preview and draft_id."
         ),
         "parameters": {
             "type": "object",
@@ -2546,7 +2676,7 @@ registry.register(
                     "type": "string",
                     "description": (
                         "Comma-separated recipient email addresses, e.g. 'a@x.com,b@y.com'. "
-                        "Required unless reply_to_message_id is set."
+                        "Required unless reply_to_message_id or draft_id is set."
                     ),
                     "default": "",
                 },
@@ -2583,9 +2713,20 @@ registry.register(
                     "description": (
                         "Must be true to actually send. Leave false/unset on the first call to get a "
                         "preview; only set true after the user has explicitly confirmed that exact "
-                        "preview."
+                        "preview. When true, pass the 'draft_id' from the preview response instead of "
+                        "repeating to/subject/body."
                     ),
                     "default": False,
+                },
+                "draft_id": {
+                    "type": "string",
+                    "description": (
+                        "The draft_id returned by the preview (confirm=false) call. Pass this back "
+                        "together with confirm=true to send exactly that previewed draft without "
+                        "retyping to/subject/body/cc/bcc. Only valid once and for the current process "
+                        "lifetime."
+                    ),
+                    "default": "",
                 },
                 "device_code": _DEVICE_CODE_PARAM_SCHEMA,
             },
@@ -2601,6 +2742,7 @@ registry.register(
         reply_to_message_id=str(args.get("reply_to_message_id", "")),
         device_code=str(args.get("device_code", "")),
         confirm=bool(args.get("confirm", False)),
+        draft_id=str(args.get("draft_id", "")),
         task_id=kw.get("task_id"),
     ),
 )

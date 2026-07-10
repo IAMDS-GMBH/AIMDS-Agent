@@ -181,7 +181,7 @@ def test_outlook_read_email_happy_path(monkeypatch):
     assert payload["email"]["conversation_id"] == "conv-1"
 
 
-def test_outlook_search_emails_requires_query(monkeypatch):
+def test_outlook_search_emails_requires_at_least_one_filter(monkeypatch):
     monkeypatch.setattr(
         outlook_tool,
         "_get_outlook_creds",
@@ -189,7 +189,6 @@ def test_outlook_search_emails_requires_query(monkeypatch):
     )
     payload = json.loads(outlook_tool.outlook_search_emails(query=""))
     assert "error" in payload
-    assert "query" in payload["error"]
 
 
 def test_outlook_search_emails_happy_path(monkeypatch):
@@ -203,8 +202,9 @@ def test_outlook_search_emails_happy_path(monkeypatch):
 
     captured = {}
 
-    async def _search_emails_async(query, count, search_in, folder):
-        captured["args"] = (query, count, search_in, folder)
+    async def _search_emails_async(query, count, search_in, folder, sender="", recipient="",
+                                    date_from="", date_to=""):
+        captured["args"] = (query, count, search_in, folder, sender, recipient, date_from, date_to)
         return []
 
     monkeypatch.setattr(outlook_tool, "_search_emails_async", _search_emails_async)
@@ -212,7 +212,112 @@ def test_outlook_search_emails_happy_path(monkeypatch):
     payload = json.loads(outlook_tool.outlook_search_emails(query="invoice", search_in="subject"))
 
     assert payload["count"] == 0
-    assert captured["args"] == ("invoice", 10, "subject", "inbox")
+    assert captured["args"] == ("invoice", 10, "subject", "inbox", "", "", "", "")
+
+
+def test_outlook_search_emails_structured_filters_without_query(monkeypatch):
+    """A search with only sender/recipient/date filters (no keyword) must be
+    accepted — this is the exact scenario that used to be forced into
+    unparseable free text and always returned zero results."""
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+
+    captured = {}
+
+    async def _search_emails_async(query, count, search_in, folder, sender="", recipient="",
+                                    date_from="", date_to=""):
+        captured["args"] = (query, count, search_in, folder, sender, recipient, date_from, date_to)
+        return []
+
+    monkeypatch.setattr(outlook_tool, "_search_emails_async", _search_emails_async)
+
+    payload = json.loads(
+        outlook_tool.outlook_search_emails(
+            recipient="arnim.schmidt@f1rst.ch", date_from="2026-05-30", date_to="2026-06-05",
+        )
+    )
+
+    assert "error" not in payload
+    assert captured["args"] == (
+        "", 10, "both", "inbox", "", "arnim.schmidt@f1rst.ch", "2026-05-30", "2026-06-05",
+    )
+
+
+def test_build_mail_search_kql_combines_structured_and_free_text():
+    expr = outlook_tool._build_mail_search_kql(
+        query="Angebot",
+        search_in="both",
+        sender="alice@contoso.com",
+        recipient="bob@contoso.com",
+        date_from="2026-05-30",
+        date_to="2026-06-05",
+    )
+    assert 'from:"alice@contoso.com"' in expr
+    assert 'to:"bob@contoso.com"' in expr
+    assert "received:2026-05-30..2026-06-05" in expr
+    assert '"Angebot"' in expr
+
+
+def test_build_mail_search_kql_date_from_only():
+    expr = outlook_tool._build_mail_search_kql(
+        query="", search_in="both", sender="", recipient="", date_from="2026-05-30", date_to="",
+    )
+    assert expr == "received>=2026-05-30"
+
+
+def test_build_mail_search_kql_date_to_only():
+    expr = outlook_tool._build_mail_search_kql(
+        query="", search_in="both", sender="", recipient="", date_from="", date_to="2026-06-05",
+    )
+    assert expr == "received<=2026-06-05"
+
+
+def test_search_emails_async_folder_all_uses_whole_mailbox(monkeypatch):
+    """folder='all' must query /me/messages (whole mailbox), not silently
+    fall back to inbox while still reporting 'all' back to the caller."""
+    captured = {}
+
+    class _FakeClient:
+        async def get_json(self, path, params=None, headers=None):
+            captured["path"] = path
+            captured["params"] = params
+            return {"value": []}
+
+    monkeypatch.setattr(outlook_tool, "_new_graph_client", lambda: (_FakeClient(), None))
+
+    import asyncio
+    asyncio.run(
+        outlook_tool._search_emails_async(
+            query="", count=10, search_in="both", folder="all", recipient="bob@contoso.com",
+        )
+    )
+
+    assert captured["path"] == "/me/messages"
+
+
+def test_search_emails_async_folder_junk_maps_to_junkemail(monkeypatch):
+    captured = {}
+
+    class _FakeClient:
+        async def get_json(self, path, params=None, headers=None):
+            captured["path"] = path
+            return {"value": []}
+
+    monkeypatch.setattr(outlook_tool, "_new_graph_client", lambda: (_FakeClient(), None))
+
+    import asyncio
+    asyncio.run(
+        outlook_tool._search_emails_async(
+            query="invoice", count=10, search_in="both", folder="junk",
+        )
+    )
+
+    assert captured["path"] == "/me/mailFolders/junkemail/messages"
 
 
 def test_outlook_read_shared_mail_requires_mailbox(monkeypatch):
@@ -373,6 +478,30 @@ def test_outlook_write_email_confirm_with_unknown_draft_id_errors(monkeypatch):
     )
     assert "error" in result
     assert "does-not-exist" in result["error"]
+
+
+def test_outlook_write_email_registry_schema_exposes_draft_id():
+    """Regression guard: draft_id is a real function parameter used by the
+    confirm-flow, but was previously missing from both the tool schema and
+    the handler lambda — meaning the model could never actually pass it
+    back, silently breaking the whole draft_id-based confirm contract."""
+    entry = outlook_tool.registry.get_entry("outlook_write_email")
+    assert entry is not None
+    assert "draft_id" in entry.schema["parameters"]["properties"]
+
+    captured = {}
+    monkeypatch_handler = entry.handler
+    original_fn = outlook_tool.outlook_write_email
+    try:
+        def _fake(*args, **kwargs):
+            captured.update(kwargs)
+            return "{}"
+        outlook_tool.outlook_write_email = _fake
+        monkeypatch_handler({"confirm": True, "draft_id": "abc-123"})
+    finally:
+        outlook_tool.outlook_write_email = original_fn
+
+    assert captured.get("draft_id") == "abc-123"
 
 
 def test_outlook_write_email_confirm_with_nothing_gives_actionable_error(monkeypatch):
