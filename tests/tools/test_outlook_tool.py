@@ -278,6 +278,16 @@ def test_outlook_write_email_without_confirm_returns_preview(monkeypatch):
     )
     monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
     monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+    monkeypatch.setattr(outlook_tool, "_load_cached_signature", lambda: None)
+
+    async def _detect_signature_from_sent_emails_async(sample_size=3):
+        return None
+
+    monkeypatch.setattr(
+        outlook_tool,
+        "_detect_signature_from_sent_emails_async",
+        _detect_signature_from_sent_emails_async,
+    )
 
     async def _send_new_email_async(to, subject, body, cc, bcc, reply_to_message_id):
         raise AssertionError("must not send before confirm=True")
@@ -296,6 +306,72 @@ def test_outlook_write_email_without_confirm_returns_preview(monkeypatch):
     # Must steer the model toward the clarify tool (real buttons/choices)
     # instead of free-text "OK" confirmation.
     assert "clarify" in payload["message"].lower()
+    assert "user_signature" not in payload
+
+
+def test_outlook_write_email_uses_cached_signature(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+    monkeypatch.setattr(outlook_tool, "_load_cached_signature", lambda: "Best,\nJohannes")
+
+    async def _detect_signature_from_sent_emails_async(sample_size=3):
+        raise AssertionError("must not re-detect when a cache hit exists")
+
+    monkeypatch.setattr(
+        outlook_tool,
+        "_detect_signature_from_sent_emails_async",
+        _detect_signature_from_sent_emails_async,
+    )
+
+    payload = json.loads(
+        outlook_tool.outlook_write_email(
+            to="a@example.com", subject="Hi", body="Body text without a signature"
+        )
+    )
+
+    assert payload["status"] == "confirmation_required"
+    assert payload["user_signature"] == "Best,\nJohannes"
+    assert payload["signature_source"] == "cache"
+
+
+def test_outlook_write_email_skips_signature_lookup_for_replies(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+
+    def _load_cached_signature():
+        raise AssertionError("replies must not trigger signature lookup")
+
+    monkeypatch.setattr(outlook_tool, "_load_cached_signature", _load_cached_signature)
+
+    payload = json.loads(
+        outlook_tool.outlook_write_email(
+            to="", subject="", body="Reply body", reply_to_message_id="msg-1"
+        )
+    )
+
+    assert payload["status"] == "confirmation_required"
+    assert "user_signature" not in payload
+
+
+def test_extract_signature_candidate_cuts_at_quote_marker():
+    body = (
+        "Hi Gonzalo,\n\nDas klingt gut.\n\nBeste Grüße,\nJohannes\n\n"
+        "From: Someone Else\nSent: yesterday\nSubject: RE: thread\n\nOld message body"
+    )
+    candidate = outlook_tool._extract_signature_candidate(body)
+    assert candidate is not None
+    assert "Johannes" in candidate
+    assert "Old message body" not in candidate
 
 
 def test_outlook_write_email_happy_path_sends_when_confirmed(monkeypatch):

@@ -26,7 +26,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -390,6 +392,124 @@ async def _fetch_email_by_id_async(message_id: str) -> dict[str, Any]:
     params = {"$select": ",".join(select_fields)}
     resp = await client.get_json(f"/me/messages/{message_id}", params=params)
     return resp
+
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _strip_html(text: str) -> str:
+    """Best-effort HTML-to-plain-text for signature detection only (not a
+    general-purpose renderer — good enough to locate a trailing text block)."""
+    if not text or "<" not in text:
+        return text or ""
+    text = re.sub(r"(?is)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?is)</p>|</div>", "\n", text)
+    text = _HTML_TAG_RE.sub("", text)
+    text = (
+        text.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+    )
+    return text
+
+
+def _signature_cache_path():
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "outlook_signature.json"
+
+
+def _load_cached_signature() -> str | None:
+    """Read the locally cached email signature, if any.
+
+    Stored on disk (not just in memory MCP) so it's available deterministically
+    to every session/client without depending on a memory tool being active or
+    the model remembering to look it up.
+    """
+    try:
+        path = _signature_cache_path()
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text())
+        sig = data.get("signature")
+        return sig if isinstance(sig, str) and sig.strip() else None
+    except Exception:
+        return None
+
+
+def _save_cached_signature(signature: str, source: str = "sent-folder") -> None:
+    try:
+        path = _signature_cache_path()
+        path.write_text(json.dumps({
+            "signature": signature,
+            "source": source,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }))
+    except Exception:
+        pass
+
+
+# Markers that indicate quoted/reply history below the user's own new text —
+# cut the body there before looking for a signature so we don't pick up the
+# *other* person's signature from a quoted thread.
+_QUOTE_MARKERS = (
+    "From:", "Von:", "-----Original Message-----", "-----Ursprüngliche Nachricht-----",
+)
+
+
+def _extract_signature_candidate(body_text: str) -> str | None:
+    """Heuristic: the last few non-empty lines of a sent email, treated as a
+    signature/closing block. Not perfect, but good enough to seed a cache
+    that a human can review/correct once."""
+    if not body_text:
+        return None
+    for marker in _QUOTE_MARKERS:
+        idx = body_text.find(marker)
+        if idx > 50:  # keep some real content before treating it as a cut point
+            body_text = body_text[:idx]
+    lines = [ln.strip() for ln in body_text.splitlines()]
+    while lines and not lines[-1]:
+        lines.pop()
+    if not lines:
+        return None
+    candidate = "\n".join(lines[-6:]).strip()
+    if not candidate or len(candidate) > 400:
+        return None
+    return candidate
+
+
+async def _detect_signature_from_sent_emails_async(sample_size: int = 3) -> str | None:
+    """Fetch a few recent sent emails and infer a common trailing signature
+    block. Best-effort: any failure returns ``None`` rather than raising, so
+    it can be a fire-and-forget step inside ``outlook_write_email``."""
+    try:
+        raw_list = await _fetch_emails_async(sample_size, "sent", False, False, "all")
+    except Exception:
+        return None
+
+    candidates: list[str] = []
+    for msg in raw_list[:sample_size]:
+        msg_id = msg.get("id")
+        if not msg_id:
+            continue
+        try:
+            full = await _fetch_email_by_id_async(msg_id)
+        except Exception:
+            continue
+        body = full.get("body") or {}
+        content = body.get("content", "")
+        text = _strip_html(content) if body.get("contentType", "").lower() == "html" else content
+        candidate = _extract_signature_candidate(text)
+        if candidate:
+            candidates.append(candidate)
+
+    if not candidates:
+        return None
+
+    counts = Counter(candidates)
+    most_common, freq = counts.most_common(1)[0]
+    return most_common if (freq >= 2 or len(candidates) == 1) else candidates[0]
 
 
 async def _search_emails_async(
@@ -1237,7 +1357,7 @@ def outlook_write_email(
         return json.dumps(early)
 
     if not confirm:
-        return json.dumps({
+        response: dict[str, Any] = {
             "status": "confirmation_required",
             "message": (
                 "Do not send yet. Show this exact preview (To/Cc/Bcc/Subject/Body) to the user "
@@ -1259,7 +1379,44 @@ def outlook_write_email(
                 "body": body,
                 "reply_to_message_id": reply_to_message_id,
             },
-        })
+        }
+
+        # Deterministic (code-level, not model-recall-dependent) signature
+        # lookup for brand-new emails (replies already show the thread, so
+        # the existing tone/signature is visible there instead). Checks a
+        # local on-disk cache first — this is the "always available in the
+        # client" source of truth independent of any memory tool — and
+        # falls back to a best-effort scan of recent Sent items on a cache
+        # miss, caching the result for next time.
+        if not reply_to_message_id:
+            signature = _load_cached_signature()
+            signature_source = "cache" if signature else None
+            if not signature:
+                try:
+                    signature = _run_async(
+                        _detect_signature_from_sent_emails_async(), timeout=60
+                    )
+                except Exception:
+                    signature = None
+                if signature:
+                    _save_cached_signature(signature)
+                    signature_source = "sent-folder"
+            if signature and signature.strip() not in body:
+                response["user_signature"] = signature
+                response["signature_source"] = signature_source
+                response["message"] += (
+                    " A signature was found (source="
+                    + str(signature_source)
+                    + "): "
+                    + json.dumps(signature)
+                    + ". If the body above doesn't already end with it, call "
+                    "outlook_write_email again (still confirm=false) with it appended "
+                    "to body before showing the preview to the user. If a memory-save "
+                    "tool is available, also persist it there (schema `notes`) so it "
+                    "survives even if this local cache is cleared."
+                )
+
+        return json.dumps(response)
 
     try:
         verification = _run_async(
