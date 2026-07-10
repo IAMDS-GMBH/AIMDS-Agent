@@ -866,3 +866,210 @@ def test_outlook_write_calendar_entries_create_happy_path(monkeypatch):
 
     assert payload["status"] == "created"
     assert payload["entry"]["subject"] == "Kickoff"
+
+
+def test_outlook_read_contacts_requires_credentials(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "", "client_id": "", "client_secret": ""},
+    )
+    payload = json.loads(outlook_tool.outlook_read_contacts())
+    assert "error" in payload
+
+
+def test_outlook_read_contacts_happy_path(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+
+    raw_contacts = [
+        {
+            "id": "c-1",
+            "displayName": "Jane Doe",
+            "givenName": "Jane",
+            "surname": "Doe",
+            "companyName": "IAMDS",
+            "jobTitle": "Engineer",
+            "emailAddresses": [{"address": "jane@example.com"}],
+            "businessPhones": ["+49 1 2345"],
+            "mobilePhone": "",
+            "personalNotes": "",
+        }
+    ]
+
+    async def _fetch_contacts_async(count, search):
+        assert count == 20
+        assert search == ""
+        return raw_contacts
+
+    monkeypatch.setattr(outlook_tool, "_fetch_contacts_async", _fetch_contacts_async)
+
+    payload = json.loads(outlook_tool.outlook_read_contacts())
+
+    assert payload["count"] == 1
+    assert payload["contacts"][0]["display_name"] == "Jane Doe"
+    assert payload["contacts"][0]["emails"] == ["jane@example.com"]
+
+
+def test_outlook_write_contacts_invalid_action(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    payload = json.loads(outlook_tool.outlook_write_contacts(action="bogus"))
+    assert "error" in payload
+
+
+def test_outlook_write_contacts_create_requires_name(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    payload = json.loads(outlook_tool.outlook_write_contacts(action="create"))
+    assert "error" in payload
+
+
+def test_outlook_write_contacts_update_requires_contact_id(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    payload = json.loads(outlook_tool.outlook_write_contacts(action="update"))
+    assert "error" in payload
+
+
+def test_outlook_write_contacts_update_without_confirm_returns_preview(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+
+    previous_contact = {
+        "id": "c-1",
+        "displayName": "Old Name",
+        "emailAddresses": [{"address": "old@example.com"}],
+    }
+
+    async def _get_contact_async(contact_id):
+        assert contact_id == "c-1"
+        return previous_contact
+
+    apply_calls = {"count": 0}
+
+    async def _update_contact_async(contact_id, contact_body):
+        apply_calls["count"] += 1
+        return previous_contact
+
+    monkeypatch.setattr(outlook_tool, "_get_contact_async", _get_contact_async)
+    monkeypatch.setattr(outlook_tool, "_update_contact_async", _update_contact_async)
+
+    payload = json.loads(
+        outlook_tool.outlook_write_contacts(
+            action="update", contact_id="c-1", display_name="New Name", confirm=False,
+        )
+    )
+
+    assert payload["status"] == "confirmation_required"
+    assert payload["previous_state"]["display_name"] == "Old Name"
+    assert apply_calls["count"] == 0
+
+
+def test_outlook_write_contacts_update_with_confirm_applies(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+
+    previous_contact = {"id": "c-1", "displayName": "Old Name"}
+    updated_contact = {"id": "c-1", "displayName": "New Name"}
+
+    async def _get_contact_async(contact_id):
+        return previous_contact
+
+    async def _update_contact_async(contact_id, contact_body):
+        assert contact_body["displayName"] == "New Name"
+        return updated_contact
+
+    monkeypatch.setattr(outlook_tool, "_get_contact_async", _get_contact_async)
+    monkeypatch.setattr(outlook_tool, "_update_contact_async", _update_contact_async)
+
+    payload = json.loads(
+        outlook_tool.outlook_write_contacts(
+            action="update", contact_id="c-1", display_name="New Name", confirm=True,
+        )
+    )
+
+    assert payload["status"] == "updated"
+    assert payload["previous_state"]["display_name"] == "Old Name"
+    assert payload["contact"]["display_name"] == "New Name"
+
+
+def test_outlook_write_contacts_delete_without_confirm_returns_preview(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+
+    previous_contact = {"id": "c-1", "displayName": "To Delete"}
+
+    async def _get_contact_async(contact_id):
+        return previous_contact
+
+    delete_calls = {"count": 0}
+
+    async def _delete_contact_async(contact_id):
+        delete_calls["count"] += 1
+        return {"deleted": True}
+
+    monkeypatch.setattr(outlook_tool, "_get_contact_async", _get_contact_async)
+    monkeypatch.setattr(outlook_tool, "_delete_contact_async", _delete_contact_async)
+
+    payload = json.loads(
+        outlook_tool.outlook_write_contacts(action="delete", contact_id="c-1", confirm=False)
+    )
+
+    assert payload["status"] == "confirmation_required"
+    assert payload["previous_state"]["display_name"] == "To Delete"
+    assert delete_calls["count"] == 0
+
+
+def test_outlook_write_contacts_create_happy_path(monkeypatch):
+    monkeypatch.setattr(
+        outlook_tool,
+        "_get_outlook_creds",
+        lambda: {"tenant_id": "tenant", "client_id": "client", "client_secret": ""},
+    )
+    monkeypatch.setattr(outlook_tool, "_has_valid_token_cache", lambda: True)
+    monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", lambda: (False, None))
+
+    created_contact = {"id": "c-new", "displayName": "Gonzalo Oberreuter"}
+
+    async def _create_contact_async(contact_body):
+        assert contact_body["displayName"] == "Gonzalo Oberreuter"
+        return created_contact
+
+    monkeypatch.setattr(outlook_tool, "_create_contact_async", _create_contact_async)
+
+    payload = json.loads(
+        outlook_tool.outlook_write_contacts(action="create", display_name="Gonzalo Oberreuter")
+    )
+
+    assert payload["status"] == "created"
+    assert payload["contact"]["display_name"] == "Gonzalo Oberreuter"

@@ -26,16 +26,26 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 # One combined scope covering every delegated permission any Outlook tool
-# needs (mail read/write/send, shared mailbox, calendar). All Outlook Graph
-# calls and interactive sign-ins request this same scope so a single sign-in
-# covers every tool — requesting narrower, tool-specific scopes previously
-# caused the user to be re-prompted for a fresh interactive sign-in whenever
-# they switched between mail/calendar/shared-mailbox tools, and let a cached
-# access token issued for one scope be silently reused (and rejected with a
-# 403) for a call that needed a different, non-overlapping scope.
+# needs (mail read/send, shared mailbox, calendar, contacts). All Outlook
+# Graph calls and interactive sign-ins request this same scope so a single
+# sign-in covers every tool — requesting narrower, tool-specific scopes
+# previously caused the user to be re-prompted for a fresh interactive
+# sign-in whenever they switched between mail/calendar/shared-mailbox tools,
+# and let a cached access token issued for one scope be silently reused
+# (and rejected with a 403) for a call that needed a different,
+# non-overlapping scope.
+#
+# Must stay in sync with the exact Graph API permissions granted on the
+# Azure AD app registration (see docs/messaging/outlook-setup.md and
+# AIMDS-Suite/docs/configuration/OUTLOOK_CONNECTOR_APPREG.md) — requesting a
+# scope the app registration doesn't have granted causes AADSTS65001 /
+# invalid_scope at sign-in. Note: Mail.ReadWrite is intentionally NOT
+# requested — it was removed from the app registration's granted
+# permissions in favor of the narrower Mail.Read/Mail.Send pair.
 DEFAULT_DELEGATED_SCOPE = (
-    "Mail.Read Mail.Send Mail.ReadWrite Mail.Read.Shared "
-    "Calendars.ReadWrite offline_access"
+    "Mail.Read Mail.Send Mail.Read.Shared Calendars.ReadWrite "
+    "Contacts.Read Contacts.ReadWrite OrgContact.Read.All User.Read "
+    "offline_access"
 )
 DEFAULT_GRAPH_AUTHORITY_URL = "https://login.microsoftonline.com"
 DEFAULT_TOKEN_SKEW_SECONDS = 120

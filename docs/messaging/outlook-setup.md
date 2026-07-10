@@ -4,12 +4,12 @@ This guide explains how to connect Hermes to Microsoft Outlook via the Microsoft
 delegated permissions. By default, sign-in uses a one-click **browser-based OAuth flow** (similar
 to "Sign in with Microsoft" in OWA) — Hermes opens your browser, you sign in, and a local loopback
 redirect completes the flow automatically, with no code to copy. A single sign-in covers mail
-(read/write/shared) and calendar — you won't be asked to sign in again when switching between
-tools. The classic **device code flow** (open a URL, type a short code) is kept as a legacy option
-for hosts where a local browser can't be reached (e.g. headless/remote gateway servers), but it is
-only ever used when explicitly selected — Hermes never switches to it automatically. Once
+(read/write/shared), calendar, and contacts — you won't be asked to sign in again when switching
+between tools. The classic **device code flow** (open a URL, type a short code) is kept as a legacy
+option for hosts where a local browser can't be reached (e.g. headless/remote gateway servers), but
+it is only ever used when explicitly selected — Hermes never switches to it automatically. Once
 configured, you can interact with Outlook directly from the Hermes chat — reading mail, sending
-messages, and working with your calendar.
+messages, working with your calendar, and managing contacts.
 
 ---
 
@@ -58,13 +58,16 @@ Add the following permissions:
 |---|---|
 | `Mail.Read` | Read emails from the mailbox |
 | `Mail.Send` | Send emails on behalf of the user |
-| `Calendar.Read` | Read calendar events |
-| `Calendar.ReadBasic` | Read basic calendar metadata |
-| `Calendar.ReadWrite` | Create and update calendar events |
-| `offline_access` | Maintain access (refresh tokens) without re-authentication |
+| `Mail.Read.Shared` | Read shared/delegated mailboxes |
+| `Calendars.ReadWrite` | Read, create, and update calendar events |
+| `Contacts.Read` | Read Outlook contacts |
+| `Contacts.ReadWrite` | Create, update, and delete Outlook contacts |
+| `OrgContact.Read.All` | Read organizational contacts |
 | `User.Read` | Read the signed-in user's profile |
+| `offline_access` | Maintain access (refresh tokens) without re-authentication |
 
 > **Note:** Do **not** add application permissions (app-only). All of the above must be added as **Delegated** permissions.
+> **Note:** `Mail.ReadWrite` is intentionally **not** requested — sending only needs `Mail.Send`, and none of the current tools edit/flag existing messages.
 
 ---
 
@@ -180,10 +183,11 @@ just ask *"is Outlook connected?"* to have Hermes confirm your current sign-in s
 
 ### One sign-in covers everything
 
-All Outlook tools (read/write mail, shared mailbox, calendar) request the same combined set of
-permissions and share the same cached refresh token — signing in once is enough for all of them.
-You should not be asked to sign in again just because you switched from reading email to writing a
-calendar entry, for example. If you are, check the Troubleshooting table below.
+All Outlook tools (read/write mail, shared mailbox, calendar, contacts) request the same combined
+set of permissions and share the same cached refresh token — signing in once is enough for all of
+them. You should not be asked to sign in again just because you switched from reading email to
+writing a calendar entry or looking up a contact, for example. If you are, check the Troubleshooting
+table below.
 
 ### Sending emails
 
@@ -193,6 +197,12 @@ speculatively. After sending, Hermes double-checks that the message actually lan
 Items folder (Microsoft Graph's send API only confirms the request was accepted, not that delivery
 succeeded) — if that check doesn't find it within a few seconds, Hermes will tell you it couldn't
 be verified instead of claiming the email was definitely sent.
+
+### Managing contacts
+
+Hermes can read/search your Outlook contacts and create, update, or delete them. Just as with
+calendar and email changes, updating or deleting a contact always shows a preview of the current
+contact and the requested change first — nothing is modified until you explicitly confirm.
 
 ### Persistent sign-in
 
@@ -218,8 +228,10 @@ to that message to restart it without leaving the page.
 | `AADSTS500113: No reply address is registered for the application` (shown on Microsoft's own sign-in page, for *either* browser sign-in or device code) | App registration has no redirect URI at all | Add `http://localhost` under **Mobile and desktop applications** in the app's Authentication settings (Step 1) — required even if you only use the device code flow |
 | `AADSTS50020: User account … does not exist in tenant` | Wrong tenant ID, or user is in a different tenant | Verify the Tenant ID matches the user's Azure AD tenant |
 | `AADSTS65001: The user or administrator has not consented` | Admin consent not granted | Complete Step 3 |
+| `AADSTS70011: The provided value for the input parameter 'scope' is not valid` (`invalid_scope`) | Requested Graph permission isn't added to the app registration | Make sure all permissions listed in Step 2 are added (and admin-consented) — this can happen after removing/renaming a permission on the app registration without redeploying Hermes |
+| Sending an email or replying reports an error even though the message went through / appears in Sent Items | Microsoft Graph's `sendMail`/`reply` endpoints reply with `202 Accepted` and an empty body — older Hermes builds tried to parse that empty body as JSON and raised a false error | Fixed — update to the latest Hermes build; if it still happens, please report it as a bug |
 | Browser sign-in falls back to a device code unexpectedly | This should no longer happen — device code is never used as an automatic fallback | If you still see this, please report it as a bug |
-| Repeatedly asked to sign in again for different Outlook actions (mail vs. calendar vs. shared mailbox) | Fixed — all Outlook tools now share one combined-scope sign-in | If it still happens, check `~/.hermes/outlook_token.json` exists and is writable, and that only one Hermes profile/gateway is in use |
+| Repeatedly asked to sign in again for different Outlook actions (mail vs. calendar vs. shared mailbox vs. contacts) | Fixed — all Outlook tools now share one combined-scope sign-in | If it still happens, check `~/.hermes/outlook_token.json` exists and is writable, and that only one Hermes profile/gateway is in use |
 | Sign-in link or device code expires before authentication completes | Browser session too slow, or you clicked **Start Auth** again before finishing the previous attempt (that reuses the same still-pending link now instead of starting a new one) | Complete the sign-in shown, or click **Start Auth** again once the previous link has actually expired |
 | `Mail.Send` succeeds but emails go to Junk | SPF/DKIM not set for Graph-sent mail | Contact your IT team to allowlist Graph API outbound mail |
 | Sending an email fails (e.g. `ErrorAccessDenied` / `Access is denied`) even though sign-in works | `Mail.Send` permission missing from the app registration (`Mail.ReadWrite` alone does **not** grant sending) | Add `Mail.Send` under **API permissions** (Step 2), then click **Grant admin consent** again |

@@ -150,6 +150,7 @@ from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock
     build_environment_hints,
     build_nous_subscription_prompt,
     build_remote_mcp_memory_prompt,
+    build_outlook_memory_guidance,
     load_soul_md,
 )
 from agent.process_bootstrap import _get_proxy_from_env  # noqa: F401

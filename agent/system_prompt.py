@@ -150,6 +150,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     remote_mcp_memory_prompt = _r.build_remote_mcp_memory_prompt(agent.valid_tool_names)
     if remote_mcp_memory_prompt:
         stable_parts.append(remote_mcp_memory_prompt)
+
+    outlook_memory_guidance = _r.build_outlook_memory_guidance(agent.valid_tool_names)
+    if outlook_memory_guidance:
+        stable_parts.append(outlook_memory_guidance)
     # Tool-use enforcement: tells the model to actually call tools instead
     # of describing intended actions.  Controlled by config.yaml
     # agent.tool_use_enforcement:

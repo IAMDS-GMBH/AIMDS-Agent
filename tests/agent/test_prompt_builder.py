@@ -15,9 +15,14 @@ from agent.prompt_builder import (
     _find_hermes_md,
     _find_git_root,
     _strip_yaml_frontmatter,
+    _resolve_memory_context_tool_name,
+    _resolve_memory_skill_read_tool_name,
+    _resolve_memory_save_tool_name,
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
+    build_remote_mcp_memory_prompt,
+    build_outlook_memory_guidance,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
@@ -1304,5 +1309,76 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
+
+
+class TestResolveMemoryToolNames:
+    """_resolve_memory_context_tool_name / _resolve_memory_skill_read_tool_name /
+    _resolve_memory_save_tool_name all share the generic ``_resolve_memory_tool_name``
+    resolution logic (native name, then mcp_<server>_*_<suffix>, then generic
+    mcp_*_<suffix>, then any *_<suffix> as a last resort)."""
+
+    def test_returns_none_for_empty_tool_set(self):
+        assert _resolve_memory_context_tool_name(set()) is None
+        assert _resolve_memory_context_tool_name(None) is None
+        assert _resolve_memory_save_tool_name(set()) is None
+
+    def test_resolves_native_tool_name(self):
+        assert _resolve_memory_context_tool_name({"memory_context", "outlook_get_emails"}) == "memory_context"
+        assert _resolve_memory_save_tool_name({"memory_save", "web_search"}) == "memory_save"
+        assert _resolve_memory_skill_read_tool_name({"memory_skill_read"}) == "memory_skill_read"
+
+    def test_resolves_generic_mcp_prefixed_name(self):
+        names = {"mcp_IAMDS_mcp_memory_memory_save", "outlook_write_email"}
+        assert _resolve_memory_save_tool_name(names) == "mcp_IAMDS_mcp_memory_memory_save"
+
+    def test_resolves_suffix_only_as_last_resort(self):
+        names = {"weird_custom_prefix_memory_save"}
+        assert _resolve_memory_save_tool_name(names) == "weird_custom_prefix_memory_save"
+
+    def test_does_not_match_unrelated_suffix(self):
+        names = {"memory_context", "memory_skill_read"}
+        assert _resolve_memory_save_tool_name(names) is None
+
+
+class TestBuildOutlookMemoryGuidance:
+    """build_outlook_memory_guidance() is a cross-toolset hint: only injected
+    when BOTH an outlook_* tool AND a resolvable memory_save tool are present."""
+
+    def test_empty_when_no_outlook_tool(self):
+        assert build_outlook_memory_guidance({"memory_save", "web_search"}) == ""
+
+    def test_empty_when_no_memory_save_tool(self):
+        assert build_outlook_memory_guidance({"outlook_search_emails", "outlook_write_email"}) == ""
+
+    def test_empty_when_no_tools_at_all(self):
+        assert build_outlook_memory_guidance(set()) == ""
+        assert build_outlook_memory_guidance(None) == ""
+
+    def test_builds_guidance_when_both_present(self):
+        text = build_outlook_memory_guidance({"outlook_search_emails", "memory_save"})
+        assert text
+        assert "memory_save" in text
+        assert "outlook_search_emails" in text
+        assert "notes" in text
+        assert "person" in text
+
+    def test_resolves_prefixed_memory_save_tool_name(self):
+        text = build_outlook_memory_guidance(
+            {"outlook_write_contacts", "mcp_IAMDS_mcp_memory_memory_save"}
+        )
+        assert "mcp_IAMDS_mcp_memory_memory_save" in text
+
+
+class TestBuildRemoteMcpMemoryPrompt:
+    def test_empty_when_no_memory_context_tool(self):
+        assert build_remote_mcp_memory_prompt({"outlook_get_emails"}) == ""
+        assert build_remote_mcp_memory_prompt(set()) == ""
+
+    def test_builds_prompt_with_native_tool_name(self):
+        text = build_remote_mcp_memory_prompt({"memory_context"})
+        assert "memory_context" in text
+        assert "FIRST action" in text
+
+
 
 

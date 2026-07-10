@@ -255,3 +255,43 @@ class TestMicrosoftGraphClient:
 
         with pytest.raises(MicrosoftGraphClientError):
             await client.get_json("/me")
+
+    async def test_post_json_returns_empty_dict_on_202_empty_body(self):
+        """/me/sendMail and /me/messages/{id}/reply are fire-and-forget and
+        reply with 202 Accepted + no content — post_json must not try to
+        decode that as JSON (previously raised MicrosoftGraphClientError even
+        though the send actually succeeded)."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(202, content=b"")
+
+        client = MicrosoftGraphClient(
+            _make_provider(),
+            transport=httpx.MockTransport(handler),
+        )
+
+        result = await client.post_json("/me/sendMail", json_body={"message": {}})
+        assert result == {}
+
+    async def test_post_json_returns_empty_dict_on_204_no_content(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(204, content=b"")
+
+        client = MicrosoftGraphClient(
+            _make_provider(),
+            transport=httpx.MockTransport(handler),
+        )
+
+        result = await client.post_json("/me/messages/1/reply", json_body={"comment": "hi"})
+        assert result == {}
+
+    async def test_post_json_still_decodes_body_when_present(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(201, json={"id": "created"})
+
+        client = MicrosoftGraphClient(
+            _make_provider(),
+            transport=httpx.MockTransport(handler),
+        )
+
+        result = await client.post_json("/me/events", json_body={"subject": "x"})
+        assert result == {"id": "created"}

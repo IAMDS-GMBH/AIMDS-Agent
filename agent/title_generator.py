@@ -10,6 +10,7 @@ import threading
 from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
+from agent.agent_runtime_helpers import strip_think_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,12 @@ def _is_unusable_assistant_response(assistant_response: str) -> bool:
 
 
 def _sanitize_generated_title(title: str) -> Optional[str]:
-    cleaned = (title or "").strip().strip('"\'')
+    # Reasoning models (DeepSeek R1, Qwen3, MiniMax, etc.) sometimes emit their
+    # chain-of-thought inline as <think>/<thinking>/... blocks before the
+    # actual title text instead of via a separate reasoning field — strip
+    # those first so the raw reasoning never ends up as (part of) the
+    # session title shown in the UI.
+    cleaned = (strip_think_blocks(None, title) or "").strip().strip('"\'')
     if cleaned.lower().startswith("title:"):
         cleaned = cleaned[6:].strip()
     if not cleaned:

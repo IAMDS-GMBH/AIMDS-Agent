@@ -1438,24 +1438,25 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
     return "\n".join(lines)
 
 
-def _resolve_memory_context_tool_name(valid_tool_names: "set[str] | None") -> str | None:
-    """Return the callable memory_context tool name from active tools.
+def _resolve_memory_tool_name(valid_tool_names: "set[str] | None", suffix: str) -> str | None:
+    """Generic resolver for a memory MCP tool by its canonical suffix (e.g. ``memory_context``,
+    ``memory_skill_read``, ``memory_save``).
 
     Supports native and prefixed names. Canonical MCP naming is:
     ``mcp_{hermes_mcp_name}_{server_name}_{tool}`` (for example
-    ``mcp_IAMDS_mcp_memory_memory_context``).
+    ``mcp_IAMDS_mcp_memory_memory_save``).
 
     Supported patterns include:
-    - ``memory_context``
-    - ``mcp_<configured_server>_*_memory_context``
-    - ``<configured_server>_*_memory_context``
-    - generic ``mcp_*_memory_context``
+    - ``{suffix}``
+    - ``mcp_<configured_server>_*_{suffix}``
+    - ``<configured_server>_*_{suffix}``
+    - generic ``mcp_*_{suffix}``
     """
     names = set(valid_tool_names or set())
     if not names:
         return None
-    if "memory_context" in names:
-        return "memory_context"
+    if suffix in names:
+        return suffix
 
     preferred_server_name = None
     try:
@@ -1479,17 +1480,33 @@ def _resolve_memory_context_tool_name(valid_tool_names: "set[str] | None") -> st
         matches = sorted(
             name
             for name in names
-            if name.startswith(prefix) and name.endswith("_memory_context")
+            if name.startswith(prefix) and name.endswith(f"_{suffix}")
         )
         if matches:
             return matches[0]
     # Last-resort compatibility for unusual/custom prefixes.
     suffix_matches = sorted(
-        name for name in names if isinstance(name, str) and name.endswith("_memory_context")
+        name for name in names if isinstance(name, str) and name.endswith(f"_{suffix}")
     )
     if suffix_matches:
         return suffix_matches[0]
     return None
+
+
+def _resolve_memory_context_tool_name(valid_tool_names: "set[str] | None") -> str | None:
+    """Return the callable memory_context tool name from active tools.
+
+    Supports native and prefixed names. Canonical MCP naming is:
+    ``mcp_{hermes_mcp_name}_{server_name}_{tool}`` (for example
+    ``mcp_IAMDS_mcp_memory_memory_context``).
+
+    Supported patterns include:
+    - ``memory_context``
+    - ``mcp_<configured_server>_*_memory_context``
+    - ``<configured_server>_*_memory_context``
+    - generic ``mcp_*_memory_context``
+    """
+    return _resolve_memory_tool_name(valid_tool_names, "memory_context")
 
 
 def _resolve_memory_skill_read_tool_name(valid_tool_names: "set[str] | None") -> str | None:
@@ -1504,44 +1521,13 @@ def _resolve_memory_skill_read_tool_name(valid_tool_names: "set[str] | None") ->
     - ``<configured_server>_*_memory_skill_read``
     - generic ``mcp_*_memory_skill_read``
     """
-    names = set(valid_tool_names or set())
-    if not names:
-        return None
-    if "memory_skill_read" in names:
-        return "memory_skill_read"
+    return _resolve_memory_tool_name(valid_tool_names, "memory_skill_read")
 
-    preferred_server_name = None
-    try:
-        from hermes_cli.config import get_primary_mcp_server_name
 
-        preferred_server_name = get_primary_mcp_server_name()
-    except Exception:
-        preferred_server_name = None
-
-    prefixes: list[str] = []
-    if preferred_server_name:
-        prefixes.extend(
-            [
-                f"mcp_{preferred_server_name}_",
-                f"{preferred_server_name}_",
-            ]
-        )
-    prefixes.append("mcp_")
-
-    for prefix in prefixes:
-        matches = sorted(
-            name
-            for name in names
-            if name.startswith(prefix) and name.endswith("_memory_skill_read")
-        )
-        if matches:
-            return matches[0]
-    suffix_matches = sorted(
-        name for name in names if isinstance(name, str) and name.endswith("_memory_skill_read")
-    )
-    if suffix_matches:
-        return suffix_matches[0]
-    return None
+def _resolve_memory_save_tool_name(valid_tool_names: "set[str] | None") -> str | None:
+    """Return the callable memory_save tool name from active tools (see
+    :func:`_resolve_memory_tool_name` for the naming patterns supported)."""
+    return _resolve_memory_tool_name(valid_tool_names, "memory_save")
 
 
 def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -> str:
@@ -1573,6 +1559,40 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
         f"{onboarding_hint}"
         f"If `{tool_name}` returns onboarding steps, complete that flow before other work. "
         f"If `{tool_name}` fails, continue the task but explicitly note that user context could not be loaded."
+    )
+
+
+def build_outlook_memory_guidance(valid_tool_names: "set[str] | None" = None) -> str:
+    """Instruct the model to use the memory MCP's ``memory_save`` tool to persist
+    Outlook follow-ups and contacts, so a later session (or after context
+    compaction) can still find the right email/person again.
+
+    Only injected when BOTH an Outlook tool and a resolvable ``memory_save``
+    tool are present — this is a cross-toolset hint, so it must stay out of
+    the static Outlook tool schemas (which may be loaded without memory, or
+    vice versa) and instead be resolved dynamically here, mirroring the
+    ``_resolve_memory_context_tool_name`` pattern used for the mandatory
+    memory_context block above.
+    """
+    names = set(valid_tool_names or set())
+    if not any(name.startswith("outlook_") for name in names):
+        return ""
+    tool_name = _resolve_memory_save_tool_name(names)
+    if not tool_name:
+        return ""
+
+    return (
+        "# Outlook + Memory\n"
+        f"When you send an email and are waiting on a reply, or agree to check back on an "
+        f"Outlook thread later, save a short note via `{tool_name}` (schema `notes`) capturing "
+        "who you're waiting on, the subject/keywords, and the date sent — this is what lets you "
+        "(or a later session) find the right thread again with `outlook_search_emails` instead of "
+        "asking the user to search manually or promising a check you can't actually perform later.\n"
+        f"When you learn a new contact's name, role, company, or email address (from an email, a "
+        "request to send/reply to someone, or outlook_read_contacts), save/update it via "
+        f"`{tool_name}` (schema `person`) so a bare first or last name is later enough to find them "
+        "and any notes about them — don't rely on outlook_read_contacts alone for people the user "
+        "mentions repeatedly in conversation."
     )
 
 

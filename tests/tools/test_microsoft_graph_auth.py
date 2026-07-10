@@ -186,12 +186,24 @@ class TestLoopbackAuthSessionDedup:
     is what stops the user from being asked to sign in over and over when a
     tool call retries without a resume id."""
 
+    @pytest.fixture(autouse=True)
+    def _no_real_browser(self, monkeypatch):
+        # start_loopback_auth() defaults to open_browser=True and calls
+        # webbrowser.open() unconditionally — without this guard every test
+        # run here pops open real browser tabs. Belt-and-suspenders: also
+        # pass open_browser=False explicitly in each call below.
+        monkeypatch.setattr("webbrowser.open", lambda *a, **kw: True)
+
     def test_reuses_pending_session_for_same_key(self):
         from tools.microsoft_graph_auth import start_loopback_auth, _cleanup_loopback_session
 
-        first = start_loopback_auth("tenant", "client", None, "Mail.Read offline_access")
+        first = start_loopback_auth(
+            "tenant", "client", None, "Mail.Read offline_access", open_browser=False
+        )
         try:
-            second = start_loopback_auth("tenant", "client", None, "Mail.Read offline_access")
+            second = start_loopback_auth(
+                "tenant", "client", None, "Mail.Read offline_access", open_browser=False
+            )
             assert second["request_id"] == first["request_id"]
             assert second["auth_url"] == first["auth_url"]
         finally:
@@ -200,10 +212,14 @@ class TestLoopbackAuthSessionDedup:
     def test_starts_fresh_session_after_previous_one_is_cleaned_up(self):
         from tools.microsoft_graph_auth import start_loopback_auth, _cleanup_loopback_session
 
-        first = start_loopback_auth("tenant", "client", None, "Mail.Read offline_access")
+        first = start_loopback_auth(
+            "tenant", "client", None, "Mail.Read offline_access", open_browser=False
+        )
         _cleanup_loopback_session(first["request_id"])
 
-        second = start_loopback_auth("tenant", "client", None, "Mail.Read offline_access")
+        second = start_loopback_auth(
+            "tenant", "client", None, "Mail.Read offline_access", open_browser=False
+        )
         try:
             assert second["request_id"] != first["request_id"]
         finally:
@@ -212,12 +228,17 @@ class TestLoopbackAuthSessionDedup:
     def test_different_scope_gets_its_own_session(self):
         from tools.microsoft_graph_auth import start_loopback_auth, _cleanup_loopback_session
 
-        first = start_loopback_auth("tenant", "client", None, "Mail.Read offline_access")
+        first = start_loopback_auth(
+            "tenant", "client", None, "Mail.Read offline_access", open_browser=False
+        )
         try:
-            second = start_loopback_auth("tenant", "client", None, "Calendars.ReadWrite offline_access")
+            second = start_loopback_auth(
+                "tenant", "client", None, "Calendars.ReadWrite offline_access", open_browser=False
+            )
             try:
                 assert second["request_id"] != first["request_id"]
             finally:
                 _cleanup_loopback_session(second["request_id"])
         finally:
             _cleanup_loopback_session(first["request_id"])
+

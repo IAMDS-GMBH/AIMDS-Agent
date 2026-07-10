@@ -62,6 +62,35 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", side_effect=RuntimeError("no provider")):
             assert generate_title("question", "answer") is None
 
+    def test_strips_think_block_before_title(self):
+        """Reasoning models sometimes emit their chain-of-thought inline as a
+        <think> block ahead of the actual title instead of via a separate
+        reasoning field — this must never leak into the session title."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "<think>The user is debugging a Python import error, so a good "
+            "title would mention Python imports.</think>Debugging Python Import Errors"
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("help me fix this import", "Sure, let me check...")
+            assert title == "Debugging Python Import Errors"
+            assert "<think>" not in title
+            assert "chain-of-thought" not in title.lower()
+
+    def test_strips_unterminated_think_block(self):
+        """Some providers (MiniMax, Ollama) drop the closing tag entirely."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "<think>\nLet me think about a concise title here...\n"
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("question", "answer")
+            assert title is None
+
     def test_invokes_failure_callback_on_exception(self):
         """failure_callback must fire so the user sees a warning (issue #15775)."""
         captured = []

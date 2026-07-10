@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 OUTLOOK_CALENDAR_READ_SCOPE = None
 OUTLOOK_CALENDAR_WRITE_SCOPE = None
 OUTLOOK_SHARED_MAIL_SCOPE = None
+OUTLOOK_CONTACTS_SCOPE = None
 
 # ---------------------------------------------------------------------------
 # Credential helpers (mirrors adapter.py logic, no coupling)
@@ -689,6 +690,116 @@ async def _update_calendar_entry_async(
 async def _delete_calendar_entry_async(event_id: str) -> dict[str, Any]:
     client, _ = _new_graph_client(scope=OUTLOOK_CALENDAR_WRITE_SCOPE)
     return await client.delete(f"/me/events/{event_id}")
+
+
+# ---------------------------------------------------------------------------
+# Contacts (read / write) async logic
+# ---------------------------------------------------------------------------
+
+_CONTACT_SELECT_FIELDS = [
+    "id",
+    "displayName",
+    "givenName",
+    "surname",
+    "companyName",
+    "jobTitle",
+    "emailAddresses",
+    "businessPhones",
+    "mobilePhone",
+    "personalNotes",
+]
+
+
+async def _fetch_contacts_async(count: int, search: str) -> list[dict[str, Any]]:
+    client, _ = _new_graph_client(scope=OUTLOOK_CONTACTS_SCOPE)
+    params: dict[str, Any] = {
+        "$top": min(max(1, count), 100),
+        "$select": ",".join(_CONTACT_SELECT_FIELDS),
+        "$orderby": "displayName",
+    }
+    if search:
+        # Graph's /me/contacts doesn't support $filter on free text — use
+        # $search instead, which requires the ConsistencyLevel header.
+        safe_search = search.replace('"', '\\"')
+        params["$search"] = f'"{safe_search}"'
+        params.pop("$orderby", None)
+        headers = {"ConsistencyLevel": "eventual"}
+        resp = await client.get_json("/me/contacts", params=params, headers=headers)
+    else:
+        resp = await client.get_json("/me/contacts", params=params)
+    return resp.get("value", [])
+
+
+def _format_contact(contact: dict[str, Any]) -> dict[str, Any]:
+    emails = contact.get("emailAddresses") or []
+    return {
+        "id": contact.get("id", ""),
+        "display_name": contact.get("displayName") or "",
+        "given_name": contact.get("givenName") or "",
+        "surname": contact.get("surname") or "",
+        "company_name": contact.get("companyName") or "",
+        "job_title": contact.get("jobTitle") or "",
+        "emails": [e.get("address", "") for e in emails if e.get("address")],
+        "business_phones": contact.get("businessPhones") or [],
+        "mobile_phone": contact.get("mobilePhone") or "",
+        "notes": contact.get("personalNotes") or "",
+    }
+
+
+async def _get_contact_async(contact_id: str) -> dict[str, Any]:
+    """Fetch the current state of a single contact (for previews/undo)."""
+    client, _ = _new_graph_client(scope=OUTLOOK_CONTACTS_SCOPE)
+    return await client.get_json(
+        f"/me/contacts/{contact_id}", params={"$select": ",".join(_CONTACT_SELECT_FIELDS)}
+    )
+
+
+def _build_contact_body(
+    display_name: str,
+    given_name: str,
+    surname: str,
+    company_name: str,
+    job_title: str,
+    emails: list[str],
+    business_phone: str,
+    mobile_phone: str,
+    notes: str,
+) -> dict[str, Any]:
+    contact: dict[str, Any] = {}
+    if display_name:
+        contact["displayName"] = display_name
+    if given_name:
+        contact["givenName"] = given_name
+    if surname:
+        contact["surname"] = surname
+    if company_name:
+        contact["companyName"] = company_name
+    if job_title:
+        contact["jobTitle"] = job_title
+    if emails:
+        contact["emailAddresses"] = [{"address": addr} for addr in emails]
+    if business_phone:
+        contact["businessPhones"] = [business_phone]
+    if mobile_phone:
+        contact["mobilePhone"] = mobile_phone
+    if notes:
+        contact["personalNotes"] = notes
+    return contact
+
+
+async def _create_contact_async(contact_body: dict[str, Any]) -> dict[str, Any]:
+    client, _ = _new_graph_client(scope=OUTLOOK_CONTACTS_SCOPE)
+    return await client.post_json("/me/contacts", json_body=contact_body)
+
+
+async def _update_contact_async(contact_id: str, contact_body: dict[str, Any]) -> dict[str, Any]:
+    client, _ = _new_graph_client(scope=OUTLOOK_CONTACTS_SCOPE)
+    return await client.patch_json(f"/me/contacts/{contact_id}", json_body=contact_body)
+
+
+async def _delete_contact_async(contact_id: str) -> dict[str, Any]:
+    client, _ = _new_graph_client(scope=OUTLOOK_CONTACTS_SCOPE)
+    return await client.delete(f"/me/contacts/{contact_id}")
 
 
 def _run_async(coro: Any, timeout: float = 120) -> Any:
@@ -1404,6 +1515,148 @@ def outlook_write_calendar_entries(
         return json.dumps({"error": str(exc)})
 
 
+def outlook_read_contacts(
+    count: int = 20,
+    search: str = "",
+    device_code: str = "",
+    task_id: str | None = None,
+) -> str:
+    """Read/search Outlook contacts (read-only)."""
+    early, toolset_enabled = _outlook_auth_guard(
+        device_code, scope=OUTLOOK_CONTACTS_SCOPE, label="Outlook contacts"
+    )
+    if early is not None:
+        return json.dumps(early)
+
+    try:
+        raw_contacts = _run_async(_fetch_contacts_async(count, search.strip()), timeout=120)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+    contacts = [_format_contact(c) for c in raw_contacts]
+    return json.dumps({
+        "count": len(contacts),
+        "search": search,
+        "contacts": contacts,
+        "toolset_auto_enabled": bool(device_code and toolset_enabled),
+    })
+
+
+def outlook_write_contacts(
+    action: str,
+    contact_id: str = "",
+    display_name: str = "",
+    given_name: str = "",
+    surname: str = "",
+    company_name: str = "",
+    job_title: str = "",
+    emails: str = "",
+    business_phone: str = "",
+    mobile_phone: str = "",
+    notes: str = "",
+    confirm: bool = False,
+    device_code: str = "",
+    task_id: str | None = None,
+) -> str:
+    """Create, update, or delete an Outlook contact.
+
+    ``update`` and ``delete`` are destructive: unless ``confirm=true`` is
+    passed, this tool only returns a preview containing the *current*
+    contact state plus the requested change — it does not modify anything.
+    The calling assistant MUST show this preview to the user and get
+    explicit confirmation before calling again with ``confirm=true``.
+    """
+    normalized_action = (action or "").strip().lower()
+    if normalized_action not in ("create", "update", "delete"):
+        return json.dumps({
+            "error": "action must be one of 'create', 'update', or 'delete'."
+        })
+    if normalized_action in ("update", "delete") and not contact_id:
+        return json.dumps({"error": "contact_id is required for update/delete."})
+    if normalized_action == "create" and not display_name and not (given_name or surname):
+        return json.dumps({
+            "error": "display_name (or given_name/surname) is required to create a contact."
+        })
+
+    early, toolset_enabled = _outlook_auth_guard(
+        device_code, scope=OUTLOOK_CONTACTS_SCOPE, label="Outlook contacts (write)"
+    )
+    if early is not None:
+        return json.dumps(early)
+
+    email_list = [e.strip() for e in emails.split(",") if e.strip()] if emails else []
+
+    # Destructive actions require an explicit confirm=true. Without it, fetch
+    # and return the current contact state as a preview so the assistant can
+    # show the user exactly what would change (and can recover the previous
+    # state from the response if something goes wrong after confirming).
+    if normalized_action in ("update", "delete") and not confirm:
+        try:
+            previous_state = _run_async(_get_contact_async(contact_id), timeout=60)
+        except Exception as exc:
+            return json.dumps({"error": f"Could not load current contact state: {exc}"})
+
+        preview: dict[str, Any] = {
+            "status": "confirmation_required",
+            "action": normalized_action,
+            "contact_id": contact_id,
+            "previous_state": _format_contact(previous_state),
+            "message": (
+                f"This would {normalized_action} the contact above. "
+                "Ask the user to explicitly confirm this change before proceeding. "
+                "Once confirmed, call this tool again with the same arguments plus confirm=true. "
+                "The previous_state above is preserved here so it can be restored manually if needed."
+            ),
+        }
+        if normalized_action == "update":
+            preview["requested_changes"] = _build_contact_body(
+                display_name, given_name, surname, company_name, job_title,
+                email_list, business_phone, mobile_phone, notes,
+            )
+        return json.dumps(preview)
+
+    try:
+        if normalized_action == "create":
+            contact_body = _build_contact_body(
+                display_name, given_name, surname, company_name, job_title,
+                email_list, business_phone, mobile_phone, notes,
+            )
+            result = _run_async(_create_contact_async(contact_body), timeout=120)
+            return json.dumps({
+                "status": "created",
+                "contact": _format_contact(result),
+                "toolset_auto_enabled": bool(device_code and toolset_enabled),
+            })
+
+        if normalized_action == "update":
+            previous_state = _run_async(_get_contact_async(contact_id), timeout=60)
+            contact_body = _build_contact_body(
+                display_name, given_name, surname, company_name, job_title,
+                email_list, business_phone, mobile_phone, notes,
+            )
+            result = _run_async(_update_contact_async(contact_id, contact_body), timeout=120)
+            return json.dumps({
+                "status": "updated",
+                "previous_state": _format_contact(previous_state),
+                "contact": _format_contact(result) if result else _format_contact(
+                    _run_async(_get_contact_async(contact_id), timeout=60)
+                ),
+                "toolset_auto_enabled": bool(device_code and toolset_enabled),
+            })
+
+        # delete
+        previous_state = _run_async(_get_contact_async(contact_id), timeout=60)
+        _run_async(_delete_contact_async(contact_id), timeout=120)
+        return json.dumps({
+            "status": "deleted",
+            "contact_id": contact_id,
+            "previous_state": _format_contact(previous_state),
+            "toolset_auto_enabled": bool(device_code and toolset_enabled),
+        })
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
@@ -1462,7 +1715,12 @@ registry.register(
             "time_range or call outlook_search_emails with a keyword instead of raising count blindly. "
             "Do NOT use this to search by keyword or topic — use outlook_search_emails instead. "
             "Do NOT use this to read the full content of one specific email — use outlook_read_email "
-            "with its message id instead."
+            "with its message id instead. "
+            "IMPORTANT: you have direct, live access to this mailbox through this tool — when the user "
+            "asks whether they received a reply, a new message, or anything mailbox-related, call this "
+            "tool YOURSELF right now to check. Never tell the user to check Outlook manually, to run a "
+            "tool/command themselves, or to 'let you know later' — you can and should look it up yourself "
+            "immediately."
         ),
         "parameters": {
             "type": "object",
@@ -1555,9 +1813,15 @@ registry.register(
         "description": (
             "Search the Outlook / Microsoft 365 mailbox for emails matching a keyword or phrase. "
             "Use this whenever the user asks to find an email about a topic, sender, or word "
-            "(e.g. 'find the email about the invoice', 'search for emails from Alice about the contract'). "
+            "(e.g. 'find the email about the invoice', 'search for emails from Alice about the contract'), "
+            "or whenever the user asks if someone has replied yet / if a follow-up arrived "
+            "(e.g. search for the recipient's name or the original subject). "
             "By default searches both subject and body content. "
-            "Do NOT use this for a plain time-boxed overview with no keyword — use outlook_get_emails instead."
+            "Do NOT use this for a plain time-boxed overview with no keyword — use outlook_get_emails instead. "
+            "IMPORTANT: you have direct, live access to this mailbox through this tool — call it YOURSELF "
+            "right now instead of telling the user to search Outlook manually, to run this tool themselves "
+            "later, or offering to 'check periodically' without actually checking. If asked to check for a "
+            "reply, check now and report the real result (found / not found yet)."
         ),
         "parameters": {
             "type": "object",
@@ -1900,6 +2164,154 @@ registry.register(
         body=str(args.get("body", "")),
         attendees=str(args.get("attendees", "")),
         is_all_day=bool(args.get("is_all_day", False)),
+        confirm=bool(args.get("confirm", False)),
+        device_code=str(args.get("device_code", "")),
+        task_id=kw.get("task_id"),
+    ),
+)
+
+registry.register(
+    name="outlook_read_contacts",
+    toolset="outlook",
+    schema={
+        "name": "outlook_read_contacts",
+        "description": (
+            "Read/search Outlook / Microsoft 365 contacts (read-only). Returns name, company, "
+            "job title, email addresses, and phone numbers. Use 'search' to find a specific "
+            "contact by name/email/company. Do NOT use this to create, change, or delete a "
+            "contact — use outlook_write_contacts for that."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer",
+                    "description": "Number of contacts to fetch (1-100). Default 20.",
+                    "default": 20,
+                },
+                "search": {
+                    "type": "string",
+                    "description": (
+                        "Optional free-text search (matches name, email, company, etc). "
+                        "Leave empty to list contacts alphabetically by display name."
+                    ),
+                    "default": "",
+                },
+                "device_code": _DEVICE_CODE_PARAM_SCHEMA,
+            },
+            "required": [],
+        },
+    },
+    handler=lambda args, **kw: outlook_read_contacts(
+        count=int(args.get("count", 20)),
+        search=str(args.get("search", "")),
+        device_code=str(args.get("device_code", "")),
+        task_id=kw.get("task_id"),
+    ),
+)
+
+registry.register(
+    name="outlook_write_contacts",
+    toolset="outlook",
+    schema={
+        "name": "outlook_write_contacts",
+        "description": (
+            "Create, update, or delete an Outlook / Microsoft 365 contact. Use action='create' "
+            "to add a new contact (display_name, or given_name/surname, is required). Use "
+            "action='update' to change an existing contact's details (contact_id required). Use "
+            "action='delete' to remove an existing contact (contact_id required). "
+            "IMPORTANT — update and delete are DESTRUCTIVE: calling them without confirm=true "
+            "only returns a PREVIEW (the contact's current state plus the requested change) and "
+            "makes no changes at all. You MUST show this preview to the user and get their "
+            "explicit confirmation before calling this tool again with confirm=true to actually "
+            "apply it. The response always includes previous_state so the prior contact details "
+            "are not lost even after the change is applied. "
+            "Do NOT use this for read-only lookups — use outlook_read_contacts instead."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "Operation to perform: 'create', 'update', or 'delete'.",
+                    "enum": ["create", "update", "delete"],
+                },
+                "contact_id": {
+                    "type": "string",
+                    "description": "Graph contact id. Required for 'update' and 'delete'.",
+                    "default": "",
+                },
+                "display_name": {
+                    "type": "string",
+                    "description": "Full display name shown in Outlook, e.g. 'Jane Doe'.",
+                    "default": "",
+                },
+                "given_name": {
+                    "type": "string",
+                    "description": "First name.",
+                    "default": "",
+                },
+                "surname": {
+                    "type": "string",
+                    "description": "Last name.",
+                    "default": "",
+                },
+                "company_name": {
+                    "type": "string",
+                    "description": "Company/organization name.",
+                    "default": "",
+                },
+                "job_title": {
+                    "type": "string",
+                    "description": "Job title.",
+                    "default": "",
+                },
+                "emails": {
+                    "type": "string",
+                    "description": "Comma-separated email addresses, e.g. 'a@x.com,b@y.com'.",
+                    "default": "",
+                },
+                "business_phone": {
+                    "type": "string",
+                    "description": "Business phone number.",
+                    "default": "",
+                },
+                "mobile_phone": {
+                    "type": "string",
+                    "description": "Mobile phone number.",
+                    "default": "",
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "Free-text personal notes about the contact.",
+                    "default": "",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": (
+                        "Required to actually apply 'update' or 'delete'. Leave false (default) to "
+                        "get a preview of the current state and requested change without modifying "
+                        "anything. Only set true after the user has explicitly confirmed the change."
+                    ),
+                    "default": False,
+                },
+                "device_code": _DEVICE_CODE_PARAM_SCHEMA,
+            },
+            "required": ["action"],
+        },
+    },
+    handler=lambda args, **kw: outlook_write_contacts(
+        action=str(args.get("action", "")),
+        contact_id=str(args.get("contact_id", "")),
+        display_name=str(args.get("display_name", "")),
+        given_name=str(args.get("given_name", "")),
+        surname=str(args.get("surname", "")),
+        company_name=str(args.get("company_name", "")),
+        job_title=str(args.get("job_title", "")),
+        emails=str(args.get("emails", "")),
+        business_phone=str(args.get("business_phone", "")),
+        mobile_phone=str(args.get("mobile_phone", "")),
+        notes=str(args.get("notes", "")),
         confirm=bool(args.get("confirm", False)),
         device_code=str(args.get("device_code", "")),
         task_id=kw.get("task_id"),

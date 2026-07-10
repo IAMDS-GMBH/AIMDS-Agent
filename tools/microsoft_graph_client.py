@@ -88,6 +88,13 @@ class MicrosoftGraphClient:
         headers: dict[str, str] | None = None,
     ) -> Any:
         response = await self._request("POST", path, json_body=json_body, headers=headers)
+        # Several Graph POST endpoints are fire-and-forget and reply with an
+        # empty body (e.g. /me/sendMail, /me/messages/{id}/reply both return
+        # 202 Accepted with no content) — decoding JSON on those would raise
+        # even though the request succeeded. Only decode when there's
+        # actually a body to parse.
+        if response.status_code == 204 or not response.content:
+            return {}
         return self._decode_json(response)
 
     async def patch_json(
