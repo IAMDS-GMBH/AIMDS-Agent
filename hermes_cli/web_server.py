@@ -4208,6 +4208,15 @@ def _messaging_platform_payload(
         )
         home_channel = None
 
+    auth_ready = False
+    if platform_id == "outlook":
+        try:
+            from tools.outlook_tool import _has_valid_token_cache
+
+            auth_ready = bool(_has_valid_token_cache())
+        except Exception:
+            auth_ready = False
+
     state = (
         runtime_platform.get("state") if isinstance(runtime_platform, dict) else None
     )
@@ -4244,6 +4253,7 @@ def _messaging_platform_payload(
             if isinstance(runtime_platform, dict)
             else None
         ),
+        "auth_ready": auth_ready,
         "home_channel": home_channel,
         "env_vars": env_vars,
     }

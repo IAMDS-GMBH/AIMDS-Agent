@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
 import {
   getMessagingPlatforms,
   type MessagingEnvVarInfo,
@@ -111,8 +110,9 @@ function messagingBadge(
   }
 
   const authenticated = options.outlookConnected === true || platform.state === 'connected'
+  const effectiveAuthenticated = authenticated || platform.auth_ready === true
 
-  if (authenticated) {
+  if (effectiveAuthenticated) {
     return {
       label: m.states.connected,
       tone: 'good'
@@ -242,35 +242,6 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     )
   }, [platforms, query])
 
-  async function handleToggle(platform: MessagingPlatformInfo, enabled: boolean) {
-    setSaving(`enabled:${platform.id}`)
-
-    try {
-      await updateMessagingPlatform(platform.id, { enabled })
-      setPlatforms(
-        current =>
-          current?.map(row =>
-            row.id === platform.id
-              ? {
-                  ...row,
-                  enabled,
-                  state: enabled ? (row.configured ? 'pending_restart' : 'not_configured') : 'disabled'
-                }
-              : row
-          ) ?? current
-      )
-      notify({
-        kind: 'success',
-        title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
-        message: m.restartToApply
-      })
-    } catch (err) {
-      notifyError(err, m.failedUpdate(platform.name))
-    } finally {
-      setSaving(null)
-    }
-  }
-
   async function handleSave(platform: MessagingPlatformInfo) {
     const env = trimEdits(edits[platform.id] || {})
 
@@ -377,7 +348,6 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                     }))
                   }
                   onSave={() => void handleSave(selected)}
-                  onToggle={enabled => void handleToggle(selected, enabled)}
                   platform={selected}
                   saving={saving}
                   onOutlookOpenGuide={() => setOutlookGuideOpen(true)}
@@ -398,6 +368,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                     onComplete={async _accessToken => {
                       // Sign-in only — connection verification is a separate,
                       // explicit "Test Connection" step, not run automatically here.
+                      setOutlookConnected(true)
                       setOutlookAuthOpen(false)
                       notify({
                         kind: 'success',
@@ -455,7 +426,6 @@ function PlatformDetail({
   onClear,
   onEdit,
   onSave,
-  onToggle,
   platform,
   saving,
   onOutlookOpenGuide,
@@ -467,7 +437,6 @@ function PlatformDetail({
   onClear: (key: string) => void
   onEdit: (key: string, value: string) => void
   onSave: () => void
-  onToggle: (enabled: boolean) => void
   platform: MessagingPlatformInfo
   saving: string | null
   onOutlookOpenGuide?: () => void
@@ -616,15 +585,7 @@ function PlatformDetail({
 
       <footer className="bg-(--ui-chat-surface-background) px-5 py-2.5">
         <div className="mx-auto flex max-w-2xl flex-wrap items-center gap-2">
-          <Switch
-            aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
-            checked={platform.enabled}
-            disabled={saving === `enabled:${platform.id}`}
-            onCheckedChange={onToggle}
-            size="xs"
-          />
-
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex w-full items-center justify-end gap-2">
             {hasEdits && <span className="text-xs text-muted-foreground">{m.unsavedChanges}</span>}
             {platform.id === 'outlook' && (
               <StatePill tone={badge.tone}>{badge.label}</StatePill>

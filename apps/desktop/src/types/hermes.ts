@@ -130,6 +130,7 @@ export interface MessagingHomeChannel {
 }
 
 export interface MessagingPlatformInfo {
+  auth_ready?: boolean
   configured: boolean
   description: string
   docs_url: string
