@@ -85,7 +85,7 @@ jobs:
           )
 
       - name: Validate install.ps1 syntax
-        shell: pwsh
+        shell: powershell
         run: |
           $errors = $null
           $tokens = $null
@@ -103,7 +103,7 @@ jobs:
           Write-Host "install.ps1 syntax OK ($($tokens.Count) tokens)"
 
       - name: Clean bootstrap target
-        shell: pwsh
+        shell: powershell
         run: |
           $target = "${{ github.workspace }}\apps\bootstrap-installer\src-tauri\target"
           if (Test-Path $target) {

@@ -144,7 +144,7 @@ jobs:
 
       - name: Validate install.ps1 syntax (Windows only)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: |
           $errors = $null
           $tokens = $null
@@ -250,7 +250,7 @@ jobs:
 
       - name: Install Azure CLI (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: |
           $azCmd = Get-Command az -ErrorAction SilentlyContinue
           if (-not $azCmd) {
@@ -317,7 +317,7 @@ jobs:
 
       - name: Collect Windows artifacts
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         env:
           INSTALLER_VERSION: ${{ steps.version.outputs.installer_version }}
         run: |
