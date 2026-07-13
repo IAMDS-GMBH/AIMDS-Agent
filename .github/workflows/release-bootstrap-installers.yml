@@ -153,13 +153,14 @@ jobs:
               [ref]$tokens,
               [ref]$errors
           )
-          if ($errors.Count -gt 0) {
-              $errors | ForEach-Object {
-                  Write-Error "install.ps1 syntax error — line $($_.Extent.StartLineNumber) char $($_.Extent.StartColumnNumber): $($_.Message)"
-              }
-              exit 1
+          if ($errors -and $errors.Count -gt 0) {
+            foreach ($err in $errors) {
+              Write-Error ('install.ps1 syntax error - line {0} char {1}: {2}' -f $err.Extent.StartLineNumber, $err.Extent.StartColumnNumber, $err.Message)
+            }
+            exit 1
           }
-          Write-Host "install.ps1 syntax OK ($($tokens.Count) tokens)"
+          $tokenCount = if ($tokens) { $tokens.Count } else { 0 }
+          Write-Host ('install.ps1 syntax OK ({0} tokens)' -f $tokenCount)
 
       - name: Setup Node.js
         uses: actions/setup-node@v6 # v6
