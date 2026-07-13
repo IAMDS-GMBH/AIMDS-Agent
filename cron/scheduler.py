@@ -87,10 +87,12 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     Precedence:
     1. Per-job ``enabled_toolsets`` (set via ``cronjob`` tool on create/update).
        Keeps the agent's job-scoped toolset override intact — #6130.
-    2. Per-platform ``hermes tools`` config for the ``cron`` platform.
-       Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``)
-       so users can gate cron toolsets globally without recreating every job.
-    3. ``None`` on any lookup failure — AIAgent loads the full default set
+    2. Per-platform ``hermes tools`` config for the ``cron`` platform when
+       that platform is explicitly configured in ``platform_toolsets``.
+    3. Fallback to the ``cli`` platform toolset profile when ``cron`` has no
+       explicit config. This keeps cron parity with normal chat for users who
+       already enabled integrations (for example Outlook) in CLI tools setup.
+    4. ``None`` on any lookup failure — AIAgent loads the full default set
        (legacy behavior before this change, preserved as the safety net).
 
     _DEFAULT_OFF_TOOLSETS ({moa, homeassistant, rl}) are removed by
@@ -103,7 +105,14 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         return per_job
     try:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
-        return sorted(_get_platform_tools(cfg or {}, "cron"))
+        resolved_cfg = cfg or {}
+        platform_toolsets = resolved_cfg.get("platform_toolsets")
+        has_explicit_cron = (
+            isinstance(platform_toolsets, dict)
+            and isinstance(platform_toolsets.get("cron"), list)
+        )
+        platform_key = "cron" if has_explicit_cron else "cli"
+        return sorted(_get_platform_tools(resolved_cfg, platform_key))
     except Exception as exc:
         logger.warning(
             "Cron toolset resolution failed, falling back to full default toolset: %s",
