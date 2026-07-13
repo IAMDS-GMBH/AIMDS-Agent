@@ -407,7 +407,7 @@ TOOLSETS = {
     
     "hermes-cli": {
         "description": "Full interactive CLI toolset - all default tools plus cronjob management",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": _HERMES_CORE_TOOLS + ["cronjob"],
         "includes": []
     },
 

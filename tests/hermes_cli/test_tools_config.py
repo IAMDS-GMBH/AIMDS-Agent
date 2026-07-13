@@ -80,6 +80,12 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
     assert enabled.isdisjoint(_DEFAULT_OFF_TOOLSETS)
 
 
+def test_get_platform_tools_default_cli_includes_cronjob():
+    enabled = _get_platform_tools({}, "cli")
+
+    assert "cronjob" in enabled
+
+
 def test_gui_toolset_label_strips_leading_emoji():
     assert gui_toolset_label("🔍 Web Search & Scraping") == "Web Search & Scraping"
     assert gui_toolset_label("👁️  Vision / Image Analysis") == "Vision / Image Analysis"

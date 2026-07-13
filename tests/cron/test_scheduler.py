@@ -70,6 +70,52 @@ class TestResolveOrigin:
         assert _resolve_origin(job) is None
 
 
+class TestCronEnabledToolsetsResolution:
+    def test_per_job_toolsets_take_precedence(self):
+        import cron.scheduler as sched
+
+        job = {"enabled_toolsets": ["outlook", "web"]}
+        cfg = {"platform_toolsets": {"cron": ["hermes-cron"]}}
+
+        assert sched._resolve_cron_enabled_toolsets(job, cfg) == ["outlook", "web"]
+
+    def test_explicit_cron_platform_config_is_used(self, monkeypatch):
+        import cron.scheduler as sched
+
+        calls = []
+
+        def fake_get_platform_tools(_cfg, platform_key):
+            calls.append(platform_key)
+            return {"cron-only"}
+
+        with patch("hermes_cli.tools_config._get_platform_tools", side_effect=fake_get_platform_tools):
+            result = sched._resolve_cron_enabled_toolsets(
+                {"enabled_toolsets": None},
+                {"platform_toolsets": {"cron": ["web", "outlook"]}},
+            )
+
+        assert result == ["cron-only"]
+        assert calls == ["cron"]
+
+    def test_missing_cron_config_falls_back_to_cli_platform_tools(self):
+        import cron.scheduler as sched
+
+        calls = []
+
+        def fake_get_platform_tools(_cfg, platform_key):
+            calls.append(platform_key)
+            return {"outlook", "web"}
+
+        with patch("hermes_cli.tools_config._get_platform_tools", side_effect=fake_get_platform_tools):
+            result = sched._resolve_cron_enabled_toolsets(
+                {"enabled_toolsets": None},
+                {"platform_toolsets": {"cli": ["web", "outlook"]}},
+            )
+
+        assert result == ["outlook", "web"]
+        assert calls == ["cli"]
+
+
 class TestResolveDeliveryTarget:
     def test_origin_delivery_preserves_thread_id(self):
         job = {
