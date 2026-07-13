@@ -12,7 +12,6 @@ import {
   getMessagingPlatforms,
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
-  restartGateway,
   testOutlookConnection,
   updateMessagingPlatform
 } from '@/hermes'
@@ -45,24 +44,7 @@ const PILL_TONE: Record<StatusTone, string> = {
   bad: 'bg-destructive/10 text-destructive'
 }
 
-const stateLabel = (state: null | string | undefined, m: Translations['messaging']) =>
-  state ? m.states[state] || state.replace(/_/g, ' ') : m.unknown
-
-function stateTone({ enabled, state }: MessagingPlatformInfo): StatusTone {
-  if (!enabled) {
-    return 'muted'
-  }
-
-  if (state === 'connected') {
-    return 'good'
-  }
-
-  if (state === 'fatal' || state === 'startup_failed') {
-    return 'bad'
-  }
-
-  return 'warn'
-}
+const OUTLOOK_PLATFORM_ID = 'outlook'
 
 const trimEdits = (edits: Record<string, string>): Record<string, string> =>
   Object.fromEntries(
@@ -87,6 +69,68 @@ const FIELD_COPY: Record<string, { advanced?: boolean }> = {
   WHATSAPP_MODE: { advanced: true }
 }
 const OUTLOOK_VISIBLE_KEYS = new Set(['OUTLOOK_TENANT_ID', 'OUTLOOK_CLIENT_ID'])
+
+function supportsMessagingToolset(platform: MessagingPlatformInfo): boolean {
+  return platform.id === OUTLOOK_PLATFORM_ID
+}
+
+function hasConfiguredOutlookCredentials(platform: MessagingPlatformInfo, edits?: Record<string, string>): boolean {
+  if (platform.id !== OUTLOOK_PLATFORM_ID) {
+    return false
+  }
+
+  const typedTenant = (edits?.OUTLOOK_TENANT_ID || '').trim()
+  const typedClient = (edits?.OUTLOOK_CLIENT_ID || '').trim()
+
+  if (typedTenant && typedClient) {
+    return true
+  }
+
+  return (
+    platform.env_vars.some(field => field.key === 'OUTLOOK_TENANT_ID' && field.is_set) &&
+    platform.env_vars.some(field => field.key === 'OUTLOOK_CLIENT_ID' && field.is_set)
+  )
+}
+
+function messagingBadge(
+  platform: MessagingPlatformInfo,
+  m: Translations['messaging'],
+  options: {
+    edits?: Record<string, string>
+    outlookConnected?: boolean | null
+  } = {}
+): {
+  label: string
+  tone: StatusTone
+} {
+  if (!supportsMessagingToolset(platform)) {
+    return {
+      label: m.disabled,
+      tone: 'muted'
+    }
+  }
+
+  const authenticated = options.outlookConnected === true || platform.state === 'connected'
+
+  if (authenticated) {
+    return {
+      label: m.states.connected,
+      tone: 'good'
+    }
+  }
+
+  if (hasConfiguredOutlookCredentials(platform, options.edits)) {
+    return {
+      label: m.credentialsSet,
+      tone: 'warn'
+    }
+  }
+
+  return {
+    label: m.needsSetup,
+    tone: 'muted'
+  }
+}
 
 function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
   const copy = FIELD_COPY[field.key] || {}
@@ -273,16 +317,6 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }
 
-  async function handleRestartGateway() {
-    try {
-      await restartGateway()
-      notify({ kind: 'info', title: 'Restarting gateway…', message: 'Try again in a few seconds.' })
-      window.setTimeout(() => void refreshPlatforms(true), 4000)
-    } catch (err) {
-      notifyError(err, 'Failed to restart gateway')
-    }
-  }
-
   async function handleTestOutlookConnection(platform: MessagingPlatformInfo) {
     setSaving(`connection:${platform.id}`)
 
@@ -349,7 +383,6 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                   onOutlookOpenGuide={() => setOutlookGuideOpen(true)}
                   onOutlookTest={() => setOutlookAuthOpen(true)}
                   onOutlookTestConnection={() => void handleTestOutlookConnection(selected)}
-                  onRestartGateway={() => void handleRestartGateway()}
                   outlookConnected={selected.state === 'connected' ? true : outlookConnected}
                 />
                 {selected.id === 'outlook' && (
@@ -394,6 +427,9 @@ function PlatformRow({
   onSelect: () => void
   platform: MessagingPlatformInfo
 }) {
+  const { t } = useI18n()
+  const badge = messagingBadge(platform, t.messaging)
+
   return (
     <button
       className={cn(
@@ -408,7 +444,7 @@ function PlatformRow({
       <PlatformAvatar platformId={platform.id} platformName={platform.name} />
       <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
         <span className="truncate text-[length:var(--conversation-text-font-size)] font-normal">{platform.name}</span>
-        <StatusDot tone={stateTone(platform)} />
+        <StatusDot tone={badge.tone} />
       </span>
     </button>
   )
@@ -425,7 +461,6 @@ function PlatformDetail({
   onOutlookOpenGuide,
   onOutlookTest,
   onOutlookTestConnection,
-  onRestartGateway,
   outlookConnected
 }: {
   edits: Record<string, string>
@@ -438,7 +473,6 @@ function PlatformDetail({
   onOutlookOpenGuide?: () => void
   onOutlookTest?: () => void
   onOutlookTestConnection?: () => void
-  onRestartGateway?: () => void
   outlookConnected?: boolean | null
 }) {
   const { t } = useI18n()
@@ -467,6 +501,7 @@ function PlatformDetail({
   const hasOutlookTypedCreds =
     platform.id === 'outlook' &&
     Boolean((edits.OUTLOOK_TENANT_ID || '').trim() && (edits.OUTLOOK_CLIENT_ID || '').trim())
+  const badge = messagingBadge(platform, m, { edits, outlookConnected })
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -480,22 +515,8 @@ function PlatformDetail({
                 {platform.description || introCopy(platform, m)}
               </p>
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                <StatePill tone={stateTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
-                <SetupPill active={platform.configured}>
-                  {platform.configured ? m.credentialsSet : m.needsSetup}
-                </SetupPill>
-                {!platform.gateway_running && (
-                  <>
-                    <SetupPill active={false}>{m.gatewayStopped}</SetupPill>
-                    {onRestartGateway && (
-                      <Button onClick={onRestartGateway} size="sm" variant="outline">
-                        Restart Gateway
-                      </Button>
-                    )}
-                  </>
-                )}
+                <StatePill tone={badge.tone}>{badge.label}</StatePill>
               </div>
-              <PlatformHint platform={platform} />
             </div>
           </header>
 
@@ -606,7 +627,7 @@ function PlatformDetail({
           <div className="ml-auto flex items-center gap-2">
             {hasEdits && <span className="text-xs text-muted-foreground">{m.unsavedChanges}</span>}
             {platform.id === 'outlook' && (
-              <SetupPill active={Boolean(outlookConnected)}>{outlookConnected ? m.states.connected : m.needsSetup}</SetupPill>
+              <StatePill tone={badge.tone}>{badge.label}</StatePill>
             )}
             {platform.id === 'outlook' && onOutlookTest && (
               <Button
@@ -776,23 +797,6 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h4 className="text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{children}</h4>
 }
 
-function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
-  const { t } = useI18n()
-
-  if (!platform.enabled || platform.state === 'connected') {
-    return null
-  }
-
-  const hint =
-    platform.state === 'pending_restart'
-      ? t.messaging.hintPendingRestart
-      : platform.gateway_running
-        ? null
-        : t.messaging.hintGatewayStopped
-
-  return hint ? <p className="mt-2 text-xs leading-5 text-muted-foreground">{hint}</p> : null
-}
-
 function StatePill({ children, tone }: { children: string; tone: StatusTone }) {
   return (
     <span
@@ -802,19 +806,6 @@ function StatePill({ children, tone }: { children: string; tone: StatusTone }) {
       )}
     >
       <StatusDot tone={tone} />
-      {children}
-    </span>
-  )
-}
-
-function SetupPill({ active, children }: { active: boolean; children: string }) {
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center rounded-full px-2 py-0.5 text-[0.66rem] font-medium',
-        PILL_TONE[active ? 'good' : 'muted']
-      )}
-    >
       {children}
     </span>
   )
