@@ -180,33 +180,26 @@ jobs:
 
       - name: Refresh Cargo Windows crates cache (Windows only)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: cmd
         run: |
-          $srcRoot = Join-Path $env:USERPROFILE ".cargo\registry\src"
-          $cacheRoot = Join-Path $env:USERPROFILE ".cargo\registry\cache"
-          $patterns = @("windows-sys-*", "windows-targets-*")
+          set "CARGO_HOME_DIR=%CARGO_HOME%"
+          if "%CARGO_HOME_DIR%"=="" set "CARGO_HOME_DIR=%USERPROFILE%\.cargo"
 
-          foreach ($root in @($srcRoot, $cacheRoot)) {
-            if (-not (Test-Path $root)) {
-              continue
-            }
-            Get-ChildItem -Path $root -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-              $indexDir = $_.FullName
-              foreach ($pattern in $patterns) {
-                Get-ChildItem -Path (Join-Path $indexDir $pattern) -Force -ErrorAction SilentlyContinue | ForEach-Object {
-                  Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
-                }
-              }
-            }
-          }
+          for %%R in ("%CARGO_HOME_DIR%\registry\src" "%CARGO_HOME_DIR%\registry\cache") do (
+            if exist "%%~R" (
+              for /d %%I in ("%%~R\*") do (
+                for /d %%P in ("%%~I\windows-sys-*") do rd /s /q "%%~P" 2>nul
+                for /d %%P in ("%%~I\windows-targets-*") do rd /s /q "%%~P" 2>nul
+              )
+            )
+          )
 
-          $manifest = "apps/bootstrap-installer/src-tauri/Cargo.toml"
-          $lockfile = "apps/bootstrap-installer/src-tauri/Cargo.lock"
-          if (Test-Path $lockfile) {
-            cargo fetch --manifest-path $manifest --locked
-          } else {
-            cargo fetch --manifest-path $manifest
-          }
+          set "MANIFEST=apps\bootstrap-installer\src-tauri\Cargo.toml"
+          if exist "apps\bootstrap-installer\src-tauri\Cargo.lock" (
+            cargo fetch --manifest-path "%MANIFEST%" --locked
+          ) else (
+            cargo fetch --manifest-path "%MANIFEST%"
+          )
 
       - name: Setup Python
         uses: actions/setup-python@v6
