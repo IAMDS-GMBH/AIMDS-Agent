@@ -117,6 +117,37 @@ async def test_runner_allows_cron_only_mode_when_no_platforms_are_enabled(monkey
 
 
 @pytest.mark.asyncio
+async def test_runner_skips_platform_startup_when_messaging_ingress_disabled(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")
+        },
+        messaging_ingress_enabled=False,
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    monkeypatch.setattr(
+        runner,
+        "_create_adapter",
+        lambda platform, platform_config: (_ for _ in ()).throw(
+            AssertionError("messaging adapters must not be created")
+        ),
+    )
+
+    ok = await runner.start()
+
+    assert ok is True
+    assert runner.should_exit_cleanly is False
+    assert runner.adapters == {}
+    state = read_runtime_status()
+    assert state["gateway_state"] == "running"
+
+
+@pytest.mark.asyncio
 async def test_runner_records_connected_platform_state_on_success(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config = GatewayConfig(

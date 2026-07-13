@@ -527,6 +527,9 @@ class GatewayConfig:
 
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
+    # Whether messaging adapters should listen/poll for inbound messages.
+    # Enabled by default; desktop can opt out via config/env.
+    messaging_ingress_enabled: bool = True
 
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
@@ -635,6 +638,7 @@ class GatewayConfig:
             "always_log_local": self.always_log_local,
             "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
+            "messaging_ingress_enabled": self.messaging_ingress_enabled,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
@@ -684,6 +688,10 @@ class GatewayConfig:
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
         nested_gateway = data.get("gateway") if isinstance(data.get("gateway"), dict) else {}
+        if "messaging_ingress_enabled" in data:
+            messaging_ingress_raw = data.get("messaging_ingress_enabled")
+        else:
+            messaging_ingress_raw = nested_gateway.get("messaging_ingress_enabled")
         if "max_concurrent_sessions" in data:
             max_concurrent_raw = data.get("max_concurrent_sessions")
             max_concurrent_key = "max_concurrent_sessions"
@@ -718,6 +726,10 @@ class GatewayConfig:
                 data.get("filter_silence_narration"), True
             ),
             stt_enabled=_coerce_bool(stt_enabled, True),
+            messaging_ingress_enabled=_coerce_bool(
+                messaging_ingress_raw,
+                not _coerce_bool(os.getenv("HERMES_DESKTOP"), False),
+            ),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             max_concurrent_sessions=max_concurrent_sessions,
@@ -814,9 +826,13 @@ def load_gateway_config() -> GatewayConfig:
             gateway_section = yaml_cfg.get("gateway")
             if isinstance(gateway_section, dict) and "max_concurrent_sessions" in gateway_section:
                 gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
+            if isinstance(gateway_section, dict) and "messaging_ingress_enabled" in gateway_section:
+                gw_data["messaging_ingress_enabled"] = gateway_section["messaging_ingress_enabled"]
 
             if "max_concurrent_sessions" in yaml_cfg:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]
+            if "messaging_ingress_enabled" in yaml_cfg:
+                gw_data["messaging_ingress_enabled"] = yaml_cfg["messaging_ingress_enabled"]
 
             streaming_cfg = yaml_cfg.get("streaming")
             if not isinstance(streaming_cfg, dict):
@@ -1367,6 +1383,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if not platform_config.enabled and not enabled_was_explicit:
             platform_config.enabled = True
         return platform_config
+
+    ingress_enabled = os.getenv("HERMES_GATEWAY_MESSAGING_INGRESS_ENABLED")
+    if ingress_enabled is not None:
+        config.messaging_ingress_enabled = _coerce_bool(ingress_enabled, False)
     
     # Telegram
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")

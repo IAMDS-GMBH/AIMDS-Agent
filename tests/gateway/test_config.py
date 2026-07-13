@@ -214,6 +214,24 @@ class TestGatewayConfigRoundtrip:
         assert restored.group_sessions_per_user is False
         assert restored.thread_sessions_per_user is True
 
+    def test_messaging_ingress_enabled_defaults_to_true(self):
+        config = GatewayConfig.from_dict({})
+        assert config.messaging_ingress_enabled is True
+
+    def test_messaging_ingress_enabled_defaults_to_false_in_desktop_mode(self, monkeypatch):
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        config = GatewayConfig.from_dict({})
+        assert config.messaging_ingress_enabled is False
+
+    def test_messaging_ingress_enabled_top_level_overrides_nested(self):
+        config = GatewayConfig.from_dict(
+            {
+                "gateway": {"messaging_ingress_enabled": True},
+                "messaging_ingress_enabled": False,
+            }
+        )
+        assert config.messaging_ingress_enabled is False
+
     def test_max_concurrent_sessions_from_dict_normalizes_disabled_values(self):
         assert GatewayConfig.from_dict({}).max_concurrent_sessions is None
         assert GatewayConfig.from_dict({"max_concurrent_sessions": None}).max_concurrent_sessions is None
@@ -293,6 +311,24 @@ class TestGatewayConfigRoundtrip:
 
 
 class TestLoadGatewayConfig:
+    def test_bridges_nested_gateway_messaging_ingress_enabled_from_config_yaml(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  messaging_ingress_enabled: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.messaging_ingress_enabled is True
+
     def test_bridges_quick_commands_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
