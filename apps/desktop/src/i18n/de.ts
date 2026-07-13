@@ -1143,6 +1143,19 @@ export const de
     loading: 'Lade…',
     loadMore: 'Mehr laden',
     loadCount: step => `${step} weitere laden`,
+    sessionMaintenance: {
+      aria: label => `${label}-Wartungsaktionen`,
+      deleteAll: 'Alle Sitzungsdaten löschen',
+      deleteOld90: 'Alte Sitzungen löschen (3+ Monate)',
+      keepLast50: 'Alle außer den letzten 50 Sitzungen löschen',
+      confirmDeleteAll: 'Alle Sitzungsdaten jetzt löschen? Dies kann nicht rückgängig gemacht werden.',
+      confirmDeleteOld90: 'Alle Sitzungen älter als 3 Monate jetzt löschen? Dies kann nicht rückgängig gemacht werden.',
+      confirmKeepLast50:
+        'Alle Sitzungen außer den 50 neuesten löschen? Dies kann nicht rückgängig gemacht werden.',
+      doneTitle: 'Sitzungsbereinigung abgeschlossen',
+      doneCount: count => `${count} Sitzung${count === 1 ? '' : 'en'} entfernt.`,
+      failed: 'Sitzungsbereinigung fehlgeschlagen'
+    },
     row: {
       pin: 'Anheften',
       unpin: 'Lösen',

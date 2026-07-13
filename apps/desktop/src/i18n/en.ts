@@ -1142,6 +1142,18 @@ export const en: Translations = {
     loading: 'Loading…',
     loadMore: 'Load more',
     loadCount: step => `Load ${step} more`,
+    sessionMaintenance: {
+      aria: label => `${label} maintenance actions`,
+      deleteAll: 'Delete all session data',
+      deleteOld90: 'Delete old sessions (3+ months)',
+      keepLast50: 'Delete all but last 50 sessions',
+      confirmDeleteAll: 'Delete all session data now? This cannot be undone.',
+      confirmDeleteOld90: 'Delete all sessions older than 3 months now? This cannot be undone.',
+      confirmKeepLast50: 'Delete all sessions except the most recent 50? This cannot be undone.',
+      doneTitle: 'Session cleanup completed',
+      doneCount: count => `${count} session${count === 1 ? '' : 's'} removed.`,
+      failed: 'Session cleanup failed'
+    },
     row: {
       pin: 'Pin',
       unpin: 'Unpin',

@@ -12,7 +12,16 @@ import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
-import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
+import {
+  bulkDeleteSessions,
+  getCronJobs,
+  getSessionMessages,
+  listAllProfileSessions,
+  listSessions,
+  pruneSessions,
+  type SessionInfo,
+  triggerCronJob
+} from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import {
   isMessagingSource,
@@ -770,6 +779,60 @@ export function DesktopController() {
     startFreshSessionDraft
   })
 
+  const handleSessionMaintenance = useCallback(
+    async (mode: 'delete_all' | 'delete_keep_50' | 'delete_old_90'): Promise<number> => {
+      if (mode === 'delete_old_90') {
+        const result = await pruneSessions(90)
+        await refreshSessions().catch(() => undefined)
+
+        return result.removed ?? 0
+      }
+
+      const pageSize = 200
+      let offset = 0
+      let total = Number.POSITIVE_INFINITY
+      const allIds: string[] = []
+
+      while (offset < total) {
+        const page = await listSessions(pageSize, 0, 'include', 'recent', offset)
+        const rows = page.sessions ?? []
+
+        allIds.push(...rows.map(session => session.id).filter(Boolean))
+
+        if (rows.length === 0) {
+          break
+        }
+
+        offset += rows.length
+        total = typeof page.total === 'number' ? page.total : offset
+      }
+
+      const targetIds = mode === 'delete_keep_50' ? allIds.slice(50) : allIds
+
+      if (targetIds.length === 0) {
+        return 0
+      }
+
+      if (selectedStoredSessionId && targetIds.includes(selectedStoredSessionId)) {
+        startFreshSessionDraft(true)
+      }
+
+      let removed = 0
+
+      for (let index = 0; index < targetIds.length; index += 500) {
+        const chunk = targetIds.slice(index, index + 500)
+        const result = await bulkDeleteSessions(chunk)
+
+        removed += result.deleted ?? 0
+      }
+
+      await refreshSessions().catch(() => undefined)
+
+      return removed
+    },
+    [refreshSessions, selectedStoredSessionId, startFreshSessionDraft]
+  )
+
   const { leftStatusbarItems, statusbarItems } = useStatusbarItems({
     agentsOpen,
     chatOpen,
@@ -802,6 +865,7 @@ export function DesktopController() {
       }}
       onNavigate={selectSidebarItem}
       onNewSessionInWorkspace={startSessionInWorkspace}
+      onSessionMaintenance={handleSessionMaintenance}
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
       onTriggerCronJob={jobId => {
         void triggerCronJob(jobId)

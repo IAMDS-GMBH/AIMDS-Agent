@@ -23,6 +23,7 @@ import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { KbdGroup } from '@/components/ui/kbd'
 import { SearchField } from '@/components/ui/search-field'
 import {
@@ -37,7 +38,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tip } from '@/components/ui/tooltip'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { type Translations, useI18n } from '@/i18n'
 import { profileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
@@ -89,6 +90,7 @@ import {
   $workingSessionIds,
   sessionPinId
 } from '@/store/session'
+import { notify, notifyError } from '@/store/notifications'
 
 import { type AppView, ARTIFACTS_ROUTE, HUB_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE, TODOS_ROUTE } from '../../routes'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
@@ -306,6 +308,26 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onNewSessionInWorkspace: (path: null | string) => void
   onManageCronJob: (jobId: string) => void
   onTriggerCronJob: (jobId: string) => void
+  onSessionMaintenance: (mode: SessionMaintenanceMode) => Promise<number>
+}
+
+type SessionMaintenanceMode = 'delete_all' | 'delete_keep_50' | 'delete_old_90'
+
+function sessionMaintenanceCopy(sidebarCopy: Translations['sidebar']) {
+  return (
+    sidebarCopy.sessionMaintenance ?? {
+      aria: (label: string) => `${label} maintenance actions`,
+      deleteAll: 'Delete all session data',
+      deleteOld90: 'Delete old sessions (3+ months)',
+      keepLast50: 'Delete all but last 50 sessions',
+      confirmDeleteAll: 'Delete all session data now? This cannot be undone.',
+      confirmDeleteOld90: 'Delete all sessions older than 3 months now? This cannot be undone.',
+      confirmKeepLast50: 'Delete all sessions except the most recent 50? This cannot be undone.',
+      doneTitle: 'Session cleanup completed',
+      doneCount: (count: number) => `${count} session${count === 1 ? '' : 's'} removed.`,
+      failed: 'Session cleanup failed'
+    }
+  )
 }
 
 export function ChatSidebar({
@@ -319,7 +341,8 @@ export function ChatSidebar({
   onArchiveSession,
   onNewSessionInWorkspace,
   onManageCronJob,
-  onTriggerCronJob
+  onTriggerCronJob,
+  onSessionMaintenance
 }: ChatSidebarProps) {
   const { t } = useI18n()
   const s = t.sidebar
@@ -360,6 +383,7 @@ export function ChatSidebar({
   const [newSessionKbdFlash, setNewSessionKbdFlash] = useState(false)
   const [profileLoadMorePending, setProfileLoadMorePending] = useState<Record<string, boolean>>({})
   const [messagingLoadMorePending, setMessagingLoadMorePending] = useState<Record<string, boolean>>({})
+  const [sessionMaintenanceBusy, setSessionMaintenanceBusy] = useState(false)
   const messagingOpenIds = useStore($sidebarMessagingOpenIds)
   // Per-platform count of rows currently revealed (starts at NON_SESSION_INITIAL_ROWS).
   const [messagingVisible, setMessagingVisible] = useState<Record<string, number>>({})
@@ -399,6 +423,40 @@ export function ChatSidebar({
   const dndSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  )
+  const sessionMaintenance = sessionMaintenanceCopy(s)
+
+  const runSessionMaintenance = useCallback(
+    async (mode: SessionMaintenanceMode) => {
+      const confirmCopy =
+        mode === 'delete_all'
+          ? sessionMaintenance.confirmDeleteAll
+          : mode === 'delete_keep_50'
+            ? sessionMaintenance.confirmKeepLast50
+            : sessionMaintenance.confirmDeleteOld90
+
+      if (!window.confirm(confirmCopy)) {
+        return
+      }
+
+      setSessionMaintenanceBusy(true)
+
+      try {
+        const removed = await onSessionMaintenance(mode)
+
+        notify({
+          durationMs: 2_500,
+          kind: 'success',
+          title: sessionMaintenance.doneTitle,
+          message: sessionMaintenance.doneCount(removed)
+        })
+      } catch (err) {
+        notifyError(err, sessionMaintenance.failed)
+      } finally {
+        setSessionMaintenanceBusy(false)
+      }
+    },
+    [onSessionMaintenance, sessionMaintenance]
   )
 
   // Profile scope = the "workspace switcher" context. Concrete scope shows only
@@ -934,33 +992,37 @@ export function ChatSidebar({
                 forceEmptyState={showSessionSkeletons}
                 groups={displayAgentGroups}
                 headerAction={
-                  // Always reserve the icon-xs (size-6) slot so the header keeps the
-                  // same height whether or not the toggle renders — otherwise the
-                  // "Sessions" label jumps when switching to the ALL-profiles view.
-                  // Grouping operates on unpinned recents; if everything is pinned
-                  // the toggle does nothing, and it's irrelevant in the ALL-profiles
-                  // view (always grouped by profile), so hide the button (not the slot).
-                  <div className="grid size-6 shrink-0 place-items-center">
-                    {!showAllProfiles && agentSessions.length > 0 ? (
-                      <Tip label={agentsGrouped ? s.groupTitleGrouped : s.groupTitleUngrouped}>
-                        <Button
-                          aria-label={agentsGrouped ? s.groupAriaGrouped : s.groupAriaUngrouped}
-                          className={cn(
-                            'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
-                            agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
-                          )}
-                          onClick={event => {
-                            event.stopPropagation()
-                            setSidebarRecentsOpen(true)
-                            setSidebarAgentsGrouped(!agentsGrouped)
-                          }}
-                          size="icon-xs"
-                          variant="ghost"
-                        >
-                          <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
-                        </Button>
-                      </Tip>
-                    ) : null}
+                  <div className="flex shrink-0 items-center gap-1">
+                    <div className="grid size-6 shrink-0 place-items-center">
+                      {!showAllProfiles && agentSessions.length > 0 ? (
+                        <Tip label={agentsGrouped ? s.groupTitleGrouped : s.groupTitleUngrouped}>
+                          <Button
+                            aria-label={agentsGrouped ? s.groupAriaGrouped : s.groupAriaUngrouped}
+                            className={cn(
+                              'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
+                              agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+                            )}
+                            onClick={event => {
+                              event.stopPropagation()
+                              setSidebarRecentsOpen(true)
+                              setSidebarAgentsGrouped(!agentsGrouped)
+                            }}
+                            size="icon-xs"
+                            variant="ghost"
+                          >
+                            <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
+                          </Button>
+                        </Tip>
+                      ) : null}
+                    </div>
+                    <SessionMaintenanceMenu
+                      busy={sessionMaintenanceBusy}
+                      label={s.sessions}
+                      copy={sessionMaintenance}
+                      onDeleteAll={() => void runSessionMaintenance('delete_all')}
+                      onDeleteOld90={() => void runSessionMaintenance('delete_old_90')}
+                      onKeepLast50={() => void runSessionMaintenance('delete_keep_50')}
+                    />
                   </div>
                 }
                 label={s.sessions}
@@ -1083,6 +1145,52 @@ function SidebarSectionHeader({ label, open, onToggle, action, meta, icon }: Sid
       </button>
       {action}
     </div>
+  )
+}
+
+function SessionMaintenanceMenu({
+  busy,
+  label,
+  copy,
+  onDeleteAll,
+  onDeleteOld90,
+  onKeepLast50
+}: {
+  busy: boolean
+  label: string
+  copy: NonNullable<Translations['sidebar']['sessionMaintenance']>
+  onDeleteAll: () => void
+  onDeleteOld90: () => void
+  onKeepLast50: () => void
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          aria-label={copy.aria(label)}
+          className="size-6 text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100"
+          disabled={busy}
+          size="icon-xs"
+          variant="ghost"
+        >
+          <Codicon name="ellipsis" size="0.875rem" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-60">
+        <DropdownMenuItem disabled={busy} onSelect={event => { event.preventDefault(); onDeleteAll() }} variant="destructive">
+          <Codicon name="trash" size="0.875rem" />
+          <span>{copy.deleteAll}</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={busy} onSelect={event => { event.preventDefault(); onDeleteOld90() }} variant="destructive">
+          <Codicon name="history" size="0.875rem" />
+          <span>{copy.deleteOld90}</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={busy} onSelect={event => { event.preventDefault(); onKeepLast50() }} variant="destructive">
+          <Codicon name="filter" size="0.875rem" />
+          <span>{copy.keepLast50}</span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 

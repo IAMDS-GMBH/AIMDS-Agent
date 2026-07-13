@@ -151,17 +151,18 @@ export async function listSessions(
   limit = 40,
   minMessages = 0,
   archived: 'exclude' | 'include' | 'only' = 'exclude',
-  order: 'created' | 'recent' = 'recent'
+  order: 'created' | 'recent' = 'recent',
+  offset = 0
 ): Promise<PaginatedSessions> {
   const result = await window.hermesDesktop.api<PaginatedSessions>({
-    path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`,
+    path: `/api/sessions?limit=${limit}&offset=${Math.max(0, offset)}&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`,
     timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
 
   return {
     ...result,
     sessions: sanitizeSessionRows(result.sessions, limit),
-    offset: 0
+    offset: Math.max(0, offset)
   }
 }
 
@@ -242,6 +243,22 @@ export function deleteSession(id: string, profile?: string | null): Promise<{ ok
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'DELETE'
+  })
+}
+
+export function bulkDeleteSessions(ids: string[]): Promise<{ deleted: number; ok: boolean }> {
+  return window.hermesDesktop.api<{ deleted: number; ok: boolean }>({
+    path: '/api/sessions/bulk-delete',
+    method: 'POST',
+    body: { ids }
+  })
+}
+
+export function pruneSessions(olderThanDays: number): Promise<{ ok: boolean; removed: number }> {
+  return window.hermesDesktop.api<{ ok: boolean; removed: number }>({
+    path: '/api/sessions/prune',
+    method: 'POST',
+    body: { older_than_days: olderThanDays }
   })
 }
 

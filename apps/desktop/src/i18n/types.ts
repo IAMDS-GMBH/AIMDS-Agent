@@ -885,6 +885,18 @@ export interface Translations {
     loading: string
     loadMore: string
     loadCount: (step: number) => string
+    sessionMaintenance?: {
+      aria: (label: string) => string
+      deleteAll: string
+      deleteOld90: string
+      keepLast50: string
+      confirmDeleteAll: string
+      confirmDeleteOld90: string
+      confirmKeepLast50: string
+      doneTitle: string
+      doneCount: (count: number) => string
+      failed: string
+    }
     row: {
       pin: string
       unpin: string
