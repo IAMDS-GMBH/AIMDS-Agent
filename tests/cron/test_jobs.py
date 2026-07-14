@@ -407,6 +407,7 @@ class TestResolveJobRef:
         result = trigger_job("alpha")
         assert result is not None
         assert result["id"] == job["id"]
+        assert isinstance(result.get("manual_triggered_at"), str)
 
     def test_pause_by_name(self, tmp_cron_dir):
         job = create_job(prompt="A", schedule="1h", name="alpha")
@@ -703,6 +704,23 @@ class TestGetDueJobs:
         from cron.jobs import _ensure_aware, _hermes_now
         next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
         assert next_dt > _hermes_now()
+
+    def test_manual_trigger_bypasses_stale_fast_forward(self, tmp_cron_dir):
+        """A manually triggered recurring job must run once even when stale."""
+        from cron.jobs import trigger_job
+
+        job = create_job(prompt="Manual", schedule="every 1h")
+        # Make it stale enough to exceed grace.
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=35)).isoformat()
+        save_jobs(jobs)
+
+        # Manual trigger should force one due run instead of stale skipping.
+        triggered = trigger_job(job["id"])
+        assert triggered is not None
+        due = get_due_jobs()
+        assert len(due) == 1
+        assert due[0]["id"] == job["id"]
 
     def test_future_not_returned(self, tmp_cron_dir):
         create_job(prompt="Not yet", schedule="every 1h")

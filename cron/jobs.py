@@ -829,6 +829,7 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
     job = resolve_job_ref(job_id)
     if not job:
         return None
+    trigger_at = _hermes_now().isoformat()
     return update_job(
         job["id"],
         {
@@ -836,7 +837,8 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
             "state": "scheduled",
             "paused_at": None,
             "paused_reason": None,
-            "next_run_at": _hermes_now().isoformat(),
+            "next_run_at": trigger_at,
+            "manual_triggered_at": trigger_at,
         },
     )
 
@@ -884,6 +886,8 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_error"] = error if not success else None
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
+                # Clear any explicit manual-trigger marker once the run finished.
+                job["manual_triggered_at"] = None
                 
                 # Increment completed count
                 if job.get("repeat"):
@@ -1038,7 +1042,12 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # (gateway was down and missed the window). Fast-forward to
             # the next future occurrence instead of firing a stale run.
             grace = _compute_grace_seconds(schedule)
-            if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
+            manual_triggered_at = job.get("manual_triggered_at")
+            if (
+                kind in {"cron", "interval"}
+                and not manual_triggered_at
+                and (now - next_run_dt).total_seconds() > grace
+            ):
                 # Job is past its catch-up grace window — this is a stale missed run.
                 # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
                 new_next = compute_next_run(schedule, now.isoformat())
