@@ -7,7 +7,7 @@ the parent row has ``message_count = 0``. ``hermes --resume <parent_id>``
 used to load zero rows and show a blank chat.
 
 ``SessionDB.resolve_resume_session_id()`` walks the parent → child chain
-and redirects to the first descendant that actually has messages. These
+and redirects to the latest descendant that actually has messages. These
 tests pin that behaviour.
 """
 import time
@@ -54,6 +54,13 @@ def test_returns_self_when_session_has_messages(db):
     _make_chain(db, [("root", None), ("child", "root")])
     db.append_message("root", role="user", content="hi")
     assert db.resolve_resume_session_id("root") == "root"
+
+
+def test_prefers_latest_descendant_when_head_also_has_messages(db):
+    _make_chain(db, [("root", None), ("child", "root")])
+    db.append_message("root", role="user", content="older")
+    db.append_message("child", role="assistant", content="newer")
+    assert db.resolve_resume_session_id("root") == "child"
 
 
 def test_returns_self_when_no_descendant_has_messages(db):

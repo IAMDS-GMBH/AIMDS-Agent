@@ -2680,7 +2680,7 @@ class SessionDB:
         }
 
     def resolve_resume_session_id(self, session_id: str) -> str:
-        """Redirect a resume target to the descendant session that holds the messages.
+        """Redirect a resume target to the newest descendant that holds messages.
 
         Context compression ends the current session and forks a new child session
         (linked via ``parent_session_id``). The flush cursor is reset, so the
@@ -2689,9 +2689,10 @@ class SessionDB:
         it before compression. See #15000.
 
         This helper walks ``parent_session_id`` forward from ``session_id`` and
-        returns the first descendant in the chain that has at least one message
-        row. If the original session already has messages, or no descendant
-        has any, the original ``session_id`` is returned unchanged.
+        returns the latest descendant in that chain with at least one message
+        row. We still walk descendants even when the original session already
+        has messages, because post-compression turns can continue in child
+        sessions while the parent keeps older rows.
 
         The chain is always walked via the child whose ``started_at`` is
         latest; that matches the single-chain shape that compression creates.
@@ -2701,7 +2702,8 @@ class SessionDB:
             return session_id
 
         with self._lock:
-            # If this session already has messages, nothing to redirect.
+            # Seed with the original id if it already has rows.
+            best_id = session_id
             try:
                 row = self._conn.execute(
                     "SELECT 1 FROM messages WHERE session_id = ? LIMIT 1",
@@ -2709,11 +2711,10 @@ class SessionDB:
                 ).fetchone()
             except Exception:
                 return session_id
-            if row is not None:
-                return session_id
+            best_has_messages = row is not None
 
             # Walk descendants: at each step, pick the most-recently-started
-                # child session; stop once we find one with messages.
+            # child session and keep the latest node that has messages.
             current = session_id
             seen = {current}
             for _ in range(32):
@@ -2727,10 +2728,10 @@ class SessionDB:
                 except Exception:
                     return session_id
                 if child_row is None:
-                    return session_id
+                    return best_id if best_has_messages else session_id
                 child_id = child_row["id"] if hasattr(child_row, "keys") else child_row[0]
                 if not child_id or child_id in seen:
-                    return session_id
+                    return best_id if best_has_messages else session_id
                 seen.add(child_id)
                 try:
                     msg_row = self._conn.execute(
@@ -2740,9 +2741,10 @@ class SessionDB:
                 except Exception:
                     return session_id
                 if msg_row is not None:
-                    return child_id
+                    best_id = child_id
+                    best_has_messages = True
                 current = child_id
-        return session_id
+        return best_id if best_has_messages else session_id
 
     def get_messages_as_conversation(
         self,
