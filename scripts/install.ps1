@@ -2757,8 +2757,12 @@ platform_toolsets = data.setdefault("platform_toolsets", {})
 cli_toolsets = platform_toolsets.get("cli")
 if isinstance(cli_toolsets, str):
     cli_toolsets = [cli_toolsets]
-elif not isinstance(cli_toolsets, list):
-    cli_toolsets = []
+elif isinstance(cli_toolsets, list):
+    cli_toolsets = list(cli_toolsets)
+else:
+    # Keep the baseline CLI defaults when the profile has never saved
+    # platform_toolsets.cli (or has malformed data), then layer bootstrap adds.
+    cli_toolsets = ["hermes-cli"]
 if "web" not in cli_toolsets:
     cli_toolsets.append("web")
 platform_toolsets["cli"] = cli_toolsets
