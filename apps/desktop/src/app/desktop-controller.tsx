@@ -110,6 +110,7 @@ import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUT
 import { SessionPickerOverlay } from './session-picker-overlay'
 import { SessionSwitcher } from './session-switcher'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
+import { useCronPolling } from './session/hooks/use-cron-polling'
 import { useCwdActions } from './session/hooks/use-cwd-actions'
 import { useHermesConfig } from './session/hooks/use-hermes-config'
 import { useMessageStream } from './session/hooks/use-message-stream'
@@ -648,6 +649,11 @@ export function DesktopController() {
     void refreshCurrentModel()
     void refreshActiveProfile()
   }, [activeGatewayProfile, refreshCurrentModel])
+
+  useCronPolling({
+    activeSessionId,
+    profile: activeGatewayProfile
+  })
 
   const composer = useComposerActions({
     activeSessionId,
