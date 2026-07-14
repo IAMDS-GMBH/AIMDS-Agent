@@ -48,8 +48,19 @@ class TestResolveAutoMainFirst:
         # Verify it asked resolve_provider_client for the MAIN provider+model,
         # not a fallback-chain provider
         mock_resolve.assert_called_once()
-        assert mock_resolve.call_args.args[0] == "openrouter"
-        assert mock_resolve.call_args.args[1] == "anthropic/claude-sonnet-4.6"
+        call_args = mock_resolve.call_args
+        resolved_provider = (
+            call_args.kwargs.get("provider")
+            if "provider" in call_args.kwargs
+            else call_args.args[0]
+        )
+        resolved_model = (
+            call_args.kwargs.get("model")
+            if "model" in call_args.kwargs
+            else call_args.args[1]
+        )
+        assert resolved_provider == "openrouter"
+        assert resolved_model == "anthropic/claude-sonnet-4.6"
 
     def test_nous_main_uses_main_model_for_aux(self, monkeypatch):
         """Nous Portal main user → aux uses their picked Nous model, not free-tier MiMo."""
@@ -71,7 +82,13 @@ class TestResolveAutoMainFirst:
 
         assert client is mock_client
         assert model == "anthropic/claude-opus-4.6"
-        assert mock_resolve.call_args.args[0] == "nous"
+        call_args = mock_resolve.call_args
+        resolved_provider = (
+            call_args.kwargs.get("provider")
+            if "provider" in call_args.kwargs
+            else call_args.args[0]
+        )
+        assert resolved_provider == "nous"
 
     def test_non_aggregator_main_still_uses_main(self, monkeypatch):
         """Non-aggregator main (DeepSeek) → unchanged behavior, main model used."""
@@ -93,7 +110,13 @@ class TestResolveAutoMainFirst:
 
         assert client is mock_client
         assert model == "deepseek-chat"
-        assert mock_resolve.call_args.args[0] == "deepseek"
+        call_args = mock_resolve.call_args
+        resolved_provider = (
+            call_args.kwargs.get("provider")
+            if "provider" in call_args.kwargs
+            else call_args.args[0]
+        )
+        assert resolved_provider == "deepseek"
 
     def test_main_unavailable_falls_through_to_chain(self, monkeypatch):
         """Main provider with no working client → fall back to aux chain."""
@@ -158,8 +181,19 @@ class TestResolveAutoMainFirst:
             })
 
         # Runtime override wins
-        assert mock_resolve.call_args.args[0] == "anthropic"
-        assert mock_resolve.call_args.args[1] == "runtime-model"
+            call_args = mock_resolve.call_args
+            resolved_provider = (
+                call_args.kwargs.get("provider")
+                if "provider" in call_args.kwargs
+                else call_args.args[0]
+            )
+            resolved_model = (
+                call_args.kwargs.get("model")
+                if "model" in call_args.kwargs
+                else call_args.args[1]
+            )
+            assert resolved_provider == "anthropic"
+            assert resolved_model == "runtime-model"
 
 
 # ── Vision — resolve_vision_provider_client ─────────────────────────────────
