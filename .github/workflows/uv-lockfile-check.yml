@@ -47,18 +47,18 @@ on:
   push:
     branches: [main]
     paths:
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - '.github/workflows/uv-lockfile-check.yml'
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/uv-lockfile-check.yml"
   pull_request:
     branches: [main]
     paths:
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - '.github/workflows/uv-lockfile-check.yml'
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/uv-lockfile-check.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: uv-lockfile-check-${{ github.event.pull_request.number || github.ref }}
@@ -71,20 +71,51 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # For PRs we check/fix the contributor branch directly so an
+          # auto-refresh commit can be pushed back to that branch.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref }}
+          fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        uses: astral-sh/setup-uv@v8
 
-      # `uv lock --check` re-resolves the project from pyproject.toml and
-      # compares the result to uv.lock, exiting non-zero if they disagree.
-      # No network writes, no file modifications.
-      #
-      # On PRs this runs against the merge commit (see comment at the top
-      # of this file) — failures often mean "your branch is behind main,
-      # rebase and regenerate uv.lock."
-      - name: Verify uv.lock is up-to-date
+      # Regenerate the lockfile and auto-commit when safe (same-repo PR).
+      # For forks (no push rights) and branch pushes, this stays blocking and
+      # prints clear remediation instructions.
+      - name: Verify or auto-refresh uv.lock
         run: |
+          set -euo pipefail
+          uv lock
+
+          if git diff --quiet -- uv.lock; then
+            echo "uv.lock is up to date."
+            exit 0
+          fi
+
+          target_ref=""
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            target_ref="${{ github.event.pull_request.head.ref }}"
+          elif [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            target_ref="main"
+          fi
+
+          if [ -n "$target_ref" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add uv.lock
+            git commit -m "chore: refresh uv.lock"
+            git push origin "HEAD:${target_ref}"
+            cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          ## ✅ uv.lock was auto-refreshed
+
+          A chore commit refreshing `uv.lock` was pushed automatically.
+          EOF
+            exit 0
+          fi
+
+          # Fork PRs (no push permissions) or direct pushes remain blocking.
           if ! uv lock --check; then
             cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
           ## ❌ uv.lock is out of sync with pyproject.toml
