@@ -133,6 +133,7 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
 async def _lifespan(app: "FastAPI"):
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
+    loop = asyncio.get_running_loop()
 
     # Register cron completion callback for broadcasting events to desktop
     def _on_cron_complete(job_id: str, success: bool, error: Optional[str] = None):
@@ -152,17 +153,16 @@ async def _lifespan(app: "FastAPI"):
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
             
-            # Schedule the broadcast on the event loop
-            # Use asyncio.create_task to avoid blocking the sync context
-            try:
-                loop = asyncio.get_running_loop()
+            # run_job() completion can come from a worker thread; bridge back to
+            # FastAPI's event loop explicitly so /api/events subscribers receive it.
+            if loop.is_closed():
+                _log.warning("Skipping cron completion broadcast; event loop is closed")
+                return
+
+            def _enqueue_broadcast():
                 asyncio.create_task(_broadcast_event(app, "cron_events", payload))
-            except RuntimeError:
-                # No event loop running in this thread
-                # Queue the event for async processing
-                if not hasattr(app.state, 'pending_events'):
-                    app.state.pending_events = []
-                app.state.pending_events.append((payload, "cron_events"))
+
+            loop.call_soon_threadsafe(_enqueue_broadcast)
         except Exception as e:
             _log.error("Error broadcasting cron completion event: %s", e, exc_info=True)
     
