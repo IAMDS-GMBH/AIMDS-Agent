@@ -2389,6 +2389,7 @@ SOUL_EOF
 
         # Remove explicitly deactivated skills so they are not surfaced in
         # desktop skill lists and cannot be loaded by the runtime.
+        log_info "Applying AIMDS deactivated skill blocklist..."
         for blocked_skill_dir in \
             "creative/architecture-diagram" \
             "creative/ascii-video" \
@@ -2398,6 +2399,9 @@ SOUL_EOF
             "creative/pretext" \
             "creative/songwriting-and-ai-music" \
             "creative/touchdesigner-mcp" \
+            "productivity/airtable" \
+            "productivity/google-workspace" \
+            "productivity/notion" \
             "media/songsee" \
             "dogfood" \
             "yuanbao" \

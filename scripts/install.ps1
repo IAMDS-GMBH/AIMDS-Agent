@@ -3047,6 +3047,7 @@ You are Hermes, an AI agent originally developed by Nous Research and extended a
 
     # Remove explicitly deactivated skills so they are not surfaced in
     # desktop skill lists and cannot be loaded by the runtime.
+    Write-Info "Applying AIMDS deactivated skill blocklist..."
     foreach ($blockedSkillDir in @(
         'creative/architecture-diagram',
         'creative/ascii-video',
@@ -3056,6 +3057,9 @@ You are Hermes, an AI agent originally developed by Nous Research and extended a
         'creative/pretext',
         'creative/songwriting-and-ai-music',
         'creative/touchdesigner-mcp',
+        'productivity/airtable',
+        'productivity/google-workspace',
+        'productivity/notion',
         'media/songsee',
         'dogfood',
         'yuanbao',
