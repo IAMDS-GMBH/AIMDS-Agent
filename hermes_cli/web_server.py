@@ -7440,10 +7440,13 @@ async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
     # Spawn immediate execution in background
     session_id = _spawn_immediate_cron_job(selected, job_id)
     
-    # Return both the job and the session_id for UI navigation
+    # Return both the job, session_id, and profile for UI navigation
+    # The profile is essential so the desktop knows which HERMES_HOME to use
+    # when polling for session messages via getSessionMessages()
     response = dict(job)
     if session_id:
         response["session_id"] = session_id
+    response["profile"] = selected
     return response
 
 
