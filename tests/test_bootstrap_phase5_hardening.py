@@ -17,13 +17,15 @@ from pathlib import Path
 from textwrap import dedent
 import pytest
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 class TestCredentialSecurityHandling:
     """Test secure handling of credentials throughout the pipeline."""
     
     def test_api_key_not_hardcoded_in_scripts(self):
         """Ensure API keys are never hardcoded in installation scripts."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         # Should not contain any API key patterns (sk-, Bearer, etc. followed by real keys)
@@ -42,7 +44,7 @@ class TestCredentialSecurityHandling:
     
     def test_env_var_not_logged_to_console(self):
         """Ensure API key env var is not logged to console/log output."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         # Find apply_bootstrap_credentials function
@@ -64,7 +66,7 @@ class TestCredentialSecurityHandling:
     
     def test_env_file_permissions_restricted(self):
         """Verify .env file has restricted permissions (600)."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         # Should have chmod 600 for .env
@@ -73,7 +75,7 @@ class TestCredentialSecurityHandling:
     
     def test_mcp_bearer_auth_properly_formatted(self):
         """Verify Bearer token is properly quoted in YAML."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         # Bearer auth should be quoted to handle special characters
@@ -96,7 +98,7 @@ class TestEdgeCaseHandling:
     
     def test_special_characters_in_api_key(self):
         """Verify sed substitution handles special characters."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         # Sed needs escaping for special chars; bash should use proper escaping
@@ -116,7 +118,7 @@ class TestEdgeCaseHandling:
     
     def test_url_escaping_in_base_url_substitution(self):
         """Verify base_url with special characters is properly escaped."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         # URLs contain / which need escaping in sed
@@ -125,7 +127,7 @@ class TestEdgeCaseHandling:
     
     def test_empty_field_handling(self):
         """Verify empty credential fields don't break sed substitution."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         # Empty fields should be handled gracefully
@@ -134,7 +136,7 @@ class TestEdgeCaseHandling:
     
     def test_powershell_string_escaping(self):
         """Verify PowerShell properly escapes credentials."""
-        install_ps1 = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.ps1")
+        install_ps1 = REPO_ROOT / "scripts" / "install.ps1"
         content = install_ps1.read_text()
         
         func_match = re.search(
@@ -159,7 +161,7 @@ class TestErrorHandling:
         """Verify malformed URLs are handled (or at least don't crash)."""
         # This is more of a "no crash" test than validation test
         # Real validation should happen in React form
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         # Should not have logic that would crash on malformed URL
@@ -169,7 +171,7 @@ class TestErrorHandling:
     
     def test_missing_required_field_handled(self):
         """Verify missing required fields don't crash the script."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         func_match = re.search(
@@ -188,7 +190,7 @@ class TestErrorHandling:
     
     def test_very_long_api_key_handled(self):
         """Verify very long API keys don't break sed substitution."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         # Sed has line length limits; should not hardcode assumptions about key length
@@ -202,7 +204,7 @@ class TestFilePermissionsAndOwnership:
     
     def test_env_file_chmod_before_writing_secrets(self):
         """Verify .env permissions set before writing secrets."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         # Should have chmod 600 for .env somewhere in the installation flow
@@ -212,7 +214,7 @@ class TestFilePermissionsAndOwnership:
     
     def test_config_yaml_not_world_readable(self):
         """Verify config.yaml doesn't get world-readable permissions."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         # Should NOT have 644 or 666 for config.yaml
@@ -225,7 +227,7 @@ class TestSecretsNotExposedInOutput:
     
     def test_api_key_not_in_success_message(self):
         """Verify API key not included in success/log messages."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         func_match = re.search(
@@ -246,7 +248,7 @@ class TestSecretsNotExposedInOutput:
     
     def test_model_name_in_output_ok(self):
         """Verify model name (non-secret) can be in output."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         # Model name is not a secret, so it's OK to appear in logs
@@ -260,7 +262,7 @@ class TestConfigYamlValidation:
     
     def test_config_yaml_remains_valid_yaml_after_substitution(self):
         """Verify sed substitutions don't break YAML syntax."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         func_match = re.search(
@@ -279,7 +281,7 @@ class TestConfigYamlValidation:
     
     def test_mcp_servers_block_valid_yaml(self):
         """Verify mcp_servers block has valid YAML structure."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         func_match = re.search(
@@ -308,7 +310,7 @@ class TestBackwardCompatibilityEdgeCases:
     
     def test_no_crash_when_config_yaml_missing(self):
         """Verify script handles missing config.yaml gracefully."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         func_match = re.search(
@@ -326,7 +328,7 @@ class TestBackwardCompatibilityEdgeCases:
     
     def test_multiple_invocations_idempotent(self):
         """Verify applying credentials multiple times is safe."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         # This is a design property - sed with simple substitution should be safe
@@ -340,7 +342,7 @@ class TestPowerShellSpecificIssues:
     
     def test_powershell_no_scriptblock_injection(self):
         """Verify credentials can't inject PowerShell code."""
-        install_ps1 = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.ps1")
+        install_ps1 = REPO_ROOT / "scripts" / "install.ps1"
         content = install_ps1.read_text()
         
         func_match = re.search(
@@ -360,7 +362,7 @@ class TestPowerShellSpecificIssues:
     
     def test_powershell_utf8_no_bom(self):
         """Verify UTF-8 written without BOM for JSON compatibility."""
-        install_ps1 = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.ps1")
+        install_ps1 = REPO_ROOT / "scripts" / "install.ps1"
         content = install_ps1.read_text()
         
         # Should use explicit UTF8Encoding($false) or similar, not Set-Content -Encoding UTF8
@@ -373,7 +375,7 @@ class TestEnvFileSecrets:
     
     def test_env_file_not_included_in_config_yaml(self):
         """Verify .env file path not hardcoded as a variable in config.yaml."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         # config.yaml should not reference or include .env content
@@ -393,7 +395,7 @@ class TestEnvFileSecrets:
     
     def test_env_file_append_not_overwrite(self):
         """Verify .env is appended to, not overwritten."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         func_match = re.search(
@@ -419,10 +421,7 @@ class TestCredentialValidation:
     
     def test_validation_in_react_form_not_scripts(self):
         """Verify complex validation is in React, not bash/PowerShell."""
-        credentials_tsx = Path(
-            "/Users/gonzalooberreuter/Work/hermes-agent/"
-            "apps/bootstrap-installer/src/routes/credentials.tsx"
-        )
+        credentials_tsx = REPO_ROOT / "apps" / "bootstrap-installer" / "src" / "routes" / "credentials.tsx"
         if not credentials_tsx.exists():
             pytest.skip("credentials.tsx not found")
         
@@ -434,7 +433,7 @@ class TestCredentialValidation:
     
     def test_bash_scripts_no_url_validation(self):
         """Verify bash scripts don't try complex URL validation."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         func_match = re.search(
