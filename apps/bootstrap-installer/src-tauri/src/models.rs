@@ -119,9 +119,11 @@ pub async fn fetch_models(base_url: String, api_key: String) -> Result<Vec<Strin
     Ok(models)
 }
 
-/// Check whether the LiteLLM endpoint is reachable. Tries `/litellm/health`
-/// first; falls back to `/litellm/v1/models` (a 401/403 still means the server
-/// is up). Returns true if either probe gets any HTTP response.
+/// Check whether the LiteLLM endpoint is reachable.
+///
+/// Health is considered OK when:
+/// - `/litellm/health` returns 2xx, or
+/// - `/litellm/v1/models` returns 2xx or 401 (unauthorized but reachable)
 #[tauri::command]
 pub async fn check_litellm_health(base_url: String) -> bool {
     let normalized = match normalize_bootstrap_base_url(&base_url) {
@@ -146,10 +148,14 @@ pub async fn check_litellm_health(base_url: String) -> bool {
         }
     }
 
-    // Fallback probe: /litellm/v1/models — any HTTP response (even 401) means reachable
+    // Fallback probe: /litellm/v1/models — treat only 2xx or 401 as reachable
     let models_url = format!("{}/litellm/v1/models", normalized);
     tracing::debug!("LiteLLM health check (fallback): {}", models_url);
-    matches!(client.get(&models_url).send().await, Ok(_))
+    if let Ok(r) = client.get(&models_url).send().await {
+        return r.status().is_success() || r.status() == reqwest::StatusCode::UNAUTHORIZED;
+    }
+
+    false
 }
 
 /// Write provider_models_cache.json with fetched LiteLLM models pinned for OpenAI slugs.
