@@ -134,6 +134,45 @@ async def _lifespan(app: "FastAPI"):
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
 
+    # Register cron completion callback for broadcasting events to desktop
+    def _on_cron_complete(job_id: str, success: bool, error: Optional[str] = None):
+        """Callback invoked when a cron job completes.
+        
+        Broadcasts a completion event to all connected event subscribers
+        so the desktop UI can refresh the job runs list without waiting
+        for the next poll interval.
+        """
+        try:
+            # Create event payload
+            payload = json.dumps({
+                "type": "cron_job_completed",
+                "job_id": job_id,
+                "success": success,
+                "error": error,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            
+            # Schedule the broadcast on the event loop
+            # Use asyncio.create_task to avoid blocking the sync context
+            try:
+                loop = asyncio.get_running_loop()
+                asyncio.create_task(_broadcast_event(app, "cron_events", payload))
+            except RuntimeError:
+                # No event loop running in this thread
+                # Queue the event for async processing
+                if not hasattr(app.state, 'pending_events'):
+                    app.state.pending_events = []
+                app.state.pending_events.append((payload, "cron_events"))
+        except Exception as e:
+            _log.error("Error broadcasting cron completion event: %s", e, exc_info=True)
+    
+    # Register the global callback with the cron jobs module
+    try:
+        from cron.jobs import register_global_completion_callback
+        register_global_completion_callback(_on_cron_complete)
+    except Exception as e:
+        _log.warning("Could not register cron completion callback: %s", e)
+
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes
     # dashboard` is unaffected — it relies on its own gateway.

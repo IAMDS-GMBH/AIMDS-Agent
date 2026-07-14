@@ -45,6 +45,60 @@ _jobs_file_lock = threading.Lock()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
+# Completion event callbacks: registered listeners called when a job finishes.
+# Format: { job_id: callback_fn(job_id, success, error) }
+_completion_callbacks: Dict[str, List] = {}
+_global_completion_callbacks: List = []
+_callbacks_lock = threading.Lock()
+
+
+def register_completion_callback(job_id: str, callback):
+    """Register a callback to be called when a specific job completes.
+    
+    callback signature: callback(job_id: str, success: bool, error: Optional[str])
+    """
+    with _callbacks_lock:
+        if job_id not in _completion_callbacks:
+            _completion_callbacks[job_id] = []
+        _completion_callbacks[job_id].append(callback)
+
+
+def register_global_completion_callback(callback):
+    """Register a callback to be called when ANY job completes.
+    
+    callback signature: callback(job_id: str, success: bool, error: Optional[str])
+    """
+    with _callbacks_lock:
+        _global_completion_callbacks.append(callback)
+
+
+def _emit_completion_event(job_id: str, success: bool, error: Optional[str] = None):
+    """Emit completion event to all registered callbacks for this job."""
+    with _callbacks_lock:
+        job_callbacks = _completion_callbacks.get(job_id, [])
+        global_callbacks = list(_global_completion_callbacks)
+    
+    # Call job-specific callbacks
+    for callback in job_callbacks:
+        try:
+            callback(job_id, success, error)
+        except Exception as e:
+            logger.error(
+                "Error in cron completion callback for job '%s': %s",
+                job_id, e, exc_info=True
+            )
+    
+    # Call global callbacks
+    for callback in global_callbacks:
+        try:
+            callback(job_id, success, error)
+        except Exception as e:
+            logger.error(
+                "Error in cron global completion callback for job '%s': %s",
+                job_id, e, exc_info=True
+            )
+
+
 # Fields on a cron job that must never change after creation. ``id`` is used
 # as a filesystem path component under ``OUTPUT_DIR``; allowing it to be
 # updated lets an unsafe value (``../escape``, absolute path, nested) leak
@@ -935,6 +989,9 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                     job["state"] = "scheduled"
 
                 save_jobs(jobs)
+                
+                # Emit completion event to all registered listeners
+                _emit_completion_event(job_id, success, error)
                 return
 
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)

@@ -110,6 +110,7 @@ import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUT
 import { SessionPickerOverlay } from './session-picker-overlay'
 import { SessionSwitcher } from './session-switcher'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
+import { useCronCompletionListener } from './session/hooks/use-cron-completion-listener'
 import { useCronPolling } from './session/hooks/use-cron-polling'
 import { useCwdActions } from './session/hooks/use-cwd-actions'
 import { useHermesConfig } from './session/hooks/use-hermes-config'
@@ -654,6 +655,13 @@ export function DesktopController() {
     activeSessionId,
     profile: activeGatewayProfile
   })
+
+  // Listen for cron job completion events and refresh the job list
+  const handleCronJobCompleted = useCallback((jobId: string, success: boolean) => {
+    void refreshCronJobs()
+  }, [refreshCronJobs])
+
+  useCronCompletionListener(handleCronJobCompleted)
 
   const composer = useComposerActions({
     activeSessionId,
