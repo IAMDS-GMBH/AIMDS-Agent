@@ -14,9 +14,7 @@ import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
-  $cronSessions,
   $currentCwd,
-  $messagingSessions,
   $messages,
   $sessions,
   $yoloActive,
@@ -69,15 +67,6 @@ interface SessionActionsOptions {
     updater: (state: ClientSessionState) => ClientSessionState,
     storedSessionId?: string | null
   ) => ClientSessionState
-}
-
-function storedSessionProfile(storedSessionId: string): string | undefined {
-  const row =
-    $sessions.get().find(session => session.id === storedSessionId) ??
-    $cronSessions.get().find(session => session.id === storedSessionId) ??
-    $messagingSessions.get().find(session => session.id === storedSessionId)
-
-  return row?.profile
 }
 
 function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
@@ -491,7 +480,8 @@ export function useSessionActions({
 
       // Swap the single live gateway to this session's profile before any
       // gateway call (no-op when it's already on that profile / single-profile).
-      const sessionProfile = storedSessionProfile(storedSessionId)
+      const storedForProfile = $sessions.get().find(session => session.id === storedSessionId)
+      const sessionProfile = storedForProfile?.profile
       await ensureGatewayProfile(sessionProfile)
 
       const cachedRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)

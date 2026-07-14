@@ -56,7 +56,6 @@ import {
 } from '../store/profile'
 import {
   $activeSessionId,
-  $cronSessions,
   $currentCwd,
   $freshDraftReady,
   $gatewayState,
@@ -147,7 +146,6 @@ const TodosView = lazy(async () => ({ default: (await import('./todos')).TodosVi
 // this cadence while the app is open + visible so new runs surface promptly
 // instead of waiting for the next user-triggered refreshSessions().
 const CRON_POLL_INTERVAL_MS = 30_000
-const CRON_SESSION_SYNC_INTERVAL_MS = 4000
 // The recents list is local-only: cron rows have their own section, and each
 // messaging platform (telegram, discord, …) is fetched separately into its own
 // self-managed sidebar section (refreshMessagingSessions). Excluding both here
@@ -534,10 +532,7 @@ export function DesktopController() {
         return
       }
 
-      const storedProfile =
-        $sessions.get().find(session => session.id === storedSessionId)?.profile ??
-        $cronSessions.get().find(session => session.id === storedSessionId)?.profile ??
-        $messagingSessions.get().find(session => session.id === storedSessionId)?.profile
+      const storedProfile = $sessions.get().find(session => session.id === storedSessionId)?.profile
 
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
@@ -572,31 +567,6 @@ export function DesktopController() {
     refreshSessions,
     updateSessionState
   })
-
-  // Cron runs complete out-of-band from the currently open gateway stream.
-  // When the selected thread is a cron run, poll persisted messages so newly
-  // finished output appears immediately without requiring an app restart.
-  useEffect(() => {
-    if (!selectedStoredSessionId?.startsWith('cron_')) {
-      return
-    }
-
-    const sync = () => {
-      if (document.visibilityState !== 'visible' || busyRef.current) {
-        return
-      }
-      void hydrateFromStoredSession(1)
-    }
-
-    sync()
-    const intervalId = window.setInterval(sync, CRON_SESSION_SYNC_INTERVAL_MS)
-    document.addEventListener('visibilitychange', sync)
-
-    return () => {
-      window.clearInterval(intervalId)
-      document.removeEventListener('visibilitychange', sync)
-    }
-  }, [hydrateFromStoredSession, selectedStoredSessionId])
 
   const { handleDesktopGatewayEvent, restartPreviewServer } = usePreviewRouting({
     activeSessionIdRef,
