@@ -283,6 +283,15 @@ export default function CronPage() {
     loadJobs();
   }, [loadJobs]);
 
+  // Keep cron state fresh while the page is open so manual triggers show
+  // completion/results without requiring an app restart.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      loadJobs();
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [loadJobs]);
+
   // Load installed skills for the profile new jobs will be created under.
   // "" / "default" maps to the dashboard's own profile via the optional
   // ?profile= scoping on /api/skills.
