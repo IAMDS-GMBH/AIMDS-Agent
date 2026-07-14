@@ -9651,7 +9651,7 @@ class SkillToggle(BaseModel):
 
 @app.get("/api/skills")
 async def get_skills(profile: Optional[str] = None):
-    from tools.skills_tool import _find_all_skills
+    from tools.skills_tool import _find_all_skills, _is_blocked_skill_name
     from hermes_cli.skills_config import get_disabled_skills
     from tools.skills_hub import HubLockFile
 
@@ -9672,6 +9672,7 @@ async def get_skills(profile: Optional[str] = None):
         skills = _find_all_skills(skip_disabled=True)
     if hidden_from_desktop:
         skills = [s for s in skills if s.get("name") not in hidden_from_desktop]
+    skills = [s for s in skills if not _is_blocked_skill_name(s.get("name"))]
     for s in skills:
         s["enabled"] = s["name"] not in disabled
     return skills
@@ -9680,6 +9681,10 @@ async def get_skills(profile: Optional[str] = None):
 @app.put("/api/skills/toggle")
 async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
     from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
+    from tools.skills_tool import _is_blocked_skill_name
+
+    if _is_blocked_skill_name(body.name):
+        return {"ok": True, "name": body.name, "enabled": False}
     with _profile_scope(body.profile or profile):
         config = load_config()
         disabled = get_disabled_skills(config)

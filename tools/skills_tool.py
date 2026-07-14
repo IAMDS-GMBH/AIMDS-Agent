@@ -118,10 +118,25 @@ _BLOCKED_SKILL_CATEGORIES = frozenset(
         "software-development",
     }
 )
+_BLOCKED_SKILL_NAMES = frozenset(
+    {
+        "airtable",
+        "google-workspace",
+        "notion",
+    }
+)
 
 
 def _normalize_skill_category(value: str | None) -> str:
     return (value or "").strip().lower().replace("_", "-")
+
+
+def _normalize_skill_name(value: str | None) -> str:
+    return (value or "").strip().lower().replace("_", "-")
+
+
+def _is_blocked_skill_name(value: str | None) -> bool:
+    return _normalize_skill_name(value) in _BLOCKED_SKILL_NAMES
 
 
 def _is_blocked_skill_category(value: str | None) -> bool:
@@ -661,6 +676,8 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     continue
 
                 name = frontmatter.get("name", skill_dir.name)[:MAX_NAME_LENGTH]
+                if _is_blocked_skill_name(name):
+                    continue
                 if name in seen_names:
                     continue
                 if name in disabled:
@@ -914,6 +931,17 @@ def skill_view(
                 },
                 ensure_ascii=False,
             )
+        requested_name = name.rsplit("/", 1)[-1]
+        if ":" in requested_name:
+            requested_name = requested_name.rsplit(":", 1)[-1]
+        if _is_blocked_skill_name(requested_name):
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Skill '{name}' is disabled by policy.",
+                },
+                ensure_ascii=False,
+            )
 
         local_category_name: str | None = None
         # ── Qualified name dispatch (plugin skills) ──────────────────
@@ -1081,6 +1109,8 @@ def skill_view(
                     fm, _ = _parse_frontmatter(fm_content)
                 except Exception:
                     fm = {}
+                if _is_blocked_skill_name(fm.get("name")):
+                    continue
                 if fm.get("name") == name:
                     _record(found_skill_md.parent, found_skill_md)
 
