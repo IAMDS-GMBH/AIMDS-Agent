@@ -435,6 +435,20 @@ class TestUnifiedCronjobTool:
         stored = get_job(created["job_id"])
         assert stored["deliver"] == "telegram,discord"
 
+    def test_create_rejects_origin_delivery_without_origin_context(self, monkeypatch):
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="x",
+                schedule="every 1h",
+                deliver="origin",
+            )
+        )
+        assert created["success"] is False
+        assert "requires a live chat origin" in created["error"]
+
     def test_update_normalizes_list_form_deliver(self):
         """update with deliver=['telegram'] stores the canonical string."""
         from cron.jobs import get_job
@@ -452,6 +466,18 @@ class TestUnifiedCronjobTool:
         assert updated["success"] is True
         stored = get_job(created["job_id"])
         assert stored["deliver"] == "telegram"
+
+    def test_update_rejects_origin_delivery_without_saved_origin(self):
+        created = json.loads(cronjob(action="create", prompt="x", schedule="every 1h"))
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                deliver="origin",
+            )
+        )
+        assert updated["success"] is False
+        assert "no saved origin" in updated["error"]
 
 
 # =========================================================================

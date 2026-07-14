@@ -532,13 +532,22 @@ def cronjob(
                             success=False,
                         )
 
+            origin = _origin_from_env()
+            normalized_deliver = _normalize_deliver_param(deliver)
+            if normalized_deliver == "origin" and not origin:
+                return tool_error(
+                    "deliver='origin' requires a live chat origin, but none is available in this context. "
+                    "Use deliver='local' or an explicit platform target (e.g. 'telegram').",
+                    success=False,
+                )
+
             job = create_job(
                 prompt=prompt or "",
                 schedule=schedule,
                 name=name,
                 repeat=repeat,
-                deliver=_normalize_deliver_param(deliver),
-                origin=_origin_from_env(),
+                deliver=normalized_deliver,
+                origin=origin,
                 skills=canonical_skills,
                 model=_normalize_optional_job_value(model),
                 provider=_normalize_optional_job_value(provider),
@@ -639,7 +648,14 @@ def cronjob(
             if name is not None:
                 updates["name"] = name
             if deliver is not None:
-                updates["deliver"] = _normalize_deliver_param(deliver)
+                normalized_deliver = _normalize_deliver_param(deliver)
+                if normalized_deliver == "origin" and not job.get("origin"):
+                    return tool_error(
+                        "Cannot set deliver='origin' on a job with no saved origin. "
+                        "Use deliver='local' or an explicit platform target (e.g. 'telegram').",
+                        success=False,
+                    )
+                updates["deliver"] = normalized_deliver
             if skills is not None or skill is not None:
                 canonical_skills = _canonical_skills(skill, skills)
                 updates["skills"] = canonical_skills
