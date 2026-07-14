@@ -175,21 +175,24 @@ class PersistentTodoStore:
         status_norm = status.strip().lower()
         if status_norm not in VALID_STATUSES:
             status_norm = "pending"
-        todo_id = f"todo-{int(now * 1000)}"
-        completed_at = now if status_norm == "completed" else None
         with self._lock:
             with self._connect() as conn:
+                row = conn.execute("SELECT MAX(created_at) AS max_created FROM todos").fetchone()
+                max_created = float(row["max_created"]) if row and row["max_created"] is not None else None
+                created_at = max(now, (max_created + 1e-6) if max_created is not None else now)
+                todo_id = f"todo-{int(created_at * 1_000_000)}"
+                completed_at = created_at if status_norm == "completed" else None
                 conn.execute(
                     "INSERT INTO todos (id, content, status, created_at, updated_at, completed_at) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
-                    (todo_id, content.strip() or "(no description)", status_norm, now, now, completed_at),
+                    (todo_id, content.strip() or "(no description)", status_norm, created_at, created_at, completed_at),
                 )
         return self.set_status(todo_id, status_norm) or {
             "id": todo_id,
             "content": content.strip() or "(no description)",
             "status": status_norm,
-            "created_at": now,
-            "updated_at": now,
+            "created_at": created_at,
+            "updated_at": created_at,
             "completed_at": completed_at,
         }
 

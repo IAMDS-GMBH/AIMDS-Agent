@@ -22,6 +22,8 @@ export interface CredentialsData {
   modelName: string
   modelNames?: string[]
   selectedEndpoint?: EndpointVariant
+  stagingApiKey?: string
+  devApiKey?: string
 }
 
 function computeFetchFingerprint(formData: CredentialsData): string {
@@ -490,4 +492,3 @@ export default function Credentials() {
     </div>
   )
 }
-

@@ -760,16 +760,16 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     Policy is controlled by ``terminal.home_mode`` (bridged to
     ``TERMINAL_HOME_MODE``):
 
-    * ``auto`` (default): host installs keep the real user HOME; containers use
+    * ``profile`` (default): use ``{HERMES_HOME}/home`` when it exists,
+      preserving strict per-profile tool-config isolation.
+    * ``auto``: host installs keep the real user HOME; containers use
       ``{HERMES_HOME}/home`` for persistent state. If a host parent already has
       HOME pointed at the profile home, repair subprocesses back to real HOME.
     * ``real``: always prefer the real OS-user HOME.
-    * ``profile``: use ``{HERMES_HOME}/home`` when it exists, preserving the
-      older strict per-profile tool-config isolation.
     """
     env = env or {}
     profile_home = _profile_home_path(env)
-    mode = str(env.get("TERMINAL_HOME_MODE") or os.getenv("TERMINAL_HOME_MODE", "auto")).strip().lower() or "auto"
+    mode = str(env.get("TERMINAL_HOME_MODE") or os.getenv("TERMINAL_HOME_MODE", "profile")).strip().lower() or "profile"
     if mode in {"isolated", "profile_home", "profile-home"}:
         mode = "profile"
     if mode in {"host", "user", "real_home", "real-home"}:

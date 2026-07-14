@@ -3210,8 +3210,8 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             _log_skip_unhealthy(main_chain_label)
         else:
             client, resolved = resolve_provider_client(
-                resolved_provider,
-                main_model,
+                provider=resolved_provider,
+                model=main_model,
                 explicit_base_url=explicit_base_url,
                 explicit_api_key=explicit_api_key,
                 api_mode=runtime_api_mode or None,

@@ -360,11 +360,15 @@ def get_cache_directory_mounts(
     ``container_path`` keys.  The host path is resolved via
     ``get_hermes_dir()`` for backward compatibility with old directory layouts.
     """
-    from hermes_constants import get_hermes_dir
+    from hermes_constants import get_hermes_dir, get_hermes_home
 
     mounts: List[Dict[str, str]] = []
+    hermes_home = get_hermes_home()
     for new_subpath, old_name in _CACHE_DIRS:
-        host_dir = get_hermes_dir(new_subpath, old_name)
+        # Keep explicit legacy-dir compatibility for cache mounts even when the
+        # legacy directory is still empty.
+        legacy_dir = hermes_home / old_name
+        host_dir = legacy_dir if legacy_dir.is_dir() else get_hermes_dir(new_subpath, old_name)
         if host_dir.is_dir():
             # Always map to the *new* container layout regardless of host layout.
             container_path = f"{container_base.rstrip('/')}/{new_subpath}"
@@ -450,5 +454,4 @@ def iter_cache_files(
 def clear_credential_files() -> None:
     """Reset the skill-scoped registry (e.g. on session reset)."""
     _get_registered().clear()
-
 
