@@ -81,9 +81,10 @@ import {
   setMessagingTruncated,
   setSessionProfileTotals,
   setSessions,
-  setSessionsLoading,
+   setSessionsLoading,
   setSessionsTotal
 } from '../store/session'
+import { notify } from '../store/notifications'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 import { isSecondaryWindow } from '../store/windows'
 
@@ -657,7 +658,13 @@ export function DesktopController() {
   })
 
   // Listen for cron job completion events and refresh the job list
-  const handleCronJobCompleted = useCallback((jobId: string, success: boolean) => {
+  const handleCronJobCompleted = useCallback((jobId: string, success: boolean, error?: string) => {
+    notify({
+      kind: success ? 'success' : 'error',
+      message: success ? `Cron job completed` : `Cron job failed`,
+      detail: jobId,
+      durationMs: success ? 5000 : 0
+    })
     void refreshCronJobs()
   }, [refreshCronJobs])
 
