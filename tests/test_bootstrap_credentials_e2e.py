@@ -17,6 +17,8 @@ from pathlib import Path
 from textwrap import dedent
 import pytest
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 @pytest.fixture
 def temp_hermes_home():
@@ -75,7 +77,7 @@ class TestBashCredentialConsumption:
     
     def test_apply_bootstrap_credentials_function_exists(self):
         """Verify apply_bootstrap_credentials function is defined."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         assert "apply_bootstrap_credentials()" in content, \
@@ -83,7 +85,7 @@ class TestBashCredentialConsumption:
     
     def test_api_key_env_var_read(self):
         """Verify API key env var is checked."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         # Check that function reads the env var
@@ -101,7 +103,7 @@ class TestBashCredentialConsumption:
     
     def test_config_yaml_substitution(self):
         """Verify config.yaml substitution with sed."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         # Check sed substitution for model name
@@ -120,7 +122,7 @@ class TestBashCredentialConsumption:
     
     def test_mcp_servers_block_added(self):
         """Verify mcp_servers block is added when Memory API URL provided."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         assert 'HERMES_BOOTSTRAP_MEMORY_API_URL' in content, \
@@ -132,7 +134,7 @@ class TestBashCredentialConsumption:
     
     def test_env_file_populated(self):
         """Verify .env file is populated with secrets."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         assert 'IAMDS_LITELLM_API_KEY' in content, \
@@ -142,7 +144,7 @@ class TestBashCredentialConsumption:
     
     def test_backward_compatible_no_env_vars(self):
         """Verify function is backward compatible (skips if no env vars)."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         # Check for guard condition
@@ -153,7 +155,7 @@ class TestBashCredentialConsumption:
     
     def test_function_called_in_copy_config_templates(self):
         """Verify apply_bootstrap_credentials is called."""
-        install_sh = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.sh")
+        install_sh = REPO_ROOT / "scripts" / "install.sh"
         content = install_sh.read_text()
         
         # Find the copy_config_templates function
@@ -174,7 +176,7 @@ class TestPowerShellCredentialConsumption:
     
     def test_apply_bootstrap_credentials_function_exists(self):
         """Verify Apply-BootstrapCredentials function is defined."""
-        install_ps1 = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.ps1")
+        install_ps1 = REPO_ROOT / "scripts" / "install.ps1"
         content = install_ps1.read_text()
         
         assert "function Apply-BootstrapCredentials" in content, \
@@ -182,7 +184,7 @@ class TestPowerShellCredentialConsumption:
     
     def test_api_key_env_var_read(self):
         """Verify API key env var is checked."""
-        install_ps1 = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.ps1")
+        install_ps1 = REPO_ROOT / "scripts" / "install.ps1"
         content = install_ps1.read_text()
         
         assert '$env:HERMES_BOOTSTRAP_API_KEY' in content, \
@@ -198,7 +200,7 @@ class TestPowerShellCredentialConsumption:
     
     def test_config_yaml_substitution(self):
         """Verify config.yaml substitution with -replace."""
-        install_ps1 = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.ps1")
+        install_ps1 = REPO_ROOT / "scripts" / "install.ps1"
         content = install_ps1.read_text()
         
         # Check -replace for model
@@ -219,7 +221,7 @@ class TestPowerShellCredentialConsumption:
     
     def test_mcp_servers_block_added(self):
         """Verify mcp_servers block is added when Memory API URL provided."""
-        install_ps1 = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.ps1")
+        install_ps1 = REPO_ROOT / "scripts" / "install.ps1"
         content = install_ps1.read_text()
         
         assert '$env:HERMES_BOOTSTRAP_MEMORY_API_URL' in content, \
@@ -231,7 +233,7 @@ class TestPowerShellCredentialConsumption:
     
     def test_env_file_populated(self):
         """Verify .env file is populated with secrets."""
-        install_ps1 = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.ps1")
+        install_ps1 = REPO_ROOT / "scripts" / "install.ps1"
         content = install_ps1.read_text()
         
         assert 'IAMDS_LITELLM_API_KEY' in content, \
@@ -241,7 +243,7 @@ class TestPowerShellCredentialConsumption:
     
     def test_backward_compatible_no_env_vars(self):
         """Verify function is backward compatible (skips if no env vars)."""
-        install_ps1 = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.ps1")
+        install_ps1 = REPO_ROOT / "scripts" / "install.ps1"
         content = install_ps1.read_text()
         
         # Check for guard condition
@@ -252,7 +254,7 @@ class TestPowerShellCredentialConsumption:
     
     def test_function_called_in_copy_config_templates(self):
         """Verify Apply-BootstrapCredentials is called."""
-        install_ps1 = Path("/Users/gonzalooberreuter/Work/hermes-agent/scripts/install.ps1")
+        install_ps1 = REPO_ROOT / "scripts" / "install.ps1"
         content = install_ps1.read_text()
         
         # Find the Copy-ConfigTemplates function
@@ -273,10 +275,7 @@ class TestTauriCredentialsThreading:
     
     def test_credentials_struct_defined(self):
         """Verify CredentialsData struct in bootstrap.rs."""
-        bootstrap_rs = Path(
-            "/Users/gonzalooberreuter/Work/hermes-agent/"
-            "apps/bootstrap-installer/src-tauri/src/bootstrap.rs"
-        )
+        bootstrap_rs = REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "src" / "bootstrap.rs"
         if not bootstrap_rs.exists():
             pytest.skip("bootstrap.rs not found (may be in different location)")
         
@@ -298,10 +297,7 @@ class TestTauriCredentialsThreading:
     
     def test_env_vars_set_before_script_execution(self):
         """Verify env vars set before subprocess call."""
-        powershell_rs = Path(
-            "/Users/gonzalooberreuter/Work/hermes-agent/"
-            "apps/bootstrap-installer/src-tauri/src/powershell.rs"
-        )
+        powershell_rs = REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "src" / "powershell.rs"
         if not powershell_rs.exists():
             pytest.skip("powershell.rs not found (may be in different location)")
         
@@ -317,19 +313,13 @@ class TestReactCredentialsForm:
     
     def test_credentials_tsx_exists(self):
         """Verify credentials.tsx file exists."""
-        credentials_tsx = Path(
-            "/Users/gonzalooberreuter/Work/hermes-agent/"
-            "apps/bootstrap-installer/src/routes/credentials.tsx"
-        )
+        credentials_tsx = REPO_ROOT / "apps" / "bootstrap-installer" / "src" / "routes" / "credentials.tsx"
         assert credentials_tsx.exists(), \
             "credentials.tsx not found"
     
     def test_credentials_data_interface_defined(self):
         """Verify CredentialsData interface in TypeScript."""
-        credentials_tsx = Path(
-            "/Users/gonzalooberreuter/Work/hermes-agent/"
-            "apps/bootstrap-installer/src/routes/credentials.tsx"
-        )
+        credentials_tsx = REPO_ROOT / "apps" / "bootstrap-installer" / "src" / "routes" / "credentials.tsx"
         if not credentials_tsx.exists():
             pytest.skip("credentials.tsx not found")
         
@@ -365,9 +355,7 @@ class TestConfigurationGeneration:
     
     def test_cli_config_yaml_example_exists(self):
         """Verify cli-config.yaml.example exists in repo."""
-        cli_config = Path(
-            "/Users/gonzalooberreuter/Work/hermes-agent/cli-config.yaml.example"
-        )
+        cli_config = REPO_ROOT / "cli-config.yaml.example"
         assert cli_config.exists(), \
             "cli-config.yaml.example not found in repo"
     
@@ -384,9 +372,9 @@ class TestIntegrationFlow:
         """Verify the flow is documented somewhere."""
         # Check for documentation in README or CONTRIBUTING
         repo_files = [
-            "/Users/gonzalooberreuter/Work/hermes-agent/README.md",
-            "/Users/gonzalooberreuter/Work/hermes-agent/CONTRIBUTING.md",
-            "/Users/gonzalooberreuter/Work/hermes-agent/apps/bootstrap-installer/README.md",
+            str(REPO_ROOT / "README.md"),
+            str(REPO_ROOT / "CONTRIBUTING.md"),
+            str(REPO_ROOT / "apps" / "bootstrap-installer" / "README.md"),
         ]
         
         found_docs = False

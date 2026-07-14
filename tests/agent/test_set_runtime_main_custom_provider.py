@@ -77,7 +77,12 @@ class TestSetRuntimeMainCustomProvider:
 
                 mock_resolve.assert_called_once()
                 call_args = mock_resolve.call_args
-                assert call_args[0][0] == "custom"
+                resolved_provider = (
+                    call_args[1].get("provider")
+                    if isinstance(call_args[1], dict) and "provider" in call_args[1]
+                    else call_args[0][0]
+                )
+                assert resolved_provider == "custom"
                 assert call_args[1]["explicit_base_url"] == "https://custom-endpoint.example.com/v1"
                 assert call_args[1]["explicit_api_key"] == "sk-test-123"
         finally:
