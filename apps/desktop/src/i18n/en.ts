@@ -348,7 +348,23 @@ export const en: Translations = {
       justNow: 'just now',
       minAgo: count => `${count} min ago`,
       hoursAgo: count => `${count} hours ago`,
-      daysAgo: count => `${count} days ago`
+      daysAgo: count => `${count} days ago`,
+      uninstall: {
+        dangerZone: 'Danger zone',
+        checkingInstalled: "Checking what's installed…",
+        confirmTitle: 'Confirm uninstall',
+        confirmBody:
+          "This removes EVERYTHING — the Chat GUI, Hermes agent, and all local Hermes data. This can't be undone.",
+        appPathLabel: 'App',
+        runCta: 'Yes, uninstall',
+        runningCta: 'Uninstalling…',
+        cancel: 'Cancel',
+        sectionTitle: 'Uninstall Hermes',
+        sectionBody:
+          'This permanently removes the app, agent, and all local Hermes data. The app closes to finish the job.',
+        uninstallAllCta: 'Uninstall everything',
+        startFailed: 'Uninstall could not start.'
+      }
     },
     config: {
       none: 'None',

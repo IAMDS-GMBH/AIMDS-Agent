@@ -349,7 +349,23 @@ export const de
       justNow: 'gerade eben',
       minAgo: count => `vor ${count} Min.`,
       hoursAgo: count => `vor ${count} Std.`,
-      daysAgo: count => `vor ${count} Tag${count === 1 ? '' : 'en'}`
+      daysAgo: count => `vor ${count} Tag${count === 1 ? '' : 'en'}`,
+      uninstall: {
+        dangerZone: 'Gefahrenbereich',
+        checkingInstalled: 'Prüfe, was installiert ist…',
+        confirmTitle: 'Deinstallation bestätigen',
+        confirmBody:
+          'Dadurch wird ALLES entfernt — die Chat-GUI, der Hermes-Agent und alle lokalen Hermes-Daten. Das kann nicht rückgängig gemacht werden.',
+        appPathLabel: 'App',
+        runCta: 'Ja, deinstallieren',
+        runningCta: 'Deinstalliere…',
+        cancel: 'Abbrechen',
+        sectionTitle: 'Hermes deinstallieren',
+        sectionBody:
+          'Dadurch werden die App, der Agent und alle lokalen Hermes-Daten dauerhaft entfernt. Die App wird zum Abschluss geschlossen.',
+        uninstallAllCta: 'Alles deinstallieren',
+        startFailed: 'Deinstallation konnte nicht gestartet werden.'
+      }
     },
     config: {
       none: 'Keine',

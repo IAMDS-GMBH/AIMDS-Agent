@@ -262,6 +262,20 @@ export interface Translations {
       minAgo: (count: number) => string
       hoursAgo: (count: number) => string
       daysAgo: (count: number) => string
+      uninstall?: {
+        dangerZone: string
+        checkingInstalled: string
+        confirmTitle: string
+        confirmBody: string
+        appPathLabel: string
+        runCta: string
+        runningCta: string
+        cancel: string
+        sectionTitle: string
+        sectionBody: string
+        uninstallAllCta: string
+        startFailed: string
+      }
     }
     config: {
       none: string
