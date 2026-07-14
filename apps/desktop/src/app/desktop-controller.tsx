@@ -668,7 +668,7 @@ export function DesktopController() {
     void refreshCronJobs()
   }, [refreshCronJobs])
 
-  useCronCompletionListener(handleCronJobCompleted)
+  useCronCompletionListener(handleCronJobCompleted, activeGatewayProfile || undefined)
 
   const composer = useComposerActions({
     activeSessionId,

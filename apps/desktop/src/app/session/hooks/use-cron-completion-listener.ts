@@ -16,7 +16,8 @@ type CronCompletionEvent = {
  * for the next poll interval.
  */
 export function useCronCompletionListener(
-  onJobCompleted?: (jobId: string, success: boolean, error?: string) => void
+  onJobCompleted?: (jobId: string, success: boolean, error?: string) => void,
+  profile?: string
 ) {
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
@@ -27,10 +28,26 @@ export function useCronCompletionListener(
       return
     }
 
-    function connect() {
-      // Build WebSocket URL - use the same base as the fetch API
+    async function resolveEventsWsUrl(): Promise<string> {
+      const desktop = window.hermesDesktop
+      if (desktop?.getConnection) {
+        const conn = await desktop.getConnection(profile ?? null)
+        const base = new URL(conn.baseUrl.endsWith('/') ? conn.baseUrl : `${conn.baseUrl}/`)
+        const wsUrl = new URL('api/events', base)
+        wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:'
+        wsUrl.searchParams.set('channel', 'cron_events')
+        if (conn.token) {
+          wsUrl.searchParams.set('token', conn.token)
+        }
+        return wsUrl.toString()
+      }
+
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const wsUrl = `${protocol}//${window.location.host}/api/events?channel=cron_events`
+      return `${protocol}//${window.location.host}/api/events?channel=cron_events`
+    }
+
+    async function connect() {
+      const wsUrl = await resolveEventsWsUrl()
 
       try {
         const ws = new WebSocket(wsUrl)
@@ -64,7 +81,7 @@ export function useCronCompletionListener(
 
           // Reconnect after 3 seconds
           reconnectTimeoutRef.current = setTimeout(() => {
-            connect()
+            void connect()
           }, 3000)
         }
 
@@ -72,12 +89,12 @@ export function useCronCompletionListener(
       } catch (e) {
         console.error('[cron-completion] Failed to create WebSocket:', e)
         reconnectTimeoutRef.current = setTimeout(() => {
-          connect()
+          void connect()
         }, 3000)
       }
     }
 
-    connect()
+    void connect()
 
     return () => {
       // Cleanup on unmount
@@ -90,5 +107,5 @@ export function useCronCompletionListener(
         reconnectTimeoutRef.current = null
       }
     }
-  }, [onJobCompleted])
+  }, [onJobCompleted, profile])
 }
