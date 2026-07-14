@@ -481,17 +481,15 @@ jobs:
           notes_file="$RUNNER_TEMP/bootstrap-release-notes.md"
           commits_file="$RUNNER_TEMP/bootstrap-release-commits.md"
 
-          prev_tag="$(gh release list --repo "$GH_REPO" --limit 100 --json tagName --jq '.[] | .tagName' | awk -v cur="$TAG" '$0 != cur { print; exit }')"
+          set +e
+          prev_tag="$(gh release list --repo "$GH_REPO" --limit 100 --json tagName --jq '.[] | .tagName' 2>/dev/null | awk -v cur="$TAG" '$0 != cur { print; exit }')"
+          set -e
 
-          if [ -n "${prev_tag:-}" ]; then
-            compare_json="$(gh api "repos/$GH_REPO/compare/${prev_tag}...${TARGET_SHA}")"
-            jq -r '.commits[] | "- `\(.sha[0:7])` \((.commit.message | split("\n"))[0]) (@\(.author.login // .commit.author.name // "unknown"))"' \
-              <<<"$compare_json" > "$commits_file"
+          if [ -n "${prev_tag:-}" ] && git rev-parse -q --verify "${prev_tag}^{commit}" >/dev/null; then
+            git log --no-merges --pretty='- `%h` %s (@%an)' "${prev_tag}..${TARGET_SHA}" > "$commits_file"
             range_label="${prev_tag}...${TAG}"
           else
-            commits_json="$(gh api "repos/$GH_REPO/commits?sha=${TARGET_SHA}&per_page=40")"
-            jq -r '.[] | "- `\(.sha[0:7])` \((.commit.message | split("\n"))[0]) (@\(.author.login // .commit.author.name // "unknown"))"' \
-              <<<"$commits_json" > "$commits_file"
+            git log --no-merges -n 40 --pretty='- `%h` %s (@%an)' "${TARGET_SHA}" > "$commits_file"
             range_label="up to ${TAG}"
           fi
 
