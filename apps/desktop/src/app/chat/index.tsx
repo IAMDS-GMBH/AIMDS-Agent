@@ -123,14 +123,14 @@ function ChatHeader({
   }
 
   return (
-    <header className={cn(titlebarHeaderBaseClass, isRoutedSessionView && titlebarHeaderShadowClass)}>
-      <div
-        className="min-w-0 flex-1"
-        style={{
-          maxWidth:
-            'calc(100vw - var(--titlebar-content-inset,0px) - var(--titlebar-tools-right) - var(--titlebar-tools-width) - 1.5rem)'
-        }}
-      >
+    <header
+      className={cn(
+        titlebarHeaderBaseClass,
+        'pr-[calc(var(--titlebar-tools-right)+var(--titlebar-tools-width)+0.75rem)]',
+        isRoutedSessionView && titlebarHeaderShadowClass
+      )}
+    >
+      <div className="min-w-0 max-w-full flex-1">
         <SessionActionsMenu
           align="start"
           onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}
