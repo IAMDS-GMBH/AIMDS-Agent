@@ -83,8 +83,9 @@ export function routeSessionId(pathname: string): string | null {
   return id && !id.includes('/') ? decodeURIComponent(id) : null
 }
 
-export function sessionRoute(sessionId: string): string {
-  return `${SESSION_ROUTE_PREFIX}${encodeURIComponent(sessionId)}`
+export function sessionRoute(sessionId: string, profile?: string): string {
+  const route = `${SESSION_ROUTE_PREFIX}${encodeURIComponent(sessionId)}`
+  return profile ? `${route}?profile=${encodeURIComponent(profile)}` : route
 }
 
 export function appViewForPath(pathname: string): AppView {

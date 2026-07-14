@@ -7326,15 +7326,86 @@ async def resume_cron_job(job_id: str, profile: Optional[str] = None):
     return job
 
 
+def _spawn_immediate_cron_job(profile: str, job_id: str) -> Optional[str]:
+    """Spawn a background thread to run a cron job immediately.
+    
+    Returns the session_id if successful, None otherwise.
+    """
+    try:
+        profile_name, home = _cron_profile_home(profile)
+        
+        # Get the job config to pass to run_job
+        job = _call_cron_for_profile(profile, "get_job", job_id)
+        if not job:
+            return None
+        
+        # Generate the session_id that will be used
+        from cron.scheduler import _hermes_now
+        session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+        
+        def _run_job_thread():
+            """Background thread to execute the job immediately."""
+            try:
+                # Switch HERMES_HOME context for this thread
+                from cron import scheduler as cron_sched
+                from hermes_cli import profiles as profiles_mod
+                
+                # Store original env
+                original_hermes_home = os.environ.get("HERMES_HOME")
+                try:
+                    os.environ["HERMES_HOME"] = str(home)
+                    # Execute the job
+                    success, output, final_response, error = cron_sched.run_job(job)
+                    # Mark the job as complete
+                    cron_sched.mark_job_run(job_id, success, error)
+                    _log.info(
+                        "Immediate cron job '%s' (session %s) completed: %s",
+                        job_id, session_id, "success" if success else "failed",
+                    )
+                except Exception as e:
+                    _log.error("Immediate cron job '%s' failed: %s", job_id, e, exc_info=True)
+                finally:
+                    # Restore original HERMES_HOME
+                    if original_hermes_home is not None:
+                        os.environ["HERMES_HOME"] = original_hermes_home
+                    else:
+                        os.environ.pop("HERMES_HOME", None)
+            except Exception as e:
+                _log.error("Background thread error for job '%s': %s", job_id, e, exc_info=True)
+        
+        # Spawn the background thread
+        thread = threading.Thread(
+            target=_run_job_thread,
+            daemon=True,
+            name=f"cron-trigger-{job_id}",
+        )
+        thread.start()
+        
+        return session_id
+    except Exception as e:
+        _log.error("Failed to spawn immediate cron job '%s': %s", job_id, e, exc_info=True)
+        return None
+
+
 @app.post("/api/cron/jobs/{job_id}/trigger")
 async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
+    
+    # Mark job as manually triggered via trigger_job
     job = _call_cron_for_profile(selected, "trigger_job", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    
+    # Spawn immediate execution in background
+    session_id = _spawn_immediate_cron_job(selected, job_id)
+    
+    # Return both the job and the session_id for UI navigation
+    response = dict(job)
+    if session_id:
+        response["session_id"] = session_id
+    return response
 
 
 @app.delete("/api/cron/jobs/{job_id}")

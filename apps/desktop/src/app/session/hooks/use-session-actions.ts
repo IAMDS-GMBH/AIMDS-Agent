@@ -471,7 +471,7 @@ export function useSessionActions({
   }, [navigate, selectedStoredSessionId])
 
   const resumeSession = useCallback(
-    async (storedSessionId: string, replaceRoute = false) => {
+    async (storedSessionId: string, replaceRoute = false, profileOverride?: string) => {
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
 
@@ -481,7 +481,7 @@ export function useSessionActions({
       // Swap the single live gateway to this session's profile before any
       // gateway call (no-op when it's already on that profile / single-profile).
       const storedForProfile = $sessions.get().find(session => session.id === storedSessionId)
-      const sessionProfile = storedForProfile?.profile
+      const sessionProfile = profileOverride || storedForProfile?.profile
       await ensureGatewayProfile(sessionProfile)
 
       const cachedRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)

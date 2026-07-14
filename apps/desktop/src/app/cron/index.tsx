@@ -240,7 +240,7 @@ function matchesQuery(job: CronJob, q: string): boolean {
 
 interface CronViewProps extends React.ComponentProps<'section'> {
   onClose: () => void
-  onOpenSession?: (sessionId: string) => void
+  onOpenSession?: (sessionId: string, profile?: string) => void
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
 
@@ -349,6 +349,14 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
       const updated = await triggerCronJob(job.id)
       updateCronJobs(rows => rows.map(row => (row.id === job.id ? updated : row)))
       notify({ kind: 'success', title: c.triggered, message: truncate(jobTitle(job), 60) })
+      
+      // If the response includes a session_id, navigate to the session immediately
+      // so the user can see the output in real-time
+      if ((updated as any)?.session_id) {
+        const sessionId = (updated as any).session_id
+        const profile = (updated as any)?.profile
+        onOpenSession?.(sessionId, profile)
+      }
     } catch (err) {
       notifyError(err, c.failedTrigger)
     } finally {
@@ -607,7 +615,7 @@ function CronJobDetail({
             )}
           </header>
 
-          <CronJobRuns c={c} jobId={job.id} onOpenSession={onOpenSession} />
+          <CronJobRuns c={c} job={job} onOpenSession={onOpenSession} />
         </div>
       </div>
     </div>
@@ -631,13 +639,14 @@ const RUNS_POLL_INTERVAL_MS = 8000
 
 function CronJobRuns({
   c,
-  jobId,
+  job,
   onOpenSession
 }: {
   c: Translations['cron']
-  jobId: string
-  onOpenSession?: (sessionId: string) => void
+  job: CronJob
+  onOpenSession?: (sessionId: string, profile?: string) => void
 }) {
+  const jobId = job.id
   const [runs, setRuns] = useState<null | SessionInfo[]>(null)
 
   useEffect(() => {
@@ -689,7 +698,7 @@ function CronJobRuns({
             <button
               className="flex items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-xs hover:bg-(--chrome-action-hover) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
               key={run.id}
-              onClick={() => onOpenSession?.(run.id)}
+              onClick={() => onOpenSession?.(run.id, (job as any)?.profile)}
               type="button"
             >
               <span className="truncate text-foreground">{run.title?.trim() || run.preview?.trim() || run.id}</span>

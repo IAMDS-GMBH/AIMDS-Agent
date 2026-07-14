@@ -218,6 +218,10 @@ export function DesktopController() {
 
   const routedSessionId = routeSessionId(location.pathname)
   const routeToken = `${location.pathname}:${location.search}:${location.hash}`
+  
+  // Extract profile parameter from URL query string if present
+  const searchParams = new URLSearchParams(location.search)
+  const routedProfile = searchParams.get('profile') || undefined
   const routeTokenRef = useRef(routeToken)
   routeTokenRef.current = routeToken
   const getRouteToken = useCallback(() => routeTokenRef.current, [])
@@ -773,6 +777,7 @@ export function DesktopController() {
     locationPathname: location.pathname,
     resumeSession,
     routedSessionId,
+    routedProfile,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef,
@@ -948,7 +953,7 @@ export function DesktopController() {
         <Suspense fallback={null}>
           <CronView
             onClose={closeOverlayToPreviousRoute}
-            onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
+            onOpenSession={(sessionId, profile) => navigate(sessionRoute(sessionId, profile))}
           />
         </Suspense>
       )}
