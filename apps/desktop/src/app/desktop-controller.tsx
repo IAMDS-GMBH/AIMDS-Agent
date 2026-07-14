@@ -29,7 +29,7 @@ import {
   MESSAGING_SESSION_SOURCE_IDS,
   normalizeSessionSource
 } from '../lib/session-source'
-import { setCronFocusJobId, setCronJobs } from '../store/cron'
+import { $cronJobs, setCronFocusJobId, setCronJobs } from '../store/cron'
 import {
   $panesFlipped,
   $pinnedSessionIds,
@@ -98,6 +98,7 @@ import {
 } from './chat/right-rail'
 import { ChatSidebar } from './chat/sidebar'
 import { CommandPalette } from './command-palette'
+import { jobTitle } from './cron/job-state'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
 import { useKeybinds } from './hooks/use-keybinds'
@@ -149,6 +150,7 @@ const TodosView = lazy(async () => ({ default: (await import('./todos')).TodosVi
 // this cadence while the app is open + visible so new runs surface promptly
 // instead of waiting for the next user-triggered refreshSessions().
 const CRON_POLL_INTERVAL_MS = 30_000
+const CRON_TOAST_TITLE_MAX = 60
 // The recents list is local-only: cron rows have their own section, and each
 // messaging platform (telegram, discord, …) is fetched separately into its own
 // self-managed sidebar section (refreshMessagingSessions). Excluding both here
@@ -659,10 +661,15 @@ export function DesktopController() {
 
   // Listen for cron job completion events and refresh the job list
   const handleCronJobCompleted = useCallback((jobId: string, success: boolean, error?: string) => {
+    const match = $cronJobs.get().find(job => job.id === jobId)
+    const titleText = match ? jobTitle(match) : jobId
+    const clippedTitle =
+      titleText.length > CRON_TOAST_TITLE_MAX ? `${titleText.slice(0, CRON_TOAST_TITLE_MAX)}…` : titleText
+
     notify({
       kind: success ? 'success' : 'error',
-      message: success ? `Cron job completed` : `Cron job failed`,
-      detail: jobId,
+      title: `${success ? 'Cron job completed' : 'Cron job failed'} · ${clippedTitle}`,
+      message: success ? 'Execution finished.' : error || 'Execution failed.',
       durationMs: success ? 5000 : 0
     })
     void refreshCronJobs()
