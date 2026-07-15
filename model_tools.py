@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 _SKILL_READ_HINT_RE = re.compile(
     r"""skill_read\s*\(\s*(['"])(?P<slug>[^'"]+)\1\s*\)"""
 )
+_INIT_SLASH_COMMAND_RE = re.compile(r"(?<![\w/])/(?P<cmd>init)\b", re.IGNORECASE)
 
 
 # =============================================================================
@@ -926,9 +927,11 @@ def _rewrite_skill_read_hints_in_text(
     text: str,
     resolved_tool_name: Optional[str],
 ) -> str:
-    """Rewrite ``skill_read('...')`` hints to a callable in-session tool syntax."""
-    if not isinstance(text, str) or "skill_read(" not in text:
+    """Rewrite onboarding hints to callable in-session memory tool syntax."""
+    if not isinstance(text, str):
         return text
+
+    rewritten = text
 
     def _replace(match: re.Match[str]) -> str:
         slug = (match.group("slug") or "").strip()
@@ -940,7 +943,15 @@ def _rewrite_skill_read_hints_in_text(
             "is available; continue onboarding with direct questions"
         )
 
-    return _SKILL_READ_HINT_RE.sub(_replace, text)
+    rewritten = _SKILL_READ_HINT_RE.sub(_replace, rewritten)
+
+    def _replace_init_command(_match: re.Match[str]) -> str:
+        if resolved_tool_name:
+            return f"{resolved_tool_name}(slug='init')"
+        return "begin onboarding interview directly in chat"
+
+    rewritten = _INIT_SLASH_COMMAND_RE.sub(_replace_init_command, rewritten)
+    return rewritten
 
 
 def _rewrite_skill_read_hints_in_obj(
@@ -974,7 +985,9 @@ def _sanitize_memory_context_onboarding_hints(
     """
     if not _is_memory_context_tool_name(function_name):
         return result
-    if not isinstance(result, str) or "skill_read(" not in result:
+    if not isinstance(result, str):
+        return result
+    if "skill_read(" not in result and "/init" not in result.lower():
         return result
 
     resolved_tool_name = _resolve_memory_skill_read_tool_name_for_context(

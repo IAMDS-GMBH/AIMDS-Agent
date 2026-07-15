@@ -240,6 +240,40 @@ class TestHandleFunctionCall:
         assert "skill_read(" not in parsed["result"]
         assert "no MCP memory skill-read tool is available" in parsed["result"]
 
+    def test_memory_context_init_slash_hint_rewrites_to_same_mcp_skill_tool(self):
+        with patch(
+            "model_tools.registry.dispatch",
+            return_value=json.dumps(
+                {"result": "Type /init to start onboarding."},
+                ensure_ascii=False,
+            ),
+        ):
+            out = handle_function_call(
+                "mcp_IAMDS_mcp_memory_memory_context",
+                {},
+                enabled_tools=["mcp_IAMDS_mcp_memory_skill_read", "skill_view"],
+            )
+        parsed = json.loads(out)
+        assert "mcp_IAMDS_mcp_memory_skill_read(slug='init')" in parsed["result"]
+        assert "/init" not in parsed["result"]
+
+    def test_memory_context_init_slash_hint_is_neutralized_without_skill_tool(self):
+        with patch(
+            "model_tools.registry.dispatch",
+            return_value=json.dumps(
+                {"result": "Type /init to start onboarding."},
+                ensure_ascii=False,
+            ),
+        ):
+            out = handle_function_call(
+                "mcp_IAMDS_mcp_memory_memory_context",
+                {},
+                enabled_tools=["skill_view"],
+            )
+        parsed = json.loads(out)
+        assert "/init" not in parsed["result"]
+        assert "begin onboarding interview directly in chat" in parsed["result"]
+
 
 # =========================================================================
 # Agent loop tools
