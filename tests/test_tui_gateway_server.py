@@ -1725,6 +1725,59 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     assert server._sessions[runtime_sid]["model_override"] == captured["model_override"]
 
 
+def test_session_resume_retries_without_stored_runtime_when_provider_missing(monkeypatch):
+    calls = []
+    server._sessions.clear()
+
+    class FakeDB:
+        def get_session(self, target):
+            return {
+                "id": target,
+                "model": "gpt-5.4",
+                "billing_provider": "openai-codex",
+                "model_config": '{"base_url":"https://custom.example/v1"}',
+            }
+
+        def reopen_session(self, target):
+            pass
+
+        def get_messages_as_conversation(self, target, include_ancestors=False):
+            return [{"role": "user", "content": "hello"}]
+
+    def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
+        calls.append(kwargs)
+        if kwargs.get("model_override"):
+            raise RuntimeError(
+                "No LLM provider configured. Run `hermes model` to select a provider."
+            )
+        return types.SimpleNamespace(model="current-model", provider="current-provider")
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda agent, *a: {"model": agent.model, "provider": agent.provider},
+    )
+
+    def fake_init_session(sid, key, agent, history, cols=80):
+        server._sessions[sid] = {"agent": agent, "session_key": key}
+
+    monkeypatch.setattr(server, "_init_session", fake_init_session)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resume", "params": {"session_id": "stored-session"}}
+    )
+
+    assert resp["result"]["info"] == {"model": "current-model", "provider": "current-provider"}
+    assert len(calls) == 2
+    assert "model_override" in calls[0]
+    assert "model_override" not in calls[1]
+
+
 def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
     updates = {}
 

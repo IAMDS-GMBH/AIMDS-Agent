@@ -1660,6 +1660,20 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     return overrides
 
 
+def _is_resume_runtime_resolution_error(exc: Exception) -> bool:
+    """True when session resume failed due to stale provider/model credentials.
+
+    In that case we can safely retry resume with the current runtime defaults
+    instead of the stored session override.
+    """
+    text = str(exc or "").lower()
+    return (
+        "no llm provider configured" in text
+        or "no api key was found" in text
+        or "provider '" in text and "set in config.yaml" in text and "api key" in text
+    )
+
+
 def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     config = dict(existing or {})
     model = str(getattr(agent, "model", "") or "").strip()
@@ -4047,13 +4061,30 @@ def _(rid, params: dict) -> dict:
             # stored session row so switching chats does not inherit whatever
             # global model another chat last selected.
             stored_runtime_overrides = _stored_session_runtime_overrides(found)
-            agent = _make_agent(
-                sid,
-                target,
-                session_id=target,
-                session_db=db,
-                **stored_runtime_overrides,
-            )
+            try:
+                agent = _make_agent(
+                    sid,
+                    target,
+                    session_id=target,
+                    session_db=db,
+                    **stored_runtime_overrides,
+                )
+            except Exception as first_err:
+                if not _is_resume_runtime_resolution_error(first_err):
+                    raise
+                logger.warning(
+                    "session.resume(%s): stored runtime override failed (%s); "
+                    "retrying with current runtime defaults",
+                    target,
+                    first_err,
+                )
+                stored_runtime_overrides = {}
+                agent = _make_agent(
+                    sid,
+                    target,
+                    session_id=target,
+                    session_db=db,
+                )
         finally:
             _clear_session_context(tokens)
     except Exception as e:

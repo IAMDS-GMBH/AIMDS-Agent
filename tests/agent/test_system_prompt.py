@@ -135,7 +135,7 @@ class TestRemoteMcpMemoryPrompt:
             platform="cli",
         )
         stable = _stable_prompt(agent)
-        assert "skill_read('init')" in stable
+        assert "init/onboarding skill" in stable
         assert f"`{self._PREF_MCP_SKILL_READ}`" in stable
         assert "not local `skill_view`" in stable
 
@@ -148,7 +148,7 @@ class TestRemoteMcpMemoryPrompt:
             platform="cli",
         )
         stable = _stable_prompt(agent)
-        assert "do not call local `skill_view('init')`" in stable
+        assert "do not call local `skill_view` for init" in stable
 
 
 class TestTodoPersistenceGuidance:

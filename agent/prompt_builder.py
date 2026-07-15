@@ -1565,11 +1565,11 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
     skill_read_tool_name = _resolve_memory_skill_read_tool_name(valid_tool_names)
 
     onboarding_hint = (
-        f"If onboarding hints mention `skill_read('init')` or suggested skills, use `{skill_read_tool_name}` "
+        f"If onboarding hints mention an init/onboarding skill or suggested skills, use `{skill_read_tool_name}` "
         "(the MCP memory skill tool), not local `skill_view`.\n"
         if skill_read_tool_name
-        else "If onboarding hints mention `skill_read('init')` but no MCP memory skill tool is available, "
-        "do not call local `skill_view('init')`; continue with direct onboarding questions instead.\n"
+        else "If onboarding hints mention an init/onboarding skill but no MCP memory skill tool is available, "
+        "do not call local `skill_view` for init; continue with direct onboarding questions instead.\n"
     )
 
     return (
