@@ -6,6 +6,7 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { GatewayClient } from "@/lib/gatewayClient";
+import { api } from "@/lib/api";
 import { Check, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -242,9 +243,39 @@ export function ModelPickerDialog(props: Props) {
     } else if (gw && sessionId) {
       setApplying(true);
       try {
+        const providerChanged =
+          providerSlug.trim().toLowerCase() !==
+          currentProviderSlug.trim().toLowerCase();
+
+        // Keep quick-switch aligned with the full "Apply" flow from Model
+        // Settings when crossing providers: persist/resolve the new main
+        // provider+model first so IAMDS MCP server credentials are rewritten
+        // from config/.env the same way.
+        if (providerChanged) {
+          const assignment = await api.setModelAssignment({
+            confirm_expensive_model: confirmExpensiveModel,
+            scope: "main",
+            provider: providerSlug,
+            model,
+          });
+          if (assignment?.confirm_required) {
+            setPendingConfirm({
+              provider: providerSlug,
+              model,
+              persistGlobal: shouldPersistGlobal,
+              message:
+                assignment.confirm_message ||
+                "This model has unusually high known pricing.",
+            });
+            return;
+          }
+        }
+
         const global = shouldPersistGlobal ? " --global" : "";
         const result = await gw.request<ConfigSetResponse>("config.set", {
-          confirm_expensive_model: confirmExpensiveModel,
+          // Provider-change pre-apply above already handled expensive-model
+          // confirmation for this exact provider/model pair.
+          confirm_expensive_model: confirmExpensiveModel || providerChanged,
           key: "model",
           session_id: sessionId,
           value: `${model} --provider ${providerSlug}${global}`,
