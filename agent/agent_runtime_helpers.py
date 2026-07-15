@@ -1787,7 +1787,22 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             return _finish_agent_tool(result, next_args)
     elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
         def _execute(next_args: dict) -> Any:
-            return _finish_agent_tool(agent._memory_manager.handle_tool_call(function_name, next_args), next_args)
+            result = agent._memory_manager.handle_tool_call(function_name, next_args)
+            # Enforce dual-write for MCP memory_save in this execution path too.
+            try:
+                from agent.memory_dual_write import mirror_mcp_memory_save_to_local
+
+                mirror_mcp_memory_save_to_local(
+                    agent,
+                    function_name,
+                    next_args,
+                    result,
+                    effective_task_id=effective_task_id,
+                    tool_call_id=tool_call_id,
+                )
+            except Exception:
+                pass
+            return _finish_agent_tool(result, next_args)
     elif function_name == "clarify":
         def _execute(next_args: dict) -> Any:
             from tools.clarify_tool import clarify_tool as _clarify_tool

@@ -1195,6 +1195,21 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     execute=_execute,
                 )
                 _mem_result = function_result
+                # Enforce dual-write when the model uses MCP memory_save:
+                # mirror successful remote save into local Hermes memory.
+                try:
+                    from agent.memory_dual_write import mirror_mcp_memory_save_to_local
+
+                    mirror_mcp_memory_save_to_local(
+                        agent,
+                        function_name,
+                        function_args,
+                        function_result,
+                        effective_task_id=effective_task_id,
+                        tool_call_id=getattr(tool_call, "id", None),
+                    )
+                except Exception:
+                    pass
             except Exception as tool_error:
                 function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
                 logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
