@@ -936,8 +936,10 @@ def _rewrite_skill_read_hints_in_text(
     def _replace(match: re.Match[str]) -> str:
         slug = (match.group("slug") or "").strip()
         if resolved_tool_name:
-            # Explicit arg style is more robust than mirroring python-call syntax.
-            return f"{resolved_tool_name}(slug='{slug}')"
+            return (
+                f"start the onboarding step '{slug}' now in this chat "
+                "(no manual slash command needed)"
+            )
         return (
             f"onboarding skill '{slug}' requested, but no MCP memory skill-read tool "
             "is available; continue onboarding with direct questions"
@@ -947,7 +949,7 @@ def _rewrite_skill_read_hints_in_text(
 
     def _replace_init_command(_match: re.Match[str]) -> str:
         if resolved_tool_name:
-            return f"{resolved_tool_name}(slug='init')"
+            return "start the onboarding interview now in this chat"
         return "begin onboarding interview directly in chat"
 
     rewritten = _INIT_SLASH_COMMAND_RE.sub(_replace_init_command, rewritten)
@@ -1006,6 +1008,102 @@ def _sanitize_memory_context_onboarding_hints(
         return json.dumps(rewritten, ensure_ascii=False)
     except Exception:
         return _rewrite_skill_read_hints_in_text(result, resolved_tool_name)
+
+
+def _contains_onboarding_init_hint_text(text: str) -> bool:
+    """Return True when text asks to start onboarding init manually."""
+    if not isinstance(text, str):
+        return False
+    lowered = text.lower()
+    return bool(
+        _SKILL_READ_HINT_RE.search(text)
+        or _INIT_SLASH_COMMAND_RE.search(text)
+        or "skill interview" in lowered
+        or "onboarding interview" in lowered
+    )
+
+
+def _contains_onboarding_init_hint(value: Any) -> bool:
+    """Recursively detect onboarding-init hints in a JSON-like value."""
+    if isinstance(value, str):
+        return _contains_onboarding_init_hint_text(value)
+    if isinstance(value, list):
+        return any(_contains_onboarding_init_hint(v) for v in value)
+    if isinstance(value, dict):
+        return any(_contains_onboarding_init_hint(v) for v in value.values())
+    return False
+
+
+def _parse_json_maybe(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except Exception:
+        return value
+
+
+def _maybe_autorun_memory_init_skill(
+    *,
+    function_name: str,
+    result: Any,
+    enabled_tools: Optional[List[str]],
+    task_id: Optional[str],
+    user_task: Optional[str],
+) -> Any:
+    """Auto-run memory init skill when memory_context says onboarding is needed.
+
+    This prevents loops where the assistant asks the user to manually trigger
+    onboarding despite the corresponding MCP skill tool being callable.
+    """
+    if not _is_memory_context_tool_name(function_name):
+        return result
+
+    parsed_result = _parse_json_maybe(result)
+    if not _contains_onboarding_init_hint(parsed_result):
+        return result
+
+    init_tool_name = _resolve_memory_skill_read_tool_name_for_context(
+        function_name, enabled_tools
+    )
+    if not init_tool_name:
+        return result
+
+    init_result_raw = registry.dispatch(
+        init_tool_name,
+        {"slug": "init"},
+        task_id=task_id,
+        user_task=user_task,
+    )
+    init_result = _parse_json_maybe(init_result_raw)
+
+    if isinstance(parsed_result, dict):
+        merged = dict(parsed_result)
+        merged["onboarding_init_auto_started"] = True
+        merged["onboarding_init_tool"] = init_tool_name
+        merged["onboarding_init_result"] = init_result
+        if isinstance(merged.get("result"), str):
+            merged["result"] = (
+                f"{merged['result']}\n\n"
+                "Onboarding interview has been started automatically in this chat."
+            )
+        return json.dumps(merged, ensure_ascii=False)
+
+    if isinstance(parsed_result, str):
+        if isinstance(init_result, str):
+            init_text = init_result
+        else:
+            try:
+                init_text = json.dumps(init_result, ensure_ascii=False)
+            except Exception:
+                init_text = str(init_result)
+        return (
+            f"{parsed_result}\n\n"
+            "Onboarding interview has been started automatically in this chat.\n\n"
+            f"{init_text}"
+        )
+
+    return result
 
 
 def handle_function_call(
@@ -1326,6 +1424,14 @@ def handle_function_call(
                         break
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
+
+        result = _maybe_autorun_memory_init_skill(
+            function_name=function_name,
+            result=result,
+            enabled_tools=enabled_tools,
+            task_id=task_id,
+            user_task=user_task,
+        )
 
         result = _sanitize_memory_context_onboarding_hints(
             function_name=function_name,

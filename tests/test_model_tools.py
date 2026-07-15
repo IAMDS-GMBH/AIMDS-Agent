@@ -220,7 +220,7 @@ class TestHandleFunctionCall:
                 enabled_tools=["mcp_IAMDS_mcp_memory_skill_read", "skill_view"],
             )
         parsed = json.loads(out)
-        assert "mcp_IAMDS_mcp_memory_skill_read(slug='init')" in parsed["result"]
+        assert "start the onboarding step 'init' now in this chat" in parsed["result"]
         assert "skill_read('init')" not in parsed["result"]
 
     def test_memory_context_skill_read_hint_is_neutralized_when_no_mcp_skill_tool(self):
@@ -254,7 +254,7 @@ class TestHandleFunctionCall:
                 enabled_tools=["mcp_IAMDS_mcp_memory_skill_read", "skill_view"],
             )
         parsed = json.loads(out)
-        assert "mcp_IAMDS_mcp_memory_skill_read(slug='init')" in parsed["result"]
+        assert "start the onboarding interview now in this chat" in parsed["result"]
         assert "/init" not in parsed["result"]
 
     def test_memory_context_init_slash_hint_is_neutralized_without_skill_tool(self):
@@ -273,6 +273,38 @@ class TestHandleFunctionCall:
         parsed = json.loads(out)
         assert "/init" not in parsed["result"]
         assert "begin onboarding interview directly in chat" in parsed["result"]
+
+    def test_memory_context_auto_runs_init_skill_when_available(self):
+        calls = []
+
+        def _dispatch(name, args, **_kwargs):
+            calls.append((name, args))
+            if name == "mcp_IAMDS_mcp_memory_memory_context":
+                return json.dumps(
+                    {"result": "Call skill_read('init') to start onboarding."},
+                    ensure_ascii=False,
+                )
+            if name == "mcp_IAMDS_mcp_memory_skill_read":
+                return json.dumps(
+                    {"steps": ["Q1", "Q2"]},
+                    ensure_ascii=False,
+                )
+            raise AssertionError(f"unexpected tool: {name}")
+
+        with patch("model_tools.registry.dispatch", side_effect=_dispatch):
+            out = handle_function_call(
+                "mcp_IAMDS_mcp_memory_memory_context",
+                {},
+                enabled_tools=["mcp_IAMDS_mcp_memory_skill_read", "skill_view"],
+            )
+        parsed = json.loads(out)
+        assert calls[0][0] == "mcp_IAMDS_mcp_memory_memory_context"
+        assert calls[1][0] == "mcp_IAMDS_mcp_memory_skill_read"
+        assert calls[1][1] == {"slug": "init"}
+        assert parsed["onboarding_init_auto_started"] is True
+        assert parsed["onboarding_init_tool"] == "mcp_IAMDS_mcp_memory_skill_read"
+        assert parsed["onboarding_init_result"] == {"steps": ["Q1", "Q2"]}
+        assert "started automatically in this chat" in parsed["result"]
 
 
 # =========================================================================

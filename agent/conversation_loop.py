@@ -25,6 +25,7 @@ import ssl
 import threading
 import time
 import uuid
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -62,7 +63,6 @@ from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
-from model_tools import _sanitize_memory_context_onboarding_hints
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
@@ -110,30 +110,9 @@ def _enforce_initial_memory_context_call(
         call_args["query"] = original_user_message.strip()
 
     call_id = f"memory-context-init-{uuid.uuid4().hex[:12]}"
-    tool_result: str
-    try:
-        tool_result = _ra().handle_function_call(
-            function_name=tool_name,
-            function_args=call_args,
-            task_id=effective_task_id,
-            enabled_tools=list(valid_tools),
-            enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-            disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-        )
-        tool_result = _sanitize_memory_context_onboarding_hints(
-            function_name=tool_name,
-            result=tool_result,
-            enabled_tools=list(valid_tools),
-        )
-    except Exception as exc:
-        tool_result = json.dumps(
-            {"error": f"Initial memory_context call failed: {exc}"},
-            ensure_ascii=False,
-        )
-
     assistant_tool_msg = {
         "role": "assistant",
-        "content": "",
+        "content": f"Loading memory context with `{tool_name}` before the first reply.",
         "tool_calls": [
             {
                 "id": call_id,
@@ -147,16 +126,37 @@ def _enforce_initial_memory_context_call(
     }
     messages.append(assistant_tool_msg)
     agent._emit_interim_assistant_message(assistant_tool_msg)
-    if agent._should_emit_quiet_tool_messages():
-        agent._vprint(f"{agent.log_prefix}🔧 Processing 1 tool call(s)...")
-    messages.append(
-        {
-            "role": "tool",
-            "name": tool_name,
-            "tool_call_id": call_id,
-            "content": tool_result,
-        }
-    )
+    try:
+        synthetic_assistant = SimpleNamespace(
+            tool_calls=[
+                SimpleNamespace(
+                    id=call_id,
+                    type="function",
+                    function=SimpleNamespace(
+                        name=tool_name,
+                        arguments=json.dumps(call_args, ensure_ascii=False),
+                    ),
+                )
+            ]
+        )
+        agent._execute_tool_calls(
+            synthetic_assistant,
+            messages,
+            effective_task_id,
+            0,
+        )
+    except Exception as exc:
+        messages.append(
+            {
+                "role": "tool",
+                "name": tool_name,
+                "tool_call_id": call_id,
+                "content": json.dumps(
+                    {"error": f"Initial memory_context call failed: {exc}"},
+                    ensure_ascii=False,
+                ),
+            }
+        )
     agent._initial_memory_context_enforced = True
 
 
