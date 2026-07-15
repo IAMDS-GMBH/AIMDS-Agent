@@ -56,6 +56,7 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
+from agent.prompt_builder import _resolve_memory_context_tool_name
 from agent.retry_utils import jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
@@ -70,6 +71,85 @@ logger = logging.getLogger(__name__)
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
+
+
+def _enforce_initial_memory_context_call(
+    agent: Any,
+    *,
+    messages: List[Dict[str, Any]],
+    conversation_history: List[Dict[str, Any]],
+    original_user_message: str,
+    effective_task_id: str,
+) -> None:
+    """Force one initial memory_context tool call before first assistant reply.
+
+    Prompt-only instructions are best-effort; this guard makes first-turn memory
+    loading deterministic when a memory_context tool is available.
+    """
+    if conversation_history:
+        return
+    if getattr(agent, "_initial_memory_context_enforced", False):
+        return
+
+    valid_tools = set(getattr(agent, "valid_tool_names", []) or [])
+    tool_name = _resolve_memory_context_tool_name(valid_tools)
+    if not tool_name:
+        return
+
+    # If any earlier preload already inserted a memory_context tool round, don't duplicate.
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "tool" and str(msg.get("name") or "") == tool_name:
+            agent._initial_memory_context_enforced = True
+            return
+
+    call_args: Dict[str, Any] = {}
+    if isinstance(original_user_message, str) and original_user_message.strip():
+        call_args["query"] = original_user_message.strip()
+
+    call_id = f"memory-context-init-{uuid.uuid4().hex[:12]}"
+    tool_result: str
+    try:
+        tool_result = _ra().handle_function_call(
+            function_name=tool_name,
+            function_args=call_args,
+            task_id=effective_task_id,
+            enabled_tools=list(valid_tools),
+            enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+            disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+        )
+    except Exception as exc:
+        tool_result = json.dumps(
+            {"error": f"Initial memory_context call failed: {exc}"},
+            ensure_ascii=False,
+        )
+
+    messages.append(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps(call_args, ensure_ascii=False),
+                    },
+                }
+            ],
+        }
+    )
+    messages.append(
+        {
+            "role": "tool",
+            "name": tool_name,
+            "tool_call_id": call_id,
+            "content": tool_result,
+        }
+    )
+    agent._initial_memory_context_enforced = True
 
 
 def _collect_initial_query_text_segments(
@@ -517,6 +597,14 @@ def run_conversation(
     _should_review_memory = _ctx.should_review_memory
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
+
+    _enforce_initial_memory_context_call(
+        agent,
+        messages=messages,
+        conversation_history=conversation_history,
+        original_user_message=original_user_message,
+        effective_task_id=effective_task_id,
+    )
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
