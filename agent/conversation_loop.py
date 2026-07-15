@@ -349,12 +349,19 @@ def _read_recent_memory_context_payload(
             start_idx = content.find(">")
             end_idx = content.rfind("</untrusted_tool_result>")
             if start_idx >= 0 and end_idx > start_idx:
-                stripped_content = content[start_idx + 1:end_idx].strip()
+                # Find the first { after the opening tag (skip preamble text)
+                text_after_tag = content[start_idx + 1:end_idx]
+                json_start = text_after_tag.find("{")
+                if json_start >= 0:
+                    stripped_content = text_after_tag[json_start:]
+                else:
+                    stripped_content = text_after_tag.strip()
         
         try:
             payload = json.loads(stripped_content)
-        except Exception:
-            logger.debug(f"[ONBOARDING] Failed to parse first JSON layer")
+            logger.debug(f"[ONBOARDING] Successfully parsed first JSON layer")
+        except Exception as e:
+            logger.debug(f"[ONBOARDING] Failed to parse first JSON layer: {e}")
             continue
         
         # Handle nested JSON in "result" field (memory_context tool returns {"result": "...json string..."})
