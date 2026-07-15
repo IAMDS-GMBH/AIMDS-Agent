@@ -110,7 +110,9 @@ def _enforce_initial_memory_context_call(
     call_id = f"memory-context-init-{uuid.uuid4().hex[:12]}"
     assistant_tool_msg = {
         "role": "assistant",
-        "content": f"Loading memory context with `{tool_name}` before the first reply.",
+        # Internal tool round only; keep user-visible stream clean so onboarding
+        # starts with the actual context sentence instead of plumbing text.
+        "content": "",
         "tool_calls": [
             {
                 "id": call_id,
@@ -123,7 +125,8 @@ def _enforce_initial_memory_context_call(
         ],
     }
     messages.append(assistant_tool_msg)
-    agent._emit_interim_assistant_message(assistant_tool_msg)
+    if str(assistant_tool_msg.get("content") or "").strip():
+        agent._emit_interim_assistant_message(assistant_tool_msg)
     try:
         synthetic_assistant = SimpleNamespace(
             tool_calls=[
@@ -159,12 +162,13 @@ def _enforce_initial_memory_context_call(
     # Deterministic onboarding bootstrap (first-turn only):
     # if memory_context says onboarding is required, emit one context line first,
     # then run clarify once per onboarding question in-order.
-    _onboarding_payload = _read_recent_onboarding_metadata_from_memory_context(
+    _onboarding_payload = _read_recent_memory_context_payload(
         messages=messages,
         valid_tool_names=valid_tools,
     )
     if (
         _onboarding_payload
+        and _onboarding_payload.get("onboarding_init_context_required")
         and "clarify" in valid_tools
         and not getattr(agent, "_initial_onboarding_clarify_enforced", False)
     ):
@@ -177,10 +181,7 @@ def _enforce_initial_memory_context_call(
             messages.append(onboarding_intro_msg)
             agent._emit_interim_assistant_message(onboarding_intro_msg)
 
-        _questions: List[str] = []
-        raw_questions = _onboarding_payload.get("onboarding_questions")
-        if isinstance(raw_questions, list):
-            _questions = [str(q).strip() for q in raw_questions if str(q).strip()]
+        _questions = _extract_onboarding_questions_from_payload(_onboarding_payload)
         if not _questions:
             _first = str(_onboarding_payload.get("onboarding_first_question") or "").strip()
             if _first:
@@ -286,6 +287,62 @@ def _build_onboarding_context_line_from_recent_memory_context(
         msg["_onboarding_context_emitted"] = True
         return line
     return None
+
+
+def _read_recent_memory_context_payload(
+    *,
+    messages: List[Dict[str, Any]],
+    valid_tool_names: "set[str] | None" = None,
+) -> Optional[Dict[str, Any]]:
+    """Return the latest memory_context payload as a dict, if present."""
+    tool_name = _resolve_memory_context_tool_name(set(valid_tool_names or set()))
+    if not tool_name:
+        return None
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "tool":
+            continue
+        if str(msg.get("name") or "") != tool_name:
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        try:
+            payload = json.loads(content)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def _extract_onboarding_questions_from_payload(value: Any) -> List[str]:
+    """Best-effort extraction of onboarding questions from memory_context payloads."""
+    if isinstance(value, dict):
+        direct = value.get("onboarding_questions")
+        if isinstance(direct, list):
+            qs = [str(item).strip() for item in direct if str(item).strip()]
+            if qs:
+                return qs[:8]
+        for key in ("onboarding_init_result", "questions", "steps", "items"):
+            child = value.get(key)
+            qs = _extract_onboarding_questions_from_payload(child)
+            if qs:
+                return qs[:8]
+        for child in value.values():
+            qs = _extract_onboarding_questions_from_payload(child)
+            if qs:
+                return qs[:8]
+        return []
+    if isinstance(value, list):
+        qs = [str(item).strip() for item in value if str(item).strip()]
+        return qs[:8]
+    if isinstance(value, str):
+        lines = [line.strip(" -\t") for line in value.splitlines()]
+        questions = [line for line in lines if line.endswith("?") and len(line) > 4]
+        return questions[:8]
+    return []
 
 
 def _read_recent_onboarding_metadata_from_memory_context(
