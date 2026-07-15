@@ -304,7 +304,7 @@ class TestHandleFunctionCall:
         assert parsed["onboarding_init_auto_started"] is True
         assert parsed["onboarding_init_tool"] == "mcp_IAMDS_mcp_memory_skill_read"
         assert parsed["onboarding_init_result"] == {"steps": ["Q1", "Q2"]}
-        assert "started automatically in this chat" in parsed["result"]
+        assert parsed["onboarding_init_context_required"] is True
 
 
 # =========================================================================

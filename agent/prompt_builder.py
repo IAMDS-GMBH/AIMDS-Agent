@@ -1585,6 +1585,9 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
         "Use memory read/list/search tools only for explicit follow-up retrieval/editing tasks after memory_context, or when memory_context is unavailable.\n"
         f"{onboarding_hint}"
         f"If `{tool_name}` returns onboarding steps, complete that flow before other work. "
+        "When the memory tool result includes `onboarding_init_auto_started=true`, first provide one brief plain-language context sentence "
+        "(for example: profile was empty and onboarding is now starting), then continue with the onboarding questions. "
+        "Do not ask the user to manually start init in that case.\n"
         f"If `{tool_name}` fails, continue the task but explicitly note that user context could not be loaded."
     )
 

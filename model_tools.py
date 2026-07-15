@@ -1082,28 +1082,19 @@ def _maybe_autorun_memory_init_skill(
         merged["onboarding_init_auto_started"] = True
         merged["onboarding_init_tool"] = init_tool_name
         merged["onboarding_init_result"] = init_result
-        if isinstance(merged.get("result"), str):
-            merged["result"] = (
-                f"{merged['result']}\n\n"
-                "Onboarding interview has been started automatically in this chat."
-            )
+        merged["onboarding_init_context_required"] = True
         return json.dumps(merged, ensure_ascii=False)
 
-    if isinstance(parsed_result, str):
-        if isinstance(init_result, str):
-            init_text = init_result
-        else:
-            try:
-                init_text = json.dumps(init_result, ensure_ascii=False)
-            except Exception:
-                init_text = str(init_result)
-        return (
-            f"{parsed_result}\n\n"
-            "Onboarding interview has been started automatically in this chat.\n\n"
-            f"{init_text}"
-        )
-
-    return result
+    return json.dumps(
+        {
+            "result": parsed_result,
+            "onboarding_init_auto_started": True,
+            "onboarding_init_tool": init_tool_name,
+            "onboarding_init_result": init_result,
+            "onboarding_init_context_required": True,
+        },
+        ensure_ascii=False,
+    )
 
 
 def handle_function_call(
