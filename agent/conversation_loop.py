@@ -186,6 +186,7 @@ def _enforce_initial_memory_context_call(
             or _onboarding_payload.get("onboarding_first_question")
             or _questions
         )
+        logger.info(f"[ONBOARDING] _onboarding_required={_onboarding_required}, flags: init_ctx_req={_onboarding_payload.get('onboarding_init_context_required')}, question_flow_req={_onboarding_payload.get('onboarding_question_flow_required')}, first_q={_onboarding_payload.get('onboarding_first_question')}, _questions={bool(_questions)}")
         if not _onboarding_required:
             agent._initial_memory_context_enforced = True
             return
