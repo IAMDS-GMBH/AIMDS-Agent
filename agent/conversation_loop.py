@@ -164,7 +164,7 @@ def _enforce_initial_memory_context_call(
     # Deterministic onboarding bootstrap (first-turn only):
     # if memory_context says onboarding is required, emit one context line first,
     # then run clarify once per onboarding question in-order.
-    logger.info(f"[ONBOARDING] Entering bootstrap check. _enforce_initial_memory_context_call={_enforce_initial_memory_context_call}, turn_index={turn_index}")
+    logger.info(f"[ONBOARDING] Entering bootstrap check")
     _onboarding_payload = _read_recent_memory_context_payload(
         messages=messages,
         valid_tool_names=valid_tools,
