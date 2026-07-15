@@ -1028,6 +1028,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         elif function_name == "memory":
             def _execute(next_args: dict) -> Any:
                 target = next_args.get("target", "memory")
+                write_meta = agent._build_memory_write_metadata(
+                    task_id=effective_task_id,
+                    tool_call_id=getattr(tool_call, "id", None),
+                )
                 from tools.memory_tool import memory_tool as _memory_tool
                 result = _memory_tool(
                     action=next_args.get("action"),
@@ -1035,6 +1039,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     content=next_args.get("content"),
                     old_text=next_args.get("old_text"),
                     store=agent._memory_store,
+                    metadata=write_meta,
                 )
                 # Bridge: notify external memory provider of built-in memory writes
                 if agent._memory_manager and next_args.get("action") in {"add", "replace"}:
@@ -1043,10 +1048,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                             next_args.get("action", ""),
                             target,
                             next_args.get("content", ""),
-                            metadata=agent._build_memory_write_metadata(
-                                task_id=effective_task_id,
-                                tool_call_id=getattr(tool_call, "id", None),
-                            ),
+                            metadata=write_meta,
                         )
                     except Exception:
                         pass

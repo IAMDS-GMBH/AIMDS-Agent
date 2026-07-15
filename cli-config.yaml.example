@@ -499,6 +499,16 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
 
+  # Managed memory layer (additive to MEMORY.md/USER.md).
+  # Phase-1 rollout defaults to fully backward-compatible behavior.
+  managed_memory:
+    enabled: false
+    capture_mode: off              # off | suggest | auto
+    hybrid_retrieval_enabled: false
+    retrieval_top_k: 5
+    retrieval_max_chars: 1200
+    retrieval_scopes: [user, project, session]
+
   # Periodic memory nudge: remind the agent to consider saving memories
   # every N user turns. Set to 0 to disable. Only active when memory is enabled.
   nudge_interval: 10        # Nudge every 10 user turns (0 = disabled)

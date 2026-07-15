@@ -1116,12 +1116,32 @@ def init_agent(
             agent._memory_enabled = mem_config.get("memory_enabled", False)
             agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
+            agent._managed_memory_store = None
             if agent._memory_enabled or agent._user_profile_enabled:
                 from tools.memory_tool import MemoryStore
                 agent._memory_store = MemoryStore(
                     memory_char_limit=mem_config.get("memory_char_limit", 2200),
                     user_char_limit=mem_config.get("user_char_limit", 1375),
                 )
+                managed_cfg = mem_config.get("managed_memory", {})
+                if isinstance(managed_cfg, dict):
+                    try:
+                        from agent.memory import ManagedMemoryStore
+
+                        _retrieval_scopes = managed_cfg.get("retrieval_scopes", ["user", "project", "session"])
+                        if not isinstance(_retrieval_scopes, list):
+                            _retrieval_scopes = ["user", "project", "session"]
+                        agent._managed_memory_store = ManagedMemoryStore(
+                            enabled=bool(managed_cfg.get("enabled", False)),
+                            capture_mode=str(managed_cfg.get("capture_mode", "off")),
+                            retrieval_enabled=bool(managed_cfg.get("hybrid_retrieval_enabled", False)),
+                            retrieval_top_k=int(managed_cfg.get("retrieval_top_k", 5)),
+                            retrieval_max_chars=int(managed_cfg.get("retrieval_max_chars", 1200)),
+                            retrieval_scopes=[str(s).strip().lower() for s in _retrieval_scopes if str(s).strip()],
+                        )
+                        agent._memory_store.set_managed_store(agent._managed_memory_store)
+                    except Exception:
+                        agent._managed_memory_store = None
                 agent._memory_store.load_from_disk()
         except Exception:
             pass  # Memory is optional -- don't break agent init

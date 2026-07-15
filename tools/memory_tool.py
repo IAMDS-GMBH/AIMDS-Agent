@@ -126,8 +126,13 @@ class MemoryStore:
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self._managed_store = None
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+
+    def set_managed_store(self, store: Any) -> None:
+        """Attach an optional managed memory store (additive layer)."""
+        self._managed_store = store
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
@@ -294,7 +299,7 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
-    def add(self, target: str, content: str) -> Dict[str, Any]:
+    def add(self, target: str, content: str, *, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
         if not content:
@@ -344,9 +349,18 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry added.")
+        result = self._success_response(target, "Entry added.")
+        self._record_managed_write("add", target, content, "", metadata)
+        return result
 
-    def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
+    def replace(
+        self,
+        target: str,
+        old_text: str,
+        new_content: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
         old_text = old_text.strip()
         new_content = new_content.strip()
@@ -409,9 +423,11 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry replaced.")
+        result = self._success_response(target, "Entry replaced.")
+        self._record_managed_write("replace", target, new_content, old_text, metadata)
+        return result
 
-    def remove(self, target: str, old_text: str) -> Dict[str, Any]:
+    def remove(self, target: str, old_text: str, *, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
         old_text = old_text.strip()
         if not old_text:
@@ -445,7 +461,9 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry removed.")
+        result = self._success_response(target, "Entry removed.")
+        self._record_managed_write("remove", target, "", old_text, metadata)
+        return result
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """
@@ -478,6 +496,28 @@ class MemoryStore:
         if message:
             resp["message"] = message
         return resp
+
+    def _record_managed_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        old_text: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        store = self._managed_store
+        if not store:
+            return
+        try:
+            store.record_write(
+                action=action,
+                target=target,
+                content=content,
+                old_text=old_text,
+                metadata=metadata or {},
+            )
+        except Exception:
+            pass
 
     def _render_block(self, target: str, entries: List[str]) -> str:
         """Render a system prompt block with header and usage indicator."""
@@ -669,6 +709,7 @@ def memory_tool(
     content: str = None,
     old_text: str = None,
     store: Optional[MemoryStore] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
@@ -698,13 +739,13 @@ def memory_tool(
         return gate_result
 
     if action == "add":
-        result = store.add(target, content)
+        result = store.add(target, content, metadata=metadata)
 
     elif action == "replace":
-        result = store.replace(target, old_text, content)
+        result = store.replace(target, old_text, content, metadata=metadata)
 
     elif action == "remove":
-        result = store.remove(target, old_text)
+        result = store.remove(target, old_text, metadata=metadata)
 
     else:
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
@@ -807,6 +848,5 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
 
 

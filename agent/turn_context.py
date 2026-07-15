@@ -372,6 +372,21 @@ def build_turn_context(
             ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
         except Exception:
             pass
+    # Additive managed-memory recall (phase-1 hybrid path).
+    # This augments prefetch injection without changing startup snapshot behavior.
+    _managed = getattr(agent, "_managed_memory_store", None)
+    if _managed:
+        try:
+            _query = original_user_message if isinstance(original_user_message, str) else ""
+            _managed_ctx = _managed.build_recall_context(_query)
+            if _managed_ctx:
+                ext_prefetch_cache = (
+                    f"{ext_prefetch_cache}\n\n{_managed_ctx}".strip()
+                    if ext_prefetch_cache
+                    else _managed_ctx
+                )
+        except Exception:
+            pass
 
     return TurnContext(
         user_message=user_message,

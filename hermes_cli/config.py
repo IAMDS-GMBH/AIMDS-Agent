@@ -1744,6 +1744,16 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Claude-like managed memory layer (additive, backward-compatible).
+        # disabled by default in phase-1 rollout.
+        "managed_memory": {
+            "enabled": False,
+            "capture_mode": "off",             # off | suggest | auto
+            "hybrid_retrieval_enabled": False,  # inject ranked managed recall per turn
+            "retrieval_top_k": 5,
+            "retrieval_max_chars": 1200,
+            "retrieval_scopes": ["user", "project", "session"],
+        },
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".
