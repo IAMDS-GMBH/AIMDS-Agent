@@ -2868,6 +2868,12 @@ def _agent_cbs(sid: str) -> dict:
             sid,
             {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
         ),
+        "interim_assistant_callback": lambda text, already_streamed=False: (
+            (not already_streamed)
+            and isinstance(text, str)
+            and bool(text.strip())
+            and _emit("message.delta", sid, {"text": text.strip(), "interim": True})
+        ),
         "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
         ),

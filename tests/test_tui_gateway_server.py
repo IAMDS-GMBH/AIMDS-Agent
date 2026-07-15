@@ -1889,6 +1889,26 @@ def test_status_callback_accepts_single_message_argument():
     )
 
 
+def test_interim_assistant_callback_emits_message_delta_when_not_streamed():
+    with patch("tui_gateway.server._emit") as emit:
+        cb = server._agent_cbs("sid")["interim_assistant_callback"]
+        cb("Profile is empty; onboarding will start now.", already_streamed=False)
+
+    emit.assert_called_once_with(
+        "message.delta",
+        "sid",
+        {"text": "Profile is empty; onboarding will start now.", "interim": True},
+    )
+
+
+def test_interim_assistant_callback_skips_when_already_streamed():
+    with patch("tui_gateway.server._emit") as emit:
+        cb = server._agent_cbs("sid")["interim_assistant_callback"]
+        cb("already visible", already_streamed=True)
+
+    emit.assert_not_called()
+
+
 def test_resolve_model_uses_inference_model_env(monkeypatch):
     monkeypatch.delenv("HERMES_MODEL", raising=False)
     monkeypatch.setenv("HERMES_INFERENCE_MODEL", " anthropic/claude-sonnet-4.6\n")
