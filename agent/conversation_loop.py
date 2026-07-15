@@ -188,6 +188,18 @@ def _enforce_initial_memory_context_call(
             messages=messages,
             valid_tool_names=valid_tools,
         )
+        if not _questions:
+            _first = str(_onboarding_payload.get("onboarding_first_question") or "").strip()
+            if _first:
+                _questions = [_first]
+        if not _questions:
+            _questions = ["What is your role/title?"]
+        _onboarding_line, _questions = _maybe_translate_onboarding_prompts_via_llm(
+            agent=agent,
+            original_user_message=original_user_message,
+            context_line=_onboarding_line,
+            questions=_questions,
+        )
         if _onboarding_line:
             onboarding_intro_msg = {"role": "assistant", "content": _onboarding_line}
             messages.append(onboarding_intro_msg)
@@ -200,12 +212,6 @@ def _enforce_initial_memory_context_call(
                     cb("", flush=True)
                 except Exception as e:
                     logger.warning(f"[ONBOARDING] Flush callback failed: {e}")
-        if not _questions:
-            _first = str(_onboarding_payload.get("onboarding_first_question") or "").strip()
-            if _first:
-                _questions = [_first]
-        if not _questions:
-            _questions = ["What is your role/title?"]
 
         if "clarify" in valid_tools:
             for _q in _questions[:8]:
