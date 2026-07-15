@@ -732,5 +732,9 @@ export interface ModelAssignmentResponse {
    *  Switching main never clears aux pins; this lets the UI warn the user
    *  their helper tasks aren't following the switch. Only set on scope:'main'. */
   stale_aux?: StaleAuxAssignment[]
+  /** Whether IAMDS MCP servers were reloaded after a main-model apply. */
+  mcp_reloaded?: boolean
+  /** User-facing status message for IAMDS MCP reload outcomes. */
+  mcp_message?: string
   tasks?: string[]
 }

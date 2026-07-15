@@ -16,6 +16,7 @@ import { useI18n } from '@/i18n'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { startManualProviderOAuth } from '@/store/onboarding'
+import { notify } from '@/store/notifications'
 
 import { CONTROL_TEXT } from './constants'
 import { ListRow, LoadingState, Pill, SectionHeading } from './primitives'
@@ -249,6 +250,13 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       setSwitchStaleAux(result.stale_aux ?? [])
       onMainModelChanged?.(provider, model)
       await refresh()
+      if (result.mcp_reloaded) {
+        notify({
+          kind: 'success',
+          title: 'MCP',
+          message: result.mcp_message || 'MCP server reconnected'
+        })
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
