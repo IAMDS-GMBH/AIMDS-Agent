@@ -300,10 +300,37 @@ def _build_onboarding_context_line_from_recent_memory_context(
         content = msg.get("content")
         if not isinstance(content, str) or not content.strip():
             continue
+        
+        # Strip <untrusted_tool_result>...</untrusted_tool_result> wrapper if present
+        stripped_content = content
+        if "<untrusted_tool_result" in content:
+            # Extract JSON from inside the XML tags
+            start_idx = content.find(">")
+            end_idx = content.rfind("</untrusted_tool_result>")
+            if start_idx >= 0 and end_idx > start_idx:
+                # Find the first { after the opening tag (skip preamble text)
+                text_after_tag = content[start_idx + 1:end_idx]
+                json_start = text_after_tag.find("{")
+                if json_start >= 0:
+                    stripped_content = text_after_tag[json_start:]
+                else:
+                    stripped_content = text_after_tag.strip()
+        
         try:
-            payload = json.loads(content)
-        except Exception:
+            payload = json.loads(stripped_content)
+        except Exception as e:
+            logger.debug(f"[ONBOARDING] Failed to parse payload in _build_onboarding_context_line: {e}")
             continue
+        
+        # Handle nested JSON in "result" field
+        if isinstance(payload, dict) and "result" in payload:
+            result_val = payload.get("result")
+            if isinstance(result_val, str):
+                try:
+                    payload = json.loads(result_val)
+                except Exception:
+                    pass
+        
         if not isinstance(payload, dict):
             continue
         onboarding_questions = _extract_onboarding_questions_from_payload(payload)
