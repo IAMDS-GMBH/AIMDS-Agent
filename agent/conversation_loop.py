@@ -165,6 +165,11 @@ def _enforce_initial_memory_context_call(
     # if memory_context says onboarding is required, emit one context line first,
     # then run clarify once per onboarding question in-order.
     logger.info(f"[ONBOARDING] Entering bootstrap check")
+    logger.info(f"[ONBOARDING] Messages before payload read: {len(messages)} messages")
+    for i, msg in enumerate(messages[-3:]):
+        logger.info(f"[ONBOARDING]   msg[{len(messages)-3+i}]: role={msg.get('role')}, name={msg.get('name')}, has_content={bool(msg.get('content'))}")
+        if msg.get('role') == 'tool':
+            logger.info(f"[ONBOARDING]     content[:200]={str(msg.get('content', ''))[:200]}")
     _onboarding_payload = _read_recent_memory_context_payload(
         messages=messages,
         valid_tool_names=valid_tools,
