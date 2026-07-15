@@ -34,6 +34,10 @@ from toolsets import HARD_DISABLED_TOOLSETS, resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
 
+_SKILL_READ_HINT_RE = re.compile(
+    r"""skill_read\s*\(\s*(['"])(?P<slug>[^'"]+)\1\s*\)"""
+)
+
 
 # =============================================================================
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
@@ -879,6 +883,118 @@ def _emit_post_tool_call_hook(
         logger.debug("post_tool_call hook error: %s", _hook_err)
 
 
+def _is_memory_context_tool_name(function_name: str) -> bool:
+    """Return True when ``function_name`` is a (possibly prefixed) memory_context tool."""
+    name = str(function_name or "")
+    return name == "memory_context" or name.endswith("_memory_context")
+
+
+def _resolve_memory_skill_read_tool_name_for_context(
+    function_name: str,
+    enabled_tools: Optional[List[str]],
+) -> Optional[str]:
+    """Resolve the callable memory skill-read tool for a memory_context result.
+
+    Prefer the tool from the *same* MCP server prefix as ``function_name``
+    (e.g. ``mcp_FOO_memory_context`` -> ``mcp_FOO_memory_skill_read``), then
+    fall back to any available memory skill-read tool in this session.
+    """
+    names = set(enabled_tools or _last_resolved_tool_names or [])
+    if not names:
+        return None
+
+    if function_name == "memory_context" and "memory_skill_read" in names:
+        return "memory_skill_read"
+
+    if function_name.endswith("_memory_context"):
+        candidate = function_name[: -len("_memory_context")] + "_memory_skill_read"
+        if candidate in names:
+            return candidate
+
+    if "memory_skill_read" in names:
+        return "memory_skill_read"
+
+    matches = sorted(
+        name
+        for name in names
+        if isinstance(name, str) and name.endswith("_memory_skill_read")
+    )
+    return matches[0] if matches else None
+
+
+def _rewrite_skill_read_hints_in_text(
+    text: str,
+    resolved_tool_name: Optional[str],
+) -> str:
+    """Rewrite ``skill_read('...')`` hints to a callable in-session tool syntax."""
+    if not isinstance(text, str) or "skill_read(" not in text:
+        return text
+
+    def _replace(match: re.Match[str]) -> str:
+        slug = (match.group("slug") or "").strip()
+        if resolved_tool_name:
+            # Explicit arg style is more robust than mirroring python-call syntax.
+            return f"{resolved_tool_name}(slug='{slug}')"
+        return (
+            f"onboarding skill '{slug}' requested, but no MCP memory skill-read tool "
+            "is available; continue onboarding with direct questions"
+        )
+
+    return _SKILL_READ_HINT_RE.sub(_replace, text)
+
+
+def _rewrite_skill_read_hints_in_obj(
+    value: Any,
+    resolved_tool_name: Optional[str],
+) -> Any:
+    """Recursively rewrite ``skill_read('...')`` text hints inside JSON-like payloads."""
+    if isinstance(value, str):
+        return _rewrite_skill_read_hints_in_text(value, resolved_tool_name)
+    if isinstance(value, list):
+        return [_rewrite_skill_read_hints_in_obj(v, resolved_tool_name) for v in value]
+    if isinstance(value, dict):
+        return {
+            k: _rewrite_skill_read_hints_in_obj(v, resolved_tool_name)
+            for k, v in value.items()
+        }
+    return value
+
+
+def _sanitize_memory_context_onboarding_hints(
+    function_name: str,
+    result: Any,
+    enabled_tools: Optional[List[str]],
+) -> Any:
+    """Sanitize onboarding hints in MCP memory_context tool results.
+
+    Some memory MCP servers return generic text like ``skill_read('init')``,
+    which can make the model call a non-existent local tool. Rewrite these
+    hints to the correct in-session memory skill-read tool (prefer same server
+    prefix), or neutralize them when no such tool is available.
+    """
+    if not _is_memory_context_tool_name(function_name):
+        return result
+    if not isinstance(result, str) or "skill_read(" not in result:
+        return result
+
+    resolved_tool_name = _resolve_memory_skill_read_tool_name_for_context(
+        function_name, enabled_tools
+    )
+
+    try:
+        parsed = json.loads(result)
+    except Exception:
+        return _rewrite_skill_read_hints_in_text(result, resolved_tool_name)
+
+    rewritten = _rewrite_skill_read_hints_in_obj(parsed, resolved_tool_name)
+    if rewritten == parsed:
+        return result
+    try:
+        return json.dumps(rewritten, ensure_ascii=False)
+    except Exception:
+        return _rewrite_skill_read_hints_in_text(result, resolved_tool_name)
+
+
 def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
@@ -1197,6 +1313,12 @@ def handle_function_call(
                         break
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
+
+        result = _sanitize_memory_context_onboarding_hints(
+            function_name=function_name,
+            result=result,
+            enabled_tools=enabled_tools,
+        )
 
         return result
 

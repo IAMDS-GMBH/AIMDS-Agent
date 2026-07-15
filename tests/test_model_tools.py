@@ -201,6 +201,45 @@ class TestHandleFunctionCall:
         assert pre_call[1]["middleware_trace"] == expected_trace
         assert post_call[1]["middleware_trace"] == expected_trace
 
+    def test_memory_context_skill_read_hint_rewrites_to_same_mcp_skill_tool(self):
+        with patch(
+            "model_tools.registry.dispatch",
+            return_value=json.dumps(
+                {
+                    "result": (
+                        "Init Hint: No profile found. "
+                        "Call skill_read('init') to start onboarding."
+                    )
+                },
+                ensure_ascii=False,
+            ),
+        ):
+            out = handle_function_call(
+                "mcp_IAMDS_mcp_memory_memory_context",
+                {},
+                enabled_tools=["mcp_IAMDS_mcp_memory_skill_read", "skill_view"],
+            )
+        parsed = json.loads(out)
+        assert "mcp_IAMDS_mcp_memory_skill_read(slug='init')" in parsed["result"]
+        assert "skill_read('init')" not in parsed["result"]
+
+    def test_memory_context_skill_read_hint_is_neutralized_when_no_mcp_skill_tool(self):
+        with patch(
+            "model_tools.registry.dispatch",
+            return_value=json.dumps(
+                {"result": "Call skill_read('init') to start onboarding."},
+                ensure_ascii=False,
+            ),
+        ):
+            out = handle_function_call(
+                "mcp_IAMDS_mcp_memory_memory_context",
+                {},
+                enabled_tools=["skill_view"],
+            )
+        parsed = json.loads(out)
+        assert "skill_read(" not in parsed["result"]
+        assert "no MCP memory skill-read tool is available" in parsed["result"]
+
 
 # =========================================================================
 # Agent loop tools
