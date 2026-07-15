@@ -375,7 +375,7 @@ class TestProfiles:
         coding = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={})
         hidden = coding.hidden_skill_categories()
         assert "social-media" in hidden and "smart-home" in hidden
-        for kept in ("github", "devops", "software-development", "data-science"):
+        for kept in ("github", "devops", "software-development", "data-science", "note-taking"):
             assert kept not in hidden
         # General posture hides nothing.
         general = cc.resolve_runtime_mode(

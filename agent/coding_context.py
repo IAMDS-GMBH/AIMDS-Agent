@@ -234,7 +234,7 @@ class ContextProfile:
 # security, …) are intentionally absent.
 _NON_CODING_SKILL_CATEGORIES = (
     "apple", "communication", "cooking", "creative", "email", "finance",
-    "gaming", "gifs", "health", "media", "music", "note-taking",
+    "gaming", "gifs", "health", "media", "music",
     "productivity", "shopping", "smart-home", "social-media", "travel",
     "yuanbao",
 )
