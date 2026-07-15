@@ -917,6 +917,15 @@ def skill_view(
         JSON string with skill content or error message
     """
     try:
+        # Compatibility alias: some callers use dotted category notation
+        # ("category.skill"). Our on-disk skill layout uses slash-separated
+        # paths ("category/skill"), so keep a fallback candidate.
+        dotted_category_alias = None
+        if ":" not in name and "/" not in name and "." in name:
+            _cat, _skill = name.rsplit(".", 1)
+            if _cat and _skill:
+                dotted_category_alias = f"{_cat.replace('.', '/')}/{_skill}"
+
         # Validate before the ':' qualified-name dispatch so a Windows drive
         # path (e.g. C:\skills\foo) can't be reinterpreted as a plugin
         # namespace, and so a traversal/absolute name never reaches the
@@ -1147,6 +1156,13 @@ def skill_view(
             skill_dir, skill_md = candidates[0]
 
         if not skill_md or not skill_md.exists():
+            if dotted_category_alias:
+                return skill_view(
+                    dotted_category_alias,
+                    file_path=file_path,
+                    task_id=task_id,
+                    preprocess=preprocess,
+                )
             available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
             return json.dumps(
                 {
