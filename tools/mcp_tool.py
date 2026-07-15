@@ -3055,11 +3055,29 @@ def reload_provider_mcp_servers(
     )
 
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import SINGLE_MCP_SERVER_NAME, load_config
 
         raw_servers = load_config().get("mcp_servers") or {}
     except Exception:
         return []
+
+    # Backward-compat: older installs may have an untagged IAMDS entry.
+    # Treat canonical/legacy names or matching IAMDS MCP host as IAMDS-aware.
+    legacy_iamds_names = {
+        "iamds",
+        SINGLE_MCP_SERVER_NAME.lower() if isinstance(SINGLE_MCP_SERVER_NAME, str) else "",
+        "memory",
+        "remote",
+        "remotemcp",
+    }
+    legacy_iamds_names.discard("")
+    target_mcp_url = _build_iamds_mcp_url(resolved_base_url)
+    target_mcp_host = ""
+    if target_mcp_url:
+        try:
+            target_mcp_host = (urlparse(target_mcp_url).hostname or "").strip().lower()
+        except Exception:
+            target_mcp_host = ""
 
     # Collect HTTP servers explicitly tagged with an IAMDS tag.
     tagged: Dict[str, dict] = {}
@@ -3067,7 +3085,22 @@ def reload_provider_mcp_servers(
         if not isinstance(cfg, dict):
             continue
         srv_provider = str(cfg.get("provider") or "").strip().lower()
-        if srv_provider not in _IAMDS_MCP_TAGS:
+        name_norm = str(name or "").strip().lower()
+        srv_url = str(cfg.get("url") or "").strip()
+        srv_host = ""
+        if srv_url:
+            try:
+                srv_host = (urlparse(srv_url).hostname or "").strip().lower()
+            except Exception:
+                srv_host = ""
+        host_matches_active_iamds = bool(
+            target_mcp_host and srv_host and target_mcp_host == srv_host
+        )
+        if (
+            srv_provider not in _IAMDS_MCP_TAGS
+            and name_norm not in legacy_iamds_names
+            and not host_matches_active_iamds
+        ):
             continue
         if not cfg.get("url"):
             # Stdio servers don't need a host/key update.
@@ -3121,7 +3154,7 @@ def reload_provider_mcp_servers(
 
     updated_cfgs = {
         name: _build_provider_aware_mcp_config(
-            updated_raw.get(name, raw_cfg), resolved_base_url, resolved_api_key
+            provider, updated_raw.get(name, raw_cfg), resolved_base_url, resolved_api_key
         )
         for name, raw_cfg in tagged.items()
     }

@@ -2165,13 +2165,19 @@ def _apply_model_switch(
     # freshly-tagged server is repaired even when the user is already on that
     # provider.
     try:
-        from tools.mcp_tool import reload_provider_mcp_servers, _IAMDS_PROVIDER_SLUGS
+        from tools.mcp_tool import (
+            _IAMDS_PROVIDER_SLUGS,
+            discover_mcp_tools,
+            reload_provider_mcp_servers,
+        )
         if result.target_provider.lower() in _IAMDS_PROVIDER_SLUGS:
             reload_provider_mcp_servers(
                 provider=result.target_provider,
                 new_base_url=result.base_url or "",
                 new_api_key=result.api_key or "",
             )
+            discover_mcp_tools()
+            _refresh_cached_agent_tools(sid)
     except Exception:
         logger.debug("MCP provider reload failed after model switch", exc_info=True)
 

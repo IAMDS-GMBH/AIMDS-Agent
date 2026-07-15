@@ -3228,7 +3228,11 @@ def _apply_model_assignment_sync(
         mcp_reloaded = False
         mcp_message = ""
         try:
-            from tools.mcp_tool import _IAMDS_PROVIDER_SLUGS, reload_provider_mcp_servers
+            from tools.mcp_tool import (
+                _IAMDS_PROVIDER_SLUGS,
+                discover_mcp_tools,
+                reload_provider_mcp_servers,
+            )
             if provider.strip().lower() in _IAMDS_PROVIDER_SLUGS:
                 from hermes_cli.runtime_provider import resolve_runtime_provider
                 _runtime = resolve_runtime_provider(requested=provider, target_model=model)
@@ -3239,6 +3243,7 @@ def _apply_model_assignment_sync(
                     new_base_url=_new_base_url,
                     new_api_key=_new_api_key,
                 )
+                discover_mcp_tools()
                 mcp_reloaded = True
                 mcp_message = "MCP server reconnected"
         except Exception:
