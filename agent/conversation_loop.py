@@ -209,6 +209,8 @@ def _enforce_initial_memory_context_call(
                     cb("", flush=True)
                 except Exception as e:
                     logger.warning(f"[ONBOARDING] Flush callback failed: {e}")
+        else:
+            logger.warning(f"[ONBOARDING] _onboarding_line is empty/None! This should be the fallback context message")
         if not _questions:
             _first = str(_onboarding_payload.get("onboarding_first_question") or "").strip()
             if _first:
