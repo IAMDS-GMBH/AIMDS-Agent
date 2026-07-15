@@ -106,8 +106,6 @@ def _enforce_initial_memory_context_call(
             return
 
     call_args: Dict[str, Any] = {}
-    if isinstance(original_user_message, str) and original_user_message.strip():
-        call_args["query"] = original_user_message.strip()
 
     call_id = f"memory-context-init-{uuid.uuid4().hex[:12]}"
     assistant_tool_msg = {
@@ -158,6 +156,51 @@ def _enforce_initial_memory_context_call(
             }
         )
     agent._initial_memory_context_enforced = True
+
+
+def _build_onboarding_context_line_from_recent_memory_context(
+    *,
+    messages: List[Dict[str, Any]],
+    valid_tool_names: "set[str] | None" = None,
+) -> Optional[str]:
+    """Return one onboarding context line from the latest memory_context tool result.
+
+    This is a runtime fallback when the model goes directly to `clarify`
+    bubbles without the required one-line preface.
+    """
+    tool_name = _resolve_memory_context_tool_name(set(valid_tool_names or set()))
+    if not tool_name:
+        return None
+
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "tool":
+            continue
+        if str(msg.get("name") or "") != tool_name:
+            continue
+        if msg.get("_onboarding_context_emitted"):
+            return None
+        content = msg.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        try:
+            payload = json.loads(content)
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if not payload.get("onboarding_init_context_required"):
+            continue
+        line = str(
+            payload.get("onboarding_context_message")
+            or "I couldn't find a saved profile yet, so I'm starting onboarding now."
+        ).strip()
+        if not line:
+            return None
+        msg["_onboarding_context_emitted"] = True
+        return line
+    return None
 
 
 def _collect_initial_query_text_segments(
@@ -3792,6 +3835,23 @@ def run_conversation(
                             "partial": True,
                             "error": f"Model generated invalid tool call: {invalid_preview}"
                         }
+
+                    # Runtime fallback: when onboarding init was auto-started and
+                    # the model jumps straight to `clarify`, prepend one short
+                    # context line if the model omitted it.
+                    if (
+                        (assistant_message.content or "").strip() == ""
+                        and any(
+                            getattr(getattr(tc, "function", None), "name", "") == "clarify"
+                            for tc in (assistant_message.tool_calls or [])
+                        )
+                    ):
+                        _onboarding_line = _build_onboarding_context_line_from_recent_memory_context(
+                            messages=messages,
+                            valid_tool_names=set(getattr(agent, "valid_tool_names", []) or []),
+                        )
+                        if _onboarding_line:
+                            assistant_message.content = _onboarding_line
 
                     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                     messages.append(assistant_msg)

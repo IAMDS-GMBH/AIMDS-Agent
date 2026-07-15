@@ -1,7 +1,10 @@
 import json
 from types import SimpleNamespace
 
-from agent.conversation_loop import _enforce_initial_memory_context_call
+from agent.conversation_loop import (
+    _build_onboarding_context_line_from_recent_memory_context,
+    _enforce_initial_memory_context_call,
+)
 
 
 def test_enforce_initial_memory_context_call_injects_tool_round(monkeypatch):
@@ -43,14 +46,14 @@ def test_enforce_initial_memory_context_call_injects_tool_round(monkeypatch):
     )
 
     assert captured["tool_name"] == "mcp_IAMDS_mcp_memory_memory_context"
-    assert captured["tool_args"] == {"query": "hello"}
+    assert captured["tool_args"] == {}
     assert captured["effective_task_id"] == "t1"
     assert captured["api_call_count"] == 0
     assert len(messages) == 3
     assert messages[1]["role"] == "assistant"
     assert "Loading memory context" in messages[1]["content"]
     assert messages[1]["tool_calls"][0]["function"]["name"] == "mcp_IAMDS_mcp_memory_memory_context"
-    assert json.loads(messages[1]["tool_calls"][0]["function"]["arguments"]) == {"query": "hello"}
+    assert json.loads(messages[1]["tool_calls"][0]["function"]["arguments"]) == {}
     assert messages[2]["role"] == "tool"
     assert messages[2]["name"] == "mcp_IAMDS_mcp_memory_memory_context"
     assert len(emitted) == 1
@@ -107,3 +110,32 @@ def test_enforce_initial_memory_context_call_falls_back_to_error_on_execute_fail
 
     assert messages[2]["role"] == "tool"
     assert "Initial memory_context call failed" in messages[2]["content"]
+
+
+def test_build_onboarding_context_line_from_recent_memory_context_once():
+    messages = [
+        {
+            "role": "tool",
+            "name": "mcp_IAMDS_mcp_memory_memory_context",
+            "content": json.dumps(
+                {
+                    "onboarding_init_context_required": True,
+                    "onboarding_context_message": "Your profile is empty, so onboarding starts now.",
+                },
+                ensure_ascii=False,
+            ),
+        }
+    ]
+
+    line = _build_onboarding_context_line_from_recent_memory_context(
+        messages=messages,
+        valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+    )
+    assert line == "Your profile is empty, so onboarding starts now."
+
+    # The same tool result should not emit a second time.
+    second = _build_onboarding_context_line_from_recent_memory_context(
+        messages=messages,
+        valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+    )
+    assert second is None

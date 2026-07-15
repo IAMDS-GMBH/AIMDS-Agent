@@ -1111,6 +1111,9 @@ def _maybe_autorun_memory_init_skill(
         merged["onboarding_init_tool"] = init_tool_name
         merged["onboarding_init_result"] = init_result
         merged["onboarding_init_context_required"] = True
+        merged["onboarding_context_message"] = (
+            "I couldn't find a saved profile yet, so I'm starting onboarding now."
+        )
         merged["onboarding_question_flow_required"] = True
         if onboarding_questions:
             merged["onboarding_questions"] = onboarding_questions
@@ -1124,6 +1127,9 @@ def _maybe_autorun_memory_init_skill(
             "onboarding_init_tool": init_tool_name,
             "onboarding_init_result": init_result,
             "onboarding_init_context_required": True,
+            "onboarding_context_message": (
+                "I couldn't find a saved profile yet, so I'm starting onboarding now."
+            ),
             "onboarding_question_flow_required": True,
             "onboarding_questions": onboarding_questions,
             "onboarding_first_question": first_question,
