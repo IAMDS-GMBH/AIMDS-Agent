@@ -341,8 +341,18 @@ def _read_recent_memory_context_payload(
         content = msg.get("content")
         if not isinstance(content, str) or not content.strip():
             continue
+        
+        # Strip <untrusted_tool_result>...</untrusted_tool_result> wrapper if present
+        stripped_content = content
+        if "<untrusted_tool_result" in content:
+            # Extract JSON from inside the XML tags
+            start_idx = content.find(">")
+            end_idx = content.rfind("</untrusted_tool_result>")
+            if start_idx >= 0 and end_idx > start_idx:
+                stripped_content = content[start_idx + 1:end_idx].strip()
+        
         try:
-            payload = json.loads(content)
+            payload = json.loads(stripped_content)
         except Exception:
             continue
         if isinstance(payload, dict):
