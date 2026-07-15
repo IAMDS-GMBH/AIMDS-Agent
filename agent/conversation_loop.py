@@ -169,7 +169,8 @@ def _enforce_initial_memory_context_call(
     for i, msg in enumerate(messages[-3:]):
         logger.info(f"[ONBOARDING]   msg[{len(messages)-3+i}]: role={msg.get('role')}, name={msg.get('name')}, has_content={bool(msg.get('content'))}")
         if msg.get('role') == 'tool':
-            logger.info(f"[ONBOARDING]     content[:200]={str(msg.get('content', ''))[:200]}")
+            content_str = str(msg.get('content', ''))
+            logger.info(f"[ONBOARDING]     content[:500]={content_str[:500]}")
     _onboarding_payload = _read_recent_memory_context_payload(
         messages=messages,
         valid_tool_names=valid_tools,
