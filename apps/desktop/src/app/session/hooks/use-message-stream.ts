@@ -527,6 +527,14 @@ export function useMessageStream({
         const dedupeReference = normalize(finalText)
 
         const replaceTextPart = (parts: ChatMessagePart[]) => {
+          // clarify/message.complete often arrives with empty text while the
+          // in-flight assistant bubble already has user-facing context built
+          // from streamed deltas. Preserve that existing text instead of
+          // stripping it, or clarify cards lose their lead-in sentence.
+          if (!finalText) {
+            return parts
+          }
+
           const kept = parts.filter(part => {
             if (part.type === 'text') {
               return false
@@ -541,7 +549,7 @@ export function useMessageStream({
             return !(r && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference)))
           })
 
-          return finalText ? [...kept, assistantTextPart(finalText)] : kept
+          return [...kept, assistantTextPart(finalText)]
         }
 
         const completeMessage = (message: ChatMessage): ChatMessage =>
