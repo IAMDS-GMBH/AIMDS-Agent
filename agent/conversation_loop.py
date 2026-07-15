@@ -166,12 +166,19 @@ def _enforce_initial_memory_context_call(
         messages=messages,
         valid_tool_names=valid_tools,
     )
-    if (
-        _onboarding_payload
-        and _onboarding_payload.get("onboarding_init_context_required")
-        and "clarify" in valid_tools
-        and not getattr(agent, "_initial_onboarding_clarify_enforced", False)
+    if _onboarding_payload and not getattr(
+        agent, "_initial_onboarding_clarify_enforced", False
     ):
+        _questions = _extract_onboarding_questions_from_payload(_onboarding_payload)
+        _onboarding_required = bool(
+            _onboarding_payload.get("onboarding_init_context_required")
+            or _onboarding_payload.get("onboarding_question_flow_required")
+            or _onboarding_payload.get("onboarding_first_question")
+            or _questions
+        )
+        if not _onboarding_required:
+            agent._initial_memory_context_enforced = True
+            return
         _onboarding_line = _build_onboarding_context_line_from_recent_memory_context(
             messages=messages,
             valid_tool_names=valid_tools,
@@ -180,8 +187,6 @@ def _enforce_initial_memory_context_call(
             onboarding_intro_msg = {"role": "assistant", "content": _onboarding_line}
             messages.append(onboarding_intro_msg)
             agent._emit_interim_assistant_message(onboarding_intro_msg)
-
-        _questions = _extract_onboarding_questions_from_payload(_onboarding_payload)
         if not _questions:
             _first = str(_onboarding_payload.get("onboarding_first_question") or "").strip()
             if _first:
@@ -189,56 +194,57 @@ def _enforce_initial_memory_context_call(
         if not _questions:
             _questions = ["What is your role/title?"]
 
-        for _q in _questions[:8]:
-            _clarify_call_id = f"onboarding-clarify-{uuid.uuid4().hex[:12]}"
-            _clarify_msg = {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": _clarify_call_id,
-                        "type": "function",
-                        "function": {
+        if "clarify" in valid_tools:
+            for _q in _questions[:8]:
+                _clarify_call_id = f"onboarding-clarify-{uuid.uuid4().hex[:12]}"
+                _clarify_msg = {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": _clarify_call_id,
+                            "type": "function",
+                            "function": {
+                                "name": "clarify",
+                                "arguments": json.dumps({"question": _q}, ensure_ascii=False),
+                            },
+                        }
+                    ],
+                }
+                messages.append(_clarify_msg)
+                agent._emit_interim_assistant_message(_clarify_msg)
+                try:
+                    _synthetic_clarify = SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                id=_clarify_call_id,
+                                type="function",
+                                function=SimpleNamespace(
+                                    name="clarify",
+                                    arguments=json.dumps({"question": _q}, ensure_ascii=False),
+                                ),
+                            )
+                        ]
+                    )
+                    agent._execute_tool_calls(
+                        _synthetic_clarify,
+                        messages,
+                        effective_task_id,
+                        0,
+                    )
+                except Exception as exc:
+                    messages.append(
+                        {
+                            "role": "tool",
                             "name": "clarify",
-                            "arguments": json.dumps({"question": _q}, ensure_ascii=False),
-                        },
-                    }
-                ],
-            }
-            messages.append(_clarify_msg)
-            agent._emit_interim_assistant_message(_clarify_msg)
-            try:
-                _synthetic_clarify = SimpleNamespace(
-                    tool_calls=[
-                        SimpleNamespace(
-                            id=_clarify_call_id,
-                            type="function",
-                            function=SimpleNamespace(
-                                name="clarify",
-                                arguments=json.dumps({"question": _q}, ensure_ascii=False),
+                            "tool_call_id": _clarify_call_id,
+                            "content": json.dumps(
+                                {"error": f"Onboarding clarify call failed: {exc}"},
+                                ensure_ascii=False,
                             ),
-                        )
-                    ]
-                )
-                agent._execute_tool_calls(
-                    _synthetic_clarify,
-                    messages,
-                    effective_task_id,
-                    0,
-                )
-            except Exception as exc:
-                messages.append(
-                    {
-                        "role": "tool",
-                        "name": "clarify",
-                        "tool_call_id": _clarify_call_id,
-                        "content": json.dumps(
-                            {"error": f"Onboarding clarify call failed: {exc}"},
-                            ensure_ascii=False,
-                        ),
-                    }
-                )
-                break
+                        }
+                    )
+                    break
 
         agent._initial_onboarding_clarify_enforced = True
     agent._initial_memory_context_enforced = True
@@ -276,11 +282,18 @@ def _build_onboarding_context_line_from_recent_memory_context(
             continue
         if not isinstance(payload, dict):
             continue
-        if not payload.get("onboarding_init_context_required"):
+        onboarding_questions = _extract_onboarding_questions_from_payload(payload)
+        onboarding_required = bool(
+            payload.get("onboarding_init_context_required")
+            or payload.get("onboarding_question_flow_required")
+            or payload.get("onboarding_first_question")
+            or onboarding_questions
+        )
+        if not onboarding_required:
             continue
         line = str(
             payload.get("onboarding_context_message")
-            or "I couldn't find a saved profile yet, so I'm starting onboarding now."
+            or "The profile in the remote server is not set yet, we will proceed with onboarding."
         ).strip()
         if not line:
             return None

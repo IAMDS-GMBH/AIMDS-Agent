@@ -144,6 +144,31 @@ def test_build_onboarding_context_line_from_recent_memory_context_once():
     assert second is None
 
 
+def test_build_onboarding_context_line_from_question_flow_without_flag():
+    messages = [
+        {
+            "role": "tool",
+            "name": "mcp_IAMDS_mcp_memory_memory_context",
+            "content": json.dumps(
+                {
+                    "onboarding_question_flow_required": True,
+                    "onboarding_questions": ["What is your role/title?"],
+                },
+                ensure_ascii=False,
+            ),
+        }
+    ]
+
+    line = _build_onboarding_context_line_from_recent_memory_context(
+        messages=messages,
+        valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+    )
+    assert (
+        line
+        == "The profile in the remote server is not set yet, we will proceed with onboarding."
+    )
+
+
 def test_read_recent_onboarding_metadata_from_memory_context():
     messages = [
         {
@@ -322,6 +347,13 @@ def test_enforce_initial_memory_context_call_skips_onboarding_clarify_without_cl
     )
 
     assert calls == ["mcp_IAMDS_mcp_memory_memory_context"]
+    assert any(
+        m.get("role") == "assistant"
+        and m.get("content")
+        == "The profile in the remote server is not set yet, we will proceed with onboarding."
+        and not m.get("tool_calls")
+        for m in messages
+    )
 
 
 def test_enforce_initial_memory_context_call_runs_onboarding_clarify_with_nested_questions():
