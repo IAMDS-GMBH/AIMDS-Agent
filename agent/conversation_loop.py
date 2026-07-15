@@ -155,6 +155,91 @@ def _enforce_initial_memory_context_call(
                 ),
             }
         )
+
+    # Deterministic onboarding bootstrap (first-turn only):
+    # if memory_context says onboarding is required, emit one context line first,
+    # then run clarify once per onboarding question in-order.
+    _onboarding_payload = _read_recent_onboarding_metadata_from_memory_context(
+        messages=messages,
+        valid_tool_names=valid_tools,
+    )
+    if (
+        _onboarding_payload
+        and "clarify" in valid_tools
+        and not getattr(agent, "_initial_onboarding_clarify_enforced", False)
+    ):
+        _onboarding_line = _build_onboarding_context_line_from_recent_memory_context(
+            messages=messages,
+            valid_tool_names=valid_tools,
+        )
+        if _onboarding_line:
+            onboarding_intro_msg = {"role": "assistant", "content": _onboarding_line}
+            messages.append(onboarding_intro_msg)
+            agent._emit_interim_assistant_message(onboarding_intro_msg)
+
+        _questions: List[str] = []
+        raw_questions = _onboarding_payload.get("onboarding_questions")
+        if isinstance(raw_questions, list):
+            _questions = [str(q).strip() for q in raw_questions if str(q).strip()]
+        if not _questions:
+            _first = str(_onboarding_payload.get("onboarding_first_question") or "").strip()
+            if _first:
+                _questions = [_first]
+        if not _questions:
+            _questions = ["What is your role/title?"]
+
+        for _q in _questions[:8]:
+            _clarify_call_id = f"onboarding-clarify-{uuid.uuid4().hex[:12]}"
+            _clarify_msg = {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": _clarify_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "clarify",
+                            "arguments": json.dumps({"question": _q}, ensure_ascii=False),
+                        },
+                    }
+                ],
+            }
+            messages.append(_clarify_msg)
+            agent._emit_interim_assistant_message(_clarify_msg)
+            try:
+                _synthetic_clarify = SimpleNamespace(
+                    tool_calls=[
+                        SimpleNamespace(
+                            id=_clarify_call_id,
+                            type="function",
+                            function=SimpleNamespace(
+                                name="clarify",
+                                arguments=json.dumps({"question": _q}, ensure_ascii=False),
+                            ),
+                        )
+                    ]
+                )
+                agent._execute_tool_calls(
+                    _synthetic_clarify,
+                    messages,
+                    effective_task_id,
+                    0,
+                )
+            except Exception as exc:
+                messages.append(
+                    {
+                        "role": "tool",
+                        "name": "clarify",
+                        "tool_call_id": _clarify_call_id,
+                        "content": json.dumps(
+                            {"error": f"Onboarding clarify call failed: {exc}"},
+                            ensure_ascii=False,
+                        ),
+                    }
+                )
+                break
+
+        agent._initial_onboarding_clarify_enforced = True
     agent._initial_memory_context_enforced = True
 
 
