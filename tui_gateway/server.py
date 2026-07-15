@@ -2849,6 +2849,24 @@ def _on_tool_progress(
         _emit(event_type, sid, payload)
 
 
+def _debug_interim_callback(sid: str, text: str, already_streamed: bool, flush: bool) -> bool:
+    """Log interim assistant messages and emit them to desktop."""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    if flush:
+        logger.info(f"[ONBOARDING] Gateway interim_flush={flush}")
+        _emit("message.interim_flush", sid, {})
+        return True
+    
+    if text and isinstance(text, str) and text.strip() and not already_streamed:
+        logger.info(f"[ONBOARDING] Gateway emitting interim text: {text[:60]}...")
+        _emit("message.delta", sid, {"text": text.strip(), "interim": True})
+        return True
+    
+    return False
+
+
 def _agent_cbs(sid: str) -> dict:
     return {
         "tool_start_callback": lambda tc_id, name, args: _on_tool_start(
@@ -2869,13 +2887,7 @@ def _agent_cbs(sid: str) -> dict:
             {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
         ),
         "interim_assistant_callback": lambda text, already_streamed=False, flush=False: (
-            (
-                (not already_streamed)
-                and isinstance(text, str)
-                and bool(text.strip())
-                and _emit("message.delta", sid, {"text": text.strip(), "interim": True})
-            )
-            or (flush and _emit("message.interim_flush", sid, {}))
+            _debug_interim_callback(sid, text, already_streamed, flush)
         ),
         "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
