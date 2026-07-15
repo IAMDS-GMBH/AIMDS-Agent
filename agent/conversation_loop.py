@@ -164,30 +164,23 @@ def _enforce_initial_memory_context_call(
     # Deterministic onboarding bootstrap (first-turn only):
     # if memory_context says onboarding is required, emit one context line first,
     # then run clarify once per onboarding question in-order.
-    logger.info(f"[ONBOARDING] Entering bootstrap check")
-    logger.info(f"[ONBOARDING] Messages before payload read: {len(messages)} messages")
-    for i, msg in enumerate(messages[-3:]):
-        logger.info(f"[ONBOARDING]   msg[{len(messages)-3+i}]: role={msg.get('role')}, name={msg.get('name')}, has_content={bool(msg.get('content'))}")
-        if msg.get('role') == 'tool':
-            content_str = str(msg.get('content', ''))
-            logger.info(f"[ONBOARDING]     content[:500]={content_str[:500]}")
     _onboarding_payload = _read_recent_memory_context_payload(
         messages=messages,
         valid_tool_names=valid_tools,
     )
-    logger.info(f"[ONBOARDING] _onboarding_payload={bool(_onboarding_payload)}, _initial_onboarding_clarify_enforced={getattr(agent, '_initial_onboarding_clarify_enforced', False)}")
     if _onboarding_payload and not getattr(
         agent, "_initial_onboarding_clarify_enforced", False
     ):
-        _questions = _extract_onboarding_questions_from_payload(_onboarding_payload)
-        logger.info(f"[ONBOARDING] Extracted questions: {_questions}")
+        _raw_questions = _extract_onboarding_questions_from_payload(_onboarding_payload)
+        _questions = [
+            q for q in _raw_questions if _is_valid_onboarding_question_text(q)
+        ]
         _onboarding_required = bool(
             _onboarding_payload.get("onboarding_init_context_required")
             or _onboarding_payload.get("onboarding_question_flow_required")
             or _onboarding_payload.get("onboarding_first_question")
-            or _questions
+            or _raw_questions
         )
-        logger.info(f"[ONBOARDING] _onboarding_required={_onboarding_required}, flags: init_ctx_req={_onboarding_payload.get('onboarding_init_context_required')}, question_flow_req={_onboarding_payload.get('onboarding_question_flow_required')}, first_q={_onboarding_payload.get('onboarding_first_question')}, _questions={bool(_questions)}")
         if not _onboarding_required:
             agent._initial_memory_context_enforced = True
             return
@@ -198,19 +191,15 @@ def _enforce_initial_memory_context_call(
         if _onboarding_line:
             onboarding_intro_msg = {"role": "assistant", "content": _onboarding_line}
             messages.append(onboarding_intro_msg)
-            logger.info(f"[ONBOARDING] Emitting context line: {_onboarding_line[:60]}...")
             agent._emit_interim_assistant_message(onboarding_intro_msg)
             agent._onboarding_context_emitted = True  # Signal to gateway that context was sent
             # Force desktop to flush the context line before tool events arrive
             cb = getattr(agent, "interim_assistant_callback", None)
             if cb is not None:
                 try:
-                    logger.info("[ONBOARDING] Calling interim_assistant_callback with flush=True")
                     cb("", flush=True)
                 except Exception as e:
                     logger.warning(f"[ONBOARDING] Flush callback failed: {e}")
-        else:
-            logger.warning(f"[ONBOARDING] _onboarding_line is empty/None! This should be the fallback context message")
         if not _questions:
             _first = str(_onboarding_payload.get("onboarding_first_question") or "").strip()
             if _first:
@@ -390,9 +379,7 @@ def _read_recent_memory_context_payload(
         
         try:
             payload = json.loads(stripped_content)
-            logger.debug(f"[ONBOARDING] Successfully parsed first JSON layer")
-        except Exception as e:
-            logger.debug(f"[ONBOARDING] Failed to parse first JSON layer: {e}")
+        except Exception:
             continue
         
         # Handle nested JSON in "result" field (memory_context tool returns {"result": "...json string..."})
@@ -401,14 +388,11 @@ def _read_recent_memory_context_payload(
             if isinstance(result_val, str):
                 try:
                     payload = json.loads(result_val)
-                    logger.debug(f"[ONBOARDING] Successfully parsed nested JSON from 'result' field")
                 except Exception:
-                    logger.debug(f"[ONBOARDING] Failed to parse nested JSON in 'result' field")
                     # Use the outer dict if nested parse fails
                     pass
         
         if isinstance(payload, dict):
-            logger.info(f"[ONBOARDING] Successfully extracted payload, keys={list(payload.keys())[:5]}")
             return payload
     return None
 
@@ -441,35 +425,36 @@ def _extract_onboarding_questions_from_payload(value: Any) -> List[str]:
     return []
 
 
+def _is_valid_onboarding_question_text(question: str) -> bool:
+    """Filter out maintenance/system hints accidentally surfaced as onboarding prompts."""
+    q = str(question or "").strip()
+    if not q:
+        return False
+    lowered = q.lower()
+    if (
+        "memory_save(" in lowered
+        or "mcp_source" in lowered
+        or "mcp tool references" in lowered
+    ):
+        return False
+    return "?" in q
+
+
 def _read_recent_onboarding_metadata_from_memory_context(
     *,
     messages: List[Dict[str, Any]],
     valid_tool_names: "set[str] | None" = None,
 ) -> Optional[Dict[str, Any]]:
     """Get onboarding metadata from the latest memory_context tool payload."""
-    tool_name = _resolve_memory_context_tool_name(set(valid_tool_names or set()))
-    if not tool_name:
+    payload = _read_recent_memory_context_payload(
+        messages=messages,
+        valid_tool_names=valid_tool_names,
+    )
+    if not payload:
         return None
-    for msg in reversed(messages):
-        if not isinstance(msg, dict):
-            continue
-        if msg.get("role") != "tool":
-            continue
-        if str(msg.get("name") or "") != tool_name:
-            continue
-        content = msg.get("content")
-        if not isinstance(content, str) or not content.strip():
-            continue
-        try:
-            payload = json.loads(content)
-        except Exception:
-            continue
-        if not isinstance(payload, dict):
-            continue
-        if not payload.get("onboarding_question_flow_required"):
-            return None
-        return payload
-    return None
+    if not payload.get("onboarding_question_flow_required"):
+        return None
+    return payload
 
 
 def _enforce_single_onboarding_clarify_question(
