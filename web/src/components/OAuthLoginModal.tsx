@@ -45,10 +45,10 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
         setStart(resp);
         setSecondsLeft(resp.expires_in);
         setPhase(resp.flow === "device_code" ? "polling" : "awaiting_user");
-        if (resp.flow === "pkce") {
-          window.open(resp.auth_url, "_blank", "noopener,noreferrer");
-        } else {
+        if (resp.flow === "device_code") {
           window.open(resp.verification_url, "_blank", "noopener,noreferrer");
+        } else {
+          window.open(resp.auth_url, "_blank", "noopener,noreferrer");
         }
       })
       .catch((e) => {
@@ -341,15 +341,15 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
                             ? "polling"
                             : "awaiting_user",
                         );
-                        if (resp.flow === "pkce") {
+                        if (resp.flow === "device_code") {
                           window.open(
-                            resp.auth_url,
+                            resp.verification_url,
                             "_blank",
                             "noopener,noreferrer",
                           );
                         } else {
                           window.open(
-                            resp.verification_url,
+                            resp.auth_url,
                             "_blank",
                             "noopener,noreferrer",
                           );

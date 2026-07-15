@@ -1972,6 +1972,8 @@ export interface ModelAssignmentResponse {
   confirm_message?: string;
   confirm_required?: boolean;
   ok: boolean;
+  mcp_reloaded?: boolean;
+  mcp_message?: string;
   scope?: string;
   provider?: string;
   model?: string;

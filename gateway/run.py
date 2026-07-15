@@ -66,6 +66,7 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 100.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+_GATEWAY_MCP_DISCOVERY_STARTUP_TIMEOUT_SECS_DEFAULT = 15.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
@@ -193,6 +194,21 @@ def _ensure_windows_gateway_venv_imports() -> None:
 def _gateway_platform_value(platform: Any) -> str:
     """Return a normalized gateway platform value for enums or raw strings."""
     return str(getattr(platform, "value", platform) or "").strip().lower()
+
+
+def _gateway_mcp_discovery_startup_timeout() -> float:
+    """Bound startup wait for MCP discovery to avoid startup hangs.
+
+    Connectivity issues to remote MCP endpoints must not block gateway startup.
+    """
+    raw = os.environ.get("HERMES_GATEWAY_MCP_DISCOVERY_STARTUP_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return _GATEWAY_MCP_DISCOVERY_STARTUP_TIMEOUT_SECS_DEFAULT
+    try:
+        timeout = float(raw)
+    except ValueError:
+        return _GATEWAY_MCP_DISCOVERY_STARTUP_TIMEOUT_SECS_DEFAULT
+    return timeout if timeout > 0 else _GATEWAY_MCP_DISCOVERY_STARTUP_TIMEOUT_SECS_DEFAULT
 
 
 def _is_transient_network_error(exc: BaseException) -> bool:
@@ -16021,7 +16037,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     try:
         from tools.mcp_tool import discover_mcp_tools
         _loop = asyncio.get_running_loop()
-        await _loop.run_in_executor(None, discover_mcp_tools)
+        _startup_timeout = _gateway_mcp_discovery_startup_timeout()
+        await asyncio.wait_for(
+            _loop.run_in_executor(None, discover_mcp_tools),
+            timeout=_startup_timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "MCP tool discovery timed out after %.1fs during startup; continuing without blocking.",
+            _startup_timeout,
+        )
     except Exception as e:
         logger.debug("MCP tool discovery failed: %s", e)
 

@@ -699,6 +699,7 @@ function ModelSettingsPanel({
   const [auxModalOpen, setAuxModalOpen] = useState(false);
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const { showToast } = useSystemActions();
+  const mainProv = aux?.main.provider ?? "";
   const mainModel = aux?.main.model ?? "";
 
   const applyAssignment = async ({
