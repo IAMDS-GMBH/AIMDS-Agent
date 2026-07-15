@@ -500,9 +500,9 @@ memory:
   user_char_limit: 1375     # ~500 tokens
 
   # Managed memory layer (additive to MEMORY.md/USER.md).
-  # Phase-1 rollout defaults to fully backward-compatible behavior.
+  # Enabled by default; disable if you need legacy-only behavior.
   managed_memory:
-    enabled: false
+    enabled: true
     capture_mode: off              # off | suggest | auto
     hybrid_retrieval_enabled: false
     retrieval_top_k: 5

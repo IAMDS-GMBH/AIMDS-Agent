@@ -1747,7 +1747,7 @@ DEFAULT_CONFIG = {
         # Claude-like managed memory layer (additive, backward-compatible).
         # disabled by default in phase-1 rollout.
         "managed_memory": {
-            "enabled": False,
+            "enabled": True,
             "capture_mode": "off",             # off | suggest | auto
             "hybrid_retrieval_enabled": False,  # inject ranked managed recall per turn
             "retrieval_top_k": 5,
