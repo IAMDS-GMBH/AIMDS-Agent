@@ -1069,6 +1069,14 @@ def _extract_onboarding_questions(value: Any) -> List[str]:
     return []
 
 
+_DEFAULT_ONBOARDING_QUESTIONS: List[str] = [
+    "What is your role/title?",
+    "What is your primary tech stack?",
+    "What is your preferred response language?",
+    "How do you prefer communication style?",
+]
+
+
 def _maybe_autorun_memory_init_skill(
     *,
     function_name: str,
@@ -1103,6 +1111,8 @@ def _maybe_autorun_memory_init_skill(
     )
     init_result = _parse_json_maybe(init_result_raw)
     onboarding_questions = _extract_onboarding_questions(init_result)
+    if not onboarding_questions:
+        onboarding_questions = list(_DEFAULT_ONBOARDING_QUESTIONS)
     first_question = onboarding_questions[0] if onboarding_questions else None
 
     if isinstance(parsed_result, dict):

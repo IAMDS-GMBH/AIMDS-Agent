@@ -310,6 +310,27 @@ class TestHandleFunctionCall:
         assert parsed["onboarding_questions"] == ["Q1", "Q2"]
         assert parsed["onboarding_first_question"] == "Q1"
 
+    def test_memory_context_auto_runs_init_skill_uses_default_questions_when_missing(self):
+        def _dispatch(name, _args, **_kwargs):
+            if name == "mcp_IAMDS_mcp_memory_memory_context":
+                return json.dumps(
+                    {"result": "Call skill_read('init') to start onboarding."},
+                    ensure_ascii=False,
+                )
+            if name == "mcp_IAMDS_mcp_memory_skill_read":
+                return json.dumps({"status": "ok"}, ensure_ascii=False)
+            raise AssertionError(f"unexpected tool: {name}")
+
+        with patch("model_tools.registry.dispatch", side_effect=_dispatch):
+            out = handle_function_call(
+                "mcp_IAMDS_mcp_memory_memory_context",
+                {},
+                enabled_tools=["mcp_IAMDS_mcp_memory_skill_read", "skill_view"],
+            )
+        parsed = json.loads(out)
+        assert parsed["onboarding_first_question"] == "What is your role/title?"
+        assert parsed["onboarding_questions"][0] == "What is your role/title?"
+
 
 # =========================================================================
 # Agent loop tools

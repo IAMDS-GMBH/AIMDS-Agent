@@ -203,6 +203,72 @@ def _build_onboarding_context_line_from_recent_memory_context(
     return None
 
 
+def _read_recent_onboarding_metadata_from_memory_context(
+    *,
+    messages: List[Dict[str, Any]],
+    valid_tool_names: "set[str] | None" = None,
+) -> Optional[Dict[str, Any]]:
+    """Get onboarding metadata from the latest memory_context tool payload."""
+    tool_name = _resolve_memory_context_tool_name(set(valid_tool_names or set()))
+    if not tool_name:
+        return None
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "tool":
+            continue
+        if str(msg.get("name") or "") != tool_name:
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        try:
+            payload = json.loads(content)
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if not payload.get("onboarding_question_flow_required"):
+            return None
+        return payload
+    return None
+
+
+def _enforce_single_onboarding_clarify_question(
+    assistant_message: Any,
+    *,
+    onboarding_payload: Dict[str, Any],
+) -> None:
+    """Rewrite onboarding clarify call to exactly one atomic first question."""
+    tool_calls = list(getattr(assistant_message, "tool_calls", None) or [])
+    if not tool_calls:
+        return
+    first_question = str(onboarding_payload.get("onboarding_first_question") or "").strip()
+    if not first_question:
+        questions = onboarding_payload.get("onboarding_questions")
+        if isinstance(questions, list) and questions:
+            first_question = str(questions[0]).strip()
+    if not first_question:
+        first_question = "What is your role/title?"
+
+    for tc in tool_calls:
+        fn = getattr(tc, "function", None)
+        if getattr(fn, "name", "") != "clarify":
+            continue
+        raw_args = getattr(fn, "arguments", "{}")
+        try:
+            args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args or {})
+        except Exception:
+            args = {}
+        if not isinstance(args, dict):
+            args = {}
+        # Hard-enforce one onboarding question for the first step; this prevents
+        # merged multi-field prompts in a single clarify bubble.
+        args["question"] = first_question
+        fn.arguments = json.dumps(args, ensure_ascii=False)
+        break
+
+
 def _collect_initial_query_text_segments(
     api_messages: List[Dict[str, Any]],
     *,
@@ -3836,22 +3902,31 @@ def run_conversation(
                             "error": f"Model generated invalid tool call: {invalid_preview}"
                         }
 
-                    # Runtime fallback: when onboarding init was auto-started and
-                    # the model jumps straight to `clarify`, prepend one short
-                    # context line if the model omitted it.
-                    if (
-                        (assistant_message.content or "").strip() == ""
-                        and any(
-                            getattr(getattr(tc, "function", None), "name", "") == "clarify"
-                            for tc in (assistant_message.tool_calls or [])
-                        )
-                    ):
-                        _onboarding_line = _build_onboarding_context_line_from_recent_memory_context(
+                    _has_clarify_tool_call = any(
+                        getattr(getattr(tc, "function", None), "name", "") == "clarify"
+                        for tc in (assistant_message.tool_calls or [])
+                    )
+                    if _has_clarify_tool_call:
+                        _onboarding_payload = _read_recent_onboarding_metadata_from_memory_context(
                             messages=messages,
                             valid_tool_names=set(getattr(agent, "valid_tool_names", []) or []),
                         )
-                        if _onboarding_line:
-                            assistant_message.content = _onboarding_line
+                        # First-turn onboarding: ensure exactly one first question.
+                        if _onboarding_payload is not None and not conversation_history:
+                            _enforce_single_onboarding_clarify_question(
+                                assistant_message,
+                                onboarding_payload=_onboarding_payload,
+                            )
+                        # Runtime fallback: prepend one short context line when
+                        # clarify is present and no user-visible content exists.
+                        _assistant_text = assistant_message.content or ""
+                        if not agent._has_content_after_think_block(_assistant_text):
+                            _onboarding_line = _build_onboarding_context_line_from_recent_memory_context(
+                                messages=messages,
+                                valid_tool_names=set(getattr(agent, "valid_tool_names", []) or []),
+                            )
+                            if _onboarding_line:
+                                assistant_message.content = _onboarding_line
 
                     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                     messages.append(assistant_msg)

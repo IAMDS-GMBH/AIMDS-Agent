@@ -2,6 +2,8 @@ import json
 from types import SimpleNamespace
 
 from agent.conversation_loop import (
+    _enforce_single_onboarding_clarify_question,
+    _read_recent_onboarding_metadata_from_memory_context,
     _build_onboarding_context_line_from_recent_memory_context,
     _enforce_initial_memory_context_call,
 )
@@ -139,3 +141,53 @@ def test_build_onboarding_context_line_from_recent_memory_context_once():
         valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
     )
     assert second is None
+
+
+def test_read_recent_onboarding_metadata_from_memory_context():
+    messages = [
+        {
+            "role": "tool",
+            "name": "mcp_IAMDS_mcp_memory_memory_context",
+            "content": json.dumps(
+                {
+                    "onboarding_question_flow_required": True,
+                    "onboarding_first_question": "What is your role/title?",
+                },
+                ensure_ascii=False,
+            ),
+        }
+    ]
+    payload = _read_recent_onboarding_metadata_from_memory_context(
+        messages=messages,
+        valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+    )
+    assert payload is not None
+    assert payload["onboarding_first_question"] == "What is your role/title?"
+
+
+def test_enforce_single_onboarding_clarify_question_rewrites_multi_prompt():
+    clarify_call = SimpleNamespace(
+        function=SimpleNamespace(
+            name="clarify",
+            arguments=json.dumps(
+                {
+                    "question": (
+                        "Please provide your role/title, preferred style, and any other details."
+                    )
+                },
+                ensure_ascii=False,
+            ),
+        )
+    )
+    assistant_message = SimpleNamespace(tool_calls=[clarify_call])
+
+    _enforce_single_onboarding_clarify_question(
+        assistant_message,
+        onboarding_payload={
+            "onboarding_first_question": "What is your role/title?",
+            "onboarding_questions": ["What is your role/title?", "What is your tech stack?"],
+        },
+    )
+
+    args = json.loads(assistant_message.tool_calls[0].function.arguments)
+    assert args["question"] == "What is your role/title?"
