@@ -7,6 +7,7 @@ from agent.conversation_loop import (
     _build_onboarding_context_line_from_recent_memory_context,
     _apply_onboarding_clarify_context,
     _enforce_initial_memory_context_call,
+    _maybe_translate_onboarding_prompts_via_llm,
 )
 
 
@@ -481,3 +482,59 @@ def test_apply_onboarding_clarify_context_adds_context_and_single_question():
         assistant_message.content
         == "The profile in the remote server is not set yet, so we'll proceed with onboarding."
     )
+
+
+def test_maybe_translate_onboarding_prompts_via_llm_translates_using_user_message_language():
+    class _FakeTransport:
+        @staticmethod
+        def normalize_response(_response):
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "context_line": "Tu perfil en el servidor remoto aún no está configurado; procederemos con el onboarding.",
+                        "questions": ["¿Cuál es tu rol o cargo?"],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    agent = SimpleNamespace(
+        _build_api_kwargs=lambda messages: {"model": "x", "messages": messages, "tools": [{"name": "x"}]},
+        _interruptible_api_call=lambda kwargs: kwargs,
+        _get_transport=lambda: _FakeTransport(),
+    )
+
+    line, questions = _maybe_translate_onboarding_prompts_via_llm(
+        agent=agent,
+        original_user_message="Hola, necesito configurar mi perfil",
+        context_line="The profile in the remote server is not set yet, we will proceed with onboarding.",
+        questions=["What is your role/title?"],
+    )
+
+    assert line.startswith("Tu perfil")
+    assert questions == ["¿Cuál es tu rol o cargo?"]
+
+
+def test_maybe_translate_onboarding_prompts_via_llm_falls_back_on_invalid_payload():
+    class _FakeTransport:
+        @staticmethod
+        def normalize_response(_response):
+            return SimpleNamespace(content="not-json")
+
+    agent = SimpleNamespace(
+        _build_api_kwargs=lambda messages: {"model": "x", "messages": messages},
+        _interruptible_api_call=lambda kwargs: kwargs,
+        _get_transport=lambda: _FakeTransport(),
+    )
+
+    original_line = "The profile in the remote server is not set yet, we will proceed with onboarding."
+    original_questions = ["What is your role/title?"]
+    line, questions = _maybe_translate_onboarding_prompts_via_llm(
+        agent=agent,
+        original_user_message="Hola",
+        context_line=original_line,
+        questions=original_questions,
+    )
+
+    assert line == original_line
+    assert questions == original_questions

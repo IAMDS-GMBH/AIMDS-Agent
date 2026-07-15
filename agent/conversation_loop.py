@@ -443,7 +443,101 @@ def _is_valid_onboarding_question_text(question: str) -> bool:
         or "mcp tool references" in lowered
     ):
         return False
-    return "?" in q
+    return ("?" in q) or ("？" in q) or ("¿" in q)
+
+
+def _parse_json_object_from_text(value: str) -> Optional[Dict[str, Any]]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, count=1, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text, count=1)
+        text = text.strip()
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _maybe_translate_onboarding_prompts_via_llm(
+    *,
+    agent: Any,
+    original_user_message: str,
+    context_line: Optional[str],
+    questions: List[str],
+) -> tuple[Optional[str], List[str]]:
+    """Translate onboarding context/question text using the active LLM.
+
+    Language is inferred from the current user message; locale/config is ignored.
+    """
+    if not str(original_user_message or "").strip():
+        return context_line, questions
+    if not (context_line or questions):
+        return context_line, questions
+    build_kwargs = getattr(agent, "_build_api_kwargs", None)
+    call_api = getattr(agent, "_interruptible_api_call", None)
+    get_transport = getattr(agent, "_get_transport", None)
+    if not (callable(build_kwargs) and callable(call_api) and callable(get_transport)):
+        return context_line, questions
+
+    request_payload = {
+        "user_message": original_user_message,
+        "context_line": context_line or "",
+        "questions": [str(q).strip() for q in questions if str(q).strip()][:8],
+    }
+    if not request_payload["questions"] and not request_payload["context_line"]:
+        return context_line, questions
+
+    api_messages: List[Dict[str, Any]] = [
+        {
+            "role": "system",
+            "content": (
+                "Infer the user's preferred language from USER_MESSAGE only. "
+                "Translate CONTEXT_LINE and QUESTIONS into that language. "
+                "If language is ambiguous, keep original text unchanged. "
+                "Return strict JSON only: {\"context_line\":\"...\",\"questions\":[\"...\"]}."
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(request_payload, ensure_ascii=False),
+        },
+    ]
+    try:
+        api_kwargs = build_kwargs(api_messages)
+        api_kwargs.pop("tools", None)
+        api_kwargs.pop("tool_choice", None)
+        api_kwargs.pop("parallel_tool_calls", None)
+        response = call_api(api_kwargs)
+        normalized = get_transport().normalize_response(response)
+    except Exception:
+        return context_line, questions
+
+    raw_content = str(getattr(normalized, "content", "") or "").strip()
+    parsed = _parse_json_object_from_text(raw_content)
+    if not parsed:
+        return context_line, questions
+
+    translated_line = parsed.get("context_line")
+    translated_questions = parsed.get("questions")
+    if isinstance(translated_line, str):
+        translated_line = translated_line.strip() or None
+    else:
+        translated_line = context_line
+
+    out_questions: List[str] = []
+    if isinstance(translated_questions, list):
+        out_questions = [
+            str(item).strip()
+            for item in translated_questions
+            if _is_valid_onboarding_question_text(str(item).strip())
+        ][:8]
+    if not out_questions:
+        out_questions = questions
+
+    return translated_line, out_questions
 
 
 def _read_recent_onboarding_metadata_from_memory_context(
