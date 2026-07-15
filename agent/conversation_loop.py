@@ -354,8 +354,23 @@ def _read_recent_memory_context_payload(
         try:
             payload = json.loads(stripped_content)
         except Exception:
+            logger.debug(f"[ONBOARDING] Failed to parse first JSON layer")
             continue
+        
+        # Handle nested JSON in "result" field (memory_context tool returns {"result": "...json string..."})
+        if isinstance(payload, dict) and "result" in payload:
+            result_val = payload.get("result")
+            if isinstance(result_val, str):
+                try:
+                    payload = json.loads(result_val)
+                    logger.debug(f"[ONBOARDING] Successfully parsed nested JSON from 'result' field")
+                except Exception:
+                    logger.debug(f"[ONBOARDING] Failed to parse nested JSON in 'result' field")
+                    # Use the outer dict if nested parse fails
+                    pass
+        
         if isinstance(payload, dict):
+            logger.info(f"[ONBOARDING] Successfully extracted payload, keys={list(payload.keys())[:5]}")
             return payload
     return None
 
