@@ -187,6 +187,13 @@ def _enforce_initial_memory_context_call(
             onboarding_intro_msg = {"role": "assistant", "content": _onboarding_line}
             messages.append(onboarding_intro_msg)
             agent._emit_interim_assistant_message(onboarding_intro_msg)
+            # Force desktop to flush the context line before tool events arrive
+            cb = getattr(agent, "interim_assistant_callback", None)
+            if cb is not None:
+                try:
+                    cb("", flush=True)
+                except Exception:
+                    pass
         if not _questions:
             _first = str(_onboarding_payload.get("onboarding_first_question") or "").strip()
             if _first:

@@ -827,6 +827,11 @@ export function useMessageStream({
         if (sessionId) {
           appendAssistantDelta(sessionId, coerceGatewayText(payload?.text))
         }
+      } else if (event.type === 'message.interim_flush') {
+        // Force immediate flush of queued deltas before tool events arrive
+        if (sessionId) {
+          flushQueuedDeltas(sessionId)
+        }
       } else if (event.type === 'thinking.delta') {
         // thinking.delta carries the kawaii spinner status (face + verb from
         // KawaiiSpinner), not real reasoning. The bottom-of-thread loading
