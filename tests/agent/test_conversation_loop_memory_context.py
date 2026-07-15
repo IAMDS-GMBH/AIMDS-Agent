@@ -5,6 +5,7 @@ from agent.conversation_loop import (
     _enforce_single_onboarding_clarify_question,
     _read_recent_onboarding_metadata_from_memory_context,
     _build_onboarding_context_line_from_recent_memory_context,
+    _apply_onboarding_clarify_context,
     _enforce_initial_memory_context_call,
 )
 
@@ -191,3 +192,52 @@ def test_enforce_single_onboarding_clarify_question_rewrites_multi_prompt():
 
     args = json.loads(assistant_message.tool_calls[0].function.arguments)
     assert args["question"] == "What is your role/title?"
+
+
+def test_apply_onboarding_clarify_context_adds_context_and_single_question():
+    messages = [
+        {
+            "role": "tool",
+            "name": "mcp_IAMDS_mcp_memory_memory_context",
+            "content": json.dumps(
+                {
+                    "onboarding_init_context_required": True,
+                    "onboarding_context_message": (
+                        "The profile in the remote server is not set yet, so we'll proceed with onboarding."
+                    ),
+                    "onboarding_question_flow_required": True,
+                    "onboarding_first_question": "What is your role/title?",
+                },
+                ensure_ascii=False,
+            ),
+        }
+    ]
+    clarify_call = SimpleNamespace(
+        function=SimpleNamespace(
+            name="clarify",
+            arguments=json.dumps(
+                {
+                    "question": (
+                        "Tell me your role/title, stack, language preference, and communication style."
+                    )
+                },
+                ensure_ascii=False,
+            ),
+        )
+    )
+    assistant_message = SimpleNamespace(content="", tool_calls=[clarify_call])
+
+    _apply_onboarding_clarify_context(
+        assistant_message,
+        messages=messages,
+        valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+        is_first_turn=True,
+        has_visible_content_fn=lambda _text: False,
+    )
+
+    args = json.loads(assistant_message.tool_calls[0].function.arguments)
+    assert args["question"] == "What is your role/title?"
+    assert (
+        assistant_message.content
+        == "The profile in the remote server is not set yet, so we'll proceed with onboarding."
+    )

@@ -269,6 +269,50 @@ def _enforce_single_onboarding_clarify_question(
         break
 
 
+def _apply_onboarding_clarify_context(
+    assistant_message: Any,
+    *,
+    messages: List[Dict[str, Any]],
+    valid_tool_names: "set[str] | None",
+    is_first_turn: bool,
+    has_visible_content_fn: Any,
+) -> None:
+    """Apply onboarding clarify guards/context when a clarify tool call is present."""
+    tool_calls = list(getattr(assistant_message, "tool_calls", None) or [])
+    has_clarify = any(
+        getattr(getattr(tc, "function", None), "name", "") == "clarify"
+        for tc in tool_calls
+    )
+    if not has_clarify:
+        return
+
+    onboarding_payload = _read_recent_onboarding_metadata_from_memory_context(
+        messages=messages,
+        valid_tool_names=set(valid_tool_names or set()),
+    )
+    if onboarding_payload is not None and is_first_turn:
+        _enforce_single_onboarding_clarify_question(
+            assistant_message,
+            onboarding_payload=onboarding_payload,
+        )
+
+    assistant_text = assistant_message.content or ""
+    has_visible_content = (
+        bool(has_visible_content_fn(assistant_text))
+        if callable(has_visible_content_fn)
+        else bool(str(assistant_text).strip())
+    )
+    if has_visible_content:
+        return
+
+    onboarding_line = _build_onboarding_context_line_from_recent_memory_context(
+        messages=messages,
+        valid_tool_names=set(valid_tool_names or set()),
+    )
+    if onboarding_line:
+        assistant_message.content = onboarding_line
+
+
 def _collect_initial_query_text_segments(
     api_messages: List[Dict[str, Any]],
     *,
@@ -3874,6 +3918,13 @@ def run_conversation(
                         if repaired:
                             print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
                             tc.function.name = repaired
+                _apply_onboarding_clarify_context(
+                    assistant_message,
+                    messages=messages,
+                    valid_tool_names=set(getattr(agent, "valid_tool_names", []) or []),
+                    is_first_turn=not conversation_history,
+                    has_visible_content_fn=getattr(agent, "_has_content_after_think_block", None),
+                )
                 invalid_tool_calls = [
                     tc.function.name for tc in assistant_message.tool_calls
                     if tc.function.name not in agent.valid_tool_names
@@ -3901,32 +3952,6 @@ def run_conversation(
                             "partial": True,
                             "error": f"Model generated invalid tool call: {invalid_preview}"
                         }
-
-                    _has_clarify_tool_call = any(
-                        getattr(getattr(tc, "function", None), "name", "") == "clarify"
-                        for tc in (assistant_message.tool_calls or [])
-                    )
-                    if _has_clarify_tool_call:
-                        _onboarding_payload = _read_recent_onboarding_metadata_from_memory_context(
-                            messages=messages,
-                            valid_tool_names=set(getattr(agent, "valid_tool_names", []) or []),
-                        )
-                        # First-turn onboarding: ensure exactly one first question.
-                        if _onboarding_payload is not None and not conversation_history:
-                            _enforce_single_onboarding_clarify_question(
-                                assistant_message,
-                                onboarding_payload=_onboarding_payload,
-                            )
-                        # Runtime fallback: prepend one short context line when
-                        # clarify is present and no user-visible content exists.
-                        _assistant_text = assistant_message.content or ""
-                        if not agent._has_content_after_think_block(_assistant_text):
-                            _onboarding_line = _build_onboarding_context_line_from_recent_memory_context(
-                                messages=messages,
-                                valid_tool_names=set(getattr(agent, "valid_tool_names", []) or []),
-                            )
-                            if _onboarding_line:
-                                assistant_message.content = _onboarding_line
 
                     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                     messages.append(assistant_msg)
