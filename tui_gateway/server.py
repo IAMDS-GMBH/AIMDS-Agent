@@ -5556,7 +5556,6 @@ def _run_prompt_submit(
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, text)
     agent = session["agent"]
-    _emit("message.start", sid)
 
     def run():
         approval_token = None
@@ -5701,6 +5700,12 @@ def _run_prompt_submit(
             except (TypeError, ValueError):
                 pass
             result = agent.run_conversation(run_message, **run_kwargs)
+            
+            # Emit message.start NOW, after onboarding bootstrap completes.
+            # This ensures all onboarding context messages + flush signal arrive at desktop
+            # BEFORE message.start resets state, allowing proper rendering of context line
+            # followed by clarify questions (not the other way around).
+            _emit("message.start", sid)
 
             last_reasoning = None
             status_note = None

@@ -86,6 +86,8 @@ def _enforce_initial_memory_context_call(
 
     Prompt-only instructions are best-effort; this guard makes first-turn memory
     loading deterministic when a memory_context tool is available.
+    
+    Returns True if any onboarding context was emitted (used by gateway to delay message.start).
     """
     if conversation_history:
         return
@@ -187,6 +189,7 @@ def _enforce_initial_memory_context_call(
             onboarding_intro_msg = {"role": "assistant", "content": _onboarding_line}
             messages.append(onboarding_intro_msg)
             agent._emit_interim_assistant_message(onboarding_intro_msg)
+            agent._onboarding_context_emitted = True  # Signal to gateway that context was sent
             # Force desktop to flush the context line before tool events arrive
             cb = getattr(agent, "interim_assistant_callback", None)
             if cb is not None:
