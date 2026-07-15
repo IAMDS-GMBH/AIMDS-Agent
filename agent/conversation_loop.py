@@ -180,6 +180,7 @@ def _enforce_initial_memory_context_call(
         agent, "_initial_onboarding_clarify_enforced", False
     ):
         _questions = _extract_onboarding_questions_from_payload(_onboarding_payload)
+        logger.info(f"[ONBOARDING] Extracted questions: {_questions}")
         _onboarding_required = bool(
             _onboarding_payload.get("onboarding_init_context_required")
             or _onboarding_payload.get("onboarding_question_flow_required")
