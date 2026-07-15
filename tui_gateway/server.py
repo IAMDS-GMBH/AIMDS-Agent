@@ -5717,6 +5717,9 @@ def _run_prompt_submit(
             # This ensures all onboarding context messages + flush signal arrive at desktop
             # BEFORE message.start resets state, allowing proper rendering of context line
             # followed by clarify questions (not the other way around).
+            import logging as _logging_for_debug
+            _debug_logger = _logging_for_debug.getLogger(__name__)
+            _debug_logger.info(f"[MESSAGE.START] Emitting after agent.run_conversation completes")
             _emit("message.start", sid)
 
             last_reasoning = None
