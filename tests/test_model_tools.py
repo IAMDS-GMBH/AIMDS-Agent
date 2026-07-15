@@ -305,6 +305,9 @@ class TestHandleFunctionCall:
         assert parsed["onboarding_init_tool"] == "mcp_IAMDS_mcp_memory_skill_read"
         assert parsed["onboarding_init_result"] == {"steps": ["Q1", "Q2"]}
         assert parsed["onboarding_init_context_required"] is True
+        assert parsed["onboarding_question_flow_required"] is True
+        assert parsed["onboarding_questions"] == ["Q1", "Q2"]
+        assert parsed["onboarding_first_question"] == "Q1"
 
 
 # =========================================================================

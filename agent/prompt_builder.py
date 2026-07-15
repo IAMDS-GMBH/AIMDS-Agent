@@ -1559,10 +1559,12 @@ def _resolve_memory_save_tool_name(valid_tool_names: "set[str] | None") -> str |
 
 def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -> str:
     """Build a strict session-init block for memory_context when that tool exists."""
-    tool_name = _resolve_memory_context_tool_name(valid_tool_names)
+    names = set(valid_tool_names or set())
+    tool_name = _resolve_memory_context_tool_name(names)
     if not tool_name:
         return ""
-    skill_read_tool_name = _resolve_memory_skill_read_tool_name(valid_tool_names)
+    skill_read_tool_name = _resolve_memory_skill_read_tool_name(names)
+    has_clarify = "clarify" in names
 
     onboarding_hint = (
         f"If onboarding hints mention an init/onboarding skill or suggested skills, use `{skill_read_tool_name}` "
@@ -1570,6 +1572,16 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
         if skill_read_tool_name
         else "If onboarding hints mention an init/onboarding skill but no MCP memory skill tool is available, "
         "do not call local `skill_view` for init; continue with direct onboarding questions instead.\n"
+    )
+    onboarding_flow_hint = (
+        "When the memory tool result includes `onboarding_init_auto_started=true`, first provide one brief plain-language context sentence "
+        "(for example: profile was empty and onboarding is now starting). "
+        "If `onboarding_question_flow_required=true`, in that SAME response immediately call `clarify` with exactly one onboarding question "
+        "(prefer `onboarding_first_question`, else the first item from `onboarding_questions`) and wait for the user's answer before asking the next question. "
+        "Do NOT output a multi-question plain-text list.\n"
+        if has_clarify
+        else "When the memory tool result includes `onboarding_init_auto_started=true`, first provide one brief plain-language context sentence "
+        "(for example: profile was empty and onboarding is now starting), then continue with onboarding questions one at a time in plain chat.\n"
     )
 
     return (
@@ -1585,8 +1597,7 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
         "Use memory read/list/search tools only for explicit follow-up retrieval/editing tasks after memory_context, or when memory_context is unavailable.\n"
         f"{onboarding_hint}"
         f"If `{tool_name}` returns onboarding steps, complete that flow before other work. "
-        "When the memory tool result includes `onboarding_init_auto_started=true`, first provide one brief plain-language context sentence "
-        "(for example: profile was empty and onboarding is now starting), then continue with the onboarding questions. "
+        f"{onboarding_flow_hint}"
         "Do not ask the user to manually start init in that case.\n"
         f"If `{tool_name}` fails, continue the task but explicitly note that user context could not be loaded."
     )

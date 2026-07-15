@@ -1043,6 +1043,32 @@ def _parse_json_maybe(value: Any) -> Any:
         return value
 
 
+def _extract_onboarding_questions(value: Any) -> List[str]:
+    """Best-effort extraction of onboarding questions from init skill payloads."""
+    if isinstance(value, dict):
+        for key in ("questions", "steps", "items"):
+            items = value.get(key)
+            if isinstance(items, list):
+                qs = [str(item).strip() for item in items if str(item).strip()]
+                if qs:
+                    return qs[:8]
+        flattened: List[str] = []
+        for child in value.values():
+            flattened.extend(_extract_onboarding_questions(child))
+            if len(flattened) >= 8:
+                break
+        return flattened[:8]
+    if isinstance(value, list):
+        qs = [str(item).strip() for item in value if str(item).strip()]
+        return qs[:8]
+    if isinstance(value, str):
+        lines = [line.strip(" -\t") for line in value.splitlines()]
+        questions = [line for line in lines if line.endswith("?") and len(line) > 4]
+        if questions:
+            return questions[:8]
+    return []
+
+
 def _maybe_autorun_memory_init_skill(
     *,
     function_name: str,
@@ -1076,6 +1102,8 @@ def _maybe_autorun_memory_init_skill(
         user_task=user_task,
     )
     init_result = _parse_json_maybe(init_result_raw)
+    onboarding_questions = _extract_onboarding_questions(init_result)
+    first_question = onboarding_questions[0] if onboarding_questions else None
 
     if isinstance(parsed_result, dict):
         merged = dict(parsed_result)
@@ -1083,6 +1111,10 @@ def _maybe_autorun_memory_init_skill(
         merged["onboarding_init_tool"] = init_tool_name
         merged["onboarding_init_result"] = init_result
         merged["onboarding_init_context_required"] = True
+        merged["onboarding_question_flow_required"] = True
+        if onboarding_questions:
+            merged["onboarding_questions"] = onboarding_questions
+            merged["onboarding_first_question"] = first_question
         return json.dumps(merged, ensure_ascii=False)
 
     return json.dumps(
@@ -1092,6 +1124,9 @@ def _maybe_autorun_memory_init_skill(
             "onboarding_init_tool": init_tool_name,
             "onboarding_init_result": init_result,
             "onboarding_init_context_required": True,
+            "onboarding_question_flow_required": True,
+            "onboarding_questions": onboarding_questions,
+            "onboarding_first_question": first_question,
         },
         ensure_ascii=False,
     )

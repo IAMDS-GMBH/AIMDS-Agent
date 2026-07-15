@@ -150,6 +150,20 @@ class TestRemoteMcpMemoryPrompt:
         stable = _stable_prompt(agent)
         assert "do not call local `skill_view` for init" in stable
 
+    def test_requires_clarify_for_auto_init_onboarding_when_available(self):
+        agent = _make_agent(
+            valid_tool_names=[
+                self._PREF_MCP_CONTEXT,
+                self._PREF_MCP_SKILL_READ,
+                "clarify",
+            ],
+            platform="cli",
+        )
+        stable = _stable_prompt(agent)
+        assert "onboarding_question_flow_required=true" in stable
+        assert "immediately call `clarify` with exactly one onboarding question" in stable
+        assert "Do NOT output a multi-question plain-text list." in stable
+
 
 class TestTodoPersistenceGuidance:
     def test_emits_in_main_prompt(self):
