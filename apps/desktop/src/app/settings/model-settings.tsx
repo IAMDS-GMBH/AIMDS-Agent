@@ -91,6 +91,7 @@ interface ModelSettingsProps {
 export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const { t } = useI18n()
   const m = t.settings.model
+  const mcp = t.settings.mcp
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [mainModel, setMainModel] = useState<{ model: string; provider: string } | null>(null)
@@ -253,8 +254,8 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       if (result.mcp_reloaded) {
         notify({
           kind: 'success',
-          title: 'MCP',
-          message: result.mcp_message || 'MCP server reconnected'
+          title: mcp.reloadedTitle,
+          message: mcp.reloadedMessage
         })
       }
     } catch (err) {
@@ -262,7 +263,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     } finally {
       setApplying(false)
     }
-  }, [onMainModelChanged, refresh, selectedModel, selectedProvider])
+  }, [mcp.reloadedMessage, mcp.reloadedTitle, onMainModelChanged, refresh, selectedModel, selectedProvider])
 
   const setAuxiliaryToMain = useCallback(
     async (task: string) => {
