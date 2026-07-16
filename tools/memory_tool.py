@@ -747,8 +747,23 @@ def memory_tool(
     elif action == "remove":
         result = store.remove(target, old_text, metadata=metadata)
 
+    elif action == "read":
+        result = store._success_response(target, "Entries loaded.")
+        # Structured mirror is additive: keep flat MEMORY.md/USER.md behavior
+        # and expose recent typed MCP mirror records in the same read payload.
+        try:
+            from agent.memory_dual_write import read_structured_mirror_records
+
+            result["structured_mirror_recent"] = read_structured_mirror_records(
+                limit=10,
+                memory_type=old_text,  # optional type filter
+                query=content,  # optional text query
+            )
+        except Exception:
+            result["structured_mirror_recent"] = []
+
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove, read", success=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -810,8 +825,8 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
-                "description": "add, replace, or remove."
+                "enum": ["add", "replace", "remove", "read"],
+                "description": "add, replace, remove, or read."
             },
             "target": {
                 "type": "string",
@@ -848,5 +863,4 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
 

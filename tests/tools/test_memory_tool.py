@@ -436,6 +436,18 @@ class TestMemoryToolDispatcher:
         result = json.loads(memory_tool(action="remove", store=store))
         assert result["success"] is False
 
+    def test_read_via_tool_includes_structured_mirror_rows(self, store, monkeypatch):
+        store.add("memory", "via tool")
+        monkeypatch.setattr(
+            "agent.memory_dual_write.read_structured_mirror_records",
+            lambda **_kwargs: [{"type": "profile", "title": "Language preference"}],
+        )
+
+        result = json.loads(memory_tool(action="read", target="memory", store=store))
+        assert result["success"] is True
+        assert "via tool" in result["entries"]
+        assert result["structured_mirror_recent"] == [{"type": "profile", "title": "Language preference"}]
+
 
 # =========================================================================
 # External drift guard (#26045)
