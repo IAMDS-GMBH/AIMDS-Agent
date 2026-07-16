@@ -2575,7 +2575,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 30,
+    "_config_version": 31,
 }
 
 # =============================================================================
@@ -5070,6 +5070,28 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                             print(f"  ✓ MCP server migration: {', '.join(parts)}")
         except Exception as _mcp_exc:
             results["warnings"].append(f"MCP server migration (v30) failed: {_mcp_exc}")
+
+    # ── Version 30 → 31: enable managed_memory.capture_mode auto by default ──
+    # Previously defaulted to "off"; upgrade existing "off" configs to "auto"
+    # so auto-capture is active without requiring manual edits.
+    if current_ver < 31:
+        try:
+            config = load_config()
+            mem_section = config.get("memory", {})
+            managed = mem_section.get("managed_memory", {}) if isinstance(mem_section, dict) else {}
+            if isinstance(managed, dict) and managed.get("capture_mode", "off") == "off":
+                managed["capture_mode"] = "auto"
+                mem_section["managed_memory"] = managed
+                config["memory"] = mem_section
+                config["_config_version"] = 31
+                save_config(config)
+                print("  ✓ memory.managed_memory.capture_mode: off → auto")
+            else:
+                # Already non-off (e.g. "suggest") — leave it alone, just bump version
+                config["_config_version"] = 31
+                save_config(config)
+        except Exception as _cap_exc:
+            results["warnings"].append(f"capture_mode migration (v31) failed: {_cap_exc}")
 
     # Check for missing config fields
     missing_config = get_missing_config_fields()
