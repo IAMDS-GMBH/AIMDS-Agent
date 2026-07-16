@@ -5,6 +5,7 @@ import json
 from types import SimpleNamespace
 
 from agent.memory_extractor import (
+    _looks_natural_language,
     _build_extraction_messages,
     _parse_extraction_response,
     should_attempt_extraction,
@@ -85,6 +86,14 @@ def test_should_attempt_extraction_short_user_fact_statement():
     )
 
 
+def test_looks_natural_language_for_semantic_text():
+    assert _looks_natural_language("I work mostly on backend APIs in this repo.")
+
+
+def test_looks_natural_language_rejects_short_noise():
+    assert not _looks_natural_language("ok")
+
+
 def test_should_attempt_extraction_long_text():
     # Need >800 chars to bypass regex filter and go straight to extraction
     long_user = "I really want to build a microservices architecture with Docker Compose for local development. " * 5
@@ -97,6 +106,13 @@ def test_should_attempt_extraction_preference_phrasing():
     assert should_attempt_extraction(
         "Can you remember how I like my code formatted?",
         "Of course! You prefer TypeScript with 2-space indentation and strict null checks enabled across all your projects."
+    )
+
+
+def test_should_attempt_extraction_non_english_semantic_text():
+    assert should_attempt_extraction(
+        "Ich arbeite in diesem Repo hauptsaechlich an Backend-APIs.",
+        "Verstanden.",
     )
 
 
@@ -141,3 +157,4 @@ def test_spawn_memory_extraction_thread_skips_short_exchange():
         assert not called, "Thread should not be spawned for short exchanges"
     finally:
         _mod.threading.Thread = _mod_thread
+

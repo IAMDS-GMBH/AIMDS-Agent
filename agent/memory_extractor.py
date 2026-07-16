@@ -40,17 +40,6 @@ MIN_CHARS_FOR_EXTRACTION = 120
 # Cap extracted facts per turn to avoid noisy saves on verbose responses.
 MAX_FACTS_PER_TURN = 5
 
-# User-origin durable fact hints (short-turn fast path).
-# These patterns are intentionally conservative to avoid noisy extraction.
-_USER_FACT_HINT_RE = re.compile(
-    r"\b("
-    r"i\s+(?:am|i'm|prefer|like|usually|typically|work|use|need|want|always|never)\b|"
-    r"my\s+(?:role|title|team|workflow|stack|project)\b|"
-    r"for\s+code\s+reviews\b"
-    r")",
-    re.I,
-)
-
 _EXTRACTION_SYSTEM_PROMPT = """\
 You are a memory extraction assistant. Your sole job is to identify durable facts \
 from a conversation exchange that are worth saving to persistent memory.
@@ -67,6 +56,10 @@ Rules:
 - "user" scope = personal preferences, habits, communication style, language.
 - "project" scope = project-specific facts, tools, decisions, context.
 - Only include facts that would meaningfully help a future assistant response.
+- Be language-agnostic: extract from ANY language and mixed-language messages.
+- Do not require the assistant to restate a fact; user-origin facts are valid.
+- Prefer durable items such as role/title, recurring workflow, technical focus,
+  review priorities, stable constraints, or long-lived project context.
 - If nothing is worth saving, return an empty array: []
 - Maximum """ + str(MAX_FACTS_PER_TURN) + """ facts.
 - Do NOT include transient state (current task steps, what you just did).\
@@ -154,6 +147,18 @@ def _parse_extraction_response(text: str) -> List[Dict[str, Any]]:
     return valid[:MAX_FACTS_PER_TURN]
 
 
+def _looks_natural_language(text: str) -> bool:
+    """Language-neutral heuristic for deciding if text is semantic prose."""
+    t = str(text or "").strip()
+    if len(t) < 25:
+        return False
+    token_count = len(re.findall(r"\w+", t, flags=re.UNICODE))
+    if token_count < 5:
+        return False
+    alnum_ratio = sum(1 for ch in t if ch.isalnum()) / max(1, len(t))
+    return alnum_ratio >= 0.40
+
+
 def _run_extraction(
     agent: Any,
     user_message: str,
@@ -228,22 +233,19 @@ def should_attempt_extraction(
     Returns True when the exchange is likely to contain durable facts.
     Avoids spending an LLM call on every short/tool-only turn.
     """
-    combined = (str(user_message or "") + " " + str(assistant_message or "")).strip()
     user_text = str(user_message or "").strip()
+    assistant_text = str(assistant_message or "").strip()
+    combined = (user_text + " " + assistant_text).strip()
     if len(combined) < MIN_CHARS_FOR_EXTRACTION:
-        # Short-turn fast path: allow extraction when the user message itself
-        # strongly looks like a durable preference/profile/project fact.
-        if len(user_text) >= 25 and _USER_FACT_HINT_RE.search(user_text):
-            return True
-        return False
+        # Short-turn fast path: language-agnostic semantic text from user.
+        return _looks_natural_language(user_text)
 
     # Always attempt when the combined text is substantial
     if len(combined) > 800:
         return True
 
-    # For shorter exchanges, pre-filter with the heuristic
-    from agent.memory_dual_write import detect_preference_candidates
-    return bool(detect_preference_candidates(combined))
+    # Mid-size exchanges: run when either side looks like semantic prose.
+    return _looks_natural_language(user_text) or _looks_natural_language(assistant_text)
 
 
 def spawn_memory_extraction_thread(
