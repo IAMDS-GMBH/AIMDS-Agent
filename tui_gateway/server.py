@@ -2731,10 +2731,12 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     duration_s = time.time() - started_at if started_at else None
     if duration_s is not None:
         payload["duration_s"] = duration_s
+    is_memory_context_tool = name.endswith("memory_context")
     try:
-        payload["result"] = json.loads(result)
+        parsed_result = json.loads(result)
     except Exception:
-        payload["result"] = result
+        parsed_result = result
+    payload["result"] = {} if is_memory_context_tool else parsed_result
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary
@@ -2743,8 +2745,9 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         if len(preview) > 220:
             preview = f"{preview[:217]}..."
         logger.info(
-            "[ONBOARDING] tool.complete memory_context id=%s result_preview=%r",
+            "[ONBOARDING] tool.complete memory_context id=%s summary=%r result_preview=%r",
             tool_call_id,
+            summary,
             preview,
         )
     if _session_verbose(sid):

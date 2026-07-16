@@ -396,6 +396,39 @@ def test_tool_summary_for_memory_context_is_compact_and_non_leaky():
     assert summary == "Memory context loaded; onboarding started"
 
 
+def test_on_tool_complete_redacts_memory_context_result_payload(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "memctx-redact",
+        {"tool_progress_mode": "compact", "tool_started_at": {"tool-1": time.time()}},
+    )
+
+    raw_result = json.dumps(
+        {
+            "result": '{"context_line":"The profile in the remote server is not set yet, we will proceed with onboarding.","questions":["What is your role/title?"]}',
+            "onboarding_init_auto_started": True,
+        },
+        ensure_ascii=False,
+    )
+    server._on_tool_complete(
+        "memctx-redact",
+        "tool-1",
+        "mcp_IAMDS_mcp_memory_memory_context",
+        {},
+        raw_result,
+    )
+
+    assert events
+    event_type, _sid, payload = events[-1]
+    assert event_type == "tool.complete"
+    assert payload["result"] == {}
+    assert str(payload.get("summary", "")).startswith("Memory context loaded; onboarding started")
+
+
 def test_dispatch_rejects_non_object_request():
     resp = server.dispatch([])
 
