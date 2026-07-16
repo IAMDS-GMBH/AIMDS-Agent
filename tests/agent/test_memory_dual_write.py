@@ -232,3 +232,30 @@ def test_annotate_tool_result_with_local_mirror_for_json_dict():
     result = annotate_tool_result_with_local_mirror('{"success": true}')
     assert isinstance(result, str)
     assert '"local_mirror": true' in result
+
+
+def test_detect_preference_candidates_finds_preference():
+    from agent.memory_dual_write import detect_preference_candidates
+
+    text = "I'll remember that you prefer responses in Spanish. Noted: you like concise bullet points."
+    candidates = detect_preference_candidates(text)
+    assert len(candidates) >= 1
+    assert any("spanish" in c["content"].lower() or "prefer" in c["content"].lower() for c in candidates)
+
+
+def test_detect_preference_candidates_empty_text():
+    from agent.memory_dual_write import detect_preference_candidates
+
+    assert detect_preference_candidates("") == []
+    assert detect_preference_candidates("Sure!") == []
+
+
+def test_detect_preference_candidates_caps_at_five():
+    from agent.memory_dual_write import detect_preference_candidates
+
+    text = (
+        "You prefer X. You like Y. You want Z. You mentioned A. "
+        "I'll remember that you prefer B. Noted: you like C. Your color is blue."
+    )
+    candidates = detect_preference_candidates(text)
+    assert len(candidates) <= 5

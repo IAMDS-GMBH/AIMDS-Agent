@@ -390,7 +390,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if getattr(agent, "_inject_structured_mirror", False):
         try:
             from agent.memory_dual_write import format_structured_mirror_for_system_prompt
-            _mirror_block = format_structured_mirror_for_system_prompt()
+            from agent.runtime_cwd import resolve_context_cwd as _resolve_cwd
+            _cwd = _resolve_cwd()
+            _active_ctx = _cwd.name if _cwd and _cwd.name else ""
+            _mirror_block = format_structured_mirror_for_system_prompt(active_context=_active_ctx)
             if _mirror_block:
                 volatile_parts.append(_mirror_block)
         except Exception:

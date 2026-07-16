@@ -400,6 +400,32 @@ def finalize_turn(
         except Exception:
             pass  # Background review is best-effort
 
+    # Auto-capture: scan assistant response for preference-like statements
+    # and write to the structured mirror store when capture_mode != off.
+    if final_response and not interrupted:
+        try:
+            _mem_cfg = getattr(agent, "_agent_cfg", {}).get("memory", {}) if hasattr(agent, "_agent_cfg") else {}
+            _managed_cfg = _mem_cfg.get("managed_memory", {}) if isinstance(_mem_cfg, dict) else {}
+            _capture_mode = str(_managed_cfg.get("capture_mode", "off")).strip().lower()
+            if _capture_mode in {"auto", "suggest"} and getattr(agent, "_inject_structured_mirror", False):
+                from agent.memory_dual_write import detect_preference_candidates, upsert_structured_mirror_record, build_structured_mirror_record
+                _response_text = str(final_response or "")
+                _candidates = detect_preference_candidates(_response_text)
+                for cand in _candidates:
+                    if _capture_mode == "auto":
+                        _rec = build_structured_mirror_record(
+                            tool_args=cand,
+                            write_meta={"write_origin": "auto_capture", "scope": "user"},
+                            tool_name="auto_capture",
+                            effective_task_id=str(effective_task_id or ""),
+                        )
+                        if _rec:
+                            upsert_structured_mirror_record(_rec)
+                    # suggest mode: currently logs candidates for future /memory pending UI
+                    # (staged writes not yet wired for structured mirror; defer to next phase)
+        except Exception:
+            pass  # Auto-capture is best-effort — never break the turn
+
     # Note: Memory provider on_session_end() + shutdown_all() are NOT
     # called here — run_conversation() is called once per user message in
     # multi-turn sessions. Shutting down after every turn would kill the

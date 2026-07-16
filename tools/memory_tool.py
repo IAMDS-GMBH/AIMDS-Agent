@@ -731,6 +731,10 @@ def memory_tool(
         return tool_error(f"{missing} is required for 'replace' action.", success=False)
     if action == "remove" and not old_text:
         return tool_error("old_text is required for 'remove' action.", success=False)
+    if action == "update_structured" and not (old_text or content):
+        return tool_error("slug (old_text) is required for 'update_structured' action.", success=False)
+    if action == "delete_structured" and not old_text:
+        return tool_error("slug (old_text) is required for 'delete_structured' action.", success=False)
 
     # Approval gate: when on, stages the write (background/gateway) or prompts
     # inline (interactive CLI); when off (default) passes straight through.
@@ -762,8 +766,69 @@ def memory_tool(
         except Exception:
             result["structured_mirror_recent"] = []
 
+    elif action == "update_structured":
+        # Update a specific structured JSONL record by slug (old_text = slug).
+        # content is the new body; title can be passed via content as "Title: ...\nBody..."
+        # This is the model-facing slug-based update path.
+        try:
+            from agent.memory_dual_write import (
+                upsert_structured_mirror_record,
+            )
+
+            slug = str(old_text or "").strip()
+            new_content = str(content or "").strip()
+            if not slug:
+                return tool_error("slug (old_text) must not be empty for 'update_structured'.", success=False)
+
+            record = {
+                "slug": slug,
+                "content": new_content,
+                "updated_at": int(__import__("time").time()),
+            }
+            upsert_structured_mirror_record(record)
+            result = {"success": True, "slug": slug, "action": "update_structured"}
+        except Exception as exc:
+            return tool_error(f"update_structured failed: {exc}", success=False)
+
+    elif action == "delete_structured":
+        # Remove a structured JSONL record by slug (old_text = slug).
+        try:
+            from agent.memory_dual_write import _memory_mirror_store_path
+            import json as _json
+
+            slug = str(old_text or "").strip()
+            if not slug:
+                return tool_error("slug (old_text) must not be empty for 'delete_structured'.", success=False)
+
+            path = _memory_mirror_store_path()
+            if path.exists():
+                lines = path.read_text(encoding="utf-8").splitlines()
+                kept = []
+                removed = 0
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = _json.loads(line)
+                        if isinstance(row, dict) and row.get("slug") == slug:
+                            removed += 1
+                            continue
+                    except Exception:
+                        pass
+                    kept.append(line)
+                path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+                result = {"success": True, "slug": slug, "removed": removed, "action": "delete_structured"}
+            else:
+                result = {"success": True, "slug": slug, "removed": 0, "action": "delete_structured"}
+        except Exception as exc:
+            return tool_error(f"delete_structured failed: {exc}", success=False)
+
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove, read", success=False)
+        return tool_error(
+            f"Unknown action '{action}'. Use: add, replace, remove, read, update_structured, delete_structured",
+            success=False,
+        )
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -825,21 +890,28 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove", "read"],
-                "description": "add, replace, remove, or read."
+                "enum": ["add", "replace", "remove", "read", "update_structured", "delete_structured"],
+                "description": (
+                    "add: append new entry. "
+                    "replace: find old_text and replace with content. "
+                    "remove: delete entry matching old_text. "
+                    "read: inspect current entries and recent structured records (which include slugs). "
+                    "update_structured: update a JSONL record by slug — pass slug as old_text, new body as content. "
+                    "delete_structured: remove a JSONL record by slug — pass slug as old_text."
+                )
             },
             "target": {
                 "type": "string",
                 "enum": ["memory", "user"],
-                "description": "memory notes or user profile."
+                "description": "memory notes or user profile. Ignored for update_structured/delete_structured."
             },
             "content": {
                 "type": "string",
-                "description": "Entry content for add/replace."
+                "description": "Entry content for add/replace/update_structured."
             },
             "old_text": {
                 "type": "string",
-                "description": "Unique substring to identify entry for replace/remove."
+                "description": "Unique substring for replace/remove; slug value for update_structured/delete_structured."
             },
         },
         "required": ["action", "target"],

@@ -275,13 +275,22 @@ def read_structured_mirror_records(
     return rows[: max(1, int(limit or 20))]
 
 
-def format_structured_mirror_for_system_prompt() -> Optional[str]:
+def format_structured_mirror_for_system_prompt(
+    *,
+    active_context: str = "",
+) -> Optional[str]:
     """Format JSONL mirror records into a compact prompt block for the volatile tier.
 
     Returns None when the store is empty or unreadable (safe no-op).
-    Groups by scope: user-scoped records go into a preferences block,
-    project-scoped records go into a project context block.
+    Groups by scope:
+    - user-scope records: always included
+    - project-scope records: included only when active_context is non-empty
     Deduplicates by slug (last-write-wins order from JSONL).
+
+    Args:
+        active_context: a project/cwd hint (e.g. cwd basename or project name).
+                        When empty, project-scope records are still included
+                        as a safe default so behavior is backward-compatible.
     """
     path = _memory_mirror_store_path()
     if not path.exists():
@@ -340,15 +349,105 @@ def format_structured_mirror_for_system_prompt() -> Optional[str]:
         lines = [l for l in lines if l]
         if lines:
             blocks.append("## User preferences & profile\n" + "\n".join(lines))
-    if project_records:
+    # Project-scope records: inject when active_context is set, or always as
+    # a safe backward-compatible default when active_context is empty.
+    _include_project = bool(active_context) or True  # keep "always" default for now
+    if project_records and _include_project:
         lines = [_format_record(r) for r in project_records]
         lines = [l for l in lines if l]
         if lines:
-            blocks.append("## Saved project context\n" + "\n".join(lines))
+            header = f"## Saved project context" + (f" ({active_context})" if active_context else "")
+            blocks.append(header + "\n" + "\n".join(lines))
 
     if not blocks:
         return None
     return "\n\n".join(blocks)
+
+
+# ── Preference patterns for auto-capture ─────────────────────────────────────
+# Each pattern captures a preference-like statement from assistant responses.
+# Group 1 = optional subject/label, Group 2 = the preference value.
+_PREFERENCE_PATTERNS: List[re.Pattern] = [
+    # "you prefer X" / "you'd prefer X" / "you seem to prefer X"
+    re.compile(r"\byou(?:'d| would| seem to)?\s+prefer\s+(.{3,80})", re.I),
+    # "you like X" / "you tend to like X"
+    re.compile(r"\byou(?:\s+tend\s+to)?\s+like\s+(.{3,80})", re.I),
+    # "you want X" / "you'd want X"
+    re.compile(r"\byou(?:'d| would)?\s+want\s+(.{3,80})", re.I),
+    # "I'll remember that X" / "I'll keep in mind that X"
+    re.compile(r"\bI(?:'ll| will)\s+(?:remember|keep in mind)\s+that\s+(.{3,120})", re.I),
+    # "noted: X" / "noted — X"
+    re.compile(r"\bnoted[:\s—-]+(.{3,120})", re.I),
+    # "your X is Y" / "your X: Y"
+    re.compile(r"\byour\s+([\w\s]{2,30}?)\s+(?:is|:)\s+(.{3,80})", re.I),
+    # "you mentioned X" / "you said X"
+    re.compile(r"\byou\s+(?:mentioned|said)\s+(?:that\s+)?(.{3,120})", re.I),
+    # "I'll keep that in mind" — general but useful, captures surrounding sentence
+    re.compile(r"\bI(?:'ll| will)\s+keep\s+that\s+in\s+mind\b", re.I),
+]
+
+# Short fillers that are not real preference content
+_FILLER_RE = re.compile(
+    r"^(?:it|that|this|so|yes|no|ok|okay|sure|absolutely|of course|got it|understood|great|noted)\s*[.!]?$",
+    re.I,
+)
+
+
+def detect_preference_candidates(text: str) -> List[Dict[str, Any]]:
+    """Scan assistant response text for preference-like statements.
+
+    Returns a list of candidate dicts with keys: title, content, type, tags.
+    Empty list when nothing worth saving is detected.
+
+    This is intentionally conservative — false-negatives are better than
+    false-positives for unsolicited memory writes.
+    """
+    if not text or len(text.strip()) < 10:
+        return []
+
+    candidates: List[Dict[str, Any]] = []
+    seen_contents: set = set()
+
+    for pattern in _PREFERENCE_PATTERNS:
+        for match in pattern.finditer(text):
+            groups = [g for g in match.groups() if g]
+            if not groups:
+                # Pattern matched but no capture group (e.g. "I'll keep that in mind")
+                # Extract surrounding sentence as context
+                start = max(0, match.start() - 40)
+                end = min(len(text), match.end() + 80)
+                snippet = text[start:end].strip()
+                groups = [snippet]
+
+            raw = " ".join(groups).strip().rstrip(".!,;")
+            # Clean up common noise
+            raw = re.sub(r"\s+", " ", raw).strip()
+
+            if len(raw) < 4 or len(raw) > 200:
+                continue
+            if _FILLER_RE.match(raw):
+                continue
+            # Avoid near-duplicates
+            key = raw.lower()[:60]
+            if key in seen_contents:
+                continue
+            seen_contents.add(key)
+
+            # Classify type: profile if personal preference, else notes
+            mem_type = "profile"
+            tags = ["auto-captured"]
+            title = raw[:60].strip()
+            if len(raw) > 60:
+                title = raw[:57].strip() + "…"
+
+            candidates.append({
+                "title": title,
+                "content": raw,
+                "type": mem_type,
+                "tags": tags,
+            })
+
+    return candidates[:5]  # Cap to avoid noisy saves in verbose responses
 
 
 def mirror_mcp_memory_save_to_local(
