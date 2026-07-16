@@ -175,12 +175,7 @@ def _enforce_initial_memory_context_call(
         _questions = [
             q for q in _raw_questions if _is_valid_onboarding_question_text(q)
         ]
-        _onboarding_required = bool(
-            _onboarding_payload.get("onboarding_init_context_required")
-            or _onboarding_payload.get("onboarding_question_flow_required")
-            or _onboarding_payload.get("onboarding_first_question")
-            or _raw_questions
-        )
+        _onboarding_required = _has_explicit_onboarding_signal(_onboarding_payload)
         if not _onboarding_required:
             agent._initial_memory_context_enforced = True
             return
@@ -320,13 +315,7 @@ def _build_onboarding_context_line_from_recent_memory_context(
         
         if not isinstance(payload, dict):
             continue
-        onboarding_questions = _extract_onboarding_questions_from_payload(payload)
-        onboarding_required = bool(
-            payload.get("onboarding_init_context_required")
-            or payload.get("onboarding_question_flow_required")
-            or payload.get("onboarding_first_question")
-            or onboarding_questions
-        )
+        onboarding_required = _has_explicit_onboarding_signal(payload)
         if not onboarding_required:
             continue
         line = str(
@@ -507,6 +496,20 @@ def _sanitize_onboarding_context_line_text(value: str) -> str:
     return text
 
 
+def _has_explicit_onboarding_signal(payload: Dict[str, Any]) -> bool:
+    """Return True only when payload explicitly indicates onboarding flow."""
+    if not isinstance(payload, dict):
+        return False
+    return bool(
+        payload.get("onboarding_init_context_required")
+        or payload.get("onboarding_question_flow_required")
+        or payload.get("onboarding_first_question")
+        or payload.get("onboarding_context_message")
+        or payload.get("onboarding_init_auto_started")
+        or payload.get("onboarding_questions")
+    )
+
+
 def _onboarding_context_line_from_payload(payload: Dict[str, Any]) -> str:
     """Resolve the final user-facing onboarding context line from payload."""
     raw_line = str(
@@ -642,12 +645,7 @@ def _read_recent_onboarding_metadata_from_memory_context(
         if not isinstance(payload, dict):
             continue
 
-        onboarding_questions = _extract_onboarding_questions_from_payload(payload)
-        if (
-            payload.get("onboarding_question_flow_required")
-            or payload.get("onboarding_first_question")
-            or onboarding_questions
-        ):
+        if _has_explicit_onboarding_signal(payload):
             return payload
 
     return None

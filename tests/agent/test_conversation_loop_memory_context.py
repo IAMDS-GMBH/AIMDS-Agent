@@ -227,6 +227,36 @@ def test_read_recent_onboarding_metadata_from_memory_context():
     assert payload["onboarding_first_question"] == "What is your role/title?"
 
 
+def test_read_recent_onboarding_metadata_ignores_non_onboarding_question_text():
+    messages = [
+        {
+            "role": "tool",
+            "name": "mcp_IAMDS_mcp_memory_memory_context",
+            "content": json.dumps(
+                {
+                    "result": json.dumps(
+                        {
+                            "profile": [{"title": "Senior Engineer"}],
+                            "maintenance_hints": [
+                                "Would you like me to compact stale memories?"
+                            ],
+                        },
+                        ensure_ascii=False,
+                    )
+                },
+                ensure_ascii=False,
+            ),
+        }
+    ]
+
+    payload = _read_recent_onboarding_metadata_from_memory_context(
+        messages=messages,
+        valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+    )
+
+    assert payload is None
+
+
 def test_read_recent_onboarding_metadata_preserves_outer_onboarding_fields_with_nested_result():
     messages = [
         {
