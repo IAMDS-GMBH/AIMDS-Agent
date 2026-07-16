@@ -518,6 +518,63 @@ def test_apply_onboarding_clarify_context_adds_context_and_single_question():
     )
 
 
+def test_apply_onboarding_clarify_context_first_turn_replaces_blob_and_reasoning_with_clean_line():
+    messages = [
+        {
+            "role": "tool",
+            "name": "mcp_IAMDS_mcp_memory_memory_context",
+            "content": json.dumps(
+                {
+                    "onboarding_init_context_required": True,
+                    "onboarding_context_message": (
+                        '{ "context_line": "The profile in the remote server is not set yet, we will proceed with onboarding.", '
+                        '"questions": [ "What is your role/title?" ] }'
+                        "The profile in the remote server is not set yet, we will proceed with onboarding."
+                    ),
+                    "onboarding_question_flow_required": True,
+                    "onboarding_first_question": "What is your role/title?",
+                },
+                ensure_ascii=False,
+            ),
+        }
+    ]
+    clarify_call = SimpleNamespace(
+        function=SimpleNamespace(
+            name="clarify",
+            arguments=json.dumps(
+                {
+                    "question": "Wrong merged question",
+                },
+                ensure_ascii=False,
+            ),
+        )
+    )
+    assistant_message = SimpleNamespace(
+        content=(
+            '{ "context_line": "The profile in the remote server is not set yet, we will proceed with onboarding.", '
+            '"questions": [ "What is your role/title?" ] }'
+            "The profile in the remote server is not set yet, we will proceed with onboarding.\n"
+            "Let me reason about the onboarding sequence..."
+        ),
+        tool_calls=[clarify_call],
+    )
+
+    _apply_onboarding_clarify_context(
+        assistant_message,
+        messages=messages,
+        valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+        is_first_turn=True,
+        has_visible_content_fn=lambda _text: True,
+    )
+
+    args = json.loads(assistant_message.tool_calls[0].function.arguments)
+    assert args["question"] == "What is your role/title?"
+    assert (
+        assistant_message.content
+        == "The profile in the remote server is not set yet, we will proceed with onboarding."
+    )
+
+
 def test_apply_onboarding_clarify_context_followup_turn_strips_preamble_and_uses_next_question():
     messages = [
         {

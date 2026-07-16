@@ -342,6 +342,11 @@ def _build_onboarding_context_line_from_recent_memory_context(
             or "The profile in the remote server is not set yet, we will proceed with onboarding."
         ).strip()
         line = _sanitize_onboarding_context_line_text(line)
+        logger.info(
+            "[ONBOARDING] Built onboarding context line from memory_context payload (len=%d): %r",
+            len(line),
+            line,
+        )
         if not line:
             return None
         msg["_onboarding_context_emitted"] = True
@@ -502,6 +507,15 @@ def _sanitize_onboarding_context_line_text(value: str) -> str:
                 return extracted
 
     return text
+
+
+def _onboarding_context_line_from_payload(payload: Dict[str, Any]) -> str:
+    """Resolve the final user-facing onboarding context line from payload."""
+    raw_line = str(
+        payload.get("onboarding_context_message")
+        or "The profile in the remote server is not set yet, we will proceed with onboarding."
+    ).strip()
+    return _sanitize_onboarding_context_line_text(raw_line)
 
 
 def _maybe_translate_onboarding_prompts_via_llm(
@@ -732,6 +746,12 @@ def _enforce_onboarding_clarify_question_sequence(
             args = {}
         args["question"] = next_question
         fn.arguments = json.dumps(args, ensure_ascii=False)
+        logger.info(
+            "[ONBOARDING] Enforced clarify question sequence: asked=%d total=%d next=%r",
+            len(asked_questions),
+            len(onboarding_questions),
+            next_question,
+        )
         break
     return True
 
@@ -759,6 +779,11 @@ def _apply_onboarding_clarify_context(
     )
     onboarding_active = False
     if onboarding_payload is not None:
+        logger.info(
+            "[ONBOARDING] Clarify guard active: first_turn=%s payload_keys=%s",
+            is_first_turn,
+            sorted(list(onboarding_payload.keys()))[:12],
+        )
         onboarding_active = _enforce_onboarding_clarify_question_sequence(
             assistant_message,
             messages=messages,
@@ -780,7 +805,20 @@ def _apply_onboarding_clarify_context(
         # During onboarding clarify turns, keep the assistant text clean:
         # first turn should show only the onboarding context line; follow-up
         # turns should show no free-form preamble, only the clarify question UI.
+        if is_first_turn:
+            clean_line = _onboarding_context_line_from_payload(onboarding_payload or {})
+            logger.info(
+                "[ONBOARDING] Replacing first-turn clarify content (len=%d) with clean onboarding line (len=%d)",
+                len(str(assistant_text or "")),
+                len(clean_line),
+            )
+            assistant_message.content = clean_line
+            return
         if not is_first_turn:
+            logger.info(
+                "[ONBOARDING] Stripping follow-up clarify preamble content (len=%d)",
+                len(str(assistant_text or "")),
+            )
             assistant_message.content = ""
             return
     if has_visible_content:
