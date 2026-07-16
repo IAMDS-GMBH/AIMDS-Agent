@@ -50,4 +50,44 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
         default="all",
         help="Which store to reset: 'all' (default), 'memory', or 'user'",
     )
+    # list-structured subcommand
+    _ls_parser = memory_sub.add_parser(
+        "list-structured",
+        help="List structured mirror records (MCP_MIRROR_MEMORY.jsonl)",
+    )
+    _ls_parser.add_argument(
+        "--scope",
+        choices=["user", "project"],
+        default=None,
+        help="Filter by scope (user or project)",
+    )
+    _ls_parser.add_argument(
+        "--type",
+        dest="memory_type",
+        default=None,
+        help="Filter by memory type (e.g. preference, project, rule)",
+    )
+    _ls_parser.add_argument(
+        "--limit",
+        type=int,
+        default=40,
+        help="Maximum number of records to display (default: 40)",
+    )
+
+    # delete-structured subcommand
+    _del_parser = memory_sub.add_parser(
+        "delete-structured",
+        help="Delete a structured mirror record by slug",
+    )
+    _del_parser.add_argument(
+        "slug",
+        help="Slug of the record to delete (from list-structured output)",
+    )
+    _del_parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip confirmation prompt",
+    )
+
     memory_parser.set_defaults(func=cmd_memory)

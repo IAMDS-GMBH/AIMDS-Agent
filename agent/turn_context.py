@@ -388,6 +388,28 @@ def build_turn_context(
         except Exception:
             pass
 
+    # Structured JSONL mirror recall — per-turn relevance-ranked injection.
+    # Runs alongside ManagedMemoryStore recall when inject_structured_mirror is on.
+    # Uses the same query (user message) to score records by token overlap + recency.
+    if getattr(agent, "_inject_structured_mirror", False):
+        try:
+            _query = original_user_message if isinstance(original_user_message, str) else ""
+            if _query.strip():
+                from agent.memory_dual_write import build_mirror_recall_context
+                _mirror_ctx = build_mirror_recall_context(
+                    _query,
+                    top_k=5,
+                    max_chars=1000,
+                )
+                if _mirror_ctx:
+                    ext_prefetch_cache = (
+                        f"{ext_prefetch_cache}\n\n{_mirror_ctx}".strip()
+                        if ext_prefetch_cache
+                        else _mirror_ctx
+                    )
+        except Exception:
+            pass
+
     return TurnContext(
         user_message=user_message,
         original_user_message=original_user_message,

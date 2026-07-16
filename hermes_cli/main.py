@@ -10941,9 +10941,129 @@ def _try_termux_fast_tui_launch() -> bool:
     return True
 
 
+def _cmd_memory_list_structured(args) -> None:
+    """Print structured JSONL mirror records to stdout."""
+    import datetime
+
+    try:
+        from agent.memory_dual_write import read_structured_mirror_records
+    except Exception as exc:
+        print(f"\n  ✗ Could not load memory module: {exc}\n")
+        return
+
+    scope = getattr(args, "scope", None)
+    memory_type = getattr(args, "memory_type", None)
+    limit = getattr(args, "limit", 40)
+
+    records = read_structured_mirror_records(
+        limit=limit,
+        memory_type=memory_type,
+        scope=scope,
+    )
+
+    if not records:
+        print("\n  No structured mirror records found.\n")
+        return
+
+    print(f"\n  Structured mirror records ({len(records)} shown)\n")
+    print(f"  {'SLUG':<36}  {'SCOPE':<8}  {'TYPE':<14}  {'TITLE'}")
+    print("  " + "-" * 80)
+
+    for r in records:
+        slug = str(r.get("slug") or r.get("id") or "")[:35]
+        rec_scope = str(r.get("scope") or "project")[:7]
+        rec_type = str(r.get("type") or "")[:13]
+        title = str(r.get("title") or r.get("content") or "")[:40]
+        ts = r.get("updated_at") or r.get("created_at")
+        age = ""
+        if ts:
+            try:
+                dt = datetime.datetime.fromtimestamp(int(ts))
+                age = f"  [{dt.strftime('%Y-%m-%d')}]"
+            except Exception:
+                pass
+        print(f"  {slug:<36}  {rec_scope:<8}  {rec_type:<14}  {title}{age}")
+
+    print()
+
+
+def _cmd_memory_delete_structured(args) -> None:
+    """Delete a structured mirror record by slug."""
+    slug = getattr(args, "slug", "").strip()
+    if not slug:
+        print("\n  ✗ No slug provided.\n")
+        return
+
+    try:
+        from agent.memory_dual_write import delete_structured_mirror_record
+    except ImportError:
+        # Fallback: inline delete via rewrite
+        from agent.memory_dual_write import _memory_mirror_store_path
+        import json as _json
+
+        path = _memory_mirror_store_path()
+        if not path.exists():
+            print(f"\n  ✗ No mirror store found.\n")
+            return
+
+        lines = path.read_text(encoding="utf-8").splitlines()
+        kept = []
+        removed = 0
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = _json.loads(line)
+                if str(row.get("slug") or row.get("id") or "") == slug:
+                    removed += 1
+                    continue
+            except Exception:
+                pass
+            kept.append(line)
+
+        if removed == 0:
+            print(f"\n  ✗ No record with slug '{slug}' found.\n")
+            return
+
+        if not getattr(args, "yes", False):
+            try:
+                answer = input(f"\n  Delete record '{slug}'? Type 'yes' to confirm: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\n  Cancelled.\n")
+                return
+            if answer != "yes":
+                print("  Cancelled.\n")
+                return
+
+        path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+        print(f"\n  ✓ Deleted record: {slug}\n")
+        return
+
+    if not getattr(args, "yes", False):
+        try:
+            answer = input(f"\n  Delete record '{slug}'? Type 'yes' to confirm: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Cancelled.\n")
+            return
+        if answer != "yes":
+            print("  Cancelled.\n")
+            return
+
+    try:
+        delete_structured_mirror_record(slug)
+        print(f"\n  ✓ Deleted record: {slug}\n")
+    except Exception as exc:
+        print(f"\n  ✗ Delete failed: {exc}\n")
+
+
 def cmd_memory(args):
     sub = getattr(args, "memory_command", None)
-    if sub == "off":
+    if sub == "list-structured":
+        _cmd_memory_list_structured(args)
+    elif sub == "delete-structured":
+        _cmd_memory_delete_structured(args)
+    elif sub == "off":
         from hermes_cli.config import load_config, save_config
 
         config = load_config()

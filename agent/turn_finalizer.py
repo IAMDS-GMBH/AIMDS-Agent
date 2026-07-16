@@ -418,6 +418,22 @@ def finalize_turn(
         except Exception:
             pass  # Auto-capture is best-effort — never break the turn
 
+    # Periodic compaction: trim stale/near-duplicate JSONL records.
+    # Runs in a daemon thread so it never blocks the response.
+    if getattr(agent, "_inject_structured_mirror", False):
+        try:
+            import threading as _threading
+            from agent.memory_dual_write import compact_mirror_store
+            _t = _threading.Thread(
+                target=compact_mirror_store,
+                kwargs={"max_age_days": 90, "max_records": 200},
+                daemon=True,
+                name="mirror-compact",
+            )
+            _t.start()
+        except Exception:
+            pass
+
     # Note: Memory provider on_session_end() + shutdown_all() are NOT
     # called here — run_conversation() is called once per user message in
     # multi-turn sessions. Shutting down after every turn would kill the
