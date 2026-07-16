@@ -2232,7 +2232,25 @@ copy_config_templates() {
 
     # Expose local memory files in Documents/HermesMemory for user visibility.
     # We use a symlink so filesystem memory and ~/.hermes/memories stay in sync.
-    if [ ! -e "$memory_fs_dir" ]; then
+    # On reinstall, repair pre-existing plain directories/files into the symlink.
+    if [ -L "$memory_fs_dir" ]; then
+        current_target="$(readlink "$memory_fs_dir" 2>/dev/null || true)"
+        if [ "$current_target" != "$HERMES_HOME/memories" ]; then
+            rm -f "$memory_fs_dir" 2>/dev/null || true
+            ln -s "$HERMES_HOME/memories" "$memory_fs_dir" 2>/dev/null || true
+        fi
+    elif [ -e "$memory_fs_dir" ]; then
+        backup_path="${memory_fs_dir}.backup.$(date +%s)"
+        if [ -d "$memory_fs_dir" ] && [ -n "$(find "$memory_fs_dir" -mindepth 1 -print -quit 2>/dev/null)" ]; then
+            if command -v rsync >/dev/null 2>&1; then
+                rsync -a "$memory_fs_dir/" "$HERMES_HOME/memories/" 2>/dev/null || true
+            else
+                cp -R "$memory_fs_dir/"* "$HERMES_HOME/memories/" 2>/dev/null || true
+            fi
+        fi
+        mv "$memory_fs_dir" "$backup_path" 2>/dev/null || rm -rf "$memory_fs_dir" 2>/dev/null || true
+        ln -s "$HERMES_HOME/memories" "$memory_fs_dir" 2>/dev/null || true
+    else
         ln -s "$HERMES_HOME/memories" "$memory_fs_dir" 2>/dev/null || true
     fi
 

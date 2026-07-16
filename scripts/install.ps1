@@ -2891,9 +2891,44 @@ function Copy-ConfigTemplates {
 
     # Expose local memory files in Documents\HermesMemory for user visibility.
     # Use a junction so filesystem memory and $HermesHome\memories stay in sync.
-    if (-not (Test-Path $hermesMemoryDir)) {
+    # On reinstall, repair existing plain directories/files into a junction.
+    $memoryTarget = "$HermesHome\memories"
+    if (Test-Path $hermesMemoryDir) {
+        $item = Get-Item -Path $hermesMemoryDir -Force -ErrorAction SilentlyContinue
+        $isLink = $item -and (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+        $linkOk = $false
+        if ($isLink) {
+            try {
+                $resolved = [System.IO.Path]::GetFullPath((Resolve-Path -Path $hermesMemoryDir).Path)
+                $expected = [System.IO.Path]::GetFullPath($memoryTarget)
+                $linkOk = ($resolved -eq $expected)
+            } catch {
+                $linkOk = $false
+            }
+        }
+
+        if (-not $linkOk) {
+            if ($item -and $item.PSIsContainer) {
+                $children = Get-ChildItem -Path $hermesMemoryDir -ErrorAction SilentlyContinue
+                if ($children) {
+                    Copy-Item -Path "$hermesMemoryDir\*" -Destination $memoryTarget -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+            $backupPath = "$hermesMemoryDir.backup.$([int][double]::Parse((Get-Date -UFormat %s)))"
+            try {
+                Move-Item -Path $hermesMemoryDir -Destination $backupPath -Force -ErrorAction Stop
+            } catch {
+                Remove-Item -Path $hermesMemoryDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            try {
+                New-Item -ItemType Junction -Path $hermesMemoryDir -Target $memoryTarget | Out-Null
+            } catch {
+                New-Item -ItemType Directory -Force -Path $hermesMemoryDir | Out-Null
+            }
+        }
+    } else {
         try {
-            New-Item -ItemType Junction -Path $hermesMemoryDir -Target "$HermesHome\memories" | Out-Null
+            New-Item -ItemType Junction -Path $hermesMemoryDir -Target $memoryTarget | Out-Null
         } catch {
             # Fallback: create regular directory if junction creation fails.
             New-Item -ItemType Directory -Force -Path $hermesMemoryDir | Out-Null
