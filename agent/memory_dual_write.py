@@ -159,6 +159,28 @@ def append_structured_mirror_record(record: Dict[str, Any]) -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def annotate_tool_result_with_local_mirror(tool_result: Any) -> Any:
+    """Best-effort: annotate tool result payload to signal local mirror write."""
+    if isinstance(tool_result, dict):
+        merged = dict(tool_result)
+        merged["local_mirror"] = True
+        return merged
+    text = str(tool_result or "").strip()
+    if not text:
+        return tool_result
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return tool_result
+    if isinstance(parsed, dict):
+        parsed["local_mirror"] = True
+        try:
+            return json.dumps(parsed, ensure_ascii=False)
+        except Exception:
+            return tool_result
+    return tool_result
+
+
 def read_structured_mirror_records(
     *,
     limit: int = 20,

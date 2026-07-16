@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from agent.memory_dual_write import (
+    annotate_tool_result_with_local_mirror,
     build_structured_mirror_record,
     build_local_mirror_payload,
     read_structured_mirror_records,
@@ -152,3 +153,9 @@ def test_build_structured_record_scope_mapping():
     assert project_row is not None
     assert project_row["scope"] == "project"
     assert project_row["target"] == "memory"
+
+
+def test_annotate_tool_result_with_local_mirror_for_json_dict():
+    result = annotate_tool_result_with_local_mirror('{"success": true}')
+    assert isinstance(result, str)
+    assert '"local_mirror": true' in result

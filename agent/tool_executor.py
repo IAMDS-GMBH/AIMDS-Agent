@@ -1198,7 +1198,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 # Enforce dual-write when the model uses MCP memory_save:
                 # mirror successful remote save into local Hermes memory.
                 try:
-                    from agent.memory_dual_write import mirror_mcp_memory_save_to_local
+                    from agent.memory_dual_write import (
+                        annotate_tool_result_with_local_mirror,
+                        mirror_mcp_memory_save_to_local,
+                    )
 
                     local_mirror_written = mirror_mcp_memory_save_to_local(
                         agent,
@@ -1210,6 +1213,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     )
                     if local_mirror_written and isinstance(function_args, dict):
                         function_args["__local_mirror"] = True
+                        function_result = annotate_tool_result_with_local_mirror(function_result)
                 except Exception:
                     pass
             except Exception as tool_error:

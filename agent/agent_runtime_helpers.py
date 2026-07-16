@@ -1790,7 +1790,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             result = agent._memory_manager.handle_tool_call(function_name, next_args)
             # Enforce dual-write for MCP memory_save in this execution path too.
             try:
-                from agent.memory_dual_write import mirror_mcp_memory_save_to_local
+                from agent.memory_dual_write import (
+                    annotate_tool_result_with_local_mirror,
+                    mirror_mcp_memory_save_to_local,
+                )
 
                 local_mirror_written = mirror_mcp_memory_save_to_local(
                     agent,
@@ -1802,6 +1805,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 )
                 if local_mirror_written and isinstance(next_args, dict):
                     next_args["__local_mirror"] = True
+                    result = annotate_tool_result_with_local_mirror(result)
             except Exception:
                 pass
             return _finish_agent_tool(result, next_args)
