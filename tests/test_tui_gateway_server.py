@@ -396,7 +396,7 @@ def test_tool_summary_for_memory_context_is_compact_and_non_leaky():
     assert summary == "Memory context loaded; onboarding started"
 
 
-def test_on_tool_complete_redacts_memory_context_result_payload(monkeypatch):
+def test_on_tool_complete_keeps_memory_context_result_payload(monkeypatch):
     events: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(
         server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
@@ -425,7 +425,9 @@ def test_on_tool_complete_redacts_memory_context_result_payload(monkeypatch):
     assert events
     event_type, _sid, payload = events[-1]
     assert event_type == "tool.complete"
-    assert payload["result"] == {}
+    assert isinstance(payload["result"], dict)
+    assert payload["result"].get("onboarding_init_auto_started") is True
+    assert "context_line" in str(payload["result"].get("result", ""))
     assert str(payload.get("summary", "")).startswith("Memory context loaded; onboarding started")
 
 

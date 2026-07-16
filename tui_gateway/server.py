@@ -2736,7 +2736,10 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         parsed_result = json.loads(result)
     except Exception:
         parsed_result = result
-    payload["result"] = {} if is_memory_context_tool else parsed_result
+    # Keep the full memory_context payload in tool.complete so desktop/TUI can
+    # show it when the user expands/clicks the tool row. We still emit a compact
+    # summary string by default, but the raw payload remains inspectable.
+    payload["result"] = parsed_result
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary
