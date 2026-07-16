@@ -2739,6 +2739,15 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary
+    if name.endswith("memory_context"):
+        preview = " ".join(str(result or "").split())
+        if len(preview) > 220:
+            preview = f"{preview[:217]}..."
+        logger.info(
+            "[ONBOARDING] tool.complete memory_context id=%s result_preview=%r",
+            tool_call_id,
+            preview,
+        )
     if _session_verbose(sid):
         result_text = _tool_result_text(result)
         if result_text:
@@ -2868,6 +2877,39 @@ def _debug_interim_callback(sid: str, text: str, already_streamed: bool, flush: 
 
 
 def _agent_cbs(sid: str) -> dict:
+    def _thinking_cb(text):
+        txt = str(text or "")
+        if txt and (len(txt) > 300 or "onboarding" in txt.lower()):
+            logger.info(
+                "[ONBOARDING] thinking.delta len=%d preview=%r",
+                len(txt),
+                txt[:160],
+            )
+        _emit("thinking.delta", sid, {"text": text})
+
+    def _reasoning_cb(text):
+        txt = str(text or "")
+        if txt and (len(txt) > 300 or "onboarding" in txt.lower()):
+            logger.info(
+                "[ONBOARDING] reasoning.delta len=%d preview=%r",
+                len(txt),
+                txt[:160],
+            )
+        _emit(
+            "reasoning.delta",
+            sid,
+            {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
+        )
+
+    def _clarify_cb(q, c):
+        question = str(q or "").strip()
+        logger.info(
+            "[ONBOARDING] clarify.request question=%r choices=%d",
+            question,
+            len(c or []),
+        )
+        return _block("clarify.request", sid, {"question": q, "choices": c})
+
     return {
         "tool_start_callback": lambda tc_id, name, args: _on_tool_start(
             sid, tc_id, name, args
@@ -2880,12 +2922,8 @@ def _agent_cbs(sid: str) -> dict:
         ),
         "tool_gen_callback": lambda name: _tool_progress_enabled(sid)
         and _emit("tool.generating", sid, {"name": name}),
-        "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
-        "reasoning_callback": lambda text: _emit(
-            "reasoning.delta",
-            sid,
-            {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
-        ),
+        "thinking_callback": _thinking_cb,
+        "reasoning_callback": _reasoning_cb,
         "interim_assistant_callback": lambda text, already_streamed=False, flush=False: (
             _debug_interim_callback(sid, text, already_streamed, flush)
         ),
@@ -2910,9 +2948,7 @@ def _agent_cbs(sid: str) -> dict:
         "notice_clear_callback": lambda key: _emit(
             "notification.clear", sid, {"key": key}
         ),
-        "clarify_callback": lambda q, c: _block(
-            "clarify.request", sid, {"question": q, "choices": c}
-        ),
+        "clarify_callback": _clarify_cb,
         # read_terminal tool (desktop GUI): same blocking bridge as clarify — the
         # renderer answers terminal.read.respond with the serialized buffer.
         "read_terminal_callback": lambda start=None, count=None: _block(
