@@ -1751,7 +1751,7 @@ DEFAULT_CONFIG = {
         # disabled by default in phase-1 rollout.
         "managed_memory": {
             "enabled": True,
-            "capture_mode": "off",             # off | suggest | auto
+            "capture_mode": "auto",             # off | suggest | auto
             "hybrid_retrieval_enabled": False,  # inject ranked managed recall per turn
             "retrieval_top_k": 5,
             "retrieval_max_chars": 1200,
