@@ -1117,6 +1117,12 @@ def init_agent(
             agent._memory_enabled = mem_config.get("memory_enabled", False)
             agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
             agent._inject_structured_mirror = bool(mem_config.get("inject_structured_mirror", True))
+            agent._enforce_context_for_personal_queries = bool(
+                mem_config.get("enforce_context_for_personal_queries", True)
+            )
+            agent._personal_query_freshness_turns = int(
+                mem_config.get("personal_query_freshness_turns", 3)
+            )
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
             agent._managed_memory_store = None
             if agent._memory_enabled or agent._user_profile_enabled:

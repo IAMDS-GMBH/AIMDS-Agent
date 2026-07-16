@@ -11096,6 +11096,113 @@ def _cmd_memory_list_extraction_audit(args) -> None:
     print()
 
 
+def _cmd_memory_list_context_audit(args) -> None:
+    """Print memory_context decision audit events."""
+    import datetime
+
+    try:
+        from agent.memory_context_audit import read_memory_context_audit_events
+    except Exception as exc:
+        print(f"\n  ✗ Could not load context audit module: {exc}\n")
+        return
+
+    events = read_memory_context_audit_events(
+        limit=getattr(args, "limit", 40),
+        status=getattr(args, "status", None),
+        reason=getattr(args, "reason", None),
+    )
+    if not events:
+        print("\n  No memory_context audit events found.\n")
+        return
+
+    print(f"\n  Memory context audit events ({len(events)} shown)\n")
+    print(f"  {'DATE':<10}  {'STATUS':<8}  {'REASON':<42}")
+    print("  " + "-" * 80)
+    for ev in events:
+        ts = ev.get("ts")
+        date = "-"
+        if ts:
+            try:
+                date = datetime.datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d")
+            except Exception:
+                date = "-"
+        status = str(ev.get("status") or "")[:8]
+        reason = str(ev.get("reason_code") or "")[:42]
+        print(f"  {date:<10}  {status:<8}  {reason:<42}")
+    print()
+
+
+def _cmd_memory_list_files(args) -> None:
+    """List editable filesystem memory entries."""
+    import datetime
+
+    try:
+        from agent.memory_dual_write import list_filesystem_memory_records
+    except Exception as exc:
+        print(f"\n  ✗ Could not load filesystem memory module: {exc}\n")
+        return
+
+    rows = list_filesystem_memory_records(
+        limit=getattr(args, "limit", 40),
+        scope=getattr(args, "scope", None),
+        memory_type=getattr(args, "memory_type", None),
+    )
+    if not rows:
+        print("\n  No filesystem memory records found.\n")
+        return
+
+    print(f"\n  Filesystem memory records ({len(rows)} shown)\n")
+    print(f"  {'SLUG':<36}  {'SCOPE':<8}  {'TYPE':<14}  {'PATH'}")
+    print("  " + "-" * 100)
+    for row in rows:
+        ts = row.get("updated_at")
+        date = ""
+        if ts:
+            try:
+                date = f"  [{datetime.datetime.fromtimestamp(int(ts)).strftime('%Y-%m-%d')}]"
+            except Exception:
+                date = ""
+        print(
+            f"  {str(row.get('slug') or '')[:35]:<36}  "
+            f"{str(row.get('scope') or '')[:8]:<8}  "
+            f"{str(row.get('type') or '')[:13]:<14}  "
+            f"{str(row.get('path') or '')}{date}"
+        )
+    print()
+
+
+def _cmd_memory_reconcile_files(_args) -> None:
+    """Reconcile editable filesystem memory into structured mirror."""
+    try:
+        from agent.memory_dual_write import reconcile_filesystem_memory_to_structured
+    except Exception as exc:
+        print(f"\n  ✗ Could not load filesystem memory module: {exc}\n")
+        return
+    out = reconcile_filesystem_memory_to_structured()
+    print(
+        f"\n  ✓ Reconciled filesystem memory: updated={int(out.get('updated') or 0)}, "
+        f"skipped={int(out.get('skipped') or 0)}\n"
+    )
+
+
+def _cmd_memory_open_slug(args) -> None:
+    """Resolve a memory slug to its editable file path."""
+    slug = str(getattr(args, "slug", "") or "").strip()
+    if not slug:
+        print("\n  ✗ No slug provided.\n")
+        return
+    try:
+        from agent.memory_dual_write import resolve_filesystem_memory_path
+    except Exception as exc:
+        print(f"\n  ✗ Could not load filesystem memory module: {exc}\n")
+        return
+    path = resolve_filesystem_memory_path(slug)
+    if not path:
+        print(f"\n  ✗ No editable file found for slug: {slug}\n")
+        return
+    print(f"\n  {path}\n")
+
+
 def cmd_memory(args):
     sub = getattr(args, "memory_command", None)
     if sub == "list-structured":
@@ -11104,6 +11211,14 @@ def cmd_memory(args):
         _cmd_memory_delete_structured(args)
     elif sub == "list-extraction-audit":
         _cmd_memory_list_extraction_audit(args)
+    elif sub == "list-context-audit":
+        _cmd_memory_list_context_audit(args)
+    elif sub == "list-files":
+        _cmd_memory_list_files(args)
+    elif sub == "reconcile-files":
+        _cmd_memory_reconcile_files(args)
+    elif sub == "open":
+        _cmd_memory_open_slug(args)
     elif sub == "off":
         from hermes_cli.config import load_config, save_config
 

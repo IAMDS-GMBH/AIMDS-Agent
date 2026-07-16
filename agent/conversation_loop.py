@@ -32,6 +32,7 @@ from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
+from agent.memory_context_audit import append_memory_context_audit_event
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
 from agent.memory_manager import build_memory_context_block
@@ -72,6 +73,169 @@ logger = logging.getLogger(__name__)
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
+
+_PERSONAL_CONTEXT_QUERY_PATTERNS: List[re.Pattern] = [
+    re.compile(r"\b(who am i|what do you know about me|my profile|my preferences|my history)\b", re.I),
+    re.compile(r"\b(about me|remember me|what is my name)\b", re.I),
+    # German / Spanish seeds (non-exhaustive, additive heuristic)
+    re.compile(r"\b(wer bin ich|was wei[ßs]t du [üu]ber mich|mein profil|meine pr[äa]ferenzen)\b", re.I),
+    re.compile(r"\b(qu[ií]en soy|qu[eé] sabes de m[ií]|mi perfil|mis preferencias)\b", re.I),
+]
+
+
+def _is_personal_context_query(user_text: str) -> bool:
+    text = str(user_text or "").strip()
+    if len(text) < 6:
+        return False
+    lowered = text.lower()
+    if any(p.search(lowered) for p in _PERSONAL_CONTEXT_QUERY_PATTERNS):
+        return True
+    # Lightweight fallback: first-person + memory/profile keyword.
+    first_person = any(tok in lowered for tok in (" me ", " my ", " ich ", " mich ", " mi ", "m\u00ed "))
+    memoryish = any(tok in lowered for tok in ("profile", "preference", "history", "remember", "know about"))
+    return first_person and memoryish
+
+
+def _has_recent_successful_memory_context(
+    *,
+    messages: List[Dict[str, Any]],
+    tool_name: str,
+    freshness_turns: int,
+) -> bool:
+    """Return True when a successful memory_context tool result is very recent."""
+    if freshness_turns <= 0:
+        return False
+    seen = 0
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "tool":
+            continue
+        if str(msg.get("name") or "") != tool_name:
+            continue
+        seen += 1
+        content = str(msg.get("content") or "").strip()
+        if not content:
+            continue
+        try:
+            parsed = json.loads(content)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            if parsed.get("error"):
+                if seen >= freshness_turns:
+                    return False
+                continue
+            return True
+        return True
+    return False
+
+
+def _enforce_personal_query_memory_context_call(
+    agent: Any,
+    *,
+    messages: List[Dict[str, Any]],
+    conversation_history: List[Dict[str, Any]],
+    original_user_message: str,
+    effective_task_id: str,
+) -> None:
+    """Force memory_context on personal profile/history questions after first turn."""
+    if not conversation_history:
+        return
+    if not getattr(agent, "_enforce_context_for_personal_queries", True):
+        return
+    if not _is_personal_context_query(original_user_message):
+        return
+
+    valid_tools = set(getattr(agent, "valid_tool_names", []) or [])
+    tool_name = _resolve_memory_context_tool_name(valid_tools)
+    base_event = {
+        "status": "skip",
+        "query": str(original_user_message or "")[:240],
+        "session_id": str(getattr(agent, "session_id", "") or ""),
+        "task_id": str(effective_task_id or ""),
+        "turn_id": str(getattr(agent, "_current_turn_id", "") or ""),
+    }
+    if not tool_name:
+        append_memory_context_audit_event({**base_event, "reason_code": "skip_tool_unavailable"})
+        return
+
+    freshness_turns = max(1, int(getattr(agent, "_personal_query_freshness_turns", 3) or 3))
+    if _has_recent_successful_memory_context(
+        messages=messages,
+        tool_name=tool_name,
+        freshness_turns=freshness_turns,
+    ):
+        append_memory_context_audit_event({**base_event, "reason_code": "skip_recent_context_fresh"})
+        return
+
+    call_id = f"memory-context-personal-{uuid.uuid4().hex[:12]}"
+    assistant_tool_msg = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "arguments": json.dumps({}, ensure_ascii=False),
+                },
+            }
+        ],
+    }
+    messages.append(assistant_tool_msg)
+    try:
+        synthetic_assistant = SimpleNamespace(
+            tool_calls=[
+                SimpleNamespace(
+                    id=call_id,
+                    type="function",
+                    function=SimpleNamespace(name=tool_name, arguments=json.dumps({}, ensure_ascii=False)),
+                )
+            ]
+        )
+        agent._execute_tool_calls(
+            synthetic_assistant,
+            messages,
+            effective_task_id,
+            0,
+        )
+        append_memory_context_audit_event(
+            {
+                "status": "trigger",
+                "reason_code": "trigger_personal_query_stale_context",
+                "query": str(original_user_message or "")[:240],
+                "session_id": str(getattr(agent, "session_id", "") or ""),
+                "task_id": str(effective_task_id or ""),
+                "turn_id": str(getattr(agent, "_current_turn_id", "") or ""),
+                "tool_name": tool_name,
+            }
+        )
+    except Exception as exc:
+        messages.append(
+            {
+                "role": "tool",
+                "name": tool_name,
+                "tool_call_id": call_id,
+                "content": json.dumps(
+                    {"error": f"Personal-query memory_context call failed: {exc}"},
+                    ensure_ascii=False,
+                ),
+            }
+        )
+        append_memory_context_audit_event(
+            {
+                "status": "error",
+                "reason_code": "error_personal_query_forced_call_failed",
+                "query": str(original_user_message or "")[:240],
+                "session_id": str(getattr(agent, "session_id", "") or ""),
+                "task_id": str(effective_task_id or ""),
+                "turn_id": str(getattr(agent, "_current_turn_id", "") or ""),
+                "tool_name": tool_name,
+                "error": str(exc)[:300],
+            }
+        )
 
 
 def _enforce_initial_memory_context_call(
@@ -1373,6 +1537,13 @@ def run_conversation(
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
     _enforce_initial_memory_context_call(
+        agent,
+        messages=messages,
+        conversation_history=conversation_history,
+        original_user_message=original_user_message,
+        effective_task_id=effective_task_id,
+    )
+    _enforce_personal_query_memory_context_call(
         agent,
         messages=messages,
         conversation_history=conversation_history,

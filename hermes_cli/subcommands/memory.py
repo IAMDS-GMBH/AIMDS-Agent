@@ -113,4 +113,62 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
         help="Maximum number of events to display (default: 40)",
     )
 
+    # list-context-audit subcommand
+    _ctx_audit = memory_sub.add_parser(
+        "list-context-audit",
+        help="List memory_context decision audit events",
+    )
+    _ctx_audit.add_argument(
+        "--status",
+        choices=["trigger", "skip", "error"],
+        default=None,
+        help="Filter by event status",
+    )
+    _ctx_audit.add_argument(
+        "--reason",
+        default=None,
+        help="Filter by reason_code",
+    )
+    _ctx_audit.add_argument(
+        "--limit",
+        type=int,
+        default=40,
+        help="Maximum number of events to display (default: 40)",
+    )
+
+    # list-files subcommand
+    _list_files = memory_sub.add_parser(
+        "list-files",
+        help="List editable memory files under HermesMemory",
+    )
+    _list_files.add_argument(
+        "--scope",
+        choices=["user", "project"],
+        default=None,
+        help="Filter by scope",
+    )
+    _list_files.add_argument(
+        "--type",
+        dest="memory_type",
+        default=None,
+        help="Filter by memory type",
+    )
+    _list_files.add_argument(
+        "--limit",
+        type=int,
+        default=40,
+        help="Maximum number of rows to display (default: 40)",
+    )
+
+    _reconcile_files = memory_sub.add_parser(
+        "reconcile-files",
+        help="Reconcile editable filesystem memory back into structured mirror",
+    )
+
+    _open_file = memory_sub.add_parser(
+        "open",
+        help="Resolve and print the editable file path for a memory slug",
+    )
+    _open_file.add_argument("slug", help="Memory slug")
+
     memory_parser.set_defaults(func=cmd_memory)

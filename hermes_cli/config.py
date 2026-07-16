@@ -1747,6 +1747,12 @@ DEFAULT_CONFIG = {
         # Inject structured JSONL mirror records (MCP_MIRROR_MEMORY.jsonl) into
         # the volatile system-prompt tier alongside MEMORY.md/USER.md blocks.
         "inject_structured_mirror": True,
+        # Force memory_context revalidation when the user asks personal/profile
+        # questions after the first turn ("who am I", preferences/history, etc.).
+        "enforce_context_for_personal_queries": True,
+        # If a successful memory_context call occurred within the last N
+        # memory_context tool results, skip the forced refresh.
+        "personal_query_freshness_turns": 3,
         # Claude-like managed memory layer (additive, backward-compatible).
         # disabled by default in phase-1 rollout.
         "managed_memory": {

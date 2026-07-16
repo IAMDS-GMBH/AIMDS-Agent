@@ -14,6 +14,9 @@ from hermes_constants import get_hermes_home
 
 
 MCP_MIRROR_STORE_FILENAME = "MCP_MIRROR_MEMORY.jsonl"
+FILESYSTEM_INDEX_FILENAME = "index.json"
+FILESYSTEM_USER_DIR = "user"
+FILESYSTEM_PROJECT_DIR = "project"
 
 
 def is_mcp_memory_save_tool(tool_name: str) -> bool:
@@ -89,6 +92,120 @@ def _memory_mirror_store_path() -> Path:
     mem_dir = get_hermes_home() / "memories"
     mem_dir.mkdir(parents=True, exist_ok=True)
     return mem_dir / MCP_MIRROR_STORE_FILENAME
+
+
+def _filesystem_memory_root() -> Path:
+    root = get_hermes_home() / "memories"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _filesystem_index_path() -> Path:
+    return _filesystem_memory_root() / FILESYSTEM_INDEX_FILENAME
+
+
+def _ensure_filesystem_memory_layout() -> None:
+    root = _filesystem_memory_root()
+    (root / FILESYSTEM_USER_DIR).mkdir(parents=True, exist_ok=True)
+    (root / FILESYSTEM_PROJECT_DIR).mkdir(parents=True, exist_ok=True)
+    idx = _filesystem_index_path()
+    if not idx.exists():
+        idx.write_text("{}", encoding="utf-8")
+
+
+def _load_filesystem_index() -> Dict[str, Any]:
+    _ensure_filesystem_memory_layout()
+    idx = _filesystem_index_path()
+    try:
+        data = json.loads(idx.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def _save_filesystem_index(index: Dict[str, Any]) -> None:
+    _ensure_filesystem_memory_layout()
+    tmp = _filesystem_index_path().with_suffix(".json.tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(index or {}, f, ensure_ascii=False, indent=2, sort_keys=True)
+    tmp.replace(_filesystem_index_path())
+
+
+def _frontmatter_from_record(record: Dict[str, Any]) -> str:
+    meta = {
+        "slug": str(record.get("slug") or ""),
+        "title": str(record.get("title") or ""),
+        "type": str(record.get("type") or "notes"),
+        "scope": str(record.get("scope") or "project"),
+        "tags": _clean_tags(record.get("tags")),
+        "updated_at": int(record.get("updated_at") or int(time.time())),
+        "confidence": (
+            record.get("hints", {}).get("extraction_confidence")
+            if isinstance(record.get("hints"), dict)
+            else None
+        ),
+    }
+    return "---\n" + json.dumps(meta, ensure_ascii=False, indent=2) + "\n---\n"
+
+
+def _record_filesystem_path(record: Dict[str, Any]) -> Path:
+    _ensure_filesystem_memory_layout()
+    scope = str(record.get("scope") or "project").lower()
+    subdir = FILESYSTEM_USER_DIR if scope == "user" else FILESYSTEM_PROJECT_DIR
+    slug = str(record.get("slug") or record.get("id") or "")
+    if not slug:
+        slug = _record_slug(str(record.get("type") or "notes"), str(record.get("title") or "untitled"))
+    return _filesystem_memory_root() / subdir / f"{slug}.md"
+
+
+def _write_record_filesystem(record: Dict[str, Any]) -> None:
+    if not isinstance(record, dict):
+        return
+    path = _record_filesystem_path(record)
+    body = str(record.get("content") or "").strip()
+    if not body:
+        body = str(record.get("title") or "").strip()
+    path.write_text(_frontmatter_from_record(record) + "\n" + body + "\n", encoding="utf-8")
+
+    index = _load_filesystem_index()
+    slug = str(record.get("slug") or "")
+    if slug:
+        index[slug] = {
+            "path": str(path.relative_to(_filesystem_memory_root())),
+            "scope": str(record.get("scope") or "project"),
+            "type": str(record.get("type") or "notes"),
+            "title": str(record.get("title") or ""),
+            "updated_at": int(record.get("updated_at") or int(time.time())),
+        }
+        _save_filesystem_index(index)
+
+
+def _delete_record_filesystem(slug: str) -> None:
+    if not slug:
+        return
+    index = _load_filesystem_index()
+    entry = index.get(slug)
+    if isinstance(entry, dict):
+        rel = str(entry.get("path") or "").strip()
+        if rel:
+            p = _filesystem_memory_root() / rel
+            try:
+                if p.exists():
+                    p.unlink()
+            except Exception:
+                pass
+        index.pop(slug, None)
+        _save_filesystem_index(index)
+        return
+    for sub in (FILESYSTEM_USER_DIR, FILESYSTEM_PROJECT_DIR):
+        p = _filesystem_memory_root() / sub / f"{slug}.md"
+        if p.exists():
+            try:
+                p.unlink()
+            except Exception:
+                pass
 
 
 def _clean_tags(value: Any) -> List[str]:
@@ -201,11 +318,22 @@ def upsert_structured_mirror_record(record: Dict[str, Any]) -> None:
                 updated_lines.append(line)
         if found:
             path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+            # Keep editable filesystem mirror in sync.
+            try:
+                _write_record_filesystem(merged)
+            except Exception:
+                pass
             return
 
     # No existing slug match — append new record
+    if "updated_at" not in record:
+        record["updated_at"] = int(time.time())
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    try:
+        _write_record_filesystem(record)
+    except Exception:
+        pass
 
 
 # Backward-compat alias (old callers used append_*)
@@ -462,7 +590,138 @@ def delete_structured_mirror_record(slug: str) -> bool:
             pass
         return False
 
+    try:
+        _delete_record_filesystem(slug)
+    except Exception:
+        pass
     return True
+
+
+def list_filesystem_memory_records(
+    *,
+    limit: int = 40,
+    scope: Optional[str] = None,
+    memory_type: Optional[str] = None,
+    query: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """List editable filesystem memory records from index.json."""
+    idx = _load_filesystem_index()
+    scope_f = str(scope or "").strip().lower()
+    type_f = str(memory_type or "").strip().lower()
+    query_f = str(query or "").strip().lower()
+    rows: List[Dict[str, Any]] = []
+    for slug, meta in idx.items():
+        if not isinstance(meta, dict):
+            continue
+        row = {
+            "slug": str(slug),
+            "path": str(meta.get("path") or ""),
+            "scope": str(meta.get("scope") or "project"),
+            "type": str(meta.get("type") or "notes"),
+            "title": str(meta.get("title") or ""),
+            "updated_at": int(meta.get("updated_at") or 0),
+        }
+        if scope_f and row["scope"].lower() != scope_f:
+            continue
+        if type_f and row["type"].lower() != type_f:
+            continue
+        if query_f:
+            hay = f'{row["slug"]} {row["title"]} {row["path"]}'.lower()
+            if query_f not in hay:
+                continue
+        rows.append(row)
+    rows.sort(key=lambda r: int(r.get("updated_at") or 0), reverse=True)
+    return rows[: max(1, int(limit or 40))]
+
+
+def resolve_filesystem_memory_path(slug: str) -> Optional[Path]:
+    """Resolve a memory slug to its editable filesystem path."""
+    idx = _load_filesystem_index()
+    entry = idx.get(str(slug or ""))
+    if isinstance(entry, dict):
+        rel = str(entry.get("path") or "").strip()
+        if rel:
+            p = _filesystem_memory_root() / rel
+            return p if p.exists() else None
+    for sub in (FILESYSTEM_USER_DIR, FILESYSTEM_PROJECT_DIR):
+        p = _filesystem_memory_root() / sub / f"{slug}.md"
+        if p.exists():
+            return p
+    return None
+
+
+def _parse_frontmatter_and_body(text: str) -> Tuple[Dict[str, Any], str]:
+    raw = str(text or "")
+    if not raw.startswith("---"):
+        return {}, raw.strip()
+    parts = raw.split("---", 2)
+    if len(parts) < 3:
+        return {}, raw.strip()
+    fm_raw = parts[1].strip()
+    body = parts[2].strip()
+    try:
+        fm = json.loads(fm_raw)
+        if isinstance(fm, dict):
+            return fm, body
+    except Exception:
+        pass
+    return {}, body
+
+
+def reconcile_filesystem_memory_to_structured() -> Dict[str, int]:
+    """Apply filesystem edits (HermesMemory) back into the structured mirror."""
+    _ensure_filesystem_memory_layout()
+    root = _filesystem_memory_root()
+    updated = 0
+    skipped = 0
+    files = list((root / FILESYSTEM_USER_DIR).glob("*.md")) + list((root / FILESYSTEM_PROJECT_DIR).glob("*.md"))
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            skipped += 1
+            continue
+        fm, body = _parse_frontmatter_and_body(text)
+        slug = str(fm.get("slug") or path.stem).strip()
+        scope = str(fm.get("scope") or (FILESYSTEM_USER_DIR if path.parent.name == FILESYSTEM_USER_DIR else "project"))
+        mem_type = str(fm.get("type") or ("profile" if scope == "user" else "project"))
+        title = str(fm.get("title") or path.stem.replace("-", " ").strip()).strip()
+        tags = _clean_tags(fm.get("tags"))
+        hints = {}
+        conf = fm.get("confidence")
+        try:
+            conf = float(conf) if conf is not None else None
+        except Exception:
+            conf = None
+        if conf is not None:
+            hints["extraction_confidence"] = max(0.0, min(1.0, conf))
+        rec = {
+            "id": str(uuid4()),
+            "slug": slug,
+            "created_at": int(time.time()),
+            "updated_at": int(time.time()),
+            "kind": "mcp_memory_save_mirror",
+            "type": mem_type or "notes",
+            "title": title,
+            "content": body,
+            "hints": hints,
+            "tags": tags,
+            "location": "",
+            "mcp_source": "filesystem",
+            "scope": "user" if scope == "user" else "project",
+            "target": "user" if scope == "user" else "memory",
+            "write_origin": "filesystem_reconcile",
+            "source_tool": "filesystem",
+            "session_id": "",
+            "task_id": "",
+            "tool_call_id": "",
+        }
+        try:
+            upsert_structured_mirror_record(rec)
+            updated += 1
+        except Exception:
+            skipped += 1
+    return {"updated": updated, "skipped": skipped}
 
 
 def _tokenize_for_recall(text: str) -> List[str]:
