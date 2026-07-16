@@ -341,11 +341,7 @@ def _build_onboarding_context_line_from_recent_memory_context(
             payload.get("onboarding_context_message")
             or "The profile in the remote server is not set yet, we will proceed with onboarding."
         ).strip()
-        inline_payload = _parse_json_object_from_text(line)
-        if isinstance(inline_payload, dict):
-            inline_line = str(inline_payload.get("context_line") or "").strip()
-            if inline_line:
-                line = inline_line
+        line = _sanitize_onboarding_context_line_text(line)
         if not line:
             return None
         msg["_onboarding_context_emitted"] = True
@@ -465,8 +461,47 @@ def _parse_json_object_from_text(value: str) -> Optional[Dict[str, Any]]:
         try:
             parsed, _idx = json.JSONDecoder().raw_decode(text)
         except (TypeError, ValueError, json.JSONDecodeError):
-            return None
+            first_object_idx = text.find("{")
+            if first_object_idx < 0:
+                return None
+            try:
+                parsed, _idx = json.JSONDecoder().raw_decode(text[first_object_idx:])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _sanitize_onboarding_context_line_text(value: str) -> str:
+    """Extract only the human onboarding line from malformed JSON+text blobs."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    parsed = _parse_json_object_from_text(text)
+    if isinstance(parsed, dict):
+        context_line = str(parsed.get("context_line") or "").strip()
+        if context_line:
+            return context_line
+
+    if "context_line" in text and "questions" in text:
+        match = re.search(
+            r"""["']context_line["']\s*:\s*["'](?P<context>(?:\\.|[^"'])*)["']""",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            extracted = match.group("context")
+            extracted = (
+                extracted.replace('\\"', '"')
+                .replace("\\'", "'")
+                .replace("\\n", "\n")
+                .replace("\\t", "\t")
+                .strip()
+            )
+            if extracted:
+                return extracted
+
+    return text
 
 
 def _maybe_translate_onboarding_prompts_via_llm(
@@ -504,6 +539,7 @@ def _maybe_translate_onboarding_prompts_via_llm(
             "content": (
                 "Infer the user's preferred language from USER_MESSAGE only. "
                 "Translate CONTEXT_LINE and QUESTIONS into that language. "
+                "Keep QUESTIONS count and order identical to the input. "
                 "If language is ambiguous, keep original text unchanged. "
                 "Return strict JSON only: {\"context_line\":\"...\",\"questions\":[\"...\"]}."
             ),
@@ -531,18 +567,19 @@ def _maybe_translate_onboarding_prompts_via_llm(
     translated_line = parsed.get("context_line")
     translated_questions = parsed.get("questions")
     if isinstance(translated_line, str):
-        translated_line = translated_line.strip() or None
+        translated_line = _sanitize_onboarding_context_line_text(translated_line) or None
     else:
         translated_line = context_line
 
     out_questions: List[str] = []
+    expected_question_count = len(request_payload["questions"])
     if isinstance(translated_questions, list):
         out_questions = [
             str(item).strip()
             for item in translated_questions
             if _is_valid_onboarding_question_text(str(item).strip())
         ][:8]
-    if not out_questions:
+    if not out_questions or (expected_question_count and len(out_questions) != expected_question_count):
         out_questions = questions
 
     return translated_line, out_questions

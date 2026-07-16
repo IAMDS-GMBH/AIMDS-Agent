@@ -9,6 +9,7 @@ from agent.conversation_loop import (
     _enforce_initial_memory_context_call,
     _maybe_translate_onboarding_prompts_via_llm,
     _parse_json_object_from_text,
+    _sanitize_onboarding_context_line_text,
 )
 
 
@@ -573,6 +574,37 @@ def test_maybe_translate_onboarding_prompts_via_llm_falls_back_on_invalid_payloa
     assert questions == original_questions
 
 
+def test_maybe_translate_onboarding_prompts_via_llm_preserves_question_sequence_size():
+    class _FakeTransport:
+        @staticmethod
+        def normalize_response(_response):
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "context_line": "Tu perfil aún no está configurado; empezamos onboarding.",
+                        "questions": ["¿Cuál es tu rol o cargo?"],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    agent = SimpleNamespace(
+        _build_api_kwargs=lambda messages: {"model": "x", "messages": messages},
+        _interruptible_api_call=lambda kwargs: kwargs,
+        _get_transport=lambda: _FakeTransport(),
+    )
+
+    line, questions = _maybe_translate_onboarding_prompts_via_llm(
+        agent=agent,
+        original_user_message="Hola",
+        context_line="The profile in the remote server is not set yet, we will proceed with onboarding.",
+        questions=["What is your role/title?", "What is your primary tech stack?"],
+    )
+
+    assert line == "Tu perfil aún no está configurado; empezamos onboarding."
+    assert questions == ["What is your role/title?", "What is your primary tech stack?"]
+
+
 def test_parse_json_object_from_text_allows_trailing_text_after_json():
     payload = _parse_json_object_from_text(
         '{"context_line":"Hola","questions":["¿Cuál es tu rol?"]}texto-extra'
@@ -580,3 +612,23 @@ def test_parse_json_object_from_text_allows_trailing_text_after_json():
 
     assert payload is not None
     assert payload["context_line"] == "Hola"
+
+
+def test_parse_json_object_from_text_allows_prefixed_text_before_json():
+    payload = _parse_json_object_from_text(
+        'intro: {"context_line":"Hola","questions":["¿Cuál es tu rol?"]}'
+    )
+
+    assert payload is not None
+    assert payload["context_line"] == "Hola"
+
+
+def test_sanitize_onboarding_context_line_text_extracts_context_from_blob():
+    dirty = (
+        '{ "context_line": "The profile in the remote server is not set yet, we will proceed with onboarding.", '
+        '"questions": [ "What is your role/title?" ] }The profile in the remote server is not set yet, we will proceed with onboarding.'
+    )
+
+    clean = _sanitize_onboarding_context_line_text(dirty)
+
+    assert clean == "The profile in the remote server is not set yet, we will proceed with onboarding."
