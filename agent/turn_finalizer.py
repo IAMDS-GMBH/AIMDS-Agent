@@ -400,29 +400,21 @@ def finalize_turn(
         except Exception:
             pass  # Background review is best-effort
 
-    # Auto-capture: scan assistant response for preference-like statements
-    # and write to the structured mirror store when capture_mode != off.
+    # Auto-capture: extract durable facts from the exchange using LLM (primary)
+    # and regex heuristic (fast fallback when LLM call not feasible).
     if final_response and not interrupted:
         try:
             _mem_cfg = getattr(agent, "_agent_cfg", {}).get("memory", {}) if hasattr(agent, "_agent_cfg") else {}
             _managed_cfg = _mem_cfg.get("managed_memory", {}) if isinstance(_mem_cfg, dict) else {}
             _capture_mode = str(_managed_cfg.get("capture_mode", "off")).strip().lower()
-            if _capture_mode in {"auto", "suggest"} and getattr(agent, "_inject_structured_mirror", False):
-                from agent.memory_dual_write import detect_preference_candidates, upsert_structured_mirror_record, build_structured_mirror_record
-                _response_text = str(final_response or "")
-                _candidates = detect_preference_candidates(_response_text)
-                for cand in _candidates:
-                    if _capture_mode == "auto":
-                        _rec = build_structured_mirror_record(
-                            tool_args=cand,
-                            write_meta={"write_origin": "auto_capture", "scope": "user"},
-                            tool_name="auto_capture",
-                            effective_task_id=str(effective_task_id or ""),
-                        )
-                        if _rec:
-                            upsert_structured_mirror_record(_rec)
-                    # suggest mode: currently logs candidates for future /memory pending UI
-                    # (staged writes not yet wired for structured mirror; defer to next phase)
+            if _capture_mode == "auto" and getattr(agent, "_inject_structured_mirror", False):
+                from agent.memory_extractor import spawn_memory_extraction_thread
+                spawn_memory_extraction_thread(
+                    agent,
+                    user_message=str(original_user_message or user_message or ""),
+                    assistant_message=str(final_response or ""),
+                    effective_task_id=str(effective_task_id or ""),
+                )
         except Exception:
             pass  # Auto-capture is best-effort — never break the turn
 
