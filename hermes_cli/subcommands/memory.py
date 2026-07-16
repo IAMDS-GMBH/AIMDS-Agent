@@ -90,4 +90,27 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
         help="Skip confirmation prompt",
     )
 
+    # list-extraction-audit subcommand
+    _audit_parser = memory_sub.add_parser(
+        "list-extraction-audit",
+        help="List extraction audit events (MCP_MIRROR_AUDIT.jsonl)",
+    )
+    _audit_parser.add_argument(
+        "--status",
+        choices=["trigger", "skip", "save", "error"],
+        default=None,
+        help="Filter by event status",
+    )
+    _audit_parser.add_argument(
+        "--reason",
+        default=None,
+        help="Filter by reason_code",
+    )
+    _audit_parser.add_argument(
+        "--limit",
+        type=int,
+        default=40,
+        help="Maximum number of events to display (default: 40)",
+    )
+
     memory_parser.set_defaults(func=cmd_memory)

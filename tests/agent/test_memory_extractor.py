@@ -6,8 +6,10 @@ from types import SimpleNamespace
 
 from agent.memory_extractor import (
     _looks_natural_language,
+    _run_extraction,
     _build_extraction_messages,
     _parse_extraction_response,
+    read_extraction_audit_events,
     should_attempt_extraction,
     spawn_memory_extraction_thread,
 )
@@ -24,13 +26,14 @@ def test_build_extraction_messages_structure():
 
 def test_parse_extraction_response_valid():
     payload = json.dumps([
-        {"title": "Language", "content": "User prefers Spanish.", "type": "profile", "scope": "user", "tags": ["language"]},
+        {"title": "Language", "content": "User prefers Spanish.", "type": "profile", "scope": "user", "tags": ["language"], "confidence": 0.91},
     ])
     facts = _parse_extraction_response(payload)
     assert len(facts) == 1
     assert facts[0]["title"] == "Language"
     assert facts[0]["scope"] == "user"
     assert facts[0]["type"] == "profile"
+    assert facts[0]["confidence"] == 0.91
 
 
 def test_parse_extraction_response_empty_array():
@@ -73,6 +76,15 @@ def test_parse_extraction_response_filters_missing_fields():
     facts = _parse_extraction_response(payload)
     assert len(facts) == 1
     assert facts[0]["title"] == "Valid"
+
+
+def test_parse_extraction_response_confidence_clamped():
+    payload = json.dumps([
+        {"title": "A", "content": "B", "type": "notes", "scope": "project", "tags": [], "confidence": 9.4},
+    ])
+    facts = _parse_extraction_response(payload)
+    assert len(facts) == 1
+    assert facts[0]["confidence"] == 1.0
 
 
 def test_should_attempt_extraction_short_text():
@@ -158,3 +170,56 @@ def test_spawn_memory_extraction_thread_skips_short_exchange():
     finally:
         _mod.threading.Thread = _mod_thread
 
+
+def test_spawn_memory_extraction_thread_writes_skip_prefilter_audit(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    bad_agent = SimpleNamespace(session_id="s1", model="m1")
+    spawn_memory_extraction_thread(bad_agent, "hi", "ok", effective_task_id="t1")
+
+    rows = read_extraction_audit_events(limit=5, status="skip")
+    assert rows
+    assert rows[0]["reason_code"] == "skip_prefilter"
+
+
+def test_run_extraction_writes_save_audit_with_confidence(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    class _Msg:
+        content = '[{"title":"Backend focus","content":"User works on backend APIs.","type":"project","scope":"project","tags":["backend"],"confidence":0.8}]'
+
+    class _Choice:
+        message = _Msg()
+
+    class _Resp:
+        choices = [_Choice()]
+
+    class _Completions:
+        @staticmethod
+        def create(**kwargs):
+            return _Resp()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    agent = SimpleNamespace(client=_Client(), model="m1", session_id="s1", _current_turn_id="turn-1")
+
+    import agent.memory_dual_write as _dual
+    monkeypatch.setattr(_dual, "build_structured_mirror_record", lambda **kwargs: {"id": "1"})
+    monkeypatch.setattr(_dual, "upsert_structured_mirror_record", lambda record: None)
+
+    _run_extraction(
+        agent,
+        user_message="I work mostly on backend APIs in this repo.",
+        assistant_message="Got it.",
+        effective_task_id="t1",
+    )
+
+    saves = read_extraction_audit_events(limit=10, status="save")
+    assert saves
+    assert saves[0]["reason_code"] == "save_facts_written"
+    assert abs(float(saves[0]["confidence"]) - 0.8) < 1e-6

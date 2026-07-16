@@ -29,7 +29,10 @@ import os
 import threading
 import contextlib
 import re
+import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,8 @@ MIN_CHARS_FOR_EXTRACTION = 120
 
 # Cap extracted facts per turn to avoid noisy saves on verbose responses.
 MAX_FACTS_PER_TURN = 5
+EXTRACTION_AUDIT_FILENAME = "MCP_MIRROR_AUDIT.jsonl"
+EXTRACTION_AUDIT_VERSION = 1
 
 _EXTRACTION_SYSTEM_PROMPT = """\
 You are a memory extraction assistant. Your sole job is to identify durable facts \
@@ -51,6 +56,7 @@ Each element must be an object with these fields:
   "type"    : one of: profile | notes | project | reference | rule
   "scope"   : one of: user | project
   "tags"    : array of 1-3 lowercase keyword strings
+  "confidence": optional float in range [0.0, 1.0]
 
 Rules:
 - "user" scope = personal preferences, habits, communication style, language.
@@ -137,12 +143,20 @@ def _parse_extraction_response(text: str) -> List[Dict[str, Any]]:
         if not isinstance(tags, list):
             tags = []
         tags = [str(t).strip().lower() for t in tags if str(t).strip()][:3]
+        confidence = item.get("confidence")
+        try:
+            confidence = float(confidence) if confidence is not None else None
+        except Exception:
+            confidence = None
+        if confidence is not None:
+            confidence = max(0.0, min(1.0, confidence))
         valid.append({
             "title": title,
             "content": content,
             "type": mem_type,
             "scope": scope,
             "tags": tags,
+            "confidence": confidence,
         })
     return valid[:MAX_FACTS_PER_TURN]
 
@@ -159,6 +173,61 @@ def _looks_natural_language(text: str) -> bool:
     return alnum_ratio >= 0.40
 
 
+def _extraction_audit_path() -> Path:
+    mem_dir = get_hermes_home() / "memories"
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    return mem_dir / EXTRACTION_AUDIT_FILENAME
+
+
+def _append_extraction_audit_event(event: Dict[str, Any]) -> None:
+    """Append one extraction audit event to local JSONL (best-effort)."""
+    try:
+        row = dict(event or {})
+        row.setdefault("version", EXTRACTION_AUDIT_VERSION)
+        row.setdefault("ts", int(time.time()))
+        path = _extraction_audit_path()
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def read_extraction_audit_events(
+    *,
+    limit: int = 40,
+    status: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Read extraction audit events from local JSONL with optional filters."""
+    path = _extraction_audit_path()
+    if not path.exists():
+        return []
+
+    status_f = str(status or "").strip().lower()
+    reason_f = str(reason or "").strip().lower()
+    rows: List[Dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(row, dict):
+            continue
+        row_status = str(row.get("status") or "").strip().lower()
+        row_reason = str(row.get("reason_code") or "").strip().lower()
+        if status_f and row_status != status_f:
+            continue
+        if reason_f and row_reason != reason_f:
+            continue
+        rows.append(row)
+
+    rows.sort(key=lambda r: int(r.get("ts") or 0), reverse=True)
+    return rows[: max(1, int(limit or 40))]
+
+
 def _run_extraction(
     agent: Any,
     user_message: str,
@@ -166,6 +235,20 @@ def _run_extraction(
     effective_task_id: str,
 ) -> None:
     """Worker: make a single LLM call and upsert extracted facts. Runs in daemon thread."""
+    started = time.time()
+    user_len = len(str(user_message or ""))
+    assistant_len = len(str(assistant_message or ""))
+    session_id = str(getattr(agent, "session_id", "") or "")
+    turn_id = str(getattr(agent, "_current_turn_id", "") or "")
+    model = str(getattr(agent, "model", "") or "")
+    base_event = {
+        "session_id": session_id,
+        "task_id": str(effective_task_id or ""),
+        "turn_id": turn_id,
+        "model": model,
+        "raw_len_user": user_len,
+        "raw_len_assistant": assistant_len,
+    }
     try:
         from agent.memory_dual_write import (
             upsert_structured_mirror_record,
@@ -176,11 +259,20 @@ def _run_extraction(
 
         # Use the parent agent's live OpenAI client + model
         client = getattr(agent, "client", None)
-        model = getattr(agent, "model", None) or ""
-
         if client is None or not model:
+            _append_extraction_audit_event({
+                **base_event,
+                "status": "skip",
+                "reason_code": "skip_missing_client_or_model",
+            })
             logger.debug("memory_extractor: no client/model on agent, skipping")
             return
+
+        _append_extraction_audit_event({
+            **base_event,
+            "status": "trigger",
+            "reason_code": "trigger_prefilter_passed",
+        })
 
         with open(os.devnull, "w", encoding="utf-8") as _devnull, \
              contextlib.redirect_stdout(_devnull), \
@@ -199,16 +291,27 @@ def _run_extraction(
 
         facts = _parse_extraction_response(content)
         if not facts:
+            _append_extraction_audit_event({
+                **base_event,
+                "status": "skip",
+                "reason_code": "skip_no_facts_extracted",
+                "latency_ms": int((time.time() - started) * 1000),
+            })
             logger.debug("memory_extractor: no facts extracted")
             return
 
         written = 0
+        confidences: List[float] = []
         for fact in facts:
             # Override type to "profile" for user-scope facts (scope drives type in our schema)
             if fact["scope"] == "user" and fact["type"] not in {"profile"}:
                 fact["type"] = "profile"
+            conf = fact.get("confidence")
+            if isinstance(conf, (int, float)):
+                confidences.append(float(conf))
+            hints = {"extraction_confidence": conf} if isinstance(conf, (int, float)) else {}
             record = build_structured_mirror_record(
-                tool_args=fact,
+                tool_args={**fact, "hints": hints},
                 write_meta={"write_origin": "llm_extraction", "scope": fact["scope"]},
                 tool_name="llm_extractor",
                 effective_task_id=str(effective_task_id or ""),
@@ -218,9 +321,32 @@ def _run_extraction(
                 written += 1
 
         if written:
+            avg_conf = (sum(confidences) / len(confidences)) if confidences else None
+            _append_extraction_audit_event({
+                **base_event,
+                "status": "save",
+                "reason_code": "save_facts_written",
+                "saved_count": int(written),
+                "confidence": avg_conf,
+                "latency_ms": int((time.time() - started) * 1000),
+            })
             logger.debug("memory_extractor: saved %d fact(s)", written)
+        else:
+            _append_extraction_audit_event({
+                **base_event,
+                "status": "skip",
+                "reason_code": "skip_no_records_built",
+                "latency_ms": int((time.time() - started) * 1000),
+            })
 
     except Exception as exc:
+        _append_extraction_audit_event({
+            **base_event,
+            "status": "error",
+            "reason_code": "error_extraction_exception",
+            "error": str(exc)[:300],
+            "latency_ms": int((time.time() - started) * 1000),
+        })
         logger.debug("memory_extractor: extraction failed: %s", exc)
 
 
@@ -261,6 +387,16 @@ def spawn_memory_extraction_thread(
     """
     try:
         if not should_attempt_extraction(user_message, assistant_message):
+            _append_extraction_audit_event({
+                "status": "skip",
+                "reason_code": "skip_prefilter",
+                "session_id": str(getattr(agent, "session_id", "") or ""),
+                "task_id": str(effective_task_id or ""),
+                "turn_id": str(getattr(agent, "_current_turn_id", "") or ""),
+                "model": str(getattr(agent, "model", "") or ""),
+                "raw_len_user": len(str(user_message or "")),
+                "raw_len_assistant": len(str(assistant_message or "")),
+            })
             return
 
         t = threading.Thread(

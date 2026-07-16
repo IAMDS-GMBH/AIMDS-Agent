@@ -11057,12 +11057,53 @@ def _cmd_memory_delete_structured(args) -> None:
         print(f"\n  ✗ Delete failed: {exc}\n")
 
 
+def _cmd_memory_list_extraction_audit(args) -> None:
+    """Print extraction audit JSONL events to stdout."""
+    import datetime
+
+    try:
+        from agent.memory_extractor import read_extraction_audit_events
+    except Exception as exc:
+        print(f"\n  ✗ Could not load extraction audit module: {exc}\n")
+        return
+
+    events = read_extraction_audit_events(
+        limit=getattr(args, "limit", 40),
+        status=getattr(args, "status", None),
+        reason=getattr(args, "reason", None),
+    )
+    if not events:
+        print("\n  No extraction audit events found.\n")
+        return
+
+    print(f"\n  Extraction audit events ({len(events)} shown)\n")
+    print(f"  {'DATE':<10}  {'STATUS':<8}  {'REASON':<32}  {'CONF':<5}  {'COUNT':<5}")
+    print("  " + "-" * 80)
+    for ev in events:
+        ts = ev.get("ts")
+        date = "-"
+        if ts:
+            try:
+                date = datetime.datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d")
+            except Exception:
+                date = "-"
+        status = str(ev.get("status") or "")[:8]
+        reason = str(ev.get("reason_code") or "")[:32]
+        conf = ev.get("confidence")
+        conf_s = f"{float(conf):.2f}" if isinstance(conf, (float, int)) else "-"
+        count = str(ev.get("saved_count") or "-")
+        print(f"  {date:<10}  {status:<8}  {reason:<32}  {conf_s:<5}  {count:<5}")
+    print()
+
+
 def cmd_memory(args):
     sub = getattr(args, "memory_command", None)
     if sub == "list-structured":
         _cmd_memory_list_structured(args)
     elif sub == "delete-structured":
         _cmd_memory_delete_structured(args)
+    elif sub == "list-extraction-audit":
+        _cmd_memory_list_extraction_audit(args)
     elif sub == "off":
         from hermes_cli.config import load_config, save_config
 
