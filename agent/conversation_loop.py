@@ -590,16 +590,59 @@ def _read_recent_onboarding_metadata_from_memory_context(
     messages: List[Dict[str, Any]],
     valid_tool_names: "set[str] | None" = None,
 ) -> Optional[Dict[str, Any]]:
-    """Get onboarding metadata from the latest memory_context tool payload."""
-    payload = _read_recent_memory_context_payload(
-        messages=messages,
-        valid_tool_names=valid_tool_names,
-    )
-    if not payload:
+    """Get onboarding metadata from the most recent payload that contains it.
+
+    We intentionally scan backwards across memory_context results and do not
+    stop on the latest non-onboarding payload. This keeps onboarding sequence
+    enforcement stable if a later memory_context call omits onboarding flags.
+    """
+    tool_name = _resolve_memory_context_tool_name(set(valid_tool_names or set()))
+    if not tool_name:
         return None
-    if not payload.get("onboarding_question_flow_required"):
-        return None
-    return payload
+
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "tool":
+            continue
+        if str(msg.get("name") or "") != tool_name:
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+
+        stripped_content = content
+        if "<untrusted_tool_result" in content:
+            start_idx = content.find(">")
+            end_idx = content.rfind("</untrusted_tool_result>")
+            if start_idx >= 0 and end_idx > start_idx:
+                text_after_tag = content[start_idx + 1:end_idx]
+                json_start = text_after_tag.find("{")
+                stripped_content = text_after_tag[json_start:] if json_start >= 0 else text_after_tag.strip()
+
+        try:
+            payload = json.loads(stripped_content)
+        except Exception:
+            continue
+
+        if isinstance(payload, dict) and "result" in payload and isinstance(payload.get("result"), str):
+            try:
+                payload = json.loads(payload.get("result") or "{}")
+            except Exception:
+                pass
+
+        if not isinstance(payload, dict):
+            continue
+
+        onboarding_questions = _extract_onboarding_questions_from_payload(payload)
+        if (
+            payload.get("onboarding_question_flow_required")
+            or payload.get("onboarding_first_question")
+            or onboarding_questions
+        ):
+            return payload
+
+    return None
 
 
 def _enforce_single_onboarding_clarify_question(
@@ -654,17 +697,17 @@ def _enforce_onboarding_clarify_question_sequence(
     *,
     messages: List[Dict[str, Any]],
     onboarding_payload: Dict[str, Any],
-) -> None:
+) -> bool:
     tool_calls = list(getattr(assistant_message, "tool_calls", None) or [])
     if not tool_calls:
-        return
+        return False
 
     onboarding_questions = [
         q for q in _extract_onboarding_questions_from_payload(onboarding_payload)
         if _is_valid_onboarding_question_text(q)
     ][:8]
     if not onboarding_questions:
-        return
+        return False
 
     asked_questions: set[str] = set()
     for msg in messages:
@@ -674,7 +717,7 @@ def _enforce_onboarding_clarify_question_sequence(
 
     next_question = next((q for q in onboarding_questions if q not in asked_questions), None)
     if not next_question:
-        return
+        return False
 
     for tc in tool_calls:
         fn = getattr(tc, "function", None)
@@ -690,6 +733,7 @@ def _enforce_onboarding_clarify_question_sequence(
         args["question"] = next_question
         fn.arguments = json.dumps(args, ensure_ascii=False)
         break
+    return True
 
 
 def _apply_onboarding_clarify_context(
@@ -713,8 +757,9 @@ def _apply_onboarding_clarify_context(
         messages=messages,
         valid_tool_names=set(valid_tool_names or set()),
     )
+    onboarding_active = False
     if onboarding_payload is not None:
-        _enforce_onboarding_clarify_question_sequence(
+        onboarding_active = _enforce_onboarding_clarify_question_sequence(
             assistant_message,
             messages=messages,
             onboarding_payload=onboarding_payload,
@@ -731,7 +776,7 @@ def _apply_onboarding_clarify_context(
         if callable(has_visible_content_fn)
         else bool(str(assistant_text).strip())
     )
-    if has_visible_content and onboarding_payload is not None:
+    if has_visible_content and onboarding_active:
         # During onboarding clarify turns, keep the assistant text clean:
         # first turn should show only the onboarding context line; follow-up
         # turns should show no free-form preamble, only the clarify question UI.

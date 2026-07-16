@@ -563,6 +563,7 @@ function toolPartFromStoredCall(call: unknown, fallbackIndex: number): ChatMessa
 function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMessage): boolean {
   const toolCallId = toolMessage.tool_call_id || undefined
   const toolName = toolMessage.tool_name || toolMessage.name || 'tool'
+  const hiddenPayload = isHiddenInternalToolPayload(toolName)
   const content = toolMessage.content || toolMessage.text || toolMessage.context || toolMessage.name
 
   for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -586,7 +587,7 @@ function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMess
     const existing = parts[partIndex]
     parts[partIndex] = {
       ...existing,
-      result: parseStoredToolResult(content),
+      result: hiddenPayload ? {} : parseStoredToolResult(content),
       isError: false
     } as ChatMessagePart
     messages[i] = { ...message, parts }
@@ -625,8 +626,9 @@ function applyStoredToolResultToParts(parts: ChatMessagePart[], toolMessage: Ses
 
 function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex: number): ChatMessagePart {
   const name = toolMessage.tool_name || toolMessage.name || 'tool'
+  const hiddenPayload = isHiddenInternalToolPayload(name)
   const context = textFromUnknown(toolMessage.context || toolMessage.text || toolMessage.content || '')
-  const args = context ? { context } : {}
+  const args = hiddenPayload ? {} : context ? { context } : {}
 
   return {
     type: 'tool-call',
@@ -634,7 +636,7 @@ function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex: numbe
     toolName: name,
     args: args as never,
     argsText: Object.keys(args).length ? JSON.stringify(args) : '',
-    result: context ? { context } : {},
+    result: hiddenPayload ? {} : context ? { context } : {},
     isError: false
   }
 }

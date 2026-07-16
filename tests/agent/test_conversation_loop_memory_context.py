@@ -576,6 +576,69 @@ def test_apply_onboarding_clarify_context_followup_turn_strips_preamble_and_uses
     assert assistant_message.content == ""
 
 
+def test_apply_onboarding_clarify_context_uses_recent_onboarding_payload_even_if_latest_memory_context_is_plain():
+    messages = [
+        {
+            "role": "tool",
+            "name": "mcp_IAMDS_mcp_memory_memory_context",
+            "content": json.dumps(
+                {
+                    "onboarding_question_flow_required": True,
+                    "onboarding_questions": [
+                        "What is your role/title?",
+                        "What is your primary tech stack?",
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        },
+        {
+            "role": "tool",
+            "name": "clarify",
+            "content": json.dumps(
+                {
+                    "question": "What is your role/title?",
+                    "user_response": "Office worker",
+                },
+                ensure_ascii=False,
+            ),
+        },
+        {
+            "role": "tool",
+            "name": "mcp_IAMDS_mcp_memory_memory_context",
+            "content": json.dumps(
+                {
+                    "context": "normal memory context without onboarding flags",
+                },
+                ensure_ascii=False,
+            ),
+        },
+    ]
+
+    clarify_call = SimpleNamespace(
+        function=SimpleNamespace(
+            name="clarify",
+            arguments=json.dumps({"question": "wrong"}, ensure_ascii=False),
+        )
+    )
+    assistant_message = SimpleNamespace(
+        content="Reasoning that should be hidden during onboarding follow-up",
+        tool_calls=[clarify_call],
+    )
+
+    _apply_onboarding_clarify_context(
+        assistant_message,
+        messages=messages,
+        valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+        is_first_turn=False,
+        has_visible_content_fn=lambda _text: True,
+    )
+
+    args = json.loads(assistant_message.tool_calls[0].function.arguments)
+    assert args["question"] == "What is your primary tech stack?"
+    assert assistant_message.content == ""
+
+
 def test_maybe_translate_onboarding_prompts_via_llm_translates_using_user_message_language():
     class _FakeTransport:
         @staticmethod

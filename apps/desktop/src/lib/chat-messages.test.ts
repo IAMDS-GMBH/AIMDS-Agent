@@ -109,6 +109,28 @@ describe('toChatMessages', () => {
     expect(chatMessageText(message)).toBe('hello from object content')
   })
 
+  it('hides stored memory_context tool payload details after hydration', () => {
+    const [assistant] = toChatMessages([
+      { role: 'assistant', content: '', timestamp: 1 },
+      {
+        role: 'tool',
+        name: 'mcp_IAMDS_mcp_memory_memory_context',
+        tool_call_id: 'memctx-stored-1',
+        content:
+          '{ "context_line": "The profile in the remote server is not set yet, we will proceed with onboarding.", "questions": [ "What is your role/title?" ] }The profile in the remote server is not set yet, we will proceed with onboarding.',
+        timestamp: 2
+      }
+    ])
+
+    const toolPart = assistant.parts.find(
+      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> => part.type === 'tool-call'
+    )
+
+    expect(toolPart).toBeDefined()
+    expect(toolPart?.args).toEqual({})
+    expect(toolPart?.result).toEqual({})
+  })
+
   it('applies attached-context filtering when user content is object-shaped', () => {
     const [message] = toChatMessages([
       {
