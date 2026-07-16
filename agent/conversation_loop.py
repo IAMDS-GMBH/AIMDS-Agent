@@ -637,6 +637,61 @@ def _enforce_single_onboarding_clarify_question(
         break
 
 
+def _extract_clarify_question_from_tool_message(message: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(message, dict):
+        return None
+    if message.get("role") != "tool" or str(message.get("name") or "") != "clarify":
+        return None
+    parsed = _parse_json_object_from_text(str(message.get("content") or ""))
+    if not parsed:
+        return None
+    question = str(parsed.get("question") or "").strip()
+    return question or None
+
+
+def _enforce_onboarding_clarify_question_sequence(
+    assistant_message: Any,
+    *,
+    messages: List[Dict[str, Any]],
+    onboarding_payload: Dict[str, Any],
+) -> None:
+    tool_calls = list(getattr(assistant_message, "tool_calls", None) or [])
+    if not tool_calls:
+        return
+
+    onboarding_questions = [
+        q for q in _extract_onboarding_questions_from_payload(onboarding_payload)
+        if _is_valid_onboarding_question_text(q)
+    ][:8]
+    if not onboarding_questions:
+        return
+
+    asked_questions: set[str] = set()
+    for msg in messages:
+        extracted = _extract_clarify_question_from_tool_message(msg)
+        if extracted:
+            asked_questions.add(extracted)
+
+    next_question = next((q for q in onboarding_questions if q not in asked_questions), None)
+    if not next_question:
+        return
+
+    for tc in tool_calls:
+        fn = getattr(tc, "function", None)
+        if getattr(fn, "name", "") != "clarify":
+            continue
+        raw_args = getattr(fn, "arguments", "{}")
+        try:
+            args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args or {})
+        except Exception:
+            args = {}
+        if not isinstance(args, dict):
+            args = {}
+        args["question"] = next_question
+        fn.arguments = json.dumps(args, ensure_ascii=False)
+        break
+
+
 def _apply_onboarding_clarify_context(
     assistant_message: Any,
     *,
@@ -658,11 +713,17 @@ def _apply_onboarding_clarify_context(
         messages=messages,
         valid_tool_names=set(valid_tool_names or set()),
     )
-    if onboarding_payload is not None and is_first_turn:
-        _enforce_single_onboarding_clarify_question(
+    if onboarding_payload is not None:
+        _enforce_onboarding_clarify_question_sequence(
             assistant_message,
+            messages=messages,
             onboarding_payload=onboarding_payload,
         )
+        if is_first_turn:
+            _enforce_single_onboarding_clarify_question(
+                assistant_message,
+                onboarding_payload=onboarding_payload,
+            )
 
     assistant_text = assistant_message.content or ""
     has_visible_content = (
@@ -670,6 +731,13 @@ def _apply_onboarding_clarify_context(
         if callable(has_visible_content_fn)
         else bool(str(assistant_text).strip())
     )
+    if has_visible_content and onboarding_payload is not None:
+        # During onboarding clarify turns, keep the assistant text clean:
+        # first turn should show only the onboarding context line; follow-up
+        # turns should show no free-form preamble, only the clarify question UI.
+        if not is_first_turn:
+            assistant_message.content = ""
+            return
     if has_visible_content:
         return
 

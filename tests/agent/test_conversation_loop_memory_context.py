@@ -518,6 +518,64 @@ def test_apply_onboarding_clarify_context_adds_context_and_single_question():
     )
 
 
+def test_apply_onboarding_clarify_context_followup_turn_strips_preamble_and_uses_next_question():
+    messages = [
+        {
+            "role": "tool",
+            "name": "mcp_IAMDS_mcp_memory_memory_context",
+            "content": json.dumps(
+                {
+                    "onboarding_question_flow_required": True,
+                    "onboarding_questions": [
+                        "What is your role/title?",
+                        "What is your primary tech stack?",
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        },
+        {
+            "role": "tool",
+            "name": "clarify",
+            "content": json.dumps(
+                {
+                    "question": "What is your role/title?",
+                    "user_response": "Office worker",
+                },
+                ensure_ascii=False,
+            ),
+        },
+    ]
+
+    clarify_call = SimpleNamespace(
+        function=SimpleNamespace(
+            name="clarify",
+            arguments=json.dumps(
+                {
+                    "question": "Some wrong question?",
+                },
+                ensure_ascii=False,
+            ),
+        )
+    )
+    assistant_message = SimpleNamespace(
+        content="Okay, let's break this down and reason about the onboarding flow...",
+        tool_calls=[clarify_call],
+    )
+
+    _apply_onboarding_clarify_context(
+        assistant_message,
+        messages=messages,
+        valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+        is_first_turn=False,
+        has_visible_content_fn=lambda _text: True,
+    )
+
+    args = json.loads(assistant_message.tool_calls[0].function.arguments)
+    assert args["question"] == "What is your primary tech stack?"
+    assert assistant_message.content == ""
+
+
 def test_maybe_translate_onboarding_prompts_via_llm_translates_using_user_message_language():
     class _FakeTransport:
         @staticmethod

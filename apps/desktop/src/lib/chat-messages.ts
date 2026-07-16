@@ -417,6 +417,12 @@ function toolResult(
   }
 }
 
+function isHiddenInternalToolPayload(name: string): boolean {
+  const normalized = String(name || '').toLowerCase()
+
+  return normalized === 'memory_context' || normalized.endsWith('_memory_context')
+}
+
 export function upsertToolPart(
   parts: ChatMessagePart[],
   payload: GatewayEventPayload | undefined,
@@ -431,7 +437,11 @@ export function upsertToolPart(
   const prev = index >= 0 ? next[index] : null
   const prevArgs = prev && 'args' in prev ? prev.args : undefined
   const prevResult = prev && 'result' in prev ? prev.result : undefined
-  const args = toolArgs(payload, prevArgs)
+  const hidePayload = isHiddenInternalToolPayload(name)
+  const args = hidePayload ? {} : toolArgs(payload, prevArgs)
+  const result = hidePayload
+    ? { ...(payload?.error ? { error: payload.error } : {}) }
+    : toolResult(payload, prevResult, prevArgs)
 
   const id =
     stableId ||
@@ -444,7 +454,7 @@ export function upsertToolPart(
     toolName: name,
     args: args as never,
     argsText: JSON.stringify(args),
-    ...(phase === 'complete' && { result: toolResult(payload, prevResult, prevArgs), isError: Boolean(payload?.error) })
+    ...(phase === 'complete' && { result, isError: Boolean(payload?.error) })
   } satisfies ChatMessagePart
 
   if (index === -1) {

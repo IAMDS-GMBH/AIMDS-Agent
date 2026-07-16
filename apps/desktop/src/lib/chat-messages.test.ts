@@ -613,6 +613,38 @@ describe('upsertToolPart', () => {
     expect(parts[0].toolCallId).toBe('memctx-1')
   })
 
+  it('hides raw payload details for memory_context tool rows', () => {
+    const started = upsertToolPart(
+      [],
+      {
+        context:
+          '{ "context_line": "The profile in the remote server is not set yet, we will proceed with onboarding.", "questions": ["What is your role/title?"] }The profile in the remote server is not set yet, we will proceed with onboarding.',
+        name: 'mcp_remotemcp_mcp_memory_memory_context',
+        tool_id: 'memctx-hidden'
+      },
+      'running'
+    )
+
+    const completed = upsertToolPart(
+      started,
+      {
+        message:
+          '{ "context_line": "The profile in the remote server is not set yet, we will proceed with onboarding.", "questions": ["What is your role/title?"] }The profile in the remote server is not set yet, we will proceed with onboarding.',
+        name: 'mcp_remotemcp_mcp_memory_memory_context',
+        preview:
+          '{ "context_line": "The profile in the remote server is not set yet, we will proceed with onboarding.", "questions": ["What is your role/title?"] }The profile in the remote server is not set yet, we will proceed with onboarding.',
+        tool_id: 'memctx-hidden'
+      },
+      'complete'
+    )
+
+    const [part] = completed
+    expect(part?.type).toBe('tool-call')
+    const toolPart = part as Extract<ChatMessagePart, { type: 'tool-call' }>
+    expect(toolPart.args).toEqual({})
+    expect(toolPart.result).toEqual({})
+  })
+
   it('reconciles preview-first progress rows with later stable-id starts', () => {
     const progressA = upsertToolPart(
       [],
