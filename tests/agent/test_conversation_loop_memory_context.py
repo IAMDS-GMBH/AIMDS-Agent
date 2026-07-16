@@ -8,6 +8,7 @@ from agent.conversation_loop import (
     _apply_onboarding_clarify_context,
     _enforce_initial_memory_context_call,
     _maybe_translate_onboarding_prompts_via_llm,
+    _parse_json_object_from_text,
 )
 
 
@@ -164,6 +165,38 @@ def test_build_onboarding_context_line_from_question_flow_without_flag():
         messages=messages,
         valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
     )
+    assert (
+        line
+        == "The profile in the remote server is not set yet, we will proceed with onboarding."
+    )
+
+
+def test_build_onboarding_context_line_strips_embedded_json_blob():
+    malformed_line = (
+        '{ "context_line": "The profile in the remote server is not set yet, we will proceed with onboarding.", '
+        '"questions": [ "What is your role/title?" ] }'
+        "The profile in the remote server is not set yet, we will proceed with onboarding."
+    )
+    messages = [
+        {
+            "role": "tool",
+            "name": "mcp_IAMDS_mcp_memory_memory_context",
+            "content": json.dumps(
+                {
+                    "onboarding_question_flow_required": True,
+                    "onboarding_context_message": malformed_line,
+                    "onboarding_questions": ["What is your role/title?"],
+                },
+                ensure_ascii=False,
+            ),
+        }
+    ]
+
+    line = _build_onboarding_context_line_from_recent_memory_context(
+        messages=messages,
+        valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+    )
+
     assert (
         line
         == "The profile in the remote server is not set yet, we will proceed with onboarding."
@@ -538,3 +571,12 @@ def test_maybe_translate_onboarding_prompts_via_llm_falls_back_on_invalid_payloa
 
     assert line == original_line
     assert questions == original_questions
+
+
+def test_parse_json_object_from_text_allows_trailing_text_after_json():
+    payload = _parse_json_object_from_text(
+        '{"context_line":"Hola","questions":["¿Cuál es tu rol?"]}texto-extra'
+    )
+
+    assert payload is not None
+    assert payload["context_line"] == "Hola"

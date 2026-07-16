@@ -341,6 +341,11 @@ def _build_onboarding_context_line_from_recent_memory_context(
             payload.get("onboarding_context_message")
             or "The profile in the remote server is not set yet, we will proceed with onboarding."
         ).strip()
+        inline_payload = _parse_json_object_from_text(line)
+        if isinstance(inline_payload, dict):
+            inline_line = str(inline_payload.get("context_line") or "").strip()
+            if inline_line:
+                line = inline_line
         if not line:
             return None
         msg["_onboarding_context_emitted"] = True
@@ -457,7 +462,10 @@ def _parse_json_object_from_text(value: str) -> Optional[Dict[str, Any]]:
     try:
         parsed = json.loads(text)
     except (TypeError, ValueError, json.JSONDecodeError):
-        return None
+        try:
+            parsed, _idx = json.JSONDecoder().raw_decode(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
     return parsed if isinstance(parsed, dict) else None
 
 
