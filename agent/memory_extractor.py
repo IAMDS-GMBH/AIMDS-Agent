@@ -28,6 +28,7 @@ import logging
 import os
 import threading
 import contextlib
+import re
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,17 @@ MIN_CHARS_FOR_EXTRACTION = 120
 
 # Cap extracted facts per turn to avoid noisy saves on verbose responses.
 MAX_FACTS_PER_TURN = 5
+
+# User-origin durable fact hints (short-turn fast path).
+# These patterns are intentionally conservative to avoid noisy extraction.
+_USER_FACT_HINT_RE = re.compile(
+    r"\b("
+    r"i\s+(?:am|i'm|prefer|like|usually|typically|work|use|need|want|always|never)\b|"
+    r"my\s+(?:role|title|team|workflow|stack|project)\b|"
+    r"for\s+code\s+reviews\b"
+    r")",
+    re.I,
+)
 
 _EXTRACTION_SYSTEM_PROMPT = """\
 You are a memory extraction assistant. Your sole job is to identify durable facts \
@@ -217,7 +229,12 @@ def should_attempt_extraction(
     Avoids spending an LLM call on every short/tool-only turn.
     """
     combined = (str(user_message or "") + " " + str(assistant_message or "")).strip()
+    user_text = str(user_message or "").strip()
     if len(combined) < MIN_CHARS_FOR_EXTRACTION:
+        # Short-turn fast path: allow extraction when the user message itself
+        # strongly looks like a durable preference/profile/project fact.
+        if len(user_text) >= 25 and _USER_FACT_HINT_RE.search(user_text):
+            return True
         return False
 
     # Always attempt when the combined text is substantial

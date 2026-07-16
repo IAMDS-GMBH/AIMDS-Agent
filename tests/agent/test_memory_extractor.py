@@ -78,6 +78,13 @@ def test_should_attempt_extraction_short_text():
     assert not should_attempt_extraction("hi", "ok")
 
 
+def test_should_attempt_extraction_short_user_fact_statement():
+    assert should_attempt_extraction(
+        "I work mostly on backend APIs in this repo.",
+        "Got it.",
+    )
+
+
 def test_should_attempt_extraction_long_text():
     # Need >800 chars to bypass regex filter and go straight to extraction
     long_user = "I really want to build a microservices architecture with Docker Compose for local development. " * 5
