@@ -14,6 +14,14 @@ const TAIL = 'ECTING'
 // nousnet-web download-button decode effect).
 const SCRAMBLE_CHARS = '/\\|-_=+<>~:*'
 const TICK_MS = 45
+const MESSAGE_STEP_MS = 1100
+const STARTUP_MIN_MS = MESSAGE_STEP_MS * 4
+const EASTER_MESSAGES_DE = [
+  'Martin beendet gerade das EVN-Meeting.',
+  'Tobias behebt gerade EasyPart-Shops.',
+  'Michael kümmert sich gerade um organisatorische Themen.',
+  'Johannes macht gerade das Dev-Deployment.'
+] as const
 
 // Exit choreography (ms): text fades down + out, hold, then the overlay fades.
 const TEXT_OUT_MS = 360
@@ -51,8 +59,10 @@ export function GatewayConnectingOverlay() {
   const [previewing] = useState(forcedPreview)
   const [tail, setTail] = useState(TAIL)
   const [phase, setPhase] = useState<Phase>('live')
+  const shownAtRef = useRef<number | null>(null)
 
   const connecting = gatewayState !== 'open' && !boot.error
+  const startupConnect = !previewing && (boot.running || boot.phase !== 'renderer.ready')
   // Latches once we've actually shown the overlay, so the brief frame where
   // gatewayState flips to "open" (connecting -> false) before the exit phase
   // kicks in doesn't unmount us and cause a flash.
@@ -60,6 +70,9 @@ export function GatewayConnectingOverlay() {
 
   if (previewing || connecting) {
     shownRef.current = true
+    if (!shownAtRef.current) {
+      shownAtRef.current = Date.now()
+    }
   }
 
   // Decode loop — only while live (freeze the resolved word during the exit).
@@ -108,10 +121,17 @@ export function GatewayConnectingOverlay() {
     }
 
     if (gatewayState === 'open' && shownRef.current) {
-      setTail(TAIL)
-      setPhase('text-out')
+      const shownAt = shownAtRef.current || Date.now()
+      const elapsed = Date.now() - shownAt
+      const waitMs = startupConnect ? Math.max(0, STARTUP_MIN_MS - elapsed) : 0
+      const id = window.setTimeout(() => {
+        setTail(TAIL)
+        setPhase('text-out')
+      }, waitMs)
+
+      return () => window.clearTimeout(id)
     }
-  }, [phase, previewing, gatewayState])
+  }, [phase, previewing, gatewayState, startupConnect])
 
   // Advance the exit choreography: text-out -> overlay-out -> gone.
   useEffect(() => {
@@ -155,6 +175,10 @@ export function GatewayConnectingOverlay() {
 
   const leaving = phase !== 'live'
   const overlayHidden = phase === 'overlay-out' || phase === 'gone'
+  const shownElapsed = Math.max(0, Date.now() - (shownAtRef.current || Date.now()))
+  const messageIndex = Math.min(EASTER_MESSAGES_DE.length - 1, Math.floor(shownElapsed / MESSAGE_STEP_MS))
+  const progressPct = Math.min(100, Math.round((shownElapsed / STARTUP_MIN_MS) * 100))
+  const currentMessage = EASTER_MESSAGES_DE[messageIndex]
 
   return (
     <div
@@ -164,20 +188,28 @@ export function GatewayConnectingOverlay() {
       )}
     >
       <style>{'@keyframes gco-cursor { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }'}</style>
-      <span
-        className={cn(
-          'inline-flex items-center pl-[0.4em] font-mono text-[0.64rem] font-semibold uppercase tracking-[0.4em] tabular-nums text-(--theme-primary) transition duration-300 ease-out',
-          leaving ? 'translate-y-2 opacity-0 saturate-0' : 'translate-y-0 opacity-100 saturate-100'
-        )}
-      >
-        {PREFIX}
-        {tail}
-        <span
-          aria-hidden="true"
-          className="dither ml-0.5 inline-block size-2 shrink-0 -translate-y-px rounded-[1px]"
-          style={{ animation: 'gco-cursor 1s step-end infinite' }}
-        />
-      </span>
+      <div className="w-full max-w-xl px-6">
+        <div
+          className={cn(
+            'inline-flex items-center pl-[0.4em] font-mono text-[0.95rem] font-semibold uppercase tracking-[0.44em] tabular-nums text-(--theme-primary) transition duration-300 ease-out',
+            leaving ? 'translate-y-2 opacity-0 saturate-0' : 'translate-y-0 opacity-100 saturate-100'
+          )}
+        >
+          <span>
+            {PREFIX}
+            {tail}
+          </span>
+          <span
+            aria-hidden="true"
+            className="dither ml-0.5 inline-block size-2 shrink-0 -translate-y-px rounded-[1px]"
+            style={{ animation: 'gco-cursor 1s step-end infinite' }}
+          />
+        </div>
+        <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-(--ui-stroke-secondary)">
+          <div className="h-full bg-(--theme-primary) transition-all duration-300 ease-out" style={{ width: `${progressPct}%` }} />
+        </div>
+        <p className="mt-2 text-xs text-(--ui-text-secondary)">{currentMessage}</p>
+      </div>
     </div>
   )
 }
