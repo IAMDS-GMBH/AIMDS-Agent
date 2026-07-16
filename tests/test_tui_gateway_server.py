@@ -380,7 +380,7 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     assert "result_text" not in events[1][2]
 
 
-def test_tool_summary_prefers_memory_context_result_text():
+def test_tool_summary_for_memory_context_is_compact_and_non_leaky():
     result = json.dumps(
         {
             "result": "Init hint from memory server.",
@@ -393,7 +393,7 @@ def test_tool_summary_prefers_memory_context_result_text():
         result,
         None,
     )
-    assert summary == "Init hint from memory server."
+    assert summary == "Memory context loaded; onboarding started"
 
 
 def test_dispatch_rejects_non_object_request():

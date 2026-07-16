@@ -226,6 +226,32 @@ def test_read_recent_onboarding_metadata_from_memory_context():
     assert payload["onboarding_first_question"] == "What is your role/title?"
 
 
+def test_read_recent_onboarding_metadata_preserves_outer_onboarding_fields_with_nested_result():
+    messages = [
+        {
+            "role": "tool",
+            "name": "mcp_IAMDS_mcp_memory_memory_context",
+            "content": json.dumps(
+                {
+                    "result": json.dumps({"context_hint": "x"}, ensure_ascii=False),
+                    "onboarding_question_flow_required": True,
+                    "onboarding_first_question": "What is your role/title?",
+                    "onboarding_questions": ["What is your role/title?", "What is your primary tech stack?"],
+                },
+                ensure_ascii=False,
+            ),
+        }
+    ]
+    payload = _read_recent_onboarding_metadata_from_memory_context(
+        messages=messages,
+        valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+    )
+
+    assert payload is not None
+    assert payload["onboarding_first_question"] == "What is your role/title?"
+    assert payload["onboarding_questions"][1] == "What is your primary tech stack?"
+
+
 def test_enforce_single_onboarding_clarify_question_rewrites_multi_prompt():
     clarify_call = SimpleNamespace(
         function=SimpleNamespace(

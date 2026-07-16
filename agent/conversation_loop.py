@@ -316,15 +316,7 @@ def _build_onboarding_context_line_from_recent_memory_context(
         except Exception as e:
             logger.debug(f"[ONBOARDING] Failed to parse payload in _build_onboarding_context_line: {e}")
             continue
-        
-        # Handle nested JSON in "result" field
-        if isinstance(payload, dict) and "result" in payload:
-            result_val = payload.get("result")
-            if isinstance(result_val, str):
-                try:
-                    payload = json.loads(result_val)
-                except Exception:
-                    pass
+        payload = _merge_nested_memory_context_result(payload)
         
         if not isinstance(payload, dict):
             continue
@@ -393,16 +385,7 @@ def _read_recent_memory_context_payload(
             payload = json.loads(stripped_content)
         except Exception:
             continue
-        
-        # Handle nested JSON in "result" field (memory_context tool returns {"result": "...json string..."})
-        if isinstance(payload, dict) and "result" in payload:
-            result_val = payload.get("result")
-            if isinstance(result_val, str):
-                try:
-                    payload = json.loads(result_val)
-                except Exception:
-                    # Use the outer dict if nested parse fails
-                    pass
+        payload = _merge_nested_memory_context_result(payload)
         
         if isinstance(payload, dict):
             return payload
@@ -474,6 +457,21 @@ def _parse_json_object_from_text(value: str) -> Optional[Dict[str, Any]]:
             except (TypeError, ValueError, json.JSONDecodeError):
                 return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _merge_nested_memory_context_result(payload: Any) -> Any:
+    """Keep outer memory_context metadata while parsing nested result JSON."""
+    if not isinstance(payload, dict):
+        return payload
+    result_val = payload.get("result")
+    if not isinstance(result_val, str):
+        return payload
+    nested = _parse_json_object_from_text(result_val)
+    if not isinstance(nested, dict):
+        return payload
+    merged = dict(payload)
+    merged["result"] = nested
+    return merged
 
 
 def _sanitize_onboarding_context_line_text(value: str) -> str:
@@ -639,11 +637,7 @@ def _read_recent_onboarding_metadata_from_memory_context(
         except Exception:
             continue
 
-        if isinstance(payload, dict) and "result" in payload and isinstance(payload.get("result"), str):
-            try:
-                payload = json.loads(payload.get("result") or "{}")
-            except Exception:
-                pass
+        payload = _merge_nested_memory_context_result(payload)
 
         if not isinstance(payload, dict):
             continue

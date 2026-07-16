@@ -2676,15 +2676,14 @@ def _tool_summary(name: str, result: str, duration_s: float | None) -> str | Non
         if n is not None:
             text = f"Extracted {n} {'page' if n == 1 else 'pages'}"
     elif name.endswith("memory_context") and isinstance(data, dict):
-        # For first-turn enforced memory_context calls, avoid showing the input
-        # query as the only visible tool detail; surface the actual memory server
-        # response instead.
-        raw_result = data.get("result")
-        if isinstance(raw_result, str) and raw_result.strip():
-            compact = " ".join(raw_result.split())
-            text = compact if len(compact) <= 260 else f"{compact[:257]}..."
-        elif data.get("onboarding_init_auto_started"):
-            text = "Memory context loaded; onboarding started"
+        # Keep memory_context summaries compact: raw payloads can contain nested
+        # JSON (including onboarding prompt artifacts) that should not surface in
+        # the user-visible transcript/tool row.
+        text = (
+            "Memory context loaded; onboarding started"
+            if data.get("onboarding_init_auto_started")
+            else "Memory context loaded"
+        )
 
     if isinstance(data, dict) and data.get("fallback_warning"):
         warning = str(data.get("fallback_warning") or "").strip()
