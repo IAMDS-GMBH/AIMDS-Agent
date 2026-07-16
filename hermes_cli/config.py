@@ -755,6 +755,70 @@ def _ensure_default_soul_md(home: Path) -> None:
     _secure_file(soul_path)
 
 
+def _merge_directory_contents(src: Path, dst: Path) -> None:
+    """Copy all direct children from ``src`` into ``dst``."""
+    for child in src.iterdir():
+        target = dst / child.name
+        if child.is_dir():
+            shutil.copytree(child, target, dirs_exist_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(child, target)
+
+
+def _ensure_documents_memory_link(home: Path) -> None:
+    """Ensure Documents/HermesMemory points to ``<HERMES_HOME>/memories``."""
+    docs_dir = Path.home() / "Documents"
+    memory_link = docs_dir / "HermesMemory"
+    memory_target = home / "memories"
+
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    memory_target.mkdir(parents=True, exist_ok=True)
+
+    if memory_link.is_symlink():
+        current_target = Path(os.readlink(memory_link))
+        if not current_target.is_absolute():
+            current_target = (memory_link.parent / current_target).resolve()
+        if current_target == memory_target.resolve():
+            return
+        memory_link.unlink()
+    elif memory_link.exists():
+        if memory_link.is_dir():
+            _merge_directory_contents(memory_link, memory_target)
+        backup_path = memory_link.with_name(
+            f"{memory_link.name}.backup.{int(time.time())}"
+        )
+        memory_link.rename(backup_path)
+
+    try:
+        memory_link.symlink_to(memory_target, target_is_directory=True)
+    except OSError as exc:
+        if _IS_WINDOWS:
+            try:
+                subprocess.run(
+                    [
+                        "cmd",
+                        "/c",
+                        f'mklink /J "{memory_link}" "{memory_target}"',
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return
+            except (OSError, subprocess.CalledProcessError) as junc_err:
+                logger.warning(
+                    "Failed to create HermesMemory junction at %s: %s",
+                    memory_link,
+                    junc_err,
+                )
+        logger.warning(
+            "Failed to create HermesMemory symlink at %s: %s",
+            memory_link,
+            exc,
+        )
+
+
 def ensure_hermes_home():
     """Ensure ~/.hermes directory structure exists with secure permissions.
 
@@ -780,6 +844,7 @@ def ensure_hermes_home():
             d.mkdir(parents=True, exist_ok=True)
             _secure_dir(d)
         _ensure_default_soul_md(home)
+        _ensure_documents_memory_link(home)
 
 
 def _ensure_hermes_home_managed(home: Path):

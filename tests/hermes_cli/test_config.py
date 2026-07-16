@@ -1,6 +1,7 @@
 """Tests for hermes_cli configuration management."""
 
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -60,6 +61,68 @@ class TestEnsureHermesHome:
             soul_path.write_text("custom soul", encoding="utf-8")
             ensure_hermes_home()
             assert soul_path.read_text(encoding="utf-8") == "custom soul"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink perms vary on CI")
+    def test_repairs_documents_memory_dir_to_symlink(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "home"
+        docs_memory = fake_home / "Documents" / "HermesMemory"
+        docs_memory.mkdir(parents=True, exist_ok=True)
+        (docs_memory / "legacy.md").write_text("legacy", encoding="utf-8")
+
+        monkeypatch.setenv("HOME", str(fake_home))
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / "hermes")}):
+            ensure_hermes_home()
+
+        target = tmp_path / "hermes" / "memories"
+        assert docs_memory.is_symlink()
+        assert docs_memory.resolve() == target.resolve()
+        assert (target / "legacy.md").read_text(encoding="utf-8") == "legacy"
+        backups = list((fake_home / "Documents").glob("HermesMemory.backup.*"))
+        assert backups
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink perms vary on CI")
+    def test_repairs_wrong_documents_memory_symlink(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "home"
+        docs_dir = fake_home / "Documents"
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        wrong_target = tmp_path / "wrong"
+        wrong_target.mkdir(parents=True, exist_ok=True)
+        docs_memory = docs_dir / "HermesMemory"
+        docs_memory.symlink_to(wrong_target, target_is_directory=True)
+
+        monkeypatch.setenv("HOME", str(fake_home))
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / "hermes")}):
+            ensure_hermes_home()
+
+        expected = tmp_path / "hermes" / "memories"
+        assert docs_memory.is_symlink()
+        assert docs_memory.resolve() == expected.resolve()
+
+    def test_windows_junction_fallback_when_symlink_fails(self, tmp_path, monkeypatch):
+        from hermes_cli import config as cfg_mod
+
+        fake_home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        monkeypatch.setattr(cfg_mod, "_IS_WINDOWS", True)
+
+        calls: list[list[str]] = []
+
+        def _fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            class _Completed:
+                returncode = 0
+            return _Completed()
+
+        def _fail_symlink(self, *args, **kwargs):
+            raise OSError("symlink denied")
+
+        monkeypatch.setattr(cfg_mod.subprocess, "run", _fake_run)
+        monkeypatch.setattr(Path, "symlink_to", _fail_symlink)
+
+        ensure_hermes_home()
+
+        assert any(cmd[:3] == ["cmd", "/c", 'mklink /J "' + str(fake_home / "Documents" / "HermesMemory") + '" "' + str(tmp_path / "hermes" / "memories") + '"'] for cmd in calls)
 
 
 class TestLoadConfigDefaults:
