@@ -1836,7 +1836,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
     else:
         def _execute(next_args: dict) -> Any:
-            return _ra().handle_function_call(
+            result = _ra().handle_function_call(
                 function_name, next_args, effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=agent.session_id or "",
@@ -1849,6 +1849,26 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 tool_request_middleware_trace=list(_tool_middleware_trace),
             )
+            try:
+                from agent.memory_dual_write import (
+                    annotate_tool_result_with_local_mirror,
+                    mirror_mcp_memory_save_to_local,
+                )
+
+                local_mirror_written = mirror_mcp_memory_save_to_local(
+                    agent,
+                    function_name,
+                    next_args,
+                    result,
+                    effective_task_id=effective_task_id,
+                    tool_call_id=tool_call_id,
+                )
+                if local_mirror_written and isinstance(next_args, dict):
+                    next_args["__local_mirror"] = True
+                    result = annotate_tool_result_with_local_mirror(result)
+            except Exception:
+                pass
+            return result
 
     from hermes_cli.middleware import run_tool_execution_middleware
 

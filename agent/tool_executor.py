@@ -1249,6 +1249,25 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                     tool_request_middleware_trace=list(middleware_trace),
                 )
+                try:
+                    from agent.memory_dual_write import (
+                        annotate_tool_result_with_local_mirror,
+                        mirror_mcp_memory_save_to_local,
+                    )
+
+                    local_mirror_written = mirror_mcp_memory_save_to_local(
+                        agent,
+                        function_name,
+                        function_args,
+                        function_result,
+                        effective_task_id=effective_task_id,
+                        tool_call_id=getattr(tool_call, "id", None),
+                    )
+                    if local_mirror_written and isinstance(function_args, dict):
+                        function_args["__local_mirror"] = True
+                        function_result = annotate_tool_result_with_local_mirror(function_result)
+                except Exception:
+                    pass
                 _spinner_result = function_result
             except KeyboardInterrupt:
                 function_result = _emit_cancelled_terminal_post_tool_call(
@@ -1291,6 +1310,25 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                     tool_request_middleware_trace=list(middleware_trace),
                 )
+                try:
+                    from agent.memory_dual_write import (
+                        annotate_tool_result_with_local_mirror,
+                        mirror_mcp_memory_save_to_local,
+                    )
+
+                    local_mirror_written = mirror_mcp_memory_save_to_local(
+                        agent,
+                        function_name,
+                        function_args,
+                        function_result,
+                        effective_task_id=effective_task_id,
+                        tool_call_id=getattr(tool_call, "id", None),
+                    )
+                    if local_mirror_written and isinstance(function_args, dict):
+                        function_args["__local_mirror"] = True
+                        function_result = annotate_tool_result_with_local_mirror(function_result)
+                except Exception:
+                    pass
             except KeyboardInterrupt:
                 _emit_cancelled_terminal_post_tool_call(
                     agent,

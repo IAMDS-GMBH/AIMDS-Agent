@@ -2482,6 +2482,59 @@ class TestConcurrentToolExecution:
             )
             assert result == "result"
 
+    def test_invoke_tool_mcp_memory_save_generic_path_marks_local_mirror(self, agent):
+        args = {"title": "Language preference", "type": "profile", "content": "Use Spanish"}
+        with (
+            patch("run_agent.handle_function_call", return_value='{"saved": true}') as mock_hfc,
+            patch("agent.memory_dual_write.mirror_mcp_memory_save_to_local", return_value=True) as mock_mirror,
+            patch(
+                "agent.memory_dual_write.annotate_tool_result_with_local_mirror",
+                return_value='{"saved": true, "local_mirror": true}',
+            ) as mock_annotate,
+        ):
+            result = agent._invoke_tool(
+                "mcp_IAMDS_mcp_memory_memory_save",
+                args,
+                "task-1",
+                tool_call_id="ms-1",
+            )
+
+        mock_hfc.assert_called_once()
+        mock_mirror.assert_called_once()
+        mock_annotate.assert_called_once_with('{"saved": true}')
+        assert args["__local_mirror"] is True
+        assert json.loads(result)["local_mirror"] is True
+
+    def test_sequential_mcp_memory_save_generic_path_marks_local_mirror(self, agent):
+        tool_call = _mock_tool_call(
+            name="mcp_IAMDS_mcp_memory_memory_save",
+            arguments='{"title":"Language preference","type":"profile","content":"Use Spanish"}',
+            call_id="ms-2",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        completes = []
+        agent.tool_complete_callback = (
+            lambda tool_call_id, function_name, function_args, function_result: completes.append(
+                (tool_call_id, function_name, function_args, function_result)
+            )
+        )
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"saved": true}'),
+            patch("agent.memory_dual_write.mirror_mcp_memory_save_to_local", return_value=True),
+            patch(
+                "agent.memory_dual_write.annotate_tool_result_with_local_mirror",
+                return_value='{"saved": true, "local_mirror": true}',
+            ),
+        ):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert len(completes) == 1
+        _tc_id, _name, callback_args, callback_result = completes[0]
+        assert callback_args["__local_mirror"] is True
+        assert json.loads(callback_result)["local_mirror"] is True
+
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
