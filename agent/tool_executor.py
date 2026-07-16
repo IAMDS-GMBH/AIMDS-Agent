@@ -1200,7 +1200,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 try:
                     from agent.memory_dual_write import mirror_mcp_memory_save_to_local
 
-                    mirror_mcp_memory_save_to_local(
+                    local_mirror_written = mirror_mcp_memory_save_to_local(
                         agent,
                         function_name,
                         function_args,
@@ -1208,6 +1208,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                         effective_task_id=effective_task_id,
                         tool_call_id=getattr(tool_call, "id", None),
                     )
+                    if local_mirror_written and isinstance(function_args, dict):
+                        function_args["__local_mirror"] = True
                 except Exception:
                     pass
             except Exception as tool_error:

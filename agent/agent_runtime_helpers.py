@@ -1792,7 +1792,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             try:
                 from agent.memory_dual_write import mirror_mcp_memory_save_to_local
 
-                mirror_mcp_memory_save_to_local(
+                local_mirror_written = mirror_mcp_memory_save_to_local(
                     agent,
                     function_name,
                     next_args,
@@ -1800,6 +1800,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     effective_task_id=effective_task_id,
                     tool_call_id=tool_call_id,
                 )
+                if local_mirror_written and isinstance(next_args, dict):
+                    next_args["__local_mirror"] = True
             except Exception:
                 pass
             return _finish_agent_tool(result, next_args)

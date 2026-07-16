@@ -1275,6 +1275,12 @@ function dynamicTitle(
   fallback: string
 ): string {
   const verb = (gerund: string, past: string) => (part.result === undefined ? gerund : past)
+  const localMirror = args.__local_mirror === true || result.local_mirror === true
+  const isMcpMemorySave = part.toolName === 'memory_save' || part.toolName.endsWith('_memory_save')
+
+  if (localMirror && isMcpMemorySave) {
+    return `${part.toolName} + Local`
+  }
 
   if (part.toolName === 'web_extract') {
     const url = findFirstUrl(args, result)

@@ -64,3 +64,17 @@ describe('buildToolView terminal exit-code status', () => {
     )
   })
 })
+
+describe('buildToolView MCP memory-save title', () => {
+  it('appends + Local when local mirror metadata is present', () => {
+    const view = buildToolView(
+      part({
+        toolName: 'mcp_IAMDS_mcp_memory_memory_save',
+        args: { __local_mirror: true },
+        result: { success: true }
+      }),
+      ''
+    )
+    expect(view.title).toBe('mcp_IAMDS_mcp_memory_memory_save + Local')
+  })
+})
