@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from agent.memory_dual_write import (
     annotate_tool_result_with_local_mirror,
     build_structured_mirror_record,
     build_local_mirror_payload,
+    format_structured_mirror_for_system_prompt,
     read_structured_mirror_records,
+    upsert_structured_mirror_record,
     is_mcp_memory_save_tool,
     tool_result_indicates_success,
     mirror_mcp_memory_save_to_local,
@@ -150,9 +153,79 @@ def test_build_structured_record_scope_mapping():
     assert user_row is not None
     assert user_row["scope"] == "user"
     assert user_row["target"] == "user"
+    assert user_row["slug"] == "person-contact"
     assert project_row is not None
     assert project_row["scope"] == "project"
     assert project_row["target"] == "memory"
+    assert project_row["slug"] == "project-repo"
+
+
+def test_upsert_structured_mirror_record_deduplicates(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    record_v1 = build_structured_mirror_record(
+        tool_args={"type": "profile", "title": "Language", "content": "English"},
+        write_meta={},
+        tool_name="memory_save",
+        effective_task_id="",
+    )
+    record_v2 = build_structured_mirror_record(
+        tool_args={"type": "profile", "title": "Language", "content": "Spanish"},
+        write_meta={},
+        tool_name="memory_save",
+        effective_task_id="",
+    )
+    assert record_v1 is not None and record_v2 is not None
+    assert record_v1["slug"] == record_v2["slug"]
+
+    upsert_structured_mirror_record(record_v1)
+    upsert_structured_mirror_record(record_v2)
+
+    rows = read_structured_mirror_records(limit=10)
+    assert len(rows) == 1
+    assert rows[0]["content"] == "Spanish"
+    assert rows[0]["id"] == record_v1["id"]  # id preserved
+
+
+def test_format_structured_mirror_for_system_prompt_empty(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    result = format_structured_mirror_for_system_prompt()
+    assert result is None
+
+
+def test_format_structured_mirror_for_system_prompt_user_scope(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    record = build_structured_mirror_record(
+        tool_args={"type": "profile", "title": "Language pref", "content": "User prefers Spanish."},
+        write_meta={},
+        tool_name="memory_save",
+        effective_task_id="",
+    )
+    upsert_structured_mirror_record(record)
+
+    result = format_structured_mirror_for_system_prompt()
+    assert result is not None
+    assert "User preferences" in result
+    assert "Language pref" in result
+    assert "User prefers Spanish." in result
+
+
+def test_format_structured_mirror_for_system_prompt_project_scope(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    record = build_structured_mirror_record(
+        tool_args={"type": "notes", "title": "API key format", "content": "Use Bearer prefix."},
+        write_meta={},
+        tool_name="memory_save",
+        effective_task_id="",
+    )
+    upsert_structured_mirror_record(record)
+
+    result = format_structured_mirror_for_system_prompt()
+    assert result is not None
+    assert "project context" in result.lower() or "Saved project" in result
+    assert "API key format" in result
 
 
 def test_annotate_tool_result_with_local_mirror_for_json_dict():

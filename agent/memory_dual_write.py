@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -106,6 +107,19 @@ def _derive_scope_for_type(mem_type: str, fallback_scope: str) -> str:
     return "project"
 
 
+def _slugify(text: str) -> str:
+    """Normalize text to a compact slug for deduplication keying."""
+    text = text.lower().strip()
+    text = re.sub(r"[^\w\s-]", "", text)
+    text = re.sub(r"[\s_-]+", "-", text)
+    return text.strip("-")[:120]
+
+
+def _record_slug(mem_type: str, title: str) -> str:
+    """Stable dedup key combining type and title slugs."""
+    return _slugify(f"{mem_type or 'notes'}-{title or 'untitled'}")
+
+
 def build_structured_mirror_record(
     *,
     tool_args: Dict[str, Any],
@@ -129,8 +143,10 @@ def build_structured_mirror_record(
     target = "user" if mem_type in {"profile", "person"} else "memory"
     scope = _derive_scope_for_type(mem_type, str(meta.get("scope") or ""))
     now = int(time.time())
+    slug = _record_slug(mem_type or "notes", title)
     return {
         "id": str(uuid4()),
+        "slug": slug,
         "created_at": now,
         "updated_at": now,
         "kind": "mcp_memory_save_mirror",
@@ -151,12 +167,48 @@ def build_structured_mirror_record(
     }
 
 
-def append_structured_mirror_record(record: Dict[str, Any]) -> None:
+def upsert_structured_mirror_record(record: Dict[str, Any]) -> None:
+    """Write a structured mirror record, updating an existing slug match in-place."""
     if not isinstance(record, dict) or not record:
         return
+    slug = str(record.get("slug") or "")
     path = _memory_mirror_store_path()
+
+    if slug and path.exists():
+        lines = path.read_text(encoding="utf-8").splitlines()
+        updated_lines: List[str] = []
+        found = False
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                existing = json.loads(line)
+            except Exception:
+                updated_lines.append(line)
+                continue
+            if isinstance(existing, dict) and existing.get("slug") == slug:
+                # Preserve original id and created_at on update
+                merged = dict(existing)
+                merged.update(record)
+                merged["id"] = existing.get("id") or record.get("id") or str(uuid4())
+                merged["created_at"] = existing.get("created_at") or record.get("created_at")
+                merged["updated_at"] = int(time.time())
+                updated_lines.append(json.dumps(merged, ensure_ascii=False))
+                found = True
+            else:
+                updated_lines.append(line)
+        if found:
+            path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+            return
+
+    # No existing slug match — append new record
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+# Backward-compat alias (old callers used append_*)
+append_structured_mirror_record = upsert_structured_mirror_record
 
 
 def annotate_tool_result_with_local_mirror(tool_result: Any) -> Any:
@@ -223,6 +275,82 @@ def read_structured_mirror_records(
     return rows[: max(1, int(limit or 20))]
 
 
+def format_structured_mirror_for_system_prompt() -> Optional[str]:
+    """Format JSONL mirror records into a compact prompt block for the volatile tier.
+
+    Returns None when the store is empty or unreadable (safe no-op).
+    Groups by scope: user-scoped records go into a preferences block,
+    project-scoped records go into a project context block.
+    Deduplicates by slug (last-write-wins order from JSONL).
+    """
+    path = _memory_mirror_store_path()
+    if not path.exists():
+        return None
+
+    seen_slugs: set = set()
+    user_records: List[Dict[str, Any]] = []
+    project_records: List[Dict[str, Any]] = []
+
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(row, dict):
+            continue
+        slug = str(row.get("slug") or row.get("id") or "")
+        if slug and slug in seen_slugs:
+            continue
+        if slug:
+            seen_slugs.add(slug)
+        scope = str(row.get("scope") or "project").lower()
+        if scope == "user":
+            user_records.append(row)
+        else:
+            project_records.append(row)
+
+    if not user_records and not project_records:
+        return None
+
+    def _format_record(r: Dict[str, Any]) -> str:
+        title = str(r.get("title") or "").strip()
+        content = str(r.get("content") or "").strip()
+        mem_type = str(r.get("type") or "").strip()
+        tags = _clean_tags(r.get("tags"))
+        parts = []
+        label = f"[{mem_type}] " if mem_type else ""
+        if title and content:
+            parts.append(f"- {label}{title}: {content}")
+        elif title:
+            parts.append(f"- {label}{title}")
+        elif content:
+            parts.append(f"- {label}{content}")
+        else:
+            return ""
+        if tags:
+            parts.append(f"  tags: {', '.join(tags)}")
+        return "\n".join(parts)
+
+    blocks: List[str] = []
+    if user_records:
+        lines = [_format_record(r) for r in user_records]
+        lines = [l for l in lines if l]
+        if lines:
+            blocks.append("## User preferences & profile\n" + "\n".join(lines))
+    if project_records:
+        lines = [_format_record(r) for r in project_records]
+        lines = [l for l in lines if l]
+        if lines:
+            blocks.append("## Saved project context\n" + "\n".join(lines))
+
+    if not blocks:
+        return None
+    return "\n\n".join(blocks)
+
+
 def mirror_mcp_memory_save_to_local(
     agent: Any,
     tool_name: str,
@@ -269,7 +397,7 @@ def mirror_mcp_memory_save_to_local(
             tool_call_id=tool_call_id,
         )
         if structured:
-            append_structured_mirror_record(structured)
+            upsert_structured_mirror_record(structured)
             structured_written = True
     except Exception:
         pass

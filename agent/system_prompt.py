@@ -386,6 +386,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
+    # Structured mirror records (MCP_MIRROR_MEMORY.jsonl) — volatile tier injection
+    if getattr(agent, "_inject_structured_mirror", False):
+        try:
+            from agent.memory_dual_write import format_structured_mirror_for_system_prompt
+            _mirror_block = format_structured_mirror_for_system_prompt()
+            if _mirror_block:
+                volatile_parts.append(_mirror_block)
+        except Exception:
+            pass
+
     from hermes_time import now as _hermes_now
     now = _hermes_now()
     # Date-only (not minute-precision) so the system prompt is byte-stable

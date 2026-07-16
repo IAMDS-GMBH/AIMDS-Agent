@@ -1744,6 +1744,9 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Inject structured JSONL mirror records (MCP_MIRROR_MEMORY.jsonl) into
+        # the volatile system-prompt tier alongside MEMORY.md/USER.md blocks.
+        "inject_structured_mirror": True,
         # Claude-like managed memory layer (additive, backward-compatible).
         # disabled by default in phase-1 rollout.
         "managed_memory": {
