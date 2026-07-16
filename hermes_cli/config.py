@@ -5074,7 +5074,10 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     # ── Version 30 → 31: enable managed_memory.capture_mode auto by default ──
     # Previously defaulted to "off"; upgrade existing "off" configs to "auto"
     # so auto-capture is active without requiring manual edits.
-    if current_ver < 31:
+    # Runs for current_ver <= 31: the version bump may have landed in a prior
+    # reinstall before this migration block existed, leaving capture_mode still
+    # "off" at v31. The content check is idempotent and safe to re-run.
+    if current_ver <= 31:
         try:
             config = load_config()
             mem_section = config.get("memory", {})
@@ -5085,11 +5088,13 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 config["memory"] = mem_section
                 config["_config_version"] = 31
                 save_config(config)
-                print("  ✓ memory.managed_memory.capture_mode: off → auto")
+                if not quiet:
+                    print("  ✓ memory.managed_memory.capture_mode: off → auto")
             else:
-                # Already non-off (e.g. "suggest") — leave it alone, just bump version
-                config["_config_version"] = 31
-                save_config(config)
+                # Already non-off (e.g. "suggest" or "auto") — just ensure version is 31
+                if config.get("_config_version", 0) < 31:
+                    config["_config_version"] = 31
+                    save_config(config)
         except Exception as _cap_exc:
             results["warnings"].append(f"capture_mode migration (v31) failed: {_cap_exc}")
 
