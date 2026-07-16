@@ -700,6 +700,120 @@ def _extract_clarify_question_from_tool_message(message: Dict[str, Any]) -> Opti
     return question or None
 
 
+def _extract_answered_clarify_question_from_tool_message(message: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(message, dict):
+        return None
+    if message.get("role") != "tool" or str(message.get("name") or "") != "clarify":
+        return None
+    parsed = _parse_json_object_from_text(str(message.get("content") or ""))
+    if not parsed:
+        return None
+    user_response = str(parsed.get("user_response") or "").strip()
+    if not user_response:
+        return None
+    question = str(parsed.get("question") or "").strip()
+    return question or None
+
+
+def _next_unanswered_onboarding_question(
+    *,
+    messages: List[Dict[str, Any]],
+    onboarding_payload: Dict[str, Any],
+) -> Optional[str]:
+    onboarding_questions = [
+        q for q in _extract_onboarding_questions_from_payload(onboarding_payload)
+        if _is_valid_onboarding_question_text(q)
+    ][:8]
+    if not onboarding_questions:
+        return None
+
+    answered_questions: set[str] = set()
+    for msg in messages:
+        extracted = _extract_answered_clarify_question_from_tool_message(msg)
+        if extracted:
+            answered_questions.add(extracted)
+
+    return next((q for q in onboarding_questions if q not in answered_questions), None)
+
+
+def _resume_onboarding_clarify_if_needed(
+    agent: Any,
+    *,
+    messages: List[Dict[str, Any]],
+    conversation_history: List[Dict[str, Any]],
+    effective_task_id: str,
+) -> None:
+    """Resume pending onboarding clarify flow on non-first turns."""
+    if not conversation_history:
+        return
+    if "clarify" not in set(getattr(agent, "valid_tool_names", []) or []):
+        return
+
+    onboarding_payload = _read_recent_onboarding_metadata_from_memory_context(
+        messages=messages,
+        valid_tool_names=set(getattr(agent, "valid_tool_names", []) or set()),
+    )
+    if onboarding_payload is None:
+        return
+
+    next_question = _next_unanswered_onboarding_question(
+        messages=messages,
+        onboarding_payload=onboarding_payload,
+    )
+    if not next_question:
+        return
+
+    logger.info("[ONBOARDING] Resuming pending onboarding clarify with question=%r", next_question)
+    clarify_call_id = f"onboarding-resume-clarify-{uuid.uuid4().hex[:12]}"
+    clarify_msg = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": clarify_call_id,
+                "type": "function",
+                "function": {
+                    "name": "clarify",
+                    "arguments": json.dumps({"question": next_question}, ensure_ascii=False),
+                },
+            }
+        ],
+    }
+    messages.append(clarify_msg)
+    agent._emit_interim_assistant_message(clarify_msg)
+    try:
+        synthetic_clarify = SimpleNamespace(
+            tool_calls=[
+                SimpleNamespace(
+                    id=clarify_call_id,
+                    type="function",
+                    function=SimpleNamespace(
+                        name="clarify",
+                        arguments=json.dumps({"question": next_question}, ensure_ascii=False),
+                    ),
+                )
+            ]
+        )
+        agent._execute_tool_calls(
+            synthetic_clarify,
+            messages,
+            effective_task_id,
+            0,
+        )
+    except Exception as exc:
+        messages.append(
+            {
+                "role": "tool",
+                "name": "clarify",
+                "tool_call_id": clarify_call_id,
+                "content": json.dumps(
+                    {"error": f"Onboarding resume clarify call failed: {exc}"},
+                    ensure_ascii=False,
+                ),
+            }
+        )
+
+
 def _enforce_onboarding_clarify_question_sequence(
     assistant_message: Any,
     *,
@@ -710,20 +824,10 @@ def _enforce_onboarding_clarify_question_sequence(
     if not tool_calls:
         return False
 
-    onboarding_questions = [
-        q for q in _extract_onboarding_questions_from_payload(onboarding_payload)
-        if _is_valid_onboarding_question_text(q)
-    ][:8]
-    if not onboarding_questions:
-        return False
-
-    asked_questions: set[str] = set()
-    for msg in messages:
-        extracted = _extract_clarify_question_from_tool_message(msg)
-        if extracted:
-            asked_questions.add(extracted)
-
-    next_question = next((q for q in onboarding_questions if q not in asked_questions), None)
+    next_question = _next_unanswered_onboarding_question(
+        messages=messages,
+        onboarding_payload=onboarding_payload,
+    )
     if not next_question:
         return False
 
@@ -741,9 +845,7 @@ def _enforce_onboarding_clarify_question_sequence(
         args["question"] = next_question
         fn.arguments = json.dumps(args, ensure_ascii=False)
         logger.info(
-            "[ONBOARDING] Enforced clarify question sequence: asked=%d total=%d next=%r",
-            len(asked_questions),
-            len(onboarding_questions),
+            "[ONBOARDING] Enforced clarify question sequence: next=%r",
             next_question,
         )
         break
@@ -1277,6 +1379,12 @@ def run_conversation(
         messages=messages,
         conversation_history=conversation_history,
         original_user_message=original_user_message,
+        effective_task_id=effective_task_id,
+    )
+    _resume_onboarding_clarify_if_needed(
+        agent,
+        messages=messages,
+        conversation_history=conversation_history,
         effective_task_id=effective_task_id,
     )
 

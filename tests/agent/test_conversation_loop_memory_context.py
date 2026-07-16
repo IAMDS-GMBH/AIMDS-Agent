@@ -7,6 +7,7 @@ from agent.conversation_loop import (
     _build_onboarding_context_line_from_recent_memory_context,
     _apply_onboarding_clarify_context,
     _enforce_initial_memory_context_call,
+    _resume_onboarding_clarify_if_needed,
     _maybe_translate_onboarding_prompts_via_llm,
     _parse_json_object_from_text,
     _sanitize_onboarding_context_line_text,
@@ -659,6 +660,55 @@ def test_apply_onboarding_clarify_context_followup_turn_strips_preamble_and_uses
     assert assistant_message.content == ""
 
 
+def test_apply_onboarding_clarify_context_reasks_unanswered_question_after_empty_response():
+    messages = [
+        {
+            "role": "tool",
+            "name": "mcp_IAMDS_mcp_memory_memory_context",
+            "content": json.dumps(
+                {
+                    "onboarding_question_flow_required": True,
+                    "onboarding_questions": [
+                        "What is your role/title?",
+                        "What is your primary tech stack?",
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        },
+        {
+            "role": "tool",
+            "name": "clarify",
+            "content": json.dumps(
+                {
+                    "question": "What is your role/title?",
+                    "user_response": "",
+                },
+                ensure_ascii=False,
+            ),
+        },
+    ]
+    clarify_call = SimpleNamespace(
+        function=SimpleNamespace(
+            name="clarify",
+            arguments=json.dumps({"question": "Wrong"}, ensure_ascii=False),
+        )
+    )
+    assistant_message = SimpleNamespace(content="thinking...", tool_calls=[clarify_call])
+
+    _apply_onboarding_clarify_context(
+        assistant_message,
+        messages=messages,
+        valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+        is_first_turn=False,
+        has_visible_content_fn=lambda _text: True,
+    )
+
+    args = json.loads(assistant_message.tool_calls[0].function.arguments)
+    assert args["question"] == "What is your role/title?"
+    assert assistant_message.content == ""
+
+
 def test_apply_onboarding_clarify_context_uses_recent_onboarding_payload_even_if_latest_memory_context_is_plain():
     messages = [
         {
@@ -720,6 +770,78 @@ def test_apply_onboarding_clarify_context_uses_recent_onboarding_payload_even_if
     args = json.loads(assistant_message.tool_calls[0].function.arguments)
     assert args["question"] == "What is your primary tech stack?"
     assert assistant_message.content == ""
+
+
+def test_resume_onboarding_clarify_if_needed_reasks_pending_question_on_non_first_turn():
+    calls = []
+
+    def _mock_execute_tool_calls(assistant_message, messages, _effective_task_id, _api_call_count):
+        tc = assistant_message.tool_calls[0]
+        tool_name = tc.function.name
+        tool_args = json.loads(tc.function.arguments)
+        calls.append((tool_name, tool_args))
+        if tool_name == "clarify":
+            messages.append(
+                {
+                    "role": "tool",
+                    "name": "clarify",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(
+                        {
+                            "question": tool_args.get("question"),
+                            "user_response": "",
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            )
+            return
+        raise AssertionError(f"unexpected tool: {tool_name}")
+
+    emitted = []
+    agent = SimpleNamespace(
+        valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context", "clarify"},
+        _emit_interim_assistant_message=lambda msg: emitted.append(msg),
+        _execute_tool_calls=_mock_execute_tool_calls,
+    )
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "tool",
+            "name": "mcp_IAMDS_mcp_memory_memory_context",
+            "content": json.dumps(
+                {
+                    "onboarding_question_flow_required": True,
+                    "onboarding_questions": [
+                        "What is your role/title?",
+                        "What is your primary tech stack?",
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        },
+        {
+            "role": "tool",
+            "name": "clarify",
+            "content": json.dumps(
+                {
+                    "question": "What is your role/title?",
+                    "user_response": "",
+                },
+                ensure_ascii=False,
+            ),
+        },
+    ]
+
+    _resume_onboarding_clarify_if_needed(
+        agent,
+        messages=messages,
+        conversation_history=[{"role": "user", "content": "older turn"}],
+        effective_task_id="t1",
+    )
+
+    assert calls == [("clarify", {"question": "What is your role/title?"})]
+    assert emitted and emitted[0]["tool_calls"][0]["function"]["name"] == "clarify"
 
 
 def test_maybe_translate_onboarding_prompts_via_llm_translates_using_user_message_language():
