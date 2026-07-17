@@ -485,11 +485,40 @@ jobs:
           prev_tag="$(gh release list --repo "$GH_REPO" --limit 100 --json tagName --jq '.[] | .tagName' 2>/dev/null | awk -v cur="$TAG" '$0 != cur { print; exit }')"
           set -e
 
+          build_commit_bullets() {
+            local log_range="$1"
+            local log_args=()
+            if [ -n "$log_range" ]; then
+              log_args+=("$log_range")
+            else
+              log_args+=(-n 40 "$TARGET_SHA")
+            fi
+
+            git log --no-merges --format='%H%x09%h%x09%s' "${log_args[@]}" | while IFS=$'\t' read -r sha short subject; do
+              [ -n "${sha:-}" ] || continue
+
+              login="$(gh api "repos/$GH_REPO/commits/$sha" --jq '.author.login // empty' 2>/dev/null || true)"
+
+              if [ -z "${login:-}" ]; then
+                email="$(git show -s --format='%ae' "$sha" 2>/dev/null || true)"
+                local_part="${email%@*}"
+                # Handle GitHub noreply addresses like 12345+login@users.noreply.github.com
+                login="${local_part##*+}"
+              fi
+
+              # Mentions must be GitHub login-safe; strip unsupported chars.
+              login="$(printf '%s' "${login:-unknown}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]//g')"
+              [ -n "$login" ] || login="unknown"
+
+              printf -- '- `%s` %s (@%s)\n' "$short" "$subject" "$login"
+            done
+          }
+
           if [ -n "${prev_tag:-}" ] && git rev-parse -q --verify "${prev_tag}^{commit}" >/dev/null; then
-            git log --no-merges --pretty='- `%h` %s (@%an)' "${prev_tag}..${TARGET_SHA}" > "$commits_file"
+            build_commit_bullets "${prev_tag}..${TARGET_SHA}" > "$commits_file"
             range_label="${prev_tag}...${TAG}"
           else
-            git log --no-merges -n 40 --pretty='- `%h` %s (@%an)' "${TARGET_SHA}" > "$commits_file"
+            build_commit_bullets "" > "$commits_file"
             range_label="up to ${TAG}"
           fi
 
