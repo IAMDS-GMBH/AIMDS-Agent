@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use tokio::sync::oneshot;
 use std::sync::Mutex;
+use url::Url;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -37,6 +38,50 @@ static KEYCLOAK_CALLBACK: std::sync::OnceLock<Mutex<Option<oneshot::Sender<Strin
 
 pub fn keycloak_callback_state() -> &'static Mutex<Option<oneshot::Sender<String>>> {
     KEYCLOAK_CALLBACK.get_or_init(|| Mutex::new(None))
+}
+
+/// Deliver a Keycloak callback URL (e.g. `hermes://callback?code=...`) to the
+/// in-flight login waiter, if one exists.
+///
+/// Returns true when the URL belongs to the Keycloak callback and was handled
+/// (sender found or not), false when the URL is unrelated.
+pub fn try_deliver_keycloak_callback_url(raw_uri: &str) -> bool {
+    let Ok(url) = raw_uri.parse::<Url>() else {
+        return false;
+    };
+    if url.scheme() != "hermes" || url.host_str() != Some("callback") {
+        return false;
+    }
+    let payload = parse_callback_payload(&url);
+    if let Ok(mut guard) = keycloak_callback_state().lock() {
+        if let Some(tx) = guard.take() {
+            let _ = tx.send(payload);
+        }
+    }
+    true
+}
+
+fn parse_callback_payload(url: &Url) -> String {
+    if let Some(err) = url
+        .query_pairs()
+        .find(|(k, _)| k == "error_description")
+        .map(|(_, v)| v.to_string())
+        .or_else(|| {
+            url.query_pairs()
+                .find(|(k, _)| k == "error")
+                .map(|(_, v)| v.to_string())
+        })
+    {
+        return format!("__KEYCLOAK_ERROR__:{err}");
+    }
+    if let Some(code) = url
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .map(|(_, v)| v.to_string())
+    {
+        return code;
+    }
+    "__KEYCLOAK_ERROR__:No authorization code in Keycloak callback URL.".to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -72,28 +117,54 @@ pub async fn keycloak_login(
     let (tx, rx) = oneshot::channel::<String>();
     *keycloak_callback_state().lock().unwrap() = Some(tx);
 
-    // Create WebView window — no on_navigation needed; the scheme handler
-    // captures the code when Keycloak redirects to hermes://callback?code=...
+    // Capture callback in-webview first (critical on Windows where custom-scheme
+    // redirects can be flaky depending on the WebView2 + IdP handoff path). The
+    // global scheme handler in lib.rs remains as a fallback path.
+    let redirect_uri_for_nav = redirect_uri.clone();
     let webview = tauri::WebviewWindowBuilder::new(
         &app,
         "keycloak-login",
         tauri::WebviewUrl::External(auth_url.parse()
             .map_err(|e| format!("Invalid auth URL: {e}"))?),
     )
+    .on_navigation(move |url| {
+        let current = url.as_str();
+        let target = redirect_uri_for_nav.trim_end_matches('/');
+        if current.starts_with(target) {
+            let _ = try_deliver_keycloak_callback_url(current);
+            return false;
+        }
+        true
+    })
     .inner_size(500.0, 600.0)
     .resizable(true)
     .title("Sign in with Keycloak")
     .build()
-    .map_err(|e| format!("Failed to create Keycloak login window: {e}"))?;
+    .map_err(|e| {
+        if let Ok(mut guard) = keycloak_callback_state().lock() {
+            let _ = guard.take();
+        }
+        format!("Failed to create Keycloak login window: {e}")
+    })?;
 
     // Wait up to 5 minutes for the auth code.
-    let code = tokio::time::timeout(
+    let code_or_error = tokio::time::timeout(
         std::time::Duration::from_secs(300),
         rx,
     )
     .await
-    .map_err(|_| "Keycloak authentication timed out after 5 minutes".to_string())?
+    .map_err(|_| {
+        if let Ok(mut guard) = keycloak_callback_state().lock() {
+            let _ = guard.take();
+        }
+        "Keycloak authentication timed out after 5 minutes".to_string()
+    })?
     .map_err(|_| "Keycloak authentication was cancelled".to_string())?;
+
+    if let Some(err) = code_or_error.strip_prefix("__KEYCLOAK_ERROR__:") {
+        return Err(format!("Keycloak authentication error: {err}"));
+    }
+    let code = code_or_error;
 
     // Close the login window.
     let _ = webview.close();
@@ -352,6 +423,21 @@ mod tests {
         let verifier = generate_code_verifier();
         assert_eq!(verifier.len(), 43);
         assert!(verifier.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'));
+    }
+
+    #[test]
+    fn parse_callback_payload_extracts_code() {
+        let url = Url::parse("hermes://callback?code=abc123").unwrap();
+        assert_eq!(parse_callback_payload(&url), "abc123");
+    }
+
+    #[test]
+    fn parse_callback_payload_surfaces_error() {
+        let url = Url::parse("hermes://callback?error=access_denied").unwrap();
+        assert_eq!(
+            parse_callback_payload(&url),
+            "__KEYCLOAK_ERROR__:access_denied"
+        );
     }
 
     fn base64_encode_std(input: &[u8]) -> String {

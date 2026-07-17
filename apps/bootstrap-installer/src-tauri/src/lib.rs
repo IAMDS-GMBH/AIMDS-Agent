@@ -115,22 +115,9 @@ pub fn run() {
         .manage(Arc::new(AppState::new(mode)))
         .register_uri_scheme_protocol("hermes", |_app, request| {
             // Keycloak redirects here after login: hermes://callback?code=...
-            // Extract the auth code and deliver it to the waiting keycloak_login command.
+            // Forward callback payload to the waiting keycloak_login command.
             let uri = request.uri().to_string();
-            if let Ok(url) = uri.parse::<url::Url>() {
-                if url.host_str() == Some("callback") {
-                    if let Some(code) = url.query_pairs()
-                        .find(|(k, _)| k == "code")
-                        .map(|(_, v)| v.to_string())
-                    {
-                        if let Ok(mut guard) = keycloak::keycloak_callback_state().lock() {
-                            if let Some(tx) = guard.take() {
-                                let _ = tx.send(code);
-                            }
-                        }
-                    }
-                }
-            }
+            let _ = keycloak::try_deliver_keycloak_callback_url(&uri);
             tauri::http::Response::builder()
                 .status(200)
                 .header("Content-Type", "text/html; charset=utf-8")
