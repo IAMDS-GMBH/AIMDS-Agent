@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hermes Client Guide (EN)</title>
+    <style>
+      :root {
+        --bg: #f6f7fb;
+        --card: #ffffff;
+        --text: #101828;
+        --muted: #475467;
+        --line: #d0d5dd;
+        --accent: #155eef;
+        --accent-soft: #e9efff;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.55;
+      }
+      .wrap {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+      .hero, .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+      }
+      .hero { padding: 24px; margin-bottom: 16px; }
+      .hero h1 { margin: 0 0 8px; font-size: 1.8rem; }
+      .hero p { margin: 0; color: var(--muted); }
+      .lang-switch {
+        margin-top: 12px;
+        display: inline-flex;
+        gap: 8px;
+      }
+      .lang-switch a {
+        text-decoration: none;
+        color: var(--accent);
+        background: var(--accent-soft);
+        border: 1px solid #bfd0ff;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: .86rem;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 280px 1fr;
+        gap: 16px;
+      }
+      .toc {
+        position: sticky;
+        top: 16px;
+        align-self: start;
+        padding: 16px;
+      }
+      .toc h2 {
+        margin: 0 0 10px;
+        font-size: 1rem;
+      }
+      .toc ol {
+        margin: 0;
+        padding-left: 18px;
+      }
+      .toc li { margin: 6px 0; }
+      .toc a { color: var(--text); text-decoration: none; }
+      .toc a:hover { color: var(--accent); }
+      .content { display: grid; gap: 12px; }
+      .section { padding: 18px; }
+      .section h2 {
+        margin: 0 0 10px;
+        font-size: 1.2rem;
+      }
+      .section h3 {
+        margin: 14px 0 6px;
+        font-size: 1rem;
+      }
+      .section p { margin: 6px 0; }
+      .section ul { margin: 6px 0 0; }
+      .section code {
+        background: #eef2ff;
+        border: 1px solid #d9e1ff;
+        border-radius: 6px;
+        padding: 1px 6px;
+      }
+      .note {
+        margin-top: 10px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid #bfd0ff;
+        background: var(--accent-soft);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 8px;
+      }
+      th, td {
+        border: 1px solid var(--line);
+        padding: 8px;
+        text-align: left;
+        vertical-align: top;
+      }
+      th { background: #f8f9fc; }
+      .footer {
+        margin-top: 14px;
+        text-align: center;
+        color: var(--muted);
+        font-size: .9rem;
+      }
+      @media (max-width: 920px) {
+        .layout { grid-template-columns: 1fr; }
+        .toc { position: static; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="hero">
+        <h1>Hermes Client Guide</h1>
+        <p>What Hermes does, how to use each feature, and what to expect in daily client workflows.</p>
+        <div class="lang-switch">
+          <a href="./hermes-client-guide-en.html">English</a>
+          <a href="./hermes-client-guide-de.html">Deutsch</a>
+        </div>
+      </header>
+
+      <div class="layout">
+        <nav class="card toc" aria-label="Table of contents">
+          <h2>Contents</h2>
+          <ol>
+            <li><a href="#start">Getting started</a></li>
+            <li><a href="#chat">Core chat workflow</a></li>
+            <li><a href="#sessions">Sessions and history</a></li>
+            <li><a href="#profiles">Profiles</a></li>
+            <li><a href="#models">Models and providers</a></li>
+            <li><a href="#skills">Skills and toolsets</a></li>
+            <li><a href="#messaging">Messaging (Outlook)</a></li>
+            <li><a href="#memory">Memory system (automatic triggers)</a></li>
+            <li><a href="#cron">Scheduled jobs (Cron)</a></li>
+            <li><a href="#artifacts">Artifacts</a></li>
+            <li><a href="#agents">Agents monitor</a></li>
+            <li><a href="#todos">Todos</a></li>
+            <li><a href="#command-center">Command Center</a></li>
+            <li><a href="#settings">Settings and support</a></li>
+          </ol>
+        </nav>
+
+        <main class="content">
+          <section class="card section" id="start">
+            <h2>1. Getting started</h2>
+            <h3>What it does</h3>
+            <p>Hermes connects your desktop app to your configured AI backend and available tools.</p>
+            <h3>How to use it</h3>
+            <ul>
+              <li>Run the installer and open Hermes Desktop.</li>
+              <li>Connect with Keycloak (recommended) or provide Base URL + API key.</li>
+              <li>Fetch/select a model and finish setup.</li>
+            </ul>
+            <h3>Expected result</h3>
+            <p>You can start a conversation immediately and switch features from the left navigation.</p>
+          </section>
+
+          <section class="card section" id="chat">
+            <h2>2. Core chat workflow</h2>
+            <h3>What it does</h3>
+            <p>Main workspace to ask tasks, receive answers, and execute tool-backed actions.</p>
+            <h3>How to use it</h3>
+            <ul>
+              <li>Type your request in the composer and send.</li>
+              <li>Attach files/images when needed.</li>
+              <li>Use slash commands like <code>/model</code>, <code>/skills</code>, <code>/new</code>.</li>
+              <li>Interrupt long runs and steer with a follow-up instruction.</li>
+            </ul>
+          </section>
+
+          <section class="card section" id="sessions">
+            <h2>3. Sessions and history</h2>
+            <h3>What it does</h3>
+            <p>Keeps your chat sessions, lets you reopen context, and manage ongoing threads.</p>
+            <h3>How to use it</h3>
+            <ul>
+              <li>Select any previous session from the sidebar.</li>
+              <li>Pin important sessions for quick access.</li>
+              <li>Delete/archive sessions when no longer needed.</li>
+            </ul>
+          </section>
+
+          <section class="card section" id="profiles">
+            <h2>4. Profiles</h2>
+            <h3>What it does</h3>
+            <p>Separates contexts by project/team/use case, including profile-level settings and behavior.</p>
+            <h3>How to use it</h3>
+            <ul>
+              <li>Create a profile and give it a clear purpose (for example: Sales, PMO, Legal).</li>
+              <li>Switch profile before starting a new topic.</li>
+              <li>Rename or remove profiles from the Profiles view.</li>
+            </ul>
+          </section>
+
+          <section class="card section" id="models">
+            <h2>5. Models and providers</h2>
+            <h3>What it does</h3>
+            <p>Lets you choose the LLM and provider account used for responses.</p>
+            <h3>How to use it</h3>
+            <ul>
+              <li>Use the status bar model picker or Settings → Model.</li>
+              <li>Configure provider credentials in Settings → Providers / Keys.</li>
+              <li>Use model visibility options to keep only relevant models enabled.</li>
+            </ul>
+          </section>
+
+          <section class="card section" id="skills">
+            <h2>6. Skills and toolsets</h2>
+            <h3>What it does</h3>
+            <p>Enables/disables capability packages (skills) and grouped tool permissions (toolsets).</p>
+            <h3>How to use it</h3>
+            <ul>
+              <li>Open Skills view and toggle specific skills on/off.</li>
+              <li>Switch to Toolsets tab to enable/disable grouped backend tools.</li>
+              <li>Keep only required capabilities active for cleaner behavior.</li>
+            </ul>
+          </section>
+
+          <section class="card section" id="messaging">
+            <h2>7. Messaging (Outlook)</h2>
+            <h3>What it does</h3>
+            <p>Connects Hermes to Outlook via Microsoft Graph for email, calendar, and contacts actions.</p>
+            <h3>How to use it</h3>
+            <ul>
+              <li>Open Messaging → Outlook.</li>
+              <li>Enter Tenant ID and Client ID, save, then authenticate.</li>
+              <li>Run Test Connection to confirm access.</li>
+            </ul>
+            <div class="note">
+              Sending emails is confirmation-based: Hermes previews recipients/subject/body first and only sends after explicit confirmation.
+            </div>
+          </section>
+
+          <section class="card section" id="memory">
+            <h2>8. Memory system (automatic triggers)</h2>
+            <h3>What it does</h3>
+            <p>Hermes stores useful long-term context and reuses it in future conversations without requiring manual save commands.</p>
+            <h3>Automatic trigger matrix</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>Automatic trigger</th>
+                  <th>When it happens</th>
+                  <th>What Hermes does</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Session-start memory load</td>
+                  <td>At the beginning of a session</td>
+                  <td>Loads persisted memory/profile context into the prompt context used by Hermes.</td>
+                </tr>
+                <tr>
+                  <td>Per-turn memory recall</td>
+                  <td>Each user turn, based on current message relevance</td>
+                  <td>Retrieves relevant stored memory snippets and injects them as contextual recall.</td>
+                </tr>
+                <tr>
+                  <td>Post-turn auto extraction</td>
+                  <td>After a completed turn (when capture mode is auto and prefilter conditions are met)</td>
+                  <td>Runs a background extraction pass to identify durable facts and store them.</td>
+                </tr>
+                <tr>
+                  <td>Periodic background review</td>
+                  <td>After configured turn intervals</td>
+                  <td>Runs a background self-improvement review that may update memory with durable preferences/context.</td>
+                </tr>
+                <tr>
+                  <td>Personal-context refresh</td>
+                  <td>When user asks profile/preference/history-type questions</td>
+                  <td>Forces context revalidation to answer with fresh stored personal context.</td>
+                </tr>
+              </tbody>
+            </table>
+            <h3>What is typically stored automatically</h3>
+            <ul>
+              <li>Stable user preferences and communication expectations.</li>
+              <li>Durable project conventions and useful context facts.</li>
+              <li>Relevant profile signals that improve future answers.</li>
+            </ul>
+            <h3>What is typically excluded</h3>
+            <ul>
+              <li>Short-lived one-off turn details.</li>
+              <li>Transient execution noise that has no long-term value.</li>
+            </ul>
+          </section>
+
+          <section class="card section" id="cron">
+            <h2>9. Scheduled jobs (Cron)</h2>
+            <h3>What it does</h3>
+            <p>Runs recurring Hermes tasks automatically on schedule (daily, weekly, custom cron).</p>
+            <h3>How to use it</h3>
+            <ul>
+              <li>Create a job with name, prompt, and schedule.</li>
+              <li>Pause/resume/run-now from the Cron view.</li>
+              <li>Review latest runs and status in the same screen.</li>
+            </ul>
+            <div class="note">
+              In this client distribution, cron delivery is fixed to <strong>Desktop</strong> (no destination selection).
+            </div>
+          </section>
+
+          <section class="card section" id="artifacts">
+            <h2>10. Artifacts</h2>
+            <h3>What it does</h3>
+            <p>Collects links, files, and images generated or referenced during sessions.</p>
+            <h3>How to use it</h3>
+            <ul>
+              <li>Open Artifacts to filter by type (image/file/link).</li>
+              <li>Open, copy, or jump back to originating session.</li>
+            </ul>
+          </section>
+
+          <section class="card section" id="agents">
+            <h2>11. Agents monitor</h2>
+            <h3>What it does</h3>
+            <p>Shows delegated/background agents and their status (running/completed/failed).</p>
+            <h3>How to use it</h3>
+            <ul>
+              <li>Open Agents view during complex tasks.</li>
+              <li>Track progress, duration, and final state of delegated workers.</li>
+            </ul>
+          </section>
+
+          <section class="card section" id="todos">
+            <h2>12. Todos</h2>
+            <h3>What it does</h3>
+            <p>Displays chronological task items grouped by day or week.</p>
+            <h3>How to use it</h3>
+            <ul>
+              <li>Open Todos and switch grouping (Day/Week).</li>
+              <li>Mark completed items directly in the list.</li>
+            </ul>
+          </section>
+
+          <section class="card section" id="command-center">
+            <h2>13. Command Center</h2>
+            <h3>What it does</h3>
+            <p>Central control for session actions, system diagnostics, and usage analytics.</p>
+            <h3>How to use it</h3>
+            <ul>
+              <li>Manage sessions (open/export/delete/pin).</li>
+              <li>Check system/gateway status and logs.</li>
+              <li>Review usage analytics by time period.</li>
+            </ul>
+          </section>
+
+          <section class="card section" id="settings">
+            <h2>14. Settings and support</h2>
+            <h3>What it does</h3>
+            <p>Configures behavior and provides support diagnostics/upload flows.</p>
+            <h3>Key areas</h3>
+            <ul>
+              <li>Model, Chat, Appearance, Workspace, Safety, Memory &amp; Context, Voice.</li>
+              <li>Providers/API keys, MCP configuration, archived chats.</li>
+              <li>Support log upload from About screen when required.</li>
+            </ul>
+            <h3>Common support workflow</h3>
+            <ul>
+              <li>Open About → verify version and update state.</li>
+              <li>Collect/send support logs if requested by support team.</li>
+            </ul>
+          </section>
+        </main>
+      </div>
+
+      <p class="footer">Hermes Client Guide · English version</p>
+    </div>
+  </body>
+</html>
