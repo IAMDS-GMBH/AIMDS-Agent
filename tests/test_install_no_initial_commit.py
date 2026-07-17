@@ -134,3 +134,7 @@ def test_install_ps1_validity_requires_initial_commit() -> None:
         "the destructive wipe of an existing install dir must be gone "
         "(transient cleanup of a just-failed clone is fine)"
     )
+    assert "Repair-InstallDirPermissionsForCurrentUser" in text, (
+        "install.ps1 should attempt a permission-repair retry before failing "
+        "to move an invalid checkout aside on Windows"
+    )

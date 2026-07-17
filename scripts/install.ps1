@@ -1252,6 +1252,32 @@ function Remove-InstallDirWithProcessCleanup {
     }
 }
 
+function Repair-InstallDirPermissionsForCurrentUser {
+    param([string]$TargetPath)
+
+    if (-not $TargetPath -or -not (Test-Path -LiteralPath $TargetPath)) { return $false }
+
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = $identity.Name
+    if (-not $principal) { $principal = $env:USERNAME }
+    if (-not $principal) { return $false }
+
+    try {
+        # Clear common DOS attrs first; stale ReadOnly/System flags on .git files
+        # can block later move/remove operations on some Windows setups.
+        $escaped = $TargetPath.Replace('"', '""')
+        & cmd /c "attrib -R -S -H `"$escaped\*`" /S /D" 2>$null | Out-Null
+    } catch {}
+
+    $granted = $false
+    try {
+        & icacls $TargetPath /inheritance:e /grant:r "${principal}:(OI)(CI)F" /t /c 2>$null | Out-Null
+        $granted = ($LASTEXITCODE -eq 0)
+    } catch {}
+
+    return $granted
+}
+
 function Install-Repository {
     Write-Info "Installing to $InstallDir..."
 
@@ -1461,22 +1487,36 @@ function Install-Repository {
             try {
                 Move-Item -LiteralPath $InstallDir -Destination $backupDir -ErrorAction Stop
             } catch {
+                $firstMoveErr = $_
                 $killed = @(Stop-ProcessesLockingPath -TargetPath $InstallDir)
                 if ($killed.Count -gt 0) {
                     Write-Warn ("Stopped {0} process(es) locking {1}: {2}" -f $killed.Count, $InstallDir, ($killed -join ", "))
                     try {
                         Move-Item -LiteralPath $InstallDir -Destination $backupDir -ErrorAction Stop
                     } catch {
-                        Write-Err "Could not move $InstallDir aside after stopping lock holders: $_"
-                        Write-Info "Close any programs that might be using files in $InstallDir (editors,"
-                        Write-Info "terminals, running hermes processes) and try again."
-                        throw
+                        $firstMoveErr = $_
                     }
-                } else {
-                    Write-Err "Could not move $InstallDir aside : $_"
+                }
+
+                Write-Warn "Retrying move after repairing file permissions in $InstallDir..."
+                $permissionRepaired = Repair-InstallDirPermissionsForCurrentUser -TargetPath $InstallDir
+                if ($permissionRepaired) {
+                    try {
+                        Move-Item -LiteralPath $InstallDir -Destination $backupDir -ErrorAction Stop
+                        $firstMoveErr = $null
+                    } catch {
+                        $firstMoveErr = $_
+                    }
+                }
+
+                if ($firstMoveErr) {
+                    Write-Err "Could not move $InstallDir aside : $firstMoveErr"
                     Write-Info "Close any programs that might be using files in $InstallDir (editors,"
                     Write-Info "terminals, running hermes processes) and try again."
-                    throw
+                    if (-not $permissionRepaired) {
+                        Write-Info "If this keeps failing with access-right errors, run the installer once as Administrator."
+                    }
+                    throw $firstMoveErr
                 }
             }
         }
