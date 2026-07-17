@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,8 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _WORD_SCRIPT_ROOT = _REPO_ROOT / "skills" / "productivity" / "word" / "scripts"
 _EXCEL_SCRIPT_ROOT = _REPO_ROOT / "skills" / "productivity" / "excel" / "scripts"
 _PPT_SCRIPT_ROOT = _REPO_ROOT / "skills" / "productivity" / "powerpoint" / "scripts"
+
+_DEFAULT_KPI_SHEETS = ["raw", "KPIs", "forecasts", "assumptions"]
 
 
 def _check_office_tools() -> bool:
@@ -31,6 +34,19 @@ def _safe_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_action(action: str | None) -> str:
+    if not action:
+        return ""
+    return action.strip().lower().replace("-", "_").replace(" ", "_")
 
 
 def _run_script(script_path: Path, args: list[str]) -> str:
@@ -58,19 +74,340 @@ def _run_script(script_path: Path, args: list[str]) -> str:
     )
 
 
+def _month_labels(months: int) -> list[str]:
+    months = max(1, min(24, months))
+    today = date.today()
+    labels: list[str] = []
+    year = today.year
+    month = today.month
+    for idx in range(months):
+        m = month - (months - 1 - idx)
+        y = year
+        while m <= 0:
+            m += 12
+            y -= 1
+        labels.append(f"{y}-{m:02d}")
+    return labels
+
+
+def _validate_workbook(path: Path, required_sheets: list[str]) -> dict[str, Any]:
+    try:
+        import openpyxl
+    except ImportError:
+        return {
+            "success": False,
+            "error": "openpyxl is required for workbook validation",
+        }
+
+    if not path.exists():
+        return {"success": False, "error": f"Workbook does not exist: {path}"}
+
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        missing = [s for s in required_sheets if s not in wb.sheetnames]
+        if missing:
+            return {
+                "success": False,
+                "error": "Workbook is missing required sheets",
+                "missing_sheets": missing,
+                "sheets": wb.sheetnames,
+            }
+        non_empty = {
+            s: bool((wb[s].max_row or 0) > 1 or (wb[s].max_column or 0) > 1)
+            for s in required_sheets
+        }
+        return {
+            "success": True,
+            "sheets": wb.sheetnames,
+            "required_sheets": required_sheets,
+            "non_empty_checks": non_empty,
+        }
+    finally:
+        wb.close()
+
+
+def _generate_kpi_workbook(output_path: Path, months: int) -> dict[str, Any]:
+    try:
+        import openpyxl
+    except ImportError:
+        return {
+            "success": False,
+            "error": "openpyxl is required for generate_kpi_workbook",
+        }
+
+    labels = _month_labels(months)
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    ws_raw = wb.create_sheet("raw")
+    ws_raw.append(
+        [
+            "month",
+            "revenue",
+            "churn_pct",
+            "cac",
+            "nps",
+            "sla_pct",
+            "outages",
+            "cloud_cost",
+        ]
+    )
+    for idx, label in enumerate(labels):
+        revenue = 900_000 + (idx * 18_000) + (idx % 3) * 7_500
+        churn = round(4.1 - (idx * 0.08), 2)
+        cac = 820 + (idx % 4) * 25
+        nps = 38 + min(12, idx)
+        sla = round(99.2 + (idx % 4) * 0.08, 2)
+        outages = max(0, 4 - (idx // 4))
+        cloud = 210_000 + idx * 5_500
+        ws_raw.append([label, revenue, churn, cac, nps, sla, outages, cloud])
+
+    ws_kpi = wb.create_sheet("KPIs")
+    ws_kpi.append(["metric", "value"])
+    ws_kpi.append(["avg_revenue", f"=AVERAGE(raw!B2:B{months+1})"])
+    ws_kpi.append(["latest_revenue", f"=raw!B{months+1}"])
+    ws_kpi.append(["avg_churn_pct", f"=AVERAGE(raw!C2:C{months+1})"])
+    ws_kpi.append(["avg_nps", f"=AVERAGE(raw!E2:E{months+1})"])
+    ws_kpi.append(["avg_sla_pct", f"=AVERAGE(raw!F2:F{months+1})"])
+    ws_kpi.append(["total_outages", f"=SUM(raw!G2:G{months+1})"])
+
+    ws_fc = wb.create_sheet("forecasts")
+    ws_fc.append(["scenario", "month", "revenue", "cloud_cost"])
+    base_revenue = 900_000 + (months * 18_000)
+    base_cloud = 210_000 + months * 5_500
+    for scenario, rev_factor, cloud_factor in [
+        ("base", 1.0, 1.0),
+        ("upside", 1.08, 0.96),
+        ("downside", 0.9, 1.12),
+    ]:
+        for step in range(1, 4):
+            ws_fc.append(
+                [
+                    scenario,
+                    f"M+{step}",
+                    int(base_revenue * rev_factor * (1 + (step * 0.01))),
+                    int(base_cloud * cloud_factor * (1 + (step * 0.015))),
+                ]
+            )
+
+    ws_ass = wb.create_sheet("assumptions")
+    ws_ass.append(["key", "value"])
+    ws_ass.append(["report_months", months])
+    ws_ass.append(["revenue_growth_rate", "1.8% / month"])
+    ws_ass.append(["cost_growth_rate", "1.5% / month"])
+    ws_ass.append(["scenario_upside_revenue_factor", 1.08])
+    ws_ass.append(["scenario_downside_revenue_factor", 0.9])
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(output_path)
+
+    checks = _validate_workbook(output_path, _DEFAULT_KPI_SHEETS)
+    checks["file_size_bytes"] = output_path.stat().st_size if output_path.exists() else 0
+    return checks
+
+
+def _validate_word_report(path: Path) -> dict[str, Any]:
+    try:
+        from docx import Document
+    except ImportError:
+        return {"success": False, "error": "python-docx is required for report validation"}
+
+    if not path.exists():
+        return {"success": False, "error": f"Report does not exist: {path}"}
+
+    doc = Document(path)
+    headings = [p.text.strip() for p in doc.paragraphs if p.style.name.startswith("Heading")]
+    required = [
+        "Executive Summary",
+        "KPI Highlights",
+        "Scenario Analysis",
+        "Risk Register",
+        "Action Plan",
+        "Unknowns & Assumptions",
+    ]
+    missing = [h for h in required if h not in headings]
+    non_empty_paragraphs = sum(1 for p in doc.paragraphs if p.text.strip())
+    return {
+        "success": len(missing) == 0 and non_empty_paragraphs >= 10,
+        "headings": headings,
+        "required_headings": required,
+        "missing_headings": missing,
+        "non_empty_paragraphs": non_empty_paragraphs,
+        "file_size_bytes": path.stat().st_size,
+    }
+
+
+def _generate_exec_report(output_path: Path, title: str) -> dict[str, Any]:
+    try:
+        from docx import Document
+    except ImportError:
+        return {"success": False, "error": "python-docx is required for generate_exec_report"}
+
+    doc = Document()
+    doc.add_heading(title or "Q3 Operational Review", level=1)
+
+    sections = {
+        "Executive Summary": [
+            "This report summarizes operational performance over the last 12 months.",
+            "Overall trend shows improving service quality with controlled cost growth.",
+        ],
+        "KPI Highlights": [
+            "Revenue trend remains positive with moderate month-over-month growth.",
+            "SLA performance stayed above target while outages declined quarter-over-quarter.",
+        ],
+        "Scenario Analysis": [
+            "Base: maintain current growth and cost control trajectory.",
+            "Upside: faster topline acceleration with improved acquisition efficiency.",
+            "Downside: demand contraction with elevated infrastructure pressure.",
+        ],
+        "Risk Register": [
+            "Capacity saturation risk in peak workload windows.",
+            "Vendor concentration risk in core cloud services.",
+            "Execution risk on cross-team delivery commitments.",
+        ],
+        "Action Plan": [
+            "Finalize cost anomaly alerts and ownership SLAs.",
+            "Harden incident runbooks for top recurring failure modes.",
+            "Prioritize CAC optimization experiments by segment.",
+        ],
+        "Unknowns & Assumptions": [
+            "Assumes no disruptive pricing changes from major vendors.",
+            "Assumes current support staffing and on-call cadence remain stable.",
+        ],
+    }
+    for heading, bullets in sections.items():
+        doc.add_heading(heading, level=2)
+        for line in bullets:
+            doc.add_paragraph(line, style="List Bullet")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(output_path)
+    return _validate_word_report(output_path)
+
+
+def _validate_pptx(path: Path, min_slides: int = 10, min_charts: int = 3) -> dict[str, Any]:
+    try:
+        from pptx import Presentation
+    except ImportError:
+        return {"success": False, "error": "python-pptx is required for deck validation"}
+
+    if not path.exists():
+        return {"success": False, "error": f"Deck does not exist: {path}"}
+
+    prs = Presentation(path)
+    slide_count = len(prs.slides)
+    chart_count = 0
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if getattr(shape, "has_chart", False):
+                chart_count += 1
+    return {
+        "success": slide_count >= min_slides and chart_count >= min_charts,
+        "slides": slide_count,
+        "charts": chart_count,
+        "min_slides": min_slides,
+        "min_charts": min_charts,
+        "file_size_bytes": path.stat().st_size,
+    }
+
+
+def _generate_review_deck(output_path: Path, title: str) -> dict[str, Any]:
+    try:
+        from pptx import Presentation
+        from pptx.chart.data import CategoryChartData
+        from pptx.enum.chart import XL_CHART_TYPE
+        from pptx.util import Inches
+    except ImportError:
+        return {"success": False, "error": "python-pptx is required for generate_review_deck"}
+
+    prs = Presentation()
+    title_text = title or "Q3 Operational Review Pack"
+
+    # Slide 1
+    slide = prs.slides.add_slide(prs.slide_layouts[0])
+    slide.shapes.title.text = title_text
+    slide.placeholders[1].text = "Executive summary and recommendations"
+
+    # Slides 2-4 with charts
+    chart_specs = [
+        ("Revenue trend", [980, 1020, 1055, 1110, 1160, 1215]),
+        ("Cloud cost trend", [220, 229, 235, 244, 252, 261]),
+        ("NPS trend", [39, 42, 44, 46, 47, 49]),
+    ]
+    months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun"]
+    for title_line, values in chart_specs:
+        s = prs.slides.add_slide(prs.slide_layouts[5])
+        s.shapes.title.text = title_line
+        data = CategoryChartData()
+        data.categories = months
+        data.add_series(title_line, values)
+        s.shapes.add_chart(
+            XL_CHART_TYPE.LINE_MARKERS,
+            Inches(0.8),
+            Inches(1.6),
+            Inches(8.5),
+            Inches(4.2),
+            data,
+        )
+
+    # Slides 5-10 content
+    body_slides = [
+        ("KPI Highlights", ["Revenue up 18%", "SLA 99.4%", "Outages down 35%"]),
+        ("Scenario Analysis", ["Base: stable growth", "Upside: +8% acceleration", "Downside: -10% demand"]),
+        ("Risk Register", ["Cloud concentration", "On-call fatigue", "Release coupling"]),
+        ("Action Plan", ["Cost guardrails", "Runbook hardening", "Quarterly experiment cadence"]),
+        ("Unknowns & Assumptions", ["No major price shocks", "Staffing remains constant", "Demand seasonality holds"]),
+        ("Decision Summary", ["Proceed with base plan", "Prepare downside response", "Track leading indicators weekly"]),
+    ]
+    for heading, bullets in body_slides:
+        s = prs.slides.add_slide(prs.slide_layouts[1])
+        s.shapes.title.text = heading
+        body = s.shapes.placeholders[1].text_frame
+        body.clear()
+        for idx, bullet in enumerate(bullets):
+            p = body.paragraphs[0] if idx == 0 else body.add_paragraph()
+            p.text = bullet
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    prs.save(output_path)
+    return _validate_pptx(output_path)
+
+
 def office_word_tool(args: dict, **kwargs) -> str:
-    action = _safe_str(args.get("action"))
+    action = _normalize_action(_safe_str(args.get("action")))
     if not action:
         return tool_error("action is required")
 
     path = _safe_str(args.get("path"))
     output_path = _safe_str(args.get("output_path"))
+    title = _safe_str(args.get("title"))
     text = _safe_str(args.get("text"))
     find_text = _safe_str(args.get("find_text"))
     replace_text = _safe_str(args.get("replace_text"))
     source_path = _safe_str(args.get("source_path"))
     source_paths = args.get("source_paths") or []
     fmt = (_safe_str(args.get("format")) or "").lower()
+
+    action_aliases = {
+        "read": "read_text",
+        "read_doc": "read_text",
+        "read_docx": "read_text",
+        "markdown": "read_markdown",
+        "read_md": "read_markdown",
+        "tables": "read_tables",
+        "metadata": "read_metadata",
+        "styles": "read_styles",
+        "from_md": "from_markdown",
+        "replace": "find_replace",
+        "append": "append_paragraph",
+        "merge_docs": "merge",
+        "convert_pdf": "convert",
+        "convert_md": "convert",
+        "convert_html": "convert",
+        "generate_report": "generate_exec_report",
+        "validate": "validate_report",
+    }
+    action = action_aliases.get(action, action)
 
     if action in {"read_text", "read_markdown", "read_tables", "read_metadata", "read_styles"}:
         if not path:
@@ -115,6 +452,18 @@ def office_word_tool(args: dict, **kwargs) -> str:
             return tool_error("convert requires path and format in [pdf, md, markdown, html, htm]")
         return _run_script(_WORD_SCRIPT_ROOT / "convert.py", [path, "--to", fmt])
 
+    if action == "generate_exec_report":
+        if not output_path:
+            return tool_error("output_path is required for generate_exec_report")
+        checks = _generate_exec_report(Path(output_path), title or "Q3 Operational Review")
+        return tool_result(action=action, output_path=output_path, checks=checks, success=bool(checks.get("success")))
+
+    if action == "validate_report":
+        if not path:
+            return tool_error("path is required for validate_report")
+        checks = _validate_word_report(Path(path))
+        return tool_result(action=action, path=path, checks=checks, success=bool(checks.get("success")))
+
     return tool_error(
         "Unsupported word action",
         supported_actions=[
@@ -128,12 +477,14 @@ def office_word_tool(args: dict, **kwargs) -> str:
             "append_paragraph",
             "merge",
             "convert",
+            "generate_exec_report",
+            "validate_report",
         ],
     )
 
 
 def office_excel_tool(args: dict, **kwargs) -> str:
-    action = _safe_str(args.get("action"))
+    action = _normalize_action(_safe_str(args.get("action")))
     if not action:
         return tool_error("action is required")
 
@@ -144,6 +495,28 @@ def office_excel_tool(args: dict, **kwargs) -> str:
     value = args.get("value")
     row_csv = _safe_str(args.get("row_csv"))
     source_path = _safe_str(args.get("source_path"))
+    months = _safe_int(args.get("months"), 12)
+    required_sheets = args.get("required_sheets")
+
+    action_aliases = {
+        "read": "read_sheet",
+        "list": "list_sheets",
+        "sheets": "list_sheets",
+        "statistics": "stats",
+        "describe": "stats",
+        "cell": "read_cell",
+        "meta": "metadata",
+        "csv_to_xlsx": "from_csv",
+        "fromcsv": "from_csv",
+        "set": "set_cell",
+        "append": "append_row",
+        "export_csv": "to_csv",
+        "export_pdf": "to_pdf",
+        "pdf": "to_pdf",
+        "generate_workbook": "generate_kpi_workbook",
+        "validate": "validate_workbook",
+    }
+    action = action_aliases.get(action, action)
 
     if action in {"read_sheet", "list_sheets", "stats", "read_cell", "metadata"}:
         if not path:
@@ -199,6 +572,25 @@ def office_excel_tool(args: dict, **kwargs) -> str:
             return tool_error("path is required for to_pdf")
         return _run_script(_EXCEL_SCRIPT_ROOT / "write.py", ["--to-pdf", path])
 
+    if action == "generate_kpi_workbook":
+        if not output_path:
+            return tool_error("output_path is required for generate_kpi_workbook")
+        checks = _generate_kpi_workbook(Path(output_path), months)
+        return tool_result(
+            action=action,
+            output_path=output_path,
+            months=months,
+            checks=checks,
+            success=bool(checks.get("success")),
+        )
+
+    if action == "validate_workbook":
+        if not path:
+            return tool_error("path is required for validate_workbook")
+        sheet_list = required_sheets if isinstance(required_sheets, list) and required_sheets else _DEFAULT_KPI_SHEETS
+        checks = _validate_workbook(Path(path), [str(s) for s in sheet_list])
+        return tool_result(action=action, path=path, checks=checks, success=bool(checks.get("success")))
+
     return tool_error(
         "Unsupported excel action",
         supported_actions=[
@@ -212,12 +604,14 @@ def office_excel_tool(args: dict, **kwargs) -> str:
             "append_row",
             "to_csv",
             "to_pdf",
+            "generate_kpi_workbook",
+            "validate_workbook",
         ],
     )
 
 
 def office_powerpoint_tool(args: dict, **kwargs) -> str:
-    action = _safe_str(args.get("action"))
+    action = _normalize_action(_safe_str(args.get("action")))
     if not action:
         return tool_error("action is required")
 
@@ -226,7 +620,20 @@ def office_powerpoint_tool(args: dict, **kwargs) -> str:
     input_directory = _safe_str(args.get("input_directory"))
     output_file = _safe_str(args.get("output_file"))
     original_file = _safe_str(args.get("original_file"))
+    title = _safe_str(args.get("title"))
     validate = args.get("validate")
+    min_slides = _safe_int(args.get("min_slides"), 10)
+    min_charts = _safe_int(args.get("min_charts"), 3)
+
+    action_aliases = {
+        "add": "add_slide",
+        "duplicate_slide": "add_slide",
+        "cleanup": "clean",
+        "repack": "pack",
+        "generate_deck": "generate_review_deck",
+        "validate": "validate_deck",
+    }
+    action = action_aliases.get(action, action)
 
     if action == "add_slide":
         if not unpacked_dir or not source:
@@ -248,24 +655,54 @@ def office_powerpoint_tool(args: dict, **kwargs) -> str:
             cmd.extend(["--validate", "true" if validate else "false"])
         return _run_script(_PPT_SCRIPT_ROOT / "office" / "pack.py", cmd)
 
+    if action == "generate_review_deck":
+        if not output_file:
+            return tool_error("output_file is required for generate_review_deck")
+        checks = _generate_review_deck(Path(output_file), title or "Q3 Operational Review Pack")
+        return tool_result(action=action, output_file=output_file, checks=checks, success=bool(checks.get("success")))
+
+    if action == "validate_deck":
+        deck_path = output_file or _safe_str(args.get("path"))
+        if not deck_path:
+            return tool_error("output_file or path is required for validate_deck")
+        checks = _validate_pptx(Path(deck_path), min_slides=min_slides, min_charts=min_charts)
+        return tool_result(action=action, path=deck_path, checks=checks, success=bool(checks.get("success")))
+
     return tool_error(
         "Unsupported powerpoint action",
-        supported_actions=["add_slide", "clean", "pack"],
+        supported_actions=["add_slide", "clean", "pack", "generate_review_deck", "validate_deck"],
     )
 
 
 OFFICE_WORD_SCHEMA = {
     "name": "office_word",
-    "description": "Operate on Word files via the bundled productivity skill scripts.",
+    "description": "Operate on Word files via deterministic skill wrappers.",
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string"},
+            "action": {
+                "type": "string",
+                "enum": [
+                    "read_text",
+                    "read_markdown",
+                    "read_tables",
+                    "read_metadata",
+                    "read_styles",
+                    "from_markdown",
+                    "find_replace",
+                    "append_paragraph",
+                    "merge",
+                    "convert",
+                    "generate_exec_report",
+                    "validate_report",
+                ],
+            },
             "path": {"type": "string"},
             "source_path": {"type": "string"},
             "source_paths": {"type": "array", "items": {"type": "string"}},
             "output_path": {"type": "string"},
-            "format": {"type": "string"},
+            "title": {"type": "string"},
+            "format": {"type": "string", "enum": ["pdf", "md", "markdown", "html", "htm"]},
             "text": {"type": "string"},
             "find_text": {"type": "string"},
             "replace_text": {"type": "string"},
@@ -277,11 +714,27 @@ OFFICE_WORD_SCHEMA = {
 
 OFFICE_EXCEL_SCHEMA = {
     "name": "office_excel",
-    "description": "Operate on Excel/CSV files via the bundled productivity skill scripts.",
+    "description": "Operate on Excel/CSV files via deterministic skill wrappers.",
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string"},
+            "action": {
+                "type": "string",
+                "enum": [
+                    "read_sheet",
+                    "list_sheets",
+                    "stats",
+                    "read_cell",
+                    "metadata",
+                    "from_csv",
+                    "set_cell",
+                    "append_row",
+                    "to_csv",
+                    "to_pdf",
+                    "generate_kpi_workbook",
+                    "validate_workbook",
+                ],
+            },
             "path": {"type": "string"},
             "source_path": {"type": "string"},
             "output_path": {"type": "string"},
@@ -289,6 +742,8 @@ OFFICE_EXCEL_SCHEMA = {
             "cell": {"type": "string"},
             "value": {"type": ["string", "number", "boolean"]},
             "row_csv": {"type": "string"},
+            "months": {"type": "integer", "minimum": 1, "maximum": 24},
+            "required_sheets": {"type": "array", "items": {"type": "string"}},
         },
         "required": ["action"],
         "additionalProperties": False,
@@ -297,17 +752,30 @@ OFFICE_EXCEL_SCHEMA = {
 
 OFFICE_POWERPOINT_SCHEMA = {
     "name": "office_powerpoint",
-    "description": "Operate on unpacked PPTX directories via the bundled powerpoint scripts.",
+    "description": "Operate on PowerPoint artifacts via deterministic skill wrappers.",
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string"},
+            "action": {
+                "type": "string",
+                "enum": [
+                    "add_slide",
+                    "clean",
+                    "pack",
+                    "generate_review_deck",
+                    "validate_deck",
+                ],
+            },
             "unpacked_dir": {"type": "string"},
             "source": {"type": "string"},
             "input_directory": {"type": "string"},
             "output_file": {"type": "string"},
+            "path": {"type": "string"},
             "original_file": {"type": "string"},
+            "title": {"type": "string"},
             "validate": {"type": "boolean"},
+            "min_slides": {"type": "integer", "minimum": 1},
+            "min_charts": {"type": "integer", "minimum": 0},
         },
         "required": ["action"],
         "additionalProperties": False,
@@ -341,4 +809,3 @@ registry.register(
     check_fn=_check_office_tools,
     emoji="📽️",
 )
-

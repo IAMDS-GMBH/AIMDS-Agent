@@ -35,3 +35,35 @@ def test_run_script_reports_missing_script(tmp_path: Path) -> None:
 
 def test_check_office_tools_true_for_repo_layout() -> None:
     assert office_tools._check_office_tools() is True
+
+
+def test_action_normalization_variants() -> None:
+    assert office_tools._normalize_action("Read Metadata") == "read_metadata"
+    assert office_tools._normalize_action("read-metadata") == "read_metadata"
+    assert office_tools._normalize_action("  READ  ") == "read"
+
+
+def test_word_action_alias_convert_pdf_requires_path() -> None:
+    result = _parse(office_tools.office_word_tool({"action": "convert-pdf"}))
+    assert "error" in result
+    assert "convert requires path" in result["error"]
+
+
+def test_word_generate_report_requires_output_path() -> None:
+    result = _parse(office_tools.office_word_tool({"action": "generate_report"}))
+    assert result["error"] == "output_path is required for generate_exec_report"
+
+
+def test_excel_generate_workbook_requires_output_path() -> None:
+    result = _parse(office_tools.office_excel_tool({"action": "generate_workbook"}))
+    assert result["error"] == "output_path is required for generate_kpi_workbook"
+
+
+def test_powerpoint_generate_deck_requires_output_file() -> None:
+    result = _parse(office_tools.office_powerpoint_tool({"action": "generate_deck"}))
+    assert result["error"] == "output_file is required for generate_review_deck"
+
+
+def test_powerpoint_validate_requires_path() -> None:
+    result = _parse(office_tools.office_powerpoint_tool({"action": "validate"}))
+    assert result["error"] == "output_file or path is required for validate_deck"
