@@ -79,16 +79,13 @@ def test_catalog_placeholders_match_english(lang: str):
 # ---------------------------------------------------------------------------
 
 def test_normalize_lang_accepts_supported():
-    assert i18n._normalize_lang("zh") == "zh"
+    assert i18n._normalize_lang("de") == "de"
     assert i18n._normalize_lang("EN") == "en"
 
 
 def test_normalize_lang_accepts_aliases():
-    assert i18n._normalize_lang("chinese") == "zh"
-    assert i18n._normalize_lang("zh-CN") == "zh"
     assert i18n._normalize_lang("Deutsch") == "de"
     assert i18n._normalize_lang("español") == "es"
-    assert i18n._normalize_lang("jp") == "ja"
     assert i18n._normalize_lang("Ukrainian") == "uk"
     assert i18n._normalize_lang("uk-UA") == "uk"
     assert i18n._normalize_lang("ua") == "uk"
@@ -106,14 +103,14 @@ def test_normalize_lang_unknown_falls_back():
 def test_env_var_override(monkeypatch):
     """HERMES_LANGUAGE wins over config."""
     i18n.reset_language_cache()
-    monkeypatch.setenv("HERMES_LANGUAGE", "ja")
-    assert i18n.get_language() == "ja"
+    monkeypatch.setenv("HERMES_LANGUAGE", "de")
+    assert i18n.get_language() == "de"
 
 
 def test_env_var_normalized(monkeypatch):
     i18n.reset_language_cache()
-    monkeypatch.setenv("HERMES_LANGUAGE", "Chinese")
-    assert i18n.get_language() == "zh"
+    monkeypatch.setenv("HERMES_LANGUAGE", "Deutsch")
+    assert i18n.get_language() == "de"
 
 
 def test_default_when_nothing_set(monkeypatch):
@@ -131,7 +128,7 @@ def test_default_when_nothing_set(monkeypatch):
 
 def test_t_explicit_lang():
     assert i18n.t("approval.denied", lang="en").endswith("Denied")
-    assert i18n.t("approval.denied", lang="zh").endswith("已拒绝")
+    assert i18n.t("approval.denied", lang="de").endswith("Abgelehnt")
     assert i18n.t("approval.denied", lang="uk").endswith("Відхилено")
     assert i18n.t("approval.denied", lang="tr").endswith("Reddedildi")
 
@@ -153,11 +150,11 @@ def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatc
     fake_locales = tmp_path / "locales"
     fake_locales.mkdir()
     (fake_locales / "en.yaml").write_text("foo: English Foo\n", encoding="utf-8")
-    (fake_locales / "zh.yaml").write_text("# intentionally empty\n", encoding="utf-8")
+    (fake_locales / "de.yaml").write_text("# intentionally empty\n", encoding="utf-8")
     monkeypatch.setattr(i18n, "_locales_dir", lambda: fake_locales)
     i18n.reset_language_cache()
     try:
-        assert i18n.t("foo", lang="zh") == "English Foo"
+        assert i18n.t("foo", lang="de") == "English Foo"
     finally:
         # Clear the cache on teardown so subsequent tests don't see the
         # fake "foo: English Foo" catalog instead of the real locales/*.yaml.
