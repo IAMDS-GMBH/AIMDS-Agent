@@ -347,7 +347,7 @@ export function ChatView({
         className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"
         {...dropHandlers}
       >
-        <AssistantRuntimeProvider runtime={runtime}>
+        <AssistantRuntimeProvider key={threadKey} runtime={runtime}>
           <Thread
             clampToComposer={showChatBar}
             cwd={currentCwd}
