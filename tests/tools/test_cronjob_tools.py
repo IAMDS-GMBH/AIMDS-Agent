@@ -396,15 +396,8 @@ class TestUnifiedCronjobTool:
         assert updated["job"]["skills"] == []
         assert updated["job"]["skill"] is None
 
-    def test_create_normalizes_list_form_deliver(self):
-        """deliver=['telegram'] (list) is stored as the string 'telegram'.
-
-        Regression for #17139: MCP clients / scripts sometimes pass ``deliver``
-        as an array.  Prior to the fix, ``['telegram']`` was written verbatim
-        to ``jobs.json`` and the scheduler then tried to resolve the literal
-        string ``"['telegram']"`` as a platform, failing with
-        "no delivery target resolved".
-        """
+    def test_create_forces_local_delivery_when_deliver_is_list(self):
+        """Desktop cron enforces local delivery regardless of caller input."""
         from cron.jobs import get_job
 
         created = json.loads(
@@ -417,10 +410,9 @@ class TestUnifiedCronjobTool:
         )
         assert created["success"] is True
         stored = get_job(created["job_id"])
-        assert stored["deliver"] == "telegram"
+        assert stored["deliver"] == "local"
 
-    def test_create_normalizes_multi_element_list_deliver(self):
-        """deliver=['telegram', 'discord'] is stored as 'telegram,discord'."""
+    def test_create_forces_local_delivery_when_deliver_has_multiple_targets(self):
         from cron.jobs import get_job
 
         created = json.loads(
@@ -433,11 +425,11 @@ class TestUnifiedCronjobTool:
         )
         assert created["success"] is True
         stored = get_job(created["job_id"])
-        assert stored["deliver"] == "telegram,discord"
+        assert stored["deliver"] == "local"
 
-    def test_create_rejects_origin_delivery_without_origin_context(self, monkeypatch):
-        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
-        monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    def test_create_forces_local_delivery_for_origin_value(self):
+        from cron.jobs import get_job
+
         created = json.loads(
             cronjob(
                 action="create",
@@ -446,11 +438,12 @@ class TestUnifiedCronjobTool:
                 deliver="origin",
             )
         )
-        assert created["success"] is False
-        assert "requires a live chat origin" in created["error"]
+        assert created["success"] is True
+        stored = get_job(created["job_id"])
+        assert stored["deliver"] == "local"
 
-    def test_update_normalizes_list_form_deliver(self):
-        """update with deliver=['telegram'] stores the canonical string."""
+    def test_update_forces_local_delivery_when_deliver_is_list(self):
+        """Desktop cron update keeps delivery local regardless of caller input."""
         from cron.jobs import get_job
 
         created = json.loads(
@@ -465,9 +458,11 @@ class TestUnifiedCronjobTool:
         )
         assert updated["success"] is True
         stored = get_job(created["job_id"])
-        assert stored["deliver"] == "telegram"
+        assert stored["deliver"] == "local"
 
-    def test_update_rejects_origin_delivery_without_saved_origin(self):
+    def test_update_forces_local_delivery_for_origin_value(self):
+        from cron.jobs import get_job
+
         created = json.loads(cronjob(action="create", prompt="x", schedule="every 1h"))
         updated = json.loads(
             cronjob(
@@ -476,8 +471,9 @@ class TestUnifiedCronjobTool:
                 deliver="origin",
             )
         )
-        assert updated["success"] is False
-        assert "no saved origin" in updated["error"]
+        assert updated["success"] is True
+        stored = get_job(created["job_id"])
+        assert stored["deliver"] == "local"
 
 
 # =========================================================================

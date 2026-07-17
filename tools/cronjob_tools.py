@@ -532,21 +532,14 @@ def cronjob(
                             success=False,
                         )
 
-            origin = _origin_from_env()
-            normalized_deliver = _normalize_deliver_param(deliver)
-            if normalized_deliver == "origin" and not origin:
-                return tool_error(
-                    "deliver='origin' requires a live chat origin, but none is available in this context. "
-                    "Use deliver='local' or an explicit platform target (e.g. 'telegram').",
-                    success=False,
-                )
+            origin = None
 
             job = create_job(
                 prompt=prompt or "",
                 schedule=schedule,
                 name=name,
                 repeat=repeat,
-                deliver=normalized_deliver,
+                deliver="local",
                 origin=origin,
                 skills=canonical_skills,
                 model=_normalize_optional_job_value(model),
@@ -647,15 +640,7 @@ def cronjob(
                 updates["prompt"] = prompt
             if name is not None:
                 updates["name"] = name
-            if deliver is not None:
-                normalized_deliver = _normalize_deliver_param(deliver)
-                if normalized_deliver == "origin" and not job.get("origin"):
-                    return tool_error(
-                        "Cannot set deliver='origin' on a job with no saved origin. "
-                        "Use deliver='local' or an explicit platform target (e.g. 'telegram').",
-                        success=False,
-                    )
-                updates["deliver"] = normalized_deliver
+            updates["deliver"] = "local"
             if skills is not None or skill is not None:
                 canonical_skills = _canonical_skills(skill, skills)
                 updates["skills"] = canonical_skills
@@ -750,7 +735,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
 If skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
 On update, passing skills=[] clears attached skills.
 
-NOTE: The agent's final response is auto-delivered to the target. Put the primary
+NOTE: The agent's final response is kept local to this Hermes desktop. Put the primary
 user-facing content in the final response. Cron jobs run autonomously with no user
 present — they cannot ask questions or request clarification.
 
@@ -781,10 +766,6 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "repeat": {
                 "type": "integer",
                 "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring)."
-            },
-            "deliver": {
-                "type": "string",
-                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), 'all' (fan out to every connected home channel), or platform:chat_id:thread_id for a specific destination. Combine with comma: 'origin,all' delivers to the origin plus every other connected channel. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567', 'all'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting. 'all' resolves at fire time, so a job created before a channel was wired up will pick it up automatically once connected."
             },
             "skills": {
                 "type": "array",

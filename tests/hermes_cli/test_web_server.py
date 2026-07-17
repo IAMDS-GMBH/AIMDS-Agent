@@ -984,33 +984,20 @@ class TestWebServerEndpoints:
         assert resp.json()["gateway_state"] == "startup_failed"
         assert resp.json()["gateway_platforms"] == {}
 
-    def test_cron_delivery_targets_lists_configured_platforms(self, monkeypatch):
-        """The cron dropdown endpoint returns Local + configured platforms dynamically."""
-        import gateway.config as gateway_config
-
-        class _Platform:
-            def __init__(self, value):
-                self.value = value
-
-        class _GatewayConfig:
-            def get_connected_platforms(self):
-                return [_Platform("matrix")]
-
-        monkeypatch.setattr(
-            gateway_config, "load_gateway_config", lambda: _GatewayConfig()
-        )
-        monkeypatch.setenv("MATRIX_HOME_ROOM", "!room:matrix.org")
-
+    def test_cron_delivery_targets_are_local_only(self):
         resp = self.client.get("/api/cron/delivery-targets")
 
         assert resp.status_code == 200
-        targets = {t["id"]: t for t in resp.json()["targets"]}
-        # Local is always offered; matrix appears because its gateway is configured.
-        assert "local" in targets
-        assert "matrix" in targets
-        assert targets["matrix"]["home_target_set"] is True
-        # No hardcoded telegram/discord/slack/email when they aren't configured.
-        assert "telegram" not in targets
+        assert resp.json() == {
+            "targets": [
+                {
+                    "id": "local",
+                    "name": "Local (desktop)",
+                    "home_target_set": True,
+                    "home_env_var": None,
+                }
+            ]
+        }
 
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")
@@ -2386,6 +2373,58 @@ class TestNewEndpoints:
     def test_cron_job_not_found(self):
         resp = self.client.get("/api/cron/jobs/nonexistent-id")
         assert resp.status_code == 404
+
+    def test_cron_create_forces_local_delivery(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        captured = {}
+
+        def _fake_call(profile, func_name, **kwargs):
+            captured["profile"] = profile
+            captured["func_name"] = func_name
+            captured["kwargs"] = kwargs
+            return {"id": "job-1", "deliver": kwargs.get("deliver")}
+
+        monkeypatch.setattr(web_server, "_call_cron_for_profile", _fake_call)
+
+        resp = self.client.post(
+            "/api/cron/jobs",
+            json={
+                "prompt": "x",
+                "schedule": "every 1h",
+                "name": "demo",
+                "deliver": "telegram",
+            },
+        )
+        assert resp.status_code == 200
+        assert captured["func_name"] == "create_job"
+        assert captured["kwargs"]["deliver"] == "local"
+        assert resp.json()["deliver"] == "local"
+
+    def test_cron_update_forces_local_delivery(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda _job_id: "default")
+        captured = {}
+
+        def _fake_call(profile, func_name, job_id, updates):
+            captured["profile"] = profile
+            captured["func_name"] = func_name
+            captured["job_id"] = job_id
+            captured["updates"] = updates
+            return {"id": job_id, "deliver": updates.get("deliver")}
+
+        monkeypatch.setattr(web_server, "_call_cron_for_profile", _fake_call)
+
+        resp = self.client.put(
+            "/api/cron/jobs/job-1",
+            json={"updates": {"name": "renamed", "deliver": "discord"}},
+        )
+        assert resp.status_code == 200
+        assert captured["func_name"] == "update_job"
+        assert captured["updates"]["name"] == "renamed"
+        assert captured["updates"]["deliver"] == "local"
+        assert resp.json()["deliver"] == "local"
 
     # --- Profiles ---
 

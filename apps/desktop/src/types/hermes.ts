@@ -456,7 +456,6 @@ export interface CronJob {
 }
 
 export interface CronJobCreatePayload {
-  deliver?: string
   name?: string
   prompt: string
   schedule: string
@@ -469,7 +468,6 @@ export interface CronJobSchedule {
 }
 
 export interface CronJobUpdates {
-  deliver?: string
   enabled?: boolean
   name?: string
   prompt?: string

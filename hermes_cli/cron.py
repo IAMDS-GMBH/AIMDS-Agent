@@ -89,11 +89,6 @@ def cron_list(show_all: bool = False):
         repeat_completed = repeat_info.get("completed", 0)
         repeat_str = f"{repeat_completed}/{repeat_times}" if repeat_times else "∞"
 
-        deliver = job.get("deliver", ["local"])
-        if isinstance(deliver, str):
-            deliver = [deliver]
-        deliver_str = ", ".join(deliver)
-
         skills = job.get("skills") or ([job["skill"]] if job.get("skill") else [])
         if state == "paused":
             status = color("[paused]", Colors.YELLOW)
@@ -109,7 +104,6 @@ def cron_list(show_all: bool = False):
         print(f"    Schedule:  {schedule}")
         print(f"    Repeat:    {repeat_str}")
         print(f"    Next run:  {next_run}")
-        print(f"    Deliver:   {deliver_str}")
         if skills:
             print(f"    Skills:    {', '.join(skills)}")
         script = job.get("script")
@@ -212,7 +206,6 @@ def cron_create(args):
         schedule=args.schedule,
         prompt=args.prompt,
         name=getattr(args, "name", None),
-        deliver=getattr(args, "deliver", None),
         repeat=getattr(args, "repeat", None),
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
@@ -275,7 +268,6 @@ def cron_edit(args):
         schedule=getattr(args, "schedule", None),
         prompt=getattr(args, "prompt", None),
         name=getattr(args, "name", None),
-        deliver=getattr(args, "deliver", None),
         repeat=getattr(args, "repeat", None),
         skills=final_skills,
         script=getattr(args, "script", None),

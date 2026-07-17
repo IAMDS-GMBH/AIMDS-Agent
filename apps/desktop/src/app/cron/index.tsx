@@ -42,10 +42,6 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { jobState, jobTitle, STATE_DOT } from './job-state'
 
-const DEFAULT_DELIVER = 'local'
-
-const DELIVERY_VALUES: readonly string[] = ['local', 'telegram', 'discord', 'slack', 'email']
-
 const SCHEDULE_OPTIONS: ReadonlyArray<ScheduleOption> = [
   { expr: '0 9 * * *', value: 'daily' },
   { expr: '0 9 * * 1-5', value: 'weekdays' },
@@ -91,10 +87,6 @@ function jobScheduleDisplay(job: CronJob): string {
 
 function jobScheduleExpr(job: CronJob): string {
   return asText(job.schedule?.expr) || asText(job.schedule_display) || ''
-}
-
-function jobDeliver(job: CronJob): string {
-  return asText(job.deliver) || DEFAULT_DELIVER
 }
 
 function cronParts(expr: string): null | string[] {
@@ -233,7 +225,7 @@ function matchesQuery(job: CronJob, q: string): boolean {
 
   const needle = q.toLowerCase()
 
-  return [jobTitle(job), jobPrompt(job), jobScheduleDisplay(job), jobScheduleExpr(job), jobDeliver(job)].some(value =>
+  return [jobTitle(job), jobPrompt(job), jobScheduleDisplay(job), jobScheduleExpr(job)].some(value =>
     value.toLowerCase().includes(needle)
   )
 }
@@ -388,8 +380,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
       const created = await createCronJob({
         prompt: values.prompt,
         schedule: values.schedule,
-        name: values.name || undefined,
-        deliver: values.deliver || DEFAULT_DELIVER
+        name: values.name || undefined
       })
 
       updateCronJobs(rows => [...rows, created])
@@ -398,8 +389,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
       const updated = await updateCronJob(editor.job.id, {
         prompt: values.prompt,
         schedule: values.schedule,
-        name: values.name,
-        deliver: values.deliver
+        name: values.name
       })
 
       updateCronJobs(rows => rows.map(row => (row.id === updated.id ? updated : row)))
@@ -552,7 +542,6 @@ function CronJobDetail({
 }) {
   const state = jobState(job)
   const isPaused = state === 'paused'
-  const deliver = jobDeliver(job)
   const prompt = jobPrompt(job)
 
   return (
@@ -565,9 +554,6 @@ function CronJobDetail({
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-xl font-semibold tracking-tight">{jobTitle(job)}</h3>
                   <StatePill tone={STATE_TONE[state] ?? 'muted'}>{c.states[state] ?? state}</StatePill>
-                  {deliver && deliver !== DEFAULT_DELIVER && (
-                    <StatePill tone="muted">{c.deliveryLabels[deliver] ?? deliver}</StatePill>
-                  )}
                 </div>
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.7rem] text-muted-foreground">
                   <span className="inline-flex items-center gap-1">
@@ -742,7 +728,6 @@ function CronEditorDialog({
   const [prompt, setPrompt] = useState('')
   const [schedule, setSchedule] = useState('')
   const [schedulePreset, setSchedulePreset] = useState('daily')
-  const [deliver, setDeliver] = useState(DEFAULT_DELIVER)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
@@ -755,7 +740,6 @@ function CronEditorDialog({
     setPrompt(initial ? jobPrompt(initial) : '')
     setSchedule(initial ? jobScheduleExpr(initial) : (SCHEDULE_OPTIONS[0].expr ?? ''))
     setSchedulePreset(initial ? scheduleOptionForExpr(jobScheduleExpr(initial)).value : 'daily')
-    setDeliver(initial ? jobDeliver(initial) : DEFAULT_DELIVER)
     setError(null)
     setSaving(false)
   }, [initial, open])
@@ -794,7 +778,6 @@ function CronEditorDialog({
 
     try {
       await onSave({
-        deliver,
         name: name.trim(),
         prompt: trimmedPrompt,
         schedule: trimmedSchedule
@@ -835,37 +818,20 @@ function CronEditorDialog({
             />
           </Field>
 
-          <div className="grid items-start gap-4 sm:grid-cols-2">
-            <Field htmlFor="cron-frequency" label={c.frequencyLabel}>
-              <Select onValueChange={handleSchedulePresetChange} value={schedulePreset}>
-                <SelectTrigger className="h-9 rounded-md" id="cron-frequency">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {SCHEDULE_OPTIONS.map(option => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {c.scheduleLabels[option.value]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-
-            <Field htmlFor="cron-deliver" label={c.deliverLabel}>
-              <Select onValueChange={setDeliver} value={deliver}>
-                <SelectTrigger className="h-9 rounded-md" id="cron-deliver">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {DELIVERY_VALUES.map(value => (
-                    <SelectItem key={value} value={value}>
-                      {c.deliveryLabels[value]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-          </div>
+          <Field htmlFor="cron-frequency" label={c.frequencyLabel}>
+            <Select onValueChange={handleSchedulePresetChange} value={schedulePreset}>
+              <SelectTrigger className="h-9 rounded-md" id="cron-frequency">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SCHEDULE_OPTIONS.map(option => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {c.scheduleLabels[option.value]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
 
           {schedulePreset === 'custom' ? (
             <Field htmlFor="cron-schedule" label={c.customScheduleLabel}>
@@ -939,7 +905,6 @@ function FieldHint({ children }: { children: React.ReactNode }) {
 type EditorState = { mode: 'closed' } | { mode: 'create' } | { job: CronJob; mode: 'edit' }
 
 interface EditorValues {
-  deliver: string
   name: string
   prompt: string
   schedule: string
