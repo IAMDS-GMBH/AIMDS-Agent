@@ -992,6 +992,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
   const [triggerActive, setTriggerActive] = useState(0)
   const [triggerItems, setTriggerItems] = useState<readonly Unstable_TriggerItem[]>([])
+  const safeTriggerActive = triggerItems.length > 0 ? Math.min(triggerActive, triggerItems.length - 1) : 0
   // See index.tsx: set in keydown when the open popover consumes a nav/control
   // key so the matching keyup skips refreshTrigger (timing-immune vs reading
   // `trigger`, which keyup sees as already-null after Escape).
@@ -1447,7 +1448,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
       if (event.key === 'Enter' || event.key === 'Tab') {
         event.preventDefault()
         triggerKeyConsumedRef.current = true
-        const item = triggerItems[triggerActive]
+        const item = triggerItems[safeTriggerActive]
 
         if (item) {
           replaceTriggerWithChip(item)
@@ -1508,7 +1509,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
         >
           {trigger && (
             <ComposerTriggerPopover
-              activeIndex={triggerActive}
+              activeIndex={safeTriggerActive}
               items={triggerItems}
               kind={trigger.kind}
               loading={triggerLoading}

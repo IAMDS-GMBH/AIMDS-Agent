@@ -552,6 +552,7 @@ export function ChatBar({
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
   const [triggerActive, setTriggerActive] = useState(0)
   const [triggerItems, setTriggerItems] = useState<readonly Unstable_TriggerItem[]>([])
+  const safeTriggerActive = triggerItems.length > 0 ? Math.min(triggerActive, triggerItems.length - 1) : 0
   // Set synchronously in keydown when the open trigger popover consumes a
   // navigation/control key (Arrow/Enter/Tab/Escape). The subsequent keyup must
   // NOT run refreshTrigger for that keypress: it never edits text, and for
@@ -803,7 +804,7 @@ export function ChatBar({
       if (event.key === 'Enter' || event.key === 'Tab') {
         event.preventDefault()
         triggerKeyConsumedRef.current = true
-        const item = triggerItems[triggerActive]
+        const item = triggerItems[safeTriggerActive]
 
         if (item) {
           replaceTriggerWithChip(item)
@@ -1680,7 +1681,7 @@ export function ChatBar({
           {showHelpHint && <HelpHint />}
           {trigger && (
             <ComposerTriggerPopover
-              activeIndex={triggerActive}
+              activeIndex={safeTriggerActive}
               items={triggerItems}
               kind={trigger.kind}
               loading={triggerLoading}
