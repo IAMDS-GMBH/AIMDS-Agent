@@ -22,7 +22,24 @@ Usage:
 
 import subprocess
 import sys
+import shutil
 from pathlib import Path
+
+
+def _libreoffice_cmd() -> str | None:
+    for candidate in [
+        "libreoffice",
+        "soffice",
+        "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    ]:
+        if "/" in candidate:
+            if Path(candidate).exists():
+                return candidate
+            continue
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    return None
 
 
 def from_csv(src, dst):
@@ -75,9 +92,17 @@ def to_csv(path, out, sheet=None):
 def to_pdf(path):
     path = str(Path(path).resolve())
     out = Path(path).with_suffix(".pdf")
+    libreoffice_bin = _libreoffice_cmd()
+    if not libreoffice_bin:
+        print(
+            "Error: LibreOffice/soffice not found. Install LibreOffice to enable XLSX -> PDF conversion.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     result = subprocess.run(
         [
-            "libreoffice",
+            libreoffice_bin,
             "--headless",
             "--convert-to",
             "pdf",
@@ -90,6 +115,9 @@ def to_pdf(path):
     )
     if result.returncode != 0:
         print(f"Error: {result.stderr}", file=sys.stderr)
+        sys.exit(1)
+    if not out.exists():
+        print("Error: Conversion did not produce a PDF output file.", file=sys.stderr)
         sys.exit(1)
     print(f"PDF: {out}")
 

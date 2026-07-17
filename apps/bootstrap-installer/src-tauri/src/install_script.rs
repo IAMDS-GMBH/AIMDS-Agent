@@ -72,16 +72,16 @@ const BUNDLED_AIMDS_ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../../../installer/scripts/seed-workspace-cwd.py"),
     ),
     (
-        "installer/skills/productivity/excel/SKILL.md",
-        include_bytes!("../../../../installer/skills/productivity/excel/SKILL.md"),
+        "skills/productivity/excel/SKILL.md",
+        include_bytes!("../../../../skills/productivity/excel/SKILL.md"),
     ),
     (
-        "installer/skills/productivity/excel/scripts/read.py",
-        include_bytes!("../../../../installer/skills/productivity/excel/scripts/read.py"),
+        "skills/productivity/excel/scripts/read.py",
+        include_bytes!("../../../../skills/productivity/excel/scripts/read.py"),
     ),
     (
-        "installer/skills/productivity/excel/scripts/write.py",
-        include_bytes!("../../../../installer/skills/productivity/excel/scripts/write.py"),
+        "skills/productivity/excel/scripts/write.py",
+        include_bytes!("../../../../skills/productivity/excel/scripts/write.py"),
     ),
     (
         "installer/skills/productivity/pdf/SKILL.md",
@@ -100,20 +100,20 @@ const BUNDLED_AIMDS_ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../../../installer/skills/productivity/file-conversion/scripts/convert.py"),
     ),
     (
-        "installer/skills/productivity/word/SKILL.md",
-        include_bytes!("../../../../installer/skills/productivity/word/SKILL.md"),
+        "skills/productivity/word/SKILL.md",
+        include_bytes!("../../../../skills/productivity/word/SKILL.md"),
     ),
     (
-        "installer/skills/productivity/word/scripts/read.py",
-        include_bytes!("../../../../installer/skills/productivity/word/scripts/read.py"),
+        "skills/productivity/word/scripts/read.py",
+        include_bytes!("../../../../skills/productivity/word/scripts/read.py"),
     ),
     (
-        "installer/skills/productivity/word/scripts/write.py",
-        include_bytes!("../../../../installer/skills/productivity/word/scripts/write.py"),
+        "skills/productivity/word/scripts/write.py",
+        include_bytes!("../../../../skills/productivity/word/scripts/write.py"),
     ),
     (
-        "installer/skills/productivity/word/scripts/convert.py",
-        include_bytes!("../../../../installer/skills/productivity/word/scripts/convert.py"),
+        "skills/productivity/word/scripts/convert.py",
+        include_bytes!("../../../../skills/productivity/word/scripts/convert.py"),
     ),
 ];
 

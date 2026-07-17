@@ -26,10 +26,13 @@ def from_markdown(src, dst):
     from pathlib import Path
 
     # Try pandoc first — best quality
-    result = subprocess.run(["pandoc", src, "-o", dst], capture_output=True, text=True)
-    if result.returncode == 0:
-        print(f"Created {dst} via pandoc.")
-        return
+    try:
+        result = subprocess.run(["pandoc", src, "-o", dst], capture_output=True, text=True)
+        if result.returncode == 0:
+            print(f"Created {dst} via pandoc.")
+            return
+    except FileNotFoundError:
+        pass
 
     # Fallback: plain paragraph write
     from docx import Document

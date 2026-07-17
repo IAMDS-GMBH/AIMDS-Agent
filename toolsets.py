@@ -48,6 +48,8 @@ _HERMES_CORE_TOOLS = [
     "clarify",
     # Code execution
     "execute_code",
+    # Office productivity
+    "office_word", "office_excel", "office_powerpoint",
 ]
 
 # Toolsets hard-disabled at runtime across all platforms/surfaces.
@@ -172,6 +174,12 @@ TOOLSETS = {
     "cronjob": {
         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",
         "tools": ["cronjob"],
+        "includes": []
+    },
+
+    "office": {
+        "description": "Word/Excel/PowerPoint productivity tools",
+        "tools": ["office_word", "office_excel", "office_powerpoint"],
         "includes": []
     },
     
