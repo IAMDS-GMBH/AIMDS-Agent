@@ -2173,24 +2173,12 @@ resolve_aimds_installer_dir() {
 }
 
 sync_aimds_custom_assets() {
-    local installer_dir skills_src hidden_skills_src scripts_src
+    local installer_dir hidden_skills_src scripts_src
     installer_dir="$(resolve_aimds_installer_dir 2>/dev/null || true)"
     [ -n "$installer_dir" ] || return 0
 
-    skills_src="$installer_dir/skills"
     hidden_skills_src="$installer_dir/skills-hidden"
     scripts_src="$installer_dir/scripts"
-
-    if [ -d "$skills_src" ] && [ -n "$(find "$skills_src" -mindepth 1 -print -quit 2>/dev/null)" ]; then
-        log_info "Syncing AIMDS custom skills from $skills_src ..."
-        mkdir -p "$HERMES_HOME/skills"
-        if command -v rsync >/dev/null 2>&1; then
-            rsync -a "$skills_src/" "$HERMES_HOME/skills/"
-        else
-            cp -R "$skills_src/"* "$HERMES_HOME/skills/" 2>/dev/null || true
-        fi
-        log_success "AIMDS custom skills synced"
-    fi
 
     # Copy staged-but-inactive AIMDS skills/docs into .archive so they ship with
     # the installer but do not register as active skills yet.
@@ -2283,8 +2271,8 @@ copy_config_templates() {
         log_info "~/.hermes/config.yaml already exists, keeping it"
     fi
 
-    # Optionally merge AIMDS custom skills/tools when AIMDS installer assets
-    # are available alongside this checkout.
+    # Optionally sync AIMDS auxiliary installer assets (hidden pack + helper
+    # scripts). Active skills come from repo-based bundled skill sync.
     sync_aimds_custom_assets
 
     # Keep parity with AIMDS installer defaults: use a stable Documents working

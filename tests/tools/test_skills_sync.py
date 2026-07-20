@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.skills_sync import (
+    _get_additional_bundled_dirs,
     _get_bundled_dir,
     _read_manifest,
     _read_skill_name,
@@ -253,6 +254,41 @@ class TestSyncSkills:
         # Hashes should be non-empty MD5 strings
         assert len(manifest["new-skill"]) == 32
         assert len(manifest["old-skill"]) == 32
+
+    def test_sync_includes_additional_bundled_sources(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        extra = tmp_path / "installer" / "skills"
+        (extra / "aimds_custom" / "doc-review").mkdir(parents=True)
+        (extra / "aimds_custom" / "doc-review" / "SKILL.md").write_text(
+            "---\nname: doc-review\n---\n# AIMDS custom\n"
+        )
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+                patch("tools.skills_sync._get_additional_bundled_dirs", return_value=[extra]):
+            result = sync_skills(quiet=True)
+
+        assert "doc-review" in result["copied"]
+        assert (skills_dir / "aimds_custom" / "doc-review" / "SKILL.md").exists()
+
+    def test_primary_source_wins_on_duplicate_rel_path(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        extra = tmp_path / "installer" / "skills"
+        # Same relative path as primary source, different content.
+        (extra / "category" / "new-skill").mkdir(parents=True)
+        (extra / "category" / "new-skill" / "SKILL.md").write_text("# From extra")
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+                patch("tools.skills_sync._get_additional_bundled_dirs", return_value=[extra]):
+            sync_skills(quiet=True)
+
+        text = (skills_dir / "category" / "new-skill" / "SKILL.md").read_text()
+        assert text == "# New"
 
     def test_user_deleted_skill_not_re_added(self, tmp_path):
         """Skill in manifest but not on disk = user deleted it. Don't re-add."""
@@ -774,6 +810,13 @@ class TestGetBundledDir:
         monkeypatch.setenv("HERMES_BUNDLED_SKILLS", "")
         result = _get_bundled_dir()
         assert result.name == "skills"
+
+    def test_additional_bundled_dirs_include_installer_skills(self, tmp_path):
+        primary = tmp_path / "repo" / "skills"
+        extra = tmp_path / "repo" / "installer" / "skills"
+        primary.mkdir(parents=True)
+        extra.mkdir(parents=True)
+        assert _get_additional_bundled_dirs(primary) == [extra]
 
 
 class TestResetBundledSkill:

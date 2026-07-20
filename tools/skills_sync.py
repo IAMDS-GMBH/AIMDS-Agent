@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import is_excluded_skill_path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Set, Tuple
 from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
@@ -62,6 +62,67 @@ def _get_bundled_dir() -> Path:
     path from this source file.
     """
     return get_bundled_skills_dir(Path(__file__).parent.parent / "skills")
+
+
+def _get_additional_bundled_dirs(primary_dir: Path) -> List[Path]:
+    """Locate additional bundled skill roots to include in manifest sync.
+
+    The IAMDS repo may carry extra bundled skills under ``installer/skills``
+    (for example AIMDS custom packs). Treat those as first-class bundled
+    sources during sync so install/update can rely on repo sync + data repair,
+    without a separate installer-to-profile copy step.
+    """
+    extras: List[Path] = []
+    seen: Set[str] = set()
+
+    def _add(path: Path) -> None:
+        key = str(path)
+        if key in seen:
+            return
+        seen.add(key)
+        if path != primary_dir and path.exists():
+            extras.append(path)
+
+    env_extra = os.environ.get("HERMES_EXTRA_BUNDLED_SKILLS", "").strip()
+    if env_extra:
+        for raw in env_extra.split(os.pathsep):
+            raw = raw.strip()
+            if raw:
+                _add(Path(raw))
+
+    _add(primary_dir.parent / "installer" / "skills")
+    return extras
+
+
+def _discover_all_bundled_skills(bundled_dirs: List[Path], *, quiet: bool = False) -> List[Tuple[str, Path, Path]]:
+    """Discover bundled skills across multiple source roots.
+
+    Dedupes by destination-relative path first, then by skill frontmatter name.
+    The first root wins (primary bundled skills outrank additional roots).
+    """
+    discovered: List[Tuple[str, Path, Path]] = []
+    seen_rel_paths: Set[str] = set()
+    seen_names: Set[str] = set()
+
+    for source_dir in bundled_dirs:
+        for skill_name, skill_src in _discover_bundled_skills(source_dir):
+            rel_path = skill_src.relative_to(source_dir).as_posix()
+            if rel_path in seen_rel_paths:
+                logger.debug("Skipping duplicate bundled skill path %s from %s", rel_path, source_dir)
+                continue
+            if skill_name in seen_names:
+                if not quiet:
+                    print(
+                        f"  ⚠ Duplicate bundled skill name '{skill_name}' in {source_dir}; "
+                        "keeping the first source."
+                    )
+                logger.debug("Skipping duplicate bundled skill name %s from %s", skill_name, source_dir)
+                continue
+            discovered.append((skill_name, skill_src, source_dir))
+            seen_rel_paths.add(rel_path)
+            seen_names.add(skill_name)
+
+    return discovered
 
 
 def _get_optional_dir() -> Path:
@@ -554,7 +615,9 @@ def sync_skills(quiet: bool = False) -> dict:
         }
 
     bundled_dir = _get_bundled_dir()
-    if not bundled_dir.exists():
+    bundled_dirs = [bundled_dir, *_get_additional_bundled_dirs(bundled_dir)]
+    existing_bundled_dirs = [path for path in bundled_dirs if path.exists()]
+    if not existing_bundled_dirs:
         return {
             "copied": [], "updated": [], "skipped": 0,
             "user_modified": [], "cleaned": [], "suppressed": [], "total_bundled": 0,
@@ -564,8 +627,8 @@ def sync_skills(quiet: bool = False) -> dict:
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     manifest = _read_manifest()
     _migrate_renamed_skills(manifest, quiet=quiet)
-    bundled_skills = _discover_bundled_skills(bundled_dir)
-    bundled_names = {name for name, _ in bundled_skills}
+    bundled_skills = _discover_all_bundled_skills(existing_bundled_dirs, quiet=quiet)
+    bundled_names = {name for name, _, _ in bundled_skills}
     suppressed = _read_suppressed_names()
 
     copied = []
@@ -574,7 +637,7 @@ def sync_skills(quiet: bool = False) -> dict:
     suppressed_skipped: List[str] = []
     skipped = 0
 
-    for skill_name, skill_src in bundled_skills:
+    for skill_name, skill_src, source_root in bundled_skills:
         # Curator-pruned built-ins: do not re-seed. The suppression list
         # (~/.hermes/skills/.curator_suppressed) is written when the curator
         # archives a bundled skill with curator.prune_builtins enabled. Without
@@ -584,7 +647,7 @@ def sync_skills(quiet: bool = False) -> dict:
             suppressed_skipped.append(skill_name)
             continue
 
-        dest = _compute_relative_dest(skill_src, bundled_dir)
+        dest = _compute_relative_dest(skill_src, source_root)
         bundled_hash = _dir_hash(skill_src)
 
         if skill_name not in manifest:
@@ -685,15 +748,16 @@ def sync_skills(quiet: bool = False) -> dict:
         del manifest[name]
 
     # Also copy DESCRIPTION.md files for categories (if not already present)
-    for desc_md in bundled_dir.rglob("DESCRIPTION.md"):
-        rel = desc_md.relative_to(bundled_dir)
-        dest_desc = SKILLS_DIR / rel
-        if not dest_desc.exists():
-            try:
-                dest_desc.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(desc_md, dest_desc)
-            except (OSError, IOError) as e:
-                logger.debug("Could not copy %s: %s", desc_md, e)
+    for source_root in existing_bundled_dirs:
+        for desc_md in source_root.rglob("DESCRIPTION.md"):
+            rel = desc_md.relative_to(source_root)
+            dest_desc = SKILLS_DIR / rel
+            if not dest_desc.exists():
+                try:
+                    dest_desc.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(desc_md, dest_desc)
+                except (OSError, IOError) as e:
+                    logger.debug("Could not copy %s: %s", desc_md, e)
 
     _write_manifest(manifest)
     optional_provenance_backfilled = _backfill_optional_provenance(quiet=quiet)

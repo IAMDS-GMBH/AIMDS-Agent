@@ -2872,18 +2872,6 @@ function Sync-AimdsCustomAssets {
     $installerDir = Resolve-AimdsInstallerDir
     if ([string]::IsNullOrWhiteSpace($installerDir)) { return }
 
-    $skillsSrc = Join-Path $installerDir 'skills'
-    if (Test-Path $skillsSrc) {
-        $skillItems = Get-ChildItem -Path $skillsSrc -ErrorAction SilentlyContinue
-        if ($skillItems) {
-            $skillsDest = Join-Path $HermesHome 'skills'
-            New-Item -ItemType Directory -Force -Path $skillsDest | Out-Null
-            Write-Info "Syncing AIMDS custom skills from $skillsSrc ..."
-            Copy-Item -Path "$skillsSrc\*" -Destination $skillsDest -Recurse -Force -ErrorAction SilentlyContinue
-            Write-Success "AIMDS custom skills synced"
-        }
-    }
-
     $hiddenSkillsSrc = Join-Path $installerDir 'skills-hidden'
     if (Test-Path $hiddenSkillsSrc) {
         $hiddenItems = Get-ChildItem -Path $hiddenSkillsSrc -ErrorAction SilentlyContinue
@@ -3004,8 +2992,8 @@ function Copy-ConfigTemplates {
         Write-Info "$configPath already exists, keeping it"
     }
 
-    # Optionally merge AIMDS custom skills/tools when AIMDS installer assets
-    # are available alongside this checkout.
+    # Optionally sync AIMDS auxiliary installer assets (hidden pack + helper
+    # scripts). Active skills come from repo-based bundled skill sync.
     Sync-AimdsCustomAssets
 
     # Keep parity with AIMDS installer defaults: use a stable Documents working
