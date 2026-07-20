@@ -7369,15 +7369,19 @@ def _spawn_immediate_cron_job(profile: str, job_id: str) -> Optional[str]:
         # Get the job config to pass to run_job
         job = _call_cron_for_profile(profile, "get_job", job_id)
         if not job:
+            _log.warning("Job '%s' not found during immediate trigger", job_id)
             return None
         
         # Generate the session_id that will be used
         from cron.scheduler import _hermes_now
         session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
         
+        _log.info("Spawning immediate cron job '%s' (session_id: %s)", job_id, session_id)
+        
         def _run_job_thread():
             """Background thread to execute the job immediately."""
             try:
+                _log.info("Background thread started for job '%s'", job_id)
                 # Switch HERMES_HOME context for this thread
                 from cron import scheduler as cron_sched
                 from hermes_cli import profiles as profiles_mod
@@ -7387,6 +7391,7 @@ def _spawn_immediate_cron_job(profile: str, job_id: str) -> Optional[str]:
                 try:
                     os.environ["HERMES_HOME"] = str(home)
                     # Execute the job
+                    _log.info("Executing job '%s' with HERMES_HOME=%s", job_id, home)
                     success, output, final_response, error = cron_sched.run_job(job)
                     # Mark the job as complete
                     cron_sched.mark_job_run(job_id, success, error)
@@ -7413,6 +7418,7 @@ def _spawn_immediate_cron_job(profile: str, job_id: str) -> Optional[str]:
         )
         thread.start()
         
+        _log.info("Background thread spawned for job '%s'", job_id)
         return session_id
     except Exception as e:
         _log.error("Failed to spawn immediate cron job '%s': %s", job_id, e, exc_info=True)
@@ -7425,10 +7431,14 @@ async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
     
+    _log.info("Manual trigger requested for job '%s' in profile '%s'", job_id, selected)
+    
     # Manual trigger: spawn immediate execution directly (do NOT call trigger_job,
     # which would queue for the next scheduler tick). This avoids double-execution
     # and ensures manual triggers always run once immediately.
     session_id = _spawn_immediate_cron_job(selected, job_id)
+    
+    _log.info("Job '%s' spawned with session_id '%s'", job_id, session_id)
     
     # Fetch the job to return current state
     job = _call_cron_for_profile(selected, "get_job", job_id)
