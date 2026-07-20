@@ -201,6 +201,7 @@ CRONJOB_SCHEDULING_GUIDANCE = (
     "Hard constraints:\n"
     "- All cron job outputs are delivered to Desktop; do not offer alternative delivery targets.\n"
     "- Do not suggest the user write their own cron script or use system-level schedulers (cron/launchd/Task Scheduler).\n"
+    "- Do NOT create a todo item when scheduling a cron job — the cronjob tool is self-contained and requires no todo.\n"
     "- The `cronjob` tool is the single source of truth for task scheduling."
 )
 
