@@ -420,9 +420,7 @@ export function DesktopController() {
       }
     }
 
-    void refreshCronSessions()
-    void refreshCronJobs()
-    void refreshMessagingSessions()
+    await Promise.allSettled([refreshCronSessions(), refreshCronJobs(), refreshMessagingSessions()])
   }, [profileScope, refreshCronSessions, refreshCronJobs, refreshMessagingSessions])
 
   const loadMoreSessions = useCallback(() => {
@@ -660,20 +658,29 @@ export function DesktopController() {
   })
 
   // Listen for cron job completion events and refresh the job list
-  const handleCronJobCompleted = useCallback((jobId: string, success: boolean, error?: string) => {
-    const match = $cronJobs.get().find(job => job.id === jobId)
-    const titleText = match ? jobTitle(match) : jobId
-    const clippedTitle =
-      titleText.length > CRON_TOAST_TITLE_MAX ? `${titleText.slice(0, CRON_TOAST_TITLE_MAX)}…` : titleText
+  const handleCronJobCompleted = useCallback(
+    (jobId: string, success: boolean, error?: string) => {
+      const match = $cronJobs.get().find(job => job.id === jobId)
+      const titleText = match ? jobTitle(match) : jobId
+      const clippedTitle =
+        titleText.length > CRON_TOAST_TITLE_MAX ? `${titleText.slice(0, CRON_TOAST_TITLE_MAX)}…` : titleText
 
-    notify({
-      kind: success ? 'success' : 'error',
-      title: `${success ? 'Cron job completed' : 'Cron job failed'} · ${clippedTitle}`,
-      message: success ? 'Execution finished.' : error || 'Execution failed.',
-      durationMs: success ? 5000 : 0
-    })
-    void refreshCronJobs()
-  }, [refreshCronJobs])
+      notify({
+        kind: success ? 'success' : 'error',
+        title: `${success ? 'Cron job completed' : 'Cron job failed'} · ${clippedTitle}`,
+        message: success ? 'Execution finished.' : error || 'Execution failed.',
+        durationMs: success ? 5000 : 0
+      })
+
+      // Refresh immediately after surfacing completion, then once more shortly
+      // after to absorb eventual persistence lag from scheduler/session writes.
+      void refreshSessions().catch(() => undefined)
+      window.setTimeout(() => {
+        void refreshSessions().catch(() => undefined)
+      }, 800)
+    },
+    [refreshSessions]
+  )
 
   // Cron trigger requests are routed through the primary backend (no `profile`
   // query param). Listen on that same backend so completion toasts are reliable

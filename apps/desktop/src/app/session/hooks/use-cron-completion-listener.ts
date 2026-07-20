@@ -16,7 +16,7 @@ type CronCompletionEvent = {
  * for the next poll interval.
  */
 export function useCronCompletionListener(
-  onJobCompleted?: (jobId: string, success: boolean, error?: string) => void,
+  onJobCompleted?: (jobId: string, success: boolean, error?: string) => Promise<void> | void,
   profile?: string
 ) {
   const wsRef = useRef<WebSocket | null>(null)
