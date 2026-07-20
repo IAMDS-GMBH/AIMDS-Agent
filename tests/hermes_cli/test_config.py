@@ -1207,3 +1207,59 @@ class TestWriteApprovalMigration:
             # gate ends up off and there's no leftover write_mode key.
             assert raw["memory"].get("write_approval", False) is False
             assert "write_mode" not in raw.get("memory", {})
+
+
+class TestMcpRootKeyRepairMigration:
+    """Version 31→32 repairs legacy MCP root keys to mcp_servers."""
+
+    def _write(self, tmp_path, body: str):
+        (tmp_path / "config.yaml").write_text(body)
+
+    def test_repairs_mcp_servers_nested_under_mcp(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 31\n"
+                "mcp:\n"
+                "  servers:\n"
+                "    legacy:\n"
+                "      url: https://example.com/mcp\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert "mcp" not in raw
+            assert "mcp_servers" in raw
+            assert "legacy" in raw["mcp_servers"]
+            assert raw["mcp_servers"]["legacy"]["url"] == "https://example.com/mcp"
+
+    def test_repairs_camelcase_mcpservers(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 31\n"
+                "mcpServers:\n"
+                "  legacy:\n"
+                "    url: https://example.com/mcp\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert "mcpServers" not in raw
+            assert "mcp_servers" in raw
+            assert "legacy" in raw["mcp_servers"]
+
+    def test_does_not_overwrite_existing_mcp_servers_entries(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 31\n"
+                "mcp_servers:\n"
+                "  kept:\n"
+                "    url: https://kept.example/mcp\n"
+                "mcp:\n"
+                "  servers:\n"
+                "    kept:\n"
+                "      url: https://legacy-should-not-overwrite/mcp\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["mcp_servers"]["kept"]["url"] == "https://kept.example/mcp"

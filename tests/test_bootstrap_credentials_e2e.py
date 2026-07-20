@@ -131,6 +131,10 @@ class TestBashCredentialConsumption:
             "mcp_servers block not found"
         assert 'mcp_server_name' in content or '{mcp_name}' in content, \
             "dynamic MCP server name configuration not found"
+        assert 'provider: iamds' in content, \
+            "MCP server bootstrap block should pin provider: iamds"
+        assert 'trusted: false' in content, \
+            "MCP server bootstrap block should default to trusted: false"
     
     def test_env_file_populated(self):
         """Verify .env file is populated with secrets."""
@@ -230,6 +234,10 @@ class TestPowerShellCredentialConsumption:
             "mcp_servers block not found"
         assert '$mcpServerName' in content or '${mcpServerName}' in content, \
             "dynamic MCP server name configuration not found"
+        assert 'provider: iamds' in content, \
+            "MCP server bootstrap block should pin provider: iamds"
+        assert 'trusted: false' in content, \
+            "MCP server bootstrap block should default to trusted: false"
     
     def test_env_file_populated(self):
         """Verify .env file is populated with secrets."""

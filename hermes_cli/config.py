@@ -2647,7 +2647,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 31,
+    "_config_version": 32,
 }
 
 # =============================================================================
@@ -4252,6 +4252,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
+    "mcp_servers",
     "sessions", "streaming", "updates",
 }
 
@@ -4405,6 +4406,29 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "    provider: custom\n"
             "    default: your-model-name\n"
             "    base_url: https://...",
+        ))
+
+    # ── Legacy MCP key repair hints ──────────────────────────────────────
+    if "mcp" in config:
+        mcp_value = config.get("mcp")
+        if isinstance(mcp_value, dict) and "servers" in mcp_value:
+            issues.append(ConfigIssue(
+                "warning",
+                "Legacy root key 'mcp.servers' detected",
+                "Run 'hermes config migrate' to auto-repair to root-level 'mcp_servers'",
+            ))
+        else:
+            issues.append(ConfigIssue(
+                "warning",
+                "Unknown root key 'mcp' detected",
+                "Run 'hermes config migrate' to repair legacy MCP config keys",
+            ))
+
+    if "mcpServers" in config:
+        issues.append(ConfigIssue(
+            "warning",
+            "Legacy camelCase key 'mcpServers' detected",
+            "Run 'hermes config migrate' to auto-repair to snake_case 'mcp_servers'",
         ))
 
     # ── Root-level keys that look misplaced ──────────────────────────────
@@ -5169,6 +5193,62 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     save_config(config)
         except Exception as _cap_exc:
             results["warnings"].append(f"capture_mode migration (v31) failed: {_cap_exc}")
+
+    # ── Version 31 → 32: repair legacy MCP root keys to mcp_servers ──
+    if current_ver < 32:
+        try:
+            config = read_raw_config()
+            touched = False
+            migrated_names: List[str] = []
+
+            # Repair legacy nested shape:
+            #   mcp:
+            #     servers:
+            #       <name>: {...}
+            legacy_mcp = config.get("mcp")
+            if isinstance(legacy_mcp, dict):
+                legacy_servers = legacy_mcp.get("servers")
+                if isinstance(legacy_servers, dict) and legacy_servers:
+                    mcp_servers = config.get("mcp_servers")
+                    if not isinstance(mcp_servers, dict):
+                        mcp_servers = {}
+                    for name, server_cfg in legacy_servers.items():
+                        if name not in mcp_servers:
+                            mcp_servers[name] = server_cfg
+                            migrated_names.append(name)
+                            touched = True
+                    config["mcp_servers"] = mcp_servers
+                # Drop the legacy root key once migrated.
+                config.pop("mcp", None)
+                touched = True
+
+            # Repair camelCase legacy root key: mcpServers
+            legacy_camel = config.get("mcpServers")
+            if isinstance(legacy_camel, dict):
+                mcp_servers = config.get("mcp_servers")
+                if not isinstance(mcp_servers, dict):
+                    mcp_servers = {}
+                for name, server_cfg in legacy_camel.items():
+                    if name not in mcp_servers:
+                        mcp_servers[name] = server_cfg
+                        migrated_names.append(name)
+                        touched = True
+                config["mcp_servers"] = mcp_servers
+                config.pop("mcpServers", None)
+                touched = True
+
+            if touched:
+                config["_config_version"] = 32
+                save_config(config)
+                if migrated_names:
+                    results["config_added"].append(
+                        f"mcp_servers (migrated {len(migrated_names)} server entries from legacy keys)"
+                    )
+                if not quiet:
+                    moved = f" ({len(migrated_names)} server entries)" if migrated_names else ""
+                    print(f"  ✓ Repaired legacy MCP root keys → mcp_servers{moved}")
+        except Exception as _mcp_repair_exc:
+            results["warnings"].append(f"MCP root-key repair (v32) failed: {_mcp_repair_exc}")
 
     # Check for missing config fields
     missing_config = get_missing_config_fields()

@@ -192,6 +192,43 @@ class TestMissingModelSection:
         assert not any("no 'model' section" in i.message for i in issues)
 
 
+class TestLegacyMcpRootValidation:
+    """Legacy MCP root keys should be flagged with repair guidance."""
+
+    def test_legacy_mcp_servers_warns_with_migration_hint(self):
+        issues = validate_config_structure({
+            "mcp": {
+                "servers": {
+                    "aimds-gateway": {"url": "https://example.com/mcp"},
+                }
+            }
+        })
+        assert any(
+            "Legacy root key 'mcp.servers' detected" in i.message
+            and "hermes config migrate" in i.hint
+            for i in issues
+        )
+
+    def test_legacy_camelcase_mcpservers_warns(self):
+        issues = validate_config_structure({
+            "mcpServers": {
+                "aimds-gateway": {"url": "https://example.com/mcp"},
+            }
+        })
+        assert any(
+            "mcpServers" in i.message and "mcp_servers" in i.hint
+            for i in issues
+        )
+
+    def test_mcp_servers_root_is_accepted(self):
+        issues = validate_config_structure({
+            "mcp_servers": {
+                "aimds-gateway": {"url": "https://example.com/mcp"},
+            }
+        })
+        assert not any("mcp" in i.message.lower() for i in issues)
+
+
 class TestConfigIssueDataclass:
     """ConfigIssue should be a proper dataclass."""
 

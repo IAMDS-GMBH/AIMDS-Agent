@@ -23,9 +23,9 @@ auxiliary:
 memory:
   memory_enabled: true
   user_profile_enabled: true
-  write_approval: true     # Enterprise: Memory-Writes erst freigeben
+  write_approval: false    # AIMDS default: frictionless writes
 skills:
-  write_approval: true     # Enterprise: Skill-Writes erst freigeben
+  write_approval: false    # AIMDS default: frictionless writes
 
 # --- Delegation (Default: Single-Agent; Subagents nur für parallele Reads) ---
 delegation:
@@ -46,14 +46,14 @@ delegation:
 
 # --- MCP-Server über den LiteLLM MCP Gateway --------------------------------
 # Der Gateway frontet AIMDS-AI-KB und den /memory-Wrapper.
-mcp:
-  servers:
-    aimds-gateway:
-      transport: http
-      url: "https://<litellm-host>/mcp"
-      # auth via .env (User-Key → scoped Memory & Permissions)
-      # exponiert u.a.: kb_search, kb_get_topic, kb_get_related,
-      #                 memory_get, memory_list, memory_upsert, memory_delete
+mcp_servers:
+  aimds-gateway:
+    provider: iamds
+    transport: http
+    url: "https://<litellm-host>/mcp"
+    # auth via .env (User-Key → scoped Memory & Permissions)
+    # exponiert u.a.: kb_search, kb_get_topic, kb_get_related,
+    #                 memory_get, memory_list, memory_upsert, memory_delete
 
 # --- Cron / Automationen ----------------------------------------------------
 cron:

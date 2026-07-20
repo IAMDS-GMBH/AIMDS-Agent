@@ -1927,12 +1927,13 @@ path, mcp_url, api_key, mcp_name = sys.argv[1], sys.argv[2], sys.argv[3], (sys.a
 text = open(path, encoding="utf-8").read()
 memory_block = (
     f"  {mcp_name}:\n"
+    "    provider: iamds\n"
     f"    url: {mcp_url}\n"
     "    headers:\n"
     f"      Authorization: \"Bearer {api_key}\"\n"
     "    timeout: 180\n"
     "    connect_timeout: 60\n"
-    "    trusted: true\n"
+    "    trusted: false\n"
 )
 
 root = re.search(r"(?ms)^mcp_servers:\n(.*?)(?=^\S|\Z)", text)
