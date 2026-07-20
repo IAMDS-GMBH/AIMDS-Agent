@@ -10,9 +10,9 @@ fork inherits the cached prompt verbatim.
 Three tiers are joined with ``\\n\\n``:
 
 * ``stable``   — identity (SOUL.md or DEFAULT_AGENT_IDENTITY), tool
-  guidance, computer-use guidance, nous subscription block, tool-use
-  enforcement guidance + per-model operational guidance, skills prompt,
-  alibaba model-name workaround, environment hints, platform hints.
+  guidance, computer-use guidance, tool-use enforcement guidance + 
+  per-model operational guidance, skills prompt, alibaba model-name 
+  workaround, environment hints, platform hints.
 * ``context``  — caller-supplied ``system_message`` plus context files
   (AGENTS.md / .cursorrules / etc.) discovered under ``TERMINAL_CWD``.
 * ``volatile`` — memory snapshot, USER.md profile, external memory
@@ -51,11 +51,10 @@ def _ra():
     """Lazy reference to the ``run_agent`` module.
 
     Helpers like ``load_soul_md``, ``build_environment_hints``,
-    ``build_context_files_prompt``, ``build_nous_subscription_prompt``,
-    ``build_skills_system_prompt`` and ``get_toolset_for_tool`` are
-    imported into ``run_agent``'s namespace.  Many tests
-    ``patch("run_agent.load_soul_md", ...)``; if we imported them
-    directly here those patches would not reach us.  Looking them up
+    ``build_context_files_prompt``, ``build_skills_system_prompt`` and 
+    ``get_toolset_for_tool`` are imported into ``run_agent``'s namespace.  
+    Many tests ``patch("run_agent.load_soul_md", ...)``; if we imported 
+    them directly here those patches would not reach us.  Looking them up 
     through ``run_agent`` on every call preserves the patch contract.
     """
     import run_agent
