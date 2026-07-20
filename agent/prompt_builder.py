@@ -189,6 +189,17 @@ TODO_PERSISTENCE_GUIDANCE = (
     "When changing part of the list, prefer `merge=true` updates to edit existing items by id instead of re-adding duplicates."
 )
 
+CRONJOB_SCHEDULING_GUIDANCE = (
+    "# Cron job scheduling for repetitive tasks\n"
+    "When the user mentions a repetitive or recurring task (keywords: 'every [day/morning/evening/week/month] at X', "
+    "'daily', 'weekly on [day]', 'monthly', 'repetitive', 'recurring', 'schedule this'), "
+    "treat it as a strong signal to create a cron job.\n"
+    "**Always ask for confirmation before creating the cron job.** Use the `clarify` tool with a specific confirmation question "
+    "that shows the task name, frequency/schedule, and confirms that outputs will be delivered to Desktop only.\n"
+    "Once confirmed, use the `cronjob` tool to create the scheduled job.\n"
+    "Hard constraint: All cron job outputs are delivered to Desktop; do not offer alternative delivery targets."
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from "
