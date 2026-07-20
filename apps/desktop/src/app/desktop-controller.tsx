@@ -902,7 +902,10 @@ export function DesktopController() {
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
       onTriggerCronJob={jobId => {
         void triggerCronJob(jobId)
-          .then(() => refreshCronJobs())
+          .then(() => {
+            refreshCronJobs()
+            refreshSessions()
+          })
           .catch(() => undefined)
       }}
     />
