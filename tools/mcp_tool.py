@@ -439,11 +439,63 @@ def _prepend_path(env: dict, directory: str) -> dict:
     return updated
 
 
+# Bare commands we know how to hunt down when the filtered subprocess PATH
+# doesn't contain them. Maps command name -> ordered list of directories
+# (relative to a resolved ``hermes_home``, or absolute) to probe for it.
+# The first executable hit wins.
+_KNOWN_FALLBACK_COMMANDS = {
+    "npx": ("node", "bin"),
+    "npm": ("node", "bin"),
+    "node": ("node", "bin"),
+    # Hermes manages its own uv install at $HERMES_HOME/bin (see
+    # hermes_cli/managed_uv.py: managed_uv_path()) precisely so tools like
+    # MCP stdio servers configured with a bare "uv"/"uvx" command still work
+    # even when the GUI/gateway subprocess PATH is filtered and doesn't
+    # include Homebrew or the astral.sh installer's ~/.local/bin.
+    "uv": ("bin",),
+    "uvx": ("bin",),
+}
+
+
+def _fallback_command_candidates(resolved_command: str) -> List[str]:
+    """Return candidate absolute paths to probe for a known bare *resolved_command*.
+
+    Only used when ``shutil.which`` fails to find the command on the
+    (possibly filtered) subprocess PATH. Returns an empty list for commands
+    we have no special knowledge of.
+    """
+    hermes_subpath = _KNOWN_FALLBACK_COMMANDS.get(resolved_command)
+    if hermes_subpath is None:
+        return []
+
+    hermes_home = os.path.expanduser(
+        os.getenv("HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes"))
+    )
+    return [
+        os.path.join(hermes_home, *hermes_subpath, resolved_command),
+        os.path.join(os.path.expanduser("~"), ".local", "bin", resolved_command),
+        # Homebrew on Apple Silicon macOS installs both node and uv here.
+        os.path.join(os.sep, "opt", "homebrew", "bin", resolved_command),
+        # /usr/local/bin is the canonical install location for Node/uv on
+        # Linux from-source builds, the upstream node:bookworm-slim image
+        # (which the Hermes Docker image copies node + npm + corepack from
+        # since #4977), and macOS Homebrew on Intel. Without this candidate,
+        # any MCP server configured with an env.PATH that omits
+        # /usr/local/bin (a common pattern when users hand-author PATH for
+        # sandboxing) fails with ENOENT at execvp, and a naive symlink
+        # workaround into the user's PATH only fails one layer deeper
+        # because npx's/uvx's shebang re-execs a sibling binary (node,
+        # python) that needs the same directory.
+        os.path.join(os.sep, "usr", "local", "bin", resolved_command),
+    ]
+
+
 def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     """Resolve a stdio MCP command against the exact subprocess environment.
 
-    This primarily exists to make bare ``npx``/``npm``/``node`` commands work
-    reliably even when MCP subprocesses run under a filtered PATH.
+    This primarily exists to make bare ``npx``/``npm``/``node``/``uv``/``uvx``
+    commands work reliably even when MCP subprocesses run under a filtered
+    PATH.
     """
     resolved_command = os.path.expanduser(str(command).strip())
     resolved_env = dict(env or {})
@@ -453,30 +505,8 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
         which_hit = shutil.which(resolved_command, path=path_arg)
         if which_hit:
             resolved_command = which_hit
-        elif resolved_command in {"npx", "npm", "node"}:
-            hermes_home = os.path.expanduser(
-                os.getenv(
-                    "HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes")
-                )
-            )
-            candidates = [
-                os.path.join(hermes_home, "node", "bin", resolved_command),
-                os.path.join(
-                    os.path.expanduser("~"), ".local", "bin", resolved_command
-                ),
-                # /usr/local/bin is the canonical install location for Node on
-                # Linux from-source builds, the upstream node:bookworm-slim
-                # image (which the Hermes Docker image copies node + npm +
-                # corepack from since #4977), and macOS Homebrew on Intel.
-                # Without this candidate, any MCP server configured with an
-                # env.PATH that omits /usr/local/bin (a common pattern when
-                # users hand-author PATH for sandboxing) fails with ENOENT
-                # at execvp, and a naive symlink workaround into the user's
-                # PATH only fails one layer deeper because npx's shebang
-                # re-execs /usr/bin/env node which needs the same directory.
-                os.path.join(os.sep, "usr", "local", "bin", resolved_command),
-            ]
-            for candidate in candidates:
+        else:
+            for candidate in _fallback_command_candidates(resolved_command):
                 if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                     resolved_command = candidate
                     break
