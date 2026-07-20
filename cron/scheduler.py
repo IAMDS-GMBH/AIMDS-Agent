@@ -1141,13 +1141,13 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     cron_hint = (
         "[IMPORTANT: You are running as a scheduled cron job. "
         "DELIVERY: Your final response will be automatically delivered "
-        "to the user — do NOT use send_message or try to deliver "
-        "the output yourself. Just produce your report/output as your "
-        "final response and the system handles the rest. "
-        "SILENT: If there is genuinely nothing new to report, respond "
-        "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
-        "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
+        "to the user's Desktop — do NOT try to send emails, messages, "
+        "or use any external delivery mechanism. Just produce your "
+        "report/output as your final response and the system handles "
+        "the rest. SILENT: If there is genuinely nothing new to report, "
+        "respond with exactly \"[SILENT]\" (nothing else) to suppress "
+        "delivery. Never combine [SILENT] with content — either report "
+        "your findings normally, or say [SILENT] and nothing more.]\n\n"
     )
     prompt = cron_hint + prompt
     if skills is None:
