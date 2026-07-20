@@ -3333,6 +3333,11 @@ def generate_launchd_plist() -> str:
         resolved_node_dir = str(Path(resolved_node).resolve().parent)
         if resolved_node_dir not in priority_dirs:
             priority_dirs.append(resolved_node_dir)
+    # Explicitly ensure user-local bin dirs (uv/uvx, pipx, cargo, go, npm
+    # global) are reachable even if the captured shell PATH below happens to
+    # lack them (e.g. plist generated from a non-interactive/minimal
+    # environment). Mirrors the same safety net used for systemd units.
+    priority_dirs.extend(_build_user_local_paths(Path.home(), priority_dirs))
     sane_path = ":".join(
         dict.fromkeys(
             priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]

@@ -1729,6 +1729,27 @@ class TestGeneratedUnitIncludesLocalBin:
         assert "/.local/bin" in unit
 
 
+class TestGeneratedLaunchdPlistIncludesLocalBin:
+    """~/.local/bin must be in the launchd plist PATH so uvx/pipx MCP tools
+    are discoverable, even when it's absent from the captured shell PATH."""
+
+    def test_launchd_plist_includes_local_bin_in_path(self, monkeypatch):
+        home = Path.home()
+        local_bin = str(home / ".local" / "bin")
+        # Simulate a minimal environment where the captured shell PATH does
+        # NOT contain ~/.local/bin.
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        monkeypatch.setattr(
+            gateway_cli,
+            "_build_user_local_paths",
+            lambda home_path, existing: [local_bin],
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert local_bin in plist
+
+
 class TestSystemServiceIdentityRootHandling:
     """Root user handling in _system_service_identity()."""
 
