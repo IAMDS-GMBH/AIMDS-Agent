@@ -675,7 +675,10 @@ export function DesktopController() {
     void refreshCronJobs()
   }, [refreshCronJobs])
 
-  useCronCompletionListener(handleCronJobCompleted, activeGatewayProfile || undefined)
+  // Cron trigger requests are routed through the primary backend (no `profile`
+  // query param). Listen on that same backend so completion toasts are reliable
+  // even when the active chat profile points at a pooled backend.
+  useCronCompletionListener(handleCronJobCompleted)
 
   const composer = useComposerActions({
     activeSessionId,
