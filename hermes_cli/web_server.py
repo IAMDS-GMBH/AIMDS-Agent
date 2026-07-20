@@ -7425,13 +7425,15 @@ async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    # Mark job as manually triggered via trigger_job
-    job = _call_cron_for_profile(selected, "trigger_job", job_id)
+    # Manual trigger: spawn immediate execution directly (do NOT call trigger_job,
+    # which would queue for the next scheduler tick). This avoids double-execution
+    # and ensures manual triggers always run once immediately.
+    session_id = _spawn_immediate_cron_job(selected, job_id)
+    
+    # Fetch the job to return current state
+    job = _call_cron_for_profile(selected, "get_job", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    
-    # Spawn immediate execution in background
-    session_id = _spawn_immediate_cron_job(selected, job_id)
     
     # Return both the job, session_id, and profile for UI navigation
     # The profile is essential so the desktop knows which HERMES_HOME to use
