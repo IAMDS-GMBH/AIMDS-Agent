@@ -10,11 +10,27 @@ import { getEnvVars, getHermesConfig } from '@/hermes'
 /**
  * Check if URL belongs to IAMDS domain or its subdomains.
  * Matches: "iamds.com", "litellm.iamds.com", "api.iamds.com", etc.
+ * Handles URLs with port, path, query params: "https://litellm.iamds.com:5000/v1?key=val"
  */
 function isIamdsUrl(url: string): boolean {
   if (!url) return false
   const lower = url.toLowerCase()
-  return lower.endsWith('iamds.com') || lower.includes('.iamds.com')
+  
+  // Extract hostname from URL (handles protocol + port + path + query)
+  let hostname = lower
+  try {
+    // Try parsing as URL first (robust)
+    const urlObj = new URL(lower.startsWith('http') ? lower : `https://${lower}`)
+    hostname = urlObj.hostname
+  } catch {
+    // Fallback: rough extraction (strip protocol, port, path, query)
+    hostname = lower
+      .replace(/^https?:\/\//, '') // Remove protocol
+      .split(/[/:?#]/)[0] // Get just hostname
+  }
+  
+  // Check if hostname is or ends with iamds.com
+  return hostname === 'iamds.com' || hostname.endsWith('.iamds.com')
 }
 
 // Static, always-legible prefix; only TAIL ever scrambles. Splitting them at
@@ -167,17 +183,25 @@ export function GatewayConnectingOverlay() {
     async function checkEndpoint() {
       try {
         const desktop = window.hermesDesktop
-        if (!desktop) return
+        if (!desktop) {
+          console.debug('[GatewayOverlay] No hermesDesktop available')
+          return
+        }
 
         // 1. Electron Verbindungs-Konfiguration prüfen
         if (desktop.getConnectionConfig) {
           const config = await desktop.getConnectionConfig()
+          console.debug('[GatewayOverlay] Electron config:', config)
           if (config && config.mode === 'remote' && config.remoteUrl) {
+            console.debug('[GatewayOverlay] Remote URL:', config.remoteUrl)
             if (isIamdsUrl(config.remoteUrl)) {
+              console.debug('[GatewayOverlay] ✓ IAMDS URL detected in Electron config')
               if (active) {
                 setIsIamds(true)
                 return
               }
+            } else {
+              console.debug('[GatewayOverlay] ✗ Not IAMDS URL (Electron):', config.remoteUrl)
             }
           }
         }
@@ -188,9 +212,13 @@ export function GatewayConnectingOverlay() {
           const rawConfig = config as Record<string, any>
           const modelBaseUrl = rawConfig.model?.base_url || ''
           const litellmBaseUrl = rawConfig.litellm_hub?.base_url || ''
+          console.debug('[GatewayOverlay] Hermes config URLs:', { modelBaseUrl, litellmBaseUrl })
           if (isIamdsUrl(modelBaseUrl) || isIamdsUrl(litellmBaseUrl)) {
+            console.debug('[GatewayOverlay] ✓ IAMDS URL detected in Hermes config')
             setIsIamds(true)
             return
+          } else {
+            console.debug('[GatewayOverlay] ✗ Not IAMDS URLs:', { modelBaseUrl, litellmBaseUrl })
           }
         }
 
@@ -200,22 +228,29 @@ export function GatewayConnectingOverlay() {
           for (const key of Object.keys(envVars)) {
             const val = envVars[key]
             if (key.toLowerCase().includes('iamds') && val?.is_set) {
+              console.debug('[GatewayOverlay] ✓ IAMDS env var found:', key)
               setIsIamds(true)
               return
             }
           }
+          console.debug('[GatewayOverlay] ✗ No IAMDS env vars found')
         }
 
         // Wenn nicht gefunden, in 500ms nochmals probieren (falls Backend noch hochfährt)
-        if (attempt < maxAttempts && !isIamds) {
+        if (attempt < maxAttempts) {
           attempt++
+          console.debug(`[GatewayOverlay] Retry attempt ${attempt}/${maxAttempts}`)
           setTimeout(() => {
             if (active) checkEndpoint()
           }, 500)
+        } else {
+          console.debug('[GatewayOverlay] Max retries reached, IAMDS not detected')
         }
       } catch (err) {
-        if (attempt < maxAttempts && !isIamds) {
+        console.error('[GatewayOverlay] Error checking endpoint:', err)
+        if (attempt < maxAttempts) {
           attempt++
+          console.debug(`[GatewayOverlay] Retry after error, attempt ${attempt}/${maxAttempts}`)
           setTimeout(() => {
             if (active) checkEndpoint()
           }, 500)
