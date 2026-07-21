@@ -104,13 +104,11 @@ export function GatewayMenuPanel({
           <SectionLabel>{copy.recentActivity}</SectionLabel>
           <ul className="mt-1.5 space-y-0.5">
             {recentLogs.map((line, index) => (
-              <li
-                className="font-mono text-[0.68rem] leading-tight whitespace-pre-wrap break-words text-muted-foreground/85 select-text"
-                key={`${index}:${line}`}
-                title={line.trim()}
-              >
-                {trimLogLine(line) || '\u00A0'}
-              </li>
+              <Tip key={`${index}:${line}`} label={line.trim()}>
+                <li className="truncate font-mono text-[0.68rem] text-muted-foreground/85">
+                  {trimLogLine(line) || '\u00A0'}
+                </li>
+              </Tip>
             ))}
           </ul>
           <Button
