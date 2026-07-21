@@ -442,7 +442,10 @@ def bridge_tool_schemas(deferred_count: int) -> List[Dict[str, Any]]:
     """
     desc_search = (
         f"Search {deferred_count} additional tools that are loaded on demand. "
-        "Returns up to ``limit`` matches with name and description. Follow "
+        "Use this whenever the task likely needs external data or side effects "
+        "(API calls, remote reads, ticket/file updates, sends, writes) and a "
+        "directly listed tool is not an exact fit. Returns up to ``limit`` "
+        "matches with name and description. Follow "
         f"with `{TOOL_DESCRIBE_NAME}` to load a tool's full parameter schema, "
         f"then `{TOOL_CALL_NAME}` to invoke it. Tools listed at the top of this "
         "system prompt are already available and do not need to be searched."
