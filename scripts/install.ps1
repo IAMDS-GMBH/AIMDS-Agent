@@ -3023,7 +3023,7 @@ function Copy-ConfigTemplates {
     # Enforce AIMDS runtime defaults on every install/reinstall so existing
     # profiles pick up tool-search, MCP tool filtering, and aux-model pinning.
     $aimdsDefaultsScript = Join-Path $InstallDir 'installer\scripts\upsert_aimds_defaults.py'
-    if ($pythonForMemorySeed -and (Test-Path $aimdsDefaultsScript) -and $aimdsInstallerDir -and (Test-Path $configPath)) {
+    if ($pythonForMemorySeed -and (Test-Path $aimdsDefaultsScript) -and (Test-Path $configPath)) {
         Write-Info "Applying AIMDS config defaults to $configPath (install/reinstall)..."
         try {
             $cfgOutput = & $pythonForMemorySeed $aimdsDefaultsScript $configPath
@@ -3033,6 +3033,12 @@ function Copy-ConfigTemplates {
         } catch {
             Write-Warn "AIMDS config defaults step failed: $($_.Exception.Message)"
         }
+    } else {
+        $skip = @()
+        if (-not $pythonForMemorySeed) { $skip += "no-python" }
+        if (-not (Test-Path $aimdsDefaultsScript)) { $skip += "missing-upsert-script" }
+        if (-not (Test-Path $configPath)) { $skip += "missing-config" }
+        Write-Info ("Skipping AIMDS config defaults step ({0})" -f ($skip -join ", "))
     }
 
     # Keep parity with AIMDS installer defaults: use a stable Documents working

@@ -8152,6 +8152,12 @@ def _apply_aimds_defaults_after_update() -> None:
         config_path = get_hermes_home() / "config.yaml"
         script_path = PROJECT_ROOT / "installer" / "scripts" / "upsert_aimds_defaults.py"
         if not script_path.is_file() or not config_path.is_file():
+            missing = []
+            if not script_path.is_file():
+                missing.append(f"script missing ({script_path})")
+            if not config_path.is_file():
+                missing.append(f"config missing ({config_path})")
+            print(f"  ℹ AIMDS defaults migration skipped: {', '.join(missing)}")
             return
 
         result = subprocess.run(
