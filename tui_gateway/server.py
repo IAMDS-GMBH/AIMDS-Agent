@@ -5754,17 +5754,10 @@ def _run_prompt_submit(
                 pass
             result = agent.run_conversation(run_message, **run_kwargs)
             
-            # Emit message.start NOW, after onboarding bootstrap completes.
-            # This ensures all onboarding context messages + flush signal arrive at desktop
-            # BEFORE message.start resets state, allowing proper rendering of context line
-            # followed by clarify questions (not the other way around).
-            import logging as _logging_for_debug
-            _debug_logger = _logging_for_debug.getLogger(__name__)
-            _debug_logger.info(f"[MESSAGE.START] Emitting after agent.run_conversation completes")
-            _emit("message.start", sid)
-
             last_reasoning = None
             status_note = None
+            message_start_deferred = False  # Flag to emit message.start AFTER history is persisted
+            
             if isinstance(result, dict):
                 if isinstance(result.get("messages"), list):
                     if isinstance(display_text, str) and display_text.strip():
@@ -5782,6 +5775,13 @@ def _run_prompt_submit(
                         if current_version == history_version:
                             session["history"] = result["messages"]
                             session["history_version"] = history_version + 1
+                            # CRITICAL: Defer message.start emission until AFTER history is persisted.
+                            # This prevents the race condition where Desktop fetches messages
+                            # before they're written to the database.
+                            import logging as _logging_for_debug
+                            _debug_logger = _logging_for_debug.getLogger(__name__)
+                            _debug_logger.info(f"[MESSAGE.START] Deferred until after history persistence")
+                            message_start_deferred = True
                         else:
                             # History mutated externally during the turn
                             # (undo/compress/retry/rollback now guard on
@@ -5836,6 +5836,15 @@ def _run_prompt_submit(
             else:
                 raw = str(result)
                 status = "complete"
+
+            # CRITICAL FIX: Emit message.start AFTER history is updated (if deferred).
+            # This prevents the race condition where Desktop fetches messages
+            # before they're persisted to the database.
+            if message_start_deferred:
+                import logging as _logging_for_debug_deferred
+                _debug_logger_deferred = _logging_for_debug_deferred.getLogger(__name__)
+                _debug_logger_deferred.info(f"[MESSAGE.START] Emitting NOW (after history persisted)")
+                _emit("message.start", sid)
 
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
             if last_reasoning:
