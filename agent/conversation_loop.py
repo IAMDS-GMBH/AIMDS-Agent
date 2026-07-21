@@ -4601,7 +4601,10 @@ def run_conversation(
             
             # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
             # This means the model ran out of output tokens mid-reasoning — retry up to 2 times
-            if has_incomplete_scratchpad(assistant_message.content or ""):
+            # Skip if the model successfully generated tool calls (as a transition to tool use
+            # indicates the turn successfully finished its planning/reasoning phase).
+            _has_tool_calls = bool(getattr(assistant_message, "tool_calls", None))
+            if has_incomplete_scratchpad(assistant_message.content or "") and not _has_tool_calls:
                 agent._incomplete_scratchpad_retries += 1
                 
                 agent._buffer_vprint(f"⚠️  Incomplete <REASONING_SCRATCHPAD> detected (opened but never closed)")
