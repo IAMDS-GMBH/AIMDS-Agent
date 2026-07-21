@@ -2304,6 +2304,24 @@ EOF
         fi
     fi
 
+    # Enforce AIMDS runtime defaults on every install/reinstall so existing
+    # profiles pick up tool-search, MCP tool filtering, and aux-model pinning.
+    aimds_defaults_script="$INSTALL_DIR/installer/scripts/upsert_aimds_defaults.py"
+    if [ -n "$python_for_seed" ] && [ -f "$aimds_defaults_script" ] && [ -n "$aimds_installer_dir" ] && [ -f "$HERMES_HOME/config.yaml" ]; then
+        log_info "Applying AIMDS config defaults to ~/.hermes/config.yaml (install/reinstall)..."
+        _aimds_cfg_out="$("$python_for_seed" "$aimds_defaults_script" "$HERMES_HOME/config.yaml" 2>&1)" || {
+            log_warn "AIMDS config defaults step failed: $_aimds_cfg_out"
+            _aimds_cfg_out=""
+        }
+        if [ -n "$_aimds_cfg_out" ]; then
+            while IFS= read -r _line; do
+                [ -n "$_line" ] && log_info "  $_line"
+            done <<EOF
+$_aimds_cfg_out
+EOF
+        fi
+    fi
+
     # Keep parity with AIMDS installer defaults: use a stable Documents working
     # directory rather than repo-relative ".".
     if [ -f "$HERMES_HOME/config.yaml" ]; then

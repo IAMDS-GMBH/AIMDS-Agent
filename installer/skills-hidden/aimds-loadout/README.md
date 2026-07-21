@@ -62,7 +62,8 @@ Hermes-AIMDS-Loadout/
 1. **Hermes installieren** (Desktop, Mac/Windows).
 2. **`identity/SOUL.md`** → nach `~/.hermes/SOUL.md` kopieren.
 3. **`config/config.hermes.example.yaml`** → angepasst nach `~/.hermes/config.yaml`
-   (LiteLLM-Endpoint, Goal-Judge-Modell, `write_approval`, MCP-Server).
+   (LiteLLM-Endpoint, Aux-Modelle on-prem, `tools.tool_search: on`,
+   `write_approval`, MCP-Server + Office-Allowlist).
 4. **Company-Workspace** anlegen: `workspace/` als Default-Arbeitsordner des Users
    ablegen (enthält `AGENTS.md`). Hermes lädt `AGENTS.md` automatisch beim Start.
 5. **Skills** installieren — **repo-synced** über das zentrale `aimds-skills`-Git-Repo
@@ -74,6 +75,16 @@ Hermes-AIMDS-Loadout/
 7. **Gateway-Daemon** sicherstellen (`hermes gateway install`) — sonst keine
    Cron-Jobs / Goals im Hintergrund.
 8. **Blueprints** anbieten — `/blueprint morning-brief` etc. (siehe `blueprints/`).
+
+### AIS-161 Mess-Workflow (Tokenlast/TTFT)
+
+Für Vorher/Nachher-Vergleiche ohne festen Schwellenwert:
+
+1. `python3 scripts/tool_search_livetest.py`
+2. `python3 scripts/analyze_livetest.py /tmp/tool_search_livetest`
+
+Auswertung: relative Verbesserung bei Input-Tokens und TTFT, bei unverändert
+funktionierenden Office-Use-Cases.
 
 ## Offene Punkte (vor Pilot klären)
 - ✅ **Skills-Distribution festgelegt:** Git-Sync aus `aimds-skills` ist der

@@ -3020,6 +3020,21 @@ function Copy-ConfigTemplates {
         }
     }
 
+    # Enforce AIMDS runtime defaults on every install/reinstall so existing
+    # profiles pick up tool-search, MCP tool filtering, and aux-model pinning.
+    $aimdsDefaultsScript = Join-Path $InstallDir 'installer\scripts\upsert_aimds_defaults.py'
+    if ($pythonForMemorySeed -and (Test-Path $aimdsDefaultsScript) -and $aimdsInstallerDir -and (Test-Path $configPath)) {
+        Write-Info "Applying AIMDS config defaults to $configPath (install/reinstall)..."
+        try {
+            $cfgOutput = & $pythonForMemorySeed $aimdsDefaultsScript $configPath
+            foreach ($line in ($cfgOutput -split "`r?`n")) {
+                if ($line.Trim()) { Write-Info "  $line" }
+            }
+        } catch {
+            Write-Warn "AIMDS config defaults step failed: $($_.Exception.Message)"
+        }
+    }
+
     # Keep parity with AIMDS installer defaults: use a stable Documents working
     # directory rather than repo-relative '.'.
     if (Test-Path $configPath) {

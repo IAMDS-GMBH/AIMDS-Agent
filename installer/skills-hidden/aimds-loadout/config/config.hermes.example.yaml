@@ -13,8 +13,36 @@ base_url: "https://<litellm-host>/v1"
 goals:
   max_turns: 10            # Office-Tasks: niedrig halten, lieber /goal resume
 
+# --- Tool-Schema-Last / TTFT-Optimierung (AIS-161) ---------------------------
+tools:
+  tool_search:
+    enabled: on            # AIMDS default: always defer non-core tool schemas
+    threshold_pct: 10      # bleibt relevant für spätere Umschaltung auf "auto"
+    search_default_limit: 5
+    max_search_limit: 20
+
+# Claude/Anthropic Prompt Caching (wenn vom aktiven Modell/Provider unterstützt)
+prompt_caching:
+  cache_ttl: "5m"
+
 auxiliary:
   goal_judge:              # billiges, schnelles Modell für den Judge (1x/Turn)
+    provider: openai_compatible
+    base_url: "https://<litellm-host>/v1"
+    model: "<litellm-fast-model>"
+  compression:             # on-prem pinning: keine unnötige Provider-Eskalation
+    provider: openai_compatible
+    base_url: "https://<litellm-host>/v1"
+    model: "<litellm-fast-model>"
+  approval:
+    provider: openai_compatible
+    base_url: "https://<litellm-host>/v1"
+    model: "<litellm-fast-model>"
+  mcp:
+    provider: openai_compatible
+    base_url: "https://<litellm-host>/v1"
+    model: "<litellm-fast-model>"
+  title_generation:
     provider: openai_compatible
     base_url: "https://<litellm-host>/v1"
     model: "<litellm-fast-model>"
@@ -55,6 +83,18 @@ mcp_servers:
     provider: iamds
     transport: http
     url: "https://<litellm-host>/mcp"
+    tools:
+      # Office-Allowlist: nur die AIMDS-Kernwerkzeuge aus dem Gateway exponieren.
+      include:
+        - kb_search
+        - kb_get_topic
+        - kb_get_related
+        - memory_get
+        - memory_list
+        - memory_upsert
+        - memory_delete
+      resources: false
+      prompts: false
     # auth via .env (User-Key → scoped Memory & Permissions)
     # exponiert u.a.: kb_search, kb_get_topic, kb_get_related,
     #                 memory_get, memory_list, memory_upsert, memory_delete
