@@ -158,4 +158,36 @@ describe('GatewayConnectingOverlay Messages Gating', () => {
       expect(screen.getByText('Martin beendet gerade das EVN-Meeting.')).toBeTruthy()
     })
   })
+
+  it('detects iamds.com via staging provider URL', async () => {
+    mockConfig = {
+      model: { base_url: '' },
+      providers: {
+        'iamds-litellm-staging': { base_url: 'https://staging.suite.iamds.com' }
+      }
+    }
+
+    render(<GatewayConnectingOverlay />)
+    
+    // Should detect IAMDS from staging URL
+    await waitFor(() => {
+      expect(screen.getByText(/Martin|Tobias|Michael|Johannes/)).toBeTruthy()
+    })
+  })
+
+  it('detects iamds.com via dev provider URL', async () => {
+    mockConfig = {
+      model: { base_url: '' },
+      providers: {
+        'iamds-litellm-dev': { base_url: 'https://dev.suite.iamds.com:5000/v1' }
+      }
+    }
+
+    render(<GatewayConnectingOverlay />)
+    
+    // Should detect IAMDS from dev URL even with port and path
+    await waitFor(() => {
+      expect(screen.getByText(/Martin|Tobias|Michael|Johannes/)).toBeTruthy()
+    })
+  })
 })
