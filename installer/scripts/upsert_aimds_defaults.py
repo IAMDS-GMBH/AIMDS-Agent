@@ -19,6 +19,7 @@ _AIMDS_DEFAULTS_VERSION_KEY = "aimds_defaults_version"
 
 _AIMDS_TOOL_INCLUDE_RAW = [
     # Canonical MCP tool names as advertised by the IAMDS gateway itself.
+    # Keep this list intentionally small to avoid noisy tool surfaces.
     "aimds_kb_kb_search",
     "aimds_kb_kb_get_topic",
     "aimds_kb_kb_get_related",
@@ -27,21 +28,6 @@ _AIMDS_TOOL_INCLUDE_RAW = [
     "mcp_memory_memory_list",
     "mcp_memory_memory_upsert",
     "mcp_memory_memory_delete",
-    # Compatibility aliases observed in older naming variants.
-    "memory_mcp_memory_context",
-    "memory_mcp_memory_get",
-    "memory_mcp_memory_list",
-    "memory_mcp_memory_upsert",
-    "memory_mcp_memory_delete",
-    # Compatibility aliases for older gateway/tool-name variants.
-    "kb_search",
-    "kb_get_topic",
-    "kb_get_related",
-    "memory_context",
-    "memory_get",
-    "memory_list",
-    "memory_upsert",
-    "memory_delete",
 ]
 
 _AIMDS_TOOL_INCLUDE_LEGACY = (

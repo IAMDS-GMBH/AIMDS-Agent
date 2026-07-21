@@ -94,7 +94,6 @@ mcp_servers:
         - mcp_IAMDS_mcp_memory_memory_list
         - mcp_IAMDS_mcp_memory_memory_upsert
         - mcp_IAMDS_mcp_memory_memory_delete
-        # Optional backward-compatible raw aliases:
         - aimds_kb_kb_search
         - aimds_kb_kb_get_topic
         - aimds_kb_kb_get_related

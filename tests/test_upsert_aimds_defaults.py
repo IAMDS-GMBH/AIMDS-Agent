@@ -33,6 +33,7 @@ def test_upsert_aimds_defaults_creates_required_sections():
         assert out["auxiliary"][slot]["model"] == "<litellm-fast-model>"
 
     include = out["mcp_servers"]["IAMDS"]["tools"]["include"]
+    assert len(include) == 16
     assert "mcp_IAMDS_aimds_kb_kb_search" in include
     assert "mcp_IAMDS_aimds_kb_kb_get_topic" in include
     assert "mcp_IAMDS_aimds_kb_kb_get_related" in include
@@ -49,6 +50,8 @@ def test_upsert_aimds_defaults_creates_required_sections():
     assert "mcp_memory_memory_list" in include
     assert "mcp_memory_memory_upsert" in include
     assert "mcp_memory_memory_delete" in include
+    assert "kb_search" not in include
+    assert "memory_context" not in include
     assert out["mcp_servers"]["IAMDS"]["tools"]["resources"] is False
     assert out["mcp_servers"]["IAMDS"]["tools"]["prompts"] is False
 
