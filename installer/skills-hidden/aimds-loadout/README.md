@@ -26,6 +26,7 @@ Hermes-AIMDS-Loadout/
 │   ├── deep-research/SKILL.md
 │   ├── meeting-prep/SKILL.md
 │   ├── email-triage/SKILL.md
+│   ├── inbox/SKILL.md
 │   ├── doc-draft/SKILL.md
 │   ├── doc-review/SKILL.md
 │   ├── kb-lookup/SKILL.md

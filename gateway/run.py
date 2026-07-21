@@ -7730,6 +7730,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 logger.debug(
                                     "Transcript echo failed (non-fatal): %s", _echo_exc,
                                 )
+                    if event.message_type == MessageType.VOICE:
+                        try:
+                            from gateway.inbox_workflow import (
+                                format_inbox_confirmation,
+                                process_inbox_dictation,
+                            )
+                            _workspace_root = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
+                            _inbox_result = await asyncio.to_thread(
+                                process_inbox_dictation,
+                                transcript="\n\n".join(_successful_transcripts),
+                                workspace_root=_workspace_root,
+                                source_platform=str(source.platform.value),
+                                source_chat_id=str(source.chat_id),
+                                source_thread_id=str(source.thread_id or ""),
+                                source_message_id=str(
+                                    getattr(event, "message_id", None) or source.message_id or "",
+                                ),
+                                source_user=str(source.user_name or source.user_id or ""),
+                            )
+                        except Exception as _workflow_exc:
+                            _inbox_result = None
+                            _inbox_note = (
+                                "[Inbox workflow failed before processing dictation. "
+                                f"Reason: {_workflow_exc}]"
+                            )
+                            message_text = f"{_inbox_note}\n\n{message_text}"
+                        else:
+                            _inbox_summary = format_inbox_confirmation(_inbox_result, _workspace_root)
+                            _inbox_note = f"[Inbox workflow result]\n{_inbox_summary}"
+                            message_text = f"{_inbox_note}\n\n{message_text}"
+                            if _echo_adapter:
+                                try:
+                                    await _echo_adapter.send(
+                                        source.chat_id,
+                                        _inbox_summary,
+                                        metadata=_echo_meta,
+                                    )
+                                except Exception as _inbox_echo_exc:
+                                    logger.debug(
+                                        "Inbox confirmation echo failed (non-fatal): %s",
+                                        _inbox_echo_exc,
+                                    )
                 _stt_fail_markers = (
                     "No STT provider",
                     "STT is disabled",

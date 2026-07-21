@@ -19,6 +19,7 @@ Updates kommen so an alle Arbeitsplätze, ohne pro Gerät anzufassen.
 | `deep-research` | Recherche-Synthese mit Quellenpflicht + Verifikation | web, kb |
 | `meeting-prep` | Briefing aus Kalender + Doks + Web | calendar, kb, web, file |
 | `email-triage` | Posteingang clustern, Aufgaben, **Entwürfe (draft-only)** | mail, file |
+| `inbox` | Diktate/Nachrichten als Inbox-Workflow klassifizieren, deduplizieren, verlinken, bestätigen | file, search, mail |
 | `doc-draft` | Word/PPTX/XLSX nach Firmen-Templates | file |
 | `doc-review` | Dokument/Vertrag prüfen, strukturierte Findings | file, kb |
 | `kb-lookup` | Firmenwissen aus AIMDS-AI-KB, mit Zitaten | kb |

@@ -9,6 +9,7 @@ import yaml
 from gateway.config import GatewayConfig, Platform, load_gateway_config
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource
+from gateway.inbox_workflow import InboxWorkflowResult
 
 
 def test_gateway_config_stt_disabled_from_dict_nested():
@@ -182,3 +183,71 @@ async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
     assert result is not None
     assert "queued voice transcript" in result
     assert "voice message" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_prepare_inbound_message_text_injects_inbox_workflow_note_for_voice(tmp_path, monkeypatch):
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    (tmp_path / "AGENTS.md").write_text(
+        "\n".join([
+            "| Task/Intent | Skill | Notes |",
+            "|---|---|---|",
+            "| dictation / voice-note / inbound-message workflow | inbox | required |",
+        ]),
+        encoding="utf-8",
+    )
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+    runner.adapters = {}
+    runner._model = "test-model"
+    runner._base_url = ""
+    runner._has_setup_skill = lambda: False
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+    )
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=["/tmp/voice.ogg"],
+        media_types=["audio/ogg"],
+    )
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={
+            "success": True,
+            "transcript": "call Alice about invoice follow-up",
+            "provider": "local_command",
+        },
+    ), patch(
+        "gateway.inbox_workflow.process_inbox_dictation",
+        return_value=InboxWorkflowResult(
+            success=True,
+            stage="confirm",
+            message="ok",
+            action="created",
+            target_path=str(tmp_path / "Inbox" / "x.md"),
+            classification="invoice",
+            links=[],
+            no_link_found=True,
+        ),
+    ), patch(
+        "gateway.inbox_workflow.format_inbox_confirmation",
+        return_value="📥 Inbox workflow completed.\n- action: created",
+    ):
+        result = await runner._prepare_inbound_message_text(
+            event=event,
+            source=source,
+            history=[],
+        )
+
+    assert result is not None
+    assert "[Inbox workflow result]" in result
+    assert "📥 Inbox workflow completed." in result

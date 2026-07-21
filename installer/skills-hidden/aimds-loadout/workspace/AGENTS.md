@@ -36,6 +36,7 @@ add criteria mid-flight. Turn budget is intentionally low (see config) — prefe
 | Research / "find out" / market or competitive info   | `deep-research` |
 | Prepare a meeting / briefing                         | `meeting-prep`  |
 | Sort inbox / extract tasks from emails / draft reply | `email-triage`  |
+| Process dictation / incoming voice note / inbound message into workspace inbox workflow | `inbox` |
 | Create document / presentation / spreadsheet         | `doc-draft`     |
 | Review document / contract, surface findings         | `doc-review`    |
 | Look up company knowledge / policy / process         | `kb-lookup`     |
