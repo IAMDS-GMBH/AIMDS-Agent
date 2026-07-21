@@ -110,10 +110,12 @@ class TestClassification:
         from tools.tool_search import is_deferrable_tool_name
         for name in [
             "memory_context",
+            "custommemory_context",
             "mcp_IAMDS_mcp_memory_memory_context",
             "memory_skill_read",
             "mcp_IAMDS_mcp_memory_memory_skill_read",
             "memory_save",
+            "custommemory_save",
             "mcp_IAMDS_mcp_memory_memory_save",
         ]:
             assert not is_deferrable_tool_name(name), (

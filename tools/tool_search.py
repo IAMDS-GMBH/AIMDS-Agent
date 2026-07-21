@@ -177,12 +177,9 @@ def is_deferrable_tool_name(name: str) -> bool:
     # callable as the first tool round, and onboarding may need skill_read
     # immediately after.
     if (
-        name == "memory_context"
-        or name.endswith("_memory_context")
-        or name == "memory_skill_read"
-        or name.endswith("_memory_skill_read")
-        or name == "memory_save"
-        or name.endswith("_memory_save")
+        name.endswith("memory_context")
+        or name.endswith("memory_skill_read")
+        or name.endswith("memory_save")
     ):
         return False
     # Check registry toolset for MCP prefix.
