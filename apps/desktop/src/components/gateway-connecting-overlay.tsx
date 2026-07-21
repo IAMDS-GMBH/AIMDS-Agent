@@ -174,7 +174,7 @@ export function GatewayConnectingOverlay() {
   const shownAtRef = useRef<number | null>(null)
   const [isIamds, setIsIamds] = useState(false)
 
-  // Dynamische Erkennung ob ein Endpunkt für iamds.com konfiguriert ist (best-effort)
+  // Dynamic detection of whether an IAMDS endpoint is configured (best-effort)
   useEffect(() => {
     let active = true
     let attempt = 0
@@ -188,7 +188,7 @@ export function GatewayConnectingOverlay() {
           return
         }
 
-        // 1. Electron Verbindungs-Konfiguration prüfen
+        // 1. Check Electron connection config
         if (desktop.getConnectionConfig) {
           const config = await desktop.getConnectionConfig()
           console.debug('[GatewayOverlay] Electron config:', config)
@@ -206,23 +206,32 @@ export function GatewayConnectingOverlay() {
           }
         }
 
-        // 2. Best-effort lokale Backend-Konfiguration prüfen
+        // 2. Best-effort local backend config check (prod + staging + dev)
         const config = await getHermesConfig().catch(() => null)
         if (config && active) {
           const rawConfig = config as Record<string, any>
+          // Prod URLs
           const modelBaseUrl = rawConfig.model?.base_url || ''
           const litellmBaseUrl = rawConfig.litellm_hub?.base_url || ''
-          console.debug('[GatewayOverlay] Hermes config URLs:', { modelBaseUrl, litellmBaseUrl })
-          if (isIamdsUrl(modelBaseUrl) || isIamdsUrl(litellmBaseUrl)) {
-            console.debug('[GatewayOverlay] ✓ IAMDS URL detected in Hermes config')
+          // Staging/Dev provider URLs (in providers object)
+          const providers = rawConfig.providers || {}
+          const stagingUrl = providers['iamds-litellm-staging']?.base_url || ''
+          const devUrl = providers['iamds-litellm-dev']?.base_url || ''
+          
+          const allUrls = { modelBaseUrl, litellmBaseUrl, stagingUrl, devUrl }
+          console.debug('[GatewayOverlay] Hermes config URLs (prod/staging/dev):', allUrls)
+          
+          const urlsToCheck = [modelBaseUrl, litellmBaseUrl, stagingUrl, devUrl].filter(Boolean)
+          if (urlsToCheck.some(url => isIamdsUrl(url))) {
+            console.debug('[GatewayOverlay] ✓ IAMDS URL detected in Hermes config (prod/staging/dev)')
             setIsIamds(true)
             return
           } else {
-            console.debug('[GatewayOverlay] ✗ Not IAMDS URLs:', { modelBaseUrl, litellmBaseUrl })
+            console.debug('[GatewayOverlay] ✗ No IAMDS URLs found in any environment')
           }
         }
 
-        // 3. Best-effort Umgebungsvariablen prüfen
+        // 3. Best-effort environment variables check
         const envVars = await getEnvVars().catch(() => null)
         if (envVars && active) {
           for (const key of Object.keys(envVars)) {
@@ -236,7 +245,7 @@ export function GatewayConnectingOverlay() {
           console.debug('[GatewayOverlay] ✗ No IAMDS env vars found')
         }
 
-        // Wenn nicht gefunden, in 500ms nochmals probieren (falls Backend noch hochfährt)
+        // If not found, retry in 500ms (backend might still be starting up)
         if (attempt < maxAttempts) {
           attempt++
           console.debug(`[GatewayOverlay] Retry attempt ${attempt}/${maxAttempts}`)
@@ -381,12 +390,12 @@ export function GatewayConnectingOverlay() {
   const overlayHidden = phase === 'overlay-out' || phase === 'gone'
   const shownElapsed = Math.max(0, Date.now() - (shownAtRef.current || Date.now()))
 
-  // Bestimme die zu verwendende Nachrichtenliste basierend auf Sprache und iamds.com Endpunkt-Präsenz
+  // Select message list based on language and IAMDS endpoint presence
   const messages = isIamds
     ? (locale === 'en' ? TEAM_MESSAGES_EN : TEAM_MESSAGES_DE)
     : (locale === 'en' ? BUSINESS_MESSAGES_EN : BUSINESS_MESSAGES_DE)
 
-  // Modulo-basiertes Cycling, damit die Meldungen sich wiederholen, falls es länger dauert
+  // Modulo-based cycling so messages repeat if the connection takes longer
   const messageIndex = Math.floor(shownElapsed / MESSAGE_STEP_MS) % messages.length
   const progressPct = Math.min(100, Math.round((shownElapsed / STARTUP_MIN_MS) * 100))
   const currentMessage = messages[messageIndex]
