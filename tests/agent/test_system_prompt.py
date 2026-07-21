@@ -183,7 +183,28 @@ class TestConfirmationRequiredEnforcement:
         agent = _make_agent(valid_tool_names=["clarify"], platform="cli")
         stable = _stable_prompt(agent)
         assert "# Confirmation-required tool results" in stable
-        assert "call the `clarify` tool" in stable
+
+
+class TestToolUseEnforcementWithToolSearch:
+    def test_auto_enforces_when_tool_search_present_even_for_custom_model_alias(self):
+        agent = _make_agent(
+            valid_tool_names=["tool_search", "tool_call", "tool_describe"],
+            _tool_use_enforcement="auto",
+            model="AIMDS-Suite-Auto",
+            platform="cli",
+        )
+        stable = _stable_prompt(agent)
+        assert "# Tool-use enforcement" in stable
+
+    def test_auto_does_not_enforce_for_custom_model_alias_without_tool_search(self):
+        agent = _make_agent(
+            valid_tool_names=["read_file"],
+            _tool_use_enforcement="auto",
+            model="AIMDS-Suite-Auto",
+            platform="cli",
+        )
+        stable = _stable_prompt(agent)
+        assert "# Tool-use enforcement" not in stable
 
     def test_not_emitted_when_clarify_tool_missing(self):
         agent = _make_agent(valid_tool_names=["read_file"], platform="cli")

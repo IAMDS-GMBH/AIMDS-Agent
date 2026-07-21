@@ -197,6 +197,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             # "auto" or any unrecognised value — use hardcoded defaults
             model_lower = (agent.model or "").lower()
             _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
+            if not _inject and "tool_search" in agent.valid_tool_names:
+                _inject = True
         if _inject:
             stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
             _model_lower = (agent.model or "").lower()
