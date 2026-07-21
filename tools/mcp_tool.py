@@ -4144,6 +4144,8 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     # Rules (matching issue #690 spec):
     #   tools.include — whitelist: only these tool names are registered
     #   tools.exclude — blacklist: all tools EXCEPT these are registered
+    #   Both raw MCP names ("memory_context") and full registered names
+    #   ("mcp_IAMDS_memory_context") are accepted for convenience.
     #   include takes precedence over exclude
     #   Neither set → register all tools (backward-compatible default)
     tools_filter = config.get("tools") or {}
@@ -4154,11 +4156,15 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
         tools_filter.get("exclude"), f"mcp_servers.{name}.tools.exclude"
     )
 
+    safe_server_name = sanitize_mcp_name_component(name)
+
     def _should_register(tool_name: str) -> bool:
+        safe_tool_name = sanitize_mcp_name_component(tool_name)
+        prefixed_tool_name = f"mcp_{safe_server_name}_{safe_tool_name}"
         if include_set:
-            return tool_name in include_set
+            return tool_name in include_set or prefixed_tool_name in include_set
         if exclude_set:
-            return tool_name not in exclude_set
+            return tool_name not in exclude_set and prefixed_tool_name not in exclude_set
         return True
 
     for mcp_tool in server._tools:

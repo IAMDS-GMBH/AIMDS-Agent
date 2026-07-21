@@ -3971,6 +3971,48 @@ class TestMcpParallelToolCalls:
                 _parallel_safe_servers.discard("a_b")
                 _mcp_tool_server_names.pop("mcp_a_b_tool", None)
 
+    def test_register_server_tools_include_accepts_prefixed_name(self):
+        """tools.include may contain full registered MCP names."""
+        from tools.registry import registry
+        from tools.mcp_tool import _register_server_tools
+
+        server = _make_mock_server(
+            "IAMDS",
+            tools=[
+                _make_mcp_tool("memory_context", "Memory context"),
+                _make_mcp_tool("memory_get", "Memory get"),
+            ],
+        )
+        config = {"tools": {"include": ["mcp_IAMDS_memory_context"]}}
+
+        registered = _register_server_tools("IAMDS", server, config)
+        try:
+            assert registered == ["mcp_IAMDS_memory_context"]
+        finally:
+            for tool_name in registered:
+                registry.deregister(tool_name)
+
+    def test_register_server_tools_exclude_accepts_prefixed_name(self):
+        """tools.exclude may contain full registered MCP names."""
+        from tools.registry import registry
+        from tools.mcp_tool import _register_server_tools
+
+        server = _make_mock_server(
+            "IAMDS",
+            tools=[
+                _make_mcp_tool("memory_context", "Memory context"),
+                _make_mcp_tool("memory_get", "Memory get"),
+            ],
+        )
+        config = {"tools": {"exclude": ["mcp_IAMDS_memory_context"]}}
+
+        registered = _register_server_tools("IAMDS", server, config)
+        try:
+            assert registered == ["mcp_IAMDS_memory_get"]
+        finally:
+            for tool_name in registered:
+                registry.deregister(tool_name)
+
     def test_is_mcp_tool_parallel_safe_no_tool_suffix(self):
         """Tool name that is just 'mcp_{server}' without a tool part returns False."""
         from tools.mcp_tool import (

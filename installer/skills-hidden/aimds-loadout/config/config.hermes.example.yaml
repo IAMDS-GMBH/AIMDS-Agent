@@ -86,14 +86,23 @@ mcp_servers:
     tools:
       # Office-Allowlist: nur die AIMDS-Kernwerkzeuge aus dem Gateway exponieren.
       include:
-        - kb_search
-        - kb_get_topic
-        - kb_get_related
-        - memory_context
-        - memory_get
-        - memory_list
-        - memory_upsert
-        - memory_delete
+        - mcp_IAMDS_aimds_kb_kb_search
+        - mcp_IAMDS_aimds_kb_kb_get_topic
+        - mcp_IAMDS_aimds_kb_kb_get_related
+        - mcp_IAMDS_mcp_memory_memory_context
+        - mcp_IAMDS_mcp_memory_memory_get
+        - mcp_IAMDS_mcp_memory_memory_list
+        - mcp_IAMDS_mcp_memory_memory_upsert
+        - mcp_IAMDS_mcp_memory_memory_delete
+        # Optional backward-compatible raw aliases:
+        - aimds_kb_kb_search
+        - aimds_kb_kb_get_topic
+        - aimds_kb_kb_get_related
+        - mcp_memory_memory_context
+        - mcp_memory_memory_get
+        - mcp_memory_memory_list
+        - mcp_memory_memory_upsert
+        - mcp_memory_memory_delete
       resources: false
       prompts: false
     # auth via .env (User-Key → scoped Memory & Permissions)

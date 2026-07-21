@@ -7,16 +7,33 @@ Usage:
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
 import yaml
 
-_AIMDS_DEFAULTS_VERSION = 4
+_AIMDS_DEFAULTS_VERSION = 7
 _AIMDS_DEFAULTS_VERSION_KEY = "aimds_defaults_version"
 
 
-_AIMDS_TOOL_INCLUDE = [
+_AIMDS_TOOL_INCLUDE_RAW = [
+    # Canonical MCP tool names as advertised by the IAMDS gateway itself.
+    "aimds_kb_kb_search",
+    "aimds_kb_kb_get_topic",
+    "aimds_kb_kb_get_related",
+    "mcp_memory_memory_context",
+    "mcp_memory_memory_get",
+    "mcp_memory_memory_list",
+    "mcp_memory_memory_upsert",
+    "mcp_memory_memory_delete",
+    # Compatibility aliases observed in older naming variants.
+    "memory_mcp_memory_context",
+    "memory_mcp_memory_get",
+    "memory_mcp_memory_list",
+    "memory_mcp_memory_upsert",
+    "memory_mcp_memory_delete",
+    # Compatibility aliases for older gateway/tool-name variants.
     "kb_search",
     "kb_get_topic",
     "kb_get_related",
@@ -27,6 +44,28 @@ _AIMDS_TOOL_INCLUDE = [
     "memory_delete",
 ]
 
+_AIMDS_TOOL_INCLUDE_LEGACY = (
+    (
+        "kb_search",
+        "kb_get_topic",
+        "kb_get_related",
+        "memory_get",
+        "memory_list",
+        "memory_upsert",
+        "memory_delete",
+    ),
+    (
+        "kb_search",
+        "kb_get_topic",
+        "kb_get_related",
+        "memory_context",
+        "memory_get",
+        "memory_list",
+        "memory_upsert",
+        "memory_delete",
+    ),
+)
+
 
 def _ensure_dict(parent: dict, key: str) -> dict:
     value = parent.get(key)
@@ -34,6 +73,20 @@ def _ensure_dict(parent: dict, key: str) -> dict:
         value = {}
         parent[key] = value
     return value
+
+
+def _sanitize_mcp_name_component(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_]", "_", str(value or ""))
+
+
+def _build_aimds_tool_include(server_name: str) -> list[str]:
+    """Build include list with full and raw names for robust matching."""
+    safe_server_name = _sanitize_mcp_name_component(server_name)
+    prefixed = [
+        f"mcp_{safe_server_name}_{_sanitize_mcp_name_component(tool_name)}"
+        for tool_name in _AIMDS_TOOL_INCLUDE_RAW
+    ]
+    return prefixed + list(_AIMDS_TOOL_INCLUDE_RAW)
 
 
 def _coerce_version(value: object) -> int:
@@ -76,7 +129,14 @@ def _is_upsert_only_aimds_gateway(entry: object) -> bool:
     if not isinstance(tools, dict):
         return False
     include = tools.get("include")
-    return include == _AIMDS_TOOL_INCLUDE
+    if isinstance(include, list):
+        raw_include = set(_AIMDS_TOOL_INCLUDE_RAW)
+        if raw_include.issubset(set(include)):
+            return True
+        include_tuple = tuple(include)
+        if include_tuple in _AIMDS_TOOL_INCLUDE_LEGACY:
+            return True
+    return False
 
 
 def upsert_aimds_defaults(config: dict) -> dict:
@@ -103,7 +163,7 @@ def upsert_aimds_defaults(config: dict) -> dict:
     target_name = _resolve_target_mcp_server_name(mcp_servers)
     target_server = _ensure_dict(mcp_servers, target_name)
     aimds_tools = _ensure_dict(target_server, "tools")
-    aimds_tools["include"] = list(_AIMDS_TOOL_INCLUDE)
+    aimds_tools["include"] = _build_aimds_tool_include(target_name)
     aimds_tools["resources"] = False
     aimds_tools["prompts"] = False
 

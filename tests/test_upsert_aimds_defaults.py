@@ -32,16 +32,23 @@ def test_upsert_aimds_defaults_creates_required_sections():
         assert out["auxiliary"][slot]["base_url"] == "https://<litellm-host>/v1"
         assert out["auxiliary"][slot]["model"] == "<litellm-fast-model>"
 
-    assert out["mcp_servers"]["IAMDS"]["tools"]["include"] == [
-        "kb_search",
-        "kb_get_topic",
-        "kb_get_related",
-        "memory_context",
-        "memory_get",
-        "memory_list",
-        "memory_upsert",
-        "memory_delete",
-    ]
+    include = out["mcp_servers"]["IAMDS"]["tools"]["include"]
+    assert "mcp_IAMDS_aimds_kb_kb_search" in include
+    assert "mcp_IAMDS_aimds_kb_kb_get_topic" in include
+    assert "mcp_IAMDS_aimds_kb_kb_get_related" in include
+    assert "mcp_IAMDS_mcp_memory_memory_context" in include
+    assert "mcp_IAMDS_mcp_memory_memory_get" in include
+    assert "mcp_IAMDS_mcp_memory_memory_list" in include
+    assert "mcp_IAMDS_mcp_memory_memory_upsert" in include
+    assert "mcp_IAMDS_mcp_memory_memory_delete" in include
+    assert "aimds_kb_kb_search" in include
+    assert "aimds_kb_kb_get_topic" in include
+    assert "aimds_kb_kb_get_related" in include
+    assert "mcp_memory_memory_context" in include
+    assert "mcp_memory_memory_get" in include
+    assert "mcp_memory_memory_list" in include
+    assert "mcp_memory_memory_upsert" in include
+    assert "mcp_memory_memory_delete" in include
     assert out["mcp_servers"]["IAMDS"]["tools"]["resources"] is False
     assert out["mcp_servers"]["IAMDS"]["tools"]["prompts"] is False
 
@@ -59,7 +66,7 @@ def test_upsert_aimds_defaults_overrides_existing_conflicting_values():
     assert out["tools"]["tool_search"]["threshold_pct"] == 10
     assert out["prompt_caching"]["cache_ttl"] == "5m"
     assert out["auxiliary"]["goal_judge"]["provider"] == "openai_compatible"
-    assert out["mcp_servers"]["IAMDS"]["tools"]["include"][0] == "kb_search"
+    assert "aimds_kb_kb_search" in out["mcp_servers"]["IAMDS"]["tools"]["include"]
     assert out["mcp_servers"]["IAMDS"]["tools"]["resources"] is False
 
 
@@ -68,20 +75,20 @@ def test_migrate_aimds_defaults_sets_version_and_applies_when_missing():
     out, changed, status = migrate_aimds_defaults(cfg)
 
     assert changed is True
-    assert "applied v4 (from v0)" in status
-    assert out["aimds_defaults_version"] == 4
+    assert "applied v7 (from v0)" in status
+    assert out["aimds_defaults_version"] == 7
     assert out["tools"]["tool_search"]["enabled"] == "on"
 
 
 def test_migrate_aimds_defaults_skips_when_already_current():
     cfg = {
-        "aimds_defaults_version": 4,
+        "aimds_defaults_version": 7,
         "tools": {"tool_search": {"enabled": "off"}},
     }
     out, changed, status = migrate_aimds_defaults(cfg)
 
     assert changed is False
-    assert "already current (v4)" in status
+    assert "already current (v7)" in status
     assert out["tools"]["tool_search"]["enabled"] == "off"
 
 
@@ -112,7 +119,7 @@ def test_upsert_removes_synthetic_aimds_gateway_when_iamds_exists():
     }
     out = upsert_aimds_defaults(cfg)
     assert "aimds-gateway" not in out["mcp_servers"]
-    assert out["mcp_servers"]["IAMDS"]["tools"]["include"][0] == "kb_search"
+    assert "aimds_kb_kb_search" in out["mcp_servers"]["IAMDS"]["tools"]["include"]
 
 
 def test_upsert_targets_provider_iamds_even_with_custom_server_name():
@@ -131,5 +138,8 @@ def test_upsert_targets_provider_iamds_even_with_custom_server_name():
     }
 
     out = upsert_aimds_defaults(cfg)
-    assert out["mcp_servers"]["corp-gateway"]["tools"]["include"][0] == "kb_search"
+    include = out["mcp_servers"]["corp-gateway"]["tools"]["include"]
+    assert "mcp_corp_gateway_aimds_kb_kb_search" in include
+    assert "mcp_corp_gateway_mcp_memory_memory_context" in include
+    assert "aimds_kb_kb_search" in out["mcp_servers"]["corp-gateway"]["tools"]["include"]
     assert out["mcp_servers"]["custom-tools"].get("tools") is None
