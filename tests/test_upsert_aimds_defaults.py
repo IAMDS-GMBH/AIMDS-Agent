@@ -16,6 +16,7 @@ _MODULE = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_MODULE)
 
 upsert_aimds_defaults = _MODULE.upsert_aimds_defaults
+migrate_aimds_defaults = _MODULE.migrate_aimds_defaults
 
 
 def test_upsert_aimds_defaults_creates_required_sections():
@@ -59,3 +60,25 @@ def test_upsert_aimds_defaults_overrides_existing_conflicting_values():
     assert out["auxiliary"]["goal_judge"]["provider"] == "openai_compatible"
     assert out["mcp_servers"]["aimds-gateway"]["tools"]["include"][0] == "kb_search"
     assert out["mcp_servers"]["aimds-gateway"]["tools"]["resources"] is False
+
+
+def test_migrate_aimds_defaults_sets_version_and_applies_when_missing():
+    cfg = {}
+    out, changed, status = migrate_aimds_defaults(cfg)
+
+    assert changed is True
+    assert "applied v1 (from v0)" in status
+    assert out["aimds_defaults_version"] == 1
+    assert out["tools"]["tool_search"]["enabled"] == "on"
+
+
+def test_migrate_aimds_defaults_skips_when_already_current():
+    cfg = {
+        "aimds_defaults_version": 1,
+        "tools": {"tool_search": {"enabled": "off"}},
+    }
+    out, changed, status = migrate_aimds_defaults(cfg)
+
+    assert changed is False
+    assert "already current (v1)" in status
+    assert out["tools"]["tool_search"]["enabled"] == "off"

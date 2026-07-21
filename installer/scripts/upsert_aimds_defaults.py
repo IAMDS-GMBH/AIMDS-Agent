@@ -12,6 +12,9 @@ from pathlib import Path
 
 import yaml
 
+_AIMDS_DEFAULTS_VERSION = 1
+_AIMDS_DEFAULTS_VERSION_KEY = "aimds_defaults_version"
+
 
 _AIMDS_TOOL_INCLUDE = [
     "kb_search",
@@ -30,6 +33,13 @@ def _ensure_dict(parent: dict, key: str) -> dict:
         value = {}
         parent[key] = value
     return value
+
+
+def _coerce_version(value: object) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def upsert_aimds_defaults(config: dict) -> dict:
@@ -62,6 +72,17 @@ def upsert_aimds_defaults(config: dict) -> dict:
     return cfg
 
 
+def migrate_aimds_defaults(config: dict) -> tuple[dict, bool, str]:
+    cfg = config if isinstance(config, dict) else {}
+    current = _coerce_version(cfg.get(_AIMDS_DEFAULTS_VERSION_KEY))
+    if current >= _AIMDS_DEFAULTS_VERSION:
+        return cfg, False, f"aimds-defaults: already current (v{current})"
+
+    cfg = upsert_aimds_defaults(cfg)
+    cfg[_AIMDS_DEFAULTS_VERSION_KEY] = _AIMDS_DEFAULTS_VERSION
+    return cfg, True, f"aimds-defaults: applied v{_AIMDS_DEFAULTS_VERSION} (from v{current})"
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
         print(f"Usage: {argv[0]} <config_path>", file=sys.stderr)
@@ -82,7 +103,7 @@ def main(argv: list[str]) -> int:
         print(f"yaml-parse-error: {exc}", file=sys.stderr)
         return 4
 
-    updated = upsert_aimds_defaults(parsed)
+    updated, _changed, status = migrate_aimds_defaults(parsed)
     try:
         path.write_text(
             yaml.safe_dump(updated, sort_keys=False, allow_unicode=True),
@@ -92,7 +113,7 @@ def main(argv: list[str]) -> int:
         print(f"write-error: {exc}", file=sys.stderr)
         return 5
 
-    print("aimds-defaults: applied")
+    print(status)
     return 0
 
 
