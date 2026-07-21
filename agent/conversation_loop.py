@@ -4600,37 +4600,42 @@ def run_conversation(
                         pass
             
             # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
-            # This means the model ran out of output tokens mid-reasoning — retry up to 2 times
-            # Skip if the model successfully generated tool calls (as a transition to tool use
-            # indicates the turn successfully finished its planning/reasoning phase).
+            # This means the model ran out of output tokens mid-reasoning or was cut off.
+            # Convert this to a length/incomplete finish_reason so the robust continuation
+            # handler resumes the turn, allowing the model to finish its thought and output
+            # tool calls or a final answer, rather than retrying from scratch (which would
+            # just repeat the truncation).
             _has_tool_calls = bool(getattr(assistant_message, "tool_calls", None))
             if has_incomplete_scratchpad(assistant_message.content or "") and not _has_tool_calls:
-                agent._incomplete_scratchpad_retries += 1
-                
-                agent._buffer_vprint(f"⚠️  Incomplete <REASONING_SCRATCHPAD> detected (opened but never closed)")
-                
-                if agent._incomplete_scratchpad_retries <= 2:
-                    agent._buffer_vprint(f"🔄 Retrying API call ({agent._incomplete_scratchpad_retries}/2)...")
-                    # Don't add the broken message, just retry
-                    continue
+                if agent.api_mode == "codex_responses":
+                    finish_reason = "incomplete"
                 else:
-                    # Max retries - discard this turn and save as partial
-                    agent._flush_status_buffer()
-                    agent._vprint(f"{agent.log_prefix}❌ Max retries (2) for incomplete scratchpad. Saving as partial.", force=True)
-                    agent._incomplete_scratchpad_retries = 0
-                    
-                    rolled_back_messages = agent._get_messages_up_to_last_assistant(messages)
-                    agent._cleanup_task_resources(effective_task_id)
-                    agent._persist_session(messages, conversation_history)
-                    
-                    return {
-                        "final_response": None,
-                        "messages": rolled_back_messages,
-                        "api_calls": api_call_count,
-                        "completed": False,
-                        "partial": True,
-                        "error": "Incomplete REASONING_SCRATCHPAD after 2 retries"
-                    }
+                    length_continue_retries += 1
+                    if length_continue_retries < 3:
+                        agent._buffer_vprint(f"⚠️  Incomplete <REASONING_SCRATCHPAD> detected — triggering continuation ({length_continue_retries}/3)")
+                        interim_msg = agent._build_assistant_message(assistant_message, "length")
+                        messages.append(interim_msg)
+                        continue_msg = {
+                            "role": "user",
+                            "content": "Incomplete response detected. Please continue your thought from where you left off.",
+                        }
+                        messages.append(continue_msg)
+                        agent._session_messages = messages
+                        _retry.restart_with_length_continuation = True
+                        continue
+                    else:
+                        # Max retries - discard this turn and save as partial
+                        agent._flush_status_buffer()
+                        agent._vprint(f"{agent.log_prefix}❌ Max retries (3) for incomplete scratchpad continuation. Saving as partial.", force=True)
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": None,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "partial": True,
+                            "error": "Incomplete REASONING_SCRATCHPAD after 3 continuation attempts"
+                        }
             
             # Reset incomplete scratchpad counter on clean response
             agent._incomplete_scratchpad_retries = 0
