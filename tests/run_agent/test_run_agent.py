@@ -4123,6 +4123,68 @@ class TestRunConversation:
         assert result["final_response"] == "Recovered after compression"
         assert result["completed"] is True
 
+    def test_probed_context_length_not_clobbered_by_stale_resolver_on_next_success(self, agent):
+        """A real provider-reported context limit must survive the next successful call.
+
+        Regression test: after a live 400 error reveals the true (smaller)
+        context window (e.g. a 40,960-token vLLM/Qwen deployment), the very
+        next successful response used to re-resolve the context length via
+        get_model_context_length() to "keep the window aligned" for UI usage
+        bars. That resolver can return a stale/wrong cached or provider-
+        reported value (e.g. 200k from a misconfigured LiteLLM /model/info
+        probe), silently overwriting the just-corrected value *before* it
+        was persisted — and then persisting the wrong value instead. This
+        caused the same overflow to repeat every session, since the correct
+        limit was never durably learned.
+        """
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+        agent.provider = "custom"
+        agent.model = "AIMDS-Suite-Auto"
+        agent.base_url = "https://dev.suite.iamds.com/litellm/v1"
+        agent.context_compressor.context_length = 200_000  # stale, like the real bug
+
+        err_400 = Exception(
+            "Error code: 400 - ContextWindowExceededError: This model's "
+            "maximum context length is 40960 tokens. However, your messages "
+            "resulted in at least 40961 input tokens."
+        )
+        err_400.status_code = 400
+        ok_resp = _mock_response(
+            content="Recovered after compression",
+            finish_reason="stop",
+            usage={"prompt_tokens": 1000, "completion_tokens": 50, "total_tokens": 1050},
+        )
+        agent.client.chat.completions.create.side_effect = [err_400, ok_resp]
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            # Simulate the stale resolver still returning the old wrong 200k
+            # value (e.g. from a persistent cache or provider /model/info
+            # probe that hasn't caught up yet) right after correction.
+            patch("agent.conversation_loop.get_model_context_length", return_value=200_000),
+            patch("agent.conversation_loop.save_context_length") as mock_save,
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "hello"}],
+                "compressed system prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        assert result["final_response"] == "Recovered after compression"
+        assert result["completed"] is True
+        # The corrected (real) limit must stick, not be clobbered back to 200k.
+        assert agent.context_compressor.context_length == 40_960
+        assert agent.context_compressor._context_probed is False
+        mock_save.assert_called_once_with("AIMDS-Suite-Auto", agent.base_url, 40_960)
+
     def test_non_minimax_overflow_without_provider_limit_keeps_context(self, agent):
         """Generic overflow without a provider-reported max must NOT probe-step down.
 

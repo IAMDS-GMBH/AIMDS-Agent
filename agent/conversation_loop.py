@@ -2746,41 +2746,56 @@ def run_conversation(
                     }
                     agent.context_compressor.update_from_response(usage_dict)
 
-                    # Keep the live compressor window aligned with the latest
-                    # resolver/cache value so UI usage bars don't stay pinned
-                    # to an older fallback (e.g. 256k) after auto-detect
-                    # discovers the provider's real limit (e.g. 200k).
-                    try:
-                        resolved_ctx = get_model_context_length(
-                            agent.model,
-                            base_url=agent.base_url,
-                            api_key=getattr(agent, "api_key", ""),
-                            provider=agent.provider,
-                            config_context_length=getattr(agent, "_config_context_length", None),
-                        )
-                        current_ctx = getattr(agent.context_compressor, "context_length", 0) or 0
-                        if resolved_ctx and resolved_ctx != current_ctx:
-                            agent.context_compressor.update_model(
-                                model=agent.model,
-                                context_length=resolved_ctx,
-                                base_url=agent.base_url,
-                                api_key=getattr(agent, "api_key", ""),
-                                provider=agent.provider,
-                                api_mode=agent.api_mode,
-                            )
-                    except Exception:
-                        pass
-
                     # Cache discovered context length after successful call.
                     # Only persist limits confirmed by the provider (parsed
                     # from the error message), not guessed probe tiers.
-                    if getattr(agent.context_compressor, "_context_probed", False):
+                    #
+                    # IMPORTANT: this must run *before* the "keep window
+                    # aligned" resolver re-fetch below. Otherwise a context
+                    # length that was just corrected from a live 400 error
+                    # (e.g. true 40,960-token vLLM limit) gets silently
+                    # clobbered back to a stale/wrong cached or provider-
+                    # reported value (e.g. 200k) on the very next successful
+                    # call, and that wrong value then gets re-persisted here,
+                    # permanently discarding the just-learned correction and
+                    # causing the same overflow to repeat every session.
+                    _context_was_freshly_probed = getattr(agent.context_compressor, "_context_probed", False)
+                    if _context_was_freshly_probed:
                         ctx = agent.context_compressor.context_length
                         if getattr(agent.context_compressor, "_context_probe_persistable", False):
                             save_context_length(agent.model, agent.base_url, ctx)
                             agent._safe_print(f"{agent.log_prefix}💾 Cached context length: {ctx:,} tokens for {agent.model}")
                         agent.context_compressor._context_probed = False
                         agent.context_compressor._context_probe_persistable = False
+
+                    # Keep the live compressor window aligned with the latest
+                    # resolver/cache value so UI usage bars don't stay pinned
+                    # to an older fallback (e.g. 256k) after auto-detect
+                    # discovers the provider's real limit (e.g. 200k).
+                    # Skip this when a real limit was just confirmed by a live
+                    # error above (and already persisted) so we don't
+                    # immediately re-overwrite it with a stale resolver value.
+                    if not _context_was_freshly_probed:
+                        try:
+                            resolved_ctx = get_model_context_length(
+                                agent.model,
+                                base_url=agent.base_url,
+                                api_key=getattr(agent, "api_key", ""),
+                                provider=agent.provider,
+                                config_context_length=getattr(agent, "_config_context_length", None),
+                            )
+                            current_ctx = getattr(agent.context_compressor, "context_length", 0) or 0
+                            if resolved_ctx and resolved_ctx != current_ctx:
+                                agent.context_compressor.update_model(
+                                    model=agent.model,
+                                    context_length=resolved_ctx,
+                                    base_url=agent.base_url,
+                                    api_key=getattr(agent, "api_key", ""),
+                                    provider=agent.provider,
+                                    api_mode=agent.api_mode,
+                                )
+                        except Exception:
+                            pass
 
                     agent.session_prompt_tokens += prompt_tokens
                     agent.session_completion_tokens += completion_tokens
