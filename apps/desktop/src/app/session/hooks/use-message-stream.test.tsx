@@ -121,4 +121,47 @@ describe('useMessageStream', () => {
     expect(assistantText(assistant!.parts)).toContain(contextLine)
     expect(assistant!.parts.some(part => part.type === 'tool-call')).toBe(true)
   })
+
+  it('keeps already-streamed assistant text when a late-turn error banner arrives', () => {
+    const states = new Map<string, ClientSessionState>()
+    const updateSessionState = (sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) => {
+      const current = states.get(sessionId) ?? baseState()
+      const next = updater(current)
+      states.set(sessionId, next)
+
+      return next
+    }
+
+    let api: ReturnType<typeof useMessageStream> | null = null
+
+    render(
+      <Harness
+        onReady={value => {
+          api = value
+        }}
+        updateSessionState={updateSessionState}
+      />
+    )
+
+    const progressLine = 'Ich suche jetzt nach dem Ticket im AIS-Board...'
+    const errorBanner = 'HTTP 400: ContextWindowExceededError: prompt exceeds model context length'
+
+    act(() => {
+      api!.handleGatewayEvent({ type: 'message.start', session_id: SESSION_ID, payload: {} } as RpcEvent)
+      api!.handleGatewayEvent({ type: 'message.delta', session_id: SESSION_ID, payload: { text: progressLine } } as RpcEvent)
+      api!.handleGatewayEvent(
+        { type: 'message.complete', session_id: SESSION_ID, payload: { text: errorBanner } } as RpcEvent
+      )
+    })
+
+    const state = states.get(SESSION_ID)
+    const assistant = state?.messages.find(message => message.role === 'assistant')
+
+    expect(assistant).toBeDefined()
+    // The already-visible progress text must survive — only the error banner
+    // itself is deduped away, not unrelated prior content (#20xxx regression:
+    // a late context-window-overflow error was wiping the whole bubble).
+    expect(assistantText(assistant!.parts)).toContain(progressLine)
+    expect(assistant!.error).toBe(errorBanner)
+  })
 })
