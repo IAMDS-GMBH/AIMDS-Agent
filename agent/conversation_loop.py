@@ -4724,6 +4724,29 @@ def run_conversation(
 
                 agent._codex_incomplete_retries = 0
                 agent._vprint(f"{agent.log_prefix}❌ Max retries (3) for incomplete codex response. Saving as partial.", force=True)
+                # Guard: if none of the 3 continuation attempts produced any
+                # visible content/reasoning, `messages` still ends on the
+                # user turn (or an empty assistant row) -- nothing tells the
+                # user their request failed on reload/reconnect. Append a
+                # real assistant message here so the failure is persisted,
+                # not just surfaced as an ephemeral gateway event.
+                _last_msg = messages[-1] if messages else None
+                _last_is_visible_assistant = (
+                    isinstance(_last_msg, dict)
+                    and _last_msg.get("role") == "assistant"
+                    and bool((_last_msg.get("content") or "").strip())
+                )
+                if not _last_is_visible_assistant:
+                    messages.append({
+                        "role": "assistant",
+                        "content": (
+                            "⚠️ Die Antwort ist nach 3 Fortsetzungsversuchen unvollständig geblieben "
+                            "(kein Tool-Aufruf, kein Antworttext). Bitte die Anfrage erneut stellen "
+                            "oder vereinfachen."
+                        ),
+                        "finish_reason": "incomplete",
+                    })
+                    agent._session_messages = messages
                 agent._persist_session(messages, conversation_history)
                 logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "codex_incomplete_retries_exhausted", agent.session_id or "none")
                 return {
