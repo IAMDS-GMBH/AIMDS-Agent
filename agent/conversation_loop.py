@@ -1996,6 +1996,7 @@ def run_conversation(
                         # so user sees the rate-limit message that led here.
                         agent._flush_status_buffer()
                         agent._persist_session(messages, conversation_history)
+                        logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "nous_rate_limit_no_fallback", agent.session_id or "none")
                         return {
                             "final_response": (
                                 f"⏳ {_nous_msg}\n\n"
@@ -2393,6 +2394,7 @@ def run_conversation(
                         agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                         logger.error(f"{agent.log_prefix}Invalid API response after {max_retries} retries.")
                         agent._persist_session(messages, conversation_history)
+                        logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "invalid_response_max_retries_exceeded", agent.session_id or "none")
                         return {
                             "messages": messages,
                             "completed": False,
@@ -2413,6 +2415,7 @@ def run_conversation(
                         if agent._interrupt_requested:
                             agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
                             agent._persist_session(messages, conversation_history)
+                            logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "interrupt_during_retry_wait", agent.session_id or "none")
                             agent.clear_interrupt()
                             return {
                                 "final_response": f"Operation interrupted during retry ({_failure_hint}, attempt {retry_count}/{max_retries}).",
@@ -2555,6 +2558,7 @@ def run_conversation(
                         )
                         agent._cleanup_task_resources(effective_task_id)
                         agent._persist_session(messages, conversation_history)
+                        logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "reasoning_thinking_budget_exhausted", agent.session_id or "none")
                         return {
                             "final_response": _exhaust_response,
                             "messages": messages,
@@ -2616,6 +2620,7 @@ def run_conversation(
                             partial_response = agent._strip_think_blocks("".join(truncated_response_parts)).strip()
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
+                            logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "truncated_response_partial_recovered", agent.session_id or "none")
                             return {
                                 "final_response": partial_response or None,
                                 "messages": messages,
@@ -2676,6 +2681,7 @@ def run_conversation(
                                 )
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
+                            logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "truncated_tool_call_response_repeat", agent.session_id or "none")
                             return {
                                 "final_response": None,
                                 "messages": messages,
@@ -2697,6 +2703,7 @@ def run_conversation(
 
                         agent._cleanup_task_resources(effective_task_id)
                         agent._persist_session(messages, conversation_history)
+                        logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "truncated_first_response_rollback", agent.session_id or "none")
 
                         return {
                             "final_response": None,
@@ -2711,6 +2718,7 @@ def run_conversation(
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ First response truncated - cannot recover", force=True)
                         agent._persist_session(messages, conversation_history)
+                        logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "truncated_first_response_unrecoverable", agent.session_id or "none")
                         return {
                             "final_response": None,
                             "messages": messages,
@@ -2926,6 +2934,7 @@ def run_conversation(
                 api_elapsed = time.time() - api_start_time
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupted during API call.", force=True)
                 agent._persist_session(messages, conversation_history)
+                logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "interrupted_during_api_call", agent.session_id or "none")
                 interrupted = True
                 final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed)."
                 break
@@ -3614,6 +3623,7 @@ def run_conversation(
                 if agent._interrupt_requested:
                     agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during error handling, aborting retries.", force=True)
                     agent._persist_session(messages, conversation_history)
+                    logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "interrupt_during_error_handling", agent.session_id or "none")
                     agent.clear_interrupt()
                     return {
                         "final_response": f"Operation interrupted: handling API error ({error_type}: {agent._clean_error_message(str(api_error))}).",
@@ -3669,6 +3679,7 @@ def run_conversation(
                         f"auto-compaction disabled — not compressing."
                     )
                     agent._persist_session(messages, conversation_history)
+                    logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "context_overflow_no_autocompaction", agent.session_id or "none")
                     return {
                         "messages": messages,
                         "completed": False,
@@ -3883,6 +3894,7 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error(f"{agent.log_prefix}413 compression failed after {max_compression_attempts} attempts.")
                         agent._persist_session(messages, conversation_history)
+                        logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "max_compression_attempts_413", agent.session_id or "none")
                         return {
                             "messages": messages,
                             "completed": False,
@@ -3917,6 +3929,7 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error(f"{agent.log_prefix}413 payload too large. Cannot compress further.")
                         agent._persist_session(messages, conversation_history)
+                        logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "payload_too_large_cannot_compress", agent.session_id or "none")
                         return {
                             "messages": messages,
                             "completed": False,
@@ -3970,6 +3983,7 @@ def run_conversation(
                             agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logger.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
                             agent._persist_session(messages, conversation_history)
+                            logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "max_compression_attempts_generic", agent.session_id or "none")
                             return {
                                 "messages": messages,
                                 "completed": False,
@@ -4039,6 +4053,7 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
                         agent._persist_session(messages, conversation_history)
+                        logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "max_compression_attempts_generic2", agent.session_id or "none")
                         return {
                             "messages": messages,
                             "completed": False,
@@ -4073,6 +4088,7 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
                         logger.error(f"{agent.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
                         agent._persist_session(messages, conversation_history)
+                        logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "context_length_exceeded_cannot_compress", agent.session_id or "none")
                         return {
                             "messages": messages,
                             "completed": False,
@@ -4270,6 +4286,7 @@ def run_conversation(
                         )
                     else:
                         agent._persist_session(messages, conversation_history)
+                        logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "non_retryable_client_error", agent.session_id or "none")
                     if classified.reason == FailoverReason.content_policy_blocked:
                         _summary = agent._summarize_api_error(api_error)
                         _policy_response = (
@@ -4379,6 +4396,7 @@ def run_conversation(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
                     agent._persist_session(messages, conversation_history)
+                    logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "max_retries_exhausted_api_error", agent.session_id or "none")
                     if classified.reason == FailoverReason.billing:
                         _final_response = f"Billing or credits exhausted: {_final_summary}"
                         if _billing_guidance:
@@ -4441,6 +4459,7 @@ def run_conversation(
                     if agent._interrupt_requested:
                         agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
                         agent._persist_session(messages, conversation_history)
+                        logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "interrupt_during_retry_wait2", agent.session_id or "none")
                         agent.clear_interrupt()
                         return {
                             "final_response": f"Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries}).",
@@ -4497,6 +4516,7 @@ def run_conversation(
             _turn_exit_reason = "all_retries_exhausted_no_response"
             print(f"{agent.log_prefix}❌ All API retries exhausted with no successful response.")
             agent._persist_session(messages, conversation_history)
+            logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "all_retries_exhausted_no_response", agent.session_id or "none")
             break
 
         try:
@@ -4643,6 +4663,7 @@ def run_conversation(
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ Max retries (3) for incomplete scratchpad continuation. Saving as partial.", force=True)
                         agent._persist_session(messages, conversation_history)
+                        logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "max_retries_incomplete_scratchpad", agent.session_id or "none")
                         return {
                             "final_response": None,
                             "messages": messages,
@@ -4703,6 +4724,7 @@ def run_conversation(
 
                 agent._codex_incomplete_retries = 0
                 agent._persist_session(messages, conversation_history)
+                logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "codex_incomplete_retries_exhausted", agent.session_id or "none")
                 return {
                     "final_response": None,
                     "messages": messages,
@@ -4757,6 +4779,7 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}❌ Max retries (3) for invalid tool calls exceeded. Stopping as partial.", force=True)
                         agent._invalid_tool_retries = 0
                         agent._persist_session(messages, conversation_history)
+                        logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "max_retries_invalid_tool_calls", agent.session_id or "none")
                         return {
                             "final_response": None,
                             "messages": messages,
@@ -4824,6 +4847,7 @@ def run_conversation(
                         agent._invalid_json_retries = 0
                         agent._cleanup_task_resources(effective_task_id)
                         agent._persist_session(messages, conversation_history)
+                        logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "truncated_tool_call_json_args_final", agent.session_id or "none")
                         return {
                             "final_response": None,
                             "messages": messages,
