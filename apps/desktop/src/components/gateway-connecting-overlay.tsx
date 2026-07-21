@@ -7,6 +7,16 @@ import { $gatewayState } from '@/store/session'
 import { useI18n } from '@/i18n'
 import { getEnvVars, getHermesConfig } from '@/hermes'
 
+/**
+ * Check if URL belongs to IAMDS domain or its subdomains.
+ * Matches: "iamds.com", "litellm.iamds.com", "api.iamds.com", etc.
+ */
+function isIamdsUrl(url: string): boolean {
+  if (!url) return false
+  const lower = url.toLowerCase()
+  return lower.endsWith('iamds.com') || lower.includes('.iamds.com')
+}
+
 // Static, always-legible prefix; only TAIL ever scrambles. Splitting them at
 // the render level means no timer logic (even a stale HMR one) can ever
 // scramble "CONN".
@@ -163,7 +173,7 @@ export function GatewayConnectingOverlay() {
         if (desktop.getConnectionConfig) {
           const config = await desktop.getConnectionConfig()
           if (config && config.mode === 'remote' && config.remoteUrl) {
-            if (config.remoteUrl.toLowerCase().includes('iamds.com')) {
+            if (isIamdsUrl(config.remoteUrl)) {
               if (active) {
                 setIsIamds(true)
                 return
@@ -178,7 +188,7 @@ export function GatewayConnectingOverlay() {
           const rawConfig = config as Record<string, any>
           const modelBaseUrl = rawConfig.model?.base_url || ''
           const litellmBaseUrl = rawConfig.litellm_hub?.base_url || ''
-          if (modelBaseUrl.toLowerCase().includes('iamds.com') || litellmBaseUrl.toLowerCase().includes('iamds.com')) {
+          if (isIamdsUrl(modelBaseUrl) || isIamdsUrl(litellmBaseUrl)) {
             setIsIamds(true)
             return
           }
