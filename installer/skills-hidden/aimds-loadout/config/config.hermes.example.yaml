@@ -79,7 +79,7 @@ delegation:
 # --- MCP-Server über den LiteLLM MCP Gateway --------------------------------
 # Der Gateway frontet AIMDS-AI-KB und den /memory-Wrapper.
 mcp_servers:
-  aimds-gateway:
+  IAMDS:
     provider: iamds
     transport: http
     url: "https://<litellm-host>/mcp"

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import yaml
 
-_AIMDS_DEFAULTS_VERSION = 1
+_AIMDS_DEFAULTS_VERSION = 3
 _AIMDS_DEFAULTS_VERSION_KEY = "aimds_defaults_version"
 
 
@@ -42,6 +42,42 @@ def _coerce_version(value: object) -> int:
         return 0
 
 
+def _resolve_target_mcp_server_name(mcp_servers: dict) -> str:
+    if not isinstance(mcp_servers, dict):
+        return "IAMDS"
+
+    # Name-agnostic primary rule: target whichever MCP entry declares
+    # provider: iamds.
+    for name, cfg in mcp_servers.items():
+        if isinstance(cfg, dict) and str(cfg.get("provider", "")).strip().lower() == "iamds":
+            return str(name)
+
+    for preferred in ("IAMDS", "memory", "aimds-gateway", "remoteMCP", "remote"):
+        if preferred in mcp_servers and isinstance(mcp_servers.get(preferred), dict):
+            return preferred
+
+    for name, cfg in mcp_servers.items():
+        if isinstance(cfg, dict):
+            return str(name)
+
+    return "IAMDS"
+
+
+def _is_upsert_only_aimds_gateway(entry: object) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    # Safe cleanup criterion: this looks like a synthetic stub created only by
+    # the defaults-upsert (tools filters, no transport/url/command identity).
+    identity_keys = {"url", "transport", "command", "provider", "args"}
+    if any(k in entry for k in identity_keys):
+        return False
+    tools = entry.get("tools")
+    if not isinstance(tools, dict):
+        return False
+    include = tools.get("include")
+    return include == _AIMDS_TOOL_INCLUDE
+
+
 def upsert_aimds_defaults(config: dict) -> dict:
     cfg = config if isinstance(config, dict) else {}
 
@@ -63,11 +99,19 @@ def upsert_aimds_defaults(config: dict) -> dict:
         aux_slot["model"] = "<litellm-fast-model>"
 
     mcp_servers = _ensure_dict(cfg, "mcp_servers")
-    aimds_gateway = _ensure_dict(mcp_servers, "aimds-gateway")
-    aimds_tools = _ensure_dict(aimds_gateway, "tools")
+    target_name = _resolve_target_mcp_server_name(mcp_servers)
+    target_server = _ensure_dict(mcp_servers, target_name)
+    aimds_tools = _ensure_dict(target_server, "tools")
     aimds_tools["include"] = list(_AIMDS_TOOL_INCLUDE)
     aimds_tools["resources"] = False
     aimds_tools["prompts"] = False
+
+    # Repair from v1 behavior: avoid introducing a separate synthetic
+    # "aimds-gateway" MCP entry when the real server is IAMDS.
+    if target_name != "aimds-gateway":
+        legacy = mcp_servers.get("aimds-gateway")
+        if _is_upsert_only_aimds_gateway(legacy):
+            mcp_servers.pop("aimds-gateway", None)
 
     return cfg
 
