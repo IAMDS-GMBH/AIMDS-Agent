@@ -4723,6 +4723,7 @@ def run_conversation(
                     continue
 
                 agent._codex_incomplete_retries = 0
+                agent._vprint(f"{agent.log_prefix}❌ Max retries (3) for incomplete codex response. Saving as partial.", force=True)
                 agent._persist_session(messages, conversation_history)
                 logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "codex_incomplete_retries_exhausted", agent.session_id or "none")
                 return {
