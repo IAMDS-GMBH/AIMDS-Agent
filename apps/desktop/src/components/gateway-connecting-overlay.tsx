@@ -263,7 +263,7 @@ export function GatewayConnectingOverlay() {
     return () => {
       active = false
     }
-  }, [])
+  }, [gatewayState])
 
   const connecting = gatewayState !== 'open' && !boot.error
   const startupConnect = !previewing && (boot.running || boot.phase !== 'renderer.ready')
