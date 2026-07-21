@@ -327,7 +327,19 @@ class TestLoadGatewayConfig:
 
         config = load_gateway_config()
 
-        assert config.messaging_ingress_enabled is True
+        assert config.messaging_ingress_enabled is False
+
+    def test_global_disable_overrides_env_ingress_enable(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_GATEWAY_MESSAGING_INGRESS_ENABLED", "true")
+
+        config = load_gateway_config()
+
+        assert config.messaging_ingress_enabled is False
 
     def test_bridges_quick_commands_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

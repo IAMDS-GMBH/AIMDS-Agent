@@ -21,6 +21,8 @@ from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
+_GLOBAL_MESSAGING_PLUGINS_DISABLED = True
+
 
 def _coerce_bool(value: Any, default: bool = True) -> bool:
     """Coerce bool-ish config values, preserving a caller-provided default."""
@@ -1294,7 +1296,15 @@ def load_gateway_config() -> GatewayConfig:
 
     # Override with environment variables
     _apply_env_overrides(config)
-    
+
+    if _GLOBAL_MESSAGING_PLUGINS_DISABLED:
+        if config.messaging_ingress_enabled:
+            logger.info(
+                "Gateway messaging plugins are globally disabled; "
+                "forcing messaging ingress off."
+            )
+        config.messaging_ingress_enabled = False
+     
     # --- Validate loaded values ---
     _validate_gateway_config(config)
 
