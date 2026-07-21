@@ -71,6 +71,22 @@ mit semantischer Suche. Nicht vermischen.
 3. Firmenwissen schreibt der End-User-Agent **nicht** (D wird kuratiert gepflegt).
 4. **Autorität bei Konflikt: B/C (zentral) gewinnt über A (lokaler Cache).**
 
+### Session-Verlauf vs. durable Memory
+- Was in einer früheren Session gesagt/entschieden wurde, wird über
+  **`session_search`** aus der Transcript-DB geholt.
+- Durable Memory (B/C) speichert stabile Fakten (Profil, Präferenzen,
+  Team-Konventionen) — nicht laufenden Task-Status.
+
+### Write-Gates & Auto-Capture
+- `memory.write_approval`:
+  - `false` (Default) → Writes laufen direkt durch.
+  - `true` → Writes werden zur Freigabe gestaged (`/memory pending` etc.).
+- `skills.write_approval` analog für Skill-Änderungen.
+- `memory.managed_memory.capture_mode`:
+  - `off` → kein automatisches Erfassen
+  - `suggest` → Agent schlägt Speicherung vor
+  - `auto` → Agent speichert geeignete durable Fakten proaktiv
+
 ### Keys (Konvention)
 ```
 user:{user_id}:profile        # Rolle, Stil, Präferenzen
@@ -91,7 +107,7 @@ Hermes spricht nativ MCP; LiteLLM `/memory` ist REST. Drei Wege (vor Pilot wähl
 - **Zugriffskontrolle** kommt aus LiteLLM (user/team-Scope per Key) — kein
   Cross-User-Leak.
 - **Hermes lokal:** `memory.write_approval: true` + `skills.write_approval: true`,
-  damit der Hintergrund-Review nichts ungefragt einbrennt.
+  wenn Freigabe-gesteuerte Writes gewünscht sind (z.B. Enterprise-Policy).
 - **Audit:** `/memory` führt `created_by`/`updated_by` mit Timestamps.
 
 ## Warum die Trennung A/B/C/D

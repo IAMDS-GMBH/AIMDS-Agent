@@ -172,6 +172,19 @@ def is_deferrable_tool_name(name: str) -> bool:
         return False
     if name in _core_tool_names():
         return False
+    # Keep critical memory-MCP primitives model-visible even when tool_search
+    # is active: session bootstrap relies on memory_context being directly
+    # callable as the first tool round, and onboarding may need skill_read
+    # immediately after.
+    if (
+        name == "memory_context"
+        or name.endswith("_memory_context")
+        or name == "memory_skill_read"
+        or name.endswith("_memory_skill_read")
+        or name == "memory_save"
+        or name.endswith("_memory_save")
+    ):
+        return False
     # Check registry toolset for MCP prefix.
     try:
         from tools.registry import registry

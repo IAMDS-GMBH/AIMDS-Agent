@@ -5,5 +5,4 @@
 
 - Firmenwissen wird über das AIMDS-AI-KB abgefragt (`kb_search`), nicht aus dem Gedächtnis.
 - Durable User-Fakten gehören in den zentralen User-Memory-MCP, nicht hierher.
-- Mailversand/Transaktionen erfordern immer Freigabe durch den Nutzer.
 - <maschinenspezifisch: z.B. Outlook-Profil, Standard-Ablageordner>

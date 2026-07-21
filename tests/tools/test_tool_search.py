@@ -106,6 +106,20 @@ class TestClassification:
         for name in BRIDGE_TOOL_NAMES:
             assert not is_deferrable_tool_name(name)
 
+    def test_memory_mcp_primitives_never_defer(self):
+        from tools.tool_search import is_deferrable_tool_name
+        for name in [
+            "memory_context",
+            "mcp_IAMDS_mcp_memory_memory_context",
+            "memory_skill_read",
+            "mcp_IAMDS_mcp_memory_memory_skill_read",
+            "memory_save",
+            "mcp_IAMDS_mcp_memory_memory_save",
+        ]:
+            assert not is_deferrable_tool_name(name), (
+                f"Critical memory-MCP tool '{name}' must remain model-visible"
+            )
+
     def test_unknown_tool_not_deferrable(self):
         """Defensive: a tool name we cannot resolve to a registry entry must
         not be claimed as deferrable. This protects against the OpenClaw
@@ -535,4 +549,3 @@ class TestRegression_ToolsetScoping:
         assert "mcp_helper_op" in names
         # core tools are never deferrable
         assert "terminal" not in names
-

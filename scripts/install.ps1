@@ -2997,6 +2997,29 @@ function Copy-ConfigTemplates {
     # scripts). Active skills come from repo-based bundled skill sync.
     Sync-AimdsCustomAssets
 
+    # Seed local memory files from AIMDS templates on fresh installs. Only
+    # missing/empty targets are seeded; existing user content is preserved.
+    $memorySeedScript = Join-Path $InstallDir 'installer\scripts\seed_memory_files.py'
+    $aimdsInstallerDir = Resolve-AimdsInstallerDir
+    $aimdsMemorySeedDir = if ($aimdsInstallerDir) { Join-Path $aimdsInstallerDir 'skills-hidden\aimds-loadout\memory' } else { $null }
+    $pythonForMemorySeed = "$InstallDir\venv\Scripts\python.exe"
+    if (-not (Test-Path $pythonForMemorySeed)) {
+        $pythonCmd = Get-Command python3 -ErrorAction SilentlyContinue
+        if (-not $pythonCmd) { $pythonCmd = Get-Command python -ErrorAction SilentlyContinue }
+        $pythonForMemorySeed = if ($pythonCmd) { $pythonCmd.Source } else { $null }
+    }
+    if ($pythonForMemorySeed -and (Test-Path $memorySeedScript) -and $aimdsMemorySeedDir -and (Test-Path $aimdsMemorySeedDir)) {
+        Write-Info "Seeding $HermesHome\memories from AIMDS seed templates (missing/empty only)..."
+        try {
+            $seedOutput = & $pythonForMemorySeed $memorySeedScript $aimdsMemorySeedDir "$HermesHome\memories"
+            foreach ($line in ($seedOutput -split "`r?`n")) {
+                if ($line.Trim()) { Write-Info "  $line" }
+            }
+        } catch {
+            Write-Warn "Memory seed step failed: $($_.Exception.Message)"
+        }
+    }
+
     # Keep parity with AIMDS installer defaults: use a stable Documents working
     # directory rather than repo-relative '.'.
     if (Test-Path $configPath) {
@@ -3080,6 +3103,8 @@ You are Hermes, an AI agent originally developed by Nous Research and extended a
 
 - Be concise, direct, and professional.
 - Avoid unnecessary filler phrases.
+- Never send emails or perform transactions without explicit user approval.
+- Never delete or perform irreversible actions without user confirmation.
 - When speaking (voice mode), use short natural sentences - avoid bullet points, markdown, or lists in spoken responses.
 - You are aware of the IAMDS product suite, which includes tools built on top of Azure, OpenAI, and Anthropic APIs.
 "@

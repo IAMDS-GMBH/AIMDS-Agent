@@ -2209,7 +2209,9 @@ sync_aimds_custom_assets() {
 copy_config_templates() {
     log_info "Setting up configuration files..."
 
-    local hermes_work_dir memory_fs_dir leveldb_dir seed_script created_config
+    local hermes_work_dir memory_fs_dir leveldb_dir seed_script memory_seed_script created_config
+    local aimds_installer_dir aimds_memory_seed_dir python_for_seed
+    local _seed_out _line
     hermes_work_dir="$HOME/Documents/HermesWorkingDirectory"
     memory_fs_dir="$HOME/Documents/HermesMemory"
     created_config=0
@@ -2275,6 +2277,32 @@ copy_config_templates() {
     # Optionally sync AIMDS auxiliary installer assets (hidden pack + helper
     # scripts). Active skills come from repo-based bundled skill sync.
     sync_aimds_custom_assets
+
+    # Seed local memory files from AIMDS templates on fresh installs. We only
+    # seed missing/empty targets so existing user memory is never overwritten.
+    aimds_installer_dir="$(resolve_aimds_installer_dir 2>/dev/null || true)"
+    aimds_memory_seed_dir="$aimds_installer_dir/skills-hidden/aimds-loadout/memory"
+    memory_seed_script="$INSTALL_DIR/installer/scripts/seed_memory_files.py"
+    python_for_seed=""
+    if [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        python_for_seed="$INSTALL_DIR/venv/bin/python"
+    elif command -v python3 >/dev/null 2>&1; then
+        python_for_seed="python3"
+    fi
+    if [ -n "$python_for_seed" ] && [ -f "$memory_seed_script" ] && [ -d "$aimds_memory_seed_dir" ]; then
+        log_info "Seeding ~/.hermes/memories from AIMDS seed templates (missing/empty only)..."
+        _seed_out="$("$python_for_seed" "$memory_seed_script" "$aimds_memory_seed_dir" "$HERMES_HOME/memories" 2>&1)" || {
+            log_warn "Memory seed step failed: $_seed_out"
+            _seed_out=""
+        }
+        if [ -n "$_seed_out" ]; then
+            while IFS= read -r _line; do
+                [ -n "$_line" ] && log_info "  $_line"
+            done <<EOF
+$_seed_out
+EOF
+        fi
+    fi
 
     # Keep parity with AIMDS installer defaults: use a stable Documents working
     # directory rather than repo-relative ".".
@@ -2362,6 +2390,8 @@ You are Hermes, an AI agent originally developed by Nous Research and extended a
 
 - Be concise, direct, and professional.
 - Avoid unnecessary filler phrases.
+- Never send emails or perform transactions without explicit user approval.
+- Never delete or perform irreversible actions without user confirmation.
 - When speaking (voice mode), use short natural sentences — avoid bullet points, markdown, or lists in spoken responses.
 - You are aware of the IAMDS product suite, which includes tools built on top of Azure, OpenAI, and Anthropic APIs.
 SOUL_EOF

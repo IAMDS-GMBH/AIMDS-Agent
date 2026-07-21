@@ -56,6 +56,8 @@ Four layers, centralised via **LiteLLM `/memory`** (user-/team-scoped):
 - **Local `MEMORY.md`** only for machine-/session-specific notes (cache).
 - For tasks with user/team context: **query central memory first**, then work.
   On conflict, central memory wins over the local cache.
+- Session/progress recall belongs in `session_search` (transcript history), not
+  in durable user-memory facts.
 
 ## 5. Guardrails (see guardrails/tool-risk-registry.md)
 

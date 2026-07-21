@@ -23,9 +23,13 @@ auxiliary:
 memory:
   memory_enabled: true
   user_profile_enabled: true
-  write_approval: false    # AIMDS default: frictionless writes
+  write_approval: false    # false = frictionless; true = stage/approve writes
+  managed_memory:
+    enabled: true
+    capture_mode: auto     # off | suggest | auto
+    # auto = durable profile facts are captured proactively when learned
 skills:
-  write_approval: false    # AIMDS default: frictionless writes
+  write_approval: false    # false = frictionless; true = stage/approve writes
 
 # --- Delegation (Default: Single-Agent; Subagents nur für parallele Reads) ---
 delegation:
