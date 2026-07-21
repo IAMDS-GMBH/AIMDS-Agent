@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import {
   getMessagingPlatforms,
   type MessagingEnvVarInfo,
@@ -288,6 +289,24 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }
 
+  async function handleToggleEnabled(platform: MessagingPlatformInfo, enabled: boolean) {
+    setSaving(`enabled:${platform.id}`)
+
+    try {
+      await updateMessagingPlatform(platform.id, { enabled })
+      await refreshPlatforms()
+      notify({
+        kind: 'success',
+        title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
+        message: m.restartToApply
+      })
+    } catch (err) {
+      notifyError(err, m.failedUpdate(platform.name))
+    } finally {
+      setSaving(null)
+    }
+  }
+
   async function handleTestOutlookConnection(platform: MessagingPlatformInfo) {
     setSaving(`connection:${platform.id}`)
 
@@ -348,6 +367,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                     }))
                   }
                   onSave={() => void handleSave(selected)}
+                  onToggleEnabled={enabled => void handleToggleEnabled(selected, enabled)}
                   platform={selected}
                   saving={saving}
                   onOutlookOpenGuide={() => setOutlookGuideOpen(true)}
@@ -426,6 +446,7 @@ function PlatformDetail({
   onClear,
   onEdit,
   onSave,
+  onToggleEnabled,
   platform,
   saving,
   onOutlookOpenGuide,
@@ -437,6 +458,7 @@ function PlatformDetail({
   onClear: (key: string) => void
   onEdit: (key: string, value: string) => void
   onSave: () => void
+  onToggleEnabled?: (enabled: boolean) => void
   platform: MessagingPlatformInfo
   saving: string | null
   onOutlookOpenGuide?: () => void
@@ -494,6 +516,23 @@ function PlatformDetail({
               <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
               <span>{platform.error_message}</span>
             </div>
+          )}
+
+          {platform.id === 'outlook' && onToggleEnabled && (
+            <section className="flex items-start justify-between gap-4 rounded-xl border border-border px-3 py-2.5">
+              <div className="min-w-0">
+                <p className="text-[0.8125rem] font-medium">{m.outlookMessagingToggleLabel}</p>
+                <p className="mt-0.5 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                  {m.outlookMessagingToggleHelp}
+                </p>
+              </div>
+              <Switch
+                aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
+                checked={platform.enabled}
+                disabled={saving === `enabled:${platform.id}`}
+                onCheckedChange={checked => onToggleEnabled(checked)}
+              />
+            </section>
           )}
 
           <section>

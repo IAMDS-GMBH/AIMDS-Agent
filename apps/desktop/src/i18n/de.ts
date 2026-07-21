@@ -821,6 +821,9 @@ export const de
     platformEnabled: name => `${name} aktiviert`,
     platformDisabled: name => `${name} deaktiviert`,
     restartToApply: 'Gateway neu starten, damit diese Änderung wirksam wird.',
+    outlookMessagingToggleLabel: 'Als Messaging-Plattform aktivieren',
+    outlookMessagingToggleHelp:
+      'Standardmäßig dient Outlook nur als Tool für Chat und Cron-Jobs (Mails/Kalender lesen und schreiben auf Anfrage). Aktiviere diesen Schalter nur, wenn Hermes den Posteingang automatisch abrufen und selbstständig Antworten versenden soll.',
     setupSaved: name => `${name}-Einrichtung gespeichert`,
     restartToReconnect: 'Gateway neu starten, um mit den neuen Zugangsdaten zu verbinden.',
     keyCleared: key => `${key} gelöscht`,

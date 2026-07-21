@@ -688,6 +688,8 @@ export interface Translations {
     platformEnabled: (name: string) => string
     platformDisabled: (name: string) => string
     restartToApply: string
+    outlookMessagingToggleLabel: string
+    outlookMessagingToggleHelp: string
     setupSaved: (name: string) => string
     restartToReconnect: string
     keyCleared: (key: string) => string

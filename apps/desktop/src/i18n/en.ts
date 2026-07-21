@@ -820,6 +820,9 @@ export const en: Translations = {
     platformEnabled: name => `${name} enabled`,
     platformDisabled: name => `${name} disabled`,
     restartToApply: 'Restart the gateway for this change to take effect.',
+    outlookMessagingToggleLabel: 'Enable as messaging platform',
+    outlookMessagingToggleHelp:
+      'By default Outlook is only used as a tool for chat and cron jobs (read/write mail and calendar on demand). Only enable this switch if Hermes should automatically poll the inbox and send replies on its own.',
     setupSaved: name => `${name} setup saved`,
     restartToReconnect: 'Restart the gateway to reconnect with the new credentials.',
     keyCleared: key => `${key} cleared`,

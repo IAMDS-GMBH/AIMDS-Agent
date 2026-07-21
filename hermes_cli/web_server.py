@@ -4762,31 +4762,38 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
         if body.enabled is not None:
             _write_platform_enabled(platform_id, body.enabled)
         elif body.env and not body.clear_env:
-            # Auto-enable when all required env vars are now satisfied
+            # Auto-enable when all required env vars are now satisfied.
+            # Outlook is intentionally excluded: it's primarily a chat/cron
+            # *tool* (mailbox read/write on demand), not a messaging platform
+            # that should silently start polling the inbox and auto-sending
+            # replies just because credentials were saved. Outlook only
+            # becomes a live gateway messaging platform via the explicit
+            # "enabled" toggle in the Outlook settings page (body.enabled
+            # branch above).
             required = set(entry.get("required_env") or ())
-            if required:
+            if required and platform_id != "outlook":
                 from hermes_cli.config import get_env_value
                 all_set = all(get_env_value(k) for k in required)
                 if all_set:
                     _write_platform_enabled(platform_id, True)
-                    if platform_id == "outlook":
-                        try:
-                            from tools.outlook_tool import _enable_outlook_toolset_for_cli
+            if platform_id == "outlook":
+                try:
+                    from tools.outlook_tool import _enable_outlook_toolset_for_cli
 
-                            changed, toolset_error = _enable_outlook_toolset_for_cli()
-                            if toolset_error:
-                                _log.warning(
-                                    "Outlook credentials saved but auto-enable of outlook toolset failed: %s",
-                                    toolset_error,
-                                )
-                            elif changed:
-                                _log.info(
-                                    "Auto-enabled outlook toolset after Outlook credential save."
-                                )
-                        except Exception:
-                            _log.exception(
-                                "Outlook credentials saved, but toolset auto-enable raised."
-                            )
+                    changed, toolset_error = _enable_outlook_toolset_for_cli()
+                    if toolset_error:
+                        _log.warning(
+                            "Outlook credentials saved but auto-enable of outlook toolset failed: %s",
+                            toolset_error,
+                        )
+                    elif changed:
+                        _log.info(
+                            "Auto-enabled outlook toolset after Outlook credential save."
+                        )
+                except Exception:
+                    _log.exception(
+                        "Outlook credentials saved, but toolset auto-enable raised."
+                    )
 
         return {"ok": True, "platform": platform_id}
     except HTTPException:

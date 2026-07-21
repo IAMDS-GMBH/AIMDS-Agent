@@ -1351,6 +1351,7 @@ class TestWebServerEndpoints:
 
     def test_update_outlook_platform_auto_enables_toolset_after_credential_save(self, monkeypatch):
         import tools.outlook_tool as outlook_tool
+        from hermes_cli.config import load_config
 
         calls = {"count": 0}
 
@@ -1372,6 +1373,11 @@ class TestWebServerEndpoints:
 
         assert resp.status_code == 200
         assert calls["count"] == 1
+        # Saving Outlook credentials must NOT silently turn Outlook into a
+        # live gateway messaging platform (auto-poll inbox + auto-send
+        # replies). It only enables the chat/cron tool. The platform stays
+        # disabled until the user explicitly flips the toggle.
+        assert load_config().get("platforms", {}).get("outlook", {}).get("enabled") is not True
 
     def test_messaging_platform_test_reports_missing_required_setup(self):
         resp = self.client.put("/api/messaging/platforms/telegram", json={"enabled": True})
