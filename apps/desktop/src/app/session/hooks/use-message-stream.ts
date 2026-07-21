@@ -557,7 +557,22 @@ export function useMessageStream({
             ? {
                 ...message,
                 error: completionError,
-                parts: message.parts.filter(part => part.type !== 'text'),
+                // Only drop text parts that duplicate the error banner itself
+                // (e.g. a stream that echoed the same failure text). Genuine
+                // progress already rendered before the failure (interim
+                // assistant commentary, tool-call narration) must survive so
+                // the bubble doesn't visibly wipe itself out the instant a
+                // late-turn error (e.g. context-window overflow after several
+                // successful tool calls) arrives.
+                parts: message.parts.filter(part => {
+                  if (part.type !== 'text') {
+                    return true
+                  }
+
+                  const t = normalize(part.text)
+
+                  return !(t && dedupeReference && (t === dedupeReference || dedupeReference.startsWith(t)))
+                }),
                 pending: false
               }
             : {
