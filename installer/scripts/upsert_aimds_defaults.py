@@ -12,7 +12,7 @@ from pathlib import Path
 
 import yaml
 
-_AIMDS_DEFAULTS_VERSION = 3
+_AIMDS_DEFAULTS_VERSION = 4
 _AIMDS_DEFAULTS_VERSION_KEY = "aimds_defaults_version"
 
 
@@ -20,6 +20,7 @@ _AIMDS_TOOL_INCLUDE = [
     "kb_search",
     "kb_get_topic",
     "kb_get_related",
+    "memory_context",
     "memory_get",
     "memory_list",
     "memory_upsert",

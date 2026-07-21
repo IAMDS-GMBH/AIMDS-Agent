@@ -89,6 +89,7 @@ mcp_servers:
         - kb_search
         - kb_get_topic
         - kb_get_related
+        - memory_context
         - memory_get
         - memory_list
         - memory_upsert

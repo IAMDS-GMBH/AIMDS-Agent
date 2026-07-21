@@ -36,6 +36,7 @@ def test_upsert_aimds_defaults_creates_required_sections():
         "kb_search",
         "kb_get_topic",
         "kb_get_related",
+        "memory_context",
         "memory_get",
         "memory_list",
         "memory_upsert",
@@ -67,20 +68,20 @@ def test_migrate_aimds_defaults_sets_version_and_applies_when_missing():
     out, changed, status = migrate_aimds_defaults(cfg)
 
     assert changed is True
-    assert "applied v3 (from v0)" in status
-    assert out["aimds_defaults_version"] == 3
+    assert "applied v4 (from v0)" in status
+    assert out["aimds_defaults_version"] == 4
     assert out["tools"]["tool_search"]["enabled"] == "on"
 
 
 def test_migrate_aimds_defaults_skips_when_already_current():
     cfg = {
-        "aimds_defaults_version": 3,
+        "aimds_defaults_version": 4,
         "tools": {"tool_search": {"enabled": "off"}},
     }
     out, changed, status = migrate_aimds_defaults(cfg)
 
     assert changed is False
-    assert "already current (v3)" in status
+    assert "already current (v4)" in status
     assert out["tools"]["tool_search"]["enabled"] == "off"
 
 
@@ -97,6 +98,7 @@ def test_upsert_removes_synthetic_aimds_gateway_when_iamds_exists():
                         "kb_search",
                         "kb_get_topic",
                         "kb_get_related",
+                        "memory_context",
                         "memory_get",
                         "memory_list",
                         "memory_upsert",
