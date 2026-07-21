@@ -8138,6 +8138,39 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         pass
 
 
+def _apply_aimds_defaults_after_update() -> None:
+    """Best-effort AIMDS config policy migration for update/sync flows.
+
+    Bootstrap update mode runs ``hermes update`` directly (not install.sh/ps1),
+    so installer-only config upserts won't fire. This hook applies the same
+    versioned AIMDS defaults migration against ~/.hermes/config.yaml after the
+    normal config migration pass.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        script_path = PROJECT_ROOT / "installer" / "scripts" / "upsert_aimds_defaults.py"
+        if not script_path.is_file() or not config_path.is_file():
+            return
+
+        result = subprocess.run(
+            [sys.executable, str(script_path), str(config_path)],
+            capture_output=True,
+            text=True,
+        )
+        output = (result.stdout or result.stderr or "").strip()
+        if result.returncode == 0:
+            if output:
+                for line in output.splitlines():
+                    print(f"  ℹ {line}")
+        else:
+            detail = output.splitlines()[0] if output else f"exit {result.returncode}"
+            print(f"  ⚠️  AIMDS defaults migration failed: {detail}")
+    except Exception as exc:
+        logger.debug("AIMDS defaults post-update migration failed: %s", exc)
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -8968,6 +9001,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("Skipped. Run 'hermes config migrate' later to configure.")
         else:
             print("  ✓ Configuration is up to date")
+
+        # Keep AIMDS policy defaults enforced for update/sync paths too.
+        _apply_aimds_defaults_after_update()
 
         # Safety net: config-version migrations have been observed to leave
         # cron/jobs.json valid-but-empty, silently dropping every scheduled
