@@ -5136,6 +5136,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # turn so the agent kicks off the new chat.
         asyncio.create_task(self._handoff_watcher())
 
+        # Start background code-drift watcher — warns (instead of silently
+        # doing nothing) when the gateway's on-disk git checkout has moved
+        # past the commit this process loaded at startup, e.g. because a
+        # plain `git pull` was run against the checkout directly instead of
+        # via `hermes update` (which always restarts the gateway).
+        asyncio.create_task(self._code_drift_watcher())
+
         logger.info("Press Ctrl+C to stop")
         
         return True
@@ -5357,6 +5364,64 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not getattr(result, "success", True):
             err = getattr(result, "error", "send returned success=False")
             raise RuntimeError(f"adapter.send failed: {err}")
+
+    @staticmethod
+    def _git_head_sha(repo_root: Path) -> Optional[str]:
+        """Return the current git HEAD SHA for ``repo_root``, or None on failure."""
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5,
+            )
+            return result.stdout.strip() or None
+        except (subprocess.CalledProcessError, OSError, subprocess.TimeoutExpired):
+            return None
+
+    async def _code_drift_watcher(self, interval: float = 900.0) -> None:
+        """Warn when the on-disk checkout has moved past the code this process loaded.
+
+        `hermes update` (and its `/update` chat command) always restarts the
+        gateway after pulling new commits, so the running process picks up
+        fixes immediately. But a plain `git pull` run directly against the
+        gateway's checkout — e.g. during manual debugging — updates the files
+        on disk without ever triggering that restart. Python doesn't hot-reload
+        modules, so the process silently keeps executing the old code with no
+        visible symptom other than "the fix doesn't seem to take effect".
+
+        This watcher makes that drift observable instead of silent: it records
+        the git HEAD loaded at startup, periodically re-checks the on-disk
+        HEAD, and logs a clear, actionable warning the first time they diverge.
+        """
+        repo_root = Path(__file__).resolve().parent.parent
+        if not (repo_root / ".git").exists():
+            return  # not a git checkout (e.g. packaged install) — nothing to compare
+
+        loop = asyncio.get_running_loop()
+        startup_sha = await loop.run_in_executor(None, self._git_head_sha, repo_root)
+        if not startup_sha:
+            return  # git unavailable or not a repo — skip silently, nothing actionable
+
+        warned = False
+        while self._running:
+            await asyncio.sleep(interval)
+            if not self._running or warned:
+                continue
+            current_sha = await loop.run_in_executor(None, self._git_head_sha, repo_root)
+            if current_sha and current_sha != startup_sha:
+                warned = True
+                logger.warning(
+                    "Gateway checkout at %s has moved from commit %s to %s, but this "
+                    "process is still running the old code. This usually means a plain "
+                    "'git pull' was run instead of 'hermes update' (which restarts the "
+                    "gateway automatically). Run 'hermes gateway restart' to load the "
+                    "new code.",
+                    repo_root, startup_sha[:12], current_sha[:12],
+                )
 
     async def _session_expiry_watcher(self, interval: int = 300):
         """Background task that finalizes expired sessions.
