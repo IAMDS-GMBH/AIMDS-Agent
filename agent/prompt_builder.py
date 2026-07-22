@@ -298,6 +298,15 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "without acting are not acceptable."
 )
 
+TOOL_SEARCH_ANTI_HALLUCINATION_GUIDANCE = (
+    "# Deferred tool search anti-hallucination directive\n"
+    "CRITICAL: `tool_search` is active and some tools or features are deferred.\n"
+    "You MUST ONLY call tools that are explicitly defined in your active tools schema/definitions array.\n"
+    "NEVER invent, guess, or call unlisted tool names directly (e.g. NEVER call 'outlook_*' or 'mcp_*' "
+    "unless they appear in your active tools list).\n"
+    "If a required tool is missing from your active tools array, call `tool_search(query='...')` first to discover and load it."
+)
+
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek")

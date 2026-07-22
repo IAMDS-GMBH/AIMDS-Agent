@@ -41,6 +41,7 @@ from agent.prompt_builder import (
     STEER_CHANNEL_NOTE,
     TASK_COMPLETION_GUIDANCE,
     TODO_PERSISTENCE_GUIDANCE,
+    TOOL_SEARCH_ANTI_HALLUCINATION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
 )
@@ -201,6 +202,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                 _inject = True
         if _inject:
             stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+            if "tool_search" in agent.valid_tool_names:
+                stable_parts.append(TOOL_SEARCH_ANTI_HALLUCINATION_GUIDANCE)
             _model_lower = (agent.model or "").lower()
             # Google model operational guidance (conciseness, absolute
             # paths, parallel tool calls, verify-before-edit, etc.)
