@@ -257,6 +257,8 @@ def _enforce_initial_memory_context_call(
         return
     if getattr(agent, "_initial_memory_context_enforced", False):
         return
+    if not getattr(agent, "_enforce_initial_memory_context", False):
+        return
 
     valid_tools = set(getattr(agent, "valid_tool_names", []) or [])
     tool_name = _resolve_memory_context_tool_name(valid_tools)

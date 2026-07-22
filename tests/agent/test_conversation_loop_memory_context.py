@@ -37,6 +37,7 @@ def test_enforce_initial_memory_context_call_injects_tool_round(monkeypatch):
 
     agent = SimpleNamespace(
         valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+        _enforce_initial_memory_context=True,
         enabled_toolsets=None,
         disabled_toolsets=None,
         _emit_interim_assistant_message=lambda msg: emitted.append(msg),
@@ -100,6 +101,7 @@ def test_enforce_initial_memory_context_call_skips_non_first_turn(monkeypatch):
 def test_enforce_initial_memory_context_call_falls_back_to_error_on_execute_failure():
     agent = SimpleNamespace(
         valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+        _enforce_initial_memory_context=True,
         enabled_toolsets=None,
         disabled_toolsets=None,
         _emit_interim_assistant_message=lambda _msg: None,
@@ -364,6 +366,7 @@ def test_enforce_initial_memory_context_call_runs_onboarding_clarify_sequence():
     emitted = []
     agent = SimpleNamespace(
         valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context", "clarify"},
+        _enforce_initial_memory_context=True,
         enabled_toolsets=None,
         disabled_toolsets=None,
         _emit_interim_assistant_message=lambda msg: emitted.append(msg),
@@ -423,6 +426,7 @@ def test_enforce_initial_memory_context_call_skips_onboarding_clarify_without_cl
 
     agent = SimpleNamespace(
         valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+        _enforce_initial_memory_context=True,
         enabled_toolsets=None,
         disabled_toolsets=None,
         _emit_interim_assistant_message=lambda _msg: None,
@@ -501,6 +505,7 @@ def test_enforce_initial_memory_context_call_runs_onboarding_clarify_with_nested
 
     agent = SimpleNamespace(
         valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context", "clarify"},
+        _enforce_initial_memory_context=True,
         enabled_toolsets=None,
         disabled_toolsets=None,
         _emit_interim_assistant_message=lambda _msg: None,
