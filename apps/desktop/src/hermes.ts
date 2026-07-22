@@ -17,6 +17,9 @@ import type {
   HermesConfig,
   HermesConfigRecord,
   LogsResponse,
+  McpCatalogInstallRequest,
+  McpCatalogInstallResponse,
+  McpCatalogResponse,
   McpServersResponse,
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
@@ -78,6 +81,10 @@ export type {
   LogsResponse,
   McpServerSummary,
   McpServersResponse,
+  McpCatalogEntry,
+  McpCatalogInstallRequest,
+  McpCatalogInstallResponse,
+  McpCatalogResponse,
   MessagingEnvVarInfo,
   MessagingHomeChannel,
   MessagingPlatformInfo,
@@ -299,6 +306,24 @@ export function getMcpServers(): Promise<McpServersResponse> {
   return window.hermesDesktop.api<McpServersResponse>({
     ...profileScoped(),
     path: '/api/mcp/servers'
+  })
+}
+
+export function getMcpCatalog(): Promise<McpCatalogResponse> {
+  return window.hermesDesktop.api<McpCatalogResponse>({
+    ...profileScoped(),
+    path: '/api/mcp/catalog'
+  })
+}
+
+export function installMcpCatalogEntry(
+  payload: McpCatalogInstallRequest
+): Promise<McpCatalogInstallResponse> {
+  return window.hermesDesktop.api<McpCatalogInstallResponse>({
+    ...profileScoped(),
+    path: '/api/mcp/catalog/install',
+    method: 'POST',
+    body: payload
   })
 }
 

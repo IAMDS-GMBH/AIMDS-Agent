@@ -2,15 +2,29 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { getHermesConfigRecord, type HermesGateway, saveHermesConfig } from '@/hermes'
+import {
+  getHermesConfigRecord,
+  getMcpCatalog,
+  type HermesGateway,
+  installMcpCatalogEntry,
+  saveHermesConfig
+} from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Wrench } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeSessionId } from '@/store/session'
-import type { HermesConfigRecord } from '@/types/hermes'
+import type { HermesConfigRecord, McpCatalogEntry } from '@/types/hermes'
 
 import { EmptyState, LoadingState, Pill, SettingsContent } from './primitives'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
@@ -54,6 +68,11 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
   const [saving, setSaving] = useState(false)
   const [reloading, setReloading] = useState(false)
 
+  const [catalogEntries, setCatalogEntries] = useState<McpCatalogEntry[]>([])
+  const [installModalEntry, setInstallModalEntry] = useState<McpCatalogEntry | null>(null)
+  const [secretInputs, setSecretInputs] = useState<Record<string, string>>({})
+  const [installing, setInstalling] = useState(false)
+
   useEffect(() => {
     let cancelled = false
 
@@ -68,6 +87,16 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
         setSelected(first)
       })
       .catch(err => notifyError(err, m.failedLoad))
+
+    getMcpCatalog()
+      .then(res => {
+        if (!cancelled && res.entries) {
+          setCatalogEntries(res.entries)
+        }
+      })
+      .catch(() => {
+        // Optional catalog fetch, ignore silent error
+      })
 
     return () => void (cancelled = true)
   }, [])
@@ -94,11 +123,61 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
     return <LoadingState label={m.loading} />
   }
 
+  const openInstallModal = (entry: McpCatalogEntry) => {
+    const initialSecrets: Record<string, string> = {}
+
+    if (entry.auth?.env) {
+      for (const item of entry.auth.env) {
+        if (item.default) {
+          initialSecrets[item.name] = item.default
+        }
+      }
+    }
+    setSecretInputs(initialSecrets)
+    setInstallModalEntry(entry)
+  }
+
+  const handleInstallCatalog = async () => {
+    if (!installModalEntry) {
+      return
+    }
+
+    setInstalling(true)
+
+    try {
+      const result = await installMcpCatalogEntry({
+        enable: true,
+        name: installModalEntry.name,
+        secrets: secretInputs
+      })
+
+      if (result.ok) {
+        notify({
+          kind: 'success',
+          message: m.catalogInstallSuccessMessage(installModalEntry.name),
+          title: m.catalogInstallSuccessTitle
+        })
+        const nextConfig = await getHermesConfigRecord()
+
+        setConfig(nextConfig)
+        setSelected(installModalEntry.name)
+        onConfigSaved?.()
+        setInstallModalEntry(null)
+      } else {
+        notify({ kind: 'error', message: result.message ?? m.saveFailed, title: m.saveFailed })
+      }
+    } catch (err) {
+      notifyError(err, m.saveFailed)
+    } finally {
+      setInstalling(false)
+    }
+  }
+
   const saveServer = async () => {
     const nextName = name.trim()
 
     if (!nextName) {
-      notify({ kind: 'error', title: m.nameRequiredTitle, message: m.nameRequiredMessage })
+      notify({ kind: 'error', message: m.nameRequiredMessage, title: m.nameRequiredTitle })
 
       return
     }
@@ -131,11 +210,12 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
       nextServers[nextName] = parsed
 
       const nextConfig = { ...config, mcp_servers: nextServers }
+
       await saveHermesConfig(nextConfig)
       setConfig(nextConfig)
       setSelected(nextName)
       onConfigSaved?.()
-      notify({ kind: 'success', title: m.savedTitle, message: m.savedMessage(nextName) })
+      notify({ kind: 'success', message: m.savedMessage(nextName), title: m.savedTitle })
     } catch (err) {
       notifyError(err, m.saveFailed)
     } finally {
@@ -148,9 +228,11 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
 
     try {
       const nextServers = { ...servers }
+
       delete nextServers[serverName]
 
       const nextConfig = { ...config, mcp_servers: nextServers }
+
       await saveHermesConfig(nextConfig)
       setConfig(nextConfig)
       setSelected(Object.keys(nextServers).sort()[0] ?? null)
@@ -164,7 +246,7 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
 
   const reloadMcp = async () => {
     if (!gateway) {
-      notify({ kind: 'warning', title: m.gatewayUnavailableTitle, message: m.gatewayUnavailableMessage })
+      notify({ kind: 'warning', message: m.gatewayUnavailableMessage, title: m.gatewayUnavailableTitle })
 
       return
     }
@@ -185,20 +267,22 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
         confirm: true,
         session_id: activeSessionId ?? undefined
       })
+
       if (result?.ok === false) {
         const failedNames = result.summary?.failed_servers?.join(', ')
+
         notify({
           kind: 'warning',
-          title: m.reloadedTitle,
           message: failedNames
             ? `${result.message ?? m.reloadedMessage} (${failedNames})`
-            : (result.message ?? m.reloadedMessage)
+            : (result.message ?? m.reloadedMessage),
+          title: m.reloadedTitle
         })
       } else {
         notify({
           kind: 'success',
-          title: m.reloadedTitle,
-          message: result?.message ?? m.reloadedMessage
+          message: result?.message ?? m.reloadedMessage,
+          title: m.reloadedTitle
         })
       }
     } catch (err) {
@@ -210,13 +294,57 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
 
   return (
     <SettingsContent>
-      <div className="mb-4 flex items-center justify-end gap-4">
-        <Button onClick={() => setSelected(null)} size="xs" variant="text">
-          {m.newServer}
-        </Button>
-        <Button disabled={reloading} onClick={() => void reloadMcp()} size="xs" variant="text">
-          {reloading ? m.reloading : m.reload}
-        </Button>
+      {catalogEntries.length > 0 && (
+        <div className="mb-8 grid gap-3 border-b border-(--stroke-nous) pb-6">
+          <div>
+            <h3 className="text-sm font-semibold">{m.catalogSectionTitle}</h3>
+            <p className="text-xs text-muted-foreground">{m.catalogSectionDesc}</p>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            {catalogEntries.map(entry => {
+              const isInstalled = Boolean(servers[entry.name])
+
+              return (
+                <div
+                  className="flex flex-col justify-between rounded-lg border border-(--stroke-nous) bg-(--ui-bg-tertiary) p-3"
+                  key={entry.name}
+                >
+                  <div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-sm capitalize">{entry.name}</span>
+                      <Pill>{entry.source ? entry.source.split(' ')[0] : 'catalog'}</Pill>
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{entry.description}</p>
+                  </div>
+
+                  <div className="mt-3 flex items-center justify-between border-t border-(--stroke-nous) pt-2">
+                    <span className="text-xs text-muted-foreground">{isInstalled ? m.catalogInstalled : ''}</span>
+                    <Button
+                      onClick={() => openInstallModal(entry)}
+                      size="xs"
+                      variant={isInstalled ? 'secondary' : 'default'}
+                    >
+                      {isInstalled ? m.editServer : m.catalogInstall}
+                    </Button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      <div className="mb-4 flex items-center justify-between gap-4">
+        <h3 className="text-sm font-semibold">{m.customServersTitle}</h3>
+        <div className="flex items-center gap-4">
+          <Button onClick={() => setSelected(null)} size="xs" variant="text">
+            {m.newServer}
+          </Button>
+          <Button disabled={reloading} onClick={() => void reloadMcp()} size="xs" variant="text">
+            {reloading ? m.reloading : m.reload}
+          </Button>
+        </div>
       </div>
 
       <div className="grid min-h-0 gap-6 lg:grid-cols-[16rem_minmax(0,1fr)]">
@@ -290,6 +418,49 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
           </div>
         </div>
       </div>
+
+      <Dialog onOpenChange={open => !open && setInstallModalEntry(null)} open={Boolean(installModalEntry)}>
+        {installModalEntry && (
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>{m.catalogModalTitle(installModalEntry.name)}</DialogTitle>
+              <DialogDescription>{m.catalogModalDesc}</DialogDescription>
+            </DialogHeader>
+
+            <div className="grid gap-3 py-2">
+              {installModalEntry.auth?.env?.map(item => (
+                <label className="grid gap-1" key={item.name}>
+                  <span className="font-medium text-xs">
+                    {item.prompt || item.name}
+                    {item.required && <span className="ml-0.5 text-destructive">*</span>}
+                  </span>
+                  <Input
+                    onChange={e =>
+                      setSecretInputs(prev => ({
+                        ...prev,
+                        [item.name]: e.target.value
+                      }))
+                    }
+                    placeholder={item.default || item.name}
+                    type={item.secret ? 'password' : 'text'}
+                    value={secretInputs[item.name] ?? ''}
+                  />
+                </label>
+              ))}
+              <p className="text-[11px] text-muted-foreground">{m.catalogSecretsNotice}</p>
+            </div>
+
+            <DialogFooter>
+              <Button onClick={() => setInstallModalEntry(null)} size="xs" variant="ghost">
+                {t.common.cancel}
+              </Button>
+              <Button disabled={installing} onClick={() => void handleInstallCatalog()} size="xs">
+                {installing ? m.catalogInstalling : m.catalogInstall}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        )}
+      </Dialog>
     </SettingsContent>
   )
 }

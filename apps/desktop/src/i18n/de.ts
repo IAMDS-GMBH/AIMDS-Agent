@@ -534,7 +534,18 @@ export const de
       name: 'Name',
       serverJson: 'Server-JSON',
       remove: 'Entfernen',
-      saveServer: 'Server speichern'
+      saveServer: 'Server speichern',
+      catalogSectionTitle: 'MCP-Katalog',
+      catalogSectionDesc: 'Vorkonfigurierte Integrationen (Jira, GitHub, etc.), die mit deinem API-Schlüssel oder PAT aktiviert werden können.',
+      catalogInstall: 'Installieren',
+      catalogInstalled: 'Installiert',
+      catalogInstalling: 'Installiere...',
+      catalogModalTitle: (name: string) => `${name} konfigurieren`,
+      catalogModalDesc: 'Gib die erforderlichen Secrets oder Tokens ein, um diese MCP-Integration zu aktivieren.',
+      catalogSecretsNotice: 'Secrets werden sicher in deiner .env-Konfiguration gespeichert.',
+      catalogInstallSuccessTitle: 'MCP installiert',
+      catalogInstallSuccessMessage: (name: string) => `${name} wurde zu deiner MCP-Konfiguration hinzugefügt.`,
+      customServersTitle: 'Benutzerdefinierte MCP-Server'
     },
     model: {
       loading: 'Lade Modellkonfiguration...',

@@ -440,6 +440,17 @@ export interface Translations {
       serverJson: string
       remove: string
       saveServer: string
+      catalogSectionTitle: string
+      catalogSectionDesc: string
+      catalogInstall: string
+      catalogInstalled: string
+      catalogInstalling: string
+      catalogModalTitle: (name: string) => string
+      catalogModalDesc: string
+      catalogSecretsNotice: string
+      catalogInstallSuccessTitle: string
+      catalogInstallSuccessMessage: (name: string) => string
+      customServersTitle: string
     }
     model: {
       loading: string

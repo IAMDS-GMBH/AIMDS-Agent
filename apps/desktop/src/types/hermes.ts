@@ -623,6 +623,48 @@ export interface McpServerSummary {
   url?: string
 }
 
+export interface McpCatalogEnvVar {
+  default?: null | string
+  description?: null | string
+  name: string
+  prompt: string
+  required: boolean
+  secret: boolean
+}
+
+export interface McpCatalogAuth {
+  env?: McpCatalogEnvVar[]
+  notes?: null | string
+  type?: string
+}
+
+export interface McpCatalogEntry {
+  auth?: McpCatalogAuth
+  description: string
+  installed?: boolean
+  name: string
+  post_install?: null | string
+  source?: string
+  tools?: string[]
+  transport: string
+}
+
+export interface McpCatalogResponse {
+  entries: McpCatalogEntry[]
+}
+
+export interface McpCatalogInstallRequest {
+  enable?: boolean
+  name: string
+  secrets?: Record<string, string>
+}
+
+export interface McpCatalogInstallResponse {
+  message: string
+  ok: boolean
+  server?: McpServerSummary
+}
+
 export interface McpServersResponse {
   servers: McpServerSummary[]
 }

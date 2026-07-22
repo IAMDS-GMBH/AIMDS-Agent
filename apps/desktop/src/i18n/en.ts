@@ -533,7 +533,18 @@ export const en: Translations = {
       name: 'Name',
       serverJson: 'Server JSON',
       remove: 'Remove',
-      saveServer: 'Save server'
+      saveServer: 'Save server',
+      catalogSectionTitle: 'MCP Catalog',
+      catalogSectionDesc: 'Pre-configured integrations (Jira, GitHub, etc.) that can be activated with your API key or PAT.',
+      catalogInstall: 'Install',
+      catalogInstalled: 'Installed',
+      catalogInstalling: 'Installing...',
+      catalogModalTitle: (name: string) => `Configure ${name}`,
+      catalogModalDesc: 'Enter the required secrets or tokens to activate this MCP integration.',
+      catalogSecretsNotice: 'Secrets will be stored securely in your .env configuration.',
+      catalogInstallSuccessTitle: 'MCP Installed',
+      catalogInstallSuccessMessage: (name: string) => `${name} has been added to your MCP configuration.`,
+      customServersTitle: 'Custom MCP Servers'
     },
     model: {
       loading: 'Loading model configuration...',
