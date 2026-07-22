@@ -25,6 +25,8 @@ import ssl
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
@@ -59,6 +61,7 @@ from agent.model_metadata import (
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import _resolve_memory_context_tool_name, _resolve_memory_save_tool_name
+from agent.runtime_cwd import resolve_agent_cwd
 from agent.retry_utils import jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
@@ -334,6 +337,11 @@ def _enforce_initial_memory_context_call(
         messages=messages,
         valid_tool_names=valid_tools,
     )
+    _maybe_append_workspace_hydration_after_memory_context(
+        agent,
+        messages=messages,
+        payload=_onboarding_payload,
+    )
     if _onboarding_payload and not getattr(
         agent, "_initial_onboarding_clarify_enforced", False
     ):
@@ -545,6 +553,250 @@ def _read_recent_memory_context_payload(
         if isinstance(payload, dict):
             return payload
     return None
+
+
+def _memory_context_payload_needs_workspace_hydration(payload: Optional[Dict[str, Any]]) -> bool:
+    """Return True when memory_context explicitly reports missing/stale context."""
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("error"):
+        return True
+
+    candidate_maps: list[Dict[str, Any]] = [payload]
+    nested = payload.get("result")
+    if isinstance(nested, dict):
+        candidate_maps.append(nested)
+
+    stale_or_missing_flags = (
+        "workspace_hydration_required",
+        "session_start_workspace_hydration_required",
+        "session_loadout_required",
+        "context_missing",
+        "context_stale",
+        "stale_context",
+        "memory_context_stale",
+        "memory_context_missing",
+    )
+    missing_markers = {"missing", "stale", "required", "empty", "none"}
+    for candidate in candidate_maps:
+        if not isinstance(candidate, dict):
+            continue
+        for key in stale_or_missing_flags:
+            value = candidate.get(key)
+            if value is True:
+                return True
+            if isinstance(value, str) and value.strip().lower() in missing_markers:
+                return True
+    return False
+
+
+def _parse_simple_frontmatter(markdown_text: str) -> Dict[str, str]:
+    """Parse a shallow YAML frontmatter block into a compact key/value map."""
+    text = str(markdown_text or "")
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}
+
+    out: Dict[str, str] = {}
+    frontmatter = text[3:end].splitlines()
+    for raw_line in frontmatter[:80]:
+        line = str(raw_line or "").strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip().lower()
+        value = value.strip().strip("\"'")
+        if key:
+            out[key] = value
+    return out
+
+
+def _parse_frontmatter_datetime(value: str) -> Optional[datetime]:
+    raw = str(value or "").strip().strip("\"'")
+    if not raw:
+        return None
+
+    candidates = [raw]
+    if len(raw) >= 10:
+        candidates.append(raw[:10])
+
+    for candidate in candidates:
+        text = candidate.strip()
+        if not text:
+            continue
+        normalized = text.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except Exception:
+            parsed = None
+        if parsed is None:
+            for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+                try:
+                    parsed = datetime.strptime(text, fmt)
+                    break
+                except Exception:
+                    continue
+        if parsed is None:
+            continue
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    return None
+
+
+def _build_stale_project_row(meta: Dict[str, str], *, now: Optional[datetime] = None) -> Optional[str]:
+    status = str(meta.get("status", "")).strip().lower()
+    if status != "active":
+        return None
+
+    updated_keys = ("updated", "updated_at", "last_updated", "last_update", "modified", "modified_at")
+    updated_at: Optional[datetime] = None
+    for key in updated_keys:
+        parsed = _parse_frontmatter_datetime(str(meta.get(key, "")).strip())
+        if parsed is not None:
+            updated_at = parsed
+            break
+    if updated_at is None:
+        return None
+
+    now_utc = now or datetime.now(timezone.utc)
+    inactivity_days = max(0, (now_utc - updated_at).days)
+    if inactivity_days < 14:
+        return None
+
+    title = str(meta.get("title") or "").strip()[:80] or "Untitled"
+    deadline = ""
+    for key in ("deadline", "due", "due_date", "target_date", "target", "eta"):
+        value = str(meta.get(key, "")).strip()
+        if value:
+            deadline = value[:40]
+            break
+    if deadline:
+        return f"{title} [{inactivity_days}d idle, due {deadline}]"
+    return f"{title} [{inactivity_days}d idle]"
+
+
+def _build_compact_workspace_hydration(cwd: Path) -> str:
+    """Build a compact workspace hydration block from bounded local reads."""
+    lines: List[str] = []
+
+    thisweek = cwd / "tasks" / "thisweek.md"
+    if thisweek.exists() and thisweek.is_file():
+        try:
+            raw = thisweek.read_text(encoding="utf-8", errors="replace")
+            picked: List[str] = []
+            for raw_line in raw.splitlines():
+                line = str(raw_line or "").strip()
+                if not line:
+                    continue
+                if line.startswith("#") or line.startswith("-") or line.startswith("*") or line.startswith("- [") or line.startswith("* ["):
+                    picked.append(line[:160])
+                if len(picked) >= 6:
+                    break
+            if picked:
+                lines.append(f"thisweek: {' | '.join(picked)}")
+        except Exception:
+            pass
+
+    findings = cwd / "_findings.md"
+    if findings.exists() and findings.is_file():
+        try:
+            max_tail_bytes = 8192
+            with findings.open("rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                size = fh.tell()
+                fh.seek(max(0, size - max_tail_bytes), os.SEEK_SET)
+                tail_text = fh.read().decode("utf-8", errors="replace")
+            tail_items = [line.strip() for line in tail_text.splitlines() if line.strip()]
+            if tail_items:
+                compact_tail = [line[:160] for line in tail_items[-6:]]
+                lines.append(f"findings_tail: {' | '.join(compact_tail)}")
+        except Exception:
+            pass
+
+    projects_dir = cwd / "projects"
+    if projects_dir.exists() and projects_dir.is_dir():
+        deadline_keys = ("deadline", "due", "due_date", "target_date", "target", "eta")
+        project_rows: List[str] = []
+        stale_rows: List[str] = []
+        try:
+            for project_file in sorted(projects_dir.glob("*.md"))[:60]:
+                try:
+                    raw = project_file.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    continue
+                meta = _parse_simple_frontmatter(raw)
+                status = str(meta.get("status", "")).strip().lower()
+                if status not in {"active", "waiting"}:
+                    continue
+                title = str(meta.get("title") or project_file.stem).strip()[:80]
+                if not meta.get("title"):
+                    meta["title"] = title
+                deadline = ""
+                for key in deadline_keys:
+                    value = str(meta.get(key, "")).strip()
+                    if value:
+                        deadline = value[:40]
+                        break
+                if deadline:
+                    project_rows.append(f"{title} [{status}, due {deadline}]")
+                else:
+                    project_rows.append(f"{title} [{status}]")
+
+                stale_row = _build_stale_project_row(meta)
+                if stale_row:
+                    stale_rows.append(stale_row)
+                if len(project_rows) >= 8:
+                    break
+        except Exception:
+            project_rows = []
+            stale_rows = []
+        if project_rows:
+            lines.append(f"projects: {' | '.join(project_rows)}")
+        if stale_rows:
+            lines.append(f"stale_projects: {' | '.join(stale_rows[:5])}")
+
+    if not lines:
+        return ""
+    return (
+        "Session-start workspace context (compact, local fallback):\n"
+        + "\n".join(f"- {line}" for line in lines)
+    )
+
+
+def _maybe_append_workspace_hydration_after_memory_context(
+    agent: Any,
+    *,
+    messages: List[Dict[str, Any]],
+    payload: Optional[Dict[str, Any]],
+) -> None:
+    """Append a compact local workspace summary only when memory context is stale/missing."""
+    if getattr(agent, "_initial_workspace_hydration_enforced", False):
+        return
+    if not getattr(agent, "_session_start_compact_workspace_hydration", True):
+        agent._initial_workspace_hydration_enforced = True
+        return
+    if not _memory_context_payload_needs_workspace_hydration(payload):
+        agent._initial_workspace_hydration_enforced = True
+        return
+
+    try:
+        cwd = Path(resolve_agent_cwd()).expanduser()
+    except Exception:
+        cwd = Path(os.getcwd())
+
+    compact_block = _build_compact_workspace_hydration(cwd)
+    if compact_block:
+        messages.append(
+            {
+                "role": "system",
+                "content": compact_block,
+                "_session_start_hydration": True,
+            }
+        )
+    agent._initial_workspace_hydration_enforced = True
 
 
 def _extract_onboarding_questions_from_payload(value: Any) -> List[str]:

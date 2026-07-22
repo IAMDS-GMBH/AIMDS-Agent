@@ -7,7 +7,18 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import (
+    _append_workspace_finding,
+    _build_job_prompt,
+    _deliver_result,
+    _job_targets_findings_persistence,
+    _persist_workspace_open_question,
+    _resolve_delivery_target,
+    _resolve_origin,
+    _send_media_via_adapter,
+    run_job,
+    SILENT_MARKER,
+)
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -2015,6 +2026,104 @@ class TestSilentDelivery:
             "Agent completed but produced empty response (model error, timeout, or misconfiguration)",
             delivery_error=None,
         )
+
+
+class TestFindingsPersistence:
+    def test_detects_morning_and_weekly_digest_review_jobs(self):
+        assert _job_targets_findings_persistence(
+            {"name": "Morning Brief", "prompt": "digest today's inbox"}
+        )
+        assert _job_targets_findings_persistence(
+            {"origin": {"seed_key": "weekly-digest"}}
+        )
+        assert _job_targets_findings_persistence(
+            {"id": "ops-weekly-review", "prompt": "review priorities"}
+        )
+        assert not _job_targets_findings_persistence(
+            {"name": "Invoice Sync", "prompt": "run billing export"}
+        )
+
+    def test_appends_structured_entry_to_workspace_findings_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        job = {"id": "aimds-morning-brief", "name": "Morning Brief"}
+
+        path = _append_workspace_finding(
+            job,
+            "## Summary\nInbox is stable.\nNext step: review 2 flagged threads.",
+        )
+
+        assert path == tmp_path / "_findings.md"
+        content = path.read_text(encoding="utf-8")
+        assert "type: findings" in content
+        assert "source=Morning Brief (aimds-morning-brief)" in content
+        assert "summary=Summary" in content
+        assert "next=Next step: review 2 flagged threads." in content
+
+    def test_tick_persists_findings_for_relevant_jobs_without_replacing_delivery(self):
+        job = {
+            "id": "aimds-weekly-review",
+            "name": "Weekly Review",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "Summary\nNext: finish top 3 plan.", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._append_workspace_finding") as persist_mock, \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        persist_mock.assert_called_once()
+        deliver_mock.assert_called_once()
+
+    def test_persists_blocked_review_ambiguity_to_open_questions(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        job = {"id": "aimds-weekly-review", "name": "Weekly Review"}
+
+        _persist_workspace_open_question(
+            job,
+            success=True,
+            final_response=(
+                "## Weekly Review\n"
+                "Blocked: needs input from owner on which priority lane to ship first."
+            ),
+        )
+
+        path = tmp_path / "_open-questions.md"
+        content = path.read_text(encoding="utf-8")
+        assert "type: open-questions" in content
+        assert "source=Weekly Review (aimds-weekly-review)" in content
+        assert "needed=Blocked: needs input from owner on which priority lane to ship first." in content
+
+    def test_tick_persists_open_questions_for_review_jobs(self):
+        job = {
+            "id": "aimds-weekly-review",
+            "name": "Weekly Review",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch(
+                 "cron.scheduler.run_job",
+                 return_value=(
+                     True,
+                     "# output",
+                     "Weekly Review\nBlocked: needs clarification on release owner.",
+                     None,
+                 ),
+             ), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._append_workspace_finding"), \
+             patch("cron.scheduler._persist_workspace_open_question") as oq_mock, \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        oq_mock.assert_called_once()
+        deliver_mock.assert_called_once()
 
 
 class TestBuildJobPromptSilentHint:

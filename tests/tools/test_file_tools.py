@@ -95,9 +95,10 @@ class TestWriteFileHandler:
 
     @patch("tools.file_tools._resolve_path_for_task")
     @patch("tools.file_tools.route_write_path")
+    @patch("tools.file_tools._workspace_write_guard", return_value=None)
     @patch("tools.file_tools._get_file_ops")
     def test_routed_simple_relative_write_records_metadata(
-        self, mock_get, mock_route, mock_resolve
+        self, mock_get, _mock_workspace_guard, mock_route, mock_resolve
     ):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -122,9 +123,10 @@ class TestWriteFileHandler:
 
     @patch("tools.file_tools._resolve_path_for_task")
     @patch("tools.file_tools.route_write_path")
+    @patch("tools.file_tools._workspace_write_guard", return_value=None)
     @patch("tools.file_tools._get_file_ops")
     def test_write_without_routing_has_no_routing_metadata(
-        self, mock_get, mock_route, mock_resolve
+        self, mock_get, _mock_workspace_guard, mock_route, mock_resolve
     ):
         mock_ops = MagicMock()
         result_obj = MagicMock()

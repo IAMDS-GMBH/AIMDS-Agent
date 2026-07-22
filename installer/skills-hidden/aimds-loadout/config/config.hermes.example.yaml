@@ -51,6 +51,8 @@ auxiliary:
 memory:
   memory_enabled: true
   user_profile_enabled: true
+  enforce_initial_memory_context: true
+  session_start_compact_workspace_hydration: true
   write_approval: false    # false = frictionless; true = stage/approve writes
   managed_memory:
     enabled: true

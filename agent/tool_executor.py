@@ -36,6 +36,10 @@ from agent.tool_dispatch_helpers import (
     _append_subdir_hint_to_multimodal,
     make_tool_result_message,
 )
+from agent.open_questions import (
+    append_open_question_entry,
+    derive_open_question_from_clarify_result,
+)
 from tools.terminal_tool import (
     get_active_env,
 )
@@ -50,6 +54,50 @@ logger = logging.getLogger(__name__)
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
 _MAX_TOOL_WORKERS = 8
+
+
+def _maybe_persist_blocking_clarify_open_question(
+    agent: Any,
+    *,
+    function_name: str,
+    function_args: dict,
+    function_result: Any,
+) -> None:
+    """Persist unresolved clarify outcomes to workspace `_open-questions.md`."""
+    if function_name != "clarify" or not isinstance(function_result, str):
+        return
+    try:
+        payload = json.loads(function_result)
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        return
+
+    question = str(function_args.get("question") or "").strip()
+    extracted = derive_open_question_from_clarify_result(question, payload)
+    if not extracted:
+        return
+    context, needed, reason_code = extracted
+    turn_id = str(getattr(agent, "_current_turn_id", "") or "").strip()
+    dedupe_key = "|".join(
+        part for part in (
+            turn_id,
+            reason_code,
+            context.lower(),
+            needed.lower(),
+        ) if part
+    )
+    source = f"{getattr(agent, 'platform', '') or 'agent'} clarify"
+    try:
+        append_open_question_entry(
+            context=context,
+            needed=needed,
+            source=source,
+            turn_id=turn_id,
+            dedupe_key=dedupe_key,
+        )
+    except Exception:
+        logger.debug("Failed to persist clarify open question", exc_info=True)
 
 
 def _ra():
@@ -692,6 +740,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     )
                 except Exception as _ver_err:
                     logging.debug("file-mutation verifier record failed: %s", _ver_err)
+                _maybe_persist_blocking_clarify_open_question(
+                    agent,
+                    function_name=function_name,
+                    function_args=function_args,
+                    function_result=function_result,
+                )
 
             if not blocked and agent.tool_progress_callback:
                 try:
@@ -1410,6 +1464,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 )
             except Exception as _ver_err:
                 logging.debug("file-mutation verifier record failed: %s", _ver_err)
+            _maybe_persist_blocking_clarify_open_question(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                function_result=function_result,
+            )
 
         if not _execution_blocked and agent.tool_progress_callback:
             try:

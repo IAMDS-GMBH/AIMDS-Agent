@@ -1816,8 +1816,12 @@ DEFAULT_CONFIG = {
         # Force memory_context revalidation when the user asks personal/profile
         # questions after the first turn ("who am I", preferences/history, etc.).
         "enforce_context_for_personal_queries": True,
-        # Force initial memory_context call on turn 1 of new sessions (default: false)
-        "enforce_initial_memory_context": False,
+        # Force initial memory_context call on turn 1 of new sessions.
+        "enforce_initial_memory_context": True,
+        # If memory_context reports missing/stale context, add a compact local
+        # workspace fallback (thisweek summary, findings tail, active/waiting
+        # projects from frontmatter) instead of broad file preloads.
+        "session_start_compact_workspace_hydration": True,
         # If a successful memory_context call occurred within the last N
         # memory_context tool results, skip the forced refresh.
         "personal_query_freshness_turns": 3,

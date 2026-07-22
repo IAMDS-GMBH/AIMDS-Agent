@@ -1108,7 +1108,8 @@ def init_agent(
     agent._memory_enabled = False
     agent._user_profile_enabled = False
     agent._inject_structured_mirror = False
-    agent._enforce_initial_memory_context = False
+    agent._enforce_initial_memory_context = True
+    agent._session_start_compact_workspace_hydration = True
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
@@ -1122,7 +1123,10 @@ def init_agent(
                 mem_config.get("enforce_context_for_personal_queries", True)
             )
             agent._enforce_initial_memory_context = bool(
-                mem_config.get("enforce_initial_memory_context", False)
+                mem_config.get("enforce_initial_memory_context", True)
+            )
+            agent._session_start_compact_workspace_hydration = bool(
+                mem_config.get("session_start_compact_workspace_hydration", True)
             )
             agent._personal_query_freshness_turns = int(
                 mem_config.get("personal_query_freshness_turns", 3)

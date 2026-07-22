@@ -15,10 +15,12 @@ import contextvars
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
 import threading
+from datetime import timezone
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -41,6 +43,11 @@ from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
+from agent.open_questions import (
+    append_open_question_entry,
+    derive_blocking_open_question_from_review_text,
+)
+from agent.runtime_cwd import resolve_agent_cwd
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +180,7 @@ _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
 _running_lock = threading.Lock()
+_findings_file_lock = threading.Lock()
 
 # Sequential (env-mutating) cron jobs — workdir jobs that touch
 # process-global runtime state — must run one at a time, but must NOT block the
@@ -606,6 +614,152 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
 # via should_send_media_as_audio() so Telegram-specific rules stay in one place.
 _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
 _IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
+_FINDINGS_HEADER = (
+    "---\n"
+    "type: findings\n"
+    "updated: \"\"\n"
+    "---\n\n"
+    "# Findings\n\n"
+    "> What the agent noticed in the background (overnight review, automations). Newest\n"
+    "> first. The agent appends here so nothing lives only in a delivered message.\n\n"
+)
+
+
+def _canonical_cron_seed_key(raw_key: object) -> str:
+    key = str(raw_key or "").strip().lower().replace("_", "-")
+    if key == "weekly-digest":
+        return "weekly-review"
+    return key
+
+
+def _job_targets_findings_persistence(job: dict) -> bool:
+    origin = job.get("origin")
+    seed_key = ""
+    if isinstance(origin, dict):
+        seed_key = _canonical_cron_seed_key(origin.get("seed_key"))
+    if seed_key in {"morning-brief", "weekly-review"}:
+        return True
+
+    haystack = " ".join(
+        str(job.get(field) or "").strip().lower()
+        for field in ("id", "name", "prompt")
+    )
+    if ("morning" in haystack and ("brief" in haystack or "digest" in haystack)):
+        return True
+    if ("weekly" in haystack and ("review" in haystack or "digest" in haystack)):
+        return True
+    return False
+
+
+def _to_compact_line(text: str, *, limit: int) -> str:
+    line = re.sub(r"\s+", " ", str(text or "").strip()).replace("|", "/")
+    return line[:limit]
+
+
+def _extract_findings_summary_action(final_response: str) -> tuple[str, str]:
+    lines: list[str] = []
+    action = ""
+    for raw in str(final_response or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("```"):
+            continue
+        line = re.sub(r"^#{1,6}\s*", "", line)
+        line = re.sub(r"^[-*]\s+\[[ xX]\]\s*", "", line)
+        line = re.sub(r"^[-*]\s+", "", line)
+        line = re.sub(r"^\d+\.\s+", "", line)
+        compact = _to_compact_line(line, limit=240)
+        if not compact:
+            continue
+        if not action:
+            lowered = compact.lower()
+            if lowered.startswith(("next", "action", "follow-up", "todo", "next step")):
+                action = compact
+        lines.append(compact)
+    summary = lines[0] if lines else "Automation run completed."
+    if not action:
+        action = lines[1] if len(lines) > 1 else "Review full cron output if follow-up is needed."
+    return summary, action
+
+
+def _append_workspace_finding(job: dict, final_response: str) -> Optional[Path]:
+    root = resolve_agent_cwd().expanduser().resolve()
+    findings_path = root / "_findings.md"
+
+    job_label = str(job.get("name") or job.get("id") or "cron-job").strip()
+    summary, action = _extract_findings_summary_action(final_response)
+    timestamp = _hermes_now().astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    source = _to_compact_line(f"{job_label} ({job.get('id', '')})", limit=120)
+    entry = (
+        f"- ts={timestamp} | source={source} | summary={_to_compact_line(summary, limit=220)} "
+        f"| next={_to_compact_line(action, limit=220)}\n"
+    )
+
+    with _findings_file_lock:
+        if not findings_path.exists():
+            findings_path.write_text(_FINDINGS_HEADER, encoding="utf-8")
+        with findings_path.open("a", encoding="utf-8") as fh:
+            fh.write(entry)
+    return findings_path
+
+
+def _persist_workspace_finding(job: dict, *, success: bool, final_response: str) -> None:
+    if not success:
+        return
+    if not _job_targets_findings_persistence(job):
+        return
+    response = str(final_response or "")
+    if not response.strip():
+        return
+    if SILENT_MARKER in response.strip().upper():
+        return
+    try:
+        _append_workspace_finding(job, response)
+    except Exception:
+        logger.warning(
+            "Job '%s': failed to persist workspace finding entry",
+            job.get("id", "?"),
+            exc_info=True,
+        )
+
+
+def _persist_workspace_open_question(job: dict, *, success: bool, final_response: str) -> None:
+    """Persist blocked/ambiguous review outputs to `_open-questions.md`."""
+    if not success:
+        return
+    if not _job_targets_findings_persistence(job):
+        return
+    response = str(final_response or "")
+    if not response.strip():
+        return
+    extracted = derive_blocking_open_question_from_review_text(response)
+    if not extracted:
+        return
+    context, needed = extracted
+    job_label = str(job.get("name") or job.get("id") or "cron-job").strip()
+    source = _to_compact_line(f"{job_label} ({job.get('id', '')})", limit=120)
+    dedupe_key = "|".join(
+        part for part in (
+            "cron-review",
+            str(job.get("id") or ""),
+            context.lower(),
+            needed.lower(),
+        ) if part
+    )
+    try:
+        append_open_question_entry(
+            context=context,
+            needed=needed,
+            source=source,
+            dedupe_key=dedupe_key,
+        )
+    except Exception:
+        logger.warning(
+            "Job '%s': failed to persist workspace open-question entry",
+            job.get("id", "?"),
+            exc_info=True,
+        )
 
 
 def _send_media_via_adapter(
@@ -2068,6 +2222,9 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 output_file = save_job_output(job["id"], output)
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
+
+                _persist_workspace_finding(job, success=success, final_response=final_response)
+                _persist_workspace_open_question(job, success=success, final_response=final_response)
 
                 # Deliver the final response to the origin/target chat.
                 # If the agent responded with [SILENT], skip delivery (but

@@ -526,15 +526,19 @@ def _run_review_in_thread(
 
         if actions:
             summary = " · ".join(dict.fromkeys(actions))
+            summary_line = f"💾 Self-improvement review: {summary}"
             agent._safe_print(
-                f"  💾 Self-improvement review: {summary}"
+                f"  {summary_line}"
             )
             _bg_cb = agent.background_review_callback
+            if not _bg_cb and getattr(agent, "status_callback", None):
+                try:
+                    agent.status_callback("review.summary", summary_line)
+                except Exception:
+                    pass
             if _bg_cb:
                 try:
-                    _bg_cb(
-                        f"💾 Self-improvement review: {summary}"
-                    )
+                    _bg_cb(summary_line)
                 except Exception:
                     pass
 

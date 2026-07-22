@@ -22,10 +22,11 @@ metadata:
    - Meetings
    - Important emails (only those requiring action)
    - Open tasks
-4. **Weekly run requirement:** when running as weekly review, include:
-   - key outcomes from this week,
-   - carry-over items,
-   - top 3 priorities for next week.
+4. **Weekly run requirement:** when running as weekly review, always output this concise structure:
+   - **Key outcomes this week**
+   - **Carry-over items**
+   - **Next week top 3 priorities**
+   - **Risks/open questions needing decisions**
 5. **Stay calm:** if nothing relevant exists → briefly say "nothing urgent" instead of noise.
 
 ## Verification

@@ -137,11 +137,11 @@ def test_upgrade_updates_existing_weekly_default_without_recreating_missing(tmp_
     }
     jobs_path.write_text(json.dumps(jobs_payload), encoding="utf-8")
 
-    # Simulate already-seeded v1 install that needs v2 upgrade.
+    # Simulate already-seeded v2 install that needs v3 upgrade.
     state_file = home / SEED_STATE_FILE_REL
     state_file.parent.mkdir(parents=True, exist_ok=True)
     state_file.write_text(
-        json.dumps({"seed_version": 1, "source": "aimds-default-cron"}, indent=2) + "\n",
+        json.dumps({"seed_version": 2, "source": "aimds-default-cron"}, indent=2) + "\n",
         encoding="utf-8",
     )
 
@@ -150,7 +150,25 @@ def test_upgrade_updates_existing_weekly_default_without_recreating_missing(tmp_
 
     jobs = _read_jobs(jobs_path)
     assert len(jobs) == 1
-    assert "next week's plan" in jobs[0]["prompt"]
+    prompt = jobs[0]["prompt"]
+    assert "Carry-over items" in prompt
+    assert "Next week top 3 priorities" in prompt
+    assert "Risks/open questions needing decisions" in prompt
 
     state = json.loads(state_file.read_text(encoding="utf-8"))
     assert state.get("seed_version") == CURRENT_DEFAULT_CRON_VERSION
+
+
+def test_seeded_weekly_review_prompt_includes_planning_contract(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+
+    result = seed_default_cron_jobs(home)
+    assert result["status"] == "seeded"
+
+    jobs = _read_jobs(home / "cron" / "jobs.json")
+    weekly = next(j for j in jobs if j.get("origin", {}).get("seed_key") == "weekly-review")
+    prompt = str(weekly.get("prompt") or "")
+    assert "Carry-over items" in prompt
+    assert "Next week top 3 priorities" in prompt
+    assert "Risks/open questions needing decisions" in prompt

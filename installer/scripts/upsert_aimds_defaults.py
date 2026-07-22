@@ -13,7 +13,7 @@ from pathlib import Path
 
 import yaml
 
-_AIMDS_DEFAULTS_VERSION = 7
+_AIMDS_DEFAULTS_VERSION = 8
 _AIMDS_DEFAULTS_VERSION_KEY = "aimds_defaults_version"
 
 
@@ -137,6 +137,10 @@ def upsert_aimds_defaults(config: dict) -> dict:
 
     prompt_caching = _ensure_dict(cfg, "prompt_caching")
     prompt_caching["cache_ttl"] = "5m"
+
+    memory = _ensure_dict(cfg, "memory")
+    memory["enforce_initial_memory_context"] = True
+    memory["session_start_compact_workspace_hydration"] = True
 
     auxiliary = _ensure_dict(cfg, "auxiliary")
     for slot in ("goal_judge", "compression", "approval", "mcp", "title_generation"):

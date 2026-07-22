@@ -26,6 +26,8 @@ def test_upsert_aimds_defaults_creates_required_sections():
     assert out["tools"]["tool_search"]["enabled"] == "on"
     assert out["tools"]["tool_search"]["threshold_pct"] == 10
     assert out["prompt_caching"]["cache_ttl"] == "5m"
+    assert out["memory"]["enforce_initial_memory_context"] is True
+    assert out["memory"]["session_start_compact_workspace_hydration"] is True
 
     for slot in ("goal_judge", "compression", "approval", "mcp", "title_generation"):
         assert out["auxiliary"][slot]["provider"] == "openai_compatible"
@@ -78,20 +80,20 @@ def test_migrate_aimds_defaults_sets_version_and_applies_when_missing():
     out, changed, status = migrate_aimds_defaults(cfg)
 
     assert changed is True
-    assert "applied v7 (from v0)" in status
-    assert out["aimds_defaults_version"] == 7
+    assert "applied v8 (from v0)" in status
+    assert out["aimds_defaults_version"] == 8
     assert out["tools"]["tool_search"]["enabled"] == "on"
 
 
 def test_migrate_aimds_defaults_skips_when_already_current():
     cfg = {
-        "aimds_defaults_version": 7,
+        "aimds_defaults_version": 8,
         "tools": {"tool_search": {"enabled": "off"}},
     }
     out, changed, status = migrate_aimds_defaults(cfg)
 
     assert changed is False
-    assert "already current (v7)" in status
+    assert "already current (v8)" in status
     assert out["tools"]["tool_search"]["enabled"] == "off"
 
 

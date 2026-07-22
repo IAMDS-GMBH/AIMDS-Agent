@@ -267,6 +267,52 @@ def test_background_review_summary_is_attributed_to_self_improvement_loop(monkey
     )
 
 
+def test_background_review_uses_review_summary_status_channel_when_callback_missing(monkeypatch):
+    """Fallback channel semantics: status_callback receives `review.summary`."""
+    import json
+
+    status_events: list[tuple[str, str]] = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = [
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_bg",
+                    "content": json.dumps(
+                        {"success": True, "message": "Entry added", "target": "memory"}
+                    ),
+                }
+            ]
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent.background_review_callback = None
+    agent.status_callback = lambda event_type, message: status_events.append((event_type, message))
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hi"}],
+        review_memory=True,
+    )
+
+    assert status_events, "Expected review summary status event"
+    event_type, message = status_events[0]
+    assert event_type == "review.summary"
+    assert message.startswith("💾 Self-improvement review:")
+
+
 def test_background_review_fork_skips_external_memory_plugins(monkeypatch):
     """The background review fork must NOT touch external memory plugins.
 

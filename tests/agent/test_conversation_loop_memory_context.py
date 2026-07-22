@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from agent.conversation_loop import (
@@ -7,10 +8,12 @@ from agent.conversation_loop import (
     _build_onboarding_context_line_from_recent_memory_context,
     _apply_onboarding_clarify_context,
     _enforce_initial_memory_context_call,
+    _memory_context_payload_needs_workspace_hydration,
     _resume_onboarding_clarify_if_needed,
     _has_memory_save_after_onboarding_answers,
     _maybe_translate_onboarding_prompts_via_llm,
     _parse_json_object_from_text,
+    _build_stale_project_row,
     _sanitize_onboarding_context_line_text,
 )
 
@@ -120,6 +123,163 @@ def test_enforce_initial_memory_context_call_falls_back_to_error_on_execute_fail
 
     assert messages[2]["role"] == "tool"
     assert "Initial memory_context call failed" in messages[2]["content"]
+
+
+def test_memory_context_payload_needs_workspace_hydration_detects_stale_and_missing():
+    assert _memory_context_payload_needs_workspace_hydration({"context_missing": True})
+    assert _memory_context_payload_needs_workspace_hydration({"result": {"context_stale": "stale"}})
+    assert not _memory_context_payload_needs_workspace_hydration({"result": {"profile": [{"name": "Ada"}]}})
+
+
+def test_enforce_initial_memory_context_call_adds_compact_workspace_hydration_when_context_missing(
+    tmp_path, monkeypatch
+):
+    workspace = tmp_path / "workspace"
+    (workspace / "tasks").mkdir(parents=True)
+    (workspace / "projects").mkdir(parents=True)
+    (workspace / "tasks" / "thisweek.md").write_text(
+        "# Focus\n- [ ] Ship AIS-171\n- [ ] Review deadlines\n",
+        encoding="utf-8",
+    )
+    (workspace / "_findings.md").write_text(
+        "\n".join([f"- Finding {i}" for i in range(1, 12)]),
+        encoding="utf-8",
+    )
+    (workspace / "projects" / "alpha.md").write_text(
+        "---\nstatus: active\ntitle: Alpha\ndeadline: 2026-07-30\n---\nbody\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects" / "beta.md").write_text(
+        "---\nstatus: waiting\ntitle: Beta\n---\nbody\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("agent.conversation_loop.resolve_agent_cwd", lambda: workspace)
+
+    def _mock_execute_tool_calls(assistant_message, messages, _effective_task_id, _api_call_count):
+        tc = assistant_message.tool_calls[0]
+        messages.append(
+            {
+                "role": "tool",
+                "name": tc.function.name,
+                "tool_call_id": tc.id,
+                "content": json.dumps({"context_missing": True}),
+            }
+        )
+
+    agent = SimpleNamespace(
+        valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+        _enforce_initial_memory_context=True,
+        _session_start_compact_workspace_hydration=True,
+        enabled_toolsets=None,
+        disabled_toolsets=None,
+        _emit_interim_assistant_message=lambda _msg: None,
+        _execute_tool_calls=_mock_execute_tool_calls,
+        log_prefix="",
+    )
+    messages = [{"role": "user", "content": "hello"}]
+
+    _enforce_initial_memory_context_call(
+        agent,
+        messages=messages,
+        conversation_history=[],
+        original_user_message="hello",
+        effective_task_id="t1",
+    )
+
+    hydration_msgs = [
+        m for m in messages if m.get("role") == "system" and "Session-start workspace context" in str(m.get("content", ""))
+    ]
+    assert len(hydration_msgs) == 1
+    content = hydration_msgs[0]["content"]
+    assert "thisweek:" in content
+    assert "findings_tail:" in content
+    assert "Alpha [active, due 2026-07-30]" in content
+    assert "Beta [waiting]" in content
+
+
+def test_build_stale_project_row_flags_only_active_entries_after_14_days():
+    now = datetime(2026, 7, 22, tzinfo=timezone.utc)
+    stale = _build_stale_project_row(
+        {
+            "status": "active",
+            "title": "Alpha",
+            "updated_at": "2026-07-01",
+            "deadline": "2026-08-01",
+        },
+        now=now,
+    )
+    assert stale == "Alpha [21d idle, due 2026-08-01]"
+
+    fresh = _build_stale_project_row(
+        {"status": "active", "title": "Fresh", "updated_at": "2026-07-15"},
+        now=now,
+    )
+    assert fresh is None
+
+    waiting = _build_stale_project_row(
+        {"status": "waiting", "title": "Waiting", "updated_at": "2026-07-01"},
+        now=now,
+    )
+    assert waiting is None
+
+
+def test_compact_workspace_hydration_surfaces_stale_projects(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    (workspace / "projects").mkdir(parents=True)
+    stale_updated = (datetime.now(timezone.utc) - timedelta(days=17)).strftime("%Y-%m-%d")
+    fresh_updated = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%d")
+    (workspace / "projects" / "alpha.md").write_text(
+        f"---\nstatus: active\ntitle: Alpha\nupdated_at: {stale_updated}\ndeadline: 2026-08-02\n---\nbody\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects" / "beta.md").write_text(
+        f"---\nstatus: active\ntitle: Beta\nupdated_at: {fresh_updated}\n---\nbody\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects" / "gamma.md").write_text(
+        "---\nstatus: waiting\ntitle: Gamma\nupdated_at: 2026-01-01\n---\nbody\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("agent.conversation_loop.resolve_agent_cwd", lambda: workspace)
+
+    def _mock_execute_tool_calls(assistant_message, messages, _effective_task_id, _api_call_count):
+        tc = assistant_message.tool_calls[0]
+        messages.append(
+            {
+                "role": "tool",
+                "name": tc.function.name,
+                "tool_call_id": tc.id,
+                "content": json.dumps({"context_missing": True}),
+            }
+        )
+
+    agent = SimpleNamespace(
+        valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+        _enforce_initial_memory_context=True,
+        _session_start_compact_workspace_hydration=True,
+        enabled_toolsets=None,
+        disabled_toolsets=None,
+        _emit_interim_assistant_message=lambda _msg: None,
+        _execute_tool_calls=_mock_execute_tool_calls,
+        log_prefix="",
+    )
+    messages = [{"role": "user", "content": "hello"}]
+
+    _enforce_initial_memory_context_call(
+        agent,
+        messages=messages,
+        conversation_history=[],
+        original_user_message="hello",
+        effective_task_id="t1",
+    )
+
+    hydration = next(
+        m for m in messages if m.get("role") == "system" and "Session-start workspace context" in str(m.get("content", ""))
+    )["content"]
+    assert "stale_projects:" in hydration
+    assert "Alpha [" in hydration
+    assert "due 2026-08-02" in hydration
+    assert "Beta [" not in hydration.split("stale_projects:", 1)[1]
 
 
 def test_build_onboarding_context_line_from_recent_memory_context_once():

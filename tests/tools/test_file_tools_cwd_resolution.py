@@ -37,6 +37,9 @@ def _isolated_cwd(tmp_path, monkeypatch):
     monkeypatch.chdir(decoy)
     # No live-terminal-cwd tracking recorded yet (fresh-session condition).
     monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+    # Keep path-resolution tests focused on workspace routing, not sensitive
+    # path policy for /private/var on macOS temp dirs.
+    monkeypatch.setattr(ft, "_check_sensitive_path", lambda *_args, **_kw: None)
     return workspace, decoy
 
 
@@ -292,3 +295,62 @@ def test_patch_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
     # And the decoy copy is untouched.
     assert (decoy / "target.py").read_text() == "DECOY_ORIGINAL\n"
 
+
+def test_write_file_blocks_relative_escape_outside_workspace(_isolated_cwd, monkeypatch):
+    workspace, decoy = _isolated_cwd
+    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(workspace))
+
+    import json
+    out = json.loads(ft.write_file_tool("../decoy/outside.txt", "blocked\n", task_id="t1"))
+
+    assert "error" in out
+    assert "outside the active workspace root" in out["error"]
+    assert not (decoy / "outside.txt").exists()
+
+
+def test_write_file_allows_absolute_external_path_without_override(_isolated_cwd, monkeypatch):
+    workspace, decoy = _isolated_cwd
+    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(workspace))
+
+    import json
+    target = decoy / "explicit-absolute.txt"
+    out = json.loads(ft.write_file_tool(str(target), "allowed\n", task_id="t1"))
+
+    assert not out.get("error"), out
+    assert target.read_text() == "allowed\n"
+
+
+def test_patch_blocks_relative_escape_outside_workspace(_isolated_cwd, monkeypatch):
+    workspace, decoy = _isolated_cwd
+    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(workspace))
+
+    import json
+    out = json.loads(ft.patch_tool(
+        mode="replace",
+        path="../decoy/target.py",
+        old_string="DECOY_ORIGINAL",
+        new_string="SHOULD_NOT_APPLY",
+        task_id="t1",
+    ))
+
+    assert "error" in out
+    assert "outside the active workspace root" in out["error"]
+    assert "DECOY_ORIGINAL" in (decoy / "target.py").read_text()
+
+
+def test_patch_allows_relative_escape_with_explicit_override(_isolated_cwd, monkeypatch):
+    workspace, decoy = _isolated_cwd
+    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(workspace))
+
+    import json
+    out = json.loads(ft.patch_tool(
+        mode="replace",
+        path="../decoy/target.py",
+        old_string="DECOY_ORIGINAL",
+        new_string="OVERRIDDEN",
+        task_id="t1",
+        allow_outside_workspace=True,
+    ))
+
+    assert not out.get("error"), out
+    assert "OVERRIDDEN" in (decoy / "target.py").read_text()

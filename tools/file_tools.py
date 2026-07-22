@@ -246,6 +246,44 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
         return None
 
 
+def _is_explicit_external_write_target(path: str) -> bool:
+    """True when caller provided an explicit absolute path."""
+    try:
+        return Path(path).expanduser().is_absolute()
+    except Exception:
+        return False
+
+
+def _workspace_write_guard(
+    requested_path: str,
+    effective_path: str,
+    task_id: str = "default",
+    allow_outside_workspace: bool = False,
+) -> str | None:
+    """Return error when a mutating write escapes workspace without override."""
+    if allow_outside_workspace or _is_explicit_external_write_target(requested_path):
+        return None
+    try:
+        workspace_root = Path(
+            _authoritative_workspace_root(task_id) or str(_resolve_base_dir(task_id))
+        ).expanduser().resolve()
+        resolved = _resolve_path_for_task(effective_path, task_id)
+    except Exception as exc:
+        return (
+            f"Write blocked: failed to resolve path {effective_path!r} against workspace: {exc}"
+        )
+    try:
+        resolved.relative_to(workspace_root)
+        return None
+    except ValueError:
+        return (
+            f"Write blocked: relative path {requested_path!r} resolves to {str(resolved)!r}, "
+            f"which is outside the active workspace root {str(workspace_root)!r}. "
+            "Use an absolute path for explicit external writes, or retry with "
+            "allow_outside_workspace=true after explicit user direction."
+        )
+
+
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
     normalized = os.path.expanduser(path)
@@ -288,7 +326,7 @@ def _is_blocked_device(filepath: str) -> bool:
 # terminal tool's approval system.  These match prefixes after os.path.realpath.
 _SENSITIVE_PATH_PREFIXES = (
     "/etc/", "/boot/", "/usr/lib/systemd/",
-    "/private/etc/", "/private/var/",
+    "/private/etc/",
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
@@ -1095,7 +1133,8 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
 
 
 def write_file_tool(path: str, content: str, task_id: str = "default",
-                    cross_profile: bool = False) -> str:
+                    cross_profile: bool = False,
+                    allow_outside_workspace: bool = False) -> str:
     """Write content to a file.
 
     ``cross_profile`` opts out of the soft cross-Hermes-profile guard. The
@@ -1106,6 +1145,14 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     """
     workspace_root = _authoritative_workspace_root(task_id) or str(_resolve_base_dir(task_id))
     effective_path, routed_subfolder = route_write_path(path, workspace_root)
+    workspace_guard_error = _workspace_write_guard(
+        requested_path=path,
+        effective_path=effective_path,
+        task_id=task_id,
+        allow_outside_workspace=allow_outside_workspace,
+    )
+    if workspace_guard_error:
+        return tool_error(workspace_guard_error)
 
     sensitive_err = _check_sensitive_path(effective_path, task_id)
     if sensitive_err:
@@ -1185,7 +1232,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
-               task_id: str = "default", cross_profile: bool = False) -> str:
+               task_id: str = "default", cross_profile: bool = False,
+               allow_outside_workspace: bool = False) -> str:
     """Patch a file using replace mode or V4A patch format.
 
     ``cross_profile`` opts out of the soft cross-Hermes-profile guard for
@@ -1217,6 +1265,14 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 )
             _paths_to_check.append(v4a_path)
     for _p in _paths_to_check:
+        workspace_guard_error = _workspace_write_guard(
+            requested_path=_p,
+            effective_path=_p,
+            task_id=task_id,
+            allow_outside_workspace=allow_outside_workspace,
+        )
+        if workspace_guard_error:
+            return tool_error(workspace_guard_error)
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
@@ -1464,6 +1520,11 @@ WRITE_FILE_SCHEMA = {
                 "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories — by default these writes are blocked with a warning because they affect a different profile than the one this session is running under.",
                 "default": False,
             },
+            "allow_outside_workspace": {
+                "type": "boolean",
+                "description": "Allow writes outside the active workspace root. Defaults to false. Use only after explicit user direction; otherwise relative paths resolving outside workspace are blocked.",
+                "default": False,
+            },
         },
         "required": ["path", "content"]
     }
@@ -1516,6 +1577,11 @@ PATCH_SCHEMA = {
             "cross_profile": {
                 "type": "boolean",
                 "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories.",
+                "default": False,
+            },
+            "allow_outside_workspace": {
+                "type": "boolean",
+                "description": "Allow writes outside the active workspace root. Defaults to false. Use only after explicit user direction; otherwise relative paths resolving outside workspace are blocked.",
                 "default": False,
             },
         },
@@ -1573,6 +1639,7 @@ def _handle_write_file(args, **kw):
     return write_file_tool(
         path=args["path"], content=args["content"], task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
+        allow_outside_workspace=bool(args.get("allow_outside_workspace", False)),
     )
 
 
@@ -1583,6 +1650,7 @@ def _handle_patch(args, **kw):
         old_string=args.get("old_string"), new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
+        allow_outside_workspace=bool(args.get("allow_outside_workspace", False)),
     )
 
 

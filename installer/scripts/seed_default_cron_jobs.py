@@ -24,7 +24,8 @@ SEED_STATE_FILE_REL = Path("state") / "default_cron_seed.json"
 LEGACY_MARKER_FILE = ".aimds-default-cron-seeded"
 # Version 1: initial default seeding gate.
 # Version 2: update weekly-review prompt to explicitly include next-week planning.
-CURRENT_DEFAULT_CRON_VERSION = 2
+# Version 3: enforce planning-oriented weekly output contract with concise sections.
+CURRENT_DEFAULT_CRON_VERSION = 3
 JOBS_FILE_REL = Path("cron") / "jobs.json"
 _SOURCE = "aimds-default-cron"
 
@@ -44,8 +45,11 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
         "name": "Weekly Review",
         "schedule": "0 16 * * 5",
         "prompt": (
-            "Create the weekly review: summarize this week's key outcomes, then "
-            "produce next week's plan with carry-over items and the top 3 priorities."
+            "Create a concise weekly review in this exact structure: "
+            "1) Key outcomes this week, "
+            "2) Carry-over items, "
+            "3) Next week top 3 priorities, "
+            "4) Risks/open questions needing decisions."
         ),
         "skill": "digest",
         "deliver": "local",
@@ -214,6 +218,24 @@ def _upgrade_jobs_for_version(
                 skills = job.get("skills")
                 if not isinstance(skills, list) or "digest" not in [str(x) for x in skills]:
                     job["skills"] = ["digest"]
+                    updated += 1
+
+    # v3 migration: weekly review prompt must include planning sections and decisions.
+    if from_version < 3 <= to_version:
+        weekly_spec = next(
+            (spec for spec in _DEFAULT_SPECS if _canonical_seed_key(spec["seed_key"]) == "weekly-review"),
+            None,
+        )
+        if weekly_spec is not None:
+            weekly_aliases = _aliases("weekly-review")
+            for job in jobs:
+                if not _job_is_aimds_default(job):
+                    continue
+                if not _job_matches_alias(job, weekly_aliases):
+                    continue
+                target_prompt = str(weekly_spec.get("prompt") or "").strip()
+                if str(job.get("prompt") or "").strip() != target_prompt:
+                    job["prompt"] = target_prompt
                     updated += 1
 
     return updated
