@@ -1613,7 +1613,7 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
         "# Memory & Storage Strategy\n"
         f"- **Cross-device MCP Memory Vault (`{tool_name}`)**: Use this for persistent, cross-client context (user profile, durable work preferences, cross-device notes, contacts, global guidelines).\n"
         "- **Local Workspace / Files**: Use local tools (such as `memory` with target='session'/`MEMORY.md`, local project filesystem, temporary TODOs) for purely local, machine- or session-specific tasks.\n"
-        f"Call `{tool_name}` on demand (for example when personal or organizational context is required) or for cross-device alignment.\n"
+        f"Do NOT call `{tool_name}` automatically on generic greetings or routine tasks. Only call `{tool_name}` when specifically needed (e.g. when personal or organizational preferences/profile context is missing or explicitly requested).\n"
         f"When the user asks about their profile, name, or cross-device saved facts, treat `{tool_name}` as the primary source.\n"
         "Use memory read/list/search tools for explicit follow-up retrieval/editing tasks after memory_context, or when memory_context is unavailable.\n"
         f"{onboarding_hint}"
