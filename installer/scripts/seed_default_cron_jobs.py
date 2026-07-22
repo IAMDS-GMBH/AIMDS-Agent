@@ -22,7 +22,9 @@ from typing import Any
 SEED_STATE_FILE_REL = Path("state") / "default_cron_seed.json"
 # Legacy marker kept only for backward-compatible migration.
 LEGACY_MARKER_FILE = ".aimds-default-cron-seeded"
-CURRENT_DEFAULT_CRON_VERSION = 1
+# Version 1: initial default seeding gate.
+# Version 2: update weekly-review prompt to explicitly include next-week planning.
+CURRENT_DEFAULT_CRON_VERSION = 2
 JOBS_FILE_REL = Path("cron") / "jobs.json"
 _SOURCE = "aimds-default-cron"
 
@@ -80,6 +82,11 @@ def _job_matches_alias(job: dict[str, Any], aliases: set[str]) -> bool:
     if isinstance(origin, dict) and _job_alias(origin.get("seed_key")) in aliases:
         return True
     return False
+
+
+def _job_is_aimds_default(job: dict[str, Any]) -> bool:
+    origin = job.get("origin")
+    return isinstance(origin, dict) and str(origin.get("source") or "").strip() == _SOURCE
 
 
 def _read_jobs(jobs_file: Path) -> list[dict[str, Any]]:
@@ -177,6 +184,41 @@ def _build_job(spec: dict[str, Any], jobs: list[dict[str, Any]]) -> dict[str, An
     return job
 
 
+def _upgrade_jobs_for_version(
+    jobs: list[dict[str, Any]], from_version: int, to_version: int
+) -> int:
+    updated = 0
+    if from_version >= to_version:
+        return 0
+
+    # v2 migration: weekly review prompt clarifies next-week planning.
+    if from_version < 2 <= to_version:
+        weekly_spec = next(
+            (spec for spec in _DEFAULT_SPECS if _canonical_seed_key(spec["seed_key"]) == "weekly-review"),
+            None,
+        )
+        if weekly_spec is not None:
+            weekly_aliases = _aliases("weekly-review")
+            for job in jobs:
+                if not _job_is_aimds_default(job):
+                    continue
+                if not _job_matches_alias(job, weekly_aliases):
+                    continue
+                target_prompt = str(weekly_spec.get("prompt") or "").strip()
+                if str(job.get("prompt") or "").strip() != target_prompt:
+                    job["prompt"] = target_prompt
+                    updated += 1
+                if str(job.get("skill") or "").strip() != "digest":
+                    job["skill"] = "digest"
+                    updated += 1
+                skills = job.get("skills")
+                if not isinstance(skills, list) or "digest" not in [str(x) for x in skills]:
+                    job["skills"] = ["digest"]
+                    updated += 1
+
+    return updated
+
+
 def _read_seed_version(state_file: Path) -> int:
     if not state_file.is_file():
         return 0
@@ -231,6 +273,25 @@ def seed_default_cron_jobs(hermes_home: Path) -> dict[str, str]:
 
     jobs_file = hermes_home / JOBS_FILE_REL
     jobs = _read_jobs(jobs_file)
+
+    # Upgrade path (versioned defaults evolution): update existing AIMDS-owned
+    # jobs in place, but do not create missing defaults. If a user deleted a
+    # default job, that remains user-owned behavior.
+    if version > 0:
+        updated = _upgrade_jobs_for_version(jobs, version, CURRENT_DEFAULT_CRON_VERSION)
+        if updated:
+            _write_jobs(jobs_file, jobs)
+        _write_seed_state(
+            seed_state_file,
+            version=CURRENT_DEFAULT_CRON_VERSION,
+            added=0,
+            skipped_existing=0,
+        )
+        return {
+            "status": "upgraded",
+            "updated": str(updated),
+        }
+
     added = 0
     skipped_existing = 0
 

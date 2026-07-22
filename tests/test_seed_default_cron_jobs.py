@@ -19,6 +19,7 @@ _SPEC.loader.exec_module(_MODULE)
 
 seed_default_cron_jobs = _MODULE.seed_default_cron_jobs
 SEED_STATE_FILE_REL = _MODULE.SEED_STATE_FILE_REL
+CURRENT_DEFAULT_CRON_VERSION = _MODULE.CURRENT_DEFAULT_CRON_VERSION
 
 
 def _read_jobs(path: Path) -> list[dict]:
@@ -43,7 +44,7 @@ def test_seeds_defaults_once(tmp_path):
     state_file = home / SEED_STATE_FILE_REL
     assert state_file.is_file()
     state = json.loads(state_file.read_text(encoding="utf-8"))
-    assert state.get("seed_version") == 1
+    assert state.get("seed_version") == CURRENT_DEFAULT_CRON_VERSION
 
     second = seed_default_cron_jobs(home)
     assert second["status"] == "already-seeded"
@@ -112,5 +113,44 @@ def test_migrates_legacy_marker_to_seed_state_without_reseeding(tmp_path):
     state_file = home / SEED_STATE_FILE_REL
     assert state_file.is_file()
     state = json.loads(state_file.read_text(encoding="utf-8"))
-    assert state.get("seed_version") == 1
+    assert state.get("seed_version") == CURRENT_DEFAULT_CRON_VERSION
     assert not (home / "cron" / "jobs.json").exists()
+
+
+def test_upgrade_updates_existing_weekly_default_without_recreating_missing(tmp_path):
+    home = tmp_path / ".hermes"
+    (home / "cron").mkdir(parents=True)
+    jobs_path = home / "cron" / "jobs.json"
+    jobs_payload = {
+        "jobs": [
+            {
+                "id": "aimds-weekly-review",
+                "name": "Weekly Review",
+                "prompt": "Old weekly prompt",
+                "skill": "digest",
+                "skills": ["digest"],
+                "origin": {"source": "aimds-default-cron", "seed_key": "weekly-review"},
+                "schedule": {"kind": "cron", "expr": "0 16 * * 5", "display": "0 16 * * 5"},
+                "enabled": True,
+            }
+        ]
+    }
+    jobs_path.write_text(json.dumps(jobs_payload), encoding="utf-8")
+
+    # Simulate already-seeded v1 install that needs v2 upgrade.
+    state_file = home / SEED_STATE_FILE_REL
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(
+        json.dumps({"seed_version": 1, "source": "aimds-default-cron"}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    result = seed_default_cron_jobs(home)
+    assert result["status"] == "upgraded"
+
+    jobs = _read_jobs(jobs_path)
+    assert len(jobs) == 1
+    assert "next week's plan" in jobs[0]["prompt"]
+
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert state.get("seed_version") == CURRENT_DEFAULT_CRON_VERSION
