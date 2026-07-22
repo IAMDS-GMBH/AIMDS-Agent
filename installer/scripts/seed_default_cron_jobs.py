@@ -19,7 +19,10 @@ from pathlib import Path
 from typing import Any
 
 
-MARKER_FILE = ".aimds-default-cron-seeded"
+SEED_STATE_FILE_REL = Path("state") / "default_cron_seed.json"
+# Legacy marker kept only for backward-compatible migration.
+LEGACY_MARKER_FILE = ".aimds-default-cron-seeded"
+CURRENT_DEFAULT_CRON_VERSION = 1
 JOBS_FILE_REL = Path("cron") / "jobs.json"
 _SOURCE = "aimds-default-cron"
 
@@ -38,7 +41,10 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
         "seed_key": "weekly-review",
         "name": "Weekly Review",
         "schedule": "0 16 * * 5",
-        "prompt": "Create the weekly digest/review and summarize key outcomes.",
+        "prompt": (
+            "Create the weekly review: summarize this week's key outcomes, then "
+            "produce next week's plan with carry-over items and the top 3 priorities."
+        ),
         "skill": "digest",
         "deliver": "local",
         "enabled": True,
@@ -171,9 +177,56 @@ def _build_job(spec: dict[str, Any], jobs: list[dict[str, Any]]) -> dict[str, An
     return job
 
 
+def _read_seed_version(state_file: Path) -> int:
+    if not state_file.is_file():
+        return 0
+    try:
+        payload = json.loads(state_file.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    if not isinstance(payload, dict):
+        return 0
+    raw = payload.get("seed_version", 0)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _write_seed_state(state_file: Path, *, version: int, added: int, skipped_existing: int) -> None:
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(
+        json.dumps(
+            {
+                "seed_version": version,
+                "seeded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "source": _SOURCE,
+                "added": added,
+                "skipped_existing": skipped_existing,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def seed_default_cron_jobs(hermes_home: Path) -> dict[str, str]:
-    marker = hermes_home / MARKER_FILE
-    if marker.exists():
+    seed_state_file = hermes_home / SEED_STATE_FILE_REL
+    version = _read_seed_version(seed_state_file)
+    if version >= CURRENT_DEFAULT_CRON_VERSION:
+        return {"status": "already-seeded"}
+
+    # Backward compatibility: migrate legacy marker installations into
+    # versioned state without reseeding.
+    legacy_marker = hermes_home / LEGACY_MARKER_FILE
+    if version == 0 and legacy_marker.exists():
+        _write_seed_state(
+            seed_state_file,
+            version=CURRENT_DEFAULT_CRON_VERSION,
+            added=0,
+            skipped_existing=0,
+        )
         return {"status": "already-seeded"}
 
     jobs_file = hermes_home / JOBS_FILE_REL
@@ -193,18 +246,11 @@ def seed_default_cron_jobs(hermes_home: Path) -> dict[str, str]:
     if added:
         _write_jobs(jobs_file, jobs)
 
-    marker.write_text(
-        json.dumps(
-            {
-                "seeded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "source": _SOURCE,
-                "added": added,
-                "skipped_existing": skipped_existing,
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
+    _write_seed_state(
+        seed_state_file,
+        version=CURRENT_DEFAULT_CRON_VERSION,
+        added=added,
+        skipped_existing=skipped_existing,
     )
     return {
         "status": "seeded",

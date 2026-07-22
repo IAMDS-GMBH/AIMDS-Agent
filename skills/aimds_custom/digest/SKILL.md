@@ -1,6 +1,6 @@
 ---
 name: digest
-description: Creates a recurring summary (daily or weekly digest) from calendar, inbox, and open tasks. Usable as a cron blueprint (morning-brief / weekly-digest).
+description: Creates a recurring summary (daily or weekly digest) from calendar, inbox, open tasks, and other available project context. Usable as a cron blueprint (morning-brief / weekly-digest).
 metadata:
   hermes:
     blueprint:
@@ -12,15 +12,21 @@ metadata:
 # Digest
 
 ## Procedure
-1. **Gather data:** today's/this week's meetings, important new emails (via
-   `email-triage` logic), open to-dos / `PLAN.md` status.
+1. **Gather data first (tool-driven):** use available calendar, email, and task
+   tools/sources to collect today's/this week's meetings, important new emails
+   (via `email-triage` logic), and open to-dos / `PLAN.md` status. If more
+   relevant context exists (kanban, recent commits, notes), include it too.
 2. **Prioritize:** max **3 things that matter today** (hard cap), then the rest.
 3. **Deliver compactly:**
    - What matters today/this week (max 3)
    - Meetings
    - Important emails (only those requiring action)
    - Open tasks
-4. **Stay calm:** if nothing relevant exists → briefly say "nothing urgent" instead of noise.
+4. **Weekly run requirement:** when running as weekly review, include:
+   - key outcomes from this week,
+   - carry-over items,
+   - top 3 priorities for next week.
+5. **Stay calm:** if nothing relevant exists → briefly say "nothing urgent" instead of noise.
 
 ## Verification
 - Top 3 are truly the highest-priority items, not just the first three.

@@ -18,6 +18,7 @@ _MODULE = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_MODULE)
 
 seed_default_cron_jobs = _MODULE.seed_default_cron_jobs
+SEED_STATE_FILE_REL = _MODULE.SEED_STATE_FILE_REL
 
 
 def _read_jobs(path: Path) -> list[dict]:
@@ -39,7 +40,10 @@ def test_seeds_defaults_once(tmp_path):
         if job.get("origin", {}).get("source") == "aimds-default-cron"
     }
     assert seed_keys == {"morning-brief", "weekly-review"}
-    assert (home / ".aimds-default-cron-seeded").is_file()
+    state_file = home / SEED_STATE_FILE_REL
+    assert state_file.is_file()
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert state.get("seed_version") == 1
 
     second = seed_default_cron_jobs(home)
     assert second["status"] == "already-seeded"
@@ -87,10 +91,26 @@ def test_seeds_when_cron_runtime_import_is_unavailable(tmp_path, monkeypatch):
     result = seed_default_cron_jobs(home)
     assert result["status"] == "seeded"
     assert result["added"] == "2"
-    assert (home / ".aimds-default-cron-seeded").is_file()
+    assert (home / SEED_STATE_FILE_REL).is_file()
 
     jobs = _read_jobs(home / "cron" / "jobs.json")
     assert len(jobs) == 2
     for job in jobs:
         assert job["schedule"]["kind"] == "cron"
         assert "expr" in job["schedule"]
+
+
+def test_migrates_legacy_marker_to_seed_state_without_reseeding(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    legacy_marker = home / ".aimds-default-cron-seeded"
+    legacy_marker.write_text("legacy\n", encoding="utf-8")
+
+    result = seed_default_cron_jobs(home)
+    assert result["status"] == "already-seeded"
+
+    state_file = home / SEED_STATE_FILE_REL
+    assert state_file.is_file()
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert state.get("seed_version") == 1
+    assert not (home / "cron" / "jobs.json").exists()
