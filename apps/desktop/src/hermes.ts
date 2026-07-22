@@ -327,6 +327,14 @@ export function installMcpCatalogEntry(
   })
 }
 
+export function removeMcpServer(name: string): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
+    path: `/api/mcp/servers/${encodeURIComponent(name)}`,
+    method: 'DELETE'
+  })
+}
+
 export function getLogs(params: {
   component?: string
   file?: string

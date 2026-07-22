@@ -15,6 +15,7 @@ import {
   getMcpCatalog,
   installMcpCatalogEntry,
   keycloakLogin,
+  removeMcpServer,
   saveHermesConfig,
   setEnvVar
 } from '@/hermes'
@@ -441,6 +442,22 @@ function McpCatalogSection({
     }
   }
 
+  const handleUninstall = async (serverName: string) => {
+    try {
+      await removeMcpServer(serverName)
+      notify({
+        kind: 'success',
+        message: `MCP Server '${serverName}' wurde entfernt`,
+        title: 'Entfernt'
+      })
+      await loadCatalogAndConfig()
+      onRefreshCreds?.()
+      setInstallModalEntry(null)
+    } catch (err) {
+      notifyError(err, 'Fehler beim Entfernen des MCP Servers')
+    }
+  }
+
   if (catalogEntries.length === 0) {
     return null
   }
@@ -475,14 +492,26 @@ function McpCatalogSection({
 
               <div className="mt-4 flex items-center justify-between border-t border-border/50 pt-2.5">
                 <span className="text-xs text-muted-foreground">{isInstalled ? m.catalogInstalled : ''}</span>
-                <Button
-                  disabled={isDisabled}
-                  onClick={() => openInstallModal(entry)}
-                  size="xs"
-                  variant={isDisabled ? 'ghost' : isInstalled ? 'secondary' : 'default'}
-                >
-                  {isDisabled ? 'In Entwicklung' : isInstalled ? m.editServer : m.catalogInstall}
-                </Button>
+                <div className="flex items-center gap-1.5">
+                  {isInstalled && (
+                    <Button
+                      onClick={() => void handleUninstall(entry.name)}
+                      size="xs"
+                      variant="ghost"
+                      className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    >
+                      Entfernen
+                    </Button>
+                  )}
+                  <Button
+                    disabled={isDisabled}
+                    onClick={() => openInstallModal(entry)}
+                    size="xs"
+                    variant={isDisabled ? 'ghost' : isInstalled ? 'secondary' : 'default'}
+                  >
+                    {isDisabled ? 'In Entwicklung' : isInstalled ? m.editServer : m.catalogInstall}
+                  </Button>
+                </div>
               </div>
             </div>
           )
@@ -528,13 +557,27 @@ function McpCatalogSection({
               <p className="text-[11px] text-muted-foreground">{m.catalogSecretsNotice}</p>
             </div>
 
-            <DialogFooter>
-              <Button onClick={() => setInstallModalEntry(null)} size="xs" variant="ghost">
-                {t.common.cancel}
-              </Button>
-              <Button disabled={installing} onClick={() => void handleInstallCatalog()} size="xs">
-                {installing ? m.catalogInstalling : m.catalogInstall}
-              </Button>
+            <DialogFooter className="flex items-center justify-between sm:justify-between">
+              <div>
+                {mcpConfig?.mcp_servers && installModalEntry.name in mcpConfig.mcp_servers && (
+                  <Button
+                    onClick={() => void handleUninstall(installModalEntry.name)}
+                    size="xs"
+                    variant="ghost"
+                    className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    Entfernen
+                  </Button>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <Button onClick={() => setInstallModalEntry(null)} size="xs" variant="ghost">
+                  {t.common.cancel}
+                </Button>
+                <Button disabled={installing} onClick={() => void handleInstallCatalog()} size="xs">
+                  {installing ? m.catalogInstalling : m.catalogInstall}
+                </Button>
+              </div>
             </DialogFooter>
           </DialogContent>
         )}
