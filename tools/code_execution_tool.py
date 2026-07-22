@@ -1809,7 +1809,10 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     return {
         "name": "execute_code",
         "description": (
-            "Run Python code with Hermes tools via hermes_tools."
+            "Run Python code with conditional branching, multi-step loops, and tool chaining via hermes_tools. "
+            "Enables processing logic and output reduction between 3+ tool calls. "
+            f"{tool_lines}\n\n"
+            "Limits: 5-min timeout, 50KB stdout, 50 tool calls/script."
         ),
         "parameters": {
             "type": "object",
