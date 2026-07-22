@@ -1517,6 +1517,7 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
     if not tool_name:
         return ""
     skill_read_tool_name = _resolve_memory_skill_read_tool_name(names)
+    memory_save_tool_name = _resolve_memory_save_tool_name(names)
     has_clarify = "clarify" in names
 
     onboarding_hint = (
@@ -1536,6 +1537,18 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
         else "When the memory tool result includes `onboarding_init_auto_started=true`, first provide one brief plain-language context sentence "
         "(for example: profile was empty and onboarding is now starting), then continue with onboarding questions one at a time in plain chat.\n"
     )
+    onboarding_save_hint = (
+        f"When onboarding confirms durable profile facts (name/role/preferences/work style), persist them via `{memory_save_tool_name}` before concluding onboarding.\n"
+        if memory_save_tool_name
+        else "When onboarding confirms durable profile facts (name/role/preferences/work style) and no MCP memory_save tool is available, persist them via local `memory` with target=\"user\".\n"
+    )
+    logger.debug(
+        "memory prompt build: context_tool=%s skill_read_tool=%s memory_save_tool=%s has_clarify=%s",
+        tool_name,
+        skill_read_tool_name,
+        memory_save_tool_name,
+        has_clarify,
+    )
 
     return (
         "# Memory Context (mandatory)\n"
@@ -1551,6 +1564,7 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
         f"{onboarding_hint}"
         f"If `{tool_name}` returns onboarding steps, complete that flow before other work. "
         f"{onboarding_flow_hint}"
+        f"{onboarding_save_hint}"
         "Do not ask the user to manually start init in that case.\n"
         f"If `{tool_name}` fails, continue the task but explicitly note that user context could not be loaded."
     )

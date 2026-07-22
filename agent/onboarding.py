@@ -176,8 +176,9 @@ def profile_build_directive() -> str:
         "accounts (email, calendar, etc.) silently — ask each time.\n"
         "  3. With consent, you may use web_search to confirm public details "
         "(e.g. employer, public profiles) from the data points they gave.\n"
-        "  4. Save each confirmed, durable fact with the memory tool using "
-        "target=\"user\" — keep entries compact and high-signal.\n"
+        "  4. Save each confirmed, durable fact with the available memory-save "
+        "tool. Prefer MCP `memory_save` when available; otherwise use local "
+        "`memory` with target=\"user\". Keep entries compact and high-signal.\n"
         "If they decline at any point, stop immediately and continue normally. "
         "Keep the whole exchange light and conversational, not an interrogation.]"
     )

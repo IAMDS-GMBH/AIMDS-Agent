@@ -275,7 +275,8 @@ class TestProfileBuildDirective:
         assert "consent" in d.lower()
         # Must forbid silently reading connected accounts.
         assert "silently" in d.lower()
-        # Must persist via the user-profile memory store.
+        # Must persist via memory-save tools (MCP preferred, local fallback).
+        assert "memory_save" in d
         assert 'target="user"' in d
         # Must allow declining.
         assert "decline" in d.lower()

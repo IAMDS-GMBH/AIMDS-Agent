@@ -58,7 +58,7 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import _resolve_memory_context_tool_name
+from agent.prompt_builder import _resolve_memory_context_tool_name, _resolve_memory_save_tool_name
 from agent.retry_utils import jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
@@ -898,6 +898,23 @@ def _next_unanswered_onboarding_question(
     return next((q for q in onboarding_questions if q not in answered_questions), None)
 
 
+def _has_onboarding_memory_save_call(messages: List[Dict[str, Any]]) -> bool:
+    """Return True if the turn history contains a memory-save tool result.
+
+    Covers MCP memory-save names (``*_memory_save``) and local ``memory`` tool
+    writes used as a fallback when MCP save is unavailable.
+    """
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "tool":
+            continue
+        tool_name = str(msg.get("name") or "")
+        if tool_name == "memory" or tool_name.endswith("_memory_save") or tool_name == "memory_save":
+            return True
+    return False
+
+
 def _resume_onboarding_clarify_if_needed(
     agent: Any,
     *,
@@ -918,11 +935,29 @@ def _resume_onboarding_clarify_if_needed(
     if onboarding_payload is None:
         return
 
+    valid_tools = set(getattr(agent, "valid_tool_names", []) or set())
+    if not getattr(agent, "_onboarding_memory_save_diagnostics_emitted", False):
+        resolved_memory_save_tool = _resolve_memory_save_tool_name(valid_tools)
+        memory_like_tools = sorted(
+            t for t in valid_tools if t == "memory" or "memory" in str(t).lower()
+        )
+        logger.info(
+            "[ONBOARDING] memory-save diagnostics: resolved_memory_save_tool=%r memory_like_tools=%s",
+            resolved_memory_save_tool,
+            memory_like_tools,
+        )
+        agent._onboarding_memory_save_diagnostics_emitted = True
+
     next_question = _next_unanswered_onboarding_question(
         messages=messages,
         onboarding_payload=onboarding_payload,
     )
     if not next_question:
+        if not _has_onboarding_memory_save_call(messages):
+            logger.warning(
+                "[ONBOARDING] onboarding flow has no pending questions but no memory-save call is present yet. "
+                "Expected MCP tool ending in 'mcp_memory_memory_save' (preferred) or local memory(action=add,target='user')."
+            )
         return
 
     logger.info("[ONBOARDING] Resuming pending onboarding clarify with question=%r", next_question)

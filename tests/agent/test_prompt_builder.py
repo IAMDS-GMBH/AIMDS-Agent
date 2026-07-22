@@ -1322,6 +1322,16 @@ class TestBuildRemoteMcpMemoryPrompt:
         assert "memory_context" in text
         assert "FIRST action" in text
 
+    def test_onboarding_save_hint_prefers_resolved_memory_save_tool(self):
+        text = build_remote_mcp_memory_prompt(
+            {"memory_context", "mcp_IAMDS_mcp_memory_memory_save"}
+        )
+        assert "mcp_IAMDS_mcp_memory_memory_save" in text
+
+    def test_onboarding_save_hint_falls_back_to_local_memory_when_missing_mcp_save(self):
+        text = build_remote_mcp_memory_prompt({"memory_context"})
+        assert 'local `memory` with target="user"' in text
+
 
 class TestBuildOutlookSignatureGuidance:
     """build_outlook_signature_guidance() covers both the global signature
@@ -1391,7 +1401,6 @@ class TestBuildOutlookContactProfilingGuidance:
             {"outlook_search_emails", "mcp_IAMDS_mcp_memory_memory_save"}
         )
         assert "mcp_IAMDS_mcp_memory_memory_save" in text
-
 
 
 
