@@ -1601,16 +1601,12 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
     )
 
     return (
-        "# Memory Context (mandatory)\n"
-        f"Before any reply to the user's first message, your FIRST action in this session must be a call to `{tool_name}`. "
-        "Do not answer, summarize, or call any other tool first (including `skill_view` and any memory read/list/search tools).\n"
-        "Do not emit pre-tool filler text (for example: \"I'll start by loading memory context...\"). "
-        "The first assistant output must be the memory_context tool call itself.\n"
-        f"Call `{tool_name}` again whenever the conversation shifts to a topic that depends on personal or organisational "
-        "context (role, preferences, contacts, company policies, team conventions), and whenever that context may have changed.\n"
+        "# Memory Context\n"
+        f"Call `{tool_name}` at session start or whenever personal or organisational context "
+        "(role, preferences, contacts, company policies, team conventions) is required or may have changed.\n"
         f"When the user asks who they are, asks for their name, or asks about saved profile/preferences/history, treat `{tool_name}` "
         "as the primary source and call it before using any other memory tool.\n"
-        "Use memory read/list/search tools only for explicit follow-up retrieval/editing tasks after memory_context, or when memory_context is unavailable.\n"
+        "Use memory read/list/search tools for explicit follow-up retrieval/editing tasks after memory_context, or when memory_context is unavailable.\n"
         f"{onboarding_hint}"
         f"If `{tool_name}` returns onboarding steps, complete that flow before other work. "
         f"{onboarding_flow_hint}"

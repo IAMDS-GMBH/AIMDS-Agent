@@ -1320,7 +1320,6 @@ class TestBuildRemoteMcpMemoryPrompt:
     def test_builds_prompt_with_native_tool_name(self):
         text = build_remote_mcp_memory_prompt({"memory_context"})
         assert "memory_context" in text
-        assert "FIRST action" in text
 
     def test_onboarding_save_hint_prefers_resolved_memory_save_tool(self):
         text = build_remote_mcp_memory_prompt(
