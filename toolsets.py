@@ -47,7 +47,7 @@ _HERMES_CORE_TOOLS = [
     # Clarifying questions
     "clarify",
     # Code execution
-    "execute_code",
+    # (deferred to tool_search in Phase 2 — saved ~1,300 tokens/call when active)
     # Office productivity
     "office_word", "office_excel", "office_powerpoint",
 ]
