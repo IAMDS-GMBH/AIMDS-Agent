@@ -106,14 +106,20 @@ class TestClassification:
         for name in BRIDGE_TOOL_NAMES:
             assert not is_deferrable_tool_name(name)
 
+    def test_heavy_skill_tools_defer_but_skills_list_stays_visible(self):
+        from tools.tool_search import is_deferrable_tool_name
+        assert is_deferrable_tool_name("skill_view")
+        assert is_deferrable_tool_name("skill_manage")
+        assert not is_deferrable_tool_name("skills_list")
+
     def test_memory_mcp_primitives_never_defer(self):
         from tools.tool_search import is_deferrable_tool_name
         for name in [
             "memory_context",
             "custommemory_context",
             "mcp_IAMDS_mcp_memory_memory_context",
-            "memory_skill_read",
-            "mcp_IAMDS_mcp_memory_memory_skill_read",
+            "memory_skill",
+            "mcp_IAMDS_mcp_memory_memory_skill",
             "memory_save",
             "custommemory_save",
             "mcp_IAMDS_mcp_memory_memory_save",

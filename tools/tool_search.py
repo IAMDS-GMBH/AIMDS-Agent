@@ -170,15 +170,19 @@ def is_deferrable_tool_name(name: str) -> bool:
     """
     if name in BRIDGE_TOOL_NAMES:
         return False
+    # Keep lightweight skill discovery always visible, but allow heavier
+    # skill payload/admin calls to defer behind tool_search.
+    if name in {"skill_view", "skill_manage"}:
+        return True
     if name in _core_tool_names():
         return False
     # Keep critical memory-MCP primitives model-visible even when tool_search
     # is active: session bootstrap relies on memory_context being directly
-    # callable as the first tool round, and onboarding may need skill_read
+    # callable as the first tool round, and onboarding may need memory_skill
     # immediately after.
     if (
         name.endswith("memory_context")
-        or name.endswith("memory_skill_read")
+        or name.endswith("memory_skill")
         or name.endswith("memory_save")
     ):
         return False
