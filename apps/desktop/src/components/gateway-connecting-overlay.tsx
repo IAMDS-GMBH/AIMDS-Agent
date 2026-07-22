@@ -173,6 +173,11 @@ export function GatewayConnectingOverlay() {
   const [phase, setPhase] = useState<Phase>('live')
   const shownAtRef = useRef<number | null>(null)
   const [isIamds, setIsIamds] = useState(false)
+  // Message rotation restarts from index 0 whenever isIamds flips (detection
+  // resolves asynchronously), so TEAM messages never pick up mid-array where
+  // BUSINESS messages left off — avoids a jumbled/"mixed" look on switch.
+  const messageStartRef = useRef<number | null>(null)
+  const prevIsIamdsRef = useRef(isIamds)
 
   // Dynamic detection of whether an IAMDS endpoint is configured (best-effort)
   useEffect(() => {
@@ -395,8 +400,19 @@ export function GatewayConnectingOverlay() {
     ? (locale === 'en' ? TEAM_MESSAGES_EN : TEAM_MESSAGES_DE)
     : (locale === 'en' ? BUSINESS_MESSAGES_EN : BUSINESS_MESSAGES_DE)
 
+  // Reset the message clock whenever isIamds changes so the newly selected
+  // array always starts at index 0 instead of inheriting the old elapsed time.
+  if (prevIsIamdsRef.current !== isIamds) {
+    prevIsIamdsRef.current = isIamds
+    messageStartRef.current = Date.now()
+  }
+  if (!messageStartRef.current) {
+    messageStartRef.current = Date.now()
+  }
+  const messageElapsed = Math.max(0, Date.now() - messageStartRef.current)
+
   // Modulo-based cycling so messages repeat if the connection takes longer
-  const messageIndex = Math.floor(shownElapsed / MESSAGE_STEP_MS) % messages.length
+  const messageIndex = Math.floor(messageElapsed / MESSAGE_STEP_MS) % messages.length
   const progressPct = Math.min(100, Math.round((shownElapsed / STARTUP_MIN_MS) * 100))
   const currentMessage = messages[messageIndex]
 
