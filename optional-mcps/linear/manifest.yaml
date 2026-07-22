@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: linear
+disabled: true
 description: Find, create, and update Linear issues, projects, and comments.
 source: https://linear.app/docs/mcp
 
