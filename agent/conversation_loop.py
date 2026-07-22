@@ -915,6 +915,45 @@ def _has_onboarding_memory_save_call(messages: List[Dict[str, Any]]) -> bool:
     return False
 
 
+def _has_memory_save_after_onboarding_answers(
+    *,
+    messages: List[Dict[str, Any]],
+    onboarding_payload: Dict[str, Any],
+) -> bool:
+    """Return True if a memory-save tool call appears *after* onboarding answers.
+
+    This avoids false positives from memory saves that happened earlier in the
+    turn/session (for example, init side-effects) and ensures the final profile
+    write happened after collecting onboarding responses.
+    """
+    onboarding_questions = {
+        q
+        for q in _extract_onboarding_questions_from_payload(onboarding_payload)
+        if _is_valid_onboarding_question_text(q)
+    }
+    if not onboarding_questions:
+        return _has_onboarding_memory_save_call(messages)
+
+    last_answer_index = -1
+    for idx, msg in enumerate(messages):
+        answered = _extract_answered_clarify_question_from_tool_message(msg)
+        if answered and answered in onboarding_questions:
+            last_answer_index = idx
+
+    if last_answer_index < 0:
+        return _has_onboarding_memory_save_call(messages)
+
+    for msg in messages[last_answer_index + 1 :]:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "tool":
+            continue
+        tool_name = str(msg.get("name") or "")
+        if tool_name == "memory" or tool_name == "memory_save" or tool_name.endswith("_memory_save"):
+            return True
+    return False
+
+
 def _resume_onboarding_clarify_if_needed(
     agent: Any,
     *,
@@ -953,9 +992,12 @@ def _resume_onboarding_clarify_if_needed(
         onboarding_payload=onboarding_payload,
     )
     if not next_question:
-        if not _has_onboarding_memory_save_call(messages):
+        if not _has_memory_save_after_onboarding_answers(
+            messages=messages,
+            onboarding_payload=onboarding_payload,
+        ):
             logger.warning(
-                "[ONBOARDING] onboarding flow has no pending questions but no memory-save call is present yet. "
+                "[ONBOARDING] onboarding flow has no pending questions but no post-onboarding memory-save call is present yet. "
                 "Expected MCP tool ending in 'mcp_memory_memory_save' (preferred) or local memory(action=add,target='user')."
             )
         return

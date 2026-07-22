@@ -8,6 +8,7 @@ from agent.conversation_loop import (
     _apply_onboarding_clarify_context,
     _enforce_initial_memory_context_call,
     _resume_onboarding_clarify_if_needed,
+    _has_memory_save_after_onboarding_answers,
     _maybe_translate_onboarding_prompts_via_llm,
     _parse_json_object_from_text,
     _sanitize_onboarding_context_line_text,
@@ -800,6 +801,74 @@ def test_apply_onboarding_clarify_context_uses_recent_onboarding_payload_even_if
     args = json.loads(assistant_message.tool_calls[0].function.arguments)
     assert args["question"] == "What is your primary tech stack?"
     assert assistant_message.content == ""
+
+
+def test_has_memory_save_after_onboarding_answers_ignores_early_save():
+    onboarding_payload = {
+        "onboarding_questions": [
+            "What is your role/title?",
+            "What is your primary tech stack?",
+        ]
+    }
+    messages = [
+        {"role": "tool", "name": "mcp_IAMDS_mcp_memory_memory_save", "content": '{"ok":true}'},
+        {
+            "role": "tool",
+            "name": "clarify",
+            "content": json.dumps(
+                {"question": "What is your role/title?", "user_response": "Engineer"},
+                ensure_ascii=False,
+            ),
+        },
+        {
+            "role": "tool",
+            "name": "clarify",
+            "content": json.dumps(
+                {"question": "What is your primary tech stack?", "user_response": "Python"},
+                ensure_ascii=False,
+            ),
+        },
+    ]
+    assert (
+        _has_memory_save_after_onboarding_answers(
+            messages=messages, onboarding_payload=onboarding_payload
+        )
+        is False
+    )
+
+
+def test_has_memory_save_after_onboarding_answers_accepts_post_answer_save():
+    onboarding_payload = {
+        "onboarding_questions": [
+            "What is your role/title?",
+            "What is your primary tech stack?",
+        ]
+    }
+    messages = [
+        {
+            "role": "tool",
+            "name": "clarify",
+            "content": json.dumps(
+                {"question": "What is your role/title?", "user_response": "Engineer"},
+                ensure_ascii=False,
+            ),
+        },
+        {
+            "role": "tool",
+            "name": "clarify",
+            "content": json.dumps(
+                {"question": "What is your primary tech stack?", "user_response": "Python"},
+                ensure_ascii=False,
+            ),
+        },
+        {"role": "tool", "name": "mcp_IAMDS_mcp_memory_memory_save", "content": '{"ok":true}'},
+    ]
+    assert (
+        _has_memory_save_after_onboarding_answers(
+            messages=messages, onboarding_payload=onboarding_payload
+        )
+        is True
+    )
 
 
 def test_resume_onboarding_clarify_if_needed_reasks_pending_question_on_non_first_turn():
