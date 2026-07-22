@@ -265,10 +265,12 @@ def should_activate(
         return True
     # auto
     if not context_length or context_length <= 0:
-        # Without a known context size, fall back to a fixed 20K-token cutoff
-        # — the cliff above which Anthropic and OpenAI both saw quality drops.
-        return deferrable_tokens >= 20_000
+        # Without a known context size, fall back to an 8K-token cutoff
+        return deferrable_tokens >= 8_000
     threshold_tokens = int(context_length * (config.threshold_pct / 100.0))
+    # Cap auto threshold tokens at 8k so large-context models (e.g. 200k)
+    # do not receive >8k tokens of tool schemas before activating tool_search.
+    threshold_tokens = min(threshold_tokens, 8_000)
     return deferrable_tokens >= threshold_tokens
 
 
