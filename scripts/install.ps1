@@ -2918,6 +2918,35 @@ function Copy-ConfigTemplates {
     New-Item -ItemType Directory -Force -Path $hermesWorkDir | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $HOME 'Documents') | Out-Null
 
+    # Seed/repair the managed workspace from installer template (non-destructive):
+    # only missing files are copied so existing user files are preserved.
+    $workspaceTemplateSrc = Join-Path $InstallDir 'installer\workspace-template'
+    if (-not (Test-Path $workspaceTemplateSrc)) {
+        $workspaceTemplateSrc = Join-Path $InstallDir 'installer\skills-hidden\aimds-loadout\workspace'
+    }
+    if (Test-Path $workspaceTemplateSrc) {
+        Write-Info "Seeding workspace template into $hermesWorkDir ..."
+        Get-ChildItem -Path $workspaceTemplateSrc -Recurse -Force | ForEach-Object {
+            $relative = $_.FullName.Substring($workspaceTemplateSrc.Length).TrimStart('\','/')
+            if ([string]::IsNullOrWhiteSpace($relative)) { return }
+            $destination = Join-Path $hermesWorkDir $relative
+            if ($_.PSIsContainer) {
+                if (-not (Test-Path $destination)) {
+                    New-Item -ItemType Directory -Force -Path $destination | Out-Null
+                }
+            } else {
+                $parent = Split-Path -Parent $destination
+                if (-not (Test-Path $parent)) {
+                    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+                }
+                if (-not (Test-Path $destination)) {
+                    Copy-Item -Path $_.FullName -Destination $destination -Force
+                }
+            }
+        }
+        Write-Success "Workspace template ready at $hermesWorkDir"
+    }
+
     # Expose local memory files in Documents\HermesMemory for user visibility.
     # Use a junction so filesystem memory and $HermesHome\memories stay in sync.
     # On reinstall, repair existing plain directories/files into a junction.

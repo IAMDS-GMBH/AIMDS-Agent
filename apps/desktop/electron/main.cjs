@@ -2091,6 +2091,72 @@ function ensureHermesWorkingDirectory() {
   return target
 }
 
+function resolveWorkspaceTemplateSource() {
+  const candidates = [
+    path.join(ACTIVE_HERMES_ROOT, 'installer', 'workspace-template'),
+    path.join(APP_ROOT, 'installer', 'workspace-template'),
+    path.join(unpackedPathFor(APP_ROOT), 'installer', 'workspace-template')
+  ]
+
+  for (const candidate of candidates) {
+    if (directoryExists(candidate)) {
+      return candidate
+    }
+  }
+
+  return null
+}
+
+function isManagedWorkspaceDirectory(resolvedDir) {
+  const defaultWorkspace = path.resolve(hermesWorkingDirectoryPath())
+  if (resolvedDir === defaultWorkspace) {
+    return true
+  }
+  return fileExists(path.join(resolvedDir, '.workspace-template-version'))
+}
+
+function copyMissingTree(sourceDir, targetDir) {
+  const entries = fs.readdirSync(sourceDir, { withFileTypes: true })
+  for (const entry of entries) {
+    const sourcePath = path.join(sourceDir, entry.name)
+    const targetPath = path.join(targetDir, entry.name)
+
+    if (entry.isDirectory()) {
+      if (!directoryExists(targetPath)) {
+        fs.mkdirSync(targetPath, { recursive: true })
+      }
+      copyMissingTree(sourcePath, targetPath)
+      continue
+    }
+
+    if (!fileExists(targetPath)) {
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true })
+      fs.copyFileSync(sourcePath, targetPath)
+    }
+  }
+}
+
+function ensureWorkspaceTemplateBaseline(workspaceDir) {
+  const resolvedDir = path.resolve(String(workspaceDir || ''))
+  if (!resolvedDir || !isManagedWorkspaceDirectory(resolvedDir)) {
+    return resolvedDir
+  }
+
+  const templateRoot = resolveWorkspaceTemplateSource()
+  if (!templateRoot) {
+    return resolvedDir
+  }
+
+  try {
+    fs.mkdirSync(resolvedDir, { recursive: true })
+    copyMissingTree(templateRoot, resolvedDir)
+  } catch (error) {
+    rememberLog(`[workspace] template repair failed for ${resolvedDir}: ${error.message}`)
+  }
+
+  return resolvedDir
+}
+
 function resolveHermesCwd() {
   // In a packaged build, `process.cwd()` resolves to the install root (e.g.
   // `…/win-unpacked` on Windows or `/Applications/Hermes.app/Contents/...`
@@ -2119,12 +2185,15 @@ function resolveHermesCwd() {
       continue
     }
 
-    if (directoryExists(resolved)) return resolved
+    if (directoryExists(resolved)) return ensureWorkspaceTemplateBaseline(resolved)
   }
 
   // No candidate exists: create and use Documents/HermesWorkingDirectory.
   const ensured = ensureHermesWorkingDirectory()
-  return directoryExists(ensured) ? ensured : app.getPath('home')
+  if (directoryExists(ensured)) {
+    return ensureWorkspaceTemplateBaseline(ensured)
+  }
+  return app.getPath('home')
 }
 
 function sanitizeWorkspaceCwd(cwd) {
@@ -2138,7 +2207,7 @@ function sanitizeWorkspaceCwd(cwd) {
     const resolved = path.resolve(trimmed)
 
     if (directoryExists(resolved)) {
-      return { cwd: resolved, sanitized: false }
+      return { cwd: ensureWorkspaceTemplateBaseline(resolved), sanitized: false }
     }
   } catch {
     // Fall through to the resolved default.

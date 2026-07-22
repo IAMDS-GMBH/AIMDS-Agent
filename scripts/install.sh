@@ -2210,6 +2210,7 @@ copy_config_templates() {
     log_info "Setting up configuration files..."
 
     local hermes_work_dir memory_fs_dir leveldb_dir seed_script memory_seed_script created_config
+    local workspace_template_src rel src_path dest_path
     local aimds_installer_dir aimds_memory_seed_dir python_for_seed
     local _seed_out _line
     hermes_work_dir="$HOME/Documents/HermesWorkingDirectory"
@@ -2220,6 +2221,32 @@ copy_config_templates() {
     mkdir -p "$HERMES_HOME"/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,skills}
     mkdir -p "$hermes_work_dir"
     mkdir -p "$HOME/Documents"
+
+    # Seed/repair the managed workspace from installer template (non-destructive):
+    # copy only missing files/folders so existing user content is preserved.
+    workspace_template_src="$INSTALL_DIR/installer/workspace-template"
+    if [ ! -d "$workspace_template_src" ]; then
+        workspace_template_src="$INSTALL_DIR/installer/skills-hidden/aimds-loadout/workspace"
+    fi
+    if [ -d "$workspace_template_src" ] && [ -n "$(find "$workspace_template_src" -mindepth 1 -print -quit 2>/dev/null)" ]; then
+        log_info "Seeding workspace template into $hermes_work_dir ..."
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -a --ignore-existing "$workspace_template_src"/ "$hermes_work_dir"/
+        else
+            while IFS= read -r -d '' rel; do
+                rel="${rel#./}"
+                src_path="$workspace_template_src/$rel"
+                dest_path="$hermes_work_dir/$rel"
+                if [ -d "$src_path" ]; then
+                    mkdir -p "$dest_path"
+                elif [ ! -e "$dest_path" ]; then
+                    mkdir -p "$(dirname "$dest_path")"
+                    cp "$src_path" "$dest_path"
+                fi
+            done < <(cd "$workspace_template_src" && find . -mindepth 1 -print0)
+        fi
+        log_success "Workspace template ready at $hermes_work_dir"
+    fi
 
     # Expose local memory files in Documents/HermesMemory for user visibility.
     # We use a symlink so filesystem memory and ~/.hermes/memories stay in sync.
