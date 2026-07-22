@@ -7822,8 +7822,9 @@ async def list_mcp_catalog(profile: Optional[str] = None):
 
 class MCPCatalogInstall(BaseModel):
     name: str
-    # env: KEY=VALUE map for catalog entries that declare required env vars.
+    # env / secrets: KEY=VALUE maps for catalog entries that declare required env vars.
     env: Dict[str, str] = {}
+    secrets: Dict[str, str] = {}
     enable: bool = True
     profile: Optional[str] = None
 
@@ -7844,14 +7845,20 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     if entry is None:
         raise HTTPException(status_code=404, detail=f"No catalog entry '{name}'")
 
-    # Persist any supplied env vars first (catalog entries declare which names
-    # they need; we only write the ones the user provided).
+    # Persist any supplied env vars / secrets first (catalog entries declare which
+    # names they need; we only write the ones the user provided).
     effective_profile = body.profile or profile
+    env_vars: Dict[str, str] = {}
     if body.env:
+        env_vars.update(body.env)
+    if body.secrets:
+        env_vars.update(body.secrets)
+
+    if env_vars:
         with _profile_scope(effective_profile):
-            for k, v in body.env.items():
-                if v:
-                    save_env_value(k, v)
+            for k, v in env_vars.items():
+                if v and str(v).strip():
+                    save_env_value(k, str(v).strip())
 
     # Git-bootstrap entries can take a while to clone — run via the background
     # action path so the request returns immediately and the UI can tail logs.

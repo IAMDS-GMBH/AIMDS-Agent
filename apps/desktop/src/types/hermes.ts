@@ -660,6 +660,7 @@ export interface McpCatalogResponse {
 export interface McpCatalogInstallRequest {
   enable?: boolean
   name: string
+  env?: Record<string, string>
   secrets?: Record<string, string>
 }
 

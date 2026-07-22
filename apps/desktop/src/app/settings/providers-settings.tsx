@@ -420,6 +420,7 @@ function McpCatalogSection({
       const result = await installMcpCatalogEntry({
         enable: true,
         name: installModalEntry.name,
+        env: secretInputs,
         secrets: secretInputs
       })
 

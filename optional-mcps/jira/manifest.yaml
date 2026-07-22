@@ -17,7 +17,6 @@ auth:
   env:
     - name: JIRA_URL
       prompt: "Jira instance URL (e.g. https://your-domain.atlassian.net or https://jira.company.com)"
-      default: "https://your-domain.atlassian.net"
       required: true
       secret: false
     - name: JIRA_API_TOKEN
