@@ -153,7 +153,9 @@ def test_upgrade_updates_existing_weekly_default_without_recreating_missing(tmp_
     prompt = jobs[0]["prompt"]
     assert "Carry-over items" in prompt
     assert "Next week top 3 priorities" in prompt
+    assert "Stale active projects (>=14 days inactivity)" in prompt
     assert "Risks/open questions needing decisions" in prompt
+    assert "OPEN_QUESTION_NEEDED:" in prompt
 
     state = json.loads(state_file.read_text(encoding="utf-8"))
     assert state.get("seed_version") == CURRENT_DEFAULT_CRON_VERSION
@@ -171,4 +173,6 @@ def test_seeded_weekly_review_prompt_includes_planning_contract(tmp_path):
     prompt = str(weekly.get("prompt") or "")
     assert "Carry-over items" in prompt
     assert "Next week top 3 priorities" in prompt
+    assert "Stale active projects (>=14 days inactivity)" in prompt
     assert "Risks/open questions needing decisions" in prompt
+    assert "OPEN_QUESTION_NEEDED:" in prompt

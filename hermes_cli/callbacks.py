@@ -43,7 +43,14 @@ def clarify_callback(cli, question, choices):
         try:
             result = response_queue.get(timeout=1)
             cli._clarify_deadline = 0
-            return result
+            if isinstance(result, dict):
+                return result
+            return {
+                "user_response": str(result).strip(),
+                "response_state": "answered",
+                "resolved": True,
+                "reason_code": "",
+            }
         except queue.Empty:
             remaining = cli._clarify_deadline - _time.monotonic()
             if remaining <= 0:
@@ -57,10 +64,12 @@ def clarify_callback(cli, question, choices):
     if hasattr(cli, "_app") and cli._app:
         cli._app.invalidate()
     cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
-    return (
-        "The user did not provide a response within the time limit. "
-        "Use your best judgement to make the choice and proceed."
-    )
+    return {
+        "user_response": "",
+        "response_state": "timeout",
+        "resolved": False,
+        "reason_code": "clarify_timeout",
+    }
 
 
 def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:

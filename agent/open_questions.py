@@ -92,6 +92,15 @@ def append_open_question_entry(
 
 def derive_blocking_open_question_from_review_text(text: str) -> Optional[Tuple[str, str]]:
     """Extract a `(context, needed)` pair from review output when blocked."""
+    marker_match = re.search(
+        r"(?im)^\s*OPEN_QUESTION_NEEDED\s*:\s*(.+?)\s*$",
+        str(text or ""),
+    )
+    if marker_match:
+        needed = _to_compact_line(marker_match.group(1), limit=280)
+        if needed:
+            return "Weekly review", needed
+
     cleaned: list[str] = []
     for raw in str(text or "").splitlines():
         line = raw.strip()
@@ -138,6 +147,31 @@ def derive_open_question_from_clarify_result(question: str, result_payload: dict
     if not q:
         return None
     payload = result_payload if isinstance(result_payload, dict) else {}
+    response_state = str(payload.get("response_state") or "").strip().lower()
+    reason_code = str(payload.get("reason_code") or "").strip().lower()
+    resolved = payload.get("resolved")
+    if isinstance(resolved, bool):
+        if resolved:
+            return None
+        needed = str(payload.get("needed") or payload.get("error") or "").strip()
+        if not needed:
+            if response_state == "timeout":
+                needed = "User did not answer in time."
+            elif response_state == "delivery_failed":
+                needed = "Clarify prompt delivery failed; user decision is still needed."
+            elif response_state == "empty":
+                needed = "No user input was captured for the clarify question."
+            elif response_state == "unavailable":
+                needed = "Clarify callback was unavailable; user decision is still needed."
+            elif response_state:
+                needed = f"Clarify unresolved ({response_state})."
+            else:
+                needed = "Clarify stayed unresolved."
+        return (
+            f"Clarify required for: {q}",
+            needed,
+            reason_code or f"clarify_{response_state or 'unresolved'}",
+        )
 
     error_text = str(payload.get("error") or "").strip()
     if error_text:
@@ -166,6 +200,25 @@ def derive_open_question_from_clarify_result(question: str, result_payload: dict
             f"Clarify required for: {q}",
             f"User did not answer in time ({response}).",
             "clarify_timeout",
+        )
+    unresolved_markers = (
+        "not sure",
+        "don't know",
+        "do not know",
+        "unsure",
+        "no preference",
+        "whatever",
+        "you decide",
+        "your call",
+        "as usual",
+        "usual one",
+        "either is fine",
+    )
+    if any(marker in lowered for marker in unresolved_markers):
+        return (
+            f"Clarify required for: {q}",
+            f"User response stayed ambiguous ({response}).",
+            "clarify_ambiguous_response",
         )
 
     return None

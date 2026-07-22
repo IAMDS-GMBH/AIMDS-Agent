@@ -2160,6 +2160,27 @@ class TestBuildJobPromptSilentHint:
         prompt_pos = result.index("My custom prompt")
         assert system_pos < prompt_pos
 
+    def test_weekly_prompt_includes_stale_project_check_hint(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        projects_dir = tmp_path / "projects"
+        projects_dir.mkdir(parents=True, exist_ok=True)
+        (projects_dir / "website-relaunch.md").write_text(
+            "---\n"
+            "title: Website Relaunch\n"
+            "status: active\n"
+            "updated: 2026-06-20\n"
+            "deadline: 2026-08-15\n"
+            "---\n\n"
+            "Body\n",
+            encoding="utf-8",
+        )
+
+        result = _build_job_prompt({"id": "ops-weekly-review", "prompt": "Run weekly review"})
+        assert "## Stale Project Check" in result
+        assert "Website Relaunch" in result
+        assert "do not change statuses automatically" in result
+        assert "OPEN_QUESTION_NEEDED:" in result
+
 
 class TestParseWakeGate:
     """Unit tests for _parse_wake_gate — pure function, no side effects."""

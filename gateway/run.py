@@ -14185,7 +14185,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 import uuid as _uuid
 
                 if not _status_adapter:
-                    return ""
+                    return {
+                        "user_response": "",
+                        "response_state": "unavailable",
+                        "resolved": False,
+                        "reason_code": "clarify_callback_unavailable",
+                    }
 
                 clarify_id = _uuid.uuid4().hex[:10]
                 _clarify_mod.register(
@@ -14233,14 +14238,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # sentinel so the agent can fall back to a sensible
                     # default rather than hanging.
                     _clarify_mod.clear_session(session_key or "")
-                    return "[clarify prompt could not be delivered]"
+                    return {
+                        "user_response": "",
+                        "response_state": "delivery_failed",
+                        "resolved": False,
+                        "reason_code": "clarify_prompt_delivery_failed",
+                    }
 
                 timeout = _clarify_mod.get_clarify_timeout()
                 response = _clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
                 if response is None or response == "":
                     # Timeout or session-boundary cancellation
-                    return f"[user did not respond within {int(timeout / 60)}m]"
-                return response
+                    return {
+                        "user_response": "",
+                        "response_state": "timeout",
+                        "resolved": False,
+                        "reason_code": "clarify_timeout",
+                    }
+                return {
+                    "user_response": str(response),
+                    "response_state": "answered",
+                    "resolved": True,
+                    "reason_code": "",
+                }
 
             agent.clarify_callback = _clarify_callback_sync
 

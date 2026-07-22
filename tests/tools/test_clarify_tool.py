@@ -26,6 +26,8 @@ class TestClarifyToolBasics:
         assert result["question"] == "What color?"
         assert result["choices_offered"] is None
         assert result["user_response"] == "blue"
+        assert result["response_state"] == "answered"
+        assert result["resolved"] is True
 
     def test_question_with_choices(self):
         """Should pass choices to callback and return response."""
@@ -42,6 +44,8 @@ class TestClarifyToolBasics:
         assert result["question"] == "Pick a number"
         assert result["choices_offered"] == ["1", "2", "3"]
         assert result["user_response"] == "2"
+        assert result["response_state"] == "answered"
+        assert result["resolved"] is True
 
     def test_empty_question_returns_error(self):
         """Should return error for empty question."""
@@ -154,6 +158,20 @@ class TestClarifyToolCallbackHandling:
 
         result = json.loads(clarify_tool("Q?", callback=mock_callback))
         assert result["user_response"] == "response with spaces"
+
+    def test_structured_callback_result_passes_state(self):
+        def mock_callback(question: str, choices: Optional[List[str]]):
+            return {
+                "user_response": "",
+                "response_state": "timeout",
+                "resolved": False,
+                "reason_code": "clarify_timeout",
+            }
+
+        result = json.loads(clarify_tool("Q?", callback=mock_callback))
+        assert result["response_state"] == "timeout"
+        assert result["resolved"] is False
+        assert result["reason_code"] == "clarify_timeout"
 
 
 class TestCheckClarifyRequirements:

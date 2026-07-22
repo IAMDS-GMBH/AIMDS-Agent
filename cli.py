@@ -9416,7 +9416,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             try:
                 result = response_queue.get(timeout=1)
                 self._clarify_deadline = 0
-                return result
+                if isinstance(result, dict):
+                    return result
+                return {
+                    "user_response": str(result).strip(),
+                    "response_state": "answered",
+                    "resolved": True,
+                    "reason_code": "",
+                }
             except queue.Empty:
                 remaining = self._clarify_deadline - _time.monotonic()
                 if remaining <= 0:
@@ -9432,10 +9439,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._clarify_deadline = 0
         self._paint_now()
         _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
-        return (
-            "The user did not provide a response within the time limit. "
-            "Use your best judgement to make the choice and proceed."
-        )
+        return {
+            "user_response": "",
+            "response_state": "timeout",
+            "resolved": False,
+            "reason_code": "clarify_timeout",
+        }
 
     def _sudo_password_callback(self) -> str:
         """

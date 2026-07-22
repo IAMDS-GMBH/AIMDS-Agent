@@ -13,7 +13,7 @@ a thin dispatcher that delegates to a platform-provided callback.
 
 import json
 import threading
-from typing import List, Optional, Callable
+from typing import Any, List, Optional, Callable
 
 
 # Maximum number of predefined choices the agent can offer.
@@ -36,13 +36,23 @@ MAX_CHOICES = 4
 _clarify_callback_local = threading.local()
 
 
-def set_clarify_callback(cb: Optional[Callable[[str, Optional[List[str]]], str]]) -> None:
+def set_clarify_callback(cb: Optional[Callable[[str, Optional[List[str]]], Any]]) -> None:
     """Register the platform's clarify callback for the current thread."""
     _clarify_callback_local.callback = cb
 
 
-def get_clarify_callback() -> Optional[Callable[[str, Optional[List[str]]], str]]:
+def get_clarify_callback() -> Optional[Callable[[str, Optional[List[str]]], Any]]:
     return getattr(_clarify_callback_local, "callback", None)
+
+def _normalize_legacy_response_state(response: str) -> tuple[str, bool, str]:
+    lowered = str(response or "").strip().lower()
+    if lowered.startswith("[clarify prompt could not be delivered]"):
+        return "delivery_failed", False, "clarify_prompt_delivery_failed"
+    if lowered.startswith("[user did not respond within"):
+        return "timeout", False, "clarify_timeout"
+    if not lowered:
+        return "empty", False, "clarify_empty_response"
+    return "answered", True, ""
 
 
 def clarify_tool(
@@ -86,17 +96,34 @@ def clarify_tool(
         )
 
     try:
-        user_response = callback(question, choices)
+        callback_result = callback(question, choices)
     except Exception as exc:
         return json.dumps(
             {"error": f"Failed to get user input: {exc}"},
             ensure_ascii=False,
         )
 
+    if isinstance(callback_result, dict):
+        user_response = str(callback_result.get("user_response") or "").strip()
+        response_state = str(callback_result.get("response_state") or "").strip().lower()
+        reason_code = str(callback_result.get("reason_code") or "").strip().lower()
+        resolved_raw = callback_result.get("resolved")
+        if response_state:
+            resolved = bool(resolved_raw) if isinstance(resolved_raw, bool) else response_state == "answered"
+        else:
+            response_state, resolved, inferred_reason = _normalize_legacy_response_state(user_response)
+            reason_code = reason_code or inferred_reason
+    else:
+        user_response = str(callback_result).strip()
+        response_state, resolved, reason_code = _normalize_legacy_response_state(user_response)
+
     return json.dumps({
         "question": question,
         "choices_offered": choices,
-        "user_response": str(user_response).strip(),
+        "user_response": user_response,
+        "response_state": response_state,
+        "resolved": resolved,
+        "reason_code": reason_code,
     }, ensure_ascii=False)
 
 

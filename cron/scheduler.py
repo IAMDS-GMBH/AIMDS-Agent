@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
-from datetime import timezone
+from datetime import date, datetime, timezone
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -623,6 +623,115 @@ _FINDINGS_HEADER = (
     "> What the agent noticed in the background (overnight review, automations). Newest\n"
     "> first. The agent appends here so nothing lives only in a delivered message.\n\n"
 )
+
+
+def _job_targets_weekly_review(job: dict) -> bool:
+    origin = job.get("origin")
+    seed_key = ""
+    if isinstance(origin, dict):
+        seed_key = _canonical_cron_seed_key(origin.get("seed_key"))
+    if seed_key == "weekly-review":
+        return True
+
+    haystack = " ".join(
+        str(job.get(field) or "").strip().lower()
+        for field in ("id", "name", "prompt")
+    )
+    return ("weekly" in haystack) and ("review" in haystack or "digest" in haystack)
+
+
+def _parse_simple_frontmatter(text: str) -> dict[str, str]:
+    if not text.startswith("---\n"):
+        return {}
+    lines = text.splitlines()
+    out: dict[str, str] = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        out[key.strip().lower()] = value.strip().strip("'\"")
+    return out
+
+
+def _parse_dateish(value: str) -> Optional[date]:
+    txt = str(value or "").strip()
+    if not txt:
+        return None
+    try:
+        return date.fromisoformat(txt[:10])
+    except Exception:
+        pass
+    try:
+        iso = txt.replace("Z", "+00:00")
+        return datetime.fromisoformat(iso).date()
+    except Exception:
+        return None
+
+
+def _build_weekly_stale_projects_hint(job: dict) -> str:
+    if not _job_targets_weekly_review(job):
+        return ""
+    try:
+        root = resolve_agent_cwd().expanduser().resolve()
+    except Exception:
+        return ""
+
+    projects_dir = root / "projects"
+    if not projects_dir.is_dir():
+        return ""
+
+    today = _hermes_now().astimezone(timezone.utc).date()
+    stale_rows: list[str] = []
+    for project_file in sorted(projects_dir.glob("*.md"))[:100]:
+        try:
+            raw = project_file.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        meta = _parse_simple_frontmatter(raw)
+        status = str(meta.get("status", "")).strip().lower()
+        if status != "active":
+            continue
+
+        name = str(meta.get("title") or project_file.stem).strip()
+        updated = (
+            _parse_dateish(meta.get("updated"))
+            or _parse_dateish(meta.get("updated_at"))
+            or _parse_dateish(meta.get("last_updated"))
+            or datetime.fromtimestamp(project_file.stat().st_mtime, tz=timezone.utc).date()
+        )
+        idle_days = (today - updated).days
+        if idle_days < 14:
+            continue
+
+        deadline = (
+            str(meta.get("deadline") or meta.get("due") or meta.get("due_date") or "")
+            .strip()[:40]
+        )
+        if deadline:
+            stale_rows.append(f"{name} (idle {idle_days}d, due {deadline})")
+        else:
+            stale_rows.append(f"{name} (idle {idle_days}d)")
+        if len(stale_rows) >= 5:
+            break
+
+    if not stale_rows:
+        return (
+            "## Stale Project Check\n"
+            "No active projects are stale by the 14-day inactivity threshold.\n"
+            "If a decision/input is missing, include exactly one line:\n"
+            "OPEN_QUESTION_NEEDED: <what decision or input is required>\n\n"
+        )
+    return (
+        "## Stale Project Check\n"
+        "Include these stale active projects in your weekly review and propose actions; "
+        "do not change statuses automatically.\n"
+        "If a decision/input is missing, include exactly one line:\n"
+        "OPEN_QUESTION_NEEDED: <what decision or input is required>\n"
+        + "\n".join(f"- {row}" for row in stale_rows)
+        + "\n\n"
+    )
 
 
 def _canonical_cron_seed_key(raw_key: object) -> str:
@@ -1312,6 +1421,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "your findings normally, or say [SILENT] and nothing more.]\n\n"
     )
     prompt = cron_hint + prompt
+    stale_hint = _build_weekly_stale_projects_hint(job)
+    if stale_hint:
+        prompt = stale_hint + prompt
     if skills is None:
         legacy = job.get("skill")
         skills = [legacy] if legacy else []

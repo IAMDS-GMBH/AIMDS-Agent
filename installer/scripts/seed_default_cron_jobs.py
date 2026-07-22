@@ -25,7 +25,9 @@ LEGACY_MARKER_FILE = ".aimds-default-cron-seeded"
 # Version 1: initial default seeding gate.
 # Version 2: update weekly-review prompt to explicitly include next-week planning.
 # Version 3: enforce planning-oriented weekly output contract with concise sections.
-CURRENT_DEFAULT_CRON_VERSION = 3
+# Version 4: weekly review contract includes explicit stale-project section.
+# Version 5: weekly review contract adds OPEN_QUESTION_NEEDED marker requirement.
+CURRENT_DEFAULT_CRON_VERSION = 5
 JOBS_FILE_REL = Path("cron") / "jobs.json"
 _SOURCE = "aimds-default-cron"
 
@@ -49,7 +51,10 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
             "1) Key outcomes this week, "
             "2) Carry-over items, "
             "3) Next week top 3 priorities, "
-            "4) Risks/open questions needing decisions."
+            "4) Stale active projects (>=14 days inactivity), "
+            "5) Risks/open questions needing decisions. "
+            "If any decision/input is missing, include exactly one line: "
+            "OPEN_QUESTION_NEEDED: <what decision or input is required>."
         ),
         "skill": "digest",
         "deliver": "local",
@@ -222,6 +227,42 @@ def _upgrade_jobs_for_version(
 
     # v3 migration: weekly review prompt must include planning sections and decisions.
     if from_version < 3 <= to_version:
+        weekly_spec = next(
+            (spec for spec in _DEFAULT_SPECS if _canonical_seed_key(spec["seed_key"]) == "weekly-review"),
+            None,
+        )
+        if weekly_spec is not None:
+            weekly_aliases = _aliases("weekly-review")
+            for job in jobs:
+                if not _job_is_aimds_default(job):
+                    continue
+                if not _job_matches_alias(job, weekly_aliases):
+                    continue
+                target_prompt = str(weekly_spec.get("prompt") or "").strip()
+                if str(job.get("prompt") or "").strip() != target_prompt:
+                    job["prompt"] = target_prompt
+                    updated += 1
+
+    # v4 migration: weekly review prompt includes explicit stale-project section.
+    if from_version < 4 <= to_version:
+        weekly_spec = next(
+            (spec for spec in _DEFAULT_SPECS if _canonical_seed_key(spec["seed_key"]) == "weekly-review"),
+            None,
+        )
+        if weekly_spec is not None:
+            weekly_aliases = _aliases("weekly-review")
+            for job in jobs:
+                if not _job_is_aimds_default(job):
+                    continue
+                if not _job_matches_alias(job, weekly_aliases):
+                    continue
+                target_prompt = str(weekly_spec.get("prompt") or "").strip()
+                if str(job.get("prompt") or "").strip() != target_prompt:
+                    job["prompt"] = target_prompt
+                    updated += 1
+
+    # v5 migration: weekly review prompt requires OPEN_QUESTION_NEEDED marker.
+    if from_version < 5 <= to_version:
         weekly_spec = next(
             (spec for spec in _DEFAULT_SPECS if _canonical_seed_key(spec["seed_key"]) == "weekly-review"),
             None,
