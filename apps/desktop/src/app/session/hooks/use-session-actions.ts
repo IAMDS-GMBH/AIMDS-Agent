@@ -69,6 +69,32 @@ interface SessionActionsOptions {
   ) => ClientSessionState
 }
 
+const CRON_RESUME_RETRY_DELAY_MS = 750
+const CRON_RESUME_MAX_RETRIES = 40
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => {
+    window.setTimeout(resolve, ms)
+  })
+}
+
+function isCronStoredSessionId(sessionId: string): boolean {
+  return sessionId.startsWith('cron_')
+}
+
+function isSessionNotFoundError(err: unknown): boolean {
+  const text = err instanceof Error ? err.message : String(err ?? '')
+  const normalized = text.toLowerCase()
+
+  return (
+    normalized.includes('session not found') ||
+    normalized.includes('not found or expired') ||
+    normalized.includes('unknown or expired session') ||
+    normalized.includes('status 404') ||
+    normalized.includes('http 404')
+  )
+}
+
 function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   let appended = false
 
@@ -587,14 +613,45 @@ export function useSessionActions({
           // Non-fatal: gateway resume below can still hydrate the session.
         }
 
-        const resumed = await requestGateway<SessionResumeResponse>('session.resume', {
-          session_id: storedSessionId,
-          cols: 96,
-          // Owning profile: in app-global remote mode one backend serves every
-          // profile, so the gateway opens this profile's state.db + home to
-          // resume + persist the right session (no-op for single/launch profile).
-          ...(sessionProfile ? { profile: sessionProfile } : {})
-        })
+        const maxResumeRetries = isCronStoredSessionId(storedSessionId) ? CRON_RESUME_MAX_RETRIES : 0
+        let resumed: SessionResumeResponse | null = null
+        let lastResumeError: unknown = null
+
+        for (let attempt = 0; attempt <= maxResumeRetries; attempt += 1) {
+          try {
+            resumed = await requestGateway<SessionResumeResponse>('session.resume', {
+              session_id: storedSessionId,
+              cols: 96,
+              // Owning profile: in app-global remote mode one backend serves every
+              // profile, so the gateway opens this profile's state.db + home to
+              // resume + persist the right session (no-op for single/launch profile).
+              ...(sessionProfile ? { profile: sessionProfile } : {})
+            })
+            break
+          } catch (err) {
+            lastResumeError = err
+
+            const retryableNotFound = isSessionNotFoundError(err) && attempt < maxResumeRetries
+
+            if (!retryableNotFound) {
+              throw err
+            }
+
+            if (!isCurrentResume()) {
+              return
+            }
+
+            await delay(CRON_RESUME_RETRY_DELAY_MS)
+
+            if (!isCurrentResume()) {
+              return
+            }
+          }
+        }
+
+        if (!resumed) {
+          throw lastResumeError ?? new Error('Session resume failed')
+        }
 
         if (!isCurrentResume()) {
           return
@@ -646,13 +703,29 @@ export function useSessionActions({
           return
         }
 
-        const fallback = await getSessionMessages(storedSessionId, sessionProfile)
+        let fallbackLoaded = false
 
-        if (!isCurrentResume()) {
+        try {
+          const fallback = await getSessionMessages(storedSessionId, sessionProfile)
+
+          if (!isCurrentResume()) {
+            return
+          }
+
+          setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
+          fallbackLoaded = true
+        } catch {
+          // If fallback fetch also fails we still surface the original resume
+          // error, but we avoid throwing from this recovery path.
+        }
+
+        // Cron sessions can exist a short while before their first persisted
+        // turn appears in state.db; in that window both resume + fallback
+        // snapshot may 404. Don't spam a failure toast for this transient state.
+        if (isCronStoredSessionId(storedSessionId) && isSessionNotFoundError(err) && !fallbackLoaded) {
           return
         }
 
-        setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
         notifyError(err, copy.resumeFailed)
       } finally {
         if (isCurrentResume()) {
