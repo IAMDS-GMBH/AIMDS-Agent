@@ -591,7 +591,6 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
   return (
     <SettingsContent>
       <IamdsAccountPanel onWantApiKey={() => onViewChange('keys')} onRefreshCreds={() => void refetch()} />
-      <McpCatalogSection vars={vars} onRefreshCreds={() => void refetch()} />
     </SettingsContent>
   )
 }
