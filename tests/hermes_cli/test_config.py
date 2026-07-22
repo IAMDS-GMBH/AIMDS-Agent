@@ -1306,3 +1306,45 @@ class TestMcpMemorySaveFilterMigration:
                 raw["mcp_servers"]["IAMDS"]["tools"]["exclude"]
                 == "mcp_IAMDS_mcp_memory_memory_save"
             )
+
+    def test_rewrites_even_when_already_version_33(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 33\n"
+                "mcp_servers:\n"
+                "  IAMDS:\n"
+                "    provider: iamds\n"
+                "    tools:\n"
+                "      include:\n"
+                "        - mcp_IAMDS_mcp_memory_memory_upsert\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            include = raw["mcp_servers"]["IAMDS"]["tools"]["include"]
+            assert "mcp_IAMDS_mcp_memory_memory_save" in include
+            assert not any("memory_upsert" in entry for entry in include)
+
+    def test_only_rewrites_servers_with_provider_iamds(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 33\n"
+                "mcp_servers:\n"
+                "  IAMDS:\n"
+                "    provider: iamds\n"
+                "    tools:\n"
+                "      include:\n"
+                "        - mcp_IAMDS_mcp_memory_memory_upsert\n"
+                "  OTHER:\n"
+                "    provider: other\n"
+                "    tools:\n"
+                "      include:\n"
+                "        - mcp_OTHER_mcp_memory_memory_upsert\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            include_iamds = raw["mcp_servers"]["IAMDS"]["tools"]["include"]
+            include_other = raw["mcp_servers"]["OTHER"]["tools"]["include"]
+            assert "mcp_IAMDS_mcp_memory_memory_save" in include_iamds
+            assert "mcp_OTHER_mcp_memory_memory_upsert" in include_other
