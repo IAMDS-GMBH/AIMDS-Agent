@@ -10227,8 +10227,8 @@ def cmd_profile(args):
                 )
             if plan.has_cron:
                 print(
-                    "  Cron jobs were included but are NOT scheduled automatically.\n"
-                    f"  Review them with:  hermes -p {plan.manifest.name} cron list"
+                    "  Cron defaults were seeded (one-time) from this distribution.\n"
+                    f"  Review/manage them with:  hermes -p {plan.manifest.name} cron list"
                 )
             print(f"\n  Use with:      hermes -p {plan.manifest.name} chat")
         except (DistributionError, ValueError) as e:
@@ -10275,7 +10275,7 @@ def cmd_profile(args):
             print(f"\n✓ Updated '{plan.manifest.name}' → v{plan.manifest.version}")
             if plan.has_cron:
                 print(
-                    "  Cron files were refreshed.  Review with:  "
+                    "  Cron defaults are one-time seeded (if never initialized).  Review with:  "
                     f"hermes -p {plan.manifest.name} cron list"
                 )
         except (DistributionError, ValueError) as e:
@@ -10381,8 +10381,8 @@ def _render_distribution_plan(plan) -> None:
             print(line)
     if plan.has_cron:
         print(
-            "\n  ⚠ This distribution ships cron jobs.  They will NOT run "
-            "automatically — review and enable manually."
+            "\n  This distribution ships cron defaults. They are seeded once on "
+            "install/update if this profile was never initialized before."
         )
 
 

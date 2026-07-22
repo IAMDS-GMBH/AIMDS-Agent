@@ -10,6 +10,7 @@ mocking git would just test the mock.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -348,6 +349,39 @@ class TestInstall:
         with pytest.raises(DistributionError, match="requires Hermes"):
             install_distribution(str(staged), name="future")
 
+    def test_install_seeds_cron_defaults_into_jobs_file(self, profile_env):
+        staged = _make_staging_dir(profile_env, "seeded")
+        (staged / "cron" / "daily.json").write_text(
+            '{"name":"Daily Brief","schedule":"0 9 * * 1-5","skill":"digest"}'
+        )
+
+        plan = install_distribution(str(staged), name="seeded")
+        jobs_file = plan.target_dir / "cron" / "jobs.json"
+        payload = json.loads(jobs_file.read_text(encoding="utf-8"))
+        jobs = payload.get("jobs", [])
+        assert any(
+            j.get("origin", {}).get("source") == "distribution-default-cron"
+            and j.get("origin", {}).get("seed_key") == "daily"
+            for j in jobs
+        )
+        assert (plan.target_dir / ".distribution-cron-seeded").is_file()
+
+    def test_install_canonicalizes_weekly_digest_seed_key(self, profile_env):
+        staged = _make_staging_dir(profile_env, "weekly")
+        (staged / "cron" / "daily.json").unlink()
+        (staged / "cron" / "weekly-digest.json").write_text(
+            '{"name":"Weekly Digest","schedule":"0 16 * * 5","skill":"digest"}'
+        )
+
+        plan = install_distribution(str(staged), name="weekly")
+        payload = json.loads((plan.target_dir / "cron" / "jobs.json").read_text(encoding="utf-8"))
+        seeded = [
+            j for j in payload.get("jobs", [])
+            if j.get("origin", {}).get("source") == "distribution-default-cron"
+        ]
+        assert seeded
+        assert seeded[0].get("origin", {}).get("seed_key") == "weekly-review"
+
 
 # ===========================================================================
 # Update — preserves user data, preserves config by default
@@ -417,6 +451,60 @@ class TestUpdate:
         create_profile(name="plain", no_alias=True)
         with pytest.raises(DistributionError, match="not a distribution"):
             update_distribution("plain")
+
+    def test_update_does_not_reseed_after_user_deletes_seeded_job(self, profile_env):
+        staged = _make_staging_dir(profile_env, "cron_update")
+        (staged / "cron" / "daily.json").unlink()
+        (staged / "cron" / "weekly-digest.json").write_text(
+            '{"name":"Weekly Digest","schedule":"0 16 * * 5","skill":"digest"}'
+        )
+        plan = install_distribution(str(staged), name="cron_update")
+        jobs_path = plan.target_dir / "cron" / "jobs.json"
+        first_payload = json.loads(jobs_path.read_text(encoding="utf-8"))
+        first_seeded = [
+            j for j in first_payload.get("jobs", [])
+            if j.get("origin", {}).get("source") == "distribution-default-cron"
+        ]
+        assert len(first_seeded) == 1
+
+        # User deletes default job after initial seeding.
+        first_payload["jobs"] = [
+            j for j in first_payload.get("jobs", [])
+            if j.get("origin", {}).get("source") != "distribution-default-cron"
+        ]
+        jobs_path.write_text(json.dumps(first_payload, indent=2) + "\n", encoding="utf-8")
+
+        # Update/sync must NOT recreate deleted defaults.
+        update_distribution("cron_update")
+        if not jobs_path.exists():
+            return
+        second_payload = json.loads(jobs_path.read_text(encoding="utf-8"))
+        second_seeded = [
+            j for j in second_payload.get("jobs", [])
+            if j.get("origin", {}).get("source") == "distribution-default-cron"
+        ]
+        assert len(second_seeded) == 0
+
+    def test_update_seeds_when_profile_was_never_initialized(self, profile_env):
+        staged = _make_staging_dir(profile_env, "legacy_sync")
+        (staged / "cron" / "daily.json").write_text(
+            '{"name":"Daily Brief","schedule":"0 9 * * 1-5","skill":"digest"}'
+        )
+        plan = install_distribution(str(staged), name="legacy_sync")
+
+        marker = plan.target_dir / ".distribution-cron-seeded"
+        marker.unlink()
+        jobs_path = plan.target_dir / "cron" / "jobs.json"
+        jobs_path.write_text('{"jobs":[]}\n', encoding="utf-8")
+
+        update_distribution("legacy_sync")
+        payload = json.loads(jobs_path.read_text(encoding="utf-8"))
+        seeded = [
+            j for j in payload.get("jobs", [])
+            if j.get("origin", {}).get("source") == "distribution-default-cron"
+        ]
+        assert len(seeded) == 1
+        assert marker.is_file()
 
 
 # ===========================================================================

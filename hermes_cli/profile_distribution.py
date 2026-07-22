@@ -61,6 +61,7 @@ Update semantics:
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -484,6 +485,298 @@ def _count_skills(staged: Path) -> int:
     )
 
 
+def _canonical_cron_seed_key(raw_key: str) -> str:
+    """Normalize distribution cron seed identifiers."""
+    key = str(raw_key or "").strip().lower().replace("_", "-")
+    if not key:
+        return ""
+    if key == "weekly-digest":
+        return "weekly-review"
+    return key
+
+
+def _cron_seed_aliases(seed_key: str) -> List[str]:
+    canonical = _canonical_cron_seed_key(seed_key)
+    if canonical == "weekly-review":
+        return [canonical, "weekly-digest"]
+    return [canonical]
+
+
+def _read_profile_cron_jobs(jobs_file: Path) -> List[Dict[str, Any]]:
+    if not jobs_file.is_file():
+        return []
+    try:
+        payload = json.loads(jobs_file.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise DistributionError(f"Failed to parse cron jobs at {jobs_file}: {exc}") from exc
+
+    if isinstance(payload, dict):
+        jobs = payload.get("jobs", [])
+    elif isinstance(payload, list):
+        jobs = payload
+    else:
+        raise DistributionError(
+            f"Invalid cron jobs file shape at {jobs_file}: expected object or list"
+        )
+    if not isinstance(jobs, list):
+        raise DistributionError(f"Invalid cron jobs list at {jobs_file}")
+    return [j for j in jobs if isinstance(j, dict)]
+
+
+def _write_profile_cron_jobs(jobs_file: Path, jobs: List[Dict[str, Any]]) -> None:
+    jobs_file.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "jobs": jobs,
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    jobs_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _iter_distribution_cron_specs(cron_dir: Path) -> List[Tuple[str, Dict[str, Any], Path]]:
+    specs: List[Tuple[str, Dict[str, Any], Path]] = []
+    if not cron_dir.is_dir():
+        return specs
+
+    files = sorted(
+        [*cron_dir.glob("*.json"), *cron_dir.glob("*.yaml"), *cron_dir.glob("*.yml")]
+    )
+    for spec_file in files:
+        if spec_file.name == "jobs.json":
+            continue
+        try:
+            if spec_file.suffix == ".json":
+                parsed = json.loads(spec_file.read_text(encoding="utf-8"))
+            else:
+                parsed = _load_yaml(spec_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise DistributionError(f"Failed to parse cron seed spec {spec_file}: {exc}") from exc
+
+        if isinstance(parsed, dict) and isinstance(parsed.get("jobs"), list):
+            raw_specs = parsed.get("jobs") or []
+        elif isinstance(parsed, list):
+            raw_specs = parsed
+        elif isinstance(parsed, dict):
+            raw_specs = [parsed]
+        else:
+            raise DistributionError(
+                f"Cron seed spec {spec_file} must be a mapping or list, got {type(parsed).__name__}"
+            )
+
+        file_seed_key = _canonical_cron_seed_key(spec_file.stem)
+        for item in raw_specs:
+            if not isinstance(item, dict):
+                raise DistributionError(f"Cron spec entry in {spec_file} must be a mapping")
+            item_seed_key = _canonical_cron_seed_key(
+                item.get("seed_key") or item.get("id") or file_seed_key
+            )
+            if not item_seed_key:
+                raise DistributionError(f"Cron spec entry in {spec_file} has no valid seed key")
+            specs.append((item_seed_key, item, spec_file))
+    return specs
+
+
+def _schedule_text_from_spec(spec: Dict[str, Any]) -> Optional[str]:
+    schedule = spec.get("schedule")
+    if isinstance(schedule, str) and schedule.strip():
+        return schedule.strip()
+    if isinstance(schedule, dict):
+        for key in ("expr", "run_at", "value", "display"):
+            value = schedule.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _distribution_seed_origin(manifest: DistributionManifest, seed_key: str, spec_file: Path) -> Dict[str, Any]:
+    return {
+        "source": "distribution-default-cron",
+        "distribution_name": manifest.name,
+        "distribution_version": manifest.version,
+        "seed_key": _canonical_cron_seed_key(seed_key),
+        "spec_file": spec_file.name,
+    }
+
+
+def _ensure_unique_job_id(preferred_id: str, jobs: List[Dict[str, Any]]) -> str:
+    existing_ids = {str(j.get("id") or "") for j in jobs}
+    if preferred_id not in existing_ids:
+        return preferred_id
+    suffix = 2
+    while True:
+        candidate = f"{preferred_id}-{suffix}"
+        if candidate not in existing_ids:
+            return candidate
+        suffix += 1
+
+
+def _cron_seed_marker_path(target_dir: Path) -> Path:
+    # Keep this marker outside distribution-owned directories so updates that
+    # refresh cron/ do not erase first-seed history.
+    return target_dir / ".distribution-cron-seeded"
+
+
+def _canonical_job_alias(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    return _canonical_cron_seed_key(text.replace(" ", "-"))
+
+
+def _job_matches_seed_alias(job: Dict[str, Any], aliases: set[str]) -> bool:
+    if _canonical_job_alias(job.get("id")) in aliases:
+        return True
+    if _canonical_job_alias(job.get("name")) in aliases:
+        return True
+    origin = job.get("origin")
+    if isinstance(origin, dict):
+        if _canonical_job_alias(origin.get("seed_key")) in aliases:
+            return True
+    return False
+
+
+def _seed_distribution_cron_defaults(target_dir: Path, manifest: DistributionManifest) -> None:
+    cron_dir = target_dir / "cron"
+    specs = _iter_distribution_cron_specs(cron_dir)
+    if not specs:
+        return
+    seed_marker = _cron_seed_marker_path(target_dir)
+    if seed_marker.is_file():
+        return
+
+    from cron.jobs import compute_next_run, parse_schedule
+
+    jobs_file = cron_dir / "jobs.json"
+    jobs = _read_profile_cron_jobs(jobs_file)
+    changed = False
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    for seed_key, spec, spec_file in specs:
+        schedule_text = _schedule_text_from_spec(spec)
+        if not schedule_text:
+            raise DistributionError(
+                f"Cron seed spec {spec_file} for '{seed_key}' is missing a valid schedule"
+            )
+        parsed_schedule = parse_schedule(schedule_text)
+
+        aliases = set(_cron_seed_aliases(seed_key))
+        seeded_matches: List[int] = []
+        alias_exists = False
+        for idx, job in enumerate(jobs):
+            if _job_matches_seed_alias(job, aliases):
+                alias_exists = True
+            origin = job.get("origin")
+            if not isinstance(origin, dict):
+                continue
+            if origin.get("source") != "distribution-default-cron":
+                continue
+            if origin.get("distribution_name") != manifest.name:
+                continue
+            job_seed_key = _canonical_cron_seed_key(str(origin.get("seed_key") or ""))
+            if job_seed_key in aliases:
+                seeded_matches.append(idx)
+
+        canonical_origin = _distribution_seed_origin(manifest, seed_key, spec_file)
+        name = str(spec.get("name") or seed_key.replace("-", " ").title())
+        prompt = str(spec.get("prompt") or f"Run scheduled task '{name}'.")
+        skills = spec.get("skills")
+        skill = spec.get("skill")
+        if isinstance(skills, str):
+            skills = [skills]
+        if isinstance(skills, list):
+            normalized_skills = [str(s).strip() for s in skills if str(s).strip()]
+        else:
+            normalized_skills = [str(skill).strip()] if isinstance(skill, str) and skill.strip() else []
+        script = spec.get("script")
+        no_agent = bool(spec.get("no_agent", False))
+        if no_agent and not script:
+            raise DistributionError(
+                f"Cron seed spec {spec_file} for '{seed_key}' sets no_agent=true without a script"
+            )
+
+        desired = {
+            "name": name,
+            "prompt": prompt,
+            "skills": normalized_skills,
+            "skill": normalized_skills[0] if normalized_skills else None,
+            "schedule": parsed_schedule,
+            "schedule_display": parsed_schedule.get("display", schedule_text),
+            "deliver": spec.get("deliver") or "local",
+            "origin": canonical_origin,
+            "model": spec.get("model"),
+            "provider": spec.get("provider"),
+            "base_url": spec.get("base_url"),
+            "script": script,
+            "context_from": spec.get("context_from"),
+            "enabled_toolsets": spec.get("enabled_toolsets"),
+            "workdir": spec.get("workdir"),
+            "no_agent": no_agent,
+        }
+
+        if seeded_matches:
+            keep = seeded_matches[0]
+            for dup_idx in reversed(seeded_matches[1:]):
+                del jobs[dup_idx]
+                changed = True
+
+            job = jobs[keep]
+            for field, value in desired.items():
+                if job.get(field) != value:
+                    job[field] = value
+                    changed = True
+            if job.get("state") != "paused" and job.get("enabled", True):
+                next_run = compute_next_run(parsed_schedule)
+                if job.get("next_run_at") != next_run:
+                    job["next_run_at"] = next_run
+                    changed = True
+            jobs[keep] = job
+            continue
+
+        # A user-managed/manual job already exists for this alias family.
+        # Respect it and do not inject another default job.
+        if alias_exists:
+            continue
+
+        preferred_id = f"dist-{manifest.name}-{_canonical_cron_seed_key(seed_key)}"
+        new_job = {
+            "id": _ensure_unique_job_id(preferred_id, jobs),
+            "created_at": now_iso,
+            "repeat": {"times": spec.get("repeat"), "completed": 0},
+            "enabled": bool(spec.get("enabled", True)),
+            "state": "scheduled" if bool(spec.get("enabled", True)) else "paused",
+            "paused_at": None,
+            "paused_reason": None,
+            "last_run_at": None,
+            "last_status": None,
+            "last_error": None,
+            "last_delivery_error": None,
+            **desired,
+        }
+        new_job["next_run_at"] = (
+            compute_next_run(parsed_schedule) if new_job["enabled"] else None
+        )
+        if not new_job["enabled"]:
+            new_job["paused_at"] = now_iso
+            new_job["paused_reason"] = "Disabled by distribution default"
+        jobs.append(new_job)
+        changed = True
+
+    if changed:
+        _write_profile_cron_jobs(jobs_file, jobs)
+    seed_marker.parent.mkdir(parents=True, exist_ok=True)
+    seed_marker.write_text(
+        json.dumps(
+            {
+                "seeded_at": now_iso,
+                "distribution_name": manifest.name,
+                "distribution_version": manifest.version,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def plan_install(
     source: str,
     workdir: Path,
@@ -637,6 +930,8 @@ def install_distribution(
             plan.manifest,
             preserve_config=False,
         )
+        if plan.has_cron:
+            _seed_distribution_cron_defaults(plan.target_dir, plan.manifest)
 
         if create_alias:
             collision = check_alias_collision(plan.manifest.name)
@@ -695,6 +990,8 @@ def update_distribution(
             plan.manifest,
             preserve_config=plan.preserves_config,
         )
+        if plan.has_cron:
+            _seed_distribution_cron_defaults(plan.target_dir, plan.manifest)
         return plan
 
 
