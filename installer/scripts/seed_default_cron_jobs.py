@@ -111,16 +111,28 @@ def _unique_id(preferred: str, jobs: list[dict[str, Any]]) -> str:
 
 
 def _build_job(spec: dict[str, Any], jobs: list[dict[str, Any]]) -> dict[str, Any]:
-    from cron.jobs import HAS_CRONITER, compute_next_run, parse_schedule
-
     now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
     seed_key = _canonical_seed_key(spec["seed_key"])
     enabled = bool(spec.get("enabled", True))
     schedule_text = str(spec["schedule"]).strip()
-    if HAS_CRONITER:
-        parsed_schedule = parse_schedule(schedule_text)
-        next_run_at = compute_next_run(parsed_schedule) if enabled else None
-    else:
+    try:
+        # Best path: reuse runtime parser so persisted schedule shape matches
+        # the cron subsystem exactly when available.
+        from cron.jobs import HAS_CRONITER, compute_next_run, parse_schedule
+
+        if HAS_CRONITER:
+            parsed_schedule = parse_schedule(schedule_text)
+            next_run_at = compute_next_run(parsed_schedule) if enabled else None
+        else:
+            parsed_schedule = {
+                "kind": "cron",
+                "expr": schedule_text,
+                "display": schedule_text,
+            }
+            next_run_at = None
+    except Exception:
+        # Installer fallback: if cron runtime isn't importable yet, still seed
+        # valid jobs with a minimal schedule shape and let runtime compute next_run_at.
         parsed_schedule = {
             "kind": "cron",
             "expr": schedule_text,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 
@@ -73,3 +74,23 @@ def test_respects_existing_weekly_digest_alias(tmp_path):
         or job.get("origin", {}).get("seed_key") in {"weekly-digest", "weekly-review"}
     ]
     assert len(weekly_jobs) == 1
+
+
+def test_seeds_when_cron_runtime_import_is_unavailable(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+
+    # Simulate installer context where cron.jobs import path is unavailable.
+    monkeypatch.setitem(sys.modules, "cron", None)
+    monkeypatch.setitem(sys.modules, "cron.jobs", None)
+
+    result = seed_default_cron_jobs(home)
+    assert result["status"] == "seeded"
+    assert result["added"] == "2"
+    assert (home / ".aimds-default-cron-seeded").is_file()
+
+    jobs = _read_jobs(home / "cron" / "jobs.json")
+    assert len(jobs) == 2
+    for job in jobs:
+        assert job["schedule"]["kind"] == "cron"
+        assert "expr" in job["schedule"]
