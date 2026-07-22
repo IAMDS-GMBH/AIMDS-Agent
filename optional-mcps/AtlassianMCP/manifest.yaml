@@ -2,7 +2,7 @@
 # Presence in this directory = approval. Merged via PR review.
 manifest_version: 1
 
-name: jira
+name: AtlassianMCP
 description: Access and manage Jira Cloud and Local (Data Center/Server) issues, projects, sprints, worklogs, and SLAs using mcp-atlassian.
 source: https://github.com/sobolevn/mcp-atlassian
 
