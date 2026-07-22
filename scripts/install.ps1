@@ -2939,11 +2939,18 @@ function Copy-ConfigTemplates {
                 if (-not (Test-Path $parent)) {
                     New-Item -ItemType Directory -Force -Path $parent | Out-Null
                 }
+                if ($_.Name -eq '.gitkeep') {
+                    return
+                }
                 if (-not (Test-Path $destination)) {
                     Copy-Item -Path $_.FullName -Destination $destination -Force
                 }
             }
         }
+        # Repair previously-seeded clients: remove .gitkeep placeholders that
+        # were copied before filtering was added.
+        Get-ChildItem -Path $hermesWorkDir -Recurse -Force -Filter '.gitkeep' -File -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
         Write-Success "Workspace template ready at $hermesWorkDir"
     }
 

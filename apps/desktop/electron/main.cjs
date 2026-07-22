@@ -2118,6 +2118,9 @@ function isManagedWorkspaceDirectory(resolvedDir) {
 function copyMissingTree(sourceDir, targetDir) {
   const entries = fs.readdirSync(sourceDir, { withFileTypes: true })
   for (const entry of entries) {
+    if (entry.name === '.gitkeep') {
+      continue
+    }
     const sourcePath = path.join(sourceDir, entry.name)
     const targetPath = path.join(targetDir, entry.name)
 
@@ -2136,6 +2139,26 @@ function copyMissingTree(sourceDir, targetDir) {
   }
 }
 
+function pruneGitkeepFiles(rootDir) {
+  const stack = [rootDir]
+
+  while (stack.length > 0) {
+    const current = stack.pop()
+    const entries = fs.readdirSync(current, { withFileTypes: true })
+
+    for (const entry of entries) {
+      const nextPath = path.join(current, entry.name)
+      if (entry.isDirectory()) {
+        stack.push(nextPath)
+        continue
+      }
+      if (entry.name === '.gitkeep') {
+        fs.rmSync(nextPath, { force: true })
+      }
+    }
+  }
+}
+
 function ensureWorkspaceTemplateBaseline(workspaceDir) {
   const resolvedDir = path.resolve(String(workspaceDir || ''))
   if (!resolvedDir || !isManagedWorkspaceDirectory(resolvedDir)) {
@@ -2150,6 +2173,8 @@ function ensureWorkspaceTemplateBaseline(workspaceDir) {
   try {
     fs.mkdirSync(resolvedDir, { recursive: true })
     copyMissingTree(templateRoot, resolvedDir)
+    // Repair workspaces seeded before .gitkeep filtering existed.
+    pruneGitkeepFiles(resolvedDir)
   } catch (error) {
     rememberLog(`[workspace] template repair failed for ${resolvedDir}: ${error.message}`)
   }

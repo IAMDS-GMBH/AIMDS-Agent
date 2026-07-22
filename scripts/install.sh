@@ -2231,10 +2231,13 @@ copy_config_templates() {
     if [ -d "$workspace_template_src" ] && [ -n "$(find "$workspace_template_src" -mindepth 1 -print -quit 2>/dev/null)" ]; then
         log_info "Seeding workspace template into $hermes_work_dir ..."
         if command -v rsync >/dev/null 2>&1; then
-            rsync -a --ignore-existing "$workspace_template_src"/ "$hermes_work_dir"/
+            rsync -a --ignore-existing --exclude='.gitkeep' "$workspace_template_src"/ "$hermes_work_dir"/
         else
             while IFS= read -r -d '' rel; do
                 rel="${rel#./}"
+                if [ "$(basename "$rel")" = ".gitkeep" ]; then
+                    continue
+                fi
                 src_path="$workspace_template_src/$rel"
                 dest_path="$hermes_work_dir/$rel"
                 if [ -d "$src_path" ]; then
@@ -2245,6 +2248,9 @@ copy_config_templates() {
                 fi
             done < <(cd "$workspace_template_src" && find . -mindepth 1 -print0)
         fi
+        # Repair previously-seeded clients: remove .gitkeep placeholders that
+        # were copied before filtering was added.
+        find "$hermes_work_dir" -type f -name '.gitkeep' -delete 2>/dev/null || true
         log_success "Workspace template ready at $hermes_work_dir"
     fi
 
