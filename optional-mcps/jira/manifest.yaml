@@ -1,0 +1,61 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: jira
+description: Access and manage Jira Cloud and Local (Data Center/Server) issues, projects, sprints, worklogs, and SLAs using mcp-atlassian.
+source: https://github.com/sobolevn/mcp-atlassian
+
+transport:
+  type: stdio
+  command: "uvx"
+  args:
+    - "mcp-atlassian"
+
+auth:
+  type: api_key
+  env:
+    - name: JIRA_URL
+      prompt: "Jira instance URL (e.g. https://your-domain.atlassian.net or https://jira.company.com)"
+      default: "https://your-domain.atlassian.net"
+      required: true
+      secret: false
+    - name: JIRA_API_TOKEN
+      prompt: "Jira API Token (Cloud) or Personal Access Token PAT (Local/Data Center)"
+      required: true
+      secret: true
+    - name: JIRA_USERNAME
+      prompt: "Jira Username or Email (required for Cloud API Token; leave blank for Local PAT)"
+      required: false
+      secret: false
+    - name: JIRA_PAT
+      prompt: "Jira Personal Access Token PAT (for Local/DC Jira; leave blank if using JIRA_API_TOKEN)"
+      required: false
+      secret: true
+
+tools:
+  default_enabled:
+    - atlassian-jira_search
+    - atlassian-jira_get_issue
+    - atlassian-jira_create_issue
+    - atlassian-jira_update_issue
+    - atlassian-jira_add_comment
+    - atlassian-jira_add_worklog
+    - atlassian-jira_get_worklog
+    - atlassian-jira_get_issue_sla
+    - atlassian-jira_get_transitions
+    - atlassian-jira_transition_issue
+
+post_install: |
+  Jira MCP (mcp-atlassian via uvx) has been configured.
+
+  Authentication modes:
+    - Jira Cloud (Default): Set JIRA_URL, JIRA_API_TOKEN, and JIRA_USERNAME (your Atlassian email).
+    - Jira Local / Data Center / Server: Set JIRA_URL and JIRA_PAT (Personal Access Token).
+
+  Time Tracking & Worklog tools included:
+    - atlassian-jira_add_worklog: Log time spent on issues.
+    - atlassian-jira_get_worklog: Retrieve time tracking entries.
+    - atlassian-jira_get_issue_sla: Calculate SLA metrics and status durations.
+
+  Start a new Hermes session to load the Jira tools.

@@ -1,0 +1,44 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: github
+description: Access GitHub repositories, issues, pull requests, commits, and code using @modelcontextprotocol/server-github.
+source: https://github.com/modelcontextprotocol/servers/tree/main/src/github
+
+transport:
+  type: stdio
+  command: "npx"
+  args:
+    - "-y"
+    - "@modelcontextprotocol/server-github"
+
+auth:
+  type: api_key
+  env:
+    - name: GITHUB_PERSONAL_ACCESS_TOKEN
+      prompt: "GitHub Personal Access Token (PAT) or OIDC/OAuth token"
+      required: true
+      secret: true
+
+tools:
+  default_enabled:
+    - search_repositories
+    - search_code
+    - get_file_contents
+    - list_issues
+    - get_issue
+    - create_issue
+    - list_pull_requests
+    - get_pull_request
+    - create_pull_request
+
+post_install: |
+  GitHub MCP (@modelcontextprotocol/server-github via npx) has been configured.
+
+  Token permissions:
+    - Personal Access Token (PAT): Generate at https://github.com/settings/tokens.
+      Recommended scopes: `repo`, `read:org`, `user`.
+    - Fine-grained PAT / OIDC Token: Ensure read/write access to repository Contents, Issues, and Pull Requests.
+
+  Start a new Hermes session to load the GitHub tools.
