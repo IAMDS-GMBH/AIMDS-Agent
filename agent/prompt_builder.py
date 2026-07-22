@@ -1388,10 +1388,17 @@ def build_skills_system_prompt(
                 else:
                     index_lines.append(f"    - {name}")
 
+        skill_tool_hint = (
+            "you MUST load it with `mcp_IAMDS_mcp_memory_skill` (or the applicable memory skill tool) if available, "
+            "otherwise `skill_view(name)` or `skills_read(name)`, and follow its instructions."
+            if "mcp_IAMDS_mcp_memory_skill" in (available_tools or set()) or "memory_skill" in (available_tools or set())
+            else "you MUST load it with `skill_view(name)` or `skills_read(name)` if available, and follow its instructions."
+        )
+
         result = (
-            "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
+            "## Skills\n"
+            "Before replying, scan the skills below. If a skill matches or is relevant "
+            f"to your task, {skill_tool_hint} "
             "Err on the side of loading — it is always better to have context you don't need "
             "than to miss critical steps, pitfalls, or established workflows. "
             "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
