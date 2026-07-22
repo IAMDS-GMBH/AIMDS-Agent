@@ -1,6 +1,6 @@
 ---
 name: outlook-tool
-description: How to actually use the outlook_* tools (mail, calendar, contacts) — including finding them via tool_search when they are not directly listed. Use whenever the user asks about their Outlook/Microsoft 365 mailbox, calendar, or contacts, or if you catch yourself about to say "check your inbox" instead of checking it.
+description: How to use Outlook integration (mail, calendar, contacts) — call tool_search if tools are not directly in your schema. Use whenever the user asks about Outlook/Microsoft 365 mailbox, calendar, or contacts.
 ---
 
 # Outlook Tool Usage
@@ -19,14 +19,10 @@ NOT shown directly in your system prompt (progressive tool disclosure /
 do **not** conclude Outlook is unavailable and do **not** fabricate an answer.
 Instead:
 
-1. Call `tool_search` with a query like `"outlook email"`, `"outlook
-   calendar"`, or `"outlook contacts"`.
-2. Call `tool_describe` on the matching tool name to load its full schema.
-3. Call `tool_call` with that tool name + arguments to actually run it.
+1. Call `tool_search` with a query like `"outlook email"`, `"outlook calendar"`, or `"outlook contacts"`.
+2. Call the matching tool directly once `tool_search` returns its name and schema.
 
-This 3-step bridge (`tool_search` → `tool_describe` → `tool_call`) behaves
-exactly like calling the tool directly — same guardrails, same approvals,
-same result. Skipping it and just guessing/refusing is the wrong answer.
+Tools returned by `tool_search` are immediately callable in your next turn. Skipping `tool_search` and guessing tool names or refusing is the wrong answer.
 
 ## Step 1 — pick the right tool
 
