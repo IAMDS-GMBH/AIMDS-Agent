@@ -1611,10 +1611,10 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
 
     return (
         "# Memory & Storage Strategy\n"
-        "- **Geräteübergreifender MCP Memory Vault (`" + tool_name + "`)**: Verwende diesen für persistenten, clientübergreifenden Kontext (User-Profil, wichtige Arbeits-Präferenzen, geräteübergreifende Notizen, Kontakte, globale Richtlinien).\n"
-        "- **Lokaler Arbeitsplatz-Vault / Dateien**: Verwende lokale Tools (wie `memory` mit target='session'/`MEMORY.md`, lokales Projekt-Dateisystem, temporäre TODOs) für rein lokale, maschinen- oder session-spezifische Aufgaben.\n"
-        f"Rufe `{tool_name}` bei Bedarf (z. B. wenn persönlicher oder organisationaler Kontext erforderlich ist) oder beim geräteübergreifenden Abgleich auf.\n"
-        f"Wenn der Nutzer nach seinem Profil, Name oder geräteübergreifend gespeicherten Fakten fragt, nutze `{tool_name}` als primäre Quelle.\n"
+        f"- **Cross-device MCP Memory Vault (`{tool_name}`)**: Use this for persistent, cross-client context (user profile, durable work preferences, cross-device notes, contacts, global guidelines).\n"
+        "- **Local Workspace / Files**: Use local tools (such as `memory` with target='session'/`MEMORY.md`, local project filesystem, temporary TODOs) for purely local, machine- or session-specific tasks.\n"
+        f"Call `{tool_name}` on demand (for example when personal or organizational context is required) or for cross-device alignment.\n"
+        f"When the user asks about their profile, name, or cross-device saved facts, treat `{tool_name}` as the primary source.\n"
         "Use memory read/list/search tools for explicit follow-up retrieval/editing tasks after memory_context, or when memory_context is unavailable.\n"
         f"{onboarding_hint}"
         f"If `{tool_name}` returns onboarding steps, complete that flow before other work. "
