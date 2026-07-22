@@ -895,6 +895,49 @@ class TestPluginEnablementGate:
         finally:
             _reg.unregister("myexplicitplat")
 
+    def test_yaml_enabled_false_is_not_overridden_by_is_connected_true(
+        self, tmp_path, monkeypatch
+    ):
+        """Explicit YAML ``enabled: false`` must NOT be re-enabled.
+
+        Reproduces the Outlook messaging toggle bug: the user explicitly
+        disables a plugin platform, but a cached credential/token makes
+        ``is_connected`` return True on the next gateway restart, silently
+        flipping ``enabled`` back to True. Explicit ``false`` must win over
+        ``is_connected=True`` just like explicit ``true`` already wins over
+        ``is_connected=False``.
+        """
+        from gateway.platform_registry import platform_registry as _reg
+
+        _reg.register(PlatformEntry(
+            name="myexplicitlyoffplat",
+            label="MyExplicitlyOff",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            is_connected=lambda cfg: True,  # cached token still valid
+            source="plugin",
+        ))
+        try:
+            home = self._write_config(
+                tmp_path,
+                "platforms:\n"
+                "  myexplicitlyoffplat:\n"
+                "    enabled: false\n",
+            )
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config, Platform
+            cfg = load_gateway_config()
+
+            plat = Platform("myexplicitlyoffplat")
+            assert plat in cfg.platforms
+            assert cfg.platforms[plat].enabled is False, (
+                "Explicit YAML enabled: false must win over plugin's "
+                "is_connected=True — user has the final say"
+            )
+        finally:
+            _reg.unregister("myexplicitlyoffplat")
+
     def test_is_connected_sees_env_seeded_extras(self, tmp_path, monkeypatch):
         """``env_enablement_fn`` extras must be visible to ``is_connected``.
 

@@ -2045,7 +2045,19 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             # Only consult is_connected for platforms that are NOT already
             # explicitly configured in YAML / env (existing_cfg with
             # enabled=True means the user wrote it themselves or another
-            # env-var bridge enabled it — keep that decision).
+            # env-var bridge enabled it — keep that decision). Likewise, an
+            # explicit ``enabled: false`` (``_enabled_explicit`` set by
+            # ``_merge_platform_map``) must NOT be silently overridden just
+            # because is_connected() finds valid cached credentials (e.g. an
+            # Outlook device-code token cached from an earlier sign-in) —
+            # mirrors the same guard already used in ``_enable_from_env``.
+            explicitly_disabled = bool(
+                existing_cfg is not None
+                and not existing_cfg.enabled
+                and existing_cfg.extra.get("_enabled_explicit")
+            )
+            if explicitly_disabled:
+                continue
             if existing_cfg is None or not existing_cfg.enabled:
                 if entry.is_connected is not None:
                     try:
