@@ -640,10 +640,14 @@ export interface McpCatalogAuth {
 
 export interface McpCatalogEntry {
   auth?: McpCatalogAuth
+  auth_type?: string
   description: string
+  disabled?: boolean
+  enabled?: boolean
   installed?: boolean
   name: string
   post_install?: null | string
+  required_env?: McpCatalogEnvVar[]
   source?: string
   tools?: string[]
   transport: string

@@ -124,13 +124,13 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
   }
 
   const openInstallModal = (entry: McpCatalogEntry) => {
+    if (entry.disabled) return
     const initialSecrets: Record<string, string> = {}
+    const envVars = entry.required_env ?? entry.auth?.env ?? []
 
-    if (entry.auth?.env) {
-      for (const item of entry.auth.env) {
-        if (item.default) {
-          initialSecrets[item.name] = item.default
-        }
+    for (const item of envVars) {
+      if (item.default) {
+        initialSecrets[item.name] = item.default
       }
     }
     setSecretInputs(initialSecrets)
@@ -304,16 +304,20 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
           <div className="grid gap-3 sm:grid-cols-2">
             {catalogEntries.map(entry => {
               const isInstalled = Boolean(servers[entry.name])
+              const isDisabled = entry.disabled === true
 
               return (
                 <div
-                  className="flex flex-col justify-between rounded-lg border border-(--stroke-nous) bg-(--ui-bg-tertiary) p-3"
+                  className={cn(
+                    "flex flex-col justify-between rounded-lg border border-(--stroke-nous) bg-(--ui-bg-tertiary) p-3",
+                    isDisabled ? "opacity-60" : ""
+                  )}
                   key={entry.name}
                 >
                   <div>
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-semibold text-sm capitalize">{entry.name}</span>
-                      <Pill>{entry.source ? entry.source.split(' ')[0] : 'catalog'}</Pill>
+                      <Pill>{isDisabled ? 'In Entwicklung' : (entry.source ? entry.source.split(' ')[0] : 'catalog')}</Pill>
                     </div>
                     <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{entry.description}</p>
                   </div>
@@ -321,11 +325,12 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
                   <div className="mt-3 flex items-center justify-between border-t border-(--stroke-nous) pt-2">
                     <span className="text-xs text-muted-foreground">{isInstalled ? m.catalogInstalled : ''}</span>
                     <Button
+                      disabled={isDisabled}
                       onClick={() => openInstallModal(entry)}
                       size="xs"
-                      variant={isInstalled ? 'secondary' : 'default'}
+                      variant={isDisabled ? 'ghost' : isInstalled ? 'secondary' : 'default'}
                     >
-                      {isInstalled ? m.editServer : m.catalogInstall}
+                      {isDisabled ? 'In Entwicklung' : isInstalled ? m.editServer : m.catalogInstall}
                     </Button>
                   </div>
                 </div>
@@ -428,7 +433,7 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
             </DialogHeader>
 
             <div className="grid gap-3 py-2">
-              {installModalEntry.auth?.env?.map(item => (
+              {(installModalEntry.required_env ?? installModalEntry.auth?.env ?? []).map(item => (
                 <label className="grid gap-1" key={item.name}>
                   <span className="font-medium text-xs">
                     {item.prompt || item.name}
