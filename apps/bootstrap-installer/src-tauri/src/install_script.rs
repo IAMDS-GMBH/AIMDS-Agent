@@ -84,20 +84,20 @@ const BUNDLED_AIMDS_ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../../../skills/productivity/excel/scripts/write.py"),
     ),
     (
-        "installer/skills/productivity/pdf/SKILL.md",
-        include_bytes!("../../../../installer/skills/productivity/pdf/SKILL.md"),
+        "skills/productivity/pdf/SKILL.md",
+        include_bytes!("../../../../skills/productivity/pdf/SKILL.md"),
     ),
     (
-        "installer/skills/productivity/pdf/scripts/pdf.py",
-        include_bytes!("../../../../installer/skills/productivity/pdf/scripts/pdf.py"),
+        "skills/productivity/pdf/scripts/pdf.py",
+        include_bytes!("../../../../skills/productivity/pdf/scripts/pdf.py"),
     ),
     (
-        "installer/skills/productivity/file-conversion/SKILL.md",
-        include_bytes!("../../../../installer/skills/productivity/file-conversion/SKILL.md"),
+        "skills/productivity/file-conversion/SKILL.md",
+        include_bytes!("../../../../skills/productivity/file-conversion/SKILL.md"),
     ),
     (
-        "installer/skills/productivity/file-conversion/scripts/convert.py",
-        include_bytes!("../../../../installer/skills/productivity/file-conversion/scripts/convert.py"),
+        "skills/productivity/file-conversion/scripts/convert.py",
+        include_bytes!("../../../../skills/productivity/file-conversion/scripts/convert.py"),
     ),
     (
         "skills/productivity/word/SKILL.md",
