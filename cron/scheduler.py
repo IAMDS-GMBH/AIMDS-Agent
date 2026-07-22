@@ -1150,6 +1150,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "if they are not immediately visible in your active tools. "
         "Do not assume a tool is unavailable without first calling "
         "tool_search(query='...') to check. "
+        "IMPORTANT: Tools returned by tool_search are IMMEDIATELY callable — "
+        "do not attempt to load, install, or activate them; just call them directly. "
         "SILENT: If there is genuinely nothing new to report, "
         "respond with exactly \"[SILENT]\" (nothing else) to suppress "
         "delivery. Never combine [SILENT] with content — either report "

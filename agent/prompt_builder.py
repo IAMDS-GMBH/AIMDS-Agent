@@ -303,7 +303,9 @@ TOOL_SEARCH_ANTI_HALLUCINATION_GUIDANCE = (
     "CRITICAL: `tool_search` is active and some tools or features are deferred.\n"
     "STRICT RULE: Only invoke function names that literally appear in your active JSON schema tools. Never invoke any function name that is not listed in your JSON schema.\n"
     "Items listed under <available_skills> are NOT callable functions. Do not attempt to invoke skill names or domain prefixes directly.\n"
-    "If a required tool is missing from your active tools array, call `tool_search(query='...')` first to discover and load it."
+    "If a required tool is missing from your active tools array, call `tool_search(query='...')` first — "
+    "tools returned by tool_search are IMMEDIATELY callable; you do not need to load, install, or activate them first. "
+    "After tool_search returns a tool name, call that tool directly in your next step."
 )
 
 # Model name substrings that trigger tool-use enforcement guidance.
