@@ -1809,8 +1809,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     return {
         "name": "execute_code",
         "description": (
-            "Run Python code that can call Hermes tools via hermes_tools. "
-            "Best for multi-step loops, branching, retries, and output reduction."
+            "Run Python code with Hermes tools via hermes_tools."
         ),
         "parameters": {
             "type": "object",

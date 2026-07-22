@@ -884,7 +884,7 @@ _OLD_MEMORY_DESCRIPTION = (
 
 MEMORY_SCHEMA = {
     "name": "memory",
-    "description": "Store durable memory entries across sessions. Use target=user for profile facts and target=memory for working notes.",
+    "description": "Store memory across sessions. Use target=user for profile, memory for notes.",
     "parameters": {
         "type": "object",
         "properties": {
