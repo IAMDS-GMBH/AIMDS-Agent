@@ -871,6 +871,29 @@ def test_has_memory_save_after_onboarding_answers_accepts_post_answer_save():
     )
 
 
+def test_has_memory_save_after_onboarding_answers_accepts_hyphenated_save_tool():
+    onboarding_payload = {
+        "onboarding_questions": ["What is your role/title?"]
+    }
+    messages = [
+        {
+            "role": "tool",
+            "name": "clarify",
+            "content": json.dumps(
+                {"question": "What is your role/title?", "user_response": "Engineer"},
+                ensure_ascii=False,
+            ),
+        },
+        {"role": "tool", "name": "mcp_IAMDS_mcp_memory-memory_save", "content": '{"ok":true}'},
+    ]
+    assert (
+        _has_memory_save_after_onboarding_answers(
+            messages=messages, onboarding_payload=onboarding_payload
+        )
+        is True
+    )
+
+
 def test_resume_onboarding_clarify_if_needed_reasks_pending_question_on_non_first_turn():
     calls = []
 

@@ -1148,6 +1148,37 @@ def _maybe_autorun_memory_init_skill(
     )
 
 
+def _log_memory_context_response(function_name: str, result: Any) -> None:
+    """Emit debug diagnostics for memory_context tool responses.
+
+    Logs both a compact parsed summary (top-level keys + onboarding flags) and a
+    raw preview to help diagnose onboarding/memory-save routing issues.
+    """
+    if not _is_memory_context_tool_name(function_name):
+        return
+    try:
+        parsed = _parse_json_maybe(result)
+        if isinstance(parsed, dict):
+            keys = sorted(str(k) for k in parsed.keys())[:30]
+            onboarding_summary = {
+                "onboarding_init_auto_started": bool(parsed.get("onboarding_init_auto_started")),
+                "onboarding_question_flow_required": bool(parsed.get("onboarding_question_flow_required")),
+                "onboarding_first_question": str(parsed.get("onboarding_first_question") or "")[:180],
+            }
+            logger.debug(
+                "[MEMORY_CONTEXT] response summary: tool=%s keys=%s onboarding=%s",
+                function_name,
+                keys,
+                onboarding_summary,
+            )
+        raw_preview = str(result or "")
+        if len(raw_preview) > 2500:
+            raw_preview = raw_preview[:2500] + "...<truncated>"
+        logger.debug("[MEMORY_CONTEXT] response raw (%s): %s", function_name, raw_preview)
+    except Exception as _log_err:
+        logger.debug("[MEMORY_CONTEXT] response logging failed: %s", _log_err)
+
+
 def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
@@ -1480,6 +1511,8 @@ def handle_function_call(
             result=result,
             enabled_tools=enabled_tools,
         )
+
+        _log_memory_context_response(function_name, result)
 
         return result
 

@@ -1427,6 +1427,16 @@ def build_skills_system_prompt(
 
 
 
+def _normalize_tool_name_for_match(name: str) -> str:
+    """Normalize tool names for suffix/prefix matching.
+
+    Some MCP surfaces expose tool ids with ``-`` separators (for example
+    ``mcp_memory-memory_save``). We normalize both separators so matching can
+    stay stable while still returning the original callable name.
+    """
+    return str(name or "").replace("-", "_")
+
+
 def _resolve_memory_tool_name(valid_tool_names: "set[str] | None", suffix: str) -> str | None:
     """Generic resolver for a memory MCP tool by its canonical suffix (e.g. ``memory_context``,
     ``memory_skill_read``, ``memory_save``).
@@ -1444,8 +1454,16 @@ def _resolve_memory_tool_name(valid_tool_names: "set[str] | None", suffix: str) 
     names = set(valid_tool_names or set())
     if not names:
         return None
+    normalized_map = {
+        str(name): _normalize_tool_name_for_match(str(name))
+        for name in names
+        if isinstance(name, str)
+    }
     if suffix in names:
         return suffix
+    for original, normalized in normalized_map.items():
+        if normalized == suffix:
+            return original
 
     preferred_server_name = None
     try:
@@ -1466,16 +1484,19 @@ def _resolve_memory_tool_name(valid_tool_names: "set[str] | None", suffix: str) 
     prefixes.append("mcp_")
 
     for prefix in prefixes:
+        normalized_prefix = _normalize_tool_name_for_match(prefix)
         matches = sorted(
-            name
-            for name in names
-            if name.startswith(prefix) and name.endswith(f"_{suffix}")
+            original
+            for original, normalized in normalized_map.items()
+            if normalized.startswith(normalized_prefix) and normalized.endswith(f"_{suffix}")
         )
         if matches:
             return matches[0]
     # Last-resort compatibility for unusual/custom prefixes.
     suffix_matches = sorted(
-        name for name in names if isinstance(name, str) and name.endswith(f"_{suffix}")
+        original
+        for original, normalized in normalized_map.items()
+        if normalized.endswith(f"_{suffix}")
     )
     if suffix_matches:
         return suffix_matches[0]

@@ -910,7 +910,12 @@ def _has_onboarding_memory_save_call(messages: List[Dict[str, Any]]) -> bool:
         if msg.get("role") != "tool":
             continue
         tool_name = str(msg.get("name") or "")
-        if tool_name == "memory" or tool_name.endswith("_memory_save") or tool_name == "memory_save":
+        normalized = tool_name.replace("-", "_")
+        if (
+            tool_name == "memory"
+            or normalized == "memory_save"
+            or normalized.endswith("_memory_save")
+        ):
             return True
     return False
 
@@ -949,7 +954,12 @@ def _has_memory_save_after_onboarding_answers(
         if msg.get("role") != "tool":
             continue
         tool_name = str(msg.get("name") or "")
-        if tool_name == "memory" or tool_name == "memory_save" or tool_name.endswith("_memory_save"):
+        normalized = tool_name.replace("-", "_")
+        if (
+            tool_name == "memory"
+            or normalized == "memory_save"
+            or normalized.endswith("_memory_save")
+        ):
             return True
     return False
 
