@@ -304,6 +304,8 @@ TOOL_SEARCH_ANTI_HALLUCINATION_GUIDANCE = (
     "STRICT RULE: Only invoke function names that literally appear in your active JSON schema tools. Never invoke any function name that is not listed in your JSON schema.\n"
     "Items listed under <available_skills> are NOT callable functions. Do not attempt to invoke skill names or domain prefixes directly.\n"
     "NEVER guess, invent, or fabricate tool names based on domain prefixes or wildcard patterns (e.g. NEVER invent function names like 'outlook_*', 'jira_*', 'github_*', 'office_*', 'outlook_calendar_check', 'outlook_calendar_read', etc.).\n"
+    "When asked about real-time or external platform state (such as JIRA tickets, emails, pull requests, calendar, web data, or files), "
+    "always search for or use live tools (`tool_search` if not present) to fetch up-to-date data instead of assuming cached memory/vault snapshots are complete or current.\n"
     "If a required tool is missing from your active tools array, call `tool_search(query='...')` first — "
     "tools returned by tool_search are IMMEDIATELY callable; you do not need to load, install, or activate them first. "
     "After tool_search returns a tool name, call that tool directly in your next step."
