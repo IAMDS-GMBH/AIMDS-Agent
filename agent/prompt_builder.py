@@ -301,9 +301,8 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 TOOL_SEARCH_ANTI_HALLUCINATION_GUIDANCE = (
     "# Deferred tool search anti-hallucination directive\n"
     "CRITICAL: `tool_search` is active and some tools or features are deferred.\n"
-    "You MUST ONLY call tools that are explicitly defined in your active tools schema/definitions array.\n"
-    "NEVER invent, guess, or call unlisted tool names directly (e.g. NEVER call 'outlook_*' or 'mcp_*' "
-    "unless they appear in your active tools list).\n"
+    "STRICT RULE: Only invoke function names that literally appear in your active JSON schema tools. Never invoke any function name that is not listed in your JSON schema.\n"
+    "Items listed under <available_skills> are NOT callable functions. Do not attempt to invoke skill names or domain prefixes directly.\n"
     "If a required tool is missing from your active tools array, call `tool_search(query='...')` first to discover and load it."
 )
 
@@ -1407,6 +1406,7 @@ def build_skills_system_prompt(
             "After difficult/iterative tasks, offer to save as a skill. "
             "If a skill you loaded was missing steps, had wrong commands, or needed "
             "pitfalls you discovered, update it before finishing.\n"
+            "Items listed under <available_skills> are NOT callable functions. Do not attempt to invoke skill names or domain prefixes directly.\n"
             "\n"
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"

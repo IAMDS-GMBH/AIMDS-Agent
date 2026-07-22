@@ -196,7 +196,8 @@ class TestToolUseEnforcementWithToolSearch:
         stable = _stable_prompt(agent)
         assert "# Tool-use enforcement" in stable
         assert "# Deferred tool search anti-hallucination directive" in stable
-        assert "NEVER invent, guess, or call unlisted tool names directly" in stable
+        assert "STRICT RULE: Only invoke function names that literally appear in your active JSON schema tools" in stable
+        assert "Items listed under <available_skills> are NOT callable functions" in stable
 
     def test_auto_does_not_enforce_for_custom_model_alias_without_tool_search(self):
         agent = _make_agent(
