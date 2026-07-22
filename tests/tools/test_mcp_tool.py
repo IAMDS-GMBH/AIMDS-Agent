@@ -4013,6 +4013,48 @@ class TestMcpParallelToolCalls:
             for tool_name in registered:
                 registry.deregister(tool_name)
 
+    def test_register_server_tools_include_accepts_memory_upsert_alias_for_save(self):
+        """Legacy include entries with memory_upsert should still allow memory_save tools."""
+        from tools.registry import registry
+        from tools.mcp_tool import _register_server_tools
+
+        server = _make_mock_server(
+            "IAMDS",
+            tools=[
+                _make_mcp_tool("mcp_memory-memory_save", "Memory save"),
+                _make_mcp_tool("mcp_memory-memory_get", "Memory get"),
+            ],
+        )
+        config = {"tools": {"include": ["mcp_IAMDS_mcp_memory_memory_upsert"]}}
+
+        registered = _register_server_tools("IAMDS", server, config)
+        try:
+            assert registered == ["mcp_IAMDS_mcp_memory_memory_save"]
+        finally:
+            for tool_name in registered:
+                registry.deregister(tool_name)
+
+    def test_register_server_tools_exclude_accepts_memory_upsert_alias_for_save(self):
+        """Legacy exclude entries with memory_upsert should also match memory_save tools."""
+        from tools.registry import registry
+        from tools.mcp_tool import _register_server_tools
+
+        server = _make_mock_server(
+            "IAMDS",
+            tools=[
+                _make_mcp_tool("mcp_memory-memory_save", "Memory save"),
+                _make_mcp_tool("mcp_memory-memory_get", "Memory get"),
+            ],
+        )
+        config = {"tools": {"exclude": ["mcp_IAMDS_mcp_memory_memory_upsert"]}}
+
+        registered = _register_server_tools("IAMDS", server, config)
+        try:
+            assert registered == ["mcp_IAMDS_mcp_memory_memory_get"]
+        finally:
+            for tool_name in registered:
+                registry.deregister(tool_name)
+
     def test_is_mcp_tool_parallel_safe_no_tool_suffix(self):
         """Tool name that is just 'mcp_{server}' without a tool part returns False."""
         from tools.mcp_tool import (

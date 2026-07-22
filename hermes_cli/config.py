@@ -2647,7 +2647,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 32,
+    "_config_version": 33,
 }
 
 # =============================================================================
@@ -5249,6 +5249,72 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     print(f"  ✓ Repaired legacy MCP root keys → mcp_servers{moved}")
         except Exception as _mcp_repair_exc:
             results["warnings"].append(f"MCP root-key repair (v32) failed: {_mcp_repair_exc}")
+
+    # ── Version 32 → 33: canonicalize memory_upsert tool filters to memory_save ──
+    # Memory MCP tool naming evolved from *_memory_upsert to *_memory_save.
+    # Older configs that pin tools.include / tools.exclude to upsert can hide
+    # the save tool exposed by current servers. Rewrite persisted filters to
+    # canonical *_memory_save so runtime registration stays aligned.
+    if current_ver < 33:
+        try:
+            config = read_raw_config()
+            mcp_servers = config.get("mcp_servers")
+            touched = False
+            renamed_count = 0
+
+            def _rewrite_tool_filter_value(value: Any) -> tuple[Any, int]:
+                replacements = 0
+
+                def _rewrite_token(token: str) -> str:
+                    nonlocal replacements
+                    out = str(token)
+                    out2 = (
+                        out.replace("_memory_upsert", "_memory_save")
+                        .replace("-memory_upsert", "-memory_save")
+                    )
+                    if out2 != out:
+                        replacements += 1
+                    return out2
+
+                if isinstance(value, str):
+                    return _rewrite_token(value), replacements
+                if isinstance(value, list):
+                    rewritten = [_rewrite_token(str(item)) for item in value]
+                    # Preserve order while deduplicating after rewrite.
+                    deduped = list(dict.fromkeys(rewritten))
+                    return deduped, replacements
+                return value, 0
+
+            if isinstance(mcp_servers, dict):
+                for _server_name, server_cfg in mcp_servers.items():
+                    if not isinstance(server_cfg, dict):
+                        continue
+                    tools_cfg = server_cfg.get("tools")
+                    if not isinstance(tools_cfg, dict):
+                        continue
+                    for filter_key in ("include", "exclude"):
+                        original = tools_cfg.get(filter_key)
+                        rewritten, count = _rewrite_tool_filter_value(original)
+                        if count > 0:
+                            tools_cfg[filter_key] = rewritten
+                            renamed_count += count
+                            touched = True
+
+            if touched:
+                config["_config_version"] = 33
+                save_config(config)
+                results["config_added"].append(
+                    f"mcp tool filters canonicalized ({renamed_count} memory_upsert→memory_save rename(s))"
+                )
+                if not quiet:
+                    print(
+                        f"  ✓ Canonicalized MCP tool filters: renamed {renamed_count} "
+                        "memory_upsert entry/entries to memory_save"
+                    )
+        except Exception as _memory_filter_exc:
+            results["warnings"].append(
+                f"MCP memory tool filter rename (v33) failed: {_memory_filter_exc}"
+            )
 
     # Check for missing config fields
     missing_config = get_missing_config_fields()

@@ -3985,6 +3985,26 @@ def _normalize_name_filter(value: Any, label: str) -> set[str]:
     return set()
 
 
+def _normalized_tool_filter_key(name: str) -> str:
+    """Normalize tool/filter names for robust include/exclude matching."""
+    return str(name or "").replace("-", "_")
+
+
+def _tool_filter_aliases(name: str) -> set[str]:
+    """Return normalized aliases for a tool/filter name.
+
+    Includes separator normalization and memory-save/upsert compatibility
+    aliases so older configs keep working after upstream renames.
+    """
+    normalized = _normalized_tool_filter_key(name)
+    aliases = {normalized}
+    if normalized.endswith("_memory_upsert"):
+        aliases.add(normalized[: -len("_memory_upsert")] + "_memory_save")
+    if normalized.endswith("_memory_save"):
+        aliases.add(normalized[: -len("_memory_save")] + "_memory_upsert")
+    return aliases
+
+
 def _parse_boolish(value: Any, default: bool = True) -> bool:
     """Parse a bool-like config value with safe fallback."""
     if value is None:
@@ -4161,10 +4181,21 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     def _should_register(tool_name: str) -> bool:
         safe_tool_name = sanitize_mcp_name_component(tool_name)
         prefixed_tool_name = f"mcp_{safe_server_name}_{safe_tool_name}"
+        tool_aliases = _tool_filter_aliases(tool_name) | _tool_filter_aliases(prefixed_tool_name)
+        include_aliases = {
+            alias
+            for item in include_set
+            for alias in _tool_filter_aliases(item)
+        }
+        exclude_aliases = {
+            alias
+            for item in exclude_set
+            for alias in _tool_filter_aliases(item)
+        }
         if include_set:
-            return tool_name in include_set or prefixed_tool_name in include_set
+            return bool(tool_aliases & include_aliases)
         if exclude_set:
-            return tool_name not in exclude_set and prefixed_tool_name not in exclude_set
+            return not bool(tool_aliases & exclude_aliases)
         return True
 
     for mcp_tool in server._tools:

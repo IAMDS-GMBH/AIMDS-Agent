@@ -1263,3 +1263,46 @@ class TestMcpRootKeyRepairMigration:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["mcp_servers"]["kept"]["url"] == "https://kept.example/mcp"
+
+
+class TestMcpMemorySaveFilterMigration:
+    """Version 32→33 rewrites memory_upsert filter entries to memory_save."""
+
+    def _write(self, tmp_path, body: str):
+        (tmp_path / "config.yaml").write_text(body)
+
+    def test_rewrites_include_entries_to_memory_save(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 32\n"
+                "mcp_servers:\n"
+                "  IAMDS:\n"
+                "    tools:\n"
+                "      include:\n"
+                "        - mcp_IAMDS_mcp_memory_memory_upsert\n"
+                "        - mcp_IAMDS_mcp_memory-memory_upsert\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            include = raw["mcp_servers"]["IAMDS"]["tools"]["include"]
+            assert "mcp_IAMDS_mcp_memory_memory_save" in include
+            assert "mcp_IAMDS_mcp_memory-memory_save" in include
+            assert not any("memory_upsert" in entry for entry in include)
+
+    def test_rewrites_exclude_string_to_memory_save(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 32\n"
+                "mcp_servers:\n"
+                "  IAMDS:\n"
+                "    tools:\n"
+                "      exclude: mcp_IAMDS_mcp_memory_memory_upsert\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert (
+                raw["mcp_servers"]["IAMDS"]["tools"]["exclude"]
+                == "mcp_IAMDS_mcp_memory_memory_save"
+            )
