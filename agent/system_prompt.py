@@ -217,10 +217,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                 stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
             # OpenAI GPT/Codex execution discipline (tool persistence,
             # prerequisite checks, verification, anti-hallucination).
-            # Also applied to xAI Grok — same failure modes (claims completion
-            # without tool calls, suggests workarounds instead of using
-            # existing tools, replies with plans instead of executing).
-            if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
+            # Also applied to xAI Grok, vLLM, Qwen, DeepSeek, GLM, and any model with tool_search active
+            # — same failure modes (claims completion without tool calls, suggests workarounds,
+            # replies with plans instead of executing).
+            if any(p in _model_lower for p in ("gpt", "codex", "grok", "vllm", "glm", "qwen", "deepseek")) or "tool_search" in agent.valid_tool_names:
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
