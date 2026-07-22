@@ -1610,7 +1610,10 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
     )
 
     return (
-        "# Memory Context\n"
+        "# MCP Memory Vault & Context\n"
+        f"The MCP memory server (`{tool_name}`) is your primary cross-system vault for persistent facts, notes, decisions, "
+        "and skills (structured like an Obsidian vault with `[[wikilinks]]` and `#tags`). "
+        "When saving durable facts or looking up knowledge, always prefer this MCP memory vault over local single-session files.\n"
         f"Call `{tool_name}` at session start or whenever personal or organisational context "
         "(role, preferences, contacts, company policies, team conventions) is required or may have changed.\n"
         f"When the user asks who they are, asks for their name, or asks about saved profile/preferences/history, treat `{tool_name}` "
