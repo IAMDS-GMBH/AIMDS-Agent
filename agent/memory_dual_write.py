@@ -1070,3 +1070,152 @@ def mirror_mcp_memory_save_to_local(
         flat_written = False
 
     return structured_written or flat_written
+
+
+# ---------------------------------------------------------------------------
+# memory_context → USER.md snapshot sync
+# ---------------------------------------------------------------------------
+
+_MCP_SNAPSHOT_MARKER = "<!-- mcp_context_snapshot -->"
+# Profile-like top-level keys to extract from a memory_context JSON result.
+_PROFILE_EXTRACT_KEYS = (
+    "profile", "user", "user_profile", "personal_info", "summary",
+    "name", "role", "preferences", "work_style", "language",
+)
+# Keys that are purely onboarding-control flags, not profile content.
+_ONBOARDING_CONTROL_KEYS = frozenset({
+    "onboarding_init_auto_started", "onboarding_question_flow_required",
+    "onboarding_first_question", "onboarding_questions",
+    "init_auto_started", "question_flow_required",
+})
+
+
+def _extract_profile_content_from_memory_context(result: Any) -> str:
+    """Extract a human-readable profile snapshot from a memory_context result.
+
+    Returns an empty string when no meaningful profile data is found.
+    """
+    if result is None:
+        return ""
+    text = str(result).strip()
+    if not text:
+        return ""
+
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        # Plain-text result: use it directly if it looks like profile data.
+        if len(text) >= 40 and not text.startswith("{") and not text.startswith("["):
+            return text[:2000]
+        return ""
+
+    if not isinstance(parsed, dict):
+        return ""
+
+    # Check if the result is mostly just onboarding control flags (no real profile).
+    content_keys = [k for k in parsed if k not in _ONBOARDING_CONTROL_KEYS]
+    if not content_keys:
+        return ""
+
+    # Try to extract named profile section keys first.
+    lines: list[str] = []
+    for key in _PROFILE_EXTRACT_KEYS:
+        val = parsed.get(key)
+        if val is None:
+            continue
+        if isinstance(val, dict):
+            sub = "; ".join(f"{k}: {v}" for k, v in val.items() if v is not None)
+            if sub:
+                lines.append(f"**{key}**: {sub}")
+        elif isinstance(val, (list, tuple)):
+            items = [str(i) for i in val if i]
+            if items:
+                lines.append(f"**{key}**: {', '.join(items)}")
+        else:
+            s = str(val).strip()
+            if s:
+                lines.append(f"**{key}**: {s}")
+
+    # Fall back: any remaining non-control, non-empty string values.
+    if not lines:
+        for key in content_keys:
+            val = parsed.get(key)
+            if val is None:
+                continue
+            s = str(val).strip() if not isinstance(val, (dict, list)) else json.dumps(val)
+            if s and len(s) >= 4:
+                lines.append(f"**{key}**: {s[:400]}")
+            if len(lines) >= 15:
+                break
+
+    return "\n".join(lines)[:2000]
+
+
+def mirror_mcp_memory_context_to_user_md(
+    agent: Any,
+    function_name: str,
+    result: Any,
+) -> bool:
+    """After a successful memory_context call, snapshot the profile into USER.md.
+
+    Writes a clearly-marked snapshot section so that if MCP becomes unavailable
+    in a future session, USER.md acts as a meaningful local fallback.
+
+    Returns True when a write was performed.
+    """
+    from model_tools import _is_memory_context_tool_name  # avoid circular at module level
+    if not _is_memory_context_tool_name(function_name):
+        return False
+    if not getattr(agent, "_memory_store", None):
+        return False
+    if not getattr(agent, "_user_profile_enabled", False):
+        return False
+
+    profile_content = _extract_profile_content_from_memory_context(result)
+    if not profile_content or len(profile_content) < 40:
+        return False
+
+    try:
+        path = agent._memory_store._path_for("user")
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    except Exception:
+        return False
+
+    # Build the replacement/new snapshot section.
+    snapshot_section = (
+        f"\n{_MCP_SNAPSHOT_MARKER}\n"
+        "## Remote Profile Snapshot\n"
+        f"*Last synced from MCP memory_context.*\n\n"
+        f"{profile_content}\n"
+        f"{_MCP_SNAPSHOT_MARKER}\n"
+    )
+
+    # If section already exists and content is identical, skip.
+    if _MCP_SNAPSHOT_MARKER in existing:
+        start = existing.index(_MCP_SNAPSHOT_MARKER)
+        end = existing.index(_MCP_SNAPSHOT_MARKER, start + len(_MCP_SNAPSHOT_MARKER)) + len(_MCP_SNAPSHOT_MARKER)
+        old_section = existing[start : end + 1]
+        if profile_content in old_section:
+            return False  # already up to date
+        new_text = existing[:start] + snapshot_section + existing[end + 1 :].lstrip("\n")
+    else:
+        new_text = existing.rstrip("\n") + "\n" + snapshot_section
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(new_text, encoding="utf-8")
+        # Reload the in-memory store to reflect the new content.
+        try:
+            agent._memory_store.load_from_disk()
+        except Exception:
+            pass
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "mirror_mcp_memory_context_to_user_md: wrote snapshot (%d chars) via %s",
+            len(profile_content),
+            function_name,
+        )
+        return True
+    except Exception:
+        return False
+

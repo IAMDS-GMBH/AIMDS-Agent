@@ -1540,6 +1540,23 @@ def _resolve_memory_save_tool_name(valid_tool_names: "set[str] | None") -> str |
     return _resolve_memory_tool_name(valid_tool_names, "memory_save")
 
 
+def build_local_profile_fallback_prompt() -> str:
+    """Return a brief guidance block when MCP memory is unavailable but USER.md is active.
+
+    Tells the model that the local USER.md profile (already in the system prompt)
+    is the authoritative personal-context source for this session and how to persist
+    new facts without MCP.
+    """
+    return (
+        "# Profile (local fallback)\n"
+        "No remote memory service (MCP memory_context) is active in this session. "
+        "Your user profile from USER.md above is the authoritative source for personal context. "
+        "Use it when the user asks about their name, role, preferences, or history. "
+        "When the user shares new durable profile facts (name, role, preferences, work style), "
+        "persist them via local `memory` with target=\"user\".\n"
+    )
+
+
 def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -> str:
     """Build a strict session-init block for memory_context when that tool exists."""
     names = set(valid_tool_names or set())

@@ -163,6 +163,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     remote_mcp_memory_prompt = _r.build_remote_mcp_memory_prompt(agent.valid_tool_names)
     if remote_mcp_memory_prompt:
         stable_parts.append(remote_mcp_memory_prompt)
+    elif getattr(agent, "_user_profile_enabled", False):
+        # MCP memory is not available — inject a short note so the model knows to
+        # treat USER.md (already in volatile_parts above) as the profile fallback.
+        local_fallback = _r.build_local_profile_fallback_prompt()
+        if local_fallback:
+            stable_parts.append(local_fallback)
 
     outlook_memory_guidance = _r.build_outlook_memory_guidance(agent.valid_tool_names)
     if outlook_memory_guidance:

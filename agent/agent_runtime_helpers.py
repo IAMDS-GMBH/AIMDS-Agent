@@ -1793,6 +1793,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 from agent.memory_dual_write import (
                     annotate_tool_result_with_local_mirror,
                     mirror_mcp_memory_save_to_local,
+                    mirror_mcp_memory_context_to_user_md,
                 )
 
                 local_mirror_written = mirror_mcp_memory_save_to_local(
@@ -1806,6 +1807,9 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 if local_mirror_written and isinstance(next_args, dict):
                     next_args["__local_mirror"] = True
                     result = annotate_tool_result_with_local_mirror(result)
+
+                # Sync profile snapshot from memory_context → USER.md fallback.
+                mirror_mcp_memory_context_to_user_md(agent, function_name, result)
             except Exception:
                 pass
             return _finish_agent_tool(result, next_args)
