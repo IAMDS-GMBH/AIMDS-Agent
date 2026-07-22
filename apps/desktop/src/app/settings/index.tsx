@@ -6,7 +6,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Archive, Globe, Info, KeyRound, Sparkles, Wrench, Zap } from '@/lib/icons'
+import { Archive, Globe, Info, KeyRound, Package, Sparkles, Wrench, Zap } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -126,6 +126,13 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
                 label={t.settings.nav.providerAccounts}
                 nested
                 onClick={() => openProviderView('accounts')}
+              />
+              <OverlayNavItem
+                active={providerView === 'catalog'}
+                icon={Package}
+                label={t.settings.nav.providerCatalog}
+                nested
+                onClick={() => openProviderView('catalog')}
               />
               <OverlayNavItem
                 active={providerView === 'keys'}
