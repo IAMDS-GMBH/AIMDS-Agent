@@ -559,7 +559,7 @@ function McpCatalogSection({
 
             <DialogFooter className="flex items-center justify-between sm:justify-between">
               <div>
-                {mcpConfig?.mcp_servers && installModalEntry.name in mcpConfig.mcp_servers && (
+                {Boolean(installedServers[installModalEntry.name]) && (
                   <Button
                     onClick={() => void handleUninstall(installModalEntry.name)}
                     size="xs"
