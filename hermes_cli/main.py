@@ -8177,6 +8177,34 @@ def _apply_aimds_defaults_after_update() -> None:
         logger.debug("AIMDS defaults post-update migration failed: %s", exc)
 
 
+def _seed_aimds_default_cron_after_update() -> None:
+    """Best-effort one-time AIMDS cron seed for update/sync flows."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        home_dir = get_hermes_home()
+        script_path = PROJECT_ROOT / "installer" / "scripts" / "seed_default_cron_jobs.py"
+        if not script_path.is_file():
+            print(f"  ℹ AIMDS default cron seed skipped: script missing ({script_path})")
+            return
+
+        result = subprocess.run(
+            [sys.executable, str(script_path), str(home_dir)],
+            capture_output=True,
+            text=True,
+        )
+        output = (result.stdout or result.stderr or "").strip()
+        if result.returncode == 0:
+            if output:
+                for line in output.splitlines():
+                    print(f"  ℹ {line}")
+        else:
+            detail = output.splitlines()[0] if output else f"exit {result.returncode}"
+            print(f"  ⚠️  AIMDS default cron seed failed: {detail}")
+    except Exception as exc:
+        logger.debug("AIMDS default cron post-update seed failed: %s", exc)
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -9010,6 +9038,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Keep AIMDS policy defaults enforced for update/sync paths too.
         _apply_aimds_defaults_after_update()
+        _seed_aimds_default_cron_after_update()
 
         # Safety net: config-version migrations have been observed to leave
         # cron/jobs.json valid-but-empty, silently dropping every scheduled

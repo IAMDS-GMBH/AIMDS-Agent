@@ -2304,6 +2304,23 @@ EOF
         fi
     fi
 
+    # Seed one-time AIMDS default cron jobs for fresh install/sync lifecycles.
+    aimds_cron_seed_script="$INSTALL_DIR/installer/scripts/seed_default_cron_jobs.py"
+    if [ -n "$python_for_seed" ] && [ -f "$aimds_cron_seed_script" ]; then
+        log_info "Seeding one-time AIMDS default cron jobs (if never initialized)..."
+        _cron_seed_out="$("$python_for_seed" "$aimds_cron_seed_script" "$HERMES_HOME" 2>&1)" || {
+            log_warn "AIMDS default cron seed step failed: $_cron_seed_out"
+            _cron_seed_out=""
+        }
+        if [ -n "$_cron_seed_out" ]; then
+            while IFS= read -r _line; do
+                [ -n "$_line" ] && log_info "  $_line"
+            done <<EOF
+$_cron_seed_out
+EOF
+        fi
+    fi
+
     # Enforce AIMDS runtime defaults on every install/reinstall so existing
     # profiles pick up tool-search, MCP tool filtering, and aux-model pinning.
     aimds_defaults_script="$INSTALL_DIR/installer/scripts/upsert_aimds_defaults.py"

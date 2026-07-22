@@ -3020,6 +3020,20 @@ function Copy-ConfigTemplates {
         }
     }
 
+    # Seed one-time AIMDS default cron jobs for fresh install/sync lifecycles.
+    $aimdsCronSeedScript = Join-Path $InstallDir 'installer\scripts\seed_default_cron_jobs.py'
+    if ($pythonForMemorySeed -and (Test-Path $aimdsCronSeedScript)) {
+        Write-Info "Seeding one-time AIMDS default cron jobs (if never initialized)..."
+        try {
+            $cronSeedOutput = & $pythonForMemorySeed $aimdsCronSeedScript $HermesHome
+            foreach ($line in ($cronSeedOutput -split "`r?`n")) {
+                if ($line.Trim()) { Write-Info "  $line" }
+            }
+        } catch {
+            Write-Warn "AIMDS default cron seed step failed: $($_.Exception.Message)"
+        }
+    }
+
     # Enforce AIMDS runtime defaults on every install/reinstall so existing
     # profiles pick up tool-search, MCP tool filtering, and aux-model pinning.
     $aimdsDefaultsScript = Join-Path $InstallDir 'installer\scripts\upsert_aimds_defaults.py'
