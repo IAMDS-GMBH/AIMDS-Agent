@@ -583,7 +583,7 @@ def assemble_tool_defs(
     threshold_tokens = int((context_length or 0) * (config.threshold_pct / 100.0))
 
     logger.info(
-        "tool_search activated: %d core/visible tools kept, %d deferred (~%d tokens, threshold ~%d)",
+        "[AIS-161] tool_search activated: %d core/visible tools kept, %d deferred (~%d tokens, threshold ~%d)",
         len(visible), len(deferrable), deferrable_tokens, threshold_tokens,
     )
 

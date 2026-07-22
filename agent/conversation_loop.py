@@ -2820,7 +2820,7 @@ def run_conversation(
                     if canonical_usage.cache_read_tokens and prompt_tokens:
                         _cache_pct = f" cache={canonical_usage.cache_read_tokens}/{prompt_tokens} ({100*canonical_usage.cache_read_tokens/prompt_tokens:.0f}%)"
                     logger.info(
-                        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s",
+                        "[AIS-161] API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s",
                         agent.session_api_calls, agent.model, agent.provider or "unknown",
                         prompt_tokens, completion_tokens, total_tokens,
                         api_duration, _cache_pct,
@@ -4767,7 +4767,9 @@ def run_conversation(
                 
                 if agent.verbose_logging:
                     for tc in assistant_message.tool_calls:
-                        logging.debug(f"Tool call: {tc.function.name} with args: {tc.function.arguments[:200]}...")
+                        logging.debug(
+                            f"[AIS-161] Tool call: {tc.function.name} with args: {tc.function.arguments[:200]}..."
+                        )
                 
                 # Validate tool call names - detect model hallucinations
                 # Repair mismatched tool names before validating
