@@ -199,6 +199,7 @@ export interface Translations {
     nav: {
       providers: string
       providerAccounts: string
+      providerCatalog: string
       providerApiKeys: string
       gateway: string
       apiKeys: string

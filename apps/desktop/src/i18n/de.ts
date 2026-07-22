@@ -264,6 +264,7 @@ export const de
     nav: {
       providers: 'Anbieter',
       providerAccounts: 'Konten',
+      providerCatalog: 'MCP-Katalog',
       providerApiKeys: 'API-Schlüssel',
       gateway: 'Diagnose',
       apiKeys: 'Tools & Schlüssel',

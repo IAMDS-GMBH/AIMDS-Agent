@@ -263,6 +263,7 @@ export const en: Translations = {
     nav: {
       providers: 'Providers',
       providerAccounts: 'Accounts',
+      providerCatalog: 'MCP Catalog',
       providerApiKeys: 'API keys',
       gateway: 'Diagnose',
       apiKeys: 'Tools & Keys',

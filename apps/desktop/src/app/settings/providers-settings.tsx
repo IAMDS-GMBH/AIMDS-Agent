@@ -1,19 +1,34 @@
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { getHermesConfigRecord, keycloakLogin, saveHermesConfig, setEnvVar } from '@/hermes'
+import {
+  getHermesConfigRecord,
+  getMcpCatalog,
+  installMcpCatalogEntry,
+  keycloakLogin,
+  saveHermesConfig,
+  setEnvVar
+} from '@/hermes'
 import { useI18n } from '@/i18n'
-import { ChevronRight, KeyRound, Loader2, Check, AlertCircle, ShieldCheck } from '@/lib/icons'
+import { AlertCircle, Check, ChevronRight, KeyRound, Loader2, ShieldCheck } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
-import type { EnvVarInfo } from '@/types/hermes'
+import type { EnvVarInfo, HermesConfigRecord, McpCatalogEntry } from '@/types/hermes'
 
 import { ProviderKeyRows } from './credential-key-ui'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
-import { LoadingState, SettingsContent } from './primitives'
+import { LoadingState, Pill, SettingsContent } from './primitives'
 
-// Sub-views surfaced as a sidebar subnav: account sign-in vs raw API keys.
-export const PROVIDER_VIEWS = ['accounts', 'keys'] as const
+// Sub-views surfaced as a sidebar subnav: account sign-in, MCP catalog, and raw API keys.
+export const PROVIDER_VIEWS = ['accounts', 'catalog', 'keys'] as const
 
 export type ProviderView = (typeof PROVIDER_VIEWS)[number]
 
@@ -340,6 +355,188 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
   )
 }
 
+function McpCatalogSection({
+  vars,
+  onRefreshCreds
+}: {
+  vars: Record<string, EnvVarInfo>
+  onRefreshCreds?: () => void
+}) {
+  const { t } = useI18n()
+  const m = t.settings.mcp
+  const [catalogEntries, setCatalogEntries] = useState<McpCatalogEntry[]>([])
+  const [installedServers, setInstalledServers] = useState<Record<string, unknown>>({})
+  const [installModalEntry, setInstallModalEntry] = useState<McpCatalogEntry | null>(null)
+  const [secretInputs, setSecretInputs] = useState<Record<string, string>>({})
+  const [installing, setInstalling] = useState(false)
+
+  const loadCatalogAndConfig = async () => {
+    try {
+      const [catRes, cfg] = await Promise.all([
+        getMcpCatalog().catch(() => ({ entries: [] })),
+        getHermesConfigRecord().catch(() => ({} as HermesConfigRecord))
+      ])
+      if (catRes.entries) {
+        setCatalogEntries(catRes.entries)
+      }
+      const rawServers = cfg?.mcp_servers
+      if (rawServers && typeof rawServers === 'object' && !Array.isArray(rawServers)) {
+        setInstalledServers(rawServers as Record<string, unknown>)
+      } else {
+        setInstalledServers({})
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  useEffect(() => {
+    void loadCatalogAndConfig()
+  }, [])
+
+  const openInstallModal = (entry: McpCatalogEntry) => {
+    const initialSecrets: Record<string, string> = {}
+
+    if (entry.auth?.env) {
+      for (const item of entry.auth.env) {
+        if (item.default) {
+          initialSecrets[item.name] = item.default
+        } else {
+          initialSecrets[item.name] = ''
+        }
+      }
+    }
+    setSecretInputs(initialSecrets)
+    setInstallModalEntry(entry)
+  }
+
+  const handleInstallCatalog = async () => {
+    if (!installModalEntry) return
+
+    setInstalling(true)
+    try {
+      const result = await installMcpCatalogEntry({
+        enable: true,
+        name: installModalEntry.name,
+        secrets: secretInputs
+      })
+
+      if (result.ok) {
+        notify({
+          kind: 'success',
+          message: m.catalogInstallSuccessMessage(installModalEntry.name),
+          title: m.catalogInstallSuccessTitle
+        })
+        await loadCatalogAndConfig()
+        onRefreshCreds?.()
+        setInstallModalEntry(null)
+      } else {
+        notify({ kind: 'error', message: result.message ?? m.saveFailed, title: m.saveFailed })
+      }
+    } catch (err) {
+      notifyError(err, m.saveFailed)
+    } finally {
+      setInstalling(false)
+    }
+  }
+
+  if (catalogEntries.length === 0) {
+    return null
+  }
+
+  return (
+    <section className="mt-6 border-t border-border/50 pt-5">
+      <div className="mb-3">
+        <h3 className="text-sm font-semibold text-foreground">{m.catalogSectionTitle}</h3>
+        <p className="mt-1 text-xs text-muted-foreground">{m.catalogSectionDesc}</p>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        {catalogEntries.map(entry => {
+          const isInstalled = Boolean(installedServers[entry.name])
+
+          return (
+            <div
+              className="flex flex-col justify-between rounded-lg border border-border bg-card p-3.5 shadow-xs transition-colors hover:border-primary/40"
+              key={entry.name}
+            >
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-sm capitalize">{entry.name}</span>
+                  <Pill>{entry.source ? entry.source.split(' ')[0] : 'catalog'}</Pill>
+                </div>
+                <p className="mt-1.5 line-clamp-2 text-xs text-muted-foreground">{entry.description}</p>
+              </div>
+
+              <div className="mt-4 flex items-center justify-between border-t border-border/50 pt-2.5">
+                <span className="text-xs text-muted-foreground">{isInstalled ? m.catalogInstalled : ''}</span>
+                <Button
+                  onClick={() => openInstallModal(entry)}
+                  size="xs"
+                  variant={isInstalled ? 'secondary' : 'default'}
+                >
+                  {isInstalled ? m.editServer : m.catalogInstall}
+                </Button>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <Dialog onOpenChange={open => !open && setInstallModalEntry(null)} open={Boolean(installModalEntry)}>
+        {installModalEntry && (
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>{m.catalogModalTitle(installModalEntry.name)}</DialogTitle>
+              <DialogDescription>{m.catalogModalDesc}</DialogDescription>
+            </DialogHeader>
+
+            <div className="grid gap-3 py-2">
+              {installModalEntry.auth?.env?.map(item => {
+                const isSet = vars[item.name]?.is_set
+                return (
+                  <label className="grid gap-1" key={item.name}>
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-xs">
+                        {item.prompt || item.name}
+                        {item.required && <span className="ml-0.5 text-destructive">*</span>}
+                      </span>
+                      {isSet && (
+                        <span className="text-[10px] text-green-500 font-medium">✓ Ist bereits in .env gesetzt</span>
+                      )}
+                    </div>
+                    <Input
+                      onChange={e =>
+                        setSecretInputs(prev => ({
+                          ...prev,
+                          [item.name]: e.target.value
+                        }))
+                      }
+                      placeholder={item.default || (isSet ? 'Bereits gesetzt (Eingabe überschreibt)' : item.name)}
+                      type={item.secret ? 'password' : 'text'}
+                      value={secretInputs[item.name] ?? ''}
+                    />
+                  </label>
+                )
+              })}
+              <p className="text-[11px] text-muted-foreground">{m.catalogSecretsNotice}</p>
+            </div>
+
+            <DialogFooter>
+              <Button onClick={() => setInstallModalEntry(null)} size="xs" variant="ghost">
+                {t.common.cancel}
+              </Button>
+              <Button disabled={installing} onClick={() => void handleInstallCatalog()} size="xs">
+                {installing ? m.catalogInstalling : m.catalogInstall}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        )}
+      </Dialog>
+    </section>
+  )
+}
+
 export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps) {
   const { t } = useI18n()
   const { rowProps, vars, refetch } = useEnvCredentials()
@@ -350,6 +547,14 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
   }
 
   const keyGroups = buildIamdsLiteLlmKeyGroup(vars)
+
+  if (view === 'catalog') {
+    return (
+      <SettingsContent>
+        <McpCatalogSection vars={vars} onRefreshCreds={() => void refetch()} />
+      </SettingsContent>
+    )
+  }
 
   if (view === 'keys') {
     return (
@@ -380,6 +585,7 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
   return (
     <SettingsContent>
       <IamdsAccountPanel onWantApiKey={() => onViewChange('keys')} onRefreshCreds={() => void refetch()} />
+      <McpCatalogSection vars={vars} onRefreshCreds={() => void refetch()} />
     </SettingsContent>
   )
 }
