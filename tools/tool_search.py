@@ -661,13 +661,17 @@ def is_bridge_tool(name: str) -> bool:
 
 
 def _format_search_hit(entry: CatalogEntry) -> Dict[str, Any]:
-    return {
+    raw_desc = (entry.description or "").strip()
+    first_line = raw_desc.split("\n")[0].strip() if raw_desc else ""
+    if len(first_line) > 150:
+        first_line = first_line[:147] + "..."
+    hit: Dict[str, Any] = {
         "name": entry.name,
-        "source": entry.source,
-        "source_name": entry.source_name,
-        # Cap description so a chatty MCP server doesn't blow up the result.
-        "description": (entry.description or "")[:400],
+        "description": first_line,
     }
+    if entry.source_name:
+        hit["source"] = entry.source_name
+    return hit
 
 
 def dispatch_tool_search(args: Dict[str, Any],

@@ -470,6 +470,8 @@ def _build_server_config(
         cfg["command"] = _expand_install_dir(t.command or "", install_dir)
         if t.args:
             cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
+        if entry.auth and entry.auth.env:
+            cfg["env"] = {item.name: f"${{{item.name}}}" for item in entry.auth.env}
     elif t.type == "http":
         cfg["url"] = t.url
         if entry.auth.type == "oauth":
