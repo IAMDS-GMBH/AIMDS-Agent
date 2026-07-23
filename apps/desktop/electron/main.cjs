@@ -3947,42 +3947,35 @@ function generatePkcePair() {
   return { codeVerifier, codeChallenge }
 }
 
-function exchangeKeycloakCode(tokenUrl, code, redirectUri, codeVerifier) {
-  return new Promise((resolve, reject) => {
-    const params = {
-      grant_type: 'authorization_code',
-      client_id: 'hermes-app',
-      code,
-      redirect_uri: redirectUri
-    }
-    if (codeVerifier) {
-      params.code_verifier = codeVerifier
-    }
-    const body = new URLSearchParams(params).toString()
-
-    const req = electronNet.request({ method: 'POST', url: tokenUrl })
-    req.setHeader('Content-Type', 'application/x-www-form-urlencoded')
-    req.setHeader('Content-Length', Buffer.byteLength(body).toString())
-
-    let responseData = ''
-    req.on('response', response => {
-      response.on('data', chunk => { responseData += chunk.toString() })
-      response.on('end', () => {
-        if (response.statusCode < 200 || response.statusCode >= 300) {
-          reject(new Error(`Keycloak token endpoint returned HTTP ${response.statusCode}: ${responseData}`))
-          return
-        }
-        try {
-          resolve(JSON.parse(responseData))
-        } catch (err) {
-          reject(new Error(`Failed to parse Keycloak token response: ${err.message}`))
-        }
-      })
-    })
-    req.on('error', err => reject(new Error(`Keycloak token request failed: ${err.message}`)))
-    req.write(body)
-    req.end()
+async function exchangeKeycloakCode(tokenUrl, code, redirectUri, codeVerifier) {
+  const params = new URLSearchParams({
+    grant_type: 'authorization_code',
+    client_id: 'hermes-app',
+    code,
+    redirect_uri: redirectUri
   })
+  if (codeVerifier) {
+    params.append('code_verifier', codeVerifier)
+  }
+
+  const response = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: params.toString()
+  })
+
+  const text = await response.text()
+  if (!response.ok) {
+    throw new Error(`Keycloak token endpoint returned HTTP ${response.status}: ${text}`)
+  }
+
+  try {
+    return JSON.parse(text)
+  } catch (err) {
+    throw new Error(`Failed to parse Keycloak token response: ${err.message}`)
+  }
 }
 
 /**
