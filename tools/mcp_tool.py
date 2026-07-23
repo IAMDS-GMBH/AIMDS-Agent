@@ -426,15 +426,16 @@ def _scan_mcp_description(
 
 
 def _prepend_path(env: dict, directory: str) -> dict:
-    """Prepend *directory* to env PATH if it is not already present."""
+    """Prepend *directory* to env PATH, moving it to the front if already present."""
     updated = dict(env or {})
     if not directory:
         return updated
 
     existing = updated.get("PATH", "")
     parts = [part for part in existing.split(os.pathsep) if part]
-    if directory not in parts:
-        parts = [directory, *parts]
+    if directory in parts:
+        parts.remove(directory)
+    parts = [directory, *parts]
     updated["PATH"] = os.pathsep.join(parts) if parts else directory
     return updated
 
@@ -474,6 +475,8 @@ def _fallback_command_candidates(resolved_command: str) -> List[str]:
     return [
         os.path.join(hermes_home, *hermes_subpath, resolved_command),
         os.path.join(os.path.expanduser("~"), ".local", "bin", resolved_command),
+        os.path.join(os.path.expanduser("~"), ".cargo", "bin", resolved_command),
+        os.path.join(sys.prefix, "bin", resolved_command),
         # Homebrew on Apple Silicon macOS installs both node and uv here.
         os.path.join(os.sep, "opt", "homebrew", "bin", resolved_command),
         # /usr/local/bin is the canonical install location for Node/uv on

@@ -655,15 +655,18 @@ def dispatch_tool_describe(args: Dict[str, Any],
     name = str(args.get("name") or "").strip()
     if not name:
         return json.dumps({"error": "name is required"}, ensure_ascii=False)
-    if not is_deferrable_tool_name(name):
+
+    from tools.registry import registry
+    entry = registry.get_entry(name)
+    if entry is None:
         return json.dumps({
             "error": (
-                f"'{name}' is not a deferrable tool. If you see it in the tools list "
-                "already, call it directly; otherwise check the spelling against tool_search."
+                f"Tool '{name}' is not registered or found. "
+                "Use tool_search to find the exact registered tool name."
             ),
         }, ensure_ascii=False)
-    _, deferrable = classify_tools(current_tool_defs)
-    for td in deferrable:
+
+    for td in current_tool_defs:
         fn = td.get("function") or {}
         if fn.get("name") == name:
             return json.dumps({
@@ -672,28 +675,32 @@ def dispatch_tool_describe(args: Dict[str, Any],
                 "parameters": fn.get("parameters", {}),
             }, ensure_ascii=False)
     return json.dumps({
-        "error": f"'{name}' is not currently available. Re-run tool_search to refresh.",
+        "error": f"Tool '{name}' is not available in this session. Use tool_search to find tools you can call.",
     }, ensure_ascii=False)
 
 
-def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
-    """Return the set of deferrable tool names present in ``tool_defs``.
+def scoped_tool_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
+    """Return the set of callable non-bridge tool names present in ``tool_defs``.
 
     ``tool_defs`` is expected to be the *pre-assembly* tool list for the
     current session's toolset scope (i.e. what
     ``get_tool_definitions(skip_tool_search_assembly=True)`` returns for the
-    session's enabled/disabled toolsets). The resulting set is the universe of
-    tools the session may legitimately reach through ``tool_call``. Used as a
-    scoping gate by both the ``model_tools`` bridge dispatch and the
-    ``tool_executor`` unwrap so a restricted-toolset session can never invoke
-    an out-of-scope tool via the bridge.
+    session's enabled/disabled toolsets). Used as a scoping gate by both the
+    ``model_tools`` bridge dispatch and the ``tool_executor`` unwrap so a
+    restricted-toolset session can never invoke an out-of-scope tool via the
+    bridge.
     """
     names: set[str] = set()
     for td in tool_defs:
         name = (td.get("function") or {}).get("name", "")
-        if name and is_deferrable_tool_name(name):
+        if name and name not in BRIDGE_TOOL_NAMES:
             names.add(name)
     return frozenset(names)
+
+
+def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
+    """Backward-compatible alias for ``scoped_tool_names``."""
+    return scoped_tool_names(tool_defs)
 
 
 def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
@@ -721,11 +728,15 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
             return None, {}, f"tool_call 'arguments' is not valid JSON: {e}"
     if not isinstance(raw_args, dict):
         return None, {}, "tool_call 'arguments' must be an object"
-    if not is_deferrable_tool_name(name):
+
+    from tools.registry import registry
+    entry = registry.get_entry(name)
+    if entry is None:
         return None, {}, (
-            f"'{name}' is not a deferrable tool. If it appears in the model-facing tools "
-            "list already, call it directly instead of via tool_call."
+            f"Tool '{name}' is not registered or found. "
+            "Use tool_search to find the exact registered tool name."
         )
+
     return name, raw_args, None
 
 
@@ -750,5 +761,6 @@ __all__ = [
     "dispatch_tool_search",
     "dispatch_tool_describe",
     "resolve_underlying_call",
+    "scoped_tool_names",
     "scoped_deferrable_names",
 ]

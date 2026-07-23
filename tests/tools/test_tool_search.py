@@ -425,16 +425,17 @@ class TestRegression_OpenClawCron84141:
         # deferrable tools to put behind them.
         assert "terminal" in names
 
-    def test_unwrap_rejects_core_tool_attempt(self):
-        """Even if the model tries to invoke a core tool through tool_call,
-        we reject the call and tell the model to use it directly."""
+    def test_unwrap_resolves_registered_tool(self):
+        """tool_call resolves any registered tool name so the model is not
+        blocked if it invokes a visible tool through tool_call."""
         from tools.tool_search import resolve_underlying_call
-        _, _, err = resolve_underlying_call({
+        name, args, err = resolve_underlying_call({
             "name": "terminal",
             "arguments": {"command": "echo hi"},
         })
-        assert err is not None
-        assert "not a deferrable" in err
+        assert err is None
+        assert name == "terminal"
+        assert args == {"command": "echo hi"}
 
 
 class TestRegression_ToolsetScoping:
@@ -556,3 +557,33 @@ class TestRegression_ToolsetScoping:
         assert "mcp_helper_op" in names
         # core tools are never deferrable
         assert "terminal" not in names
+
+
+class TestRegression_UnregisteredToolError:
+    """Regression guard for unregistered or hallucinated tool names in tool_call/tool_describe.
+
+    When a model calls tool_call or tool_describe with a tool name that is NOT
+    registered in the registry (e.g. 'mcp_atlassian_issue_search'), the bridge
+    must report that the tool is 'not registered or found' rather than claiming
+    that the tool is 'not a deferrable tool' (which misleadingly implies it is a
+    directly-callable core tool).
+    """
+
+    def test_resolve_underlying_call_unregistered_tool_returns_not_found_error(self):
+        from tools.tool_search import resolve_underlying_call
+        _, _, err = resolve_underlying_call({
+            "name": "mcp_atlassian_issue_search",
+            "arguments": {},
+        })
+        assert err is not None
+        assert "not registered or found" in err
+        assert "not a deferrable tool" not in err
+
+    def test_dispatch_tool_describe_unregistered_tool_returns_not_found_error(self):
+        from tools.tool_search import dispatch_tool_describe
+        res_str = dispatch_tool_describe({"name": "mcp_atlassian_issue_search"}, current_tool_defs=[])
+        res = json.loads(res_str)
+        assert "error" in res
+        assert "not registered or found" in res["error"]
+        assert "not a deferrable tool" not in res["error"]
+
