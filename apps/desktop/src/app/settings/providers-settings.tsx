@@ -128,10 +128,24 @@ function readProviderBaseUrl(config: Record<string, unknown>, slug: string): str
   return typeof baseUrl === 'string' ? toEditableBaseUrl(baseUrl) : ''
 }
 
-function IamdsExtraProvidersPanel({ onKeycloakLogin }: { onKeycloakLogin?: (baseUrl: string, keyEnv: string) => void }) {
+function IamdsExtraProvidersPanel() {
   const [stagingBaseUrl, setStagingBaseUrl] = useState('')
   const [devBaseUrl, setDevBaseUrl] = useState('')
   const [isSaving, setIsSaving] = useState(false)
+
+  const handleKeycloakLogin = async (baseUrl: string, targetKeyEnv: string) => {
+    try {
+      const result = await keycloakLogin({
+        baseUrl,
+        realm: DEFAULT_REALM,
+        redirectUri: DEFAULT_REDIRECT_URI || `${baseUrl}/oauth/oidc/callback`,
+      })
+      await setEnvVar(targetKeyEnv, result.apiKey)
+      notify({ kind: 'success', message: `API key obtained via Keycloak SSO (${targetKeyEnv})`, title: 'Connected' })
+    } catch (err) {
+      notifyError(err, 'Keycloak SSO failed')
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -221,9 +235,9 @@ function IamdsExtraProvidersPanel({ onKeycloakLogin }: { onKeycloakLogin?: (base
               placeholder="https://staging.suite.example.com"
               value={stagingBaseUrl}
             />
-            {onKeycloakLogin && stagingBaseUrl.trim() && (
+            {stagingBaseUrl.trim() && (
               <Button
-                onClick={() => onKeycloakLogin(stagingBaseUrl.trim(), 'IAMDS_LITELLM_STAGING_API_KEY')}
+                onClick={() => void handleKeycloakLogin(stagingBaseUrl.trim(), 'IAMDS_LITELLM_STAGING_API_KEY')}
                 size="sm"
                 variant="outline"
               >
@@ -244,9 +258,9 @@ function IamdsExtraProvidersPanel({ onKeycloakLogin }: { onKeycloakLogin?: (base
               placeholder="https://dev.suite.example.com"
               value={devBaseUrl}
             />
-            {onKeycloakLogin && devBaseUrl.trim() && (
+            {devBaseUrl.trim() && (
               <Button
-                onClick={() => onKeycloakLogin(devBaseUrl.trim(), 'IAMDS_LITELLM_DEV_API_KEY')}
+                onClick={() => void handleKeycloakLogin(devBaseUrl.trim(), 'IAMDS_LITELLM_DEV_API_KEY')}
                 size="sm"
                 variant="outline"
               >
@@ -745,7 +759,7 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
                 rowProps={rowProps}
               />
             ))}
-            <IamdsExtraProvidersPanel onKeycloakLogin={handleKeycloakLogin} />
+            <IamdsExtraProvidersPanel />
           </div>
         ) : (
           <div className="grid min-h-32 place-items-center px-4 py-8 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
