@@ -12,7 +12,9 @@ import {
 import { Input } from '@/components/ui/input'
 import {
   disconnectOAuthProvider,
+  getEnvVars,
   getHermesConfigRecord,
+  revealEnvVar,
   getMcpCatalog,
   installMcpCatalogEntry,
   keycloakLogin,
@@ -152,10 +154,22 @@ function IamdsExtraProvidersPanel() {
     let cancelled = false
     void (async () => {
       try {
-        const config = await getHermesConfigRecord()
+        const [config, envVars] = await Promise.all([
+          getHermesConfigRecord().catch(() => ({} as HermesConfigRecord)),
+          getEnvVars().catch(() => ({} as Record<string, EnvVarInfo>)),
+        ])
         if (!cancelled) {
           const mainUrl = readProviderBaseUrl(config, 'iamds-litellm')
-          setProdBaseUrl(mainUrl || DEFAULT_BASE_URL)
+          let envUrl = ''
+          if (envVars.IAMDS_LITELLM_BASE_URL?.is_set) {
+            try {
+              const revealed = await revealEnvVar('IAMDS_LITELLM_BASE_URL')
+              envUrl = revealed.value || ''
+            } catch {
+              // Ignore
+            }
+          }
+          setProdBaseUrl(mainUrl || envUrl || DEFAULT_BASE_URL)
           setStagingBaseUrl(readProviderBaseUrl(config, 'iamds-litellm-staging'))
           setDevBaseUrl(readProviderBaseUrl(config, 'iamds-litellm-dev'))
         }
@@ -216,6 +230,10 @@ function IamdsExtraProvidersPanel() {
       upsertOrDelete('iamds-litellm-staging', 'AIMDS-Suite (Staging)', 'IAMDS_LITELLM_STAGING_API_KEY', stagingNormalized)
       upsertOrDelete('iamds-litellm-dev', 'AIMDS-Suite (Development)', 'IAMDS_LITELLM_DEV_API_KEY', devNormalized)
 
+      if (prodNormalized) {
+        await setEnvVar('IAMDS_LITELLM_BASE_URL', prodNormalized)
+      }
+
       await saveHermesConfig({ ...config, providers: nextProviders })
       notify({ kind: 'success', message: 'AIMDS-Suite provider URLs saved', title: 'Saved' })
     } catch (err) {
@@ -233,72 +251,81 @@ function IamdsExtraProvidersPanel() {
       </p>
 
       <div className="mt-3 grid gap-3">
-        <div className="grid gap-1">
-          <label className="text-xs font-medium text-foreground" htmlFor="iamds-prod-url">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <label className="text-xs font-medium text-foreground min-w-44 shrink-0" htmlFor="iamds-prod-url">
             Production Base URL (Default)
           </label>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-1 max-w-xl sm:ml-auto">
             <Input
               id="iamds-prod-url"
               onChange={e => setProdBaseUrl(e.target.value)}
               placeholder="https://suite.iamds.com"
               value={prodBaseUrl}
+              className="text-xs flex-1"
             />
-            {prodBaseUrl.trim() && (
-              <Button
-                onClick={() => void handleKeycloakLogin(prodBaseUrl.trim(), 'IAMDS_LITELLM_API_KEY')}
-                size="sm"
-                variant="outline"
-              >
-                Production SSO Key
-              </Button>
-            )}
+            <div className="shrink-0 min-w-36 text-right">
+              {prodBaseUrl.trim() && (
+                <Button
+                  onClick={() => void handleKeycloakLogin(prodBaseUrl.trim(), 'IAMDS_LITELLM_API_KEY')}
+                  size="sm"
+                  variant="outline"
+                >
+                  Production SSO Key
+                </Button>
+              )}
+            </div>
           </div>
         </div>
 
-        <div className="grid gap-1">
-          <label className="text-xs font-medium text-foreground" htmlFor="iamds-staging-url">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <label className="text-xs font-medium text-foreground min-w-44 shrink-0" htmlFor="iamds-staging-url">
             Staging Base URL
           </label>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-1 max-w-xl sm:ml-auto">
             <Input
               id="iamds-staging-url"
               onChange={e => setStagingBaseUrl(e.target.value)}
-              placeholder="https://staging.suite.example.com"
+              placeholder="https://staging.suite.iamds.com"
               value={stagingBaseUrl}
+              className="text-xs flex-1"
             />
-            {stagingBaseUrl.trim() && (
-              <Button
-                onClick={() => void handleKeycloakLogin(stagingBaseUrl.trim(), 'IAMDS_LITELLM_STAGING_API_KEY')}
-                size="sm"
-                variant="outline"
-              >
-                Staging SSO Key
-              </Button>
-            )}
+            <div className="shrink-0 min-w-36 text-right">
+              {stagingBaseUrl.trim() && (
+                <Button
+                  onClick={() => void handleKeycloakLogin(stagingBaseUrl.trim(), 'IAMDS_LITELLM_STAGING_API_KEY')}
+                  size="sm"
+                  variant="outline"
+                >
+                  Staging SSO Key
+                </Button>
+              )}
+            </div>
           </div>
         </div>
 
-        <div className="grid gap-1">
-          <label className="text-xs font-medium text-foreground" htmlFor="iamds-dev-url">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <label className="text-xs font-medium text-foreground min-w-44 shrink-0" htmlFor="iamds-dev-url">
             Dev Base URL
           </label>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-1 max-w-xl sm:ml-auto">
             <Input
               id="iamds-dev-url"
               onChange={e => setDevBaseUrl(e.target.value)}
-              placeholder="https://dev.suite.example.com"
+              placeholder="https://dev.suite.iamds.com"
               value={devBaseUrl}
+              className="text-xs flex-1"
             />
-            {devBaseUrl.trim() && (
-              <Button
-                onClick={() => void handleKeycloakLogin(devBaseUrl.trim(), 'IAMDS_LITELLM_DEV_API_KEY')}
-                size="sm"
-                variant="outline"
-              >
-                Development SSO Key
-              </Button>
-            )}
+            <div className="shrink-0 min-w-36 text-right">
+              {devBaseUrl.trim() && (
+                <Button
+                  onClick={() => void handleKeycloakLogin(devBaseUrl.trim(), 'IAMDS_LITELLM_DEV_API_KEY')}
+                  size="sm"
+                  variant="outline"
+                >
+                  Development SSO Key
+                </Button>
+              )}
+            </div>
           </div>
         </div>
       </div>
