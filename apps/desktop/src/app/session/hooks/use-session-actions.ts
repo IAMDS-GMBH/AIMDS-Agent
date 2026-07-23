@@ -587,14 +587,20 @@ export function useSessionActions({
           // Non-fatal: gateway resume below can still hydrate the session.
         }
 
-        const resumed = await requestGateway<SessionResumeResponse>('session.resume', {
-          session_id: storedSessionId,
-          cols: 96,
-          // Owning profile: in app-global remote mode one backend serves every
-          // profile, so the gateway opens this profile's state.db + home to
-          // resume + persist the right session (no-op for single/launch profile).
-          ...(sessionProfile ? { profile: sessionProfile } : {})
-        })
+        // Cron sessions (id starts with 'cron_') don't have a runtime yet when in-flight.
+        // Skip session.resume for them — they'll update via polling. For regular sessions,
+        // resume to bind the runtime and get any in-memory state.
+        const isCronSession = storedSessionId.startsWith('cron_')
+        const resumed = isCronSession
+          ? { session_id: storedSessionId, messages: [], info: {} }
+          : await requestGateway<SessionResumeResponse>('session.resume', {
+              session_id: storedSessionId,
+              cols: 96,
+              // Owning profile: in app-global remote mode one backend serves every
+              // profile, so the gateway opens this profile's state.db + home to
+              // resume + persist the right session (no-op for single/launch profile).
+              ...(sessionProfile ? { profile: sessionProfile } : {})
+            })
 
         if (!isCurrentResume()) {
           return
