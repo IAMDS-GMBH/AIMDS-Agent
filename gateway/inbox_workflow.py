@@ -12,7 +12,12 @@ from difflib import SequenceMatcher
 from pathlib import Path
 import os
 import re
+import logging
 from typing import Iterable, Optional
+
+from agent.topic_capture import capture_durable_topic
+
+logger = logging.getLogger(__name__)
 
 
 _DICTATION_ROUTE_HINTS = ("dictation", "voice-note", "inbound-message", "voice note", "diktat")
@@ -105,6 +110,19 @@ def process_inbox_dictation(
     links = _find_links(root, text, keywords, exclude={path})
     no_link = not links
     _append_links(path, links)
+    try:
+        capture_durable_topic(
+            source="inbox-dictation",
+            title=title,
+            content=text,
+            confidence=0.9,
+            memory_type="notes",
+            scope="project",
+            tags=[classification, "inbox", action],
+            session_id=source_chat_id,
+        )
+    except Exception as exc:
+        logger.warning("Inbox durable topic capture failed: %s", exc, exc_info=True)
 
     return InboxWorkflowResult(
         success=True,

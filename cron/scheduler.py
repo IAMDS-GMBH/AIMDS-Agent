@@ -48,6 +48,7 @@ from agent.open_questions import (
     derive_blocking_open_question_from_review_text,
 )
 from agent.runtime_cwd import resolve_agent_cwd
+from agent.topic_capture import capture_durable_topic
 
 logger = logging.getLogger(__name__)
 
@@ -810,6 +811,24 @@ def _append_workspace_finding(job: dict, final_response: str) -> Optional[Path]:
             findings_path.write_text(_FINDINGS_HEADER, encoding="utf-8")
         with findings_path.open("a", encoding="utf-8") as fh:
             fh.write(entry)
+
+    try:
+        capture_durable_topic(
+            source="cron-finding",
+            title=f"{job_label} finding",
+            content=f"Summary: {summary}\nNext: {action}",
+            confidence=0.92,
+            memory_type="notes",
+            scope="project",
+            tags=["cron", "finding"],
+            effective_task_id=str(job.get("id") or ""),
+        )
+    except Exception:
+        logger.warning(
+            "Job '%s': failed durable topic capture for finding",
+            job.get("id", "?"),
+            exc_info=True,
+        )
     return findings_path
 
 
@@ -862,6 +881,16 @@ def _persist_workspace_open_question(job: dict, *, success: bool, final_response
             needed=needed,
             source=source,
             dedupe_key=dedupe_key,
+        )
+        capture_durable_topic(
+            source="cron-open-question",
+            title=f"{job_label} open question",
+            content=f"{context}\nNeeded: {needed}",
+            confidence=0.86,
+            memory_type="notes",
+            scope="project",
+            tags=["cron", "open-question"],
+            effective_task_id=str(job.get("id") or ""),
         )
     except Exception:
         logger.warning(

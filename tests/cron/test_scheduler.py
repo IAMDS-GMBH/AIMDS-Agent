@@ -2047,10 +2047,11 @@ class TestFindingsPersistence:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         job = {"id": "aimds-morning-brief", "name": "Morning Brief"}
 
-        path = _append_workspace_finding(
-            job,
-            "## Summary\nInbox is stable.\nNext step: review 2 flagged threads.",
-        )
+        with patch("cron.scheduler.capture_durable_topic") as capture_mock:
+            path = _append_workspace_finding(
+                job,
+                "## Summary\nInbox is stable.\nNext step: review 2 flagged threads.",
+            )
 
         assert path == tmp_path / "_findings.md"
         content = path.read_text(encoding="utf-8")
@@ -2058,6 +2059,7 @@ class TestFindingsPersistence:
         assert "source=Morning Brief (aimds-morning-brief)" in content
         assert "summary=Summary" in content
         assert "next=Next step: review 2 flagged threads." in content
+        capture_mock.assert_called_once()
 
     def test_tick_persists_findings_for_relevant_jobs_without_replacing_delivery(self):
         job = {
@@ -2082,20 +2084,22 @@ class TestFindingsPersistence:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         job = {"id": "aimds-weekly-review", "name": "Weekly Review"}
 
-        _persist_workspace_open_question(
-            job,
-            success=True,
-            final_response=(
-                "## Weekly Review\n"
-                "Blocked: needs input from owner on which priority lane to ship first."
-            ),
-        )
+        with patch("cron.scheduler.capture_durable_topic") as capture_mock:
+            _persist_workspace_open_question(
+                job,
+                success=True,
+                final_response=(
+                    "## Weekly Review\n"
+                    "Blocked: needs input from owner on which priority lane to ship first."
+                ),
+            )
 
         path = tmp_path / "_open-questions.md"
         content = path.read_text(encoding="utf-8")
         assert "type: open-questions" in content
         assert "source=Weekly Review (aimds-weekly-review)" in content
         assert "needed=Blocked: needs input from owner on which priority lane to ship first." in content
+        capture_mock.assert_called_once()
 
     def test_tick_persists_open_questions_for_review_jobs(self):
         job = {

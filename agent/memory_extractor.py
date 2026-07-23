@@ -30,6 +30,7 @@ import threading
 import contextlib
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from hermes_constants import get_hermes_home
@@ -44,6 +45,8 @@ MIN_CHARS_FOR_EXTRACTION = 120
 MAX_FACTS_PER_TURN = 5
 EXTRACTION_AUDIT_FILENAME = "MCP_MIRROR_AUDIT.jsonl"
 EXTRACTION_AUDIT_VERSION = 1
+DEFAULT_AUTO_SAVE_CONFIDENCE = 0.78
+DEFAULT_ASK_CONFIDENCE = 0.45
 
 _EXTRACTION_SYSTEM_PROMPT = """\
 You are a memory extraction assistant. Your sole job is to identify durable facts \
@@ -251,9 +254,14 @@ def _run_extraction(
     }
     try:
         from agent.memory_dual_write import (
+            mirror_mcp_memory_save_to_local,
+            tool_result_indicates_success,
             upsert_structured_mirror_record,
             build_structured_mirror_record,
         )
+        from agent.open_questions import append_open_question_entry
+        from agent.prompt_builder import _resolve_memory_save_tool_name
+        import run_agent as _ra
 
         messages = _build_extraction_messages(user_message, assistant_message)
 
@@ -300,8 +308,14 @@ def _run_extraction(
             logger.debug("memory_extractor: no facts extracted")
             return
 
-        written = 0
+        high_conf_written = 0
+        low_conf_queued = 0
+        skipped_low_conf = 0
         confidences: List[float] = []
+        save_threshold, ask_threshold = _resolve_capture_thresholds(agent)
+        valid_tools = set(getattr(agent, "valid_tool_names", []) or [])
+        memory_save_tool = _resolve_memory_save_tool_name(valid_tools)
+
         for fact in facts:
             # Override type to "profile" for user-scope facts (scope drives type in our schema)
             if fact["scope"] == "user" and fact["type"] not in {"profile"}:
@@ -309,7 +323,78 @@ def _run_extraction(
             conf = fact.get("confidence")
             if isinstance(conf, (int, float)):
                 confidences.append(float(conf))
+            score = float(conf) if isinstance(conf, (int, float)) else 0.6
+            score = max(0.0, min(1.0, score))
+
+            if score < ask_threshold:
+                skipped_low_conf += 1
+                continue
+
+            if score < save_threshold:
+                context = f"Memory capture confirmation needed: {fact.get('title', 'durable topic')}"
+                needed = (
+                    f"Confirm whether this should be saved as durable memory: "
+                    f"{str(fact.get('content') or '').strip()[:200]}"
+                )
+                dedupe_key = "|".join(
+                    [
+                        "memory-extractor",
+                        str(fact.get("scope") or "project"),
+                        str(fact.get("type") or "notes"),
+                        str(fact.get("title") or "").strip().lower()[:80],
+                    ]
+                )
+                append_open_question_entry(
+                    context=context,
+                    needed=needed,
+                    source="memory-extractor",
+                    turn_id=turn_id,
+                    dedupe_key=dedupe_key,
+                )
+                low_conf_queued += 1
+                continue
+
             hints = {"extraction_confidence": conf} if isinstance(conf, (int, float)) else {}
+            mcp_saved = False
+            if memory_save_tool:
+                tool_args = {
+                    "title": fact["title"],
+                    "content": fact["content"],
+                    "type": fact["type"],
+                    "tags": fact.get("tags") or [],
+                    "hints": hints,
+                }
+                call_id = f"memory-extractor-{uuid.uuid4().hex[:12]}"
+                try:
+                    mcp_result = _ra.handle_function_call(
+                        memory_save_tool,
+                        tool_args,
+                        str(effective_task_id or ""),
+                        tool_call_id=call_id,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        api_request_id="",
+                        enabled_tools=list(valid_tools) if valid_tools else None,
+                        skip_pre_tool_call_hook=True,
+                        skip_tool_request_middleware=True,
+                        enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                        disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                        tool_request_middleware_trace=[],
+                    )
+                    if tool_result_indicates_success(mcp_result):
+                        mcp_saved = True
+                        mirror_mcp_memory_save_to_local(
+                            agent,
+                            memory_save_tool,
+                            tool_args,
+                            mcp_result,
+                            effective_task_id=str(effective_task_id or ""),
+                            tool_call_id=call_id,
+                        )
+                except Exception:
+                    mcp_saved = False
+
+            # Local structured mirror fallback/secondary persistence.
             record = build_structured_mirror_record(
                 tool_args={**fact, "hints": hints},
                 write_meta={"write_origin": "llm_extraction", "scope": fact["scope"]},
@@ -318,24 +403,37 @@ def _run_extraction(
             )
             if record:
                 upsert_structured_mirror_record(record)
-                written += 1
+                high_conf_written += 1
+            elif mcp_saved:
+                high_conf_written += 1
 
-        if written:
+        if high_conf_written or low_conf_queued:
             avg_conf = (sum(confidences) / len(confidences)) if confidences else None
             _append_extraction_audit_event({
                 **base_event,
                 "status": "save",
                 "reason_code": "save_facts_written",
-                "saved_count": int(written),
+                "saved_count": int(high_conf_written),
+                "queued_for_confirmation_count": int(low_conf_queued),
+                "skipped_low_confidence_count": int(skipped_low_conf),
+                "save_threshold": float(save_threshold),
+                "ask_threshold": float(ask_threshold),
                 "confidence": avg_conf,
                 "latency_ms": int((time.time() - started) * 1000),
             })
-            logger.debug("memory_extractor: saved %d fact(s)", written)
+            logger.debug(
+                "memory_extractor: saved=%d queued=%d skipped=%d",
+                high_conf_written,
+                low_conf_queued,
+                skipped_low_conf,
+            )
         else:
             _append_extraction_audit_event({
                 **base_event,
                 "status": "skip",
                 "reason_code": "skip_no_records_built",
+                "save_threshold": float(save_threshold),
+                "ask_threshold": float(ask_threshold),
                 "latency_ms": int((time.time() - started) * 1000),
             })
 
@@ -372,6 +470,36 @@ def should_attempt_extraction(
 
     # Mid-size exchanges: run when either side looks like semantic prose.
     return _looks_natural_language(user_text) or _looks_natural_language(assistant_text)
+
+
+def _resolve_capture_thresholds(agent: Any) -> tuple[float, float]:
+    """Read memory extraction thresholds from config with safe defaults.
+
+    - auto-save when confidence >= save_threshold
+    - ask/queue when ask_threshold <= confidence < save_threshold
+    - skip below ask_threshold
+    """
+    save_threshold = DEFAULT_AUTO_SAVE_CONFIDENCE
+    ask_threshold = DEFAULT_ASK_CONFIDENCE
+    try:
+        cfg = getattr(agent, "_agent_cfg", {}) if hasattr(agent, "_agent_cfg") else {}
+        mem_cfg = cfg.get("memory", {}) if isinstance(cfg, dict) else {}
+        managed_cfg = mem_cfg.get("managed_memory", {}) if isinstance(mem_cfg, dict) else {}
+        raw_save = managed_cfg.get("auto_save_min_confidence")
+        raw_ask = managed_cfg.get("ask_min_confidence")
+        if raw_save is not None:
+            save_threshold = float(raw_save)
+        if raw_ask is not None:
+            ask_threshold = float(raw_ask)
+    except Exception:
+        save_threshold = DEFAULT_AUTO_SAVE_CONFIDENCE
+        ask_threshold = DEFAULT_ASK_CONFIDENCE
+
+    save_threshold = max(0.0, min(1.0, float(save_threshold)))
+    ask_threshold = max(0.0, min(1.0, float(ask_threshold)))
+    if ask_threshold > save_threshold:
+        ask_threshold = save_threshold
+    return save_threshold, ask_threshold
 
 
 def spawn_memory_extraction_thread(

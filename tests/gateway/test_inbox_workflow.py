@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from gateway.inbox_workflow import format_inbox_confirmation, process_inbox_dictation
 
@@ -95,3 +96,20 @@ def test_format_inbox_confirmation_reports_no_links(tmp_path: Path):
     assert "action:" in summary
     assert "file:" in summary
     assert "links:" in summary
+
+
+def test_process_inbox_dictation_persists_durable_topic(tmp_path: Path):
+    _write_agents_with_inbox_route(tmp_path)
+    with patch("gateway.inbox_workflow.capture_durable_topic") as capture_mock:
+        result = process_inbox_dictation(
+            transcript="Document customer escalation lessons learned for next sprint.",
+            workspace_root=str(tmp_path),
+            source_platform="telegram",
+            source_chat_id="chat-5",
+        )
+
+    assert result.success is True
+    capture_mock.assert_called_once()
+    kwargs = capture_mock.call_args.kwargs
+    assert kwargs["source"] == "inbox-dictation"
+    assert kwargs["confidence"] == 0.9

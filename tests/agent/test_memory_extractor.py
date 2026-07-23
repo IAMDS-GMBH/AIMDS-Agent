@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from agent.memory_extractor import (
     _looks_natural_language,
+    _resolve_capture_thresholds,
     _run_extraction,
     _build_extraction_messages,
     _parse_extraction_response,
@@ -223,3 +224,87 @@ def test_run_extraction_writes_save_audit_with_confidence(tmp_path, monkeypatch)
     assert saves
     assert saves[0]["reason_code"] == "save_facts_written"
     assert abs(float(saves[0]["confidence"]) - 0.8) < 1e-6
+
+
+def test_resolve_capture_thresholds_defaults():
+    agent = SimpleNamespace()
+    save_t, ask_t = _resolve_capture_thresholds(agent)
+    assert 0.0 <= ask_t <= save_t <= 1.0
+
+
+def test_resolve_capture_thresholds_from_agent_cfg():
+    agent = SimpleNamespace(
+        _agent_cfg={
+            "memory": {
+                "managed_memory": {
+                    "auto_save_min_confidence": 0.85,
+                    "ask_min_confidence": 0.55,
+                }
+            }
+        }
+    )
+    save_t, ask_t = _resolve_capture_thresholds(agent)
+    assert save_t == 0.85
+    assert ask_t == 0.55
+
+
+def test_run_extraction_queues_low_confidence_for_confirmation(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    class _Msg:
+        content = '[{"title":"Maybe preference","content":"User might prefer compact updates.","type":"profile","scope":"user","tags":["tone"],"confidence":0.6}]'
+
+    class _Choice:
+        message = _Msg()
+
+    class _Resp:
+        choices = [_Choice()]
+
+    class _Completions:
+        @staticmethod
+        def create(**kwargs):
+            return _Resp()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    queued = []
+
+    import agent.open_questions as _oq
+    monkeypatch.setattr(
+        _oq,
+        "append_open_question_entry",
+        lambda **kwargs: queued.append(kwargs) or (hermes_home / "_open-questions.md"),
+    )
+
+    agent = SimpleNamespace(
+        client=_Client(),
+        model="m1",
+        session_id="s1",
+        _current_turn_id="turn-1",
+        valid_tool_names=[],
+        _agent_cfg={
+            "memory": {
+                "managed_memory": {
+                    "auto_save_min_confidence": 0.9,
+                    "ask_min_confidence": 0.4,
+                }
+            }
+        },
+    )
+
+    _run_extraction(
+        agent,
+        user_message="Please remember how I like update summaries.",
+        assistant_message="Understood.",
+        effective_task_id="t1",
+    )
+
+    assert len(queued) == 1
+    saves = read_extraction_audit_events(limit=10, status="save")
+    assert saves
+    assert saves[0]["queued_for_confirmation_count"] == 1
