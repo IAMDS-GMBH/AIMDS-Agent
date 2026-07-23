@@ -85,7 +85,7 @@ def get_github_oauth_status() -> Dict[str, Any]:
         return {
             "logged_in": True,
             "source": "env",
-            "source_label": ".env: GITHUB_PERSONAL_ACCESS_TOKEN",
+            "source_label": f"GitHub Account Token (…{preview})",
             "token_preview": f"…{preview}",
             "expires_at": None,
             "has_refresh_token": True,
