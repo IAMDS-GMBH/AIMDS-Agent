@@ -3993,9 +3993,17 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
       return
     }
 
+    let rootDomain = baseUrl.trim().replace(/\/+$/, '')
+    for (const suffix of ['/litellm/v1', '/litellm', '/auth']) {
+      if (rootDomain.endsWith(suffix)) {
+        rootDomain = rootDomain.slice(0, -suffix.length).replace(/\/+$/, '')
+      }
+    }
+
+    const authBaseUrl = `${rootDomain}/auth`
     const effectiveRealm = (realm || 'aimds').trim()
-    const effectiveRedirectUri = (redirectUri || 'hermes://callback').trim()
-    const tokenUrl = `${baseUrl}/auth/realms/${effectiveRealm}/protocol/openid-connect/token`
+    const effectiveRedirectUri = (redirectUri || `${rootDomain}/oauth/oidc/callback`).trim()
+    const tokenUrl = `${authBaseUrl}/realms/${effectiveRealm}/protocol/openid-connect/token`
 
     const authParams = new URLSearchParams({
       client_id: 'hermes-app',
@@ -4003,7 +4011,7 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
       scope: 'openid',
       redirect_uri: effectiveRedirectUri
     })
-    const authUrl = `${baseUrl}/auth/realms/${effectiveRealm}/protocol/openid-connect/auth?${authParams}`
+    const authUrl = `${authBaseUrl}/realms/${effectiveRealm}/protocol/openid-connect/auth?${authParams}`
 
     let settled = false
     let win = null
@@ -4039,7 +4047,7 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
     })
 
     // Intercept Keycloak's redirect to the callback URI before Open-WebUI loads it.
-    win.webContents.on('will-navigate', (event, url) => {
+    const handleRedirect = (event, url) => {
       if (!url.startsWith(effectiveRedirectUri)) return
       event.preventDefault()
 
@@ -4073,10 +4081,13 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
               'Ensure the LiteLLM virtual key is mapped as a token claim in Keycloak.'
             )
           }
-          finish(null, { apiKey, baseUrl })
+          finish(null, { apiKey, baseUrl: rootDomain })
         })
         .catch(err => finish(err instanceof Error ? err : new Error(String(err))))
-    })
+    }
+
+    win.webContents.on('will-navigate', handleRedirect)
+    win.webContents.on('will-redirect', handleRedirect)
 
     win.loadURL(authUrl).catch(error => {
       finish(error instanceof Error ? error : new Error(String(error)))

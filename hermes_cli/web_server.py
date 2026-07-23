@@ -6145,9 +6145,9 @@ def _iamds_keycloak_base_url() -> str:
             "IAMDS_LITELLM_BASE_URL is not set. "
             "Configure it in Settings → IAMDS LiteLLM before connecting via Keycloak."
         )
-    for suffix in ("/litellm/v1", "/litellm"):
+    for suffix in ("/litellm/v1", "/litellm", "/auth"):
         if raw.endswith(suffix):
-            raw = raw[: -len(suffix)]
+            raw = raw[: -len(suffix)].rstrip("/")
             break
     return raw.rstrip("/")
 

@@ -138,10 +138,17 @@ function IamdsExtraProvidersPanel() {
 
   const handleKeycloakLogin = async (baseUrl: string, targetKeyEnv: string) => {
     try {
+      let rootDomain = baseUrl.trim().replace(/\/+$/, '')
+      for (const suffix of ['/litellm/v1', '/litellm', '/auth']) {
+        if (rootDomain.endsWith(suffix)) {
+          rootDomain = rootDomain.slice(0, -suffix.length).replace(/\/+$/, '')
+        }
+      }
+      const redirectUri = DEFAULT_REDIRECT_URI || `${rootDomain}/oauth/oidc/callback`
       const result = await keycloakLogin({
-        baseUrl,
+        baseUrl: rootDomain,
         realm: DEFAULT_REALM,
-        redirectUri: DEFAULT_REDIRECT_URI || `${baseUrl}/oauth/oidc/callback`,
+        redirectUri,
       })
       await setEnvVar(targetKeyEnv, result.apiKey)
       notify({ kind: 'success', message: `API key obtained via Keycloak SSO (${targetKeyEnv})`, title: 'Connected' })
@@ -359,10 +366,17 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
     }
 
     try {
+      let rootDomain = baseUrl.trim().replace(/\/+$/, '')
+      for (const suffix of ['/litellm/v1', '/litellm', '/auth']) {
+        if (rootDomain.endsWith(suffix)) {
+          rootDomain = rootDomain.slice(0, -suffix.length).replace(/\/+$/, '')
+        }
+      }
+      const redirectUri = DEFAULT_REDIRECT_URI || `${rootDomain}/oauth/oidc/callback`
       const result = await keycloakLogin({
-        baseUrl,
+        baseUrl: rootDomain,
         realm: DEFAULT_REALM,
-        redirectUri: DEFAULT_REDIRECT_URI || `${baseUrl}/oauth/oidc/callback`,
+        redirectUri,
       })
 
       await setEnvVar(targetKey, result.apiKey)
