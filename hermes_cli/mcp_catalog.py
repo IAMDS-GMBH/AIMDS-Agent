@@ -705,11 +705,25 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
         print(color("  Configure credentials:", Colors.CYAN))
         _prompt_env_vars(entry.auth.env)
     elif entry.auth.type == "oauth":
-        if entry.auth.provider:
-            # Case 2: provider-mediated (Google, GitHub, etc.). We rely on
-            # the existing `hermes auth <provider>` flow. Surface guidance
-            # here rather than auto-running it — keeps the catalog install
-            # decoupled from provider-auth lifecycle.
+        if entry.auth.env:
+            print()
+            print(color("  Configure credentials:", Colors.CYAN))
+            collected = _prompt_env_vars(entry.auth.env)
+            has_token = any(v and v.strip() for v in collected.values())
+        else:
+            has_token = False
+
+        if not has_token and entry.auth.provider == "github":
+            print(color("  Starting GitHub OAuth device code login...", Colors.CYAN))
+            from hermes_cli.copilot_auth import copilot_device_code_login
+            token = copilot_device_code_login()
+            if token:
+                from hermes_cli.config import save_env_value
+                save_env_value("GITHUB_PERSONAL_ACCESS_TOKEN", token)
+                print(color("  ✓ Saved GitHub OAuth token to ~/.hermes/.env", Colors.GREEN))
+            else:
+                print(color("  ⚠ GitHub OAuth incomplete; you can set GITHUB_PERSONAL_ACCESS_TOKEN later.", Colors.YELLOW))
+        elif entry.auth.provider:
             print(color(
                 f"  This MCP uses {entry.auth.provider} OAuth. Run "
                 f"`hermes auth {entry.auth.provider}` if you have not "

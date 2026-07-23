@@ -3267,6 +3267,25 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 # ---------------------------------------------------------------------------
 
 
+def _clean_mcp_args(server: "MCPServerTask", tool_name: str, args: dict) -> dict:
+    if not isinstance(args, dict):
+        return args
+    clean = dict(args)
+    for k in ("name", "tool_name"):
+        if k in clean:
+            val = str(clean[k])
+            if val == tool_name or val == server.name or val.endswith(tool_name) or "mcp_" in val:
+                tool_obj = next((t for t in getattr(server, "_tools", []) if getattr(t, "name", "") == tool_name), None)
+                has_prop = False
+                if tool_obj and hasattr(tool_obj, "inputSchema") and isinstance(tool_obj.inputSchema, dict):
+                    props = tool_obj.inputSchema.get("properties") or {}
+                    if k in props:
+                        has_prop = True
+                if not has_prop:
+                    clean.pop(k, None)
+    return clean
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -3314,8 +3333,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             )
 
         async def _call():
+            clean_args = _clean_mcp_args(server, tool_name, args)
             async with server._rpc_lock:
-                result = await server.session.call_tool(tool_name, arguments=args)
+                result = await server.session.call_tool(tool_name, arguments=clean_args)
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""

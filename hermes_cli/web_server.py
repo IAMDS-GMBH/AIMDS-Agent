@@ -5187,6 +5187,14 @@ def _claude_code_only_status() -> Dict[str, Any]:
 # to a third-party CLI like Claude Code or Qwen).
 _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     {
+        "id": "github",
+        "name": "GitHub (OAuth)",
+        "flow": "device_code",
+        "cli_command": "hermes auth add github",
+        "docs_url": "https://github.com/settings/tokens",
+        "status_fn": None,
+    },
+    {
         "id": "nous",
         "name": "Nous Portal",
         "flow": "device_code",
@@ -5275,6 +5283,9 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
         except Exception as e:
             return {"logged_in": False, "error": str(e)}
     try:
+        if provider_id in {"github", "github-oauth"}:
+            from hermes_cli.github_auth import get_github_oauth_status
+            return get_github_oauth_status()
         from hermes_cli import auth as hauth
         if provider_id == "nous":
             raw = hauth.get_nous_auth_status()
@@ -5692,13 +5703,68 @@ def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
 
 
 async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
-    """Initiate a device-code flow (Nous, OpenAI Codex, or MiniMax).
+    """Initiate a device-code flow (GitHub, Nous, OpenAI Codex, or MiniMax).
 
     Calls the provider's device-auth endpoint via the existing CLI helpers,
     then spawns a background poller. Returns the user-facing display fields
     so the UI can render the verification page link + user code.
     """
-    if provider_id == "nous":
+    if provider_id in {"github", "github-oauth"}:
+        from hermes_cli.github_auth import request_github_device_code, poll_github_device_code
+        device_data = await asyncio.get_running_loop().run_in_executor(
+            None, request_github_device_code
+        )
+        sid, sess = _new_oauth_session("github", "device_code")
+        sess["device_code"] = str(device_data["device_code"])
+        sess["interval"] = int(device_data.get("interval", 5))
+        sess["expires_at"] = time.time() + int(device_data.get("expires_in", 900))
+
+        def _github_worker():
+            interval = max(int(sess["interval"]), 1)
+            while time.time() < sess["expires_at"]:
+                time.sleep(interval)
+                with _oauth_sessions_lock:
+                    if sid not in _oauth_sessions:
+                        return
+                try:
+                    res = poll_github_device_code(sess["device_code"])
+                    token = res.get("access_token")
+                    if token:
+                        save_env_value("GITHUB_PERSONAL_ACCESS_TOKEN", token)
+                        with _oauth_sessions_lock:
+                            s = _oauth_sessions.get(sid)
+                            if s:
+                                s["status"] = "approved"
+                        _log.info("oauth/device: github login completed (session=%s)", sid)
+                        return
+                    err = res.get("error")
+                    if err in ("authorization_pending", "slow_down"):
+                        if err == "slow_down":
+                            interval += 5
+                        continue
+                    elif err:
+                        with _oauth_sessions_lock:
+                            s = _oauth_sessions.get(sid)
+                            if s:
+                                s["status"] = "error"
+                                s["error_message"] = f"GitHub auth error: {err}"
+                        return
+                except Exception as e:
+                    _log.debug("github device code poll error: %s", e)
+
+        t = threading.Thread(target=_github_worker, daemon=True)
+        t.start()
+
+        verification_uri = device_data.get("verification_uri", "https://github.com/login/device")
+        user_code = device_data.get("user_code", "")
+        return {
+            "session_id": sid,
+            "verification_url": verification_uri,
+            "user_code": user_code,
+            "expires_in": device_data.get("expires_in", 900),
+            "interval": sess["interval"],
+        }
+    elif provider_id == "nous":
         from hermes_cli.auth import (
             _request_device_code,
             PROVIDER_REGISTRY,

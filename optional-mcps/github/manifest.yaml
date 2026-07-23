@@ -14,10 +14,16 @@ transport:
     - "@modelcontextprotocol/server-github"
 
 auth:
-  type: api_key
+  type: oauth
+  provider: github
+  env_var: GITHUB_PERSONAL_ACCESS_TOKEN
+  scopes:
+    - repo
+    - read:org
+    - user
   env:
     - name: GITHUB_PERSONAL_ACCESS_TOKEN
-      prompt: "GitHub Personal Access Token (PAT) or OIDC/OAuth token (optional)"
+      prompt: "GitHub PAT (optional; leave blank to authenticate via OAuth device code)"
       required: false
       secret: true
 

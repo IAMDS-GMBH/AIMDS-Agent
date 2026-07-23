@@ -766,11 +766,6 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
 
     On parse error, returns ``(None, {}, error_message)``.
     """
-    name = str(args.get("name") or "").strip()
-    if not name:
-        return None, {}, "tool_call requires a 'name' argument"
-    if name in BRIDGE_TOOL_NAMES:
-        return None, {}, f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
     raw_args = args.get("arguments")
     if raw_args is None:
         raw_args = {}
@@ -781,6 +776,15 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
             return None, {}, f"tool_call 'arguments' is not valid JSON: {e}"
     if not isinstance(raw_args, dict):
         return None, {}, "tool_call 'arguments' must be an object"
+
+    name = str(args.get("name") or "").strip()
+    if not name and ("name" in raw_args or "tool_name" in raw_args):
+        name = str(raw_args.pop("name", None) or raw_args.pop("tool_name", None) or "").strip()
+
+    if not name:
+        return None, {}, "tool_call requires a 'name' argument"
+    if name in BRIDGE_TOOL_NAMES:
+        return None, {}, f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
 
     from tools.registry import registry
     entry = registry.get_entry(name)
