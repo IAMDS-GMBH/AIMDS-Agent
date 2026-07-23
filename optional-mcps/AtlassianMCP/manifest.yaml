@@ -34,16 +34,16 @@ auth:
 
 tools:
   default_enabled:
-    - atlassian-jira_search
-    - atlassian-jira_get_issue
-    - atlassian-jira_create_issue
-    - atlassian-jira_update_issue
-    - atlassian-jira_add_comment
-    - atlassian-jira_add_worklog
-    - atlassian-jira_get_worklog
-    - atlassian-jira_get_issue_sla
-    - atlassian-jira_get_transitions
-    - atlassian-jira_transition_issue
+    - jira_search
+    - jira_get_issue
+    - jira_create_issue
+    - jira_update_issue
+    - jira_add_comment
+    - jira_add_worklog
+    - jira_get_worklog
+    - jira_get_issue_sla
+    - jira_get_transitions
+    - jira_transition_issue
 
 post_install: |
   Jira MCP (mcp-atlassian via uvx) has been configured.
@@ -53,8 +53,8 @@ post_install: |
     - Jira Local / Data Center / Server: Set JIRA_URL and JIRA_PAT (Personal Access Token).
 
   Time Tracking & Worklog tools included:
-    - atlassian-jira_add_worklog: Log time spent on issues.
-    - atlassian-jira_get_worklog: Retrieve time tracking entries.
-    - atlassian-jira_get_issue_sla: Calculate SLA metrics and status durations.
+    - jira_add_worklog: Log time spent on issues.
+    - jira_get_worklog: Retrieve time tracking entries.
+    - jira_get_issue_sla: Calculate SLA metrics and status durations.
 
   Start a new Hermes session to load the Jira tools.
