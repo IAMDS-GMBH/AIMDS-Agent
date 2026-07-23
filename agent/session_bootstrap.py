@@ -105,13 +105,13 @@ def evaluate_session_bootstrap(
 
 
 def build_bootstrap_status_block(status: BootstrapStatus) -> str:
+    mem_state = "ok" if status.memory_context_ok else "missing"
+    if status.hydration_required:
+        hyd_state = "ok" if status.hydration_ok else "missing"
+        hydration = f"hydration=required:{hyd_state}"
+    else:
+        hydration = "hydration=not-required"
     return (
-        "Session-start bootstrap status:\n"
-        f"- state: {status.state}\n"
-        f"- reason_code: {status.reason_code}\n"
-        f"- memory_context_required: {str(status.memory_context_required).lower()}\n"
-        f"- memory_context_ok: {str(status.memory_context_ok).lower()}\n"
-        f"- workspace_hydration_required: {str(status.hydration_required).lower()}\n"
-        f"- workspace_hydration_ok: {str(status.hydration_ok).lower()}\n"
-        f"- details: {status.details}"
+        f"Session-start bootstrap status: {status.state} "
+        f"({status.reason_code}; mem={mem_state}; {hydration})"
     )

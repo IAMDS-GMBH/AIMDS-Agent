@@ -40,5 +40,5 @@ def test_build_bootstrap_status_block_contains_reason_code():
         memory_context_required=True,
     )
     text = build_bootstrap_status_block(status)
-    assert "Session-start bootstrap status:" in text
-    assert "reason_code: memory_context_missing_or_failed" in text
+    assert "Session-start bootstrap status: degraded" in text
+    assert "memory_context_missing_or_failed" in text

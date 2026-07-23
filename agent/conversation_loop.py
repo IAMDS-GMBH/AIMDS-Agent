@@ -64,7 +64,6 @@ from agent.prompt_builder import _resolve_memory_context_tool_name, _resolve_mem
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.retry_utils import jittered_backoff
 from agent.session_bootstrap import (
-    build_bootstrap_status_block,
     evaluate_session_bootstrap,
     memory_context_requires_hydration,
 )
@@ -790,7 +789,7 @@ def _append_session_bootstrap_status(
     payload: Optional[Dict[str, Any]],
     hydration_added: bool,
 ) -> None:
-    """Append explicit first-turn bootstrap readiness status block once."""
+    """Evaluate first-turn bootstrap readiness without rendering chat output."""
     if getattr(agent, "_session_start_bootstrap_status_emitted", False):
         return
     if not getattr(agent, "_session_start_bootstrap_contract_enabled", False):
@@ -801,13 +800,7 @@ def _append_session_bootstrap_status(
         hydration_added=hydration_added,
         memory_context_required=bool(getattr(agent, "_enforce_initial_memory_context", True)),
     )
-    messages.append(
-        {
-            "role": "system",
-            "content": build_bootstrap_status_block(status),
-            "_session_start_bootstrap_status": True,
-        }
-    )
+    # Intentionally no rendered status block in chat.
     agent._session_start_bootstrap_status_emitted = True
     agent._session_start_bootstrap_ready = bool(status.ready)
     agent._session_start_bootstrap_reason_code = str(status.reason_code)
@@ -931,6 +924,10 @@ def _sanitize_onboarding_context_line_text(value: str) -> str:
 def _has_explicit_onboarding_signal(payload: Dict[str, Any]) -> bool:
     """Return True only when payload explicitly indicates onboarding flow."""
     if not isinstance(payload, dict):
+        return False
+    if _memory_context_payload_has_user_profile(payload):
+        # If user profile data is already present, onboarding should not be forced
+        # even when stale onboarding flags leak in a mixed payload.
         return False
     return bool(
         payload.get("onboarding_init_context_required")
@@ -1077,10 +1074,45 @@ def _read_recent_onboarding_metadata_from_memory_context(
         if not isinstance(payload, dict):
             continue
 
+        # Latest profile-bearing payload wins: onboarding is complete.
+        if _memory_context_payload_has_user_profile(payload):
+            return None
+
         if _has_explicit_onboarding_signal(payload):
             return payload
 
     return None
+
+
+def _memory_context_payload_has_user_profile(payload: Dict[str, Any]) -> bool:
+    """Return True when memory_context payload already contains user profile data."""
+    if not isinstance(payload, dict):
+        return False
+
+    candidate_maps: list[Dict[str, Any]] = [payload]
+    nested = payload.get("result")
+    if isinstance(nested, dict):
+        candidate_maps.append(nested)
+
+    strong_keys = ("profile", "user_profile", "user", "person")
+    scalar_profile_keys = ("name", "role", "preferences", "work_style", "language")
+    for candidate in candidate_maps:
+        if not isinstance(candidate, dict):
+            continue
+
+        for key in strong_keys:
+            value = candidate.get(key)
+            if isinstance(value, list) and len(value) > 0:
+                return True
+            if isinstance(value, dict) and len(value) > 0:
+                return True
+            if isinstance(value, str) and value.strip().lower() not in {"", "none", "null"}:
+                return True
+
+        if any(candidate.get(key) for key in scalar_profile_keys):
+            return True
+
+    return False
 
 
 def _enforce_single_onboarding_clarify_question(

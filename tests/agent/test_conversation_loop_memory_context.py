@@ -14,6 +14,7 @@ from agent.conversation_loop import (
     _maybe_translate_onboarding_prompts_via_llm,
     _parse_json_object_from_text,
     _build_stale_project_row,
+    _has_explicit_onboarding_signal,
     _sanitize_onboarding_context_line_text,
 )
 
@@ -197,7 +198,7 @@ def test_enforce_initial_memory_context_call_adds_compact_workspace_hydration_wh
     assert "Beta [waiting]" in content
 
 
-def test_enforce_initial_memory_context_call_appends_ready_bootstrap_status(tmp_path, monkeypatch):
+def test_enforce_initial_memory_context_call_tracks_ready_bootstrap_status_without_rendering(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     (workspace / "tasks").mkdir(parents=True)
     (workspace / "tasks" / "thisweek.md").write_text("# Focus\n- [ ] Bootstrap\n", encoding="utf-8")
@@ -238,11 +239,13 @@ def test_enforce_initial_memory_context_call_appends_ready_bootstrap_status(tmp_
     bootstrap_msgs = [
         m for m in messages if m.get("role") == "system" and "Session-start bootstrap status" in str(m.get("content", ""))
     ]
-    assert len(bootstrap_msgs) == 1
-    assert "state: ready" in bootstrap_msgs[0]["content"]
+    assert len(bootstrap_msgs) == 0
+    assert getattr(agent, "_session_start_bootstrap_status_emitted", False) is True
+    assert getattr(agent, "_session_start_bootstrap_ready", None) is True
+    assert getattr(agent, "_session_start_bootstrap_reason_code", "") == "ok"
 
 
-def test_enforce_initial_memory_context_call_appends_degraded_bootstrap_status_on_error():
+def test_enforce_initial_memory_context_call_tracks_degraded_bootstrap_status_without_rendering():
     def _mock_execute_tool_calls(assistant_message, messages, _effective_task_id, _api_call_count):
         tc = assistant_message.tool_calls[0]
         messages.append(
@@ -278,9 +281,10 @@ def test_enforce_initial_memory_context_call_appends_degraded_bootstrap_status_o
     bootstrap_msgs = [
         m for m in messages if m.get("role") == "system" and "Session-start bootstrap status" in str(m.get("content", ""))
     ]
-    assert len(bootstrap_msgs) == 1
-    assert "state: degraded" in bootstrap_msgs[0]["content"]
-    assert "reason_code: memory_context_missing_or_failed" in bootstrap_msgs[0]["content"]
+    assert len(bootstrap_msgs) == 0
+    assert getattr(agent, "_session_start_bootstrap_status_emitted", False) is True
+    assert getattr(agent, "_session_start_bootstrap_ready", None) is False
+    assert getattr(agent, "_session_start_bootstrap_reason_code", "") == "memory_context_missing_or_failed"
 
 
 def test_build_stale_project_row_flags_only_active_entries_after_14_days():
@@ -503,6 +507,50 @@ def test_read_recent_onboarding_metadata_ignores_non_onboarding_question_text():
         valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
     )
 
+    assert payload is None
+
+
+def test_has_explicit_onboarding_signal_skips_when_profile_present():
+    payload = {
+        "onboarding_question_flow_required": True,
+        "onboarding_first_question": "What is your role/title?",
+        "result": {
+            "profile": [{"name": "Gonzalo", "role": "Engineer"}]
+        },
+    }
+    assert _has_explicit_onboarding_signal(payload) is False
+
+
+def test_read_recent_onboarding_metadata_stops_on_latest_profile_payload():
+    messages = [
+        {
+            "role": "tool",
+            "name": "mcp_IAMDS_mcp_memory_memory_context",
+            "content": json.dumps(
+                {
+                    "onboarding_question_flow_required": True,
+                    "onboarding_questions": ["What is your role/title?"],
+                },
+                ensure_ascii=False,
+            ),
+        },
+        {
+            "role": "tool",
+            "name": "mcp_IAMDS_mcp_memory_memory_context",
+            "content": json.dumps(
+                {
+                    "result": {
+                        "profile": [{"name": "Gonzalo", "role": "Engineer"}]
+                    }
+                },
+                ensure_ascii=False,
+            ),
+        },
+    ]
+    payload = _read_recent_onboarding_metadata_from_memory_context(
+        messages=messages,
+        valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+    )
     assert payload is None
 
 
