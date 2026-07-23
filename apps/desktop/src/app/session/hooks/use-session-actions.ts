@@ -587,20 +587,44 @@ export function useSessionActions({
           // Non-fatal: gateway resume below can still hydrate the session.
         }
 
-        // Cron sessions (id starts with 'cron_') don't have a runtime yet when in-flight.
-        // Skip session.resume for them — they'll update via polling. For regular sessions,
-        // resume to bind the runtime and get any in-memory state.
+        // Cron sessions (id starts with 'cron_') can be in-flight without a
+        // resume-able runtime id. Keep their stored snapshot visible and let the
+        // dedicated cron polling hook refresh the transcript every second.
         const isCronSession = storedSessionId.startsWith('cron_')
-        const resumed = isCronSession
-          ? { session_id: storedSessionId, messages: [], info: {} }
-          : await requestGateway<SessionResumeResponse>('session.resume', {
-              session_id: storedSessionId,
-              cols: 96,
-              // Owning profile: in app-global remote mode one backend serves every
-              // profile, so the gateway opens this profile's state.db + home to
-              // resume + persist the right session (no-op for single/launch profile).
-              ...(sessionProfile ? { profile: sessionProfile } : {})
-            })
+        if (isCronSession) {
+          if (!isCurrentResume()) {
+            return
+          }
+
+          const currentMessages = $messages.get()
+          const messagesForView = preserveLocalAssistantErrors(
+            localSnapshot.length > 0 ? localSnapshot : currentMessages,
+            currentMessages
+          )
+
+          setActiveSessionId(storedSessionId)
+          activeSessionIdRef.current = storedSessionId
+          updateSessionState(
+            storedSessionId,
+            state => ({
+              ...state,
+              messages: messagesForView,
+              busy: false,
+              awaitingResponse: false
+            }),
+            storedSessionId
+          )
+          return
+        }
+
+        const resumed = await requestGateway<SessionResumeResponse>('session.resume', {
+          session_id: storedSessionId,
+          cols: 96,
+          // Owning profile: in app-global remote mode one backend serves every
+          // profile, so the gateway opens this profile's state.db + home to
+          // resume + persist the right session (no-op for single/launch profile).
+          ...(sessionProfile ? { profile: sessionProfile } : {})
+        })
 
         if (!isCurrentResume()) {
           return
