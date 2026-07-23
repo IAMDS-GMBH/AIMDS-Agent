@@ -304,6 +304,7 @@ TOOL_SEARCH_ANTI_HALLUCINATION_GUIDANCE = (
     "STRICT RULE: Only invoke function names that literally appear in your active JSON schema tools. Never invoke any function name that is not listed in your JSON schema.\n"
     "Items listed under <available_skills> are NOT callable functions. Do not attempt to invoke skill names or domain prefixes directly.\n"
     "NEVER guess, invent, or fabricate tool names based on domain prefixes or wildcard patterns (e.g. NEVER invent function names like 'outlook_*', 'jira_*', 'github_*', 'office_*', 'outlook_calendar_check', 'outlook_calendar_read', etc.).\n"
+    "When a specific action tool is ALREADY listed in your JSON schema tools (such as `jira_search`, `memory_search`, `mcp_customer__storage_search`), invoke that action tool directly! Do NOT call empty resource listing tools (e.g. `list_resources` or `mcp_AtlassianMCP_list_resources`) when a direct action tool exists.\n"
     "When asked about real-time or external platform state (such as JIRA tickets, emails, pull requests, calendar, web data, or files), "
     "always search for or use live tools (`tool_search` if not present) to fetch up-to-date data instead of assuming cached memory/vault snapshots are complete or current.\n"
     "If a required tool is missing from your active tools array, call `tool_search(query='...')` first — "
@@ -1608,11 +1609,11 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
     )
 
     return (
-        "# Memory & Storage Strategy\n"
-        f"- **Cross-device MCP Memory Vault (`{tool_name}`)**: Use this for persistent, cross-client context (user profile, durable work preferences, cross-device notes, contacts, global guidelines).\n"
-        "- **Local Workspace / Files**: Use local tools (such as `memory` with target='session'/`MEMORY.md`, local project filesystem, temporary TODOs) for purely local, machine- or session-specific tasks.\n"
-        f"Do NOT call `{tool_name}` repeatedly on generic greetings or routine tasks. Runtime may already perform one first-turn `{tool_name}` pass; rely on that and avoid duplicate broad preload calls.\n"
-        f"When the user asks about their profile, name, or cross-device saved facts, treat `{tool_name}` as the primary source.\n"
+        "# Memory & Dual-Vault Storage Strategy\n"
+        "- **Local Workspace / Obsidian Vault (Primary)**: Treat local workspace files, local markdown notes, code, and project artifacts as the primary working store for session files and detailed local notes.\n"
+        f"- **Cross-device MCP Memory Vault (`{tool_name}`)**: Secondary synchronized store for Open WebUI / mobile sync. Use `{tool_name}` on-demand when needed for user profile, durable rules, or cross-device context.\n"
+        f"Do NOT call `{tool_name}` automatically on generic greetings or routine tasks. Call `{tool_name}` on-demand when user rules or cross-device profile facts are required.\n"
+        f"When durable user preferences, rules, or contacts are confirmed, persist them via `{memory_save_tool_name or 'memory_save'}` so Open WebUI / mobile access stays up to date.\n"
         "Use memory read/list/search tools for explicit follow-up retrieval/editing tasks after memory_context, or when memory_context is unavailable.\n"
         f"{onboarding_hint}"
         f"If `{tool_name}` returns onboarding steps, complete that flow before other work. "

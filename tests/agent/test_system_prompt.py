@@ -104,24 +104,21 @@ class TestRemoteMcpMemoryPrompt:
     def test_uses_prefixed_remote_mcp_memory_context_tool_name(self):
         agent = _make_agent(valid_tool_names=[self._PREF_MCP_CONTEXT], platform="cli")
         stable = _stable_prompt(agent)
-        assert "# Memory Context (mandatory)" in stable
-        assert f"FIRST action in this session must be a call to `{self._PREF_MCP_CONTEXT}`" in stable
-        assert "Do not emit pre-tool filler text" in stable
-        assert "including `skill_view` and any memory read/list/search tools" in stable
-        assert "asks for their name" in stable
-        assert "primary source and call it before using any other memory tool" in stable
-        assert "Use memory read/list/search tools only for explicit follow-up retrieval/editing tasks" in stable
+        assert "# Memory & Dual-Vault Storage Strategy" in stable
+        assert "Local Workspace / Obsidian Vault (Primary)" in stable
+        assert f"Cross-device MCP Memory Vault (`{self._PREF_MCP_CONTEXT}`)" in stable
+        assert f"Do NOT call `{self._PREF_MCP_CONTEXT}` automatically on generic greetings" in stable
 
     def test_uses_prefixed_mcp_memory_context_tool_name(self):
         agent = _make_agent(valid_tool_names=["mcp_memory_memory_context"], platform="cli")
         stable = _stable_prompt(agent)
-        assert "# Memory Context (mandatory)" in stable
-        assert "FIRST action in this session must be a call to `mcp_memory_memory_context`" in stable
+        assert "# Memory & Dual-Vault Storage Strategy" in stable
+        assert "Cross-device MCP Memory Vault (`mcp_memory_memory_context`)" in stable
 
     def test_not_emitted_when_memory_context_tool_missing(self):
         agent = _make_agent(valid_tool_names=["read_file"], platform="cli")
         stable = _stable_prompt(agent)
-        assert "# Memory Context (mandatory)" not in stable
+        assert "# Memory & Dual-Vault Storage Strategy" not in stable
 
     def test_uses_mcp_memory_skill_read_for_init_hints_when_available(self):
         agent = _make_agent(
