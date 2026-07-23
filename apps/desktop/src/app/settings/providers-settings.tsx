@@ -528,7 +528,9 @@ function OAuthAccountsPanel() {
   const loadProviders = useCallback(async () => {
     try {
       const res = await listOAuthProviders()
-      setProviders(res.providers || [])
+      const all = res.providers || []
+      const githubOnly = all.filter(p => p.id === 'github')
+      setProviders(githubOnly.length > 0 ? githubOnly : all)
     } catch (err) {
       console.error('Failed to load OAuth providers', err)
     } finally {

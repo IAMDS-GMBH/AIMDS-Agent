@@ -835,6 +835,22 @@ function FlowPanel({
           <li>{t.onboarding.authorizeThere}</li>
           <li>{t.onboarding.copyAuthCode}</li>
         </ol>
+        <div className="flex flex-col gap-1 rounded-md border border-border/60 bg-muted/30 p-2 text-xs">
+          <div className="flex items-center justify-between">
+            <span className="font-medium text-foreground">Authorization URL:</span>
+            <Button
+              onClick={() => void navigator.clipboard.writeText(flow.start.auth_url)}
+              size="xs"
+              variant="ghost"
+              className="h-5 px-1.5 text-[11px]"
+            >
+              Copy URL
+            </Button>
+          </div>
+          <a href={flow.start.auth_url} target="_blank" rel="noreferrer" className="font-mono text-primary hover:underline break-all">
+            {flow.start.auth_url}
+          </a>
+        </div>
         <Input
           autoFocus
           onChange={e => setOnboardingCode(e.target.value)}
@@ -856,6 +872,22 @@ function FlowPanel({
     return (
       <Step title={t.onboarding.signInWith(title)}>
         <p className="text-sm text-muted-foreground">{t.onboarding.autoBrowser(title)}</p>
+        <div className="flex flex-col gap-1 rounded-md border border-border/60 bg-muted/30 p-2 text-xs">
+          <div className="flex items-center justify-between">
+            <span className="font-medium text-foreground">Authorization URL:</span>
+            <Button
+              onClick={() => void navigator.clipboard.writeText(flow.start.auth_url)}
+              size="xs"
+              variant="ghost"
+              className="h-5 px-1.5 text-[11px]"
+            >
+              Copy URL
+            </Button>
+          </div>
+          <a href={flow.start.auth_url} target="_blank" rel="noreferrer" className="font-mono text-primary hover:underline break-all">
+            {flow.start.auth_url}
+          </a>
+        </div>
         <FlowFooter left={<DocsLink href={flow.start.auth_url}>{t.onboarding.reopenSignInPage}</DocsLink>}>
           <span className="flex items-center gap-2 text-xs text-muted-foreground">
             <Loader2 className="size-3 animate-spin" />
@@ -894,6 +926,22 @@ function FlowPanel({
     <Step title={t.onboarding.signInWith(title)}>
       <p className="text-sm text-muted-foreground">{t.onboarding.deviceCodeOpened(title)}</p>
       <DeviceCode code={flow.start.user_code} copied={flow.copied} onCopy={() => void copyDeviceCode()} />
+      <div className="flex flex-col gap-1 rounded-md border border-border/60 bg-muted/30 p-2 text-xs">
+        <div className="flex items-center justify-between">
+          <span className="font-medium text-foreground">Verification URL:</span>
+          <Button
+            onClick={() => void navigator.clipboard.writeText(flow.start.verification_url)}
+            size="xs"
+            variant="ghost"
+            className="h-5 px-1.5 text-[11px]"
+          >
+            Copy URL
+          </Button>
+        </div>
+        <a href={flow.start.verification_url} target="_blank" rel="noreferrer" className="font-mono text-primary hover:underline break-all">
+          {flow.start.verification_url}
+        </a>
+      </div>
       <FlowFooter left={<DocsLink href={flow.start.verification_url}>{t.onboarding.reopenVerification}</DocsLink>}>
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
           <Loader2 className="size-3 animate-spin" />

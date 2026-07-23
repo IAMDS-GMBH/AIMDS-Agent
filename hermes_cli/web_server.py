@@ -5457,6 +5457,21 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
         _log.info("oauth/disconnect: iamds-keycloak (cleared IAMDS_LITELLM_API_KEY)")
         return {"ok": True, "provider": provider_id}
 
+    if provider_id == "github":
+        try:
+            from hermes_cli.config import save_env_value
+            save_env_value("GITHUB_PERSONAL_ACCESS_TOKEN", "")
+            save_env_value("GITHUB_TOKEN", "")
+            os.environ.pop("GITHUB_PERSONAL_ACCESS_TOKEN", None)
+            os.environ.pop("GITHUB_TOKEN", None)
+            from hermes_cli.auth import clear_provider_auth
+            clear_provider_auth("github")
+            _log.info("oauth/disconnect: github (cleared GITHUB_PERSONAL_ACCESS_TOKEN and GITHUB_TOKEN)")
+            return {"ok": True, "provider": provider_id}
+        except Exception as e:
+            _log.exception("disconnect github failed")
+            raise HTTPException(status_code=500, detail=str(e))
+
     try:
         from hermes_cli.auth import clear_provider_auth
         cleared = clear_provider_auth(provider_id)
