@@ -53,10 +53,10 @@ function buildIamdsLiteLlmKeyGroup(vars: Record<string, EnvVarInfo>): ProviderKe
   const groups: ProviderKeyGroup[] = [
     {
       advanced: [],
-      description: 'IAMDS LiteLLM gateway key from ~/.hermes/.env',
+      description: 'AIMDS-Suite API key from ~/.hermes/.env',
       docsUrl: '',
       hasAnySet: mainInfo.is_set,
-      name: 'IAMDS LiteLLM',
+      name: 'AIMDS-Suite',
       primary: [mainKey, mainInfo],
       priority: 0
     }
@@ -66,10 +66,10 @@ function buildIamdsLiteLlmKeyGroup(vars: Record<string, EnvVarInfo>): ProviderKe
   if (stagingInfo) {
     groups.push({
       advanced: [],
-      description: 'IAMDS LiteLLM staging key from ~/.hermes/.env',
+      description: 'AIMDS-Suite (Staging) API key from ~/.hermes/.env',
       docsUrl: '',
       hasAnySet: stagingInfo.is_set,
-      name: 'IAMDS LiteLLM (Staging)',
+      name: 'AIMDS-Suite (Staging)',
       primary: ['IAMDS_LITELLM_STAGING_API_KEY', stagingInfo],
       priority: 1
     })
@@ -79,10 +79,10 @@ function buildIamdsLiteLlmKeyGroup(vars: Record<string, EnvVarInfo>): ProviderKe
   if (devInfo) {
     groups.push({
       advanced: [],
-      description: 'IAMDS LiteLLM dev key from ~/.hermes/.env',
+      description: 'AIMDS-Suite (Development) API key from ~/.hermes/.env',
       docsUrl: '',
       hasAnySet: devInfo.is_set,
-      name: 'IAMDS LiteLLM (Dev)',
+      name: 'AIMDS-Suite (Development)',
       primary: ['IAMDS_LITELLM_DEV_API_KEY', devInfo],
       priority: 2
     })
@@ -128,7 +128,7 @@ function readProviderBaseUrl(config: Record<string, unknown>, slug: string): str
   return typeof baseUrl === 'string' ? toEditableBaseUrl(baseUrl) : ''
 }
 
-function IamdsExtraProvidersPanel() {
+function IamdsExtraProvidersPanel({ onKeycloakLogin }: { onKeycloakLogin?: (baseUrl: string, keyEnv: string) => void }) {
   const [stagingBaseUrl, setStagingBaseUrl] = useState('')
   const [devBaseUrl, setDevBaseUrl] = useState('')
   const [isSaving, setIsSaving] = useState(false)
@@ -190,8 +190,8 @@ function IamdsExtraProvidersPanel() {
         nextProviders[slug] = existing
       }
 
-      upsertOrDelete('iamds-litellm-staging', 'IAMDS LiteLLM (Staging)', 'IAMDS_LITELLM_STAGING_API_KEY', stagingNormalized)
-      upsertOrDelete('iamds-litellm-dev', 'IAMDS LiteLLM (Dev)', 'IAMDS_LITELLM_DEV_API_KEY', devNormalized)
+      upsertOrDelete('iamds-litellm-staging', 'AIMDS-Suite (Staging)', 'IAMDS_LITELLM_STAGING_API_KEY', stagingNormalized)
+      upsertOrDelete('iamds-litellm-dev', 'AIMDS-Suite (Development)', 'IAMDS_LITELLM_DEV_API_KEY', devNormalized)
 
       await saveHermesConfig({ ...config, providers: nextProviders })
       notify({ kind: 'success', message: 'Staging/Dev provider URLs saved', title: 'Saved' })
@@ -204,7 +204,7 @@ function IamdsExtraProvidersPanel() {
 
   return (
     <section className="mt-4 rounded-[8px] border border-border bg-muted/20 p-3">
-      <h3 className="text-sm font-medium text-foreground">Additional IAMDS providers</h3>
+      <h3 className="text-sm font-medium text-foreground">Additional AIMDS-Suite Base URLs</h3>
       <p className="mt-1 text-xs text-muted-foreground">
         Configure staging/dev endpoint URLs here. API keys are edited above in the provider key rows.
       </p>
@@ -214,24 +214,46 @@ function IamdsExtraProvidersPanel() {
           <label className="text-xs font-medium text-foreground" htmlFor="iamds-staging-url">
             Staging Base URL
           </label>
-          <Input
-            id="iamds-staging-url"
-            onChange={e => setStagingBaseUrl(e.target.value)}
-            placeholder="https://staging.suite.example.com"
-            value={stagingBaseUrl}
-          />
+          <div className="flex items-center gap-2">
+            <Input
+              id="iamds-staging-url"
+              onChange={e => setStagingBaseUrl(e.target.value)}
+              placeholder="https://staging.suite.example.com"
+              value={stagingBaseUrl}
+            />
+            {onKeycloakLogin && stagingBaseUrl.trim() && (
+              <Button
+                onClick={() => onKeycloakLogin(stagingBaseUrl.trim(), 'IAMDS_LITELLM_STAGING_API_KEY')}
+                size="sm"
+                variant="outline"
+              >
+                Staging SSO Key
+              </Button>
+            )}
+          </div>
         </div>
 
         <div className="grid gap-1">
           <label className="text-xs font-medium text-foreground" htmlFor="iamds-dev-url">
             Dev Base URL
           </label>
-          <Input
-            id="iamds-dev-url"
-            onChange={e => setDevBaseUrl(e.target.value)}
-            placeholder="https://dev.suite.example.com"
-            value={devBaseUrl}
-          />
+          <div className="flex items-center gap-2">
+            <Input
+              id="iamds-dev-url"
+              onChange={e => setDevBaseUrl(e.target.value)}
+              placeholder="https://dev.suite.example.com"
+              value={devBaseUrl}
+            />
+            {onKeycloakLogin && devBaseUrl.trim() && (
+              <Button
+                onClick={() => onKeycloakLogin(devBaseUrl.trim(), 'IAMDS_LITELLM_DEV_API_KEY')}
+                size="sm"
+                variant="outline"
+              >
+                Development SSO Key
+              </Button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -250,14 +272,15 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
   const [keycloakConnected, setKeycloakConnected] = useState(false)
   const [keycloakError, setKeycloakError] = useState<string | null>(null)
 
-  const handleKeycloakLogin = async () => {
+  const handleKeycloakLogin = async (overrideBaseUrl?: string, targetKeyEnv?: string) => {
     setKeycloakError(null)
     setIsKeycloakLoading(true)
     setKeycloakConnected(false)
 
-    const baseUrl = DEFAULT_BASE_URL.trim()
+    const baseUrl = (overrideBaseUrl || DEFAULT_BASE_URL).trim()
+    const targetKey = targetKeyEnv || 'IAMDS_LITELLM_API_KEY'
     if (!baseUrl) {
-      setKeycloakError('Set VITE_DEFAULT_BASE_URL in the enterprise bundle to enable Keycloak SSO')
+      setKeycloakError('Set a base URL to enable Keycloak SSO')
       setIsKeycloakLoading(false)
       return
     }
@@ -269,9 +292,9 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
         redirectUri: DEFAULT_REDIRECT_URI || `${baseUrl}/oauth/oidc/callback`,
       })
 
-      await setEnvVar('IAMDS_LITELLM_API_KEY', result.apiKey)
+      await setEnvVar(targetKey, result.apiKey)
       setKeycloakConnected(true)
-      notify({ kind: 'success', message: 'API key obtained via Keycloak SSO', title: 'Connected' })
+      notify({ kind: 'success', message: `API key obtained via Keycloak SSO (${targetKey})`, title: 'Connected' })
       onRefreshCreds?.()
     } catch (err) {
       setKeycloakError(err instanceof Error ? err.message : String(err))
@@ -288,7 +311,7 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
       {DEFAULT_BASE_URL && (
         <div className="rounded-[8px] border border-border bg-muted/20 p-3">
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-[length:var(--conversation-text-font-size)] font-semibold">IAMDS LiteLLM</span>
+            <span className="text-[length:var(--conversation-text-font-size)] font-semibold">AIMDS-Suite</span>
             <span className="inline-flex items-center gap-1.5 bg-primary px-2 py-0.5 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-primary-foreground">
               <span aria-hidden="true" className="dither inline-block size-2 shrink-0" />
               {t.onboarding.recommended}
@@ -339,7 +362,7 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
-              IAMDS LiteLLM
+              AIMDS-Suite
             </span>
             {!DEFAULT_BASE_URL && (
               <span className="inline-flex items-center gap-1.5 bg-primary px-2 py-0.5 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-primary-foreground">
@@ -722,7 +745,7 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
                 rowProps={rowProps}
               />
             ))}
-            <IamdsExtraProvidersPanel />
+            <IamdsExtraProvidersPanel onKeycloakLogin={handleKeycloakLogin} />
           </div>
         ) : (
           <div className="grid min-h-32 place-items-center px-4 py-8 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">

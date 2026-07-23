@@ -370,7 +370,7 @@ ALIASES: Dict[str, str] = {
 
 _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
-    "iamds-litellm": "IAMDS LiteLLM",
+    "iamds-litellm": "AIMDS-Suite",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
     "stepfun": "StepFun Step Plan",

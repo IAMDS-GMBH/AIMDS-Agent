@@ -1,5 +1,5 @@
 name: iamds-litellm-provider
 kind: model-provider
 version: 1.0.0
-description: IAMDS LiteLLM gateway (OpenAI-compatible API)
+description: AIMDS-Suite gateway (OpenAI-compatible API)
 author: IAMDS

@@ -2681,24 +2681,24 @@ REQUIRED_ENV_VARS = {}
 OPTIONAL_ENV_VARS = {
     # ── Provider (handled in provider selection, not shown in checklists) ──
     "IAMDS_LITELLM_API_KEY": {
-        "description": "IAMDS LiteLLM API key",
-        "prompt": "IAMDS LiteLLM API key",
+        "description": "AIMDS-Suite API key",
+        "prompt": "AIMDS-Suite API key",
         "url": None,
         "password": True,
         "category": "provider",
         "advanced": False,
     },
     "IAMDS_LITELLM_STAGING_API_KEY": {
-        "description": "IAMDS LiteLLM staging API key",
-        "prompt": "IAMDS LiteLLM staging API key",
+        "description": "AIMDS-Suite (Staging) API key",
+        "prompt": "AIMDS-Suite (Staging) API key",
         "url": None,
         "password": True,
         "category": "provider",
         "advanced": True,
     },
     "IAMDS_LITELLM_DEV_API_KEY": {
-        "description": "IAMDS LiteLLM dev API key",
-        "prompt": "IAMDS LiteLLM dev API key",
+        "description": "AIMDS-Suite (Development) API key",
+        "prompt": "AIMDS-Suite (Development) API key",
         "url": None,
         "password": True,
         "category": "provider",

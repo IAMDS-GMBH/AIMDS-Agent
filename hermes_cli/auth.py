@@ -182,7 +182,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
     "iamds-litellm": ProviderConfig(
         id="iamds-litellm",
-        name="IAMDS LiteLLM",
+        name="AIMDS-Suite",
         auth_type="api_key",
         api_key_env_vars=("IAMDS_LITELLM_API_KEY",),
         base_url_env_var="IAMDS_LITELLM_BASE_URL",
