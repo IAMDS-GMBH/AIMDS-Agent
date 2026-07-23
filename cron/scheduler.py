@@ -2066,7 +2066,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             session_id=_cron_session_id,
             session_db=_session_db,
         )
-        
+        # Cron should produce user-facing digest/review content only. Disable
+        # first-turn bootstrap context injections (memory_context/hydration)
+        # that are useful in interactive chat sessions but noisy in cron output.
+        agent._enforce_initial_memory_context = False
+        agent._session_start_compact_workspace_hydration = False
+        agent._session_start_bootstrap_contract_enabled = False
+
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
         # but a hung API call or stuck tool with no activity for the configured

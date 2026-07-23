@@ -1454,6 +1454,52 @@ class TestRunJobSessionPersistence:
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
         fake_db.close.assert_called_once()
 
+    def test_run_job_disables_bootstrap_injection_for_cron(self, tmp_path):
+        job = {
+            "id": "test-job",
+            "name": "test",
+            "prompt": "hello",
+            "deliver": "local",
+        }
+        fake_db = MagicMock()
+        seen = {}
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                self._enforce_initial_memory_context = True
+                self._session_start_compact_workspace_hydration = True
+                self._session_start_bootstrap_contract_enabled = True
+
+            def run_conversation(self, *args, **kwargs):
+                seen["enforce_initial_memory_context"] = self._enforce_initial_memory_context
+                seen["session_start_compact_workspace_hydration"] = self._session_start_compact_workspace_hydration
+                seen["session_start_bootstrap_contract_enabled"] = self._session_start_bootstrap_contract_enabled
+                return {"final_response": "ok"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent", FakeAgent):
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert "ok" in output
+        assert seen == {
+            "enforce_initial_memory_context": False,
+            "session_start_compact_workspace_hydration": False,
+            "session_start_bootstrap_contract_enabled": False,
+        }
+
     def test_run_job_clears_stale_auto_delivery_thread_id_between_jobs(self, tmp_path, monkeypatch):
         jobs = [
             {
