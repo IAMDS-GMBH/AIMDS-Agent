@@ -15,7 +15,7 @@ interface UseCronPollingOptions {
   recentThresholdMs?: number
 }
 
-const CRON_POLL_INTERVAL_MS = 3000 // Poll every 3 seconds for real-time updates
+const CRON_POLL_INTERVAL_MS = 1000 // Poll every 1 second for real-time updates
 const DEFAULT_RECENT_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
 
 /**
