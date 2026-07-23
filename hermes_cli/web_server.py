@@ -5379,11 +5379,32 @@ async def list_oauth_providers():
           expires_at       ISO timestamp string or null
           has_refresh_token bool
     """
+    from hermes_cli.config import load_config
+    cfg = load_config()
+    mcp_servers = cfg.get("mcp_servers") or {}
+    enabled_mcp_providers = set()
+    for s_name, s_cfg in mcp_servers.items():
+        if isinstance(s_cfg, dict) and s_cfg.get("enabled", True):
+            p_val = s_cfg.get("provider") or ""
+            if p_val:
+                enabled_mcp_providers.add(str(p_val).lower())
+            args = s_cfg.get("args") or []
+            if "server-github" in " ".join(str(a) for a in args) or s_name.lower() in ("github", "githubmcp"):
+                enabled_mcp_providers.add("github")
+
+    mcp_oauth_providers = {"github"}
+
     providers = []
     for p in _OAUTH_PROVIDER_CATALOG:
         if p.get("hidden"):
             continue
         status = _resolve_provider_status(p["id"], p.get("status_fn"))
+        p_id = p["id"]
+
+        if p_id in mcp_oauth_providers:
+            if not status.get("logged_in") and p_id not in enabled_mcp_providers:
+                continue
+
         providers.append({
             "id": p["id"],
             "name": p["name"],
