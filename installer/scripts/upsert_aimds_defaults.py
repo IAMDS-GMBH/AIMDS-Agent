@@ -7,13 +7,14 @@ Usage:
 
 from __future__ import annotations
 
+from copy import deepcopy
 import re
 import sys
 from pathlib import Path
 
 import yaml
 
-_AIMDS_DEFAULTS_VERSION = 8
+_AIMDS_DEFAULTS_VERSION = 9
 _AIMDS_DEFAULTS_VERSION_KEY = "aimds_defaults_version"
 
 
@@ -139,8 +140,9 @@ def upsert_aimds_defaults(config: dict) -> dict:
     prompt_caching["cache_ttl"] = "5m"
 
     memory = _ensure_dict(cfg, "memory")
-    memory["enforce_initial_memory_context"] = True
-    memory["session_start_compact_workspace_hydration"] = True
+    memory["enforce_initial_memory_context"] = False
+    memory["session_start_compact_workspace_hydration"] = False
+    memory["session_start_bootstrap_contract_enabled"] = False
 
     auxiliary = _ensure_dict(cfg, "auxiliary")
     for slot in ("goal_judge", "compression", "approval", "mcp", "title_generation"):
@@ -170,10 +172,17 @@ def upsert_aimds_defaults(config: dict) -> dict:
 def migrate_aimds_defaults(config: dict) -> tuple[dict, bool, str]:
     cfg = config if isinstance(config, dict) else {}
     current = _coerce_version(cfg.get(_AIMDS_DEFAULTS_VERSION_KEY))
-    if current >= _AIMDS_DEFAULTS_VERSION:
-        return cfg, False, f"aimds-defaults: already current (v{current})"
-
+    before = deepcopy(cfg)
     cfg = upsert_aimds_defaults(cfg)
+    if current >= _AIMDS_DEFAULTS_VERSION:
+        changed = cfg != before
+        status = (
+            f"aimds-defaults: enforced policy v{_AIMDS_DEFAULTS_VERSION} (already current v{current})"
+            if changed
+            else f"aimds-defaults: already current (v{current})"
+        )
+        return cfg, changed, status
+
     cfg[_AIMDS_DEFAULTS_VERSION_KEY] = _AIMDS_DEFAULTS_VERSION
     return cfg, True, f"aimds-defaults: applied v{_AIMDS_DEFAULTS_VERSION} (from v{current})"
 
