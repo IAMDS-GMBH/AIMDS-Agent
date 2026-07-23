@@ -130,13 +130,23 @@ function readProviderBaseUrl(config: Record<string, unknown>, slug: string): str
   return typeof baseUrl === 'string' ? toEditableBaseUrl(baseUrl) : ''
 }
 
-function IamdsExtraProvidersPanel() {
+function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => void } = {}) {
   const [prodBaseUrl, setProdBaseUrl] = useState('')
   const [stagingBaseUrl, setStagingBaseUrl] = useState('')
   const [devBaseUrl, setDevBaseUrl] = useState('')
   const [isSaving, setIsSaving] = useState(false)
+  const [envVars, setEnvVars] = useState<Record<string, EnvVarInfo>>({})
 
-  const handleKeycloakLogin = async (baseUrl: string, targetKeyEnv: string) => {
+  const loadEnvVars = async () => {
+    try {
+      const vars = await getEnvVars()
+      setEnvVars(vars)
+    } catch {
+      // Ignore
+    }
+  }
+
+  const handleKeycloakLogin = async (baseUrl: string, targetKeyEnv: string, envLabel: string) => {
     try {
       let rootDomain = baseUrl.trim().replace(/\/+$/, '')
       for (const suffix of ['/litellm/v1', '/litellm', '/auth']) {
@@ -160,7 +170,9 @@ function IamdsExtraProvidersPanel() {
       } catch {
         // Best-effort model selection
       }
-      notify({ kind: 'success', message: `API key obtained via Keycloak SSO (${targetKeyEnv})`, title: 'Connected' })
+      await loadEnvVars()
+      onRefreshCreds?.()
+      notify({ kind: 'success', message: `API key obtained via Keycloak SSO (${envLabel})`, title: 'Connected' })
     } catch (err) {
       notifyError(err, 'Keycloak SSO failed')
     }
@@ -170,14 +182,15 @@ function IamdsExtraProvidersPanel() {
     let cancelled = false
     void (async () => {
       try {
-        const [config, envVars] = await Promise.all([
+        const [config, vars] = await Promise.all([
           getHermesConfigRecord().catch(() => ({} as HermesConfigRecord)),
           getEnvVars().catch(() => ({} as Record<string, EnvVarInfo>)),
         ])
         if (!cancelled) {
+          setEnvVars(vars)
           const mainUrl = readProviderBaseUrl(config, 'iamds-litellm')
           let envUrl = ''
-          if (envVars.IAMDS_LITELLM_BASE_URL?.is_set) {
+          if (vars.IAMDS_LITELLM_BASE_URL?.is_set) {
             try {
               const revealed = await revealEnvVar('IAMDS_LITELLM_BASE_URL')
               envUrl = revealed.value || ''
@@ -279,15 +292,21 @@ function IamdsExtraProvidersPanel() {
               value={prodBaseUrl}
               className="text-xs flex-1"
             />
-            <div className="shrink-0 min-w-36 text-right">
-              {prodBaseUrl.trim() && (
-                <Button
-                  onClick={() => void handleKeycloakLogin(prodBaseUrl.trim(), 'IAMDS_LITELLM_API_KEY')}
-                  size="sm"
-                  variant="outline"
-                >
-                  Production SSO Key
-                </Button>
+            <div className="shrink-0 min-w-36 text-right flex items-center justify-end">
+              {envVars.IAMDS_LITELLM_API_KEY?.is_set ? (
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-500 py-1 px-2.5">
+                  <Check className="size-3.5" /> Connected
+                </span>
+              ) : (
+                prodBaseUrl.trim() && (
+                  <Button
+                    onClick={() => void handleKeycloakLogin(prodBaseUrl.trim(), 'IAMDS_LITELLM_API_KEY', 'AIMDS-Suite')}
+                    size="sm"
+                    variant="outline"
+                  >
+                    Production SSO Key
+                  </Button>
+                )
               )}
             </div>
           </div>
@@ -305,15 +324,21 @@ function IamdsExtraProvidersPanel() {
               value={stagingBaseUrl}
               className="text-xs flex-1"
             />
-            <div className="shrink-0 min-w-36 text-right">
-              {stagingBaseUrl.trim() && (
-                <Button
-                  onClick={() => void handleKeycloakLogin(stagingBaseUrl.trim(), 'IAMDS_LITELLM_STAGING_API_KEY')}
-                  size="sm"
-                  variant="outline"
-                >
-                  Staging SSO Key
-                </Button>
+            <div className="shrink-0 min-w-36 text-right flex items-center justify-end">
+              {envVars.IAMDS_LITELLM_STAGING_API_KEY?.is_set ? (
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-500 py-1 px-2.5">
+                  <Check className="size-3.5" /> Connected
+                </span>
+              ) : (
+                stagingBaseUrl.trim() && (
+                  <Button
+                    onClick={() => void handleKeycloakLogin(stagingBaseUrl.trim(), 'IAMDS_LITELLM_STAGING_API_KEY', 'AIMDS-Suite Staging')}
+                    size="sm"
+                    variant="outline"
+                  >
+                    Staging SSO Key
+                  </Button>
+                )
               )}
             </div>
           </div>
@@ -331,15 +356,21 @@ function IamdsExtraProvidersPanel() {
               value={devBaseUrl}
               className="text-xs flex-1"
             />
-            <div className="shrink-0 min-w-36 text-right">
-              {devBaseUrl.trim() && (
-                <Button
-                  onClick={() => void handleKeycloakLogin(devBaseUrl.trim(), 'IAMDS_LITELLM_DEV_API_KEY')}
-                  size="sm"
-                  variant="outline"
-                >
-                  Development SSO Key
-                </Button>
+            <div className="shrink-0 min-w-36 text-right flex items-center justify-end">
+              {envVars.IAMDS_LITELLM_DEV_API_KEY?.is_set ? (
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-500 py-1 px-2.5">
+                  <Check className="size-3.5" /> Connected
+                </span>
+              ) : (
+                devBaseUrl.trim() && (
+                  <Button
+                    onClick={() => void handleKeycloakLogin(devBaseUrl.trim(), 'IAMDS_LITELLM_DEV_API_KEY', 'AIMDS-Suite Development')}
+                    size="sm"
+                    variant="outline"
+                  >
+                    Development SSO Key
+                  </Button>
+                )
               )}
             </div>
           </div>
@@ -399,7 +430,8 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
         // Best-effort model selection
       }
       setKeycloakConnected(true)
-      notify({ kind: 'success', message: `API key obtained via Keycloak SSO (${targetKey})`, title: 'Connected' })
+      const label = targetKey === 'IAMDS_LITELLM_STAGING_API_KEY' ? 'AIMDS-Suite Staging' : targetKey === 'IAMDS_LITELLM_DEV_API_KEY' ? 'AIMDS-Suite Development' : 'AIMDS-Suite'
+      notify({ kind: 'success', message: `API key obtained via Keycloak SSO (${label})`, title: 'Connected' })
       onRefreshCreds?.()
     } catch (err) {
       setKeycloakError(err instanceof Error ? err.message : String(err))
@@ -868,7 +900,7 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
                 rowProps={rowProps}
               />
             ))}
-            <IamdsExtraProvidersPanel />
+            <IamdsExtraProvidersPanel onRefreshCreds={() => void refetch()} />
           </div>
         ) : (
           <div className="grid min-h-32 place-items-center px-4 py-8 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
