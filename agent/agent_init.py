@@ -1110,6 +1110,7 @@ def init_agent(
     agent._inject_structured_mirror = False
     agent._enforce_initial_memory_context = True
     agent._session_start_compact_workspace_hydration = True
+    agent._session_start_bootstrap_contract_enabled = True
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
@@ -1127,6 +1128,9 @@ def init_agent(
             )
             agent._session_start_compact_workspace_hydration = bool(
                 mem_config.get("session_start_compact_workspace_hydration", True)
+            )
+            agent._session_start_bootstrap_contract_enabled = bool(
+                mem_config.get("session_start_bootstrap_contract_enabled", True)
             )
             agent._personal_query_freshness_turns = int(
                 mem_config.get("personal_query_freshness_turns", 3)

@@ -197,6 +197,92 @@ def test_enforce_initial_memory_context_call_adds_compact_workspace_hydration_wh
     assert "Beta [waiting]" in content
 
 
+def test_enforce_initial_memory_context_call_appends_ready_bootstrap_status(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    (workspace / "tasks").mkdir(parents=True)
+    (workspace / "tasks" / "thisweek.md").write_text("# Focus\n- [ ] Bootstrap\n", encoding="utf-8")
+    monkeypatch.setattr("agent.conversation_loop.resolve_agent_cwd", lambda: workspace)
+
+    def _mock_execute_tool_calls(assistant_message, messages, _effective_task_id, _api_call_count):
+        tc = assistant_message.tool_calls[0]
+        messages.append(
+            {
+                "role": "tool",
+                "name": tc.function.name,
+                "tool_call_id": tc.id,
+                "content": json.dumps({"context_missing": True}),
+            }
+        )
+
+    agent = SimpleNamespace(
+        valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+        _enforce_initial_memory_context=True,
+        _session_start_compact_workspace_hydration=True,
+        _session_start_bootstrap_contract_enabled=True,
+        enabled_toolsets=None,
+        disabled_toolsets=None,
+        _emit_interim_assistant_message=lambda _msg: None,
+        _execute_tool_calls=_mock_execute_tool_calls,
+        log_prefix="",
+    )
+    messages = [{"role": "user", "content": "hello"}]
+
+    _enforce_initial_memory_context_call(
+        agent,
+        messages=messages,
+        conversation_history=[],
+        original_user_message="hello",
+        effective_task_id="t1",
+    )
+
+    bootstrap_msgs = [
+        m for m in messages if m.get("role") == "system" and "Session-start bootstrap status" in str(m.get("content", ""))
+    ]
+    assert len(bootstrap_msgs) == 1
+    assert "state: ready" in bootstrap_msgs[0]["content"]
+
+
+def test_enforce_initial_memory_context_call_appends_degraded_bootstrap_status_on_error():
+    def _mock_execute_tool_calls(assistant_message, messages, _effective_task_id, _api_call_count):
+        tc = assistant_message.tool_calls[0]
+        messages.append(
+            {
+                "role": "tool",
+                "name": tc.function.name,
+                "tool_call_id": tc.id,
+                "content": json.dumps({"error": "memory unavailable"}),
+            }
+        )
+
+    agent = SimpleNamespace(
+        valid_tool_names={"mcp_IAMDS_mcp_memory_memory_context"},
+        _enforce_initial_memory_context=True,
+        _session_start_compact_workspace_hydration=False,
+        _session_start_bootstrap_contract_enabled=True,
+        enabled_toolsets=None,
+        disabled_toolsets=None,
+        _emit_interim_assistant_message=lambda _msg: None,
+        _execute_tool_calls=_mock_execute_tool_calls,
+        log_prefix="",
+    )
+    messages = [{"role": "user", "content": "hello"}]
+
+    _enforce_initial_memory_context_call(
+        agent,
+        messages=messages,
+        conversation_history=[],
+        original_user_message="hello",
+        effective_task_id="t1",
+    )
+
+    bootstrap_msgs = [
+        m for m in messages if m.get("role") == "system" and "Session-start bootstrap status" in str(m.get("content", ""))
+    ]
+    assert len(bootstrap_msgs) == 1
+    assert "state: degraded" in bootstrap_msgs[0]["content"]
+    assert "reason_code: memory_context_missing_or_failed" in bootstrap_msgs[0]["content"]
+
+
 def test_build_stale_project_row_flags_only_active_entries_after_14_days():
     now = datetime(2026, 7, 22, tzinfo=timezone.utc)
     stale = _build_stale_project_row(

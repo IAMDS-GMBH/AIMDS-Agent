@@ -63,6 +63,11 @@ from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import _resolve_memory_context_tool_name, _resolve_memory_save_tool_name
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.retry_utils import jittered_backoff
+from agent.session_bootstrap import (
+    build_bootstrap_status_block,
+    evaluate_session_bootstrap,
+    memory_context_requires_hydration,
+)
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
@@ -337,10 +342,16 @@ def _enforce_initial_memory_context_call(
         messages=messages,
         valid_tool_names=valid_tools,
     )
-    _maybe_append_workspace_hydration_after_memory_context(
+    _hydration_added = _maybe_append_workspace_hydration_after_memory_context(
         agent,
         messages=messages,
         payload=_onboarding_payload,
+    )
+    _append_session_bootstrap_status(
+        agent,
+        messages=messages,
+        payload=_onboarding_payload,
+        hydration_added=bool(_hydration_added),
     )
     if _onboarding_payload and not getattr(
         agent, "_initial_onboarding_clarify_enforced", False
@@ -557,37 +568,7 @@ def _read_recent_memory_context_payload(
 
 def _memory_context_payload_needs_workspace_hydration(payload: Optional[Dict[str, Any]]) -> bool:
     """Return True when memory_context explicitly reports missing/stale context."""
-    if not isinstance(payload, dict):
-        return False
-    if payload.get("error"):
-        return True
-
-    candidate_maps: list[Dict[str, Any]] = [payload]
-    nested = payload.get("result")
-    if isinstance(nested, dict):
-        candidate_maps.append(nested)
-
-    stale_or_missing_flags = (
-        "workspace_hydration_required",
-        "session_start_workspace_hydration_required",
-        "session_loadout_required",
-        "context_missing",
-        "context_stale",
-        "stale_context",
-        "memory_context_stale",
-        "memory_context_missing",
-    )
-    missing_markers = {"missing", "stale", "required", "empty", "none"}
-    for candidate in candidate_maps:
-        if not isinstance(candidate, dict):
-            continue
-        for key in stale_or_missing_flags:
-            value = candidate.get(key)
-            if value is True:
-                return True
-            if isinstance(value, str) and value.strip().lower() in missing_markers:
-                return True
-    return False
+    return memory_context_requires_hydration(payload)
 
 
 def _parse_simple_frontmatter(markdown_text: str) -> Dict[str, str]:
@@ -771,16 +752,16 @@ def _maybe_append_workspace_hydration_after_memory_context(
     *,
     messages: List[Dict[str, Any]],
     payload: Optional[Dict[str, Any]],
-) -> None:
+) -> bool:
     """Append a compact local workspace summary only when memory context is stale/missing."""
     if getattr(agent, "_initial_workspace_hydration_enforced", False):
-        return
+        return False
     if not getattr(agent, "_session_start_compact_workspace_hydration", True):
         agent._initial_workspace_hydration_enforced = True
-        return
+        return False
     if not _memory_context_payload_needs_workspace_hydration(payload):
         agent._initial_workspace_hydration_enforced = True
-        return
+        return False
 
     try:
         cwd = Path(resolve_agent_cwd()).expanduser()
@@ -788,6 +769,7 @@ def _maybe_append_workspace_hydration_after_memory_context(
         cwd = Path(os.getcwd())
 
     compact_block = _build_compact_workspace_hydration(cwd)
+    appended = False
     if compact_block:
         messages.append(
             {
@@ -796,7 +778,39 @@ def _maybe_append_workspace_hydration_after_memory_context(
                 "_session_start_hydration": True,
             }
         )
+        appended = True
     agent._initial_workspace_hydration_enforced = True
+    return appended
+
+
+def _append_session_bootstrap_status(
+    agent: Any,
+    *,
+    messages: List[Dict[str, Any]],
+    payload: Optional[Dict[str, Any]],
+    hydration_added: bool,
+) -> None:
+    """Append explicit first-turn bootstrap readiness status block once."""
+    if getattr(agent, "_session_start_bootstrap_status_emitted", False):
+        return
+    if not getattr(agent, "_session_start_bootstrap_contract_enabled", False):
+        return
+
+    status = evaluate_session_bootstrap(
+        payload=payload,
+        hydration_added=hydration_added,
+        memory_context_required=bool(getattr(agent, "_enforce_initial_memory_context", True)),
+    )
+    messages.append(
+        {
+            "role": "system",
+            "content": build_bootstrap_status_block(status),
+            "_session_start_bootstrap_status": True,
+        }
+    )
+    agent._session_start_bootstrap_status_emitted = True
+    agent._session_start_bootstrap_ready = bool(status.ready)
+    agent._session_start_bootstrap_reason_code = str(status.reason_code)
 
 
 def _extract_onboarding_questions_from_payload(value: Any) -> List[str]:
