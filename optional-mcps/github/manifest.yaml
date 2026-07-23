@@ -2,7 +2,7 @@
 # Presence in this directory = approval. Merged via PR review.
 manifest_version: 1
 
-name: github
+name: GithubMCP
 description: Access GitHub repositories, issues, pull requests, commits, and code using @modelcontextprotocol/server-github.
 source: https://github.com/modelcontextprotocol/servers/tree/main/src/github
 

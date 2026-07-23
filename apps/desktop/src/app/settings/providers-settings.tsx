@@ -23,6 +23,7 @@ import { useI18n } from '@/i18n'
 import { AlertCircle, Check, ChevronRight, KeyRound, Loader2, ShieldCheck } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { startManualProviderOAuth } from '@/store/onboarding'
 import type { EnvVarInfo, HermesConfigRecord, McpCatalogEntry } from '@/types/hermes'
 
 import { ProviderKeyRows } from './credential-key-ui'
@@ -432,7 +433,14 @@ function McpCatalogSection({
         })
         await loadCatalogAndConfig()
         onRefreshCreds?.()
+
+        const provider = installModalEntry.auth?.provider
+        const tokenEntered = Object.values(secretInputs).some(val => val && val.trim().length > 0)
         setInstallModalEntry(null)
+
+        if (provider && !tokenEntered) {
+          startManualProviderOAuth(provider)
+        }
       } else {
         notify({ kind: 'error', message: result.message ?? m.saveFailed, title: m.saveFailed })
       }

@@ -635,6 +635,7 @@ export interface McpCatalogEnvVar {
 export interface McpCatalogAuth {
   env?: McpCatalogEnvVar[]
   notes?: null | string
+  provider?: null | string
   type?: string
 }
 
