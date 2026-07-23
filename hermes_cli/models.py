@@ -3527,6 +3527,12 @@ def fetch_litellm_model_info_models(
         seen.add(key)
         model_ids.append(model_id)
 
+    # Prioritize AIMDS-Suite-Auto / auto models at the top of the list
+    auto_models = [m for m in model_ids if m.lower() in ("aimds-suite-auto", "auto", "iamds-auto")]
+    other_models = [m for m in model_ids if m.lower() not in ("aimds-suite-auto", "auto", "iamds-auto")]
+    if auto_models:
+        model_ids = auto_models + other_models
+
     return model_ids
 
 

@@ -3941,14 +3941,24 @@ function decodeJwtPayload(token) {
  * @param {string} redirectUri
  * @returns {Promise<object>} parsed token response
  */
-function exchangeKeycloakCode(tokenUrl, code, redirectUri) {
+function generatePkcePair() {
+  const codeVerifier = crypto.randomBytes(32).toString('base64url')
+  const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url')
+  return { codeVerifier, codeChallenge }
+}
+
+function exchangeKeycloakCode(tokenUrl, code, redirectUri, codeVerifier) {
   return new Promise((resolve, reject) => {
-    const body = new URLSearchParams({
+    const params = {
       grant_type: 'authorization_code',
       client_id: 'hermes-app',
       code,
       redirect_uri: redirectUri
-    }).toString()
+    }
+    if (codeVerifier) {
+      params.code_verifier = codeVerifier
+    }
+    const body = new URLSearchParams(params).toString()
 
     const req = electronNet.request({ method: 'POST', url: tokenUrl })
     req.setHeader('Content-Type', 'application/x-www-form-urlencoded')
@@ -4005,11 +4015,15 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
     const effectiveRedirectUri = (redirectUri || 'hermes://callback').trim()
     const tokenUrl = `${authBaseUrl}/realms/${effectiveRealm}/protocol/openid-connect/token`
 
+    const { codeVerifier, codeChallenge } = generatePkcePair()
+
     const authParams = new URLSearchParams({
       client_id: 'hermes-app',
       response_type: 'code',
       scope: 'openid',
-      redirect_uri: effectiveRedirectUri
+      redirect_uri: effectiveRedirectUri,
+      code_challenge: codeChallenge,
+      code_challenge_method: 'S256'
     })
     const authUrl = `${authBaseUrl}/realms/${effectiveRealm}/protocol/openid-connect/auth?${authParams}`
 
@@ -4069,7 +4083,7 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
         return
       }
 
-      exchangeKeycloakCode(tokenUrl, code, effectiveRedirectUri)
+      exchangeKeycloakCode(tokenUrl, code, effectiveRedirectUri, codeVerifier)
         .then(tokenData => {
           const accessToken = tokenData.access_token
           if (!accessToken) throw new Error('No access_token in Keycloak response.')

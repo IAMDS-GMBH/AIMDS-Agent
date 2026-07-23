@@ -151,6 +151,15 @@ function IamdsExtraProvidersPanel() {
         redirectUri,
       })
       await setEnvVar(targetKeyEnv, result.apiKey)
+      try {
+        const config = await getHermesConfigRecord()
+        await saveHermesConfig({
+          ...config,
+          model: 'iamds-litellm/AIMDS-Suite-Auto',
+        })
+      } catch {
+        // Best-effort model selection
+      }
       notify({ kind: 'success', message: `API key obtained via Keycloak SSO (${targetKeyEnv})`, title: 'Connected' })
     } catch (err) {
       notifyError(err, 'Keycloak SSO failed')
@@ -380,6 +389,15 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
       })
 
       await setEnvVar(targetKey, result.apiKey)
+      try {
+        const config = await getHermesConfigRecord()
+        await saveHermesConfig({
+          ...config,
+          model: 'iamds-litellm/AIMDS-Suite-Auto',
+        })
+      } catch {
+        // Best-effort model selection
+      }
       setKeycloakConnected(true)
       notify({ kind: 'success', message: `API key obtained via Keycloak SSO (${targetKey})`, title: 'Connected' })
       onRefreshCreds?.()
