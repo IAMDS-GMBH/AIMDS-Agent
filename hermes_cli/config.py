@@ -2680,6 +2680,14 @@ REQUIRED_ENV_VARS = {}
 # Optional environment variables that enhance functionality
 OPTIONAL_ENV_VARS = {
     # ── Provider (handled in provider selection, not shown in checklists) ──
+    "IAMDS_LITELLM_BASE_URL": {
+        "description": "AIMDS-Suite Base URL",
+        "prompt": "AIMDS-Suite Base URL",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "IAMDS_LITELLM_API_KEY": {
         "description": "AIMDS-Suite API key",
         "prompt": "AIMDS-Suite API key",
