@@ -27,7 +27,7 @@ import { useI18n } from '@/i18n'
 import { AlertCircle, Check, ChevronRight, ExternalLink, KeyRound, Loader2, ShieldCheck } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import { startManualProviderOAuth } from '@/store/onboarding'
+import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding'
 import type { EnvVarInfo, HermesConfigRecord, McpCatalogEntry, OAuthProvider } from '@/types/hermes'
 
 import { ProviderKeyRows } from './credential-key-ui'
@@ -540,6 +540,20 @@ function OAuthAccountsPanel() {
 
   useEffect(() => {
     void loadProviders()
+
+    const handleFocus = () => {
+      void loadProviders()
+    }
+    window.addEventListener('focus', handleFocus)
+
+    const unsubscribe = $desktopOnboarding.subscribe(() => {
+      void loadProviders()
+    })
+
+    return () => {
+      window.removeEventListener('focus', handleFocus)
+      unsubscribe()
+    }
   }, [loadProviders])
 
   const handleDisconnect = async (id: string) => {
