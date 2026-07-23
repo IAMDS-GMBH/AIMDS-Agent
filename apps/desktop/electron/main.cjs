@@ -4002,7 +4002,7 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
 
     const authBaseUrl = `${rootDomain}/auth`
     const effectiveRealm = (realm || 'aimds').trim()
-    const effectiveRedirectUri = (redirectUri || `${rootDomain}/oauth/oidc/callback`).trim()
+    const effectiveRedirectUri = (redirectUri || 'hermes://callback').trim()
     const tokenUrl = `${authBaseUrl}/realms/${effectiveRealm}/protocol/openid-connect/token`
 
     const authParams = new URLSearchParams({

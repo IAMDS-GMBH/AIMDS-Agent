@@ -144,7 +144,7 @@ function IamdsExtraProvidersPanel() {
           rootDomain = rootDomain.slice(0, -suffix.length).replace(/\/+$/, '')
         }
       }
-      const redirectUri = DEFAULT_REDIRECT_URI || `${rootDomain}/oauth/oidc/callback`
+      const redirectUri = DEFAULT_REDIRECT_URI || 'hermes://callback'
       const result = await keycloakLogin({
         baseUrl: rootDomain,
         realm: DEFAULT_REALM,
@@ -372,7 +372,7 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
           rootDomain = rootDomain.slice(0, -suffix.length).replace(/\/+$/, '')
         }
       }
-      const redirectUri = DEFAULT_REDIRECT_URI || `${rootDomain}/oauth/oidc/callback`
+      const redirectUri = DEFAULT_REDIRECT_URI || 'hermes://callback'
       const result = await keycloakLogin({
         baseUrl: rootDomain,
         realm: DEFAULT_REALM,
