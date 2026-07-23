@@ -472,7 +472,7 @@ class TestToolSelection:
 
         install_entry(_entry("demo"), enable=True)
         server = load_config()["mcp_servers"]["demo"]
-        assert server["tools"]["include"] == ["real"]
+        assert server["tools"]["include"] == ["real", "ghost"]
 
     def test_reinstall_preserves_prior_user_selection(
         self, catalog_dir, monkeypatch

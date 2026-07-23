@@ -560,6 +560,16 @@ def _apply_tool_selection(
       - Otherwise → leave config with no filter (all on when reachable).
       - Either way, point the user at ``hermes mcp configure <name>``.
     """
+    import sys as _sys
+    if not _sys.stdin.isatty():
+        if prior_selection is not None:
+            _write_tools_include(entry.name, prior_selection)
+        elif entry.tools.default_enabled:
+            _write_tools_include(entry.name, entry.tools.default_enabled)
+        else:
+            _write_tools_include(entry.name, None)
+        return
+
     print()
     print(color(f"  Probing '{entry.name}' for available tools...", Colors.CYAN))
     probed = _probe_tools(entry.name)
@@ -713,16 +723,20 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
         else:
             has_token = False
 
+        import sys as _sys
         if not has_token and entry.auth.provider == "github":
-            print(color("  Starting GitHub OAuth device code login...", Colors.CYAN))
-            from hermes_cli.copilot_auth import copilot_device_code_login
-            token = copilot_device_code_login()
-            if token:
-                from hermes_cli.config import save_env_value
-                save_env_value("GITHUB_PERSONAL_ACCESS_TOKEN", token)
-                print(color("  ✓ Saved GitHub OAuth token to ~/.hermes/.env", Colors.GREEN))
+            if _sys.stdin.isatty():
+                print(color("  Starting GitHub OAuth device code login...", Colors.CYAN))
+                from hermes_cli.copilot_auth import copilot_device_code_login
+                token = copilot_device_code_login()
+                if token:
+                    from hermes_cli.config import save_env_value
+                    save_env_value("GITHUB_PERSONAL_ACCESS_TOKEN", token)
+                    print(color("  ✓ Saved GitHub OAuth token to ~/.hermes/.env", Colors.GREEN))
+                else:
+                    print(color("  ⚠ GitHub OAuth incomplete; you can set GITHUB_PERSONAL_ACCESS_TOKEN later.", Colors.YELLOW))
             else:
-                print(color("  ⚠ GitHub OAuth incomplete; you can set GITHUB_PERSONAL_ACCESS_TOKEN later.", Colors.YELLOW))
+                print(color("  GitHub OAuth required. Complete via OAuth/Settings in UI.", Colors.DIM))
         elif entry.auth.provider:
             print(color(
                 f"  This MCP uses {entry.auth.provider} OAuth. Run "

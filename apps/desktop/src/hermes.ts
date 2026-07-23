@@ -323,7 +323,8 @@ export function installMcpCatalogEntry(
     ...profileScoped(),
     path: '/api/mcp/catalog/install',
     method: 'POST',
-    body: payload
+    body: payload,
+    timeoutMs: 60000
   })
 }
 
