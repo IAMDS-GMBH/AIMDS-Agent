@@ -5401,9 +5401,8 @@ async def list_oauth_providers():
         status = _resolve_provider_status(p["id"], p.get("status_fn"))
         p_id = p["id"]
 
-        if p_id in mcp_oauth_providers:
-            if not status.get("logged_in") and p_id not in enabled_mcp_providers:
-                continue
+        if not status.get("logged_in") and p_id != "github" and p_id not in enabled_mcp_providers:
+            continue
 
         providers.append({
             "id": p["id"],

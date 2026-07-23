@@ -22,7 +22,7 @@ import {
   setEnvVar
 } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { AlertCircle, Check, ChevronRight, KeyRound, Loader2, ShieldCheck } from '@/lib/icons'
+import { AlertCircle, Check, ChevronRight, ExternalLink, KeyRound, Loader2, ShieldCheck } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { startManualProviderOAuth } from '@/store/onboarding'
@@ -129,6 +129,7 @@ function readProviderBaseUrl(config: Record<string, unknown>, slug: string): str
 }
 
 function IamdsExtraProvidersPanel() {
+  const [prodBaseUrl, setProdBaseUrl] = useState('')
   const [stagingBaseUrl, setStagingBaseUrl] = useState('')
   const [devBaseUrl, setDevBaseUrl] = useState('')
   const [isSaving, setIsSaving] = useState(false)
@@ -153,6 +154,8 @@ function IamdsExtraProvidersPanel() {
       try {
         const config = await getHermesConfigRecord()
         if (!cancelled) {
+          const mainUrl = readProviderBaseUrl(config, 'iamds-litellm')
+          setProdBaseUrl(mainUrl || DEFAULT_BASE_URL)
           setStagingBaseUrl(readProviderBaseUrl(config, 'iamds-litellm-staging'))
           setDevBaseUrl(readProviderBaseUrl(config, 'iamds-litellm-dev'))
         }
@@ -166,9 +169,14 @@ function IamdsExtraProvidersPanel() {
   }, [])
 
   const saveUrls = async () => {
+    const prodNormalized = normalizeProviderBaseUrl(prodBaseUrl)
     const stagingNormalized = normalizeProviderBaseUrl(stagingBaseUrl)
     const devNormalized = normalizeProviderBaseUrl(devBaseUrl)
 
+    if (prodBaseUrl.trim() && !prodNormalized) {
+      notify({ kind: 'error', message: 'Production URL is invalid', title: 'Could not save provider URLs' })
+      return
+    }
     if (stagingBaseUrl.trim() && !stagingNormalized) {
       notify({ kind: 'error', message: 'Staging URL is invalid', title: 'Could not save provider URLs' })
       return
@@ -204,11 +212,12 @@ function IamdsExtraProvidersPanel() {
         nextProviders[slug] = existing
       }
 
+      upsertOrDelete('iamds-litellm', 'AIMDS-Suite', 'IAMDS_LITELLM_API_KEY', prodNormalized)
       upsertOrDelete('iamds-litellm-staging', 'AIMDS-Suite (Staging)', 'IAMDS_LITELLM_STAGING_API_KEY', stagingNormalized)
       upsertOrDelete('iamds-litellm-dev', 'AIMDS-Suite (Development)', 'IAMDS_LITELLM_DEV_API_KEY', devNormalized)
 
       await saveHermesConfig({ ...config, providers: nextProviders })
-      notify({ kind: 'success', message: 'Staging/Dev provider URLs saved', title: 'Saved' })
+      notify({ kind: 'success', message: 'AIMDS-Suite provider URLs saved', title: 'Saved' })
     } catch (err) {
       notifyError(err, 'Failed to save provider URLs')
     } finally {
@@ -218,12 +227,35 @@ function IamdsExtraProvidersPanel() {
 
   return (
     <section className="mt-4 rounded-[8px] border border-border bg-muted/20 p-3">
-      <h3 className="text-sm font-medium text-foreground">Additional AIMDS-Suite Base URLs</h3>
+      <h3 className="text-sm font-medium text-foreground">AIMDS-Suite Base URLs</h3>
       <p className="mt-1 text-xs text-muted-foreground">
-        Configure staging/dev endpoint URLs here. API keys are edited above in the provider key rows.
+        Configure production, staging, and dev endpoint URLs here. API keys are edited above in the provider key rows.
       </p>
 
       <div className="mt-3 grid gap-3">
+        <div className="grid gap-1">
+          <label className="text-xs font-medium text-foreground" htmlFor="iamds-prod-url">
+            Production Base URL (Default)
+          </label>
+          <div className="flex items-center gap-2">
+            <Input
+              id="iamds-prod-url"
+              onChange={e => setProdBaseUrl(e.target.value)}
+              placeholder="https://suite.iamds.com"
+              value={prodBaseUrl}
+            />
+            {prodBaseUrl.trim() && (
+              <Button
+                onClick={() => void handleKeycloakLogin(prodBaseUrl.trim(), 'IAMDS_LITELLM_API_KEY')}
+                size="sm"
+                variant="outline"
+              >
+                Production SSO Key
+              </Button>
+            )}
+          </div>
+        </div>
+
         <div className="grid gap-1">
           <label className="text-xs font-medium text-foreground" htmlFor="iamds-staging-url">
             Staging Base URL
@@ -612,6 +644,8 @@ function McpCatalogSection({
         {catalogEntries.map(entry => {
           const isInstalled = Boolean(installedServers[entry.name])
           const isDisabled = entry.disabled === true
+          const sourceStr = entry.source?.trim() || ''
+          const isSourceUrl = sourceStr.startsWith('http://') || sourceStr.startsWith('https://')
 
           return (
             <div
@@ -624,7 +658,23 @@ function McpCatalogSection({
               <div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-semibold text-sm capitalize">{entry.name}</span>
-                  <Pill>{isDisabled ? 'In Entwicklung' : (entry.source ? entry.source.split(' ')[0] : 'catalog')}</Pill>
+                  {isDisabled ? (
+                    <Pill>In Entwicklung</Pill>
+                  ) : isSourceUrl ? (
+                    <a
+                      href={sourceStr}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted/80 hover:text-foreground transition-colors shrink-0"
+                      onClick={e => e.stopPropagation()}
+                      title={sourceStr}
+                    >
+                      Source
+                      <ExternalLink className="size-3 shrink-0" />
+                    </a>
+                  ) : (
+                    <Pill>{sourceStr ? sourceStr.split(' ')[0] : 'catalog'}</Pill>
+                  )}
                 </div>
                 <p className="mt-1.5 line-clamp-2 text-xs text-muted-foreground">{entry.description}</p>
               </div>
