@@ -17,8 +17,8 @@ auth:
   type: api_key
   env:
     - name: GITHUB_PERSONAL_ACCESS_TOKEN
-      prompt: "GitHub Personal Access Token (PAT) or OIDC/OAuth token"
-      required: true
+      prompt: "GitHub Personal Access Token (PAT) or OIDC/OAuth token (optional)"
+      required: false
       secret: true
 
 tools:
@@ -36,9 +36,8 @@ tools:
 post_install: |
   GitHub MCP (@modelcontextprotocol/server-github via npx) has been configured.
 
-  Token permissions:
-    - Personal Access Token (PAT): Generate at https://github.com/settings/tokens.
-      Recommended scopes: `repo`, `read:org`, `user`.
-    - Fine-grained PAT / OIDC Token: Ensure read/write access to repository Contents, Issues, and Pull Requests.
+  Authentication options:
+    - Automatic / OAuth / OIDC / gh auth: Leave GITHUB_PERSONAL_ACCESS_TOKEN blank if authentication is handled via OAuth/OIDC or gh CLI env.
+    - Personal Access Token (PAT): Optional token at https://github.com/settings/tokens (recommended scopes: `repo`, `read:org`, `user`).
 
   Start a new Hermes session to load the GitHub tools.
