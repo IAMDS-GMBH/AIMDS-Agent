@@ -291,6 +291,8 @@ class CatalogEntry:
 
     # Pre-tokenized fields for BM25.
     _tokens: List[str] = field(default_factory=list)
+    _name_tokens: set[str] = field(default_factory=set)
+    _source_tokens: set[str] = field(default_factory=set)
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
@@ -302,22 +304,22 @@ def _tokenize(text: str) -> List[str]:
     return [t.lower() for t in _TOKEN_RE.findall(text)]
 
 
-def _entry_search_text(td: Dict[str, Any]) -> str:
+def _entry_search_text(td: Dict[str, Any], source_name: str = "") -> str:
     """Build the search-text blob for a deferrable tool.
 
     Includes the tool name (with underscores broken into words so BM25 can
-    match against query terms), the description, and the names of the
-    top-level parameters. Schema bodies are deliberately excluded —
-    indexing them adds noise without improving recall in our measurement.
+    match against query terms), the source/toolset name, description, and
+    parameter names. Schema bodies are excluded.
     """
     fn = td.get("function") or {}
     name = fn.get("name", "")
     desc = fn.get("description", "") or ""
     params = ((fn.get("parameters") or {}).get("properties") or {})
     param_names = " ".join(params.keys())
-    # Break snake_case and dotted names into words for BM25.
+    # Break snake_case, dotted, dashed names into words for BM25.
     name_words = name.replace("_", " ").replace(".", " ").replace("-", " ").replace(":", " ")
-    return f"{name_words} {desc} {param_names}"
+    source_words = source_name.replace("_", " ").replace(".", " ").replace("-", " ").replace(":", " ")
+    return f"{name_words} {name_words} {source_words} {desc} {param_names}"
 
 
 def _classify_source(name: str) -> Tuple[str, str]:
@@ -348,13 +350,17 @@ def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
             continue
         desc = fn.get("description", "") or ""
         source, source_name = _classify_source(name)
+        name_words = name.replace("_", " ").replace(".", " ").replace("-", " ").replace(":", " ")
+        source_words = source_name.replace("_", " ").replace(".", " ").replace("-", " ").replace(":", " ")
         entry = CatalogEntry(
             name=name,
             description=desc,
             schema=td,
             source=source,
             source_name=source_name,
-            _tokens=_tokenize(_entry_search_text(td)),
+            _tokens=_tokenize(_entry_search_text(td, source_name)),
+            _name_tokens=set(_tokenize(name_words)),
+            _source_tokens=set(_tokenize(source_words)),
         )
         catalog.append(entry)
     return catalog
@@ -391,14 +397,17 @@ def _bm25_score(query_tokens: List[str], doc_tokens: List[str],
     return score
 
 
-def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> List[CatalogEntry]:
-    """Return the top-``limit`` catalog entries for ``query`` by BM25.
+_GENERIC_SEARCH_TERMS = frozenset({
+    "search", "get", "list", "read", "find", "show", "fetch",
+    "create", "update", "delete", "tool", "mcp"
+})
 
-    Falls back to a stable name-substring match when BM25 yields no hits
-    above zero. That ensures a query like ``"github"`` against a catalog
-    where every tool is named ``github_*`` still returns results — BM25
-    can underperform when query and document share only one token that
-    appears in every document (zero IDF).
+
+def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> List[CatalogEntry]:
+    """Return the top-``limit`` catalog entries for ``query`` by BM25 + name relevance.
+
+    Boosts tool name and toolset name matches, and filters out weak description-only
+    matches when specific query terms were supplied.
     """
     if not catalog or limit <= 0:
         return []
@@ -406,26 +415,66 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> L
     if not query_tokens:
         return []
 
+    query_lower = query.lower().strip()
+    non_generic_query_tokens = [t for t in query_tokens if t not in _GENERIC_SEARCH_TERMS]
+
     # Precompute doc statistics.
     doc_lengths = [len(e._tokens) for e in catalog]
     avg_dl = sum(doc_lengths) / max(len(doc_lengths), 1)
     doc_freq: Dict[str, int] = {}
     for e in catalog:
-        seen = set(e._tokens)
-        for t in seen:
+        for t in set(e._tokens):
             doc_freq[t] = doc_freq.get(t, 0) + 1
     n_docs = len(catalog)
 
+    k1 = 1.5
+    b = 0.75
     scored: List[Tuple[float, CatalogEntry]] = []
     for entry in catalog:
-        s = _bm25_score(query_tokens, entry._tokens, doc_lengths, avg_dl,
-                        doc_freq, n_docs)
-        if s > 0:
-            scored.append((s, entry))
+        doc_tf: Dict[str, int] = {}
+        for t in entry._tokens:
+            doc_tf[t] = doc_tf.get(t, 0) + 1
+
+        bm25_score = 0.0
+        matched_query_tokens: set[str] = set()
+        matched_specific_tokens: set[str] = set()
+        matched_name_tokens: set[str] = set()
+
+        for q in set(query_tokens):
+            if q in doc_tf:
+                matched_query_tokens.add(q)
+                if q not in _GENERIC_SEARCH_TERMS:
+                    matched_specific_tokens.add(q)
+                if q in entry._name_tokens or q in entry._source_tokens:
+                    matched_name_tokens.add(q)
+                df = doc_freq.get(q, 0)
+                idf = math.log(1 + (n_docs - df + 0.5) / (df + 0.5))
+                tf = doc_tf[q]
+                norm = tf * (k1 + 1) / (tf + k1 * (1 - b + b * len(entry._tokens) / max(avg_dl, 1.0)))
+                bm25_score += idf * norm
+
+        if bm25_score <= 0 and not matched_query_tokens:
+            continue
+
+        boost = 0.0
+        clean_name = entry.name.lower().replace("_", "").replace("-", "")
+        clean_query = query_lower.replace("_", "").replace("-", "")
+        if clean_query and (clean_query in clean_name or clean_name in clean_query):
+            boost += 10.0
+
+        boost += len(matched_name_tokens) * 5.0
+        total_score = bm25_score + boost
+
+        # Filtering: if user searched specific terms (e.g. 'jira'), but entry matched ONLY generic terms (e.g. 'search')
+        # in description and zero specific or name terms, drop this false positive.
+        if non_generic_query_tokens and not matched_specific_tokens and not matched_name_tokens:
+            continue
+
+        scored.append((total_score, entry))
 
     if not scored:
-        # Substring fallback against the original tool name.
-        ql = query.lower()
+        # Fallback: literal substring match on original tool name if filtered out
+        ql = query_lower
         for entry in catalog:
             if ql in entry.name.lower():
                 scored.append((0.1, entry))

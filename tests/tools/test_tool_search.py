@@ -252,6 +252,31 @@ class TestRetrieval:
         hits = search_catalog(self._fake_catalog(), "github", limit=1)
         assert len(hits) <= 1
 
+    def test_search_filters_generic_false_positives(self):
+        """When searching for specific terms (e.g. 'jira search'), tools that only match 'search'
+        in description but have zero name/source/term matches for 'jira' are filtered out."""
+        from tools.tool_search import CatalogEntry, search_catalog, _tokenize, _entry_search_text
+        outlook_td = _td("outlook_read_contacts", "Read and search contacts in Outlook")
+        jira_td = _td("jira_search_issues", "Search Jira issues using JQL")
+
+        e_outlook = CatalogEntry("outlook_read_contacts", outlook_td["function"]["description"], outlook_td, "plugin", "outlook")
+        e_jira = CatalogEntry("jira_search_issues", jira_td["function"]["description"], jira_td, "mcp", "mcp-AtlassianMCP")
+
+        e_outlook._tokens = _tokenize(_entry_search_text(outlook_td, "outlook"))
+        e_outlook._name_tokens = set(_tokenize("outlook read contacts"))
+        e_outlook._source_tokens = set(_tokenize("outlook"))
+
+        e_jira._tokens = _tokenize(_entry_search_text(jira_td, "mcp-AtlassianMCP"))
+        e_jira._name_tokens = set(_tokenize("jira search issues"))
+        e_jira._source_tokens = set(_tokenize("mcp AtlassianMCP"))
+
+        cat = [e_outlook, e_jira]
+
+        hits = search_catalog(cat, "jira search", limit=5)
+        names = [h.name for h in hits]
+        assert "jira_search_issues" in names
+        assert "outlook_read_contacts" not in names
+
 
 # ---------------------------------------------------------------------------
 # Assembly — the full passthrough/activate decision.
