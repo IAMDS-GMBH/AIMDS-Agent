@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -11,10 +11,12 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import {
+  disconnectOAuthProvider,
   getHermesConfigRecord,
   getMcpCatalog,
   installMcpCatalogEntry,
   keycloakLogin,
+  listOAuthProviders,
   removeMcpServer,
   saveHermesConfig,
   setEnvVar
@@ -24,7 +26,7 @@ import { AlertCircle, Check, ChevronRight, KeyRound, Loader2, ShieldCheck } from
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { startManualProviderOAuth } from '@/store/onboarding'
-import type { EnvVarInfo, HermesConfigRecord, McpCatalogEntry } from '@/types/hermes'
+import type { EnvVarInfo, HermesConfigRecord, McpCatalogEntry, OAuthProvider } from '@/types/hermes'
 
 import { ProviderKeyRows } from './credential-key-ui'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
@@ -358,6 +360,97 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
   )
 }
 
+function OAuthAccountsPanel() {
+  const [providers, setProviders] = useState<OAuthProvider[]>([])
+  const [loading, setLoading] = useState(true)
+  const [disconnecting, setDisconnecting] = useState<null | string>(null)
+
+  const loadProviders = useCallback(async () => {
+    try {
+      const res = await listOAuthProviders()
+      setProviders(res.providers || [])
+    } catch (err) {
+      console.error('Failed to load OAuth providers', err)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadProviders()
+  }, [loadProviders])
+
+  const handleDisconnect = async (id: string) => {
+    setDisconnecting(id)
+    try {
+      await disconnectOAuthProvider(id)
+      await loadProviders()
+      notify({ kind: 'success', message: 'Disconnected account', title: 'Account disconnected' })
+    } catch (err) {
+      notifyError(err, 'Failed to disconnect account')
+    } finally {
+      setDisconnecting(null)
+    }
+  }
+
+  if (loading || providers.length === 0) {
+    return null
+  }
+
+  return (
+    <section className="mb-5 grid gap-2">
+      <SettingsCategoryHeading icon={KeyRound} title="Connected Accounts (OAuth)" />
+      <div className="grid gap-2">
+        {providers.map(p => {
+          const loggedIn = p.status?.logged_in
+          return (
+            <div
+              key={p.id}
+              className="flex items-center justify-between gap-4 rounded-[8px] border border-border bg-muted/20 p-3"
+            >
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold text-foreground">{p.name}</span>
+                  {loggedIn ? (
+                    <Pill tone="primary">Connected</Pill>
+                  ) : (
+                    <Pill tone="muted">Not connected</Pill>
+                  )}
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {loggedIn
+                    ? p.status?.source_label || p.status?.token_preview || 'Authenticated'
+                    : `Authenticate using ${p.flow === 'device_code' ? 'device verification code' : 'OAuth'}`}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {loggedIn ? (
+                  <Button
+                    disabled={disconnecting === p.id}
+                    onClick={() => void handleDisconnect(p.id)}
+                    size="xs"
+                    variant="outline"
+                  >
+                    {disconnecting === p.id ? 'Disconnecting…' : 'Disconnect'}
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={() => startManualProviderOAuth(p.id)}
+                    size="xs"
+                    variant="default"
+                  >
+                    Connect
+                  </Button>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
 function McpCatalogSection({
   vars,
   onRefreshCreds
@@ -643,6 +736,7 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
   return (
     <SettingsContent>
       <IamdsAccountPanel onWantApiKey={() => onViewChange('keys')} onRefreshCreds={() => void refetch()} />
+      <OAuthAccountsPanel />
     </SettingsContent>
   )
 }
