@@ -3,8 +3,12 @@
 
 from __future__ import annotations
 
+import re
+import os
 import subprocess
 import sys
+import tempfile
+from urllib.parse import unquote
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -41,6 +45,42 @@ def _safe_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _workspace_root() -> Path:
+    raw = (os.environ.get("TERMINAL_CWD") or "").strip()
+    if raw:
+        candidate = Path(raw).expanduser()
+        if candidate.is_absolute() and candidate.is_dir():
+            return candidate
+    return Path.cwd()
+
+
+def _resolve_workspace_path(path_value: str) -> str:
+    p = Path(path_value).expanduser()
+    if p.is_absolute():
+        return str(p)
+    return str((_workspace_root() / p).resolve())
+
+
+def _materialize_markdown_source(source_path: str) -> str:
+    prefix = "data:text/markdown,"
+    if source_path.startswith(prefix):
+        markdown_text = unquote(source_path[len(prefix):])
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".md",
+            prefix="office_word_",
+            dir=str(_workspace_root()),
+            encoding="utf-8",
+            delete=False,
+        )
+        try:
+            tmp.write(markdown_text)
+            return tmp.name
+        finally:
+            tmp.close()
+    return _resolve_workspace_path(source_path)
 
 
 def _normalize_action(action: str | None) -> str:
@@ -88,6 +128,40 @@ def _month_labels(months: int) -> list[str]:
             y -= 1
         labels.append(f"{y}-{m:02d}")
     return labels
+
+
+def _markdown_to_slide_sections(markdown: str) -> list[tuple[str, list[str]]]:
+    sections: list[tuple[str, list[str]]] = []
+    current_title: str | None = None
+    current_bullets: list[str] = []
+
+    for raw in markdown.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            if current_title and current_bullets:
+                sections.append((current_title, current_bullets[:8]))
+            current_title = line.lstrip("#").strip() or "Section"
+            current_bullets = []
+            continue
+        if line.startswith(("- ", "* ")):
+            current_bullets.append(line[2:].strip())
+        elif re.match(r"^\d+\.\s+", line):
+            current_bullets.append(re.sub(r"^\d+\.\s+", "", line))
+        elif current_title:
+            current_bullets.append(line)
+
+    if current_title and current_bullets:
+        sections.append((current_title, current_bullets[:8]))
+
+    if sections:
+        return sections[:12]
+
+    plain_lines = [line.strip() for line in markdown.splitlines() if line.strip()]
+    if not plain_lines:
+        return [("Summary", ["No content provided"])]
+    return [("Summary", plain_lines[:10])]
 
 
 def _validate_workbook(path: Path, required_sheets: list[str]) -> dict[str, Any]:
@@ -311,7 +385,7 @@ def _validate_pptx(path: Path, min_slides: int = 10, min_charts: int = 3) -> dic
     }
 
 
-def _generate_review_deck(output_path: Path, title: str) -> dict[str, Any]:
+def _generate_review_deck(output_path: Path, title: str, content_markdown: str | None = None) -> dict[str, Any]:
     try:
         from pptx import Presentation
         from pptx.chart.data import CategoryChartData
@@ -326,7 +400,20 @@ def _generate_review_deck(output_path: Path, title: str) -> dict[str, Any]:
     # Slide 1
     slide = prs.slides.add_slide(prs.slide_layouts[0])
     slide.shapes.title.text = title_text
-    slide.placeholders[1].text = "Executive summary and recommendations"
+    slide.placeholders[1].text = "Generated from provided input content"
+
+    if content_markdown and content_markdown.strip():
+        for heading, bullets in _markdown_to_slide_sections(content_markdown):
+            s = prs.slides.add_slide(prs.slide_layouts[1])
+            s.shapes.title.text = heading
+            body = s.shapes.placeholders[1].text_frame
+            body.clear()
+            for idx, bullet in enumerate(bullets):
+                p = body.paragraphs[0] if idx == 0 else body.add_paragraph()
+                p.text = bullet
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        prs.save(output_path)
+        return _validate_pptx(output_path, min_slides=2, min_charts=0)
 
     # Slides 2-4 with charts
     chart_specs = [
@@ -427,7 +514,9 @@ def office_word_tool(args: dict, **kwargs) -> str:
     if action == "from_markdown":
         if not source_path or not output_path:
             return tool_error("source_path and output_path are required for from_markdown")
-        return _run_script(_WORD_SCRIPT_ROOT / "write.py", ["--from-md", source_path, output_path])
+        resolved_source = _materialize_markdown_source(source_path)
+        resolved_output = _resolve_workspace_path(output_path)
+        return _run_script(_WORD_SCRIPT_ROOT / "write.py", ["--from-md", resolved_source, resolved_output])
 
     if action == "find_replace":
         if not path or find_text is None or replace_text is None:
@@ -442,10 +531,13 @@ def office_word_tool(args: dict, **kwargs) -> str:
     if action == "merge":
         if not source_paths or not isinstance(source_paths, list) or not output_path:
             return tool_error("source_paths (array) and output_path are required for merge")
-        paths = [str(p) for p in source_paths if _safe_str(p)]
+        paths = [_resolve_workspace_path(str(p)) for p in source_paths if _safe_str(p)]
         if len(paths) < 2:
             return tool_error("merge requires at least two source_paths")
-        return _run_script(_WORD_SCRIPT_ROOT / "write.py", ["--merge", *paths, "--out", output_path])
+        return _run_script(
+            _WORD_SCRIPT_ROOT / "write.py",
+            ["--merge", *paths, "--out", _resolve_workspace_path(output_path)],
+        )
 
     if action == "convert":
         if not path or fmt not in {"pdf", "md", "markdown", "html", "htm"}:
@@ -619,6 +711,8 @@ def office_powerpoint_tool(args: dict, **kwargs) -> str:
     source = _safe_str(args.get("source"))
     input_directory = _safe_str(args.get("input_directory"))
     output_file = _safe_str(args.get("output_file"))
+    source_path = _safe_str(args.get("source_path"))
+    text = _safe_str(args.get("text"))
     original_file = _safe_str(args.get("original_file"))
     title = _safe_str(args.get("title"))
     validate = args.get("validate")
@@ -658,7 +752,13 @@ def office_powerpoint_tool(args: dict, **kwargs) -> str:
     if action == "generate_review_deck":
         if not output_file:
             return tool_error("output_file is required for generate_review_deck")
-        checks = _generate_review_deck(Path(output_file), title or "Q3 Operational Review Pack")
+        content_markdown: str | None = text
+        if source_path:
+            try:
+                content_markdown = Path(_resolve_workspace_path(source_path)).read_text(encoding="utf-8")
+            except OSError as exc:
+                return tool_error(f"Failed to read source_path for generate_review_deck: {exc}")
+        checks = _generate_review_deck(Path(_resolve_workspace_path(output_file)), title or "Q3 Operational Review Pack", content_markdown=content_markdown)
         return tool_result(action=action, output_file=output_file, checks=checks, success=bool(checks.get("success")))
 
     if action == "validate_deck":
@@ -807,7 +907,8 @@ OFFICE_POWERPOINT_SCHEMA = {
         "Operate on PowerPoint artifacts via deterministic skill wrappers. "
         "Action-specific required args: add_slide -> unpacked_dir+source; "
         "clean -> unpacked_dir; pack -> input_directory+output_file; "
-        "generate_review_deck -> output_file; validate_deck -> output_file or path."
+        "generate_review_deck -> output_file (+ optional source_path or text for dynamic content); "
+        "validate_deck -> output_file or path."
     ),
     "parameters": {
         "type": "object",
@@ -826,6 +927,8 @@ OFFICE_POWERPOINT_SCHEMA = {
             "source": {"type": "string"},
             "input_directory": {"type": "string"},
             "output_file": {"type": "string"},
+            "source_path": {"type": "string"},
+            "text": {"type": "string"},
             "path": {"type": "string"},
             "original_file": {"type": "string"},
             "title": {"type": "string"},

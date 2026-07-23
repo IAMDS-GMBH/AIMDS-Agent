@@ -87,3 +87,48 @@ def test_office_powerpoint_schema_requires_add_slide_inputs() -> None:
         if item.get("properties", {}).get("action", {}).get("const") == "add_slide"
     )
     assert set(branch["required"]) == {"action", "unpacked_dir", "source"}
+
+
+def test_markdown_to_slide_sections_parses_headings_and_bullets() -> None:
+    md = """# Intro
+- one
+- two
+
+## Details
+1. alpha
+2. beta
+"""
+    sections = office_tools._markdown_to_slide_sections(md)
+    assert sections[0][0] == "Intro"
+    assert sections[0][1] == ["one", "two"]
+    assert sections[1][0] == "Details"
+    assert sections[1][1] == ["alpha", "beta"]
+
+
+def test_powerpoint_generate_review_deck_reads_source_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    src = tmp_path / "input.md"
+    src.write_text("# Topic\n- a\n- b\n", encoding="utf-8")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    captured: dict[str, object] = {}
+
+    def _fake_generate(output_path: Path, title: str, content_markdown: str | None = None) -> dict:
+        captured["output_path"] = str(output_path)
+        captured["title"] = title
+        captured["content"] = content_markdown
+        return {"success": True}
+
+    monkeypatch.setattr(office_tools, "_generate_review_deck", _fake_generate)
+    result = _parse(
+        office_tools.office_powerpoint_tool(
+            {
+                "action": "generate_review_deck",
+                "output_file": "deck.pptx",
+                "source_path": "input.md",
+                "title": "Cats Deck",
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert captured["title"] == "Cats Deck"
+    assert captured["content"] == "# Topic\n- a\n- b\n"
