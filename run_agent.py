@@ -149,6 +149,7 @@ from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock
     build_context_files_prompt,
     build_environment_hints,
     build_remote_mcp_memory_prompt,
+    build_local_profile_fallback_prompt,
     build_outlook_memory_guidance,
     build_outlook_signature_guidance,
     build_outlook_contact_profiling_guidance,
