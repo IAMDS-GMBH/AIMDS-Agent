@@ -67,3 +67,23 @@ def test_powerpoint_generate_deck_requires_output_file() -> None:
 def test_powerpoint_validate_requires_path() -> None:
     result = _parse(office_tools.office_powerpoint_tool({"action": "validate"}))
     assert result["error"] == "output_file or path is required for validate_deck"
+
+
+def test_office_word_schema_requires_from_markdown_paths() -> None:
+    schema = office_tools.OFFICE_WORD_SCHEMA["parameters"]
+    branch = next(
+        item
+        for item in schema["oneOf"]
+        if item.get("properties", {}).get("action", {}).get("const") == "from_markdown"
+    )
+    assert set(branch["required"]) == {"action", "source_path", "output_path"}
+
+
+def test_office_powerpoint_schema_requires_add_slide_inputs() -> None:
+    schema = office_tools.OFFICE_POWERPOINT_SCHEMA["parameters"]
+    branch = next(
+        item
+        for item in schema["oneOf"]
+        if item.get("properties", {}).get("action", {}).get("const") == "add_slide"
+    )
+    assert set(branch["required"]) == {"action", "unpacked_dir", "source"}

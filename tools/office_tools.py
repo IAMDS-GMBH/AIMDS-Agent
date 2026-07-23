@@ -676,7 +676,14 @@ def office_powerpoint_tool(args: dict, **kwargs) -> str:
 
 OFFICE_WORD_SCHEMA = {
     "name": "office_word",
-    "description": "Operate on Word files via deterministic skill wrappers.",
+    "description": (
+        "Operate on Word files via deterministic skill wrappers. "
+        "Action-specific required args: "
+        "read_* -> path; from_markdown -> source_path+output_path; "
+        "find_replace -> path+find_text+replace_text; append_paragraph -> path+text; "
+        "merge -> source_paths+output_path; convert -> path+format; "
+        "generate_exec_report -> output_path; validate_report -> path."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
@@ -708,6 +715,50 @@ OFFICE_WORD_SCHEMA = {
             "replace_text": {"type": "string"},
         },
         "required": ["action"],
+        "oneOf": [
+            {
+                "properties": {
+                    "action": {
+                        "enum": [
+                            "read_text",
+                            "read_markdown",
+                            "read_tables",
+                            "read_metadata",
+                            "read_styles",
+                        ]
+                    }
+                },
+                "required": ["action", "path"],
+            },
+            {
+                "properties": {"action": {"const": "from_markdown"}},
+                "required": ["action", "source_path", "output_path"],
+            },
+            {
+                "properties": {"action": {"const": "find_replace"}},
+                "required": ["action", "path", "find_text", "replace_text"],
+            },
+            {
+                "properties": {"action": {"const": "append_paragraph"}},
+                "required": ["action", "path", "text"],
+            },
+            {
+                "properties": {"action": {"const": "merge"}},
+                "required": ["action", "source_paths", "output_path"],
+            },
+            {
+                "properties": {"action": {"const": "convert"}},
+                "required": ["action", "path", "format"],
+            },
+            {
+                "properties": {"action": {"const": "generate_exec_report"}},
+                "required": ["action", "output_path"],
+            },
+            {
+                "properties": {"action": {"const": "validate_report"}},
+                "required": ["action", "path"],
+            },
+        ],
         "additionalProperties": False,
     },
 }
@@ -752,7 +803,12 @@ OFFICE_EXCEL_SCHEMA = {
 
 OFFICE_POWERPOINT_SCHEMA = {
     "name": "office_powerpoint",
-    "description": "Operate on PowerPoint artifacts via deterministic skill wrappers.",
+    "description": (
+        "Operate on PowerPoint artifacts via deterministic skill wrappers. "
+        "Action-specific required args: add_slide -> unpacked_dir+source; "
+        "clean -> unpacked_dir; pack -> input_directory+output_file; "
+        "generate_review_deck -> output_file; validate_deck -> output_file or path."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
@@ -778,6 +834,32 @@ OFFICE_POWERPOINT_SCHEMA = {
             "min_charts": {"type": "integer", "minimum": 0},
         },
         "required": ["action"],
+        "oneOf": [
+            {
+                "properties": {"action": {"const": "add_slide"}},
+                "required": ["action", "unpacked_dir", "source"],
+            },
+            {
+                "properties": {"action": {"const": "clean"}},
+                "required": ["action", "unpacked_dir"],
+            },
+            {
+                "properties": {"action": {"const": "pack"}},
+                "required": ["action", "input_directory", "output_file"],
+            },
+            {
+                "properties": {"action": {"const": "generate_review_deck"}},
+                "required": ["action", "output_file"],
+            },
+            {
+                "properties": {"action": {"const": "validate_deck"}},
+                "required": ["action"],
+                "anyOf": [
+                    {"required": ["output_file"]},
+                    {"required": ["path"]},
+                ],
+            },
+        ],
         "additionalProperties": False,
     },
 }
