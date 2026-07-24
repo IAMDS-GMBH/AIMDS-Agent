@@ -1,10 +1,11 @@
-# SOUL — AIMDS Assistant (Canonical Reference)
+# SOUL — AIMDS Assistant (Docker Image Reference)
 
-> This is a reference copy. The authoritative SOUL.md is:
-> - **Installed to:** `~/.hermes/SOUL.md` by the installer
-> - **Source:** `installer/skills-hidden/aimds-loadout/identity/SOUL.md`
-> - **Loaded:** At runtime by `agent/prompt_builder.py:build_soul_context()`
+> This directory file is kept for documentation only.
 >
-> Customization: edit `~/.hermes/SOUL.md` after install. It will be loaded fresh each session.
-
-See `installer/skills-hidden/aimds-loadout/identity/SOUL.md` for the current definition.
+> During Docker container initialization (stage2-hook.sh), the **canonical SOUL.md** is seeded:
+> - **Source:** `installer/skills-hidden/aimds-loadout/identity/SOUL.md`
+> - **Installed to:** `$HERMES_HOME/SOUL.md` (e.g., /opt/data/SOUL.md)
+> - **Seeding Logic:** `stage2-hook.sh` line 347 seeds from canonical path
+>
+> For host installations, see scripts/install.sh or scripts/install.ps1.
+> For the current definition, see `installer/skills-hidden/aimds-loadout/identity/SOUL.md`
