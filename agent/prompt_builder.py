@@ -1148,12 +1148,17 @@ def _skill_should_show(
     at = available_tools or set()
     ats = available_toolsets or set()
 
+    def _has_tool(req: str) -> bool:
+        if req in at:
+            return True
+        return any(req in tool for tool in at)
+
     # fallback_for: hide when the primary tool/toolset IS available
     for ts in conditions.get("fallback_for_toolsets", []):
         if ts in ats:
             return False
     for t in conditions.get("fallback_for_tools", []):
-        if t in at:
+        if _has_tool(t):
             return False
 
     # requires: hide when a required tool/toolset is NOT available
@@ -1161,7 +1166,7 @@ def _skill_should_show(
         if ts not in ats:
             return False
     for t in conditions.get("requires_tools", []):
-        if t not in at:
+        if not _has_tool(t):
             return False
 
     return True

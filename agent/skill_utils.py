@@ -350,6 +350,9 @@ def _external_dirs_cache_clear() -> None:
 def get_external_skills_dirs() -> List[Path]:
     """Read ``skills.external_dirs`` from config.yaml and return validated paths.
 
+    Also automatically includes standard user agent skill directories
+    (``~/.agents/skills``, ``~/.claude/skills``, ``~/.copilot/skills``) if present.
+
     Each entry is expanded (``~`` and ``${VAR}``) and resolved to an absolute
     path.  Only directories that actually exist are returned.  Duplicates and
     paths that resolve to the local ``~/.hermes/skills/`` are silently skipped.
@@ -360,8 +363,6 @@ def get_external_skills_dirs() -> List[Path]:
     when the cache is absent.
     """
     config_path = get_config_path()
-    if not config_path.exists():
-        return []
 
     # Cache key: (absolute path, mtime_ns).  stat() is ~2us vs ~85ms for
     # the full YAML parse, so the fast path is nearly free.
@@ -377,27 +378,31 @@ def get_external_skills_dirs() -> List[Path]:
             # Return a copy so callers can't mutate the cached list.
             return list(cached)
 
-    try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if not isinstance(parsed, dict):
-        return []
+    raw_dirs: list = []
+    if config_path.exists():
+        try:
+            parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                skills_cfg = parsed.get("skills")
+                if isinstance(skills_cfg, dict):
+                    ext_dirs = skills_cfg.get("external_dirs")
+                    if isinstance(ext_dirs, str):
+                        raw_dirs = [ext_dirs]
+                    elif isinstance(ext_dirs, list):
+                        raw_dirs = ext_dirs
+        except Exception:
+            pass
 
-    skills_cfg = parsed.get("skills")
-    if not isinstance(skills_cfg, dict):
-        return []
-
-    raw_dirs = skills_cfg.get("external_dirs")
-    if not raw_dirs:
-        result: List[Path] = []
-        if cache_key is not None:
-            _EXTERNAL_DIRS_CACHE[cache_key] = list(result)
-        return result
-    if isinstance(raw_dirs, str):
-        raw_dirs = [raw_dirs]
-    if not isinstance(raw_dirs, list):
-        return []
+    # Standard user agent skill locations (skipped during unit test runs)
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        standard_agent_dirs = [
+            str(Path.home() / ".agents" / "skills"),
+            str(Path.home() / ".claude" / "skills"),
+            str(Path.home() / ".copilot" / "skills"),
+        ]
+        for std_dir in standard_agent_dirs:
+            if std_dir not in raw_dirs:
+                raw_dirs.append(std_dir)
 
     from hermes_constants import get_hermes_home
 
