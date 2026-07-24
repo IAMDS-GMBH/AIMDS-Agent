@@ -435,19 +435,27 @@ def _expand_install_dir(value: str, install_dir: Optional[Path]) -> str:
     return value.replace(_INSTALL_DIR_VAR, str(install_dir))
 
 
-def _prompt_env_vars(specs: List[EnvVarSpec]) -> Dict[str, str]:
+def _prompt_env_vars(
+    specs: List[EnvVarSpec], *, reprompt: bool = False
+) -> Dict[str, str]:
     """Walk the env spec list, prompting the user for each. Writes secrets and
-    non-secrets alike to ~/.hermes/.env via save_env_value()."""
+    non-secrets alike to ~/.hermes/.env via save_env_value().
+    
+    If reprompt=False and a variable is already set, keeps existing value.
+    If reprompt=True or variable is missing, prompts with existing value as default,
+    so pressing Enter keeps existing token/value.
+    """
     collected: Dict[str, str] = {}
     for spec in specs:
         existing = get_env_value(spec.name)
-        if existing:
+        if existing and not reprompt:
             print(color(f"  ✓ {spec.name} already set in .env", Colors.GREEN))
             collected[spec.name] = existing
             continue
+        default_val = existing or spec.default or None
         value = _prompt_input(
             spec.prompt,
-            default=spec.default or None,
+            default=default_val,
             password=spec.secret,
         )
         if not value:
@@ -680,7 +688,9 @@ def _apply_tool_selection(
     ))
 
 
-def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
+def install_entry(
+    entry: CatalogEntry, *, enable: bool = True, reprompt: bool = False
+) -> None:
     """Install a catalog entry end-to-end.
 
     Steps:
@@ -713,12 +723,12 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
     if entry.auth.type == "api_key":
         print()
         print(color("  Configure credentials:", Colors.CYAN))
-        _prompt_env_vars(entry.auth.env)
+        _prompt_env_vars(entry.auth.env, reprompt=reprompt)
     elif entry.auth.type == "oauth":
         if entry.auth.env:
             print()
             print(color("  Configure credentials:", Colors.CYAN))
-            collected = _prompt_env_vars(entry.auth.env)
+            collected = _prompt_env_vars(entry.auth.env, reprompt=reprompt)
             has_token = any(v and v.strip() for v in collected.values())
         else:
             has_token = False

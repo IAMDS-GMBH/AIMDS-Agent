@@ -220,7 +220,7 @@ def _handle_row(row: _Row) -> None:
     elif choice == 3:
         try:
             assert row.entry is not None
-            install_entry(row.entry, enable=True)
+            install_entry(row.entry, enable=True, reprompt=True)
         except CatalogError as exc:
             print(color(f"  ✗ reinstall failed: {exc}", Colors.RED))
 

@@ -270,6 +270,36 @@ class TestInstall:
         assert get_env_value("DEMO_KEY") == "secret-val"
         assert "demo" in load_config()["mcp_servers"]
 
+    def test_reprompt_preserves_existing_env_vars_when_blank(self, catalog_dir, monkeypatch):
+        body = _basic_manifest(
+            auth={
+                "type": "api_key",
+                "env": [
+                    {"name": "KEY1", "prompt": "key1", "secret": True},
+                    {"name": "KEY2", "prompt": "key2", "secret": False, "required": False},
+                ],
+            }
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import save_env_value, get_env_value
+        from hermes_cli.mcp_catalog import install_entry
+
+        save_env_value("KEY1", "existing-secret-1")
+        save_env_value("KEY2", "existing-val-2")
+
+        # Mock _prompt_input to return default when default is provided (user hits Enter)
+        def fake_prompt(question, default=None, **kwargs):
+            return default or ""
+
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", fake_prompt)
+
+        install_entry(_entry("demo"), enable=True, reprompt=True)
+
+        assert get_env_value("KEY1") == "existing-secret-1"
+        assert get_env_value("KEY2") == "existing-val-2"
+
     def test_install_http_oauth_writes_auth_marker(self, catalog_dir):
         body = _basic_manifest(
             transport={"type": "http", "url": "https://mcp.example.com/sse"},
