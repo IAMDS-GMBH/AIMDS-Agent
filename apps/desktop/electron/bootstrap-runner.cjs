@@ -41,6 +41,13 @@ const https = require('node:https')
 const { spawn } = require('node:child_process')
 
 const IS_WINDOWS = process.platform === 'win32'
+const CANONICAL_SOUL_REL_PATH = path.join(
+  'installer',
+  'skills-hidden',
+  'aimds-loadout',
+  'identity',
+  'SOUL.md'
+)
 
 function hiddenWindowsChildOptions(options = {}) {
   if (!IS_WINDOWS || Object.prototype.hasOwnProperty.call(options, 'windowsHide')) {
@@ -83,6 +90,42 @@ function resolveLocalInstallScript(sourceRepoRoot) {
 
 function bootstrapCacheDir(hermesHome) {
   return path.join(hermesHome, 'bootstrap-cache')
+}
+
+function canonicalSoulCandidates({ sourceRepoRoot, activeRoot, hermesHome }) {
+  const candidates = []
+  if (sourceRepoRoot) candidates.push(path.join(sourceRepoRoot, CANONICAL_SOUL_REL_PATH))
+  if (activeRoot) candidates.push(path.join(activeRoot, CANONICAL_SOUL_REL_PATH))
+  if (hermesHome) candidates.push(path.join(hermesHome, 'hermes-agent', CANONICAL_SOUL_REL_PATH))
+  return candidates
+}
+
+function resolveCanonicalSoulSource({ sourceRepoRoot, activeRoot, hermesHome }) {
+  for (const candidate of canonicalSoulCandidates({ sourceRepoRoot, activeRoot, hermesHome })) {
+    try {
+      if (fs.statSync(candidate).isFile()) return candidate
+    } catch {
+      void 0
+    }
+  }
+  return null
+}
+
+function enforceCanonicalSoul({ sourceRepoRoot, activeRoot, hermesHome, emit }) {
+  const source = resolveCanonicalSoulSource({ sourceRepoRoot, activeRoot, hermesHome })
+  if (!source) {
+    throw new Error(
+      `Could not locate canonical SOUL source (${CANONICAL_SOUL_REL_PATH}) during reinstall bootstrap`
+    )
+  }
+  const target = path.join(hermesHome, 'SOUL.md')
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  fs.copyFileSync(source, target)
+  emit({
+    type: 'log',
+    line: `[bootstrap] enforced canonical SOUL.md from ${source} -> ${target}`
+  })
+  return { source, target }
 }
 
 // The install.sh / install.ps1 that ships inside the already-installed agent
@@ -698,7 +741,10 @@ async function runBootstrap(opts) {
       }
     }
 
-    // 4. Write the bootstrap-complete marker.
+    // 4. Enforce canonical SOUL.md after install stages complete.
+    enforceCanonicalSoul({ sourceRepoRoot, activeRoot, hermesHome, emit })
+
+    // 5. Write the bootstrap-complete marker.
     const markerPayload = {
       pinnedCommit: installStamp ? installStamp.commit : null,
       pinnedBranch: installStamp ? installStamp.branch : null
@@ -722,6 +768,8 @@ module.exports = {
   runBootstrap,
   // Exposed for testability
   parseStageResult,
+  enforceCanonicalSoul,
+  resolveCanonicalSoulSource,
   resolveLocalInstallScript,
   resolveInstallScript,
   installedAgentInstallScript,

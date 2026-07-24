@@ -6,6 +6,8 @@ const path = require('node:path')
 
 const {
   runBootstrap,
+  enforceCanonicalSoul,
+  resolveCanonicalSoulSource,
   resolveInstallScript,
   installedAgentInstallScript,
   cachedScriptPath
@@ -133,6 +135,69 @@ test('resolveInstallScript rethrows when the 404 fallback is unavailable', async
       /HTTP 404|Failed to download/
     )
   } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('resolveCanonicalSoulSource prefers sourceRepoRoot then activeRoot then installed agent', () => {
+  const home = mkTmpHome()
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-source-'))
+  const active = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-active-'))
+  try {
+    const rel = path.join('installer', 'skills-hidden', 'aimds-loadout', 'identity')
+    const srcSoul = path.join(src, rel, 'SOUL.md')
+    const activeSoul = path.join(active, rel, 'SOUL.md')
+    const installedSoul = path.join(home, 'hermes-agent', rel, 'SOUL.md')
+    fs.mkdirSync(path.dirname(activeSoul), { recursive: true })
+    fs.mkdirSync(path.dirname(installedSoul), { recursive: true })
+    fs.writeFileSync(activeSoul, 'active soul\n')
+    fs.writeFileSync(installedSoul, 'installed soul\n')
+
+    // sourceRepoRoot absent -> activeRoot wins
+    assert.equal(
+      resolveCanonicalSoulSource({ sourceRepoRoot: null, activeRoot: active, hermesHome: home }),
+      activeSoul
+    )
+
+    // sourceRepoRoot present -> source wins
+    fs.mkdirSync(path.dirname(srcSoul), { recursive: true })
+    fs.writeFileSync(srcSoul, 'source soul\n')
+    assert.equal(
+      resolveCanonicalSoulSource({ sourceRepoRoot: src, activeRoot: active, hermesHome: home }),
+      srcSoul
+    )
+  } finally {
+    fs.rmSync(src, { recursive: true, force: true })
+    fs.rmSync(active, { recursive: true, force: true })
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('enforceCanonicalSoul overwrites HERMES_HOME/SOUL.md from canonical source', () => {
+  const home = mkTmpHome()
+  const active = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-active-'))
+  try {
+    const rel = path.join('installer', 'skills-hidden', 'aimds-loadout', 'identity')
+    const canonical = path.join(active, rel, 'SOUL.md')
+    fs.mkdirSync(path.dirname(canonical), { recursive: true })
+    fs.writeFileSync(canonical, '# SOUL canonical\n')
+
+    const target = path.join(home, 'SOUL.md')
+    fs.writeFileSync(target, '# old soul\n')
+    const events = []
+    const result = enforceCanonicalSoul({
+      sourceRepoRoot: null,
+      activeRoot: active,
+      hermesHome: home,
+      emit: ev => events.push(ev)
+    })
+
+    assert.equal(result.source, canonical)
+    assert.equal(result.target, target)
+    assert.equal(fs.readFileSync(target, 'utf8'), '# SOUL canonical\n')
+    assert.ok(events.some(ev => ev.type === 'log' && /enforced canonical SOUL\.md/.test(ev.line || '')))
+  } finally {
+    fs.rmSync(active, { recursive: true, force: true })
     fs.rmSync(home, { recursive: true, force: true })
   }
 })
