@@ -7874,40 +7874,43 @@ async def list_mcp_catalog(profile: Optional[str] = None):
 
     entries = []
     try:
+        from hermes_cli.config import get_env_value
+
         with _profile_scope(profile):
             catalog_entries = list(mcp_catalog.list_catalog())
             installed_state = {
                 e.name: (mcp_catalog.is_installed(e.name), mcp_catalog.is_enabled(e.name))
                 for e in catalog_entries
             }
-        for entry in catalog_entries:
-            auth = entry.auth
-            env_vars = [
-                {
-                    "name": e.name,
-                    "prompt": e.prompt,
-                    "required": getattr(e, "required", True),
-                    "secret": getattr(e, "secret", True),
-                    "default": getattr(e, "default", ""),
-                }
-                for e in (getattr(auth, "env", []) or [])
-            ]
-            entries.append({
-                "name": entry.name,
-                "description": entry.description,
-                "source": entry.source,
-                "transport": entry.transport.type,
-                "auth_type": getattr(auth, "type", "none"),
-                "required_env": env_vars,
-                "auth": {
-                    "type": getattr(auth, "type", "none"),
-                    "env": env_vars,
-                },
-                "disabled": getattr(entry, "disabled", False),
-                "needs_install": entry.install is not None,
-                "installed": installed_state.get(entry.name, (False, False))[0],
-                "enabled": installed_state.get(entry.name, (False, False))[1],
-            })
+            for entry in catalog_entries:
+                auth = entry.auth
+                env_vars = [
+                    {
+                        "name": e.name,
+                        "prompt": e.prompt,
+                        "required": getattr(e, "required", True),
+                        "secret": getattr(e, "secret", True),
+                        "default": getattr(e, "default", ""),
+                        "current_value": get_env_value(e.name) or "",
+                    }
+                    for e in (getattr(auth, "env", []) or [])
+                ]
+                entries.append({
+                    "name": entry.name,
+                    "description": entry.description,
+                    "source": entry.source,
+                    "transport": entry.transport.type,
+                    "auth_type": getattr(auth, "type", "none"),
+                    "required_env": env_vars,
+                    "auth": {
+                        "type": getattr(auth, "type", "none"),
+                        "env": env_vars,
+                    },
+                    "disabled": getattr(entry, "disabled", False),
+                    "needs_install": entry.install is not None,
+                    "installed": installed_state.get(entry.name, (False, False))[0],
+                    "enabled": installed_state.get(entry.name, (False, False))[1],
+                })
     except HTTPException:
         # Unknown/invalid profile → 404, not a silently-empty catalog.
         raise

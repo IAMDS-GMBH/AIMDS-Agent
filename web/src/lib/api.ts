@@ -1244,7 +1244,12 @@ export interface McpCatalogEntry {
   source: string;
   transport: "http" | "stdio";
   auth_type: "api_key" | "oauth" | "none";
-  required_env: Array<{ name: string; prompt: string; required: boolean }>;
+  required_env: Array<{
+    name: string;
+    prompt: string;
+    required: boolean;
+    current_value?: string;
+  }>;
   needs_install: boolean;
   installed: boolean;
   enabled: boolean;

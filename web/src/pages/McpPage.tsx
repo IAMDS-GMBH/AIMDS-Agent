@@ -255,7 +255,7 @@ export default function McpPage() {
     if (entry.required_env.length > 0) {
       const initial: Record<string, string> = {};
       entry.required_env.forEach((item) => {
-        initial[item.name] = "";
+        initial[item.name] = item.current_value ?? "";
       });
       setInstallEnv(initial);
       setInstallEntry(entry);
@@ -480,7 +480,7 @@ export default function McpPage() {
                 id="install-mcp-title"
                 className="font-mondwest text-display text-base tracking-wider"
               >
-                Install {installEntry.name}
+                {installEntry.installed ? "Configure" : "Install"} {installEntry.name}
               </h2>
             </header>
 
@@ -522,8 +522,10 @@ export default function McpPage() {
                   }
                 >
                   {installingName === installEntry.name
-                    ? "Installing..."
-                    : "Install"}
+                    ? "Saving..."
+                    : installEntry.installed
+                      ? "Save"
+                      : "Install"}
                 </Button>
               </div>
             </div>
@@ -734,7 +736,21 @@ export default function McpPage() {
 
                 <div className="flex items-center gap-1 shrink-0">
                   {entry.installed ? (
-                    <Badge tone="success">Installed</Badge>
+                    <div className="flex items-center gap-2">
+                      <Badge tone="success">Installed</Badge>
+                      {entry.required_env.length > 0 && (
+                        <Button
+                          variant="outline"
+                          className="uppercase"
+                          size="sm"
+                          onClick={() => handleInstallClick(entry)}
+                          disabled={isInstalling}
+                          prefix={isInstalling ? <Spinner /> : undefined}
+                        >
+                          {isInstalling ? "Saving..." : "Edit"}
+                        </Button>
+                      )}
+                    </div>
                   ) : (
                     <Button
                       className="uppercase"
