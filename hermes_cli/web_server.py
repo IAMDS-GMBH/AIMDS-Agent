@@ -7705,6 +7705,11 @@ def _redact_mcp_env(env: Dict[str, Any]) -> Dict[str, str]:
 
 def _mcp_server_summary(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
     transport = "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")
+    tools_cfg = cfg.get("tools")
+    if isinstance(tools_cfg, dict):
+        tools = tools_cfg.get("include") if "include" in tools_cfg else tools_cfg
+    else:
+        tools = tools_cfg
     return {
         "name": name,
         "transport": transport,
@@ -7715,7 +7720,7 @@ def _mcp_server_summary(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
         "auth": cfg.get("auth"),
         "enabled": cfg.get("enabled", True) is not False,
         # Tool selection: list of enabled tool names, or None = all.
-        "tools": cfg.get("tools"),
+        "tools": tools,
     }
 
 

@@ -38,6 +38,19 @@ function ScopeChip({ active, label, onSelect }: { active: boolean; label: string
   )
 }
 
+function getMcpServerToolCount(server: McpServerSummary): number | null {
+  if (!server.tools) return null
+  if (Array.isArray(server.tools)) return server.tools.length
+  if (
+    typeof server.tools === 'object' &&
+    'include' in server.tools &&
+    Array.isArray((server.tools as { include?: string[] }).include)
+  ) {
+    return (server.tools as { include: string[] }).include.length
+  }
+  return null
+}
+
 export function GatewaySettings() {
   const { t } = useI18n()
   const g = t.settings.gateway
@@ -333,9 +346,41 @@ export function GatewaySettings() {
                 <span className="truncate">{g.dashboardAuthGate}</span>
                 <span>{localStatus.auth_required ? g.authGateEnabled((localStatus.auth_providers ?? []).join(', ') || 'configured') : g.authGateDisabled}</span>
               </div>
-              <div className="flex items-center justify-between rounded border border-border/60 bg-background/40 px-2 py-1 text-xs">
-                <span className="truncate">{g.configuredMcp}</span>
-                <span>{enabledMcpServers.length}/{mcpServers.length}</span>
+              <div className="rounded border border-border/60 bg-background/40 p-2 text-xs">
+                <div className="flex items-center justify-between font-medium">
+                  <span className="truncate">{g.configuredMcp}</span>
+                  <span className="font-mono text-muted-foreground">
+                    {enabledMcpServers.length}/{mcpServers.length}
+                    {mcpServers.some(s => getMcpServerToolCount(s) !== null)
+                      ? ` (${enabledMcpServers.reduce((sum, s) => sum + (getMcpServerToolCount(s) ?? 0), 0)} Tools)`
+                      : ''}
+                  </span>
+                </div>
+                {mcpServers.length > 0 && (
+                  <div className="mt-2 grid gap-1 border-t border-border/40 pt-1.5">
+                    {mcpServers.map(server => {
+                      const count = getMcpServerToolCount(server)
+                      const countLabel = count !== null ? `${count} Tool${count === 1 ? '' : 's'}` : null
+                      return (
+                        <div key={server.name} className="flex items-center justify-between pl-2 text-[11px]">
+                          <span className="truncate font-mono text-foreground/80">{server.name}</span>
+                          <span
+                            className={cn(
+                              'font-mono',
+                              server.enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'
+                            )}
+                          >
+                            {server.enabled
+                              ? countLabel
+                                ? `${g.statusUp} (${countLabel})`
+                                : g.statusUp
+                              : g.gatewayOptional}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
             </div>
           )}
