@@ -14,37 +14,14 @@ from pathlib import Path
 
 import yaml
 
-_AIMDS_DEFAULTS_VERSION = 10
+_AIMDS_DEFAULTS_VERSION = 11
 _AIMDS_DEFAULTS_VERSION_KEY = "aimds_defaults_version"
 
 
 _AIMDS_TOOL_INCLUDE_RAW = [
-    # Canonical MCP tool names as advertised by the IAMDS gateway / memory / KB servers.
-    "aimds_kb_kb_search",
-    "aimds_kb_kb_get_topic",
-    "aimds_kb_kb_list_topics",
-    "aimds_kb_kb_get_recent",
-    "aimds_kb_kb_get_related",
-    "aimds_kb_kb_get_tags",
-    "aimds_kb_kb_get_backlinks",
-    "aimds_kb_kb_get_graph",
-    "mcp_memory_memory_context",
-    "mcp_memory_memory_get",
-    "mcp_memory_memory_list",
-    "mcp_memory_memory_save",
-    "mcp_memory_memory_read",
-    "mcp_memory_memory_upsert",
-    "mcp_memory_memory_delete",
-    "mcp_memory_memory_search",
-    "mcp_memory_memory_manage",
-    "mcp_memory_memory_backlinks",
-    "mcp_memory_memory_transfer",
-    "mcp_memory_memory_meta",
-    "mcp_memory_memory_agent",
-    "mcp_memory_memory_summarize_session",
-    "mcp_memory_skill",
-    "mcp_websearch_web_search",
-    "mcp_websearch_web_fetch",
+    # Canonical AIMDS default tools (KB, Memory, WebSearch).
+    # Flexible alias matching in mcp_tool.py automatically handles server
+    # prefixes (e.g. mcp_IAMDS_..., aimds_kb_..., mcp_memory_...).
     "kb_search",
     "kb_get_topic",
     "kb_list_topics",
@@ -108,17 +85,8 @@ def _sanitize_mcp_name_component(value: str) -> str:
 
 
 def _build_aimds_tool_include(server_name: str) -> list[str]:
-    """Build include list with full and raw names for robust matching."""
-    safe_server_name = _sanitize_mcp_name_component(server_name)
-    prefixed = [
-        f"mcp_{safe_server_name}_{_sanitize_mcp_name_component(tool_name)}"
-        for tool_name in _AIMDS_TOOL_INCLUDE_RAW
-    ]
-    prefixed_raw = [
-        f"mcp_{safe_server_name}_{tool_name}"
-        for tool_name in _AIMDS_TOOL_INCLUDE_RAW
-    ]
-    return list(dict.fromkeys(prefixed + prefixed_raw + list(_AIMDS_TOOL_INCLUDE_RAW)))
+    """Build include list of base tool names. Alias matching handles prefixing."""
+    return list(dict.fromkeys(_AIMDS_TOOL_INCLUDE_RAW))
 
 
 def _coerce_version(value: object) -> int:
