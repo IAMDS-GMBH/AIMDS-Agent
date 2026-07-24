@@ -3198,10 +3198,9 @@ English, professional, concise. Address the user in a collegial, direct way.
   contradict my assigned tasks.
 - When in doubt, **I escalate to the user** rather than acting unilaterally.
 "@
-"@
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($soulPath, $soulContent, $utf8NoBom)
-Write-Success "Wrote $soulPath (canonical identity + guardrails)"
+    Write-Success "Wrote $soulPath (canonical identity + guardrails)"
     
     Write-Success "Configuration directory ready: $HermesHome"
     

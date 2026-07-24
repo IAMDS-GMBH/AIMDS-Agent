@@ -42,6 +42,7 @@ const UPDATE_EXIT_CONCURRENT: i32 = 2;
 /// before giving up and letting `hermes update`'s own guard decide.
 const DESKTOP_EXIT_WAIT: Duration = Duration::from_secs(20);
 const DESKTOP_EXIT_POLL: Duration = Duration::from_millis(500);
+const CANONICAL_SOUL_REL_PATH: &str = "installer/skills-hidden/aimds-loadout/identity/SOUL.md";
 
 /// Guards against concurrent update runs. The frontend kicks `startUpdate()`
 /// from a mount effect, which can fire more than once (React strict-mode
@@ -319,6 +320,22 @@ async fn run_update(app: AppHandle) -> Result<()> {
     }
     emit_stage(&app, "rebuild", StageState::Succeeded, Some(rebuild_ms), None);
 
+    // Keep SOUL.md aligned on every update/reinstall. The update path does not
+    // run the installer's config stage, so enforce the canonical identity file
+    // here from the freshly-updated checkout.
+    let hermes_home_path = PathBuf::from(&hermes_home);
+    let canonical_soul = sync_canonical_soul(&install_root, &hermes_home_path)?;
+    emit_log(
+        &app,
+        Some("update"),
+        LogStream::Stdout,
+        &format!(
+            "[update] synced canonical SOUL.md from {} to {}",
+            canonical_soul.display(),
+            hermes_home_path.join("SOUL.md").display()
+        ),
+    );
+
     let launch_target = if let Some(target_app) = target_app {
         let started = Instant::now();
         emit_stage(&app, "install", StageState::Running, None, None);
@@ -389,6 +406,22 @@ async fn run_update(app: AppHandle) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn sync_canonical_soul(install_root: &Path, hermes_home: &Path) -> Result<PathBuf> {
+    let source = install_root.join(CANONICAL_SOUL_REL_PATH);
+    if !source.is_file() {
+        return Err(anyhow!(
+            "Canonical SOUL.md missing after update at {}",
+            source.display()
+        ));
+    }
+    let target = hermes_home.join("SOUL.md");
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(&source, &target)?;
+    Ok(source)
 }
 
 /// Poll until the venv shim is no longer locked (Windows) or a bounded timeout
@@ -1003,6 +1036,41 @@ mod tests {
             "OLD"
         );
         assert!(!old.exists(), "backup should be rolled back, not left behind");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn sync_canonical_soul_copies_source_into_hermes_home() {
+        let base = unique_tmp_dir("soul-copy");
+        let install_root = base.join("hermes-agent");
+        let hermes_home = base.join(".hermes");
+        let source = install_root.join(CANONICAL_SOUL_REL_PATH);
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&hermes_home).unwrap();
+        std::fs::write(&source, "# canonical soul\n").unwrap();
+        std::fs::write(hermes_home.join("SOUL.md"), "# old soul\n").unwrap();
+
+        let copied_from = sync_canonical_soul(&install_root, &hermes_home).unwrap();
+        assert_eq!(copied_from, source);
+        assert_eq!(
+            std::fs::read_to_string(hermes_home.join("SOUL.md")).unwrap(),
+            "# canonical soul\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn sync_canonical_soul_errors_when_source_missing() {
+        let base = unique_tmp_dir("soul-missing");
+        let install_root = base.join("hermes-agent");
+        let hermes_home = base.join(".hermes");
+        std::fs::create_dir_all(&hermes_home).unwrap();
+        let err = sync_canonical_soul(&install_root, &hermes_home).unwrap_err();
+        assert!(
+            err.to_string().contains("Canonical SOUL.md missing after update"),
+            "unexpected error: {err}"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 }
