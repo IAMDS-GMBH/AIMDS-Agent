@@ -8205,6 +8205,28 @@ def _seed_aimds_default_cron_after_update() -> None:
         logger.debug("AIMDS default cron post-update seed failed: %s", exc)
 
 
+def _sync_canonical_soul_after_update() -> None:
+    """Best-effort SOUL.md sync for update/reinstall flows.
+
+    Some update paths run ``hermes update`` directly and do not execute the
+    installer config stage that rewrites ``~/.hermes/SOUL.md``. Keep identity
+    consistent by copying the canonical loadout SOUL after update.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        source = PROJECT_ROOT / "installer" / "skills-hidden" / "aimds-loadout" / "identity" / "SOUL.md"
+        target = get_hermes_home() / "SOUL.md"
+        if not source.is_file():
+            print(f"  ℹ SOUL sync skipped: canonical source missing ({source})")
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        print(f"  ✓ Synced canonical SOUL.md to {target}")
+    except Exception as exc:
+        logger.debug("Canonical SOUL post-update sync failed: %s", exc)
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -9039,6 +9061,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Keep AIMDS policy defaults enforced for update/sync paths too.
         _apply_aimds_defaults_after_update()
         _seed_aimds_default_cron_after_update()
+        _sync_canonical_soul_after_update()
 
         # Safety net: config-version migrations have been observed to leave
         # cron/jobs.json valid-but-empty, silently dropping every scheduled
