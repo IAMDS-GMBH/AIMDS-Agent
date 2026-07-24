@@ -330,6 +330,14 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = [
     # echo back; the underscore form is provider-specific enough.
     "content_filter",
     "responsibleaipolicyviolation",
+    # LiteLLM / LLM-Guard prompt injection & guardrail filters
+    "promptinjection",
+    "prompt injection",
+    "prompt_injection",
+    "llm-guard",
+    "llm_guard",
+    "input guardrail",
+    "input_guardrail",
 ]
 
 # Auth patterns (non-status-code signals)

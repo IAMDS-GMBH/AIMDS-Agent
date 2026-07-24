@@ -4693,8 +4693,9 @@ def run_conversation(
                             "failed": True,
                             "error": f"content_policy_blocked: {_summary}",
                         }
+                    _summary = agent._summarize_api_error(api_error)
                     return {
-                        "final_response": None,
+                        "final_response": f"⚠️ API call failed (HTTP {status_code}): {_summary}",
                         "messages": messages,
                         "api_calls": api_call_count,
                         "completed": False,
