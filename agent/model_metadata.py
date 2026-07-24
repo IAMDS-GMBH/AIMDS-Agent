@@ -687,7 +687,26 @@ def fetch_endpoint_model_metadata(
     if alternate and alternate not in candidates:
         candidates.append(alternate)
 
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    api_key = str(api_key or "").strip()
+    if not api_key:
+        api_key = (
+            os.getenv("IAMDS_LITELLM_API_KEY", "").strip()
+            or os.getenv("OPENAI_API_KEY", "").strip()
+            or os.getenv("LITELLM_KEY", "").strip()
+        )
+        if not api_key:
+            try:
+                from hermes_cli.auth import resolve_api_key_provider_credentials
+
+                for p_id in ("iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
+                    creds = resolve_api_key_provider_credentials(p_id)
+                    if isinstance(creds, dict) and creds.get("api_key"):
+                        api_key = str(creds["api_key"]).strip()
+                        break
+            except Exception:
+                pass
+
+    headers = _auth_headers(api_key) if api_key else {}
     last_error: Optional[Exception] = None
 
     if is_local_endpoint(normalized):
@@ -742,59 +761,127 @@ def fetch_endpoint_model_metadata(
         except Exception as exc:
             last_error = exc
 
+    _is_litellm = "suite.iamds.com" in normalized.lower() or "/litellm" in normalized.lower()
+
     for candidate in candidates:
+        cache: Dict[str, Dict[str, Any]] = {}
         url = candidate.rstrip("/") + "/models"
         try:
             response = requests.get(url, headers=headers, timeout=10, verify=_resolve_requests_verify())
-            response.raise_for_status()
-            payload = response.json()
-            cache: Dict[str, Dict[str, Any]] = {}
-            for model in payload.get("data", []):
-                if not isinstance(model, dict):
-                    continue
-                model_id = model.get("id")
-                if not model_id:
-                    continue
-                entry: Dict[str, Any] = {"name": model.get("name", model_id)}
-                context_length = _extract_context_length(model)
-                if context_length is not None:
-                    entry["context_length"] = context_length
-                max_completion_tokens = _extract_max_completion_tokens(model)
-                if max_completion_tokens is not None:
-                    entry["max_completion_tokens"] = max_completion_tokens
-                pricing = _extract_pricing(model)
-                if pricing:
-                    entry["pricing"] = pricing
-                _add_model_aliases(cache, model_id, entry)
+            if response.ok:
+                payload = response.json()
+                for model in payload.get("data", []) or []:
+                    if not isinstance(model, dict):
+                        continue
+                    model_id = model.get("id")
+                    if not model_id:
+                        continue
+                    entry: Dict[str, Any] = {"name": model.get("name", model_id)}
+                    context_length = _extract_context_length(model)
+                    if context_length is not None:
+                        entry["context_length"] = context_length
+                    max_completion_tokens = _extract_max_completion_tokens(model)
+                    if max_completion_tokens is not None:
+                        entry["max_completion_tokens"] = max_completion_tokens
+                    pricing = _extract_pricing(model)
+                    if pricing:
+                        entry["pricing"] = pricing
+                    _add_model_aliases(cache, model_id, entry)
 
-            # If this is a llama.cpp server, query /props for actual allocated context
-            is_llamacpp = any(
-                m.get("owned_by") == "llamacpp"
-                for m in payload.get("data", []) if isinstance(m, dict)
-            )
-            if is_llamacpp:
-                try:
-                    # Try /v1/props first (current llama.cpp); fall back to /props for older builds
-                    base = candidate.rstrip("/").replace("/v1", "")
-                    _verify = _resolve_requests_verify()
-                    props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5, verify=_verify)
-                    if not props_resp.ok:
-                        props_resp = requests.get(base + "/props", headers=headers, timeout=5, verify=_verify)
-                    if props_resp.ok:
-                        props = props_resp.json()
-                        gen_settings = props.get("default_generation_settings", {})
-                        n_ctx = gen_settings.get("n_ctx")
-                        model_alias = props.get("model_alias", "")
-                        if n_ctx and model_alias and model_alias in cache:
-                            cache[model_alias]["context_length"] = n_ctx
-                except Exception:
-                    pass
+                is_llamacpp = any(
+                    m.get("owned_by") == "llamacpp"
+                    for m in payload.get("data", []) if isinstance(m, dict)
+                )
+                if is_llamacpp:
+                    try:
+                        base = candidate.rstrip("/").replace("/v1", "")
+                        _verify = _resolve_requests_verify()
+                        props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5, verify=_verify)
+                        if not props_resp.ok:
+                            props_resp = requests.get(base + "/props", headers=headers, timeout=5, verify=_verify)
+                        if props_resp.ok:
+                            props = props_resp.json()
+                            gen_settings = props.get("default_generation_settings", {})
+                            n_ctx = gen_settings.get("n_ctx")
+                            model_alias = props.get("model_alias", "")
+                            if n_ctx and model_alias and model_alias in cache:
+                                cache[model_alias]["context_length"] = n_ctx
+                    except Exception:
+                        pass
+        except Exception as exc:
+            last_error = exc
 
+        info_url = candidate.rstrip("/").replace("/v1", "") + "/model/info"
+        if _is_litellm or api_key:
+            try:
+                info_resp = requests.get(info_url, headers=headers, timeout=10, verify=_resolve_requests_verify())
+                if info_resp.ok:
+                    info_payload = info_resp.json()
+                    info_data = info_payload.get("data", []) if isinstance(info_payload, dict) else None
+                    if isinstance(info_data, list):
+                        for item in info_data:
+                            if not isinstance(item, dict):
+                                continue
+                            names: list[str] = []
+                            for cand in (
+                                item.get("model_name"),
+                                item.get("id"),
+                                (item.get("litellm_params") or {}).get("model")
+                                if isinstance(item.get("litellm_params"), dict)
+                                else None,
+                            ):
+                                if isinstance(cand, str) and cand.strip():
+                                    names.append(cand.strip())
+                            if not names:
+                                continue
+
+                            info = item.get("model_info") or {}
+                            ctx = (
+                                info.get("max_input_tokens")
+                                or info.get("max_tokens")
+                                or _extract_context_length(info)
+                                or _extract_context_length(item)
+                            )
+                            comp = (
+                                info.get("max_output_tokens")
+                                or info.get("max_tokens")
+                                or _extract_max_completion_tokens(info)
+                            )
+
+                            prompt_cost = info.get("input_cost_per_token")
+                            comp_cost = info.get("output_cost_per_token")
+                            cache_read = info.get("cache_read_input_token_cost")
+                            cache_write = info.get("cache_creation_input_token_cost")
+
+                            pricing: Dict[str, Any] = {}
+                            if prompt_cost is not None:
+                                pricing["prompt"] = str(prompt_cost)
+                            if comp_cost is not None:
+                                pricing["completion"] = str(comp_cost)
+                            if cache_read is not None:
+                                pricing["cache_read"] = str(cache_read)
+                            if cache_write is not None:
+                                pricing["cache_write"] = str(cache_write)
+
+                            for canonical in names:
+                                entry = cache.setdefault(canonical, {"name": canonical})
+                                if isinstance(ctx, int) and ctx > 0:
+                                    entry["context_length"] = ctx
+                                if isinstance(comp, int) and comp > 0:
+                                    entry["max_completion_tokens"] = comp
+                                if pricing:
+                                    existing_p = entry.get("pricing", {})
+                                    existing_p.update(pricing)
+                                    entry["pricing"] = existing_p
+                                _add_model_aliases(cache, canonical, entry)
+            except Exception as exc:
+                if not cache:
+                    last_error = exc
+
+        if cache:
             _endpoint_model_metadata_cache[normalized] = cache
             _endpoint_model_metadata_cache_time[normalized] = time.time()
             return cache
-        except Exception as exc:
-            last_error = exc
 
     if last_error:
         logger.debug("Failed to fetch model metadata from %s/models: %s", normalized, last_error)
