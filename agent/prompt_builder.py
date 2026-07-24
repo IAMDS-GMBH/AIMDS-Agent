@@ -1740,6 +1740,26 @@ def build_outlook_contact_profiling_guidance(valid_tool_names: "set[str] | None"
     )
 
 
+def build_jira_guidance(valid_tool_names: "set[str] | None" = None) -> str:
+    """Instruct the model to query Jira tools with optimized JQL, fields, and limits.
+
+    Prevents large tool payloads from exceeding the LLM context window.
+    Applies when any Jira / Atlassian tool (e.g. atlassian-jira_search, jira_search,
+    mcp_AtlassianMCP_jira_search) is present in valid_tool_names.
+    """
+    names = set(valid_tool_names or set())
+    if not any("jira" in name.lower() for name in names):
+        return ""
+
+    return (
+        "# Jira Query & Result Optimization Strategy\n"
+        "- **Keep JQL specific**: Use precise JQL filters (e.g., `project = AIS AND assignee = currentUser() AND statusCategory != Done`). Avoid broad or unbounded JQL queries.\n"
+        "- **Limit result count**: Always pass `limit` set to 10 or 15 (maximum 20) per search call to prevent large payload context overruns.\n"
+        "- **Select essential fields only**: Always use `fields` parameter to request specific fields (e.g., `fields=\"key,summary,status,priority,assignee,updated\"`) rather than fetching full issue structures.\n"
+        "- **Paginate when fetching sets**: Use `start_at` or pagination tokens for additional results across multiple small turns rather than requesting high limits at once."
+    )
+
+
 # =========================================================================
 # Context files (SOUL.md, AGENTS.md, .cursorrules)
 # =========================================================================

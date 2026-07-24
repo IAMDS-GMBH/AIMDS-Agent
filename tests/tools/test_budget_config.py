@@ -174,3 +174,10 @@ class TestResolveThreshold:
         """Canonical case: read_file must always return inf."""
         cfg = BudgetConfig()
         assert cfg.resolve_threshold("read_file") == float("inf")
+
+    def test_jira_tools_use_jira_default(self):
+        """Jira tools should default to DEFAULT_JIRA_RESULT_SIZE_CHARS (25,000)."""
+        cfg = BudgetConfig()
+        assert cfg.resolve_threshold("mcp_AtlassianMCP_jira_search") == 25_000
+        assert cfg.resolve_threshold("atlassian-jira_search") == 25_000
+        assert cfg.resolve_threshold("jira_get_issue") == 25_000

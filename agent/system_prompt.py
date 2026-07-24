@@ -183,6 +183,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     )
     if outlook_contact_profiling_guidance:
         stable_parts.append(outlook_contact_profiling_guidance)
+
+    jira_guidance = _r.build_jira_guidance(agent.valid_tool_names)
+    if jira_guidance:
+        stable_parts.append(jira_guidance)
     # Tool-use enforcement: tells the model to actually call tools instead
     # of describing intended actions.  Controlled by config.yaml
     # agent.tool_use_enforcement:

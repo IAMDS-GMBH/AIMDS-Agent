@@ -15,6 +15,7 @@ PINNED_THRESHOLDS: Dict[str, float] = {
 # Defaults matching the current hardcoded values in tool_result_storage.py.
 # Kept here as the single source of truth; tool_result_storage.py imports these.
 DEFAULT_RESULT_SIZE_CHARS: int = 100_000
+DEFAULT_JIRA_RESULT_SIZE_CHARS: int = 25_000
 DEFAULT_TURN_BUDGET_CHARS: int = 200_000
 DEFAULT_PREVIEW_SIZE_CHARS: int = 1_500
 
@@ -37,12 +38,14 @@ class BudgetConfig:
     def resolve_threshold(self, tool_name: str) -> int | float:
         """Resolve the persistence threshold for a tool.
 
-        Priority: pinned -> tool_overrides -> registry per-tool -> default.
+        Priority: pinned -> tool_overrides -> jira default -> registry -> global default.
         """
         if tool_name in PINNED_THRESHOLDS:
             return PINNED_THRESHOLDS[tool_name]
         if tool_name in self.tool_overrides:
             return self.tool_overrides[tool_name]
+        if "jira" in tool_name.lower():
+            return DEFAULT_JIRA_RESULT_SIZE_CHARS
         from tools.registry import registry
         return registry.get_max_result_size(tool_name, default=self.default_result_size)
 

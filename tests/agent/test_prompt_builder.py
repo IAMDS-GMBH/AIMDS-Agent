@@ -24,6 +24,7 @@ from agent.prompt_builder import (
     build_outlook_memory_guidance,
     build_outlook_signature_guidance,
     build_outlook_contact_profiling_guidance,
+    build_jira_guidance,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
@@ -1406,5 +1407,24 @@ class TestBuildOutlookContactProfilingGuidance:
             {"outlook_search_emails", "mcp_IAMDS_mcp_memory_memory_save"}
         )
         assert "mcp_IAMDS_mcp_memory_memory_save" in text
+
+
+class TestBuildJiraGuidance:
+    """build_jira_guidance() instructs the LLM to query Jira with bounds (JQL, fields, limit)."""
+
+    def test_empty_when_no_jira_tool(self):
+        assert build_jira_guidance({"web_search", "read_file"}) == ""
+        assert build_jira_guidance(set()) == ""
+        assert build_jira_guidance(None) == ""
+
+    def test_builds_guidance_for_various_jira_tool_names(self):
+        for tool_name in ["jira_search", "atlassian-jira_search", "mcp_AtlassianMCP_jira_search"]:
+            text = build_jira_guidance({tool_name})
+            assert text
+            assert "Jira Query & Result Optimization Strategy" in text
+            assert "JQL" in text
+            assert "limit" in text.lower()
+            assert "fields" in text.lower()
+            assert "paginate" in text.lower()
 
 

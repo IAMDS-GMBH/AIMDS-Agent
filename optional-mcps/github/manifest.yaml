@@ -4,7 +4,7 @@ manifest_version: 1
 
 name: GithubMCP
 description: Access GitHub repositories, issues, pull requests, commits, and code using @modelcontextprotocol/server-github.
-source: https://github.com/modelcontextprotocol/servers/tree/main/src/github
+source: https://github.com/modelcontextprotocol/servers
 
 transport:
   type: stdio

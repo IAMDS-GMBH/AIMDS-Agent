@@ -4,7 +4,7 @@ manifest_version: 1
 
 name: AtlassianMCP
 description: Access and manage Jira Cloud and Local (Data Center/Server) issues, projects, sprints, worklogs, and SLAs using mcp-atlassian.
-source: https://github.com/sobolevn/mcp-atlassian
+source: https://github.com/sooperset/mcp-atlassian
 
 transport:
   type: stdio
