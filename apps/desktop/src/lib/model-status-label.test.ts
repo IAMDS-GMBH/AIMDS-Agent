@@ -31,19 +31,33 @@ describe('model-status-label', () => {
     expect(formatModelStatusLabel('')).toBe('No model')
   })
 
-  it('includes provider and MCP tool count when provided', () => {
-    expect(
-      formatModelStatusLabel('AIMDS-Suite-Auto', {
-        provider: 'iamds-litellm',
-        toolsCount: 23
-      })
-    ).toBe('iamds-litellm · AIMDS Suite Auto · 23 Tools')
-
+  it('formats AIMDS provider environment labels and MCP tool count', () => {
     expect(
       formatModelStatusLabel('AIMDS-Suite-Auto', {
         provider: 'iamds-litellm',
         toolsCount: 0
       })
-    ).toBe('iamds-litellm · AIMDS Suite Auto · 0 Tools')
+    ).toBe('Productive · AIMDS Suite Auto · 0 Tools')
+
+    expect(
+      formatModelStatusLabel('AIMDS-Suite-Auto', {
+        provider: 'iamds-litellm-staging',
+        toolsCount: 23
+      })
+    ).toBe('Staging · AIMDS Suite Auto · 23 Tools')
+
+    expect(
+      formatModelStatusLabel('AIMDS-Suite-Auto', {
+        provider: 'iamds-litellm-dev',
+        toolsCount: 22
+      })
+    ).toBe('Development · AIMDS Suite Auto · 22 Tools')
+
+    expect(
+      formatModelStatusLabel('openai/gpt-5.5', {
+        provider: 'openai',
+        toolsCount: 12
+      })
+    ).toBe('GPT-5.5 · Med · 12 Tools')
   })
 })

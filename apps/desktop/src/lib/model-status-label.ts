@@ -76,6 +76,22 @@ export function displayModelName(model: string): string {
   return modelDisplayParts(model).name
 }
 
+const AIMDS_PROVIDER_NAMES: Record<string, string> = {
+  'iamds-litellm': 'Productive',
+  'iamds-litellm-staging': 'Staging',
+  'iamds-litellm-dev': 'Development',
+  'iamds_litellm': 'Productive',
+  'iamds_litellm_staging': 'Staging',
+  'iamds_litellm_dev': 'Development',
+  'iamds': 'Productive',
+  'aimds': 'Productive'
+}
+
+export function formatAimdsProviderLabel(provider: string): string | null {
+  const norm = provider.trim().toLowerCase()
+  return AIMDS_PROVIDER_NAMES[norm] ?? null
+}
+
 /** Status bar trigger label — model name plus the live session state (effort/fast). */
 export function formatModelStatusLabel(
   model: string,
@@ -87,16 +103,17 @@ export function formatModelStatusLabel(
   }
 ): string {
   const name = displayModelName(model)
-  const provider = options?.provider?.trim()
+  const rawProvider = options?.provider?.trim() ?? ''
+  const aimdsLabel = formatAimdsProviderLabel(rawProvider)
 
   if (!model.trim()) {
-    return provider ? `${provider} · No model` : name
+    return aimdsLabel ? `${aimdsLabel} · No model` : name
   }
 
   const parts: string[] = []
 
-  if (provider) {
-    parts.push(provider)
+  if (aimdsLabel) {
+    parts.push(aimdsLabel)
   }
 
   parts.push(name)
@@ -109,7 +126,7 @@ export function formatModelStatusLabel(
   const effort = reasoningEffortLabel(options?.reasoningEffort ?? '') || 'Med'
   stateFlags.push(effort)
 
-  if (options?.fastMode || (options?.reasoningEffort && options.reasoningEffort !== 'medium') || !provider) {
+  if (options?.fastMode || (options?.reasoningEffort && options.reasoningEffort !== 'medium') || !aimdsLabel) {
     parts.push(stateFlags.join(' '))
   }
 
