@@ -8590,6 +8590,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     text=True,
                     check=False,
                 )
+            # Even when there are no new commits, keep update-scoped policy
+            # repairs idempotent so reinstall/sync flows can refresh defaults
+            # and identity files without requiring a code delta.
+            _apply_aimds_defaults_after_update()
+            _seed_aimds_default_cron_after_update()
+            _sync_canonical_soul_after_update()
             print("✓ Already up to date!")
             return
 
