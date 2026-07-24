@@ -19,6 +19,9 @@ import {
   Zap,
   ZapFilled
 } from '@/lib/icons'
+import { useQuery } from '@tanstack/react-query'
+import { getMcpServers } from '@/hermes'
+import { getMcpServerToolCount } from '@/lib/mcp-helpers'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
@@ -117,6 +120,25 @@ export function useStatusbarItems({
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
+
+  const mcpServersQuery = useQuery({
+    queryKey: ['mcp-servers'],
+    queryFn: getMcpServers,
+    refetchInterval: 10000
+  })
+
+  const enabledMcpServers = useMemo(
+    () => (mcpServersQuery.data?.servers ?? []).filter(s => s.enabled),
+    [mcpServersQuery.data?.servers]
+  )
+
+  const totalMcpTools = useMemo(
+    () =>
+      mcpServersQuery.data?.servers
+        ? enabledMcpServers.reduce((sum, s) => sum + (getMcpServerToolCount(s) ?? 0), 0)
+        : null,
+    [mcpServersQuery.data?.servers, enabledMcpServers]
+  )
 
   // Per-session approval bypass (same scope as the TUI's Shift+Tab). On a
   // new-chat draft (no runtime session yet) we arm locally; the session-create
@@ -423,7 +445,9 @@ export function useStatusbarItems({
             <span className="truncate">
               {formatModelStatusLabel(currentModel, {
                 fastMode: currentFastMode,
-                reasoningEffort: currentReasoningEffort
+                reasoningEffort: currentReasoningEffort,
+                provider: currentProvider,
+                toolsCount: totalMcpTools
               })}
             </span>
             <ChevronDown className="size-2.5 shrink-0 opacity-50" />
@@ -477,7 +501,8 @@ export function useStatusbarItems({
       turnStartedAt,
       clientVersionItem,
       backendVersionItem,
-      yoloActive
+      yoloActive,
+      totalMcpTools
     ]
   )
 

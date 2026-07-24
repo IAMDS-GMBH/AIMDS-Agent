@@ -38,18 +38,7 @@ function ScopeChip({ active, label, onSelect }: { active: boolean; label: string
   )
 }
 
-function getMcpServerToolCount(server: McpServerSummary): number | null {
-  if (!server.tools) return null
-  if (Array.isArray(server.tools)) return server.tools.length
-  if (
-    typeof server.tools === 'object' &&
-    'include' in server.tools &&
-    Array.isArray((server.tools as { include?: string[] }).include)
-  ) {
-    return (server.tools as { include: string[] }).include.length
-  }
-  return null
-}
+import { getMcpServerToolCount } from '@/lib/mcp-helpers'
 
 export function GatewaySettings() {
   const { t } = useI18n()

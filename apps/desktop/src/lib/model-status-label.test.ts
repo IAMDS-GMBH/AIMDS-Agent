@@ -30,4 +30,20 @@ describe('model-status-label', () => {
   it('returns just the placeholder name when there is no model', () => {
     expect(formatModelStatusLabel('')).toBe('No model')
   })
+
+  it('includes provider and MCP tool count when provided', () => {
+    expect(
+      formatModelStatusLabel('AIMDS-Suite-Auto', {
+        provider: 'iamds-litellm',
+        toolsCount: 23
+      })
+    ).toBe('iamds-litellm · AIMDS Suite Auto · 23 Tools')
+
+    expect(
+      formatModelStatusLabel('AIMDS-Suite-Auto', {
+        provider: 'iamds-litellm',
+        toolsCount: 0
+      })
+    ).toBe('iamds-litellm · AIMDS Suite Auto · 0 Tools')
+  })
 })

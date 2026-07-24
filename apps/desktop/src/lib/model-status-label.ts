@@ -79,25 +79,43 @@ export function displayModelName(model: string): string {
 /** Status bar trigger label — model name plus the live session state (effort/fast). */
 export function formatModelStatusLabel(
   model: string,
-  options?: { fastMode?: boolean; reasoningEffort?: string }
+  options?: {
+    fastMode?: boolean
+    reasoningEffort?: string
+    provider?: string
+    toolsCount?: number | null
+  }
 ): string {
   const name = displayModelName(model)
+  const provider = options?.provider?.trim()
 
   if (!model.trim()) {
-    return name
+    return provider ? `${provider} · No model` : name
   }
 
   const parts: string[] = []
 
-  // Fast is shown when the speed=fast param is on (options.fastMode) OR the
-  // active model is a `…-fast` variant (fast via a separate model id).
-  if (options?.fastMode || /-fast$/i.test(modelBaseId(model))) {
-    parts.push('Fast')
+  if (provider) {
+    parts.push(provider)
   }
 
-  // Always surface the effort (empty = Hermes default of medium) so the
-  // current reasoning level is visible at a glance, not just when non-default.
-  parts.push(reasoningEffortLabel(options?.reasoningEffort ?? '') || 'Med')
+  parts.push(name)
 
-  return `${name} · ${parts.join(' ')}`
+  const stateFlags: string[] = []
+  if (options?.fastMode || /-fast$/i.test(modelBaseId(model))) {
+    stateFlags.push('Fast')
+  }
+
+  const effort = reasoningEffortLabel(options?.reasoningEffort ?? '') || 'Med'
+  stateFlags.push(effort)
+
+  if (options?.fastMode || (options?.reasoningEffort && options.reasoningEffort !== 'medium') || !provider) {
+    parts.push(stateFlags.join(' '))
+  }
+
+  if (typeof options?.toolsCount === 'number') {
+    parts.push(`${options.toolsCount} Tool${options.toolsCount === 1 ? '' : 's'}`)
+  }
+
+  return parts.join(' · ')
 }
