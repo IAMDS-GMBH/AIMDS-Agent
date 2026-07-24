@@ -840,6 +840,35 @@ def _fetch_litellm_model_info_contexts(
     if not normalized:
         return {}
 
+    api_key = str(api_key or "").strip()
+    if not api_key:
+        api_key = (
+            os.getenv("IAMDS_LITELLM_API_KEY", "").strip()
+            or os.getenv("OPENAI_API_KEY", "").strip()
+            or os.getenv("LITELLM_KEY", "").strip()
+        )
+        if not api_key:
+            try:
+                from hermes_cli.auth import resolve_api_key_provider_credentials
+
+                for p_id in ("iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
+                    creds = resolve_api_key_provider_credentials(p_id)
+                    if isinstance(creds, dict) and creds.get("api_key"):
+                        api_key = str(creds["api_key"]).strip()
+                        break
+            except Exception:
+                pass
+
+    _looks_like_remote_litellm = (
+        "suite.iamds.com" in normalized.lower() or "/litellm" in normalized.lower()
+    )
+    if not api_key and _looks_like_remote_litellm:
+        logger.debug(
+            "Skipping /model/info probe on %s: no API key available",
+            normalized,
+        )
+        return {}
+
     if not force_refresh:
         cached = _litellm_model_info_cache.get(normalized)
         cached_at = _litellm_model_info_cache_time.get(normalized, 0)
@@ -851,6 +880,33 @@ def _fetch_litellm_model_info_contexts(
         root_candidate = normalized[:-3].rstrip("/") + "/model/info"
         if root_candidate not in candidates:
             candidates.append(root_candidate)
+
+    if not api_key:
+        api_key = (
+            os.getenv("IAMDS_LITELLM_API_KEY", "").strip()
+            or os.getenv("OPENAI_API_KEY", "").strip()
+            or os.getenv("LITELLM_KEY", "").strip()
+        )
+        if not api_key:
+            try:
+                from hermes_cli.auth import resolve_api_key_provider_credentials
+
+                for provider_id in ("iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
+                    creds = resolve_api_key_provider_credentials(provider_id)
+                    if isinstance(creds, dict) and creds.get("api_key"):
+                        api_key = str(creds["api_key"]).strip()
+                        break
+            except Exception:
+                pass
+
+    # Unauthenticated requests to remote LiteLLM endpoints fail in LiteLLM auth
+    # with 'No api key passed in.' — skip remote probes if no key is resolved.
+    _is_remote_litellm = "suite.iamds.com" in normalized.lower() or "/litellm" in normalized.lower()
+    if not api_key and _is_remote_litellm:
+        logger.debug("Skipping unauthenticated LiteLLM /model/info probe for %s", normalized)
+        _litellm_model_info_cache[normalized] = {}
+        _litellm_model_info_cache_time[normalized] = time.time()
+        return {}
 
     headers = _auth_headers(api_key)
     contexts: Dict[str, int] = {}

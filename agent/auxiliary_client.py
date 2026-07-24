@@ -3569,9 +3569,23 @@ def resolve_provider_client(
             _looks_like_iamds_litellm = (
                 "suite.iamds.com" in custom_base.lower() or "/litellm/" in custom_base.lower()
             )
+            iamds_key = ""
+            if _looks_like_iamds_litellm:
+                iamds_key = os.getenv("IAMDS_LITELLM_API_KEY", "").strip()
+                if not iamds_key:
+                    try:
+                        from hermes_cli.auth import resolve_api_key_provider_credentials
+                        for p_id in ("iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
+                            creds = resolve_api_key_provider_credentials(p_id)
+                            if isinstance(creds, dict) and creds.get("api_key"):
+                                iamds_key = str(creds["api_key"]).strip()
+                                break
+                    except Exception:
+                        pass
+
             custom_key = (
                 (explicit_api_key or "").strip()
-                or (os.getenv("IAMDS_LITELLM_API_KEY", "").strip() if _looks_like_iamds_litellm else "")
+                or iamds_key
                 or os.getenv("OPENAI_API_KEY", "").strip()
                 or "no-key-required"  # local servers don't need auth
             )

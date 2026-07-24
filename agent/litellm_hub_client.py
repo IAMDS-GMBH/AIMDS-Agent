@@ -53,6 +53,28 @@ def resolve_litellm_hub_settings() -> Dict[str, Any]:
         or hub_cfg.get("api_key")
         or ""
     ).strip()
+    if not api_key:
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+
+            for p_id in ("iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
+                creds = resolve_api_key_provider_credentials(p_id)
+                if isinstance(creds, dict) and creds.get("api_key"):
+                    api_key = str(creds["api_key"]).strip()
+                    break
+        except Exception:
+            pass
+    if not api_key:
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+
+            for provider_id in ("iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
+                creds = resolve_api_key_provider_credentials(provider_id)
+                if isinstance(creds, dict) and creds.get("api_key"):
+                    api_key = str(creds["api_key"]).strip()
+                    break
+        except Exception:
+            pass
     timeout_raw = hub_cfg.get("timeout", 20)
     try:
         timeout = max(1, int(timeout_raw))
