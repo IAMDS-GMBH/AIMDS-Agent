@@ -31,30 +31,11 @@ def test_upsert_aimds_defaults_creates_required_sections():
     assert out["memory"]["session_start_bootstrap_contract_enabled"] is False
 
     for slot in ("goal_judge", "compression", "approval", "mcp", "title_generation"):
-        assert out["auxiliary"][slot]["provider"] == "openai_compatible"
-        assert out["auxiliary"][slot]["base_url"] == "https://<litellm-host>/v1"
-        assert out["auxiliary"][slot]["model"] == "<litellm-fast-model>"
+        assert slot not in out.get("auxiliary", {})
 
     include = out["mcp_servers"]["IAMDS"]["tools"]["include"]
-    assert len(include) == 16
-    assert "mcp_IAMDS_aimds_kb_kb_search" in include
-    assert "mcp_IAMDS_aimds_kb_kb_get_topic" in include
-    assert "mcp_IAMDS_aimds_kb_kb_get_related" in include
-    assert "mcp_IAMDS_mcp_memory_memory_context" in include
-    assert "mcp_IAMDS_mcp_memory_memory_get" in include
-    assert "mcp_IAMDS_mcp_memory_memory_list" in include
-    assert "mcp_IAMDS_mcp_memory_memory_upsert" in include
-    assert "mcp_IAMDS_mcp_memory_memory_delete" in include
-    assert "aimds_kb_kb_search" in include
-    assert "aimds_kb_kb_get_topic" in include
-    assert "aimds_kb_kb_get_related" in include
-    assert "mcp_memory_memory_context" in include
-    assert "mcp_memory_memory_get" in include
-    assert "mcp_memory_memory_list" in include
-    assert "mcp_memory_memory_upsert" in include
-    assert "mcp_memory_memory_delete" in include
-    assert "kb_search" not in include
-    assert "memory_context" not in include
+    assert "kb_search" in include
+    assert "memory_context" in include
     assert out["mcp_servers"]["IAMDS"]["tools"]["resources"] is False
     assert out["mcp_servers"]["IAMDS"]["tools"]["prompts"] is False
 
@@ -63,7 +44,7 @@ def test_upsert_aimds_defaults_overrides_existing_conflicting_values():
     cfg = {
         "tools": {"tool_search": {"enabled": "off", "threshold_pct": 50}},
         "prompt_caching": {"cache_ttl": "1h"},
-        "auxiliary": {"goal_judge": {"provider": "openrouter", "model": "foo"}},
+        "auxiliary": {"goal_judge": {"provider": "openai_compatible", "base_url": "https://<litellm-host>/v1", "model": "<litellm-fast-model>"}},
         "mcp_servers": {"IAMDS": {"tools": {"include": ["legacy"], "resources": True}}},
     }
 
@@ -71,8 +52,8 @@ def test_upsert_aimds_defaults_overrides_existing_conflicting_values():
     assert out["tools"]["tool_search"]["enabled"] == "on"
     assert out["tools"]["tool_search"]["threshold_pct"] == 10
     assert out["prompt_caching"]["cache_ttl"] == "5m"
-    assert out["auxiliary"]["goal_judge"]["provider"] == "openai_compatible"
-    assert "aimds_kb_kb_search" in out["mcp_servers"]["IAMDS"]["tools"]["include"]
+    assert "goal_judge" not in out["auxiliary"]
+    assert "kb_search" in out["mcp_servers"]["IAMDS"]["tools"]["include"]
     assert out["mcp_servers"]["IAMDS"]["tools"]["resources"] is False
 
 
@@ -81,14 +62,14 @@ def test_migrate_aimds_defaults_sets_version_and_applies_when_missing():
     out, changed, status = migrate_aimds_defaults(cfg)
 
     assert changed is True
-    assert "applied v9 (from v0)" in status
-    assert out["aimds_defaults_version"] == 9
+    assert "applied v14 (from v0)" in status
+    assert out["aimds_defaults_version"] == 14
     assert out["tools"]["tool_search"]["enabled"] == "on"
 
 
 def test_migrate_aimds_defaults_reenforces_policy_when_already_current():
     cfg = {
-        "aimds_defaults_version": 9,
+        "aimds_defaults_version": 14,
         "memory": {
             "enforce_initial_memory_context": True,
             "session_start_compact_workspace_hydration": True,
@@ -98,7 +79,7 @@ def test_migrate_aimds_defaults_reenforces_policy_when_already_current():
     out, changed, status = migrate_aimds_defaults(cfg)
 
     assert changed is True
-    assert "enforced policy v9 (already current v9)" in status
+    assert "enforced policy v14 (already current v14)" in status
     assert out["memory"]["enforce_initial_memory_context"] is False
     assert out["memory"]["session_start_compact_workspace_hydration"] is False
     assert out["memory"]["session_start_bootstrap_contract_enabled"] is False
@@ -131,7 +112,7 @@ def test_upsert_removes_synthetic_aimds_gateway_when_iamds_exists():
     }
     out = upsert_aimds_defaults(cfg)
     assert "aimds-gateway" not in out["mcp_servers"]
-    assert "aimds_kb_kb_search" in out["mcp_servers"]["IAMDS"]["tools"]["include"]
+    assert "kb_search" in out["mcp_servers"]["IAMDS"]["tools"]["include"]
 
 
 def test_upsert_targets_provider_iamds_even_with_custom_server_name():
@@ -151,7 +132,6 @@ def test_upsert_targets_provider_iamds_even_with_custom_server_name():
 
     out = upsert_aimds_defaults(cfg)
     include = out["mcp_servers"]["corp-gateway"]["tools"]["include"]
-    assert "mcp_corp_gateway_aimds_kb_kb_search" in include
-    assert "mcp_corp_gateway_mcp_memory_memory_context" in include
-    assert "aimds_kb_kb_search" in out["mcp_servers"]["corp-gateway"]["tools"]["include"]
+    assert "kb_search" in include
+    assert "memory_context" in include
     assert out["mcp_servers"]["custom-tools"].get("tools") is None

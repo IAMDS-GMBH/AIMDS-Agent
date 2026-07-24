@@ -14,7 +14,7 @@ from pathlib import Path
 
 import yaml
 
-_AIMDS_DEFAULTS_VERSION = 13
+_AIMDS_DEFAULTS_VERSION = 14
 _AIMDS_DEFAULTS_VERSION_KEY = "aimds_defaults_version"
 
 
@@ -159,10 +159,10 @@ def upsert_aimds_defaults(config: dict) -> dict:
 
     auxiliary = _ensure_dict(cfg, "auxiliary")
     for slot in ("goal_judge", "compression", "approval", "mcp", "title_generation"):
-        aux_slot = _ensure_dict(auxiliary, slot)
-        aux_slot["provider"] = "openai_compatible"
-        aux_slot["base_url"] = "https://<litellm-host>/v1"
-        aux_slot["model"] = "<litellm-fast-model>"
+        aux_slot = auxiliary.get(slot)
+        if isinstance(aux_slot, dict):
+            if "<litellm-host>" in str(aux_slot.get("base_url", "")) or "<litellm-fast-model>" in str(aux_slot.get("model", "")):
+                auxiliary.pop(slot, None)
 
     mcp_servers = _ensure_dict(cfg, "mcp_servers")
     target_name = _resolve_target_mcp_server_name(mcp_servers)
