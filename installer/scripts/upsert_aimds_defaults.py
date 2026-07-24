@@ -14,7 +14,7 @@ from pathlib import Path
 
 import yaml
 
-_AIMDS_DEFAULTS_VERSION = 11
+_AIMDS_DEFAULTS_VERSION = 13
 _AIMDS_DEFAULTS_VERSION_KEY = "aimds_defaults_version"
 
 
@@ -167,6 +167,12 @@ def upsert_aimds_defaults(config: dict) -> dict:
     mcp_servers = _ensure_dict(cfg, "mcp_servers")
     target_name = _resolve_target_mcp_server_name(mcp_servers)
     target_server = _ensure_dict(mcp_servers, target_name)
+
+    headers = _ensure_dict(target_server, "headers")
+    auth_val = str(headers.get("Authorization") or "").strip()
+    if not auth_val or auth_val == "******" or auth_val.endswith("******"):
+        headers["Authorization"] = "${IAMDS_LITELLM_API_KEY}"
+
     aimds_tools = _ensure_dict(target_server, "tools")
     aimds_tools["include"] = _build_aimds_tool_include(target_name)
     aimds_tools["resources"] = False
