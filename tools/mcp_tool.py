@@ -2801,6 +2801,12 @@ _IAMDS_PROVIDER_SLUGS: frozenset = frozenset(
         "iamds-litellm",
         "iamds-litellm-staging",
         "iamds-litellm-dev",
+        "iamds_litellm",
+        "iamds_litellm_staging",
+        "iamds_litellm_dev",
+        "iamds",
+        "aimds",
+        "custom",
     }
 )
 
@@ -2966,7 +2972,7 @@ def _build_iamds_mcp_url(provider_base_url: str) -> str:
         if base.endswith(suffix):
             base = base[: -len(suffix)]
             break
-    return f"{base}/litellm/mcp"
+    return f"{base}/litellm/mcp/"
 
 
 def _build_provider_aware_mcp_config(
@@ -3079,7 +3085,14 @@ def reload_provider_mcp_servers(
     Returns the list of MCP tool names available after reconnecting the
     tagged servers (same contract as ``register_mcp_servers``).
     """
-    if provider.lower() not in _IAMDS_PROVIDER_SLUGS:
+    is_iamds_provider = (
+        provider.lower() in _IAMDS_PROVIDER_SLUGS
+        or "iamds" in provider.lower()
+        or "aimds" in provider.lower()
+        or "iamds" in (new_base_url or "").lower()
+        or "aimds" in (new_base_url or "").lower()
+    )
+    if not is_iamds_provider:
         return []
     resolved_base_url, resolved_api_key = _resolve_iamds_provider_credentials(
         provider=provider,

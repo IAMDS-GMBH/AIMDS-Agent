@@ -14,21 +14,62 @@ from pathlib import Path
 
 import yaml
 
-_AIMDS_DEFAULTS_VERSION = 9
+_AIMDS_DEFAULTS_VERSION = 10
 _AIMDS_DEFAULTS_VERSION_KEY = "aimds_defaults_version"
 
 
 _AIMDS_TOOL_INCLUDE_RAW = [
-    # Canonical MCP tool names as advertised by the IAMDS gateway itself.
-    # Keep this list intentionally small to avoid noisy tool surfaces.
+    # Canonical MCP tool names as advertised by the IAMDS gateway / memory / KB servers.
     "aimds_kb_kb_search",
     "aimds_kb_kb_get_topic",
+    "aimds_kb_kb_list_topics",
+    "aimds_kb_kb_get_recent",
     "aimds_kb_kb_get_related",
+    "aimds_kb_kb_get_tags",
+    "aimds_kb_kb_get_backlinks",
+    "aimds_kb_kb_get_graph",
     "mcp_memory_memory_context",
     "mcp_memory_memory_get",
     "mcp_memory_memory_list",
+    "mcp_memory_memory_save",
+    "mcp_memory_memory_read",
     "mcp_memory_memory_upsert",
     "mcp_memory_memory_delete",
+    "mcp_memory_memory_search",
+    "mcp_memory_memory_manage",
+    "mcp_memory_memory_backlinks",
+    "mcp_memory_memory_transfer",
+    "mcp_memory_memory_meta",
+    "mcp_memory_memory_agent",
+    "mcp_memory_memory_summarize_session",
+    "mcp_memory_skill",
+    "mcp_websearch_web_search",
+    "mcp_websearch_web_fetch",
+    "kb_search",
+    "kb_get_topic",
+    "kb_list_topics",
+    "kb_get_recent",
+    "kb_get_related",
+    "kb_get_tags",
+    "kb_get_backlinks",
+    "kb_get_graph",
+    "memory_context",
+    "memory_get",
+    "memory_list",
+    "memory_save",
+    "memory_read",
+    "memory_upsert",
+    "memory_delete",
+    "memory_search",
+    "memory_manage",
+    "memory_backlinks",
+    "memory_transfer",
+    "memory_meta",
+    "memory_agent",
+    "memory_summarize_session",
+    "skill",
+    "web_search",
+    "web_fetch",
 ]
 
 _AIMDS_TOOL_INCLUDE_LEGACY = (
@@ -73,7 +114,11 @@ def _build_aimds_tool_include(server_name: str) -> list[str]:
         f"mcp_{safe_server_name}_{_sanitize_mcp_name_component(tool_name)}"
         for tool_name in _AIMDS_TOOL_INCLUDE_RAW
     ]
-    return prefixed + list(_AIMDS_TOOL_INCLUDE_RAW)
+    prefixed_raw = [
+        f"mcp_{safe_server_name}_{tool_name}"
+        for tool_name in _AIMDS_TOOL_INCLUDE_RAW
+    ]
+    return list(dict.fromkeys(prefixed + prefixed_raw + list(_AIMDS_TOOL_INCLUDE_RAW)))
 
 
 def _coerce_version(value: object) -> int:
