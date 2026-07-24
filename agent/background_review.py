@@ -474,6 +474,13 @@ def _run_review_in_thread(
                     quiet_mode=True,
                 )
             }
+            if hasattr(agent, "tools") and isinstance(agent.tools, list):
+                for tool_def in agent.tools:
+                    if isinstance(tool_def, dict) and "function" in tool_def:
+                        t_name = tool_def["function"].get("name", "")
+                        lower_name = t_name.lower()
+                        if "memory" in lower_name or "skill" in lower_name:
+                            review_whitelist.add(t_name)
             set_thread_tool_whitelist(
                 review_whitelist,
                 deny_msg_fmt=(
