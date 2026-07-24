@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { getHermesConfigRecord, getMcpServers, getRemoteHealthStatus, getStatus, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertCircle, Globe, Loader2, RefreshCw } from '@/lib/icons'
+import { formatAimdsProviderLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $profiles, refreshActiveProfile } from '@/store/profile'
@@ -61,6 +62,7 @@ export function GatewaySettings() {
   const [supportConfigLoaded, setSupportConfigLoaded] = useState(false)
   const [savingSupportConfig, setSavingSupportConfig] = useState(false)
   const [supportKeyConfigured, setSupportKeyConfigured] = useState(false)
+  const [aimdsEnv, setAimdsEnv] = useState<string | null>(null)
 
   const refreshRemoteHealth = async () => {
     setRemoteHealthLoading(true)
@@ -132,6 +134,14 @@ export function GatewaySettings() {
         if (cancelled) {
           return
         }
+        const rawProvider =
+          typeof config?.provider === 'string'
+            ? config.provider
+            : typeof (config?.model as Record<string, unknown>)?.provider === 'string'
+              ? ((config.model as Record<string, unknown>).provider as string)
+              : ''
+        setAimdsEnv(formatAimdsProviderLabel(rawProvider))
+
         const support = (config?.support && typeof config.support === 'object'
           ? (config.support as Record<string, unknown>)
           : {}) as Record<string, unknown>
@@ -386,6 +396,11 @@ export function GatewaySettings() {
                   ? g.statusError(remoteHealth.overall_status ?? 'unknown')
                   : (remoteHealth?.error ?? g.remoteHealthFailed)}
               </p>
+              {aimdsEnv && (
+                <p className="mt-0.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                  {g.environmentLabel(aimdsEnv)}
+                </p>
+              )}
               <p className="mt-1 text-xs text-muted-foreground">
                 {remoteHealth?.health_url ? g.endpointRemote(remoteHealth.health_url) : g.endpointNotConfigured}
               </p>

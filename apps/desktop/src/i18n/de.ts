@@ -454,6 +454,7 @@ export const de
       statusHealthy: 'Status: verfügbar',
       statusUnknown: 'Status: unbekannt',
       statusError: (msg: string) => `Status: ${msg}`,
+      environmentLabel: (env: string) => `Umgebung: ${env}`,
       endpointLocal: (url: string) => `Endpunkt: Hermes lokale API (${url})`,
       endpointNotConfigured: 'Endpunkt: nicht konfiguriert',
       endpointRemote: (url: string) => `Endpunkt: ${url}`,

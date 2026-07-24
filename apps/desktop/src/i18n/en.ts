@@ -453,6 +453,7 @@ export const en: Translations = {
       statusHealthy: 'Status: healthy',
       statusUnknown: 'Status: unknown',
       statusError: (msg: string) => `Status: ${msg}`,
+      environmentLabel: (env: string) => `Environment: ${env}`,
       endpointLocal: (url: string) => `Endpoint: Hermes local API (${url})`,
       endpointNotConfigured: 'Endpoint: not configured',
       endpointRemote: (url: string) => `Endpoint: ${url}`,

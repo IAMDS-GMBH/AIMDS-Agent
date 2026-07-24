@@ -540,6 +540,13 @@ class ChatCompletionsTransport(ProviderTransport):
         # extra_body assembly
         extra_body: dict[str, Any] = {}
 
+        session_id = params.get("session_id")
+        if session_id:
+            api_kwargs.setdefault("user", str(session_id))
+            meta = extra_body.setdefault("metadata", {})
+            if isinstance(meta, dict):
+                meta.setdefault("session_id", str(session_id))
+
         # Profile's extra_body (tags, provider prefs, vl_high_resolution, etc.)
         profile_body = profile.build_extra_body(
             session_id=params.get("session_id"),

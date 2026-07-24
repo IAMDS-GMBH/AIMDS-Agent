@@ -359,6 +359,7 @@ export interface Translations {
       statusHealthy: string
       statusUnknown: string
       statusError: (msg: string) => string
+      environmentLabel: (env: string) => string
       endpointLocal: (url: string) => string
       endpointNotConfigured: string
       endpointRemote: (url: string) => string

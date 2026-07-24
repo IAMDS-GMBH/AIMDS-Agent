@@ -1219,3 +1219,83 @@ def mirror_mcp_memory_context_to_user_md(
     except Exception:
         return False
 
+
+def mirror_local_memory_to_mcp(
+    agent: Any,
+    tool_name: str,
+    tool_args: Dict[str, Any],
+    tool_result: Any,
+    *,
+    effective_task_id: str = "",
+    tool_call_id: Optional[str] = None,
+) -> bool:
+    """Mirror successful local Hermes memory writes to remote MCP memory_save if available."""
+    if tool_name != "memory":
+        return False
+    if not tool_result_indicates_success(tool_result):
+        return False
+
+    args = tool_args or {}
+    if args.get("__mcp_mirror"):
+        return False  # Prevent re-mirror loop
+
+    action = str(args.get("action") or "").strip().lower()
+    if action not in {"add", "replace", "update_structured"}:
+        return False
+
+    content = str(args.get("content") or "").strip()
+    if not content:
+        return False
+
+    valid_tools = set(getattr(agent, "valid_tool_names", []) or [])
+    from agent.prompt_builder import _resolve_memory_save_tool_name
+
+    mcp_save_tool = _resolve_memory_save_tool_name(valid_tools)
+    if not mcp_save_tool:
+        return False
+
+    target = str(args.get("target") or "memory").strip().lower()
+    mem_type = "profile" if target == "user" else "notes"
+
+    # Extract first line or short snippet for title
+    first_line = content.splitlines()[0].strip() if content else "Local memory update"
+    title = first_line[:60].lstrip("#").strip() or "Local memory update"
+
+    save_args = {
+        "title": title,
+        "content": content,
+        "type": mem_type,
+        "tags": ["local-sync", "hermes-memory"],
+        "__mcp_mirror": True,
+    }
+
+    try:
+        import run_agent as _ra
+
+        _ra.handle_function_call(
+            mcp_save_tool,
+            save_args,
+            effective_task_id,
+            tool_call_id=f"mcp-mirror-{uuid4().hex[:8]}",
+            session_id=agent.session_id or "",
+            turn_id=getattr(agent, "_current_turn_id", "") or "",
+            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+            enabled_tools=list(valid_tools),
+            skip_pre_tool_call_hook=True,
+            skip_tool_request_middleware=True,
+        )
+        import logging as _logging
+
+        _logging.getLogger(__name__).info(
+            "mirror_local_memory_to_mcp: mirrored local memory write to %s", mcp_save_tool
+        )
+        return True
+    except Exception as exc:
+        import logging as _logging
+
+        _logging.getLogger(__name__).debug(
+            "mirror_local_memory_to_mcp failed for %s: %s", mcp_save_tool, exc
+        )
+        return False
+
+

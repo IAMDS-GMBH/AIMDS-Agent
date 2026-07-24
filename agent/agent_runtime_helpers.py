@@ -1220,6 +1220,14 @@ def anthropic_prompt_cache_policy(
         return True, True
     if (is_openrouter or is_nous_portal) and is_claude:
         return True, False
+
+    is_iamds_litellm = (
+        provider_lower.startswith("iamds")
+        or "suite.iamds.com" in eff_base_url.lower()
+        or "/litellm/" in eff_base_url.lower()
+    )
+    if is_iamds_litellm:
+        return True, False
     # Nous Portal Qwen (e.g. qwen3.6-plus) takes the same envelope-layout
     # cache_control path as Portal Claude. Portal proxies to OpenRouter
     # and the upstream Qwen route accepts cache_control markers; without

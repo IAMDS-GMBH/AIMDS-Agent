@@ -184,6 +184,9 @@ def is_deferrable_tool_name(name: str) -> bool:
         name.endswith("memory_context")
         or name.endswith("memory_skill")
         or name.endswith("memory_save")
+        or name.endswith("memory_search")
+        or name.endswith("memory_read")
+        or name.endswith("memory_list")
     ):
         return False
     # Check registry toolset for MCP prefix.

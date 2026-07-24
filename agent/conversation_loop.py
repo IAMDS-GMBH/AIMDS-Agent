@@ -87,6 +87,8 @@ _PERSONAL_CONTEXT_QUERY_PATTERNS: List[re.Pattern] = [
     # German / Spanish seeds (non-exhaustive, additive heuristic)
     re.compile(r"\b(wer bin ich|was wei[ßs]t du [üu]ber mich|mein profil|meine pr[äa]ferenzen)\b", re.I),
     re.compile(r"\b(qu[ií]en soy|qu[eé] sabes de m[ií]|mi perfil|mis preferencias)\b", re.I),
+    # Memory, vault, and rules query triggers
+    re.compile(r"\b(was steht im (memory|vault)|welche regeln|regeln im (memory|vault)|memory (vault|mcp)|vault (mcp|memory)|my rules|user rules)\b", re.I),
 ]
 
 

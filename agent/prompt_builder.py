@@ -1612,10 +1612,9 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
     return (
         "# Memory & Dual-Vault Storage Strategy\n"
         "- **Local Workspace / Obsidian Vault (Primary)**: Treat local workspace files, local markdown notes, code, and project artifacts as the primary working store for session files and detailed local notes.\n"
-        f"- **Cross-device MCP Memory Vault (`{tool_name}`)**: Secondary synchronized store for Open WebUI / mobile sync. Use `{tool_name}` on-demand when needed for user profile, durable rules, or cross-device context.\n"
-        f"Do NOT call `{tool_name}` automatically on generic greetings or routine tasks. Call `{tool_name}` on-demand when user rules or cross-device profile facts are required.\n"
-        f"When durable user preferences, rules, or contacts are confirmed, persist them via `{memory_save_tool_name or 'memory_save'}` so Open WebUI / mobile access stays up to date.\n"
-        "Use memory read/list/search tools for explicit follow-up retrieval/editing tasks after memory_context, or when memory_context is unavailable.\n"
+        f"- **Cross-device MCP Memory Vault (`{tool_name}`)**: Central synchronized store across devices and WebUI interfaces. Call `{tool_name}` or memory search tools whenever user profile facts, durable rules, or cross-device context are required for the task.\n"
+        f"When the user shares or confirms durable preferences, rules, instructions, or contacts, persist them immediately via `{memory_save_tool_name or 'memory_save'}` or local `memory` so the central vault stays up to date.\n"
+        "Use memory read/list/search tools for explicit retrieval or editing tasks.\n"
         f"{onboarding_hint}"
         f"If `{tool_name}` returns onboarding steps, complete that flow before other work. "
         f"{onboarding_flow_hint}"

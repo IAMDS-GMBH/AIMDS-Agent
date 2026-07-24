@@ -259,3 +259,41 @@ def test_detect_preference_candidates_caps_at_five():
     )
     candidates = detect_preference_candidates(text)
     assert len(candidates) <= 5
+
+
+def test_mirror_local_memory_to_mcp_invokes_mcp_save(monkeypatch):
+    from types import SimpleNamespace
+    from agent.memory_dual_write import mirror_local_memory_to_mcp
+
+    calls = []
+
+    def mock_handle_function_call(name, args, task_id, **kwargs):
+        calls.append((name, args, task_id, kwargs))
+        return '{"success": true}'
+
+    monkeypatch.setattr("run_agent.handle_function_call", mock_handle_function_call)
+
+    agent = SimpleNamespace(
+        valid_tool_names={"memory", "mcp_IAMDS_mcp_memory_memory_save"},
+        session_id="session-123",
+        _current_turn_id="turn-1",
+        _current_api_request_id="req-1",
+    )
+
+    success = mirror_local_memory_to_mcp(
+        agent=agent,
+        tool_name="memory",
+        tool_args={"action": "add", "target": "user", "content": "Prefer concise bullet points"},
+        tool_result='{"success": true}',
+        effective_task_id="task-1",
+    )
+
+    assert success is True
+    assert len(calls) == 1
+    m_name, m_args, m_task_id, m_kwargs = calls[0]
+    assert m_name == "mcp_IAMDS_mcp_memory_memory_save"
+    assert m_args["content"] == "Prefer concise bullet points"
+    assert m_args["type"] == "profile"
+    assert m_args["__mcp_mirror"] is True
+    assert m_kwargs["session_id"] == "session-123"
+
