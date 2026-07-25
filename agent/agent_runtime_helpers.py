@@ -1223,11 +1223,15 @@ def anthropic_prompt_cache_policy(
 
     is_iamds_litellm = (
         provider_lower.startswith("iamds")
+        or provider_lower.startswith("aimds")
         or "suite.iamds.com" in eff_base_url.lower()
         or "/litellm/" in eff_base_url.lower()
     )
     if is_iamds_litellm:
-        return True, False
+        # AIMDS-Suite / LiteLLM handles prompt caching automatically on the server
+        # side. Client-side cache_control injection is omitted to avoid conflicts
+        # or exceeding Anthropic's breakpoint limits.
+        return False, False
     # Nous Portal Qwen (e.g. qwen3.6-plus) takes the same envelope-layout
     # cache_control path as Portal Claude. Portal proxies to OpenRouter
     # and the upstream Qwen route accepts cache_control markers; without

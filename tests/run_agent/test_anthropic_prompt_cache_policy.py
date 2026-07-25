@@ -75,6 +75,50 @@ class TestOpenRouter:
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
 
+class TestAimdsSuiteLitellm:
+    """AIMDS-Suite / LiteLLM proxy handles prompt caching server-side via prompt_cache_hook.py.
+
+    Hermes-agent must NOT inject client-side cache_control markers for AIMDS-Suite endpoints,
+    avoiding conflicts and Anthropic 400 'Found 5 cache_control blocks' errors.
+    """
+
+    def test_aimds_suite_prod_does_not_cache_client_side(self):
+        agent = _make_agent(
+            provider="aimds-suite-prod",
+            base_url="https://suite.iamds.com/litellm/v1",
+            api_mode="chat_completions",
+            model="AIMDS-Suite-Auto",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_aimds_suite_staging_does_not_cache_client_side(self):
+        agent = _make_agent(
+            provider="aimds-suite-staging",
+            base_url="https://staging.suite.iamds.com/litellm/v1",
+            api_mode="chat_completions",
+            model="claude-sonnet-5",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_aimds_suite_dev_does_not_cache_client_side(self):
+        agent = _make_agent(
+            provider="aimds-suite-dev",
+            base_url="https://dev.suite.iamds.com/litellm/v1",
+            api_mode="chat_completions",
+            model="claude-sonnet-5",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_iamds_litellm_alias_does_not_cache_client_side(self):
+        agent = _make_agent(
+            provider="iamds-litellm",
+            base_url="https://suite.iamds.com/litellm/v1",
+            api_mode="chat_completions",
+            model="claude-sonnet-5",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+
 class TestThirdPartyAnthropicGateway:
     """Third-party gateways speaking the Anthropic protocol (MiniMax, Zhipu GLM, LiteLLM)."""
 
