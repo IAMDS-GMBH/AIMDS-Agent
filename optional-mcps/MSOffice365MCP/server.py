@@ -69,18 +69,28 @@ def _get_msal_app() -> msal.PublicClientApplication:
         or os.environ.get("TEAMS_TENANT_ID")
     )
 
-    # Defaults: standard multi-tenant Azure CLI / PowerShell client ID for public auth
-    client_id = custom_client_id or "04b07795-8ddb-461a-bbee-02f9e1bf7b46"  # Azure CLI public multi-tenant app ID
+    # Defaults: standard multi-tenant client app if no custom app registration provided
+    client_id = custom_client_id or "41c29967-8ee6-4fac-b484-e87460272bda"  # Microsoft Intune / Office multi-tenant app ID
     tenant_id = custom_tenant_id or "organizations"
 
     if tenant_id == "common":
         tenant_id = "organizations"
-    authority = f"https://login.microsoftonline.com/{tenant_id}"
 
     cache = msal.SerializableTokenCache()
     cache_path = _get_token_cache_path()
     if cache_path.exists():
-        cache.deserialize(cache_path.read_text(encoding="utf-8"))
+        try:
+            cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
+            accounts = cache_data.get("Account", {})
+            if accounts and tenant_id == "organizations":
+                first_acc = next(iter(accounts.values()))
+                if first_acc.get("realm"):
+                    tenant_id = first_acc["realm"]
+            cache.deserialize(json.dumps(cache_data))
+        except Exception:
+            pass
+
+    authority = f"https://login.microsoftonline.com/{tenant_id}"
 
     app = msal.PublicClientApplication(
         client_id=client_id,
