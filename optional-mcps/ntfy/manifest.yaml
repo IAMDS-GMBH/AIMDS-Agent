@@ -2,7 +2,7 @@
 manifest_version: 1
 
 name: NtfyMCP
-disabled: true
+disabled: false
 description: ntfy pub/sub messaging integration for push notifications, Cron topic polling, and Inter-Agent communication.
 source: https://github.com/IAMDS-GMBH/hermes-agent/tree/main/optional-mcps/ntfy
 

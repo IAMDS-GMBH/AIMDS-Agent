@@ -1,8 +1,8 @@
 # Nous-approved MCP catalog entry.
 manifest_version: 1
 
-name: EmailMCP
-disabled: true
+name: E-MailMCP
+disabled: false
 description: Standard IMAP and SMTP email integration supporting SSL/TLS, STARTTLS, and custom ports.
 source: https://github.com/IAMDS-GMBH/hermes-agent/tree/main/optional-mcps/email
 

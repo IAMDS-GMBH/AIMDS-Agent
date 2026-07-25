@@ -2,7 +2,7 @@
 manifest_version: 1
 
 name: MSOffice365MCP
-disabled: true
+disabled: false
 description: Access Microsoft 365 services (Outlook Mail, Outlook Calendar, Teams, and OneDrive) via MS Graph API.
 source: https://github.com/IAMDS-GMBH/hermes-agent/tree/main/optional-mcps/MSOffice365MCP
 
@@ -21,14 +21,16 @@ install:
     - ".venv/bin/pip install -r ${INSTALL_DIR}/optional-mcps/MSOffice365MCP/requirements.txt"
 
 auth:
-  type: api_key
+  type: oauth
+  provider: microsoft
+  env_var: M365_ACCESS_TOKEN
   env:
     - name: M365_CLIENT_ID
-      prompt: "Microsoft Entra App Client ID (Application ID)"
+      prompt: "Microsoft Entra App Client ID (optional; leave blank to use default multi-tenant app)"
       required: false
       secret: false
     - name: M365_TENANT_ID
-      prompt: "Microsoft Entra Tenant ID (or 'common' for multi-tenant auto-discovery)"
+      prompt: "Microsoft Entra Tenant ID (default: common)"
       default: "common"
       required: false
       secret: false

@@ -38,6 +38,17 @@ ADMIN_ROLE_IDS = {
 }
 
 
+def _get_timezone_name() -> str:
+    tz = os.environ.get("HERMES_TIMEZONE") or os.environ.get("TIMEZONE")
+    if tz:
+        return tz
+    try:
+        from hermes_time import default_timezone_name
+        return default_timezone_name()
+    except Exception:
+        return "Europe/Berlin"
+
+
 def _get_token_cache_path() -> Path:
     hermes_home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
     cache_dir = Path(hermes_home)
@@ -275,14 +286,16 @@ def m365_create_event(
     subject: str,
     start_time_iso: str,
     end_time_iso: str,
+    time_zone: Optional[str] = None,
     attendees: Optional[List[str]] = None,
     body: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new event or meeting in Outlook Calendar."""
+    tz_name = time_zone or _get_timezone_name()
     payload: Dict[str, Any] = {
         "subject": subject,
-        "start": {"dateTime": start_time_iso, "timeZone": "UTC"},
-        "end": {"dateTime": end_time_iso, "timeZone": "UTC"},
+        "start": {"dateTime": start_time_iso, "timeZone": tz_name},
+        "end": {"dateTime": end_time_iso, "timeZone": tz_name},
     }
     if body:
         payload["body"] = {"contentType": "Text", "content": body}
