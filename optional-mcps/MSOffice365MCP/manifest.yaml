@@ -37,6 +37,8 @@ auth:
 
 tools:
   default_enabled:
+    - m365_initiate_login
+    - m365_complete_login
     - m365_get_user_profile
     - m365_check_admin_status
     - m365_generate_admin_consent_url

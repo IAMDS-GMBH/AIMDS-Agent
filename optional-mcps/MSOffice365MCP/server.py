@@ -212,6 +212,41 @@ def m365_generate_admin_consent_url(
 
 
 @mcp.tool()
+def m365_initiate_login() -> Dict[str, Any]:
+    """Initiate interactive Microsoft 365 OAuth sign-in flow directly via Device Code Flow or Browser Link from Hermes."""
+    app = _get_msal_app()
+    flow = app.initiate_device_flow(scopes=SCOPES)
+    if "user_code" in flow:
+        return {
+            "status": "pending",
+            "device_code": flow["user_code"],
+            "verification_url": flow["verification_uri"],
+            "message": (
+                f"Please open {flow['verification_uri']} in your browser and enter the code: "
+                f"**{flow['user_code']}**\n"
+                "Once completed, run `m365_complete_login` or call any M365 tool to verify login."
+            ),
+            "flow_data": flow,
+        }
+    return {"error": "Failed to initiate device flow", "details": flow}
+
+
+@mcp.tool()
+def m365_complete_login(flow_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Complete the Microsoft 365 OAuth sign-in flow after the user entered the code in browser."""
+    app = _get_msal_app()
+    result = app.acquire_token_by_device_flow(flow_data)
+    if "access_token" in result:
+        _save_cache(app)
+        return {
+            "success": True,
+            "message": "Sign-in successful! Token cached in ~/.hermes/m365_token_cache.bin",
+            "account": result.get("id_token_claims", {}).get("preferred_username"),
+        }
+    return {"error": "Sign-in incomplete or failed", "details": result}
+
+
+@mcp.tool()
 def m365_get_user_profile() -> Dict[str, Any]:
     """Get the current authenticated user profile from Microsoft 365."""
     return _graph_request("GET", "/me")
