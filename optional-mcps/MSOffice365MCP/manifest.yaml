@@ -3,7 +3,7 @@ manifest_version: 1
 
 name: MSOffice365MCP
 disabled: false
-description: Access Microsoft 365 services (Outlook Mail, Outlook Calendar, Teams, and OneDrive) via MS Graph API.
+description: Access Microsoft 365 services (Outlook Mail, Outlook Calendar, Teams, OneDrive, Directory/Users, Contacts, and SharePoint) via MS Graph API.
 source: https://github.com/IAMDS-GMBH/hermes-agent/tree/main/optional-mcps/MSOffice365MCP
 
 transport:
@@ -42,16 +42,24 @@ tools:
     - m365_get_user_profile
     - m365_check_admin_status
     - m365_generate_admin_consent_url
+    - m365_search_users
     - m365_send_email
     - m365_list_emails
     - m365_get_email
     - m365_list_events
     - m365_create_event
     - m365_list_chats
+    - m365_get_chat_members
+    - m365_get_or_create_direct_chat
     - m365_send_chat_message
+    - m365_list_contacts
     - m365_list_drive_files
     - m365_search_drive_files
     - m365_get_drive_file
+    - m365_list_sharepoint_sites
+    - m365_list_sharepoint_drives
+    - m365_list_sharepoint_files
+    - m365_search_sharepoint_files
 
 post_install: |
   Microsoft 365 MCP (m365) has been installed into your catalog.
@@ -62,7 +70,8 @@ post_install: |
     - Token cache is automatically stored in ~/.hermes/m365_token_cache.bin.
 
   Supported Services:
-    - Outlook Mail (m365_send_email, m365_list_emails, m365_get_email)
+    - User Directory (m365_search_users, m365_get_user_profile)
+    - Outlook Mail & Contacts (m365_send_email, m365_list_emails, m365_get_email, m365_list_contacts)
     - Outlook Calendar (m365_list_events, m365_create_event)
-    - Teams (m365_list_chats, m365_send_chat_message)
-    - OneDrive (m365_list_drive_files, m365_search_drive_files, m365_get_drive_file)
+    - Teams (m365_list_chats, m365_get_chat_members, m365_get_or_create_direct_chat, m365_send_chat_message)
+    - OneDrive & SharePoint (m365_list_drive_files, m365_search_drive_files, m365_get_drive_file, m365_list_sharepoint_sites, m365_list_sharepoint_drives, m365_list_sharepoint_files, m365_search_sharepoint_files)

@@ -23,12 +23,15 @@ mcp = FastMCP("MSOffice365MCP")
 GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 SCOPES = [
     "User.Read",
+    "User.Read.All",
     "Mail.ReadWrite",
     "Mail.Send",
     "Calendars.ReadWrite",
     "Chat.ReadWrite",
     "Files.ReadWrite.All",
     "Directory.Read.All",
+    "Contacts.ReadWrite",
+    "Sites.ReadWrite.All",
 ]
 
 ADMIN_ROLE_IDS = {
@@ -157,12 +160,15 @@ def _graph_request(
     endpoint: str,
     json_data: Optional[Dict[str, Any]] = None,
     params: Optional[Dict[str, Any]] = None,
+    extra_headers: Optional[Dict[str, str]] = None,
 ) -> Any:
     token = _get_access_token()
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
+    if extra_headers:
+        headers.update(extra_headers)
     url = f"{GRAPH_API_BASE}{endpoint}" if not endpoint.startswith("http") else endpoint
 
     with httpx.Client(timeout=30.0) as client:
@@ -390,6 +396,117 @@ def m365_get_drive_file(file_id: str) -> Dict[str, Any]:
     """Get file metadata and download URL from OneDrive."""
     return _graph_request("GET", f"/me/drive/items/{file_id}")
 
+
+
+
+@mcp.tool()
+def m365_search_users(query: str, top: int = 10) -> Dict[str, Any]:
+    """Search tenant user directory by display name, email, or userPrincipalName."""
+    clean_q = query.replace("'", "''")
+    filter_expr = f"startswith(displayName,'{clean_q}') or startswith(mail,'{clean_q}') or startswith(userPrincipalName,'{clean_q}')"
+    params = {
+        "$top": min(top, 50),
+        "$select": "id,displayName,mail,userPrincipalName,jobTitle,department",
+        "$filter": filter_expr,
+    }
+    try:
+        return _graph_request("GET", "/users", params=params)
+    except Exception:
+        # Fallback to $search with ConsistencyLevel: eventual header if $filter fails
+        search_params = {
+            "$top": min(top, 50),
+            "$select": "id,displayName,mail,userPrincipalName,jobTitle,department",
+            "$search": f'"{clean_q}"',
+        }
+        return _graph_request("GET", "/users", params=search_params, extra_headers={"ConsistencyLevel": "eventual"})
+
+
+@mcp.tool()
+def m365_get_chat_members(chat_id: str) -> Dict[str, Any]:
+    """Get the members (participants) of a Microsoft Teams chat."""
+    return _graph_request("GET", f"/me/chats/{chat_id}/members")
+
+
+@mcp.tool()
+def m365_get_or_create_direct_chat(user_id_or_upn: str) -> Dict[str, Any]:
+    """Get or create a 1:1 Teams direct chat with a tenant user by ID or email/UPN."""
+    me_profile = _graph_request("GET", "/me")
+    my_id = me_profile.get("id")
+
+    other_user = user_id_or_upn
+    if "@" in user_id_or_upn:
+        search_res = m365_search_users(user_id_or_upn, top=1)
+        users = search_res.get("value", [])
+        if users:
+            other_user = users[0].get("id")
+        else:
+            # Fallback: get user directly by UPN
+            user_by_upn = _graph_request("GET", f"/users/{user_id_or_upn}")
+            if "id" in user_by_upn:
+                other_user = user_by_upn["id"]
+
+    payload = {
+        "chatType": "oneOnOne",
+        "members": [
+            {
+                "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                "roles": ["owner"],
+                "user@odata.bind": f"{GRAPH_API_BASE}/users/{my_id}",
+            },
+            {
+                "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                "roles": ["owner"],
+                "user@odata.bind": f"{GRAPH_API_BASE}/users/{other_user}",
+            },
+        ],
+    }
+    return _graph_request("POST", "/chats", json_data=payload)
+
+
+@mcp.tool()
+def m365_list_contacts(top: int = 20, search: Optional[str] = None) -> Dict[str, Any]:
+    """List personal contacts from Outlook Contacts."""
+    params = {"$top": min(top, 50)}
+    if search:
+        params["$search"] = f'"{search}"'
+    return _graph_request("GET", "/me/contacts", params=params)
+
+
+@mcp.tool()
+def m365_list_sharepoint_sites(search: Optional[str] = None, top: int = 10) -> Dict[str, Any]:
+    """List or search SharePoint sites in the tenant."""
+    if search:
+        endpoint = f"/sites?search={search}"
+    else:
+        endpoint = "/sites?search=*"
+    return _graph_request("GET", endpoint, params={"$top": min(top, 50)})
+
+
+@mcp.tool()
+def m365_list_sharepoint_drives(site_id: str) -> Dict[str, Any]:
+    """List document libraries (drives) for a SharePoint site."""
+    return _graph_request("GET", f"/sites/{site_id}/drives")
+
+
+@mcp.tool()
+def m365_list_sharepoint_files(
+    site_id: str,
+    drive_id: str,
+    folder_id: Optional[str] = None,
+    top: int = 20,
+) -> Dict[str, Any]:
+    """List files in a SharePoint document library drive."""
+    if folder_id:
+        endpoint = f"/sites/{site_id}/drives/{drive_id}/items/{folder_id}/children"
+    else:
+        endpoint = f"/sites/{site_id}/drives/{drive_id}/root/children"
+    return _graph_request("GET", endpoint, params={"$top": min(top, 50)})
+
+
+@mcp.tool()
+def m365_search_sharepoint_files(site_id: str, query: str) -> Dict[str, Any]:
+    """Search for files within a SharePoint site."""
+    return _graph_request("GET", f"/sites/{site_id}/drive/root/search(q='{query}')")
 
 if __name__ == "__main__":
     if "--login" in sys.argv:

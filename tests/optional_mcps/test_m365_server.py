@@ -60,3 +60,59 @@ def test_m365_token_device_flow_fallback():
     with patch.object(server, "_get_msal_app", return_value=mock_app), patch.object(server.sys, "argv", ["server.py", "--login"]):
         token = server._get_access_token()
         assert token == "mock-token-xyz"
+
+
+def test_m365_search_users():
+    mock_res = {"value": [{"id": "user-123", "displayName": "Gonzalo Oberreuter", "mail": "gonzalo@example.com"}]}
+    with patch.object(server, "_graph_request", return_value=mock_res) as mock_req:
+        res = server.m365_search_users("gonzalo")
+        assert res["value"][0]["id"] == "user-123"
+        mock_req.assert_called_once()
+        args, kwargs = mock_req.call_args
+        assert args[0] == "GET"
+        assert args[1] == "/users"
+        assert "startswith(displayName,'gonzalo')" in kwargs["params"]["$filter"]
+
+
+def test_m365_get_chat_members():
+    mock_res = {"value": [{"id": "mem-1", "displayName": "Gonzalo"}]}
+    with patch.object(server, "_graph_request", return_value=mock_res) as mock_req:
+        res = server.m365_get_chat_members("chat-123")
+        assert res["value"][0]["id"] == "mem-1"
+        mock_req.assert_called_once_with("GET", "/me/chats/chat-123/members")
+
+
+def test_m365_get_or_create_direct_chat():
+    me_res = {"id": "my-id-999"}
+    search_res = {"value": [{"id": "gonzalo-id-123"}]}
+    chat_created = {"id": "19:direct-chat-id"}
+
+    def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None):
+        if endpoint == "/me":
+            return me_res
+        if endpoint == "/users":
+            return search_res
+        if endpoint == "/chats":
+            assert json_data["chatType"] == "oneOnOne"
+            assert len(json_data["members"]) == 2
+            return chat_created
+        return {}
+
+    with patch.object(server, "_graph_request", side_effect=side_effect):
+        res = server.m365_get_or_create_direct_chat("gonzalo@example.com")
+        assert res["id"] == "19:direct-chat-id"
+
+
+def test_m365_sharepoint_tools():
+    with patch.object(server, "_graph_request", return_value={"value": []}) as mock_req:
+        server.m365_list_sharepoint_sites(search="Intranet")
+        mock_req.assert_called_with("GET", "/sites?search=Intranet", params={"$top": 10})
+
+    with patch.object(server, "_graph_request", return_value={"value": []}) as mock_req:
+        server.m365_list_sharepoint_drives("site-123")
+        mock_req.assert_called_with("GET", "/sites/site-123/drives")
+
+    with patch.object(server, "_graph_request", return_value={"value": []}) as mock_req:
+        server.m365_list_sharepoint_files("site-123", "drive-456")
+        mock_req.assert_called_with("GET", "/sites/site-123/drives/drive-456/root/children", params={"$top": 20})
+
