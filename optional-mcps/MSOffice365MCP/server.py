@@ -536,6 +536,133 @@ def m365_search_sharepoint_files(site_id: str, query: str) -> Dict[str, Any]:
     """Search for files within a SharePoint site."""
     return _graph_request("GET", f"/sites/{site_id}/drive/root/search(q='{query}')")
 
+
+# ─── Teams Channels & Activity Feed Tools ───────────────────────────────────
+
+
+@mcp.tool()
+def m365_list_chat_messages(chat_id: str, top: int = 10) -> Dict[str, Any]:
+    """List recent messages in a specific Microsoft Teams chat (1:1 or group chat)."""
+    params = {"$top": min(top, 50)}
+    return _graph_request("GET", f"/me/chats/{chat_id}/messages", params=params)
+
+
+@mcp.tool()
+def m365_list_joined_teams(top: int = 20) -> Dict[str, Any]:
+    """List all Microsoft Teams that the current user is a member of."""
+    params = {"$top": min(top, 50)}
+    return _graph_request("GET", "/me/joinedTeams", params=params)
+
+
+@mcp.tool()
+def m365_list_team_channels(team_id: str) -> Dict[str, Any]:
+    """List all channels in a specific Microsoft Team."""
+    return _graph_request("GET", f"/teams/{team_id}/channels")
+
+
+@mcp.tool()
+def m365_list_channel_messages(team_id: str, channel_id: str, top: int = 10) -> Dict[str, Any]:
+    """List recent messages in a specific Microsoft Teams channel."""
+    params = {"$top": min(top, 50)}
+    return _graph_request("GET", f"/teams/{team_id}/channels/{channel_id}/messages", params=params)
+
+
+@mcp.tool()
+def m365_get_activity_feed(top_chats: int = 5, top_messages_per_chat: int = 3) -> Dict[str, Any]:
+    """Get an aggregated Activity Feed across recent 1:1 DMs, group chats, and joined Teams channels.
+    
+    Inspects recent active chats and teams channels to return a combined overview of recent messages.
+    """
+    activity = {
+        "recent_chats": [],
+        "team_channels": [],
+        "errors": [],
+    }
+
+    # 1. Fetch recent chats
+    try:
+        chats_res = _graph_request("GET", "/me/chats", params={"$top": min(top_chats, 15)})
+        chats = chats_res.get("value", [])
+        for c in chats:
+            chat_id = c.get("id")
+            topic = c.get("topic") or c.get("chatType")
+            if not chat_id:
+                continue
+            try:
+                msgs_res = _graph_request(
+                    "GET",
+                    f"/me/chats/{chat_id}/messages",
+                    params={"$top": min(top_messages_per_chat, 10)},
+                )
+                msgs = msgs_res.get("value", [])
+                activity["recent_chats"].append({
+                    "chat_id": chat_id,
+                    "topic": topic,
+                    "chat_type": c.get("chatType"),
+                    "last_updated": c.get("lastUpdatedDateTime"),
+                    "recent_messages": [
+                        {
+                            "id": m.get("id"),
+                            "from": m.get("from", {}).get("user", {}).get("displayName"),
+                            "created_at": m.get("createdDateTime"),
+                            "body_preview": m.get("body", {}).get("content", "")[:200],
+                        }
+                        for m in msgs if m.get("messageType") == "message"
+                    ],
+                })
+            except Exception as err:
+                activity["errors"].append(f"Chat {chat_id} messages error: {err}")
+    except Exception as err:
+        activity["errors"].append(f"List chats error: {err}")
+
+    # 2. Fetch joined teams & their primary/active channels
+    try:
+        teams_res = _graph_request("GET", "/me/joinedTeams", params={"$top": 10})
+        teams = teams_res.get("value", [])
+        for t in teams:
+            team_id = t.get("id")
+            team_name = t.get("displayName")
+            if not team_id:
+                continue
+            try:
+                channels_res = _graph_request("GET", f"/teams/{team_id}/channels")
+                channels = channels_res.get("value", [])
+                for ch in channels[:3]:  # Top channels per team
+                    ch_id = ch.get("id")
+                    ch_name = ch.get("displayName")
+                    if not ch_id:
+                        continue
+                    try:
+                        ch_msgs_res = _graph_request(
+                            "GET",
+                            f"/teams/{team_id}/channels/{ch_id}/messages",
+                            params={"$top": min(top_messages_per_chat, 5)},
+                        )
+                        ch_msgs = ch_msgs_res.get("value", [])
+                        activity["team_channels"].append({
+                            "team_id": team_id,
+                            "team_name": team_name,
+                            "channel_id": ch_id,
+                            "channel_name": ch_name,
+                            "recent_messages": [
+                                {
+                                    "id": m.get("id"),
+                                    "from": m.get("from", {}).get("user", {}).get("displayName"),
+                                    "created_at": m.get("createdDateTime"),
+                                    "body_preview": m.get("body", {}).get("content", "")[:200],
+                                }
+                                for m in ch_msgs if m.get("messageType") == "message"
+                            ],
+                        })
+                    except Exception:
+                        pass
+            except Exception as err:
+                activity["errors"].append(f"Team {team_name} channels error: {err}")
+    except Exception as err:
+        activity["errors"].append(f"List teams error: {err}")
+
+    return activity
+
 if __name__ == "__main__":
     if "--login" in sys.argv:
         token = _get_access_token()
