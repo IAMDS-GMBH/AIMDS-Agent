@@ -478,6 +478,8 @@ export function useSessionActions({
       const isCurrentResume = () =>
         resumeRequestRef.current === requestId && selectedStoredSessionIdRef.current === storedSessionId
 
+      const isSessionSwitch = selectedStoredSessionIdRef.current !== storedSessionId
+
       // Swap the single live gateway to this session's profile before any
       // gateway call (no-op when it's already on that profile / single-profile).
       const storedForProfile = $sessions.get().find(session => session.id === storedSessionId)
@@ -507,6 +509,9 @@ export function useSessionActions({
         selectedStoredSessionIdRef.current = storedSessionId
         setActiveSessionId(cachedRuntimeId)
         activeSessionIdRef.current = cachedRuntimeId
+        if (isSessionSwitch) {
+          setMessages([])
+        }
         syncSessionStateToView(cachedRuntimeId, cachedViewState)
         setCurrentCwd(cachedViewState.cwd)
         setCurrentBranch(cachedViewState.branch)
@@ -548,6 +553,9 @@ export function useSessionActions({
       clearNotifications()
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
+      if (isSessionSwitch) {
+        setMessages([])
+      }
       setSessionStartedAt(Date.now())
       const stored = $sessions.get().find(session => session.id === storedSessionId)
       applyStoredSessionPreviewRuntimeInfo(stored)
@@ -577,7 +585,8 @@ export function useSessionActions({
           const storedMessages = await getSessionMessages(storedSessionId, sessionProfile)
 
           if (isCurrentResume()) {
-            localSnapshot = preserveLocalAssistantErrors(toChatMessages(storedMessages.messages), $messages.get())
+            const previousMessages = isSessionSwitch ? [] : $messages.get()
+            localSnapshot = preserveLocalAssistantErrors(toChatMessages(storedMessages.messages), previousMessages)
 
             if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
               setMessages(localSnapshot)
@@ -597,9 +606,10 @@ export function useSessionActions({
           }
 
           const currentMessages = $messages.get()
+          const previousMessages = isSessionSwitch ? [] : currentMessages
           const messagesForView = preserveLocalAssistantErrors(
-            localSnapshot.length > 0 ? localSnapshot : currentMessages,
-            currentMessages
+            localSnapshot.length > 0 ? localSnapshot : previousMessages,
+            previousMessages
           )
 
           setActiveSessionId(storedSessionId)
@@ -631,10 +641,11 @@ export function useSessionActions({
         }
 
         const currentMessages = $messages.get()
+        const previousMessages = isSessionSwitch ? [] : currentMessages
 
         const resumedMessages = preserveLocalAssistantErrors(
-          reconcileResumeMessages(toChatMessages(resumed.messages), currentMessages),
-          currentMessages
+          reconcileResumeMessages(toChatMessages(resumed.messages), previousMessages),
+          previousMessages
         )
         // Avoid a second visible transcript rebuild on resume/switch.
         // `getSessionMessages()` is the stable stored transcript snapshot and
@@ -652,7 +663,7 @@ export function useSessionActions({
               ? currentMessages
               : resumedMessages
 
-        const messagesForView = preserveLocalAssistantErrors(preferredMessages, currentMessages)
+        const messagesForView = preserveLocalAssistantErrors(preferredMessages, previousMessages)
 
         setActiveSessionId(resumed.session_id)
         activeSessionIdRef.current = resumed.session_id
