@@ -1398,9 +1398,12 @@ class MCPServerTask:
             old_tool_names = set(self._registered_tool_names)
 
             # 1. Fetch current tool list from server
-            async with self._rpc_lock:
-                tools_result = await self.session.list_tools()
-            new_mcp_tools = tools_result.tools if hasattr(tools_result, "tools") else []
+            if self.session is not None and hasattr(self.session, "list_tools"):
+                async with self._rpc_lock:
+                    tools_result = await self.session.list_tools()
+                new_mcp_tools = tools_result.tools if hasattr(tools_result, "tools") else []
+            else:
+                new_mcp_tools = list(self._tools)
 
             # 2. Re-register with fresh tool list. Avoid nuke-and-repave for
             # all names: live agent turns may already have tool-call IDs
@@ -1917,12 +1920,16 @@ class MCPServerTask:
                         )
 
     async def _discover_tools(self):
-        """Discover tools from the connected session."""
+        """Discover tools from the connected session and register them in the registry."""
         if self.session is None:
             return
-        async with self._rpc_lock:
-            tools_result = await self.session.list_tools()
-        self._tools = tools_result.tools if hasattr(tools_result, "tools") else []
+        if hasattr(self.session, "list_tools"):
+            async with self._rpc_lock:
+                tools_result = await self.session.list_tools()
+            self._tools = tools_result.tools if hasattr(tools_result, "tools") else []
+        self._registered_tool_names = _register_server_tools(
+            self.name, self, self._config
+        )
 
     async def run(self, config: dict):
         """Long-lived coroutine: connect, discover tools, wait, disconnect.
