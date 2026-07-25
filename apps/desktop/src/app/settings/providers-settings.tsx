@@ -641,8 +641,10 @@ function McpCatalogSection({
   const [installModalEntry, setInstallModalEntry] = useState<McpCatalogEntry | null>(null)
   const [secretInputs, setSecretInputs] = useState<Record<string, string>>({})
   const [installing, setInstalling] = useState(false)
+  const [loading, setLoading] = useState(true)
 
   const loadCatalogAndConfig = async () => {
+    setLoading(true)
     try {
       const [catRes, cfg] = await Promise.all([
         getMcpCatalog().catch(() => ({ entries: [] })),
@@ -659,6 +661,8 @@ function McpCatalogSection({
       }
     } catch {
       // ignore
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -736,8 +740,22 @@ function McpCatalogSection({
     }
   }
 
+  if (loading) {
+    return <LoadingState label={t.settings.providers.loading} />
+  }
+
   if (catalogEntries.length === 0) {
-    return null
+    return (
+      <section className="mb-6">
+        <div className="mb-3">
+          <h3 className="text-sm font-semibold text-foreground">{m.catalogSectionTitle}</h3>
+          <p className="mt-1 text-xs text-muted-foreground">{m.catalogSectionDesc}</p>
+        </div>
+        <div className="rounded-lg border border-border bg-card p-8 text-center text-xs text-muted-foreground">
+          Keine Katalog-Einträge verfügbar.
+        </div>
+      </section>
+    )
   }
 
   return (

@@ -138,6 +138,12 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
             </div>
           )}
           <OverlayNavItem
+            active={activeView === 'mcp'}
+            icon={Wrench}
+            label={t.settings.nav.mcp}
+            onClick={() => setActiveView('mcp')}
+          />
+          <OverlayNavItem
             active={activeView === 'mcp-catalog'}
             icon={Package}
             label={t.settings.nav.providerCatalog}
@@ -148,12 +154,6 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
             icon={Globe}
             label={t.settings.nav.gateway}
             onClick={() => setActiveView('gateway')}
-          />
-          <OverlayNavItem
-            active={activeView === 'mcp'}
-            icon={Wrench}
-            label={t.settings.nav.mcp}
-            onClick={() => setActiveView('mcp')}
           />
           <OverlayNavItem
             active={activeView === 'sessions'}
