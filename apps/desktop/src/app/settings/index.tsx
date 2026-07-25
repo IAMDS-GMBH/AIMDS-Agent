@@ -21,13 +21,14 @@ import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
 import { McpSettings } from './mcp-settings'
-import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
+import { PROVIDER_VIEWS, ProvidersSettings, McpCatalogSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
   'providers',
+  'mcp-catalog',
   'gateway',
   'keys',
   'mcp',
@@ -128,13 +129,6 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
                 onClick={() => openProviderView('accounts')}
               />
               <OverlayNavItem
-                active={providerView === 'catalog'}
-                icon={Package}
-                label={t.settings.nav.providerCatalog}
-                nested
-                onClick={() => openProviderView('catalog')}
-              />
-              <OverlayNavItem
                 active={providerView === 'keys'}
                 icon={KeyRound}
                 label={t.settings.nav.providerApiKeys}
@@ -143,6 +137,12 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
               />
             </div>
           )}
+          <OverlayNavItem
+            active={activeView === 'mcp-catalog'}
+            icon={Package}
+            label={t.settings.nav.providerCatalog}
+            onClick={() => setActiveView('mcp-catalog')}
+          />
           <OverlayNavItem
             active={activeView === 'gateway'}
             icon={Globe}
@@ -203,6 +203,8 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
             <AppearanceSettings />
           ) : activeView === 'about' ? (
             <AboutSettings />
+          ) : activeView === 'mcp-catalog' ? (
+            <McpCatalogSettings />
           ) : activeView === 'gateway' ? (
             <GatewaySettings />
           ) : activeView.startsWith('config:') ? (

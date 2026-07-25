@@ -34,8 +34,8 @@ import { ProviderKeyRows } from './credential-key-ui'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { LoadingState, Pill, SettingsContent } from './primitives'
 
-// Sub-views surfaced as a sidebar subnav: account sign-in, MCP catalog, and raw API keys.
-export const PROVIDER_VIEWS = ['accounts', 'catalog', 'keys'] as const
+// Sub-views surfaced as a sidebar subnav: account sign-in and raw API keys.
+export const PROVIDER_VIEWS = ['accounts', 'keys'] as const
 
 export type ProviderView = (typeof PROVIDER_VIEWS)[number]
 
@@ -741,7 +741,7 @@ function McpCatalogSection({
   }
 
   return (
-    <section className="mt-6 border-t border-border/50 pt-5">
+    <section className="mb-6">
       <div className="mb-3">
         <h3 className="text-sm font-semibold text-foreground">{m.catalogSectionTitle}</h3>
         <p className="mt-1 text-xs text-muted-foreground">{m.catalogSectionDesc}</p>
@@ -923,6 +923,21 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
     <SettingsContent>
       <IamdsAccountPanel onWantApiKey={() => onViewChange('keys')} onRefreshCreds={() => void refetch()} />
       <OAuthAccountsPanel />
+    </SettingsContent>
+  )
+}
+
+export function McpCatalogSettings({ onRefreshCreds }: { onRefreshCreds?: () => void } = {}) {
+  const { t } = useI18n()
+  const { vars, refetch } = useEnvCredentials()
+
+  if (!vars) {
+    return <LoadingState label={t.settings.providers.loading} />
+  }
+
+  return (
+    <SettingsContent>
+      <McpCatalogSection vars={vars} onRefreshCreds={() => { void refetch(); onRefreshCreds?.() }} />
     </SettingsContent>
   )
 }
