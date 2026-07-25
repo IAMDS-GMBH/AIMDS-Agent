@@ -1,5 +1,9 @@
 """Outlook / Microsoft Graph inbox read tool.
 
+DEPRECATION NOTICE:
+  The built-in outlook toolset is being migrated to catalog-based MCP servers
+  (MSOffice365MCP and EmailMCP). New setups should use MSOffice365MCP or EmailMCP.
+
 Lets the agent fetch and summarize emails from the user's Outlook inbox
 on demand, using the same delegated token cache as the Outlook gateway
 adapter (``~/.hermes/outlook_token.json``).
