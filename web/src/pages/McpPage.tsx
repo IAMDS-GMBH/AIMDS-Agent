@@ -496,8 +496,8 @@ export default function McpPage() {
                   </Label>
                   <Input
                     id={`install-env-${item.name}`}
-                    type="password"
-                    placeholder={item.name}
+                    type={item.secret ? "password" : "text"}
+                    placeholder={item.default || item.name}
                     value={installEnv[item.name] ?? ""}
                     onChange={(e) =>
                       setInstallEnv((prev) => ({

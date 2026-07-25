@@ -6378,14 +6378,20 @@ def reload_env() -> int:
 
 
 def get_env_value(key: str) -> Optional[str]:
-    """Get a value from ~/.hermes/.env or environment."""
-    # Check environment first
-    if key in os.environ:
-        return os.environ[key]
-    
-    # Then check .env file
+    """Get a value from ~/.hermes/.env or environment.
+
+    Ignores empty strings and literal template expressions like '${VAR}'.
+    """
+    val = os.environ.get(key)
+    if val and not (val.startswith("${") and val.endswith("}")):
+        return val
+
     env_vars = load_env()
-    return env_vars.get(key)
+    file_val = env_vars.get(key)
+    if file_val and not (file_val.startswith("${") and file_val.endswith("}")):
+        return file_val
+
+    return val if val is not None else file_val
 
 
 # =============================================================================

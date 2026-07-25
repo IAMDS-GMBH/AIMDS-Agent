@@ -1,0 +1,48 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: TempoMCP
+description: Tempo Timesheets integration for Jira Cloud & Server/DC (worklogs, time bookings, accounts, work attributes) using @ivelin-web/tempo-mcp-server.
+source: https://github.com/ivelin-web/tempo-mcp-server
+
+transport:
+  type: stdio
+  command: npx
+  args:
+    - "-y"
+    - "@ivelin-web/tempo-mcp-server"
+
+auth:
+  type: api_key
+  env:
+    - name: TEMPO_API_TOKEN
+      prompt: "Tempo API Token (from Tempo Timesheets Settings > API Tokens)"
+      required: true
+      secret: true
+    - name: JIRA_BASE_URL
+      prompt: "Jira Base URL (e.g. https://your-domain.atlassian.net)"
+      required: true
+      secret: false
+    - name: JIRA_API_TOKEN
+      prompt: "Jira API Token (Cloud) or Personal Access Token PAT (Server/DC)"
+      required: true
+      secret: true
+    - name: JIRA_EMAIL
+      prompt: "Jira User Email (required for Jira Cloud; leave blank for Server/DC)"
+      required: false
+      secret: false
+
+tools:
+  default_enabled:
+    - get_worklogs
+    - create_worklog
+    - update_worklog
+    - delete_worklog
+    - get_user_schedule
+
+post_install: |
+  Tempo MCP (@ivelin-web/tempo-mcp-server via npx) has been configured.
+
+  Provides dedicated tools for Tempo Timesheets worklog creation, time bookings,
+  timesheet retrieval, and work attribute reporting in Jira.

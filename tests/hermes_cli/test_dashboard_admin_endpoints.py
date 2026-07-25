@@ -98,6 +98,28 @@ class TestMcpEndpoints:
         for e in body["entries"]:
             assert {"name", "transport", "installed", "enabled", "needs_install"} <= set(e)
 
+    def test_catalog_env_current_value_resolution(self):
+        from hermes_cli.config import save_env_value, save_config, load_config
+        save_env_value("JIRA_PAT", "secret_pat_123")
+        cfg = load_config()
+        cfg.setdefault("mcp_servers", {})["AtlassianMCP"] = {
+            "command": "uvx",
+            "args": ["mcp-atlassian"],
+            "env": {
+                "JIRA_PAT": "${JIRA_PAT}",
+                "TEMPO_URL": "https://tempo.example.com",
+            }
+        }
+        save_config(cfg)
+
+        r = self.client.get("/api/mcp/catalog")
+        assert r.status_code == 200
+        atlassian = [e for e in r.json()["entries"] if e["name"] == "AtlassianMCP"]
+        if atlassian:
+            env_map = {item["name"]: item["current_value"] for item in atlassian[0]["required_env"]}
+            assert env_map.get("JIRA_PAT") == "secret_pat_123"
+            assert env_map.get("TEMPO_URL") == "https://tempo.example.com"
+
     def test_catalog_install_unknown_404(self):
         r = self.client.post("/api/mcp/catalog/install", json={"name": "no-such-mcp-xyz"})
         assert r.status_code == 404
