@@ -67,6 +67,7 @@ export const de: Translations = {
       stopped: "Gestoppt",
     },
     nav: {
+      mcp: "MCP-Katalog",
       analytics: "Analyse",
       chat: "Chat",
       config: "Konfiguration",
@@ -88,7 +89,7 @@ export const de: Translations = {
     pluginNavSection: "Plugins",
     sessionsActiveCount: "{count} aktiv",
     statusOverview: "Statusübersicht",
-    system: "System",
+    system: "Diagnose",
     webUi: "Web UI",
   },
 
@@ -163,7 +164,7 @@ export const de: Translations = {
     roles: {
       user: "Benutzer",
       assistant: "Assistent",
-      system: "System",
+      system: "Diagnose",
       tool: "Werkzeug",
     },
   },

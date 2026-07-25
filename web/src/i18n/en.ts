@@ -70,6 +70,7 @@ export const en: Translations = {
       stopped: "Stopped",
     },
     nav: {
+      mcp: "MCP Catalog",
       analytics: "Analytics",
       chat: "Chat",
       config: "Config",
@@ -91,7 +92,7 @@ export const en: Translations = {
     pluginNavSection: "Plugins",
     sessionsActiveCount: "{count} active",
     statusOverview: "Status overview",
-    system: "System",
+    system: "Diagnostics",
     webUi: "Web UI",
     managingProfile: "Managing profile",
     currentProfileOption: "this dashboard ({name})",
@@ -170,7 +171,7 @@ export const en: Translations = {
     roles: {
       user: "User",
       assistant: "Assistant",
-      system: "System",
+      system: "Diagnostics",
       tool: "Tool",
     },
   },

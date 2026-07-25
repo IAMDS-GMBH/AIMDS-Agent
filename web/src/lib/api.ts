@@ -1248,6 +1248,8 @@ export interface McpCatalogEntry {
     name: string;
     prompt: string;
     required: boolean;
+    secret?: boolean;
+    default?: string;
     current_value?: string;
   }>;
   needs_install: boolean;

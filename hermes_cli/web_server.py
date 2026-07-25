@@ -6926,8 +6926,9 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
         )
     from hermes_state import SessionDB
     db = SessionDB()
+    sessions_dir = get_hermes_home() / "sessions"
     try:
-        deleted = db.delete_sessions(body.ids)
+        deleted = db.delete_sessions(body.ids, sessions_dir=sessions_dir)
         return {"ok": True, "deleted": deleted}
     finally:
         db.close()
@@ -6971,8 +6972,9 @@ async def delete_empty_sessions_endpoint():
     """
     from hermes_state import SessionDB
     db = SessionDB()
+    sessions_dir = get_hermes_home() / "sessions"
     try:
-        deleted = db.delete_empty_sessions()
+        deleted = db.delete_empty_sessions(sessions_dir=sessions_dir)
         return {"ok": True, "deleted": deleted}
     finally:
         db.close()
@@ -7026,6 +7028,13 @@ def _open_session_db_for_profile(profile: Optional[str]):
     return SessionDB(db_path=Path(home) / "state.db")
 
 
+def _sessions_dir_for_profile(profile: Optional[str]) -> Path:
+    if not profile:
+        return get_hermes_home() / "sessions"
+    _name, home = _cron_profile_home(profile)
+    return Path(home) / "sessions"
+
+
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str, profile: Optional[str] = None):
     db = _open_session_db_for_profile(profile)
@@ -7074,8 +7083,9 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
     # opening its state.db directly. Remote profiles never reach here — the
     # desktop routes their DELETE to the remote backend. Omit for current/default.
     db = _open_session_db_for_profile(profile)
+    sessions_dir = _sessions_dir_for_profile(profile)
     try:
-        if not db.delete_session(session_id):
+        if not db.delete_session(session_id, sessions_dir=sessions_dir):
             raise HTTPException(status_code=404, detail="Session not found")
         return {"ok": True}
     finally:
@@ -7884,17 +7894,24 @@ async def list_mcp_catalog(profile: Optional[str] = None):
             }
             for entry in catalog_entries:
                 auth = entry.auth
-                env_vars = [
-                    {
+                env_vars = []
+                for e in (getattr(auth, "env", []) or []):
+                    val = get_env_value(e.name) or ""
+                    if not val:
+                        if e.name == "JIRA_BASE_URL":
+                            val = get_env_value("JIRA_URL") or ""
+                        elif e.name == "JIRA_EMAIL":
+                            val = get_env_value("JIRA_USERNAME") or ""
+                        elif e.name == "JIRA_API_TOKEN":
+                            val = get_env_value("JIRA_PAT") or ""
+                    env_vars.append({
                         "name": e.name,
                         "prompt": e.prompt,
                         "required": getattr(e, "required", True),
                         "secret": getattr(e, "secret", True),
                         "default": getattr(e, "default", ""),
-                        "current_value": get_env_value(e.name) or "",
-                    }
-                    for e in (getattr(auth, "env", []) or [])
-                ]
+                        "current_value": val,
+                    })
                 entries.append({
                     "name": entry.name,
                     "description": entry.description,
@@ -7954,9 +7971,14 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     if entry is None:
         raise HTTPException(status_code=404, detail=f"No catalog entry '{name}'")
 
-    # Persist any supplied env vars / secrets first (catalog entries declare which
-    # names they need; we only write the ones the user provided).
     effective_profile = body.profile or profile
+    if name == "TempoMCP":
+        with _profile_scope(effective_profile):
+            if not mcp_catalog.is_installed("AtlassianMCP"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="AtlassianMCP must be installed before installing TempoMCP.",
+                )
     env_vars: Dict[str, str] = {}
     if body.env:
         env_vars.update(body.env)

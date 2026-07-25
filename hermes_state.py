@@ -3635,10 +3635,10 @@ class SessionDB:
 
     @staticmethod
     def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
-        """Remove on-disk transcript files for a session.
+        """Remove on-disk transcript files and session folder for a session.
 
-        Cleans up ``{session_id}.json``, ``{session_id}.jsonl``, and any
-        ``request_dump_{session_id}_*.json`` files left by the gateway.
+        Cleans up ``{session_id}.json``, ``{session_id}.jsonl``, directory
+        ``{session_id}``, and any ``request_dump_{session_id}_*.json`` files left by the gateway.
         Silently skips files that don't exist and swallows OSError so a
         filesystem hiccup never blocks a DB operation.
         """
@@ -3648,6 +3648,16 @@ class SessionDB:
             p = sessions_dir / f"{session_id}{suffix}"
             try:
                 p.unlink(missing_ok=True)
+            except OSError:
+                pass
+        s_dir = sessions_dir / session_id
+        if s_dir.exists():
+            try:
+                import shutil
+                if s_dir.is_dir():
+                    shutil.rmtree(s_dir, ignore_errors=True)
+                else:
+                    s_dir.unlink(missing_ok=True)
             except OSError:
                 pass
         # request_dump files use session_id as a prefix component
