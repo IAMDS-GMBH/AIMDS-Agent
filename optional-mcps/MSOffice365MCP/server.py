@@ -371,9 +371,37 @@ def m365_list_chats(top: int = 10) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def m365_send_chat_message(chat_id: str, content: str) -> Dict[str, Any]:
-    """Send a message to a Microsoft Teams chat."""
-    payload = {"body": {"content": content}}
+def m365_send_chat_message(
+    chat_id: str,
+    content: str,
+    content_type: str = "html",
+) -> Dict[str, Any]:
+    """Send a message to a Microsoft Teams chat.
+
+    Args:
+        chat_id: The Teams chat ID.
+        content: Message content (text or HTML).
+        content_type: 'html' (default) or 'text'. When 'html', Teams renders rich text, line breaks, and paragraphs.
+    """
+    ct = content_type.lower()
+    final_content = content
+    if ct == "html":
+        import re
+        if not re.search(r"<(p|div|br|ul|ol|li|h[1-6])\b", content, re.IGNORECASE):
+            paragraphs = content.split("\n\n")
+            formatted_p = []
+            for p in paragraphs:
+                p_clean = p.strip().replace("\n", "<br/>")
+                if p_clean:
+                    formatted_p.append(f"<p>{p_clean}</p>")
+            final_content = "".join(formatted_p) if formatted_p else content
+
+    payload = {
+        "body": {
+            "contentType": "html" if ct == "html" else "text",
+            "content": final_content,
+        }
+    }
     return _graph_request("POST", f"/me/chats/{chat_id}/messages", json_data=payload)
 
 

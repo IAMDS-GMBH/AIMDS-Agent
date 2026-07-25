@@ -116,3 +116,24 @@ def test_m365_sharepoint_tools():
         server.m365_list_sharepoint_files("site-123", "drive-456")
         mock_req.assert_called_with("GET", "/sites/site-123/drives/drive-456/root/children", params={"$top": 20})
 
+
+def test_m365_send_chat_message_formatting():
+    with patch.object(server, "_graph_request", return_value={"id": "msg-1"}) as mock_req:
+        server.m365_send_chat_message("chat-123", "Para 1\n\nPara 2")
+        mock_req.assert_called_once()
+        args, kwargs = mock_req.call_args
+        assert args[0] == "POST"
+        assert args[1] == "/me/chats/chat-123/messages"
+        json_data = kwargs["json_data"]
+        assert json_data["body"]["contentType"] == "html"
+        assert json_data["body"]["content"] == "<p>Para 1</p><p>Para 2</p>"
+
+    with patch.object(server, "_graph_request", return_value={"id": "msg-2"}) as mock_req:
+        server.m365_send_chat_message("chat-123", "<p>Paragraph 1</p><p>Paragraph 2</p>")
+        mock_req.assert_called_once()
+        args, kwargs = mock_req.call_args
+        json_data = kwargs["json_data"]
+        assert json_data["body"]["contentType"] == "html"
+        assert json_data["body"]["content"] == "<p>Paragraph 1</p><p>Paragraph 2</p>"
+
+
