@@ -1,0 +1,52 @@
+# Nous-approved MCP catalog entry.
+manifest_version: 1
+
+name: NtfyMCP
+disabled: true
+description: ntfy pub/sub messaging integration for push notifications, Cron topic polling, and Inter-Agent communication.
+source: https://github.com/IAMDS-GMBH/hermes-agent/tree/main/optional-mcps/ntfy
+
+transport:
+  type: stdio
+  command: "${INSTALL_DIR}/.venv/bin/python"
+  args:
+    - "${INSTALL_DIR}/server.py"
+
+install:
+  type: git
+  url: https://github.com/IAMDS-GMBH/hermes-agent.git
+  ref: main
+  bootstrap:
+    - "python3 -m venv .venv"
+    - ".venv/bin/pip install -r ${INSTALL_DIR}/optional-mcps/ntfy/requirements.txt"
+
+auth:
+  type: api_key
+  env:
+    - name: NTFY_SERVER_URL
+      prompt: "ntfy Server URL (default: https://ntfy.sh)"
+      default: "https://ntfy.sh"
+      required: false
+      secret: false
+    - name: NTFY_AUTH_TOKEN
+      prompt: "ntfy Bearer Auth Token (optional)"
+      required: false
+      secret: true
+    - name: NTFY_DEFAULT_TOPIC
+      prompt: "ntfy Default Topic Name (optional)"
+      required: false
+      secret: false
+
+tools:
+  default_enabled:
+    - ntfy_publish_message
+    - ntfy_poll_topic
+    - ntfy_test_connection
+
+post_install: |
+  ntfy MCP (ntfy) has been installed into your catalog.
+
+  Supported Features:
+    - Push Notifications (ntfy_publish_message with priority, tags, titles, click URLs)
+    - Topic Polling (ntfy_poll_topic for Cron jobs & Inter-Agent messaging)
+    - Connection Diagnostics (ntfy_test_connection)
