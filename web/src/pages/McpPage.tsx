@@ -736,21 +736,7 @@ export default function McpPage() {
 
                 <div className="flex items-center gap-1 shrink-0">
                   {entry.installed ? (
-                    <div className="flex items-center gap-2">
-                      <Badge tone="success">Installed</Badge>
-                      {entry.required_env.length > 0 && (
-                        <Button
-                          variant="outline"
-                          className="uppercase"
-                          size="sm"
-                          onClick={() => handleInstallClick(entry)}
-                          disabled={isInstalling}
-                          prefix={isInstalling ? <Spinner /> : undefined}
-                        >
-                          {isInstalling ? "Saving..." : "Edit"}
-                        </Button>
-                      )}
-                    </div>
+                    <Badge tone="success">Installed</Badge>
                   ) : (
                     <Button
                       className="uppercase"

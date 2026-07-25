@@ -3,7 +3,7 @@
 manifest_version: 1
 
 name: AtlassianMCP
-description: Access and manage Jira Cloud and Local (Data Center/Server) issues, projects, sprints, worklogs, Tempo Timesheets, and SLAs using mcp-atlassian.
+description: Access and manage Jira Cloud and Local (Data Center/Server) issues, projects, sprints, worklogs, and SLAs using mcp-atlassian.
 source: https://github.com/sooperset/mcp-atlassian
 
 transport:
@@ -31,14 +31,6 @@ auth:
       prompt: "Jira Personal Access Token PAT (for Local/DC Jira; leave blank if using JIRA_API_TOKEN)"
       required: false
       secret: true
-    - name: TEMPO_API_TOKEN
-      prompt: "Tempo API Token (optional; required for Tempo Timesheets integration)"
-      required: false
-      secret: true
-    - name: TEMPO_URL
-      prompt: "Tempo Server/DC base URL (optional; leave blank for Tempo Cloud)"
-      required: false
-      secret: false
 
 tools:
   default_enabled:
@@ -59,7 +51,6 @@ post_install: |
   Authentication modes:
     - Jira Cloud (Default): Set JIRA_URL, JIRA_API_TOKEN, and JIRA_USERNAME (your Atlassian email).
     - Jira Local / Data Center / Server: Set JIRA_URL and JIRA_PAT (Personal Access Token).
-    - Tempo Timesheets (Optional): Set TEMPO_API_TOKEN (and TEMPO_URL if using Server/DC) to enable Tempo integration.
 
   Time Tracking & Worklog tools included:
     - jira_add_worklog: Log time spent on issues.

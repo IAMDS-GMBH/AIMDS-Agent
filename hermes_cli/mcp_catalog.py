@@ -472,6 +472,8 @@ def _build_server_config(
 ) -> dict:
     """Translate a manifest into the ``mcp_servers.<name>`` block format used
     by hermes_cli/mcp_config.py."""
+    from hermes_cli.config import get_env_value
+
     cfg: dict = {}
     t = entry.transport
     if t.type == "stdio":
@@ -479,7 +481,13 @@ def _build_server_config(
         if t.args:
             cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
         if entry.auth and entry.auth.env:
-            cfg["env"] = {item.name: f"${{{item.name}}}" for item in entry.auth.env}
+            env_map = {}
+            for item in entry.auth.env:
+                val = get_env_value(item.name)
+                if val and str(val).strip():
+                    env_map[item.name] = f"${{{item.name}}}"
+            if env_map:
+                cfg["env"] = env_map
     elif t.type == "http":
         cfg["url"] = t.url
         if entry.auth.type == "oauth":

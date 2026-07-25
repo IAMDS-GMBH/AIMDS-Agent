@@ -7882,36 +7882,19 @@ async def list_mcp_catalog(profile: Optional[str] = None):
                 e.name: (mcp_catalog.is_installed(e.name), mcp_catalog.is_enabled(e.name))
                 for e in catalog_entries
             }
-            mcp_servers = load_config().get("mcp_servers") or {}
-
             for entry in catalog_entries:
                 auth = entry.auth
-                server_cfg = mcp_servers.get(entry.name) or {}
-                server_env = server_cfg.get("env") or {}
-                if not isinstance(server_env, dict):
-                    server_env = {}
-
-                env_vars = []
-                for e in (getattr(auth, "env", []) or []):
-                    val = ""
-                    if e.name in server_env:
-                        raw_val = str(server_env[e.name])
-                        if raw_val.startswith("${") and raw_val.endswith("}"):
-                            var_name = raw_val[2:-1].strip()
-                            val = get_env_value(var_name) or ""
-                        else:
-                            val = raw_val
-                    if not val:
-                        val = get_env_value(e.name) or ""
-
-                    env_vars.append({
+                env_vars = [
+                    {
                         "name": e.name,
                         "prompt": e.prompt,
                         "required": getattr(e, "required", True),
                         "secret": getattr(e, "secret", True),
                         "default": getattr(e, "default", ""),
-                        "current_value": val,
-                    })
+                        "current_value": get_env_value(e.name) or "",
+                    }
+                    for e in (getattr(auth, "env", []) or [])
+                ]
                 entries.append({
                     "name": entry.name,
                     "description": entry.description,
