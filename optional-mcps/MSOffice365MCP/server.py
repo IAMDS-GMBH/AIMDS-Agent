@@ -103,10 +103,11 @@ def _get_access_token() -> str:
     accounts = app.get_accounts()
 
     if accounts:
-        result = app.acquire_token_silent(SCOPES, account=accounts[0])
-        if result and "access_token" in result:
-            _save_cache(app)
-            return result["access_token"]
+        for acc in accounts:
+            result = app.acquire_token_silent(SCOPES, account=acc)
+            if result and "access_token" in result:
+                _save_cache(app)
+                return result["access_token"]
 
     # 2. Check if running in interactive --login CLI mode
     if "--login" in sys.argv:
