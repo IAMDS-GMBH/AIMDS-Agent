@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import type { ModelOptionProvider, ModelOptionsResponse, ModelPricing } from '@/types/hermes'
@@ -201,7 +201,29 @@ function ModelResults({
   // Only configured providers (those with curated models) are selectable
   // here. Switching to a NOT-yet-configured provider goes through the
   // "Add provider" footer button, which opens the full onboarding selector.
-  const configured = providers.filter(p => (p.models ?? []).length > 0)
+  const configured = useMemo(() => {
+    const raw = providers.filter(p => (p.models ?? []).length > 0)
+    const canonicalMap: Record<string, string> = {
+      'aimds-suite': 'aimds-suite-prod',
+      'iamds-litellm': 'aimds-suite-prod',
+      'iamds-litellm-staging': 'aimds-suite-staging',
+      'iamds-litellm-dev': 'aimds-suite-dev'
+    }
+    const seenSlugs = new Set<string>()
+    const seenNames = new Set<string>()
+    const result: ModelOptionProvider[] = []
+    for (const p of raw) {
+      const slug = String(p.slug || '').toLowerCase()
+      const canonical = canonicalMap[slug] || slug
+      const name = String(p.name || '').trim().toLowerCase()
+      if (!seenSlugs.has(canonical) && (!name || !seenNames.has(name))) {
+        seenSlugs.add(canonical)
+        if (name) seenNames.add(name)
+        result.push(p)
+      }
+    }
+    return result
+  }, [providers])
 
   return (
     <>
