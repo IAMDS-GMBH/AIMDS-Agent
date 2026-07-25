@@ -50,8 +50,23 @@ describe('PendingToolApproval', () => {
     setRequest('chmod -R 777 /tmp/x')
     render(<PendingToolApproval part={part('terminal')} />)
 
-    expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Run|Ausführen/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Reject|Ablehnen/ })).toBeTruthy()
+  })
+
+  it('renders inline approval controls for bash, powershell and edit_file tools', () => {
+    setRequest('chmod -R 777 /tmp/x')
+    const { unmount: u1 } = render(<PendingToolApproval part={part('bash')} />)
+    expect(screen.getByRole('button', { name: /Run|Ausführen/ })).toBeTruthy()
+    u1()
+
+    const { unmount: u2 } = render(<PendingToolApproval part={part('powershell')} />)
+    expect(screen.getByRole('button', { name: /Run|Ausführen/ })).toBeTruthy()
+    u2()
+
+    const { unmount: u3 } = render(<PendingToolApproval part={part('edit_file')} />)
+    expect(screen.getByRole('button', { name: /Run|Ausführen/ })).toBeTruthy()
+    u3()
   })
 
   it('sends approval.respond {choice: "once"} and clears the request on Run', async () => {
@@ -59,7 +74,7 @@ describe('PendingToolApproval', () => {
     setRequest()
     render(<PendingToolApproval part={part('terminal')} />)
 
-    fireEvent.click(screen.getByRole('button', { name: /Run/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Run|Ausführen/ }))
 
     await waitFor(() => {
       expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'once', session_id: 'sess-1' })
@@ -72,7 +87,7 @@ describe('PendingToolApproval', () => {
     setRequest()
     render(<PendingToolApproval part={part('terminal')} />)
 
-    fireEvent.click(screen.getByRole('button', { name: /Reject/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Reject|Ablehnen/ }))
 
     await waitFor(() => {
       expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'deny', session_id: 'sess-1' })
