@@ -2798,6 +2798,9 @@ def _interpolate_env_vars(value):
 # the new base URL and API key.
 _IAMDS_PROVIDER_SLUGS: frozenset = frozenset(
     {
+        "aimds-suite-prod",
+        "aimds-suite-staging",
+        "aimds-suite-dev",
         "iamds-litellm",
         "iamds-litellm-staging",
         "iamds-litellm-dev",
@@ -2816,6 +2819,10 @@ _IAMDS_PROVIDER_SLUGS: frozenset = frozenset(
 _IAMDS_MCP_TAGS: frozenset = frozenset(
     {
         "iamds",
+        "aimds",
+        "aimds-suite-prod",
+        "aimds-suite-staging",
+        "aimds-suite-dev",
         "iamds-litellm",
         "iamds-litellm-staging",
         "iamds-litellm-dev",
@@ -2825,12 +2832,18 @@ _IAMDS_MCP_TAGS: frozenset = frozenset(
 # Maps each IAMDS provider slug to its API key env var so config.yaml is
 # written with a portable ``${VAR}`` placeholder instead of the raw key.
 _IAMDS_KEY_ENV_VAR: Dict[str, str] = {
+    "aimds-suite-prod": "IAMDS_LITELLM_API_KEY",
+    "aimds-suite-staging": "IAMDS_LITELLM_STAGING_API_KEY",
+    "aimds-suite-dev": "IAMDS_LITELLM_DEV_API_KEY",
     "iamds-litellm": "IAMDS_LITELLM_API_KEY",
     "iamds-litellm-staging": "IAMDS_LITELLM_STAGING_API_KEY",
     "iamds-litellm-dev": "IAMDS_LITELLM_DEV_API_KEY",
 }
 
 _IAMDS_BASE_ENV_VAR: Dict[str, str] = {
+    "aimds-suite-prod": "IAMDS_LITELLM_BASE_URL",
+    "aimds-suite-staging": "IAMDS_LITELLM_STAGING_BASE_URL",
+    "aimds-suite-dev": "IAMDS_LITELLM_DEV_BASE_URL",
     "iamds-litellm": "IAMDS_LITELLM_BASE_URL",
     "iamds-litellm-staging": "IAMDS_LITELLM_STAGING_BASE_URL",
     "iamds-litellm-dev": "IAMDS_LITELLM_DEV_BASE_URL",

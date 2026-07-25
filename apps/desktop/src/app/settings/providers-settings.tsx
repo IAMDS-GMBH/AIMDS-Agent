@@ -165,7 +165,7 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
         const config = await getHermesConfigRecord()
         await saveHermesConfig({
           ...config,
-          model: 'iamds-litellm/AIMDS-Suite-Auto',
+          model: 'aimds-suite-prod/AIMDS-Suite-Auto',
         })
       } catch {
         // Best-effort model selection
@@ -188,7 +188,7 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
         ])
         if (!cancelled) {
           setEnvVars(vars)
-          const mainUrl = readProviderBaseUrl(config, 'iamds-litellm')
+          const mainUrl = readProviderBaseUrl(config, 'aimds-suite-prod') || readProviderBaseUrl(config, 'iamds-litellm')
           let envUrl = ''
           if (vars.IAMDS_LITELLM_BASE_URL?.is_set) {
             try {
@@ -199,8 +199,8 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
             }
           }
           setProdBaseUrl(mainUrl || envUrl || DEFAULT_BASE_URL)
-          setStagingBaseUrl(readProviderBaseUrl(config, 'iamds-litellm-staging'))
-          setDevBaseUrl(readProviderBaseUrl(config, 'iamds-litellm-dev'))
+          setStagingBaseUrl(readProviderBaseUrl(config, 'aimds-suite-staging') || readProviderBaseUrl(config, 'iamds-litellm-staging'))
+          setDevBaseUrl(readProviderBaseUrl(config, 'aimds-suite-dev') || readProviderBaseUrl(config, 'iamds-litellm-dev'))
         }
       } catch {
         // Best-effort prefill only.
@@ -255,9 +255,9 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
         nextProviders[slug] = existing
       }
 
-      upsertOrDelete('iamds-litellm', 'AIMDS-Suite', 'IAMDS_LITELLM_API_KEY', prodNormalized)
-      upsertOrDelete('iamds-litellm-staging', 'AIMDS-Suite (Staging)', 'IAMDS_LITELLM_STAGING_API_KEY', stagingNormalized)
-      upsertOrDelete('iamds-litellm-dev', 'AIMDS-Suite (Development)', 'IAMDS_LITELLM_DEV_API_KEY', devNormalized)
+      upsertOrDelete('aimds-suite-prod', 'AIMDS-Suite', 'IAMDS_LITELLM_API_KEY', prodNormalized)
+      upsertOrDelete('aimds-suite-staging', 'AIMDS-Suite (Staging)', 'IAMDS_LITELLM_STAGING_API_KEY', stagingNormalized)
+      upsertOrDelete('aimds-suite-dev', 'AIMDS-Suite (Development)', 'IAMDS_LITELLM_DEV_API_KEY', devNormalized)
 
       if (prodNormalized) {
         await setEnvVar('IAMDS_LITELLM_BASE_URL', prodNormalized)
@@ -424,7 +424,7 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
         const config = await getHermesConfigRecord()
         await saveHermesConfig({
           ...config,
-          model: 'iamds-litellm/AIMDS-Suite-Auto',
+          model: 'aimds-suite-prod/AIMDS-Suite-Auto',
         })
       } catch {
         // Best-effort model selection

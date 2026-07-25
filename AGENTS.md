@@ -46,6 +46,9 @@ If multiple PRs target same integration category (providers/backends/notifiers),
 
 - Secrets only in `.env` (keys/tokens/passwords).
 - Behavioral settings belong in `config.yaml`, not new user-facing `HERMES_*` env vars.
+- Canonical AIMDS Suite provider instance keys are `aimds-suite-prod` (`suite.iamds.com`), `aimds-suite-staging` (`staging.suite.iamds.com`), and `aimds-suite-dev` (`dev.suite.iamds.com`). Legacy `iamds-litellm*` aliases are preserved for backward compatibility.
+- Request timeouts default to 180s in `config.yaml` for AIMDS Suite endpoints.
+- API calls scale timeouts exponentially on retries (`2 ** retry_count` multiplier). Live progress status notifications must inform the user during retry attempts, and terminal API errors must be formatted as friendly, actionable messages rather than raw technical stack/string dumps.
 - Use profile-aware paths:
   - Code paths: `get_hermes_home()`
   - User-facing paths: `display_hermes_home()`

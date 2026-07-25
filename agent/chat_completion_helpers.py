@@ -552,7 +552,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 
-def build_api_kwargs(agent, api_messages: list) -> dict:
+def build_api_kwargs(agent, api_messages: list, retry_count: int = 0) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
 
@@ -648,7 +648,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             reasoning_config=agent.reasoning_config,
             session_id=getattr(agent, "session_id", None),
             max_tokens=agent.max_tokens,
-            timeout=agent._resolved_api_call_timeout(),
+            timeout=agent._resolved_api_call_timeout(retry_count=retry_count),
             request_overrides=agent.request_overrides,
             is_github_responses=is_github_responses,
             is_codex_backend=is_codex_backend,
@@ -746,7 +746,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             messages=api_messages,
             tools=tools_for_api,
             base_url=agent.base_url,
-            timeout=agent._resolved_api_call_timeout(),
+            timeout=agent._resolved_api_call_timeout(retry_count=retry_count),
             max_tokens=agent.max_tokens,
             ephemeral_max_output_tokens=_ephemeral_out,
             max_tokens_param_fn=agent._max_tokens_param,
@@ -778,7 +778,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         messages=_msgs_for_chat,
         tools=tools_for_api,
         base_url=agent.base_url,
-        timeout=agent._resolved_api_call_timeout(),
+        timeout=agent._resolved_api_call_timeout(retry_count=retry_count),
         max_tokens=agent.max_tokens,
         ephemeral_max_output_tokens=_ephemeral_out,
         max_tokens_param_fn=agent._max_tokens_param,

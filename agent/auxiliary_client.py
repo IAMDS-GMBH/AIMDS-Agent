@@ -3575,7 +3575,7 @@ def resolve_provider_client(
                 if not iamds_key:
                     try:
                         from hermes_cli.auth import resolve_api_key_provider_credentials
-                        for p_id in ("iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
+                        for p_id in ("aimds-suite-prod", "aimds-suite-dev", "aimds-suite-staging", "iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
                             creds = resolve_api_key_provider_credentials(p_id)
                             if isinstance(creds, dict) and creds.get("api_key"):
                                 iamds_key = str(creds["api_key"]).strip()

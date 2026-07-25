@@ -59,6 +59,18 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         auth_type="oauth_external",
         base_url_override="https://chatgpt.com/backend-api/codex",
     ),
+    "aimds-suite-prod": HermesOverlay(
+        transport="codex_responses",
+        base_url_env_var="IAMDS_LITELLM_BASE_URL",
+    ),
+    "aimds-suite-staging": HermesOverlay(
+        transport="codex_responses",
+        base_url_env_var="IAMDS_LITELLM_STAGING_BASE_URL",
+    ),
+    "aimds-suite-dev": HermesOverlay(
+        transport="codex_responses",
+        base_url_env_var="IAMDS_LITELLM_DEV_BASE_URL",
+    ),
     "iamds-litellm": HermesOverlay(
         transport="codex_responses",
         base_url_env_var="IAMDS_LITELLM_BASE_URL",
@@ -370,6 +382,9 @@ ALIASES: Dict[str, str] = {
 
 _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
+    "aimds-suite-prod": "AIMDS-Suite",
+    "aimds-suite-staging": "AIMDS-Suite (Staging)",
+    "aimds-suite-dev": "AIMDS-Suite (Development)",
     "iamds-litellm": "AIMDS-Suite",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",

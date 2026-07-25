@@ -2414,7 +2414,7 @@ def run_conversation(
                 # unless the active provider needs it) so the fallback request
                 # isn't sent with stale, primary-shaped reasoning fields.
                 agent._reapply_reasoning_echo_for_provider(api_messages)
-                api_kwargs = agent._build_api_kwargs(api_messages)
+                api_kwargs = agent._build_api_kwargs(api_messages, retry_count=retry_count)
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
@@ -3975,6 +3975,7 @@ def run_conversation(
                 _base = getattr(agent, "base_url", "unknown")
                 _model = getattr(agent, "model", "unknown")
                 _status_code_str = f" [HTTP {status_code}]" if status_code else ""
+                agent._emit_status(f"⚠️ API-Aufruf fehlgeschlagen (Versuch {retry_count}/{max_retries}): {_error_summary}. Neuer Versuch mit erhöhtem Timeout...")
                 agent._buffer_vprint(f"⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type}{_status_code_str}")
                 agent._buffer_vprint(f"   🔌 Provider: {_provider}  Model: {_model}")
                 agent._buffer_vprint(f"   🌐 Endpoint: {_base}")
@@ -4792,7 +4793,9 @@ def run_conversation(
                         if _billing_guidance:
                             _final_response += f"\n\n{_billing_guidance}"
                     else:
-                        _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
+                        _final_response = agent._format_user_friendly_api_error(
+                            _final_summary, max_retries, provider=_provider, model=_model
+                        )
                     if _is_stream_drop:
                         _final_response += (
                             "\n\nThe provider's stream connection keeps "

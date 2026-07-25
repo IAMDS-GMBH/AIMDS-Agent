@@ -172,7 +172,21 @@ export function GatewayConnectingOverlay() {
   const [tail, setTail] = useState(TAIL)
   const [phase, setPhase] = useState<Phase>('live')
   const shownAtRef = useRef<number | null>(null)
-  const [isIamds, setIsIamds] = useState(false)
+  const [isIamds, setIsIamds] = useState(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const cached = localStorage.getItem('is_iamds_endpoint')
+        if (cached === 'true') return true
+        if (cached === 'false') return false
+        if (typeof window.location?.href === 'string' && isIamdsUrl(window.location.href)) {
+          return true
+        }
+      }
+    } catch {
+      // Ignore
+    }
+    return true // Default to true so IAMDS team messages show immediately without delay
+  })
   // Message rotation restarts from index 0 whenever isIamds flips (detection
   // resolves asynchronously), so TEAM messages never pick up mid-array where
   // BUSINESS messages left off — avoids a jumbled/"mixed" look on switch.
@@ -203,6 +217,7 @@ export function GatewayConnectingOverlay() {
               console.debug('[GatewayOverlay] ✓ IAMDS URL detected in Electron config')
               if (active) {
                 setIsIamds(true)
+                try { localStorage.setItem('is_iamds_endpoint', 'true') } catch {}
                 return
               }
             } else {
@@ -220,17 +235,21 @@ export function GatewayConnectingOverlay() {
           const litellmBaseUrl = rawConfig.litellm_hub?.base_url || ''
           // Staging/Dev provider URLs (in providers object)
           const providers = rawConfig.providers || {}
-          const stagingUrl = providers['iamds-litellm-staging']?.base_url || ''
-          const devUrl = providers['iamds-litellm-dev']?.base_url || ''
+          const prodUrl = providers['aimds-suite-prod']?.base_url || providers['iamds-litellm']?.base_url || ''
+          const stagingUrl = providers['aimds-suite-staging']?.base_url || providers['iamds-litellm-staging']?.base_url || ''
+          const devUrl = providers['aimds-suite-dev']?.base_url || providers['iamds-litellm-dev']?.base_url || ''
           
-          const allUrls = { modelBaseUrl, litellmBaseUrl, stagingUrl, devUrl }
+          const allUrls = { modelBaseUrl, litellmBaseUrl, prodUrl, stagingUrl, devUrl }
           console.debug('[GatewayOverlay] Hermes config URLs (prod/staging/dev):', allUrls)
           
-          const urlsToCheck = [modelBaseUrl, litellmBaseUrl, stagingUrl, devUrl].filter(Boolean)
+          const urlsToCheck = [modelBaseUrl, litellmBaseUrl, prodUrl, stagingUrl, devUrl].filter(Boolean)
           if (urlsToCheck.some(url => isIamdsUrl(url))) {
             console.debug('[GatewayOverlay] ✓ IAMDS URL detected in Hermes config (prod/staging/dev)')
-            setIsIamds(true)
-            return
+            if (active) {
+              setIsIamds(true)
+              try { localStorage.setItem('is_iamds_endpoint', 'true') } catch {}
+              return
+            }
           } else {
             console.debug('[GatewayOverlay] ✗ No IAMDS URLs found in any environment')
           }

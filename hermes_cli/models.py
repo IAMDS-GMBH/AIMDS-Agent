@@ -996,7 +996,9 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex (Codex CLI via ChatGPT subscription or API key)"),
     ProviderEntry("openai-api",     "OpenAI API",               "OpenAI API (api.openai.com, API key)"),
-    ProviderEntry("iamds-litellm",  "AIMDS-Suite",              "AIMDS-Suite gateway (OpenAI-compatible API)"),
+    ProviderEntry("aimds-suite-prod",    "AIMDS-Suite (Prod)",       "AIMDS-Suite production gateway (OpenAI-compatible API)"),
+    ProviderEntry("aimds-suite-staging", "AIMDS-Suite (Staging)",    "AIMDS-Suite staging gateway"),
+    ProviderEntry("aimds-suite-dev",     "AIMDS-Suite (Development)", "AIMDS-Suite development gateway"),
     ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope (Qwen + multi-provider)"),
     ProviderEntry("xai-oauth",      "xAI Grok OAuth (SuperGrok / Premium+)", "xAI Grok OAuth (SuperGrok / Premium+ subscription)"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models: pro, omni, flash)"),
@@ -2239,21 +2241,32 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:
             return live
-    if normalized == "iamds-litellm":
-        api_key = (os.getenv("IAMDS_LITELLM_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+    if normalized in ("iamds-litellm", "aimds-suite-prod", "aimds-suite-staging", "aimds-suite-dev"):
+        api_key = (
+            os.getenv("IAMDS_LITELLM_API_KEY")
+            or os.getenv("IAMDS_LITELLM_DEV_API_KEY")
+            or os.getenv("IAMDS_LITELLM_STAGING_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+            or ""
+        ).strip()
         base_raw = (
             os.getenv("IAMDS_LITELLM_BASE_URL")
+            or os.getenv("IAMDS_LITELLM_DEV_BASE_URL")
+            or os.getenv("IAMDS_LITELLM_STAGING_BASE_URL")
             or os.getenv("OPENAI_BASE_URL")
             or ""
         ).strip()
         try:
             from hermes_cli.auth import resolve_api_key_provider_credentials
 
-            creds = resolve_api_key_provider_credentials("iamds-litellm")
-            api_key = str(creds.get("api_key") or api_key).strip()
-            base_from_creds = str(creds.get("base_url") or "").strip()
-            if base_from_creds:
-                base_raw = base_from_creds
+            for _pid in (normalized, "aimds-suite-dev", "aimds-suite-prod", "aimds-suite-staging", "iamds-litellm"):
+                creds = resolve_api_key_provider_credentials(_pid)
+                if isinstance(creds, dict) and creds.get("api_key"):
+                    api_key = str(creds.get("api_key") or api_key).strip()
+                    base_from_creds = str(creds.get("base_url") or "").strip()
+                    if base_from_creds:
+                        base_raw = base_from_creds
+                    break
         except Exception:
             pass
 

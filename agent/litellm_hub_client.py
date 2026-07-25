@@ -57,7 +57,7 @@ def resolve_litellm_hub_settings() -> Dict[str, Any]:
         try:
             from hermes_cli.auth import resolve_api_key_provider_credentials
 
-            for p_id in ("iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
+            for p_id in ("aimds-suite-prod", "aimds-suite-dev", "aimds-suite-staging", "iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
                 creds = resolve_api_key_provider_credentials(p_id)
                 if isinstance(creds, dict) and creds.get("api_key"):
                     api_key = str(creds["api_key"]).strip()
@@ -68,7 +68,7 @@ def resolve_litellm_hub_settings() -> Dict[str, Any]:
         try:
             from hermes_cli.auth import resolve_api_key_provider_credentials
 
-            for provider_id in ("iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
+            for provider_id in ("aimds-suite-prod", "aimds-suite-dev", "aimds-suite-staging", "iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
                 creds = resolve_api_key_provider_credentials(provider_id)
                 if isinstance(creds, dict) and creds.get("api_key"):
                     api_key = str(creds["api_key"]).strip()

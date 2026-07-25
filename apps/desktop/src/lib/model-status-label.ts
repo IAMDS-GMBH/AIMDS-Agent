@@ -77,6 +77,9 @@ export function displayModelName(model: string): string {
 }
 
 const AIMDS_PROVIDER_NAMES: Record<string, string> = {
+  'aimds-suite-prod': 'Productive',
+  'aimds-suite-staging': 'Staging',
+  'aimds-suite-dev': 'Development',
   'iamds-litellm': 'Productive',
   'iamds-litellm-staging': 'Staging',
   'iamds-litellm-dev': 'Development',

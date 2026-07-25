@@ -11,6 +11,25 @@ def _coerce_timeout(raw: object) -> float | None:
     return timeout
 
 
+_PROVIDER_ALIASES = {
+    "aimds-suite-prod": ["aimds-suite-prod", "iamds-litellm"],
+    "aimds-suite-staging": ["aimds-suite-staging", "iamds-litellm-staging"],
+    "aimds-suite-dev": ["aimds-suite-dev", "iamds-litellm-dev"],
+    "iamds-litellm": ["iamds-litellm", "aimds-suite-prod"],
+}
+
+
+def _get_provider_config(providers: dict, provider_id: str) -> dict:
+    if not isinstance(providers, dict):
+        return {}
+    candidates = _PROVIDER_ALIASES.get(provider_id, [provider_id])
+    for cand in candidates:
+        cfg = providers.get(cand)
+        if isinstance(cfg, dict) and cfg:
+            return cfg
+    return {}
+
+
 def get_provider_request_timeout(
     provider_id: str, model: str | None = None
 ) -> float | None:
@@ -25,9 +44,7 @@ def get_provider_request_timeout(
         return None
 
     providers = config.get("providers", {}) if isinstance(config, dict) else {}
-    provider_config = (
-        providers.get(provider_id, {}) if isinstance(providers, dict) else {}
-    )
+    provider_config = _get_provider_config(providers, provider_id)
     if not isinstance(provider_config, dict):
         return None
 
@@ -54,9 +71,7 @@ def get_provider_stale_timeout(
         return None
 
     providers = config.get("providers", {}) if isinstance(config, dict) else {}
-    provider_config = (
-        providers.get(provider_id, {}) if isinstance(providers, dict) else {}
-    )
+    provider_config = _get_provider_config(providers, provider_id)
     if not isinstance(provider_config, dict):
         return None
 

@@ -1081,25 +1081,20 @@ class AIAgent:
             )
         return hostname == "api.githubcopilot.com"
 
-    def _resolved_api_call_timeout(self) -> float:
-        """Resolve the effective per-call request timeout in seconds.
+    def _resolved_api_call_timeout(self, retry_count: int = 0) -> float:
+        """Resolve the effective per-call request timeout in seconds with exponential scaling on retries.
 
         Priority:
           1. ``providers.<id>.models.<model>.timeout_seconds`` (per-model override)
           2. ``providers.<id>.request_timeout_seconds`` (provider-wide)
           3. ``HERMES_API_TIMEOUT`` env var (legacy escape hatch)
           4. 1800.0s default
-
-        Used by OpenAI-wire chat completions (streaming and non-streaming) so
-        the per-provider config knob wins over the 1800s default.  Without this
-        helper, the hardcoded ``HERMES_API_TIMEOUT`` fallback would always be
-        passed as a per-call ``timeout=`` kwarg, overriding the client-level
-        timeout the AIAgent.__init__ path configured.
         """
         cfg = get_provider_request_timeout(self.provider, self.model)
-        if cfg is not None:
-            return cfg
-        return float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
+        base_timeout = cfg if cfg is not None else float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
+        if retry_count > 0:
+            return min(base_timeout * (2 ** retry_count), 3600.0)
+        return base_timeout
 
     def _resolved_api_call_stale_timeout_base(self) -> tuple[float, bool]:
         """Resolve the base non-stream stale timeout and whether it is implicit.
@@ -4680,10 +4675,45 @@ class AIAgent:
                     content[-1]["cache_control"] = {"type": "ephemeral"}
                 break
 
-    def _build_api_kwargs(self, api_messages: list) -> dict:
+    def _build_api_kwargs(self, api_messages: list, retry_count: int = 0) -> dict:
         """Forwarder — see ``agent.chat_completion_helpers.build_api_kwargs``."""
         from agent.chat_completion_helpers import build_api_kwargs
-        return build_api_kwargs(self, api_messages)
+        return build_api_kwargs(self, api_messages, retry_count=retry_count)
+
+    def _format_user_friendly_api_error(
+        self, error_summary: str, max_retries: int, provider: str = "", model: str = ""
+    ) -> str:
+        """Format technical API errors into human-readable user-facing messages."""
+        p_name = provider or self.provider or "API-Endpoint"
+        m_name = model or self.model or ""
+        target_info = f" ({p_name} / {m_name})" if m_name else f" ({p_name})"
+        lowered = (error_summary or "").lower()
+
+        if any(term in lowered for term in ["connection error", "connecterror", "failed to establish a new connection", "connection refused"]):
+            return (
+                f"Die Verbindung zum KI-Dienst{target_info} konnte nach {max_retries} Versuchen nicht hergestellt werden.\n"
+                "Der Endpoint ist aktuell nicht erreichbar oder es liegt ein Netzwerkproblem vor. "
+                "Bitte prüfe deine Verbindung oder versuche es später erneut."
+            )
+        if any(term in lowered for term in ["timeout", "timed out", "readtimeout"]):
+            return (
+                f"Der KI-Dienst{target_info} hat nach {max_retries} Versuchen nicht rechtzeitig geantwortet (Zeitüberschreitung).\n"
+                "Möglicherweise ist die Anfrage zu umfangreich oder der Server aktuell stark ausgelastet."
+            )
+        if any(term in lowered for term in ["429", "rate limit", "too many requests"]):
+            return (
+                f"Das Anfrage-Limit für den KI-Dienst{target_info} wurde nach {max_retries} Versuchen überschritten (Rate Limit / HTTP 429).\n"
+                "Bitte warte einen kurzen Moment, bevor du eine neue Anfrage sendest."
+            )
+        if any(term in lowered for term in ["401", "403", "unauthorized", "authentication"]):
+            return (
+                f"Die Authentifizierung beim KI-Dienst{target_info} ist fehlgeschlagen (HTTP 401/403).\n"
+                "Bitte überprüfe deinen API-Schlüssel oder die Anmeldedaten."
+            )
+        return (
+            f"Die API-Anfrage an{target_info} konnte nach {max_retries} Versuchen nicht erfolgreich verarbeitet werden.\n"
+            f"Fehlermeldung: {error_summary}"
+        )
 
     def _supports_reasoning_extra_body(self) -> bool:
         """Return True when reasoning extra_body is safe to send for this route/model.
