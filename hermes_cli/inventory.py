@@ -220,12 +220,32 @@ def _append_unconfigured_rows(rows: list[dict], ctx: ConfigContext) -> list[dict
     """Build skeleton rows for canonical providers missing from ``rows``."""
     from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
 
-    seen = {r["slug"].lower() for r in rows}
+    canonical_map = {
+        "iamds-litellm": "aimds-suite-prod",
+        "iamds-litellm-staging": "aimds-suite-staging",
+        "iamds-litellm-dev": "aimds-suite-dev",
+        "aimds-suite": "aimds-suite-prod",
+    }
+    seen = set()
+    for r in rows:
+        slug = r["slug"].lower()
+        seen.add(slug)
+        if slug in canonical_map:
+            seen.add(canonical_map[slug])
+        if r.get("name"):
+            seen.add(r["name"].lower())
+
     cur = (ctx.current_provider or "").lower()
     extras: list[dict] = []
     for entry in CANONICAL_PROVIDERS:
-        if entry.slug.lower() in seen:
+        entry_slug = entry.slug.lower()
+        mapped = canonical_map.get(entry_slug, entry_slug)
+        label_lower = _PROVIDER_LABELS.get(entry.slug, entry.label).lower()
+        if entry_slug in seen or mapped in seen or label_lower in seen:
             continue
+        seen.add(entry_slug)
+        seen.add(mapped)
+        seen.add(label_lower)
         extras.append(
             {
                 "slug": entry.slug,

@@ -1220,13 +1220,14 @@ def list_authenticated_providers(
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
     seen_mdev_ids: set = set()  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
 
-    _SLUG_ALIASES = {
-        "aimds-suite-prod": "iamds-litellm",
-        "aimds-suite-staging": "iamds-litellm-staging",
-        "aimds-suite-dev": "iamds-litellm-dev",
-        "iamds-litellm": "aimds-suite-prod",
-        "iamds-litellm-staging": "aimds-suite-staging",
-        "iamds-litellm-dev": "aimds-suite-dev",
+    _SLUG_ALIASES_MAP = {
+        "aimds-suite-prod": {"iamds-litellm", "aimds-suite"},
+        "aimds-suite": {"aimds-suite-prod", "iamds-litellm"},
+        "iamds-litellm": {"aimds-suite-prod", "aimds-suite"},
+        "aimds-suite-staging": {"iamds-litellm-staging"},
+        "iamds-litellm-staging": {"aimds-suite-staging"},
+        "aimds-suite-dev": {"iamds-litellm-dev"},
+        "iamds-litellm-dev": {"aimds-suite-dev"},
     }
 
     def _add_seen_slug(slug_str: str) -> None:
@@ -1234,8 +1235,8 @@ def list_authenticated_providers(
         if not s:
             return
         seen_slugs.add(s)
-        if s in _SLUG_ALIASES:
-            seen_slugs.add(_SLUG_ALIASES[s])
+        for alias in _SLUG_ALIASES_MAP.get(s, ()):
+            seen_slugs.add(alias)
     # Effective base URLs of every built-in row we emit (normalized lower+rstrip).
     # Section 4 uses this to hide ``custom_providers`` entries that point at the
     # same endpoint as a built-in (e.g. a user-defined "my-dashscope" on
@@ -1473,6 +1474,7 @@ def list_authenticated_providers(
             "source": "built-in",
         })
         _add_seen_slug(slug)
+        _add_seen_slug(display_name)
         seen_mdev_ids.add(mdev_id)
         _record_builtin_endpoint(slug)
 
@@ -1635,6 +1637,7 @@ def list_authenticated_providers(
         })
         _add_seen_slug(pid)
         _add_seen_slug(hermes_slug)
+        _add_seen_slug(get_label(hermes_slug))
         _record_builtin_endpoint(hermes_slug)
 
     # --- 2b. Cross-check canonical provider list ---
@@ -1711,6 +1714,7 @@ def list_authenticated_providers(
             "source": "canonical",
         })
         _add_seen_slug(_cp.slug)
+        _add_seen_slug(_cp.label)
         _record_builtin_endpoint(_cp.slug)
 
     # --- 3. User-defined endpoints from config ---
@@ -1815,6 +1819,7 @@ def list_authenticated_providers(
                 "api_url": api_url,
             })
             _add_seen_slug(ep_name)
+            _add_seen_slug(display_name)
             _add_seen_slug(custom_provider_slug(display_name))
             _pair = (
                 str(display_name).strip().lower(),
@@ -1822,6 +1827,8 @@ def list_authenticated_providers(
             )
             if _pair[0] and _pair[1]:
                 _section3_emitted_pairs.add(_pair)
+            if api_url:
+                _builtin_endpoints.add(_norm_url(api_url))
 
     # --- 4. Saved custom providers from config ---
     # Each ``custom_providers`` entry represents one model under a named
@@ -1959,6 +1966,21 @@ def list_authenticated_providers(
             # Prevents two picker rows labelled identically when callers
             # pass both ``user_providers`` and a compatibility-merged
             # ``custom_providers`` list.
+            canonical_aliases = {
+                "aimds-suite",
+                "aimds-suite-prod",
+                "aimds-suite-staging",
+                "aimds-suite-dev",
+                "iamds-litellm",
+                "iamds-litellm-staging",
+                "iamds-litellm-dev",
+                "aimds-suite (staging)",
+                "aimds-suite (development)",
+            }
+            if grp["slug"].lower() in canonical_aliases or grp["name"].lower() in canonical_aliases:
+                if any(alias in seen_slugs for alias in canonical_aliases):
+                    continue
+
             _pair_key = (
                 str(grp["name"]).strip().lower(),
                 str(grp["api_url"]).strip().rstrip("/").lower(),

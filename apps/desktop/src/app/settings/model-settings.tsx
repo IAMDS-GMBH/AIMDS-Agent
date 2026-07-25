@@ -141,17 +141,21 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     if (!providers.length) return NO_PROVIDERS
     const matched = providers.filter(p => /^(?:aimds-suite|iamds-litellm)(?:-|$)/.test(String(p.slug || '').toLowerCase()))
     const canonicalMap: Record<string, string> = {
+      'aimds-suite': 'aimds-suite-prod',
       'iamds-litellm': 'aimds-suite-prod',
       'iamds-litellm-staging': 'aimds-suite-staging',
       'iamds-litellm-dev': 'aimds-suite-dev'
     }
-    const seen = new Set<string>()
+    const seenSlugs = new Set<string>()
+    const seenNames = new Set<string>()
     const result: ModelOptionProvider[] = []
     for (const p of matched) {
       const slug = String(p.slug || '').toLowerCase()
       const canonical = canonicalMap[slug] || slug
-      if (!seen.has(canonical)) {
-        seen.add(canonical)
+      const name = String(p.name || '').trim().toLowerCase()
+      if (!seenSlugs.has(canonical) && (!name || !seenNames.has(name))) {
+        seenSlugs.add(canonical)
+        if (name) seenNames.add(name)
         result.push(p)
       }
     }
