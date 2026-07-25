@@ -1,0 +1,64 @@
+# Nous-approved MCP catalog entry.
+manifest_version: 1
+
+name: MSOffice365MCP
+disabled: true
+description: Access Microsoft 365 services (Outlook Mail, Outlook Calendar, Teams, and OneDrive) via MS Graph API.
+source: https://github.com/IAMDS-GMBH/hermes-agent/tree/main/optional-mcps/MSOffice365MCP
+
+transport:
+  type: stdio
+  command: "${INSTALL_DIR}/.venv/bin/python"
+  args:
+    - "${INSTALL_DIR}/server.py"
+
+install:
+  type: git
+  url: https://github.com/IAMDS-GMBH/hermes-agent.git
+  ref: main
+  bootstrap:
+    - "python3 -m venv .venv"
+    - ".venv/bin/pip install -r ${INSTALL_DIR}/optional-mcps/MSOffice365MCP/requirements.txt"
+
+auth:
+  type: api_key
+  env:
+    - name: M365_CLIENT_ID
+      prompt: "Microsoft Entra App Client ID (Application ID)"
+      required: false
+      secret: false
+    - name: M365_TENANT_ID
+      prompt: "Microsoft Entra Tenant ID (or 'common' for multi-tenant auto-discovery)"
+      default: "common"
+      required: false
+      secret: false
+
+tools:
+  default_enabled:
+    - m365_get_user_profile
+    - m365_check_admin_status
+    - m365_generate_admin_consent_url
+    - m365_send_email
+    - m365_list_emails
+    - m365_get_email
+    - m365_list_events
+    - m365_create_event
+    - m365_list_chats
+    - m365_send_chat_message
+    - m365_list_drive_files
+    - m365_search_drive_files
+    - m365_get_drive_file
+
+post_install: |
+  Microsoft 365 MCP (m365) has been installed into your catalog.
+
+  Authentication:
+    - If M365_CLIENT_ID is provided, Hermes connects to your tenant's Entra App Registration.
+    - Otherwise, Hermes connects via auto-discovery to common multi-tenant OAuth.
+    - Token cache is automatically stored in ~/.hermes/m365_token_cache.bin.
+
+  Supported Services:
+    - Outlook Mail (m365_send_email, m365_list_emails, m365_get_email)
+    - Outlook Calendar (m365_list_events, m365_create_event)
+    - Teams (m365_list_chats, m365_send_chat_message)
+    - OneDrive (m365_list_drive_files, m365_search_drive_files, m365_get_drive_file)
