@@ -8,8 +8,6 @@ import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
-import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
-import { $tipMode, setTipMode } from '@/store/tip-mode'
 import { useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import { isUserTheme, removeUserTheme, resolveTheme } from '@/themes/user-themes'
@@ -135,8 +133,6 @@ function VscodeThemeInstaller() {
 export function AppearanceSettings() {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
-  const toolViewMode = useStore($toolViewMode)
-  const tipMode = useStore($tipMode)
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
   const a = t.settings.appearance
@@ -149,17 +145,6 @@ export function AppearanceSettings() {
     profiles.find(profile => normalizeProfileKey(profile.name) === activeProfileKey)?.name ?? activeProfileKey
 
   const modeOptions = MODE_OPTIONS.map(({ id, icon }) => ({ icon, id, label: t.settings.modeOptions[id].label }))
-
-  const toolOptions = [
-    { id: 'product', label: a.product },
-    { id: 'technical', label: a.technical }
-  ] as const
-
-  const tipOptions = [
-    { id: 'auto', label: a.tipModeAuto },
-    { id: 'business', label: a.tipModeBusiness },
-    { id: 'nerd', label: a.tipModeNerd }
-  ] as const
 
   return (
     <SettingsContent>
@@ -263,36 +248,6 @@ export function AppearanceSettings() {
             description={a.themeDesc}
             title={a.themeTitle}
             wide
-          />
-
-          <ListRow
-            action={
-              <SegmentedControl
-                onChange={id => {
-                  triggerHaptic('selection')
-                  setToolViewMode(id)
-                }}
-                options={toolOptions}
-                value={toolViewMode}
-              />
-            }
-            description={a.toolViewDesc}
-            title={a.toolViewTitle}
-          />
-
-          <ListRow
-            action={
-              <SegmentedControl
-                onChange={id => {
-                  triggerHaptic('selection')
-                  setTipMode(id)
-                }}
-                options={tipOptions}
-                value={tipMode}
-              />
-            }
-            description={a.tipModeDesc}
-            title={a.tipModeTitle}
           />
         </div>
       </div>

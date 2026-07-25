@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type { ChangeEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -7,6 +8,7 @@ import { Command, CommandInput, CommandItem, CommandList, CommandSeparator } fro
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -17,9 +19,12 @@ import {
   saveHermesConfig
 } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { triggerHaptic } from '@/lib/haptics'
 import { Check, ChevronDown } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
+import { $tipMode, setTipMode } from '@/store/tip-mode'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
@@ -393,6 +398,9 @@ export function ConfigSettings({
 }) {
   const { t } = useI18n()
   const c = t.settings.config
+  const a = t.settings.appearance
+  const toolViewMode = useStore($toolViewMode)
+  const tipMode = useStore($tipMode)
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [_defaults, setDefaults] = useState<HermesConfigRecord | null>(null)
   const [schema, setSchema] = useState<Record<string, ConfigFieldSchema> | null>(null)
@@ -400,6 +408,17 @@ export function ConfigSettings({
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
   const saveVersionRef = useRef(0)
   const [saveVersion, setSaveVersion] = useState(0)
+
+  const toolOptions = [
+    { id: 'product', label: a.product },
+    { id: 'technical', label: a.technical }
+  ] as const
+
+  const tipOptions = [
+    { id: 'auto', label: a.tipModeAuto },
+    { id: 'business', label: a.tipModeBusiness },
+    { id: 'nerd', label: a.tipModeNerd }
+  ] as const
 
   useEffect(() => {
     let cancelled = false
@@ -549,6 +568,38 @@ export function ConfigSettings({
       {activeSectionId === 'model' && (
         <div className="mb-6">
           <ModelSettings onMainModelChanged={onMainModelChanged} />
+        </div>
+      )}
+      {activeSectionId === 'advanced' && (
+        <div className="mb-4 divide-y divide-(--ui-stroke-tertiary) rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1">
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setToolViewMode(id)
+                }}
+                options={toolOptions}
+                value={toolViewMode}
+              />
+            }
+            description={a.toolViewDesc}
+            title={a.toolViewTitle}
+          />
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setTipMode(id)
+                }}
+                options={tipOptions}
+                value={tipMode}
+              />
+            }
+            description={a.tipModeDesc}
+            title={a.tipModeTitle}
+          />
         </div>
       )}
       {fields.length === 0 ? (

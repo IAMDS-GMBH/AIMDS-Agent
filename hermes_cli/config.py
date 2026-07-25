@@ -2654,7 +2654,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 33,
+    "_config_version": 34,
 }
 
 # =============================================================================
@@ -5341,6 +5341,65 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     except Exception as _memory_filter_exc:
         results["warnings"].append(
             f"IAMDS MCP memory tool filter rename (v33) failed: {_memory_filter_exc}"
+        )
+
+    # ── Version 33 → 34 (+ idempotent): migrate legacy iamds-litellm provider keys to aimds-suite ──
+    try:
+        config = read_raw_config()
+        touched = False
+        migrated_providers = 0
+
+        provider_map = {
+            "iamds-litellm": "aimds-suite-prod",
+            "iamds-litellm-staging": "aimds-suite-staging",
+            "iamds-litellm-dev": "aimds-suite-dev",
+        }
+
+        # 1. Update providers dictionary keys and entry fields if present
+        providers = config.get("providers")
+        if isinstance(providers, dict):
+            new_providers = {}
+            for key, val in providers.items():
+                canonical_key = provider_map.get(str(key).lower(), key)
+                if canonical_key != key:
+                    touched = True
+                    migrated_providers += 1
+                if isinstance(val, dict):
+                    if "slug" in val and str(val["slug"]).lower() in provider_map:
+                        val["slug"] = provider_map[str(val["slug"]).lower()]
+                        touched = True
+                    if "id" in val and str(val["id"]).lower() in provider_map:
+                        val["id"] = provider_map[str(val["id"]).lower()]
+                        touched = True
+                new_providers[canonical_key] = val
+            config["providers"] = new_providers
+
+        # 2. Update model.provider / default_provider if legacy
+        model_cfg = config.get("model")
+        if isinstance(model_cfg, dict):
+            p = str(model_cfg.get("provider") or "").lower()
+            if p in provider_map:
+                model_cfg["provider"] = provider_map[p]
+                touched = True
+
+        dp = str(config.get("default_provider") or "").lower()
+        if dp in provider_map:
+            config["default_provider"] = provider_map[dp]
+            touched = True
+
+        if touched:
+            config["_config_version"] = 34
+            save_config(config)
+            results["config_added"].append(
+                f"legacy provider keys migrated ({migrated_providers} provider(s) updated)"
+            )
+            if not quiet:
+                print(
+                    f"  ✓ Migrated {migrated_providers} legacy iamds-litellm provider key(s) to aimds-suite"
+                )
+    except Exception as _provider_mig_exc:
+        results["warnings"].append(
+            f"Legacy provider key migration (v34) failed: {_provider_mig_exc}"
         )
 
     # Check for missing config fields

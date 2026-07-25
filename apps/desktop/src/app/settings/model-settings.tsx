@@ -137,9 +137,26 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     void refresh()
   }, [refresh])
 
-  const providerOptions = providers.length
-    ? providers.filter(p => /^(?:aimds-suite|iamds-litellm)(?:-|$)/.test(String(p.slug || '').toLowerCase()))
-    : NO_PROVIDERS
+  const providerOptions = useMemo(() => {
+    if (!providers.length) return NO_PROVIDERS
+    const matched = providers.filter(p => /^(?:aimds-suite|iamds-litellm)(?:-|$)/.test(String(p.slug || '').toLowerCase()))
+    const canonicalMap: Record<string, string> = {
+      'iamds-litellm': 'aimds-suite-prod',
+      'iamds-litellm-staging': 'aimds-suite-staging',
+      'iamds-litellm-dev': 'aimds-suite-dev'
+    }
+    const seen = new Set<string>()
+    const result: ModelOptionProvider[] = []
+    for (const p of matched) {
+      const slug = String(p.slug || '').toLowerCase()
+      const canonical = canonicalMap[slug] || slug
+      if (!seen.has(canonical)) {
+        seen.add(canonical)
+        result.push(p)
+      }
+    }
+    return result
+  }, [providers])
 
   const selectedProviderRow = useMemo(
     () => providers.find(provider => provider.slug === selectedProvider),

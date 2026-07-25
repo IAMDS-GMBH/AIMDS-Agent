@@ -1219,6 +1219,23 @@ def list_authenticated_providers(
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
     seen_mdev_ids: set = set()  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
+
+    _SLUG_ALIASES = {
+        "aimds-suite-prod": "iamds-litellm",
+        "aimds-suite-staging": "iamds-litellm-staging",
+        "aimds-suite-dev": "iamds-litellm-dev",
+        "iamds-litellm": "aimds-suite-prod",
+        "iamds-litellm-staging": "aimds-suite-staging",
+        "iamds-litellm-dev": "aimds-suite-dev",
+    }
+
+    def _add_seen_slug(slug_str: str) -> None:
+        s = str(slug_str or "").lower()
+        if not s:
+            return
+        seen_slugs.add(s)
+        if s in _SLUG_ALIASES:
+            seen_slugs.add(_SLUG_ALIASES[s])
     # Effective base URLs of every built-in row we emit (normalized lower+rstrip).
     # Section 4 uses this to hide ``custom_providers`` entries that point at the
     # same endpoint as a built-in (e.g. a user-defined "my-dashscope" on
@@ -1455,7 +1472,7 @@ def list_authenticated_providers(
             "total_models": total,
             "source": "built-in",
         })
-        seen_slugs.add(slug.lower())
+        _add_seen_slug(slug)
         seen_mdev_ids.add(mdev_id)
         _record_builtin_endpoint(slug)
 
@@ -1616,8 +1633,8 @@ def list_authenticated_providers(
             "total_models": total,
             "source": "hermes",
         })
-        seen_slugs.add(pid.lower())
-        seen_slugs.add(hermes_slug.lower())
+        _add_seen_slug(pid)
+        _add_seen_slug(hermes_slug)
         _record_builtin_endpoint(hermes_slug)
 
     # --- 2b. Cross-check canonical provider list ---
@@ -1693,7 +1710,7 @@ def list_authenticated_providers(
             "total_models": _cp_total,
             "source": "canonical",
         })
-        seen_slugs.add(_cp.slug.lower())
+        _add_seen_slug(_cp.slug)
         _record_builtin_endpoint(_cp.slug)
 
     # --- 3. User-defined endpoints from config ---
@@ -1797,8 +1814,8 @@ def list_authenticated_providers(
                 "source": "user-config",
                 "api_url": api_url,
             })
-            seen_slugs.add(ep_name.lower())
-            seen_slugs.add(custom_provider_slug(display_name).lower())
+            _add_seen_slug(ep_name)
+            _add_seen_slug(custom_provider_slug(display_name))
             _pair = (
                 str(display_name).strip().lower(),
                 str(api_url).strip().rstrip("/").lower(),
@@ -2012,7 +2029,7 @@ def list_authenticated_providers(
                 "source": "user-config",
                 "api_url": grp["api_url"],
             })
-            seen_slugs.add(slug.lower())
+            _add_seen_slug(slug)
             _section4_emitted_slugs.add(slug.lower())
 
     # Sort: current provider first, then by model count descending
