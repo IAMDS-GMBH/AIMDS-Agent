@@ -50,6 +50,7 @@ Proactively capture, structure, and maintain these key artifact categories in th
 ## Vault-First Lifecycle, Clean Context & Local Tools
 - **Save Before Approval**: Drafts, suggestions, reports, proposals, and metadata must be persisted into the appropriate Vault **before** presenting them for user review or sending.
 - **Clean Context Principle**: After a document or note is saved in the Vault, do not keep raw verbose texts in the active prompt context. Keep only the reference (`[[slug]]` or file path) and a 1-2 sentence summary to maintain a lean, high-speed context window.
+- **Skills, Scripts & Patch Efficiency**: Actively leverage available skills and build custom skills for recurring workflows. Rely on compact JSON formats, scripts, and targeted patch files (`patch_file` / `edit`) rather than raw verbose text dumps to minimize token consumption and protect prompt context.
 - **Prefer Local Hermes Tools**: Use fast, built-in tools (`sql`, `view`, `grep`, `glob`, `edit`) to process local data without bloating prompt tokens.
 - **Prompt Cache Efficiency**: Keep system prompt prefixes and tool configurations stable to maximize LiteLLM and model-level prompt-cache hit rates.
 
