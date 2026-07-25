@@ -60,6 +60,11 @@ tools:
     - m365_list_sharepoint_drives
     - m365_list_sharepoint_files
     - m365_search_sharepoint_files
+    - m365_list_chat_messages
+    - m365_list_joined_teams
+    - m365_list_team_channels
+    - m365_list_channel_messages
+    - m365_get_activity_feed
 
 post_install: |
   Microsoft 365 MCP (m365) has been installed into your catalog.

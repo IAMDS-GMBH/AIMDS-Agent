@@ -137,3 +137,46 @@ def test_m365_send_chat_message_formatting():
         assert json_data["body"]["content"] == "<p>Paragraph 1</p><p>Paragraph 2</p>"
 
 
+def test_m365_activity_feed_and_channel_tools():
+    with patch.object(server, "_graph_request", return_value={"value": [{"id": "msg-123"}]}) as mock_req:
+        res = server.m365_list_chat_messages("chat-1")
+        assert res["value"][0]["id"] == "msg-123"
+        mock_req.assert_called_with("GET", "/me/chats/chat-1/messages", params={"$top": 10})
+
+    with patch.object(server, "_graph_request", return_value={"value": [{"id": "team-1"}]}) as mock_req:
+        res = server.m365_list_joined_teams()
+        assert res["value"][0]["id"] == "team-1"
+        mock_req.assert_called_with("GET", "/me/joinedTeams", params={"$top": 20})
+
+    with patch.object(server, "_graph_request", return_value={"value": [{"id": "ch-1"}]}) as mock_req:
+        res = server.m365_list_team_channels("team-1")
+        assert res["value"][0]["id"] == "ch-1"
+        mock_req.assert_called_with("GET", "/teams/team-1/channels")
+
+    with patch.object(server, "_graph_request", return_value={"value": [{"id": "ch-msg-1"}]}) as mock_req:
+        res = server.m365_list_channel_messages("team-1", "ch-1")
+        assert res["value"][0]["id"] == "ch-msg-1"
+        mock_req.assert_called_with("GET", "/teams/team-1/channels/ch-1/messages", params={"$top": 10})
+
+    def mock_feed_graph(method, endpoint, params=None):
+        if endpoint == "/me/chats":
+            return {"value": [{"id": "chat-1", "topic": "Team Sync", "chatType": "oneOnOne"}]}
+        if endpoint == "/me/chats/chat-1/messages":
+            return {"value": [{"id": "m1", "messageType": "message", "body": {"content": "Hello"}, "from": {"user": {"displayName": "Alice"}}}]}
+        if endpoint == "/me/joinedTeams":
+            return {"value": [{"id": "team-1", "displayName": "Dev Team"}]}
+        if endpoint == "/teams/team-1/channels":
+            return {"value": [{"id": "ch-1", "displayName": "General"}]}
+        if endpoint == "/teams/team-1/channels/ch-1/messages":
+            return {"value": [{"id": "m2", "messageType": "message", "body": {"content": "Deploy update"}, "from": {"user": {"displayName": "Bob"}}}]}
+        return {"value": []}
+
+    with patch.object(server, "_graph_request", side_effect=mock_feed_graph):
+        feed = server.m365_get_activity_feed()
+        assert len(feed["recent_chats"]) == 1
+        assert feed["recent_chats"][0]["chat_id"] == "chat-1"
+        assert len(feed["team_channels"]) == 1
+        assert feed["team_channels"][0]["team_name"] == "Dev Team"
+
+
+
