@@ -15,6 +15,11 @@ description: Searches and summarizes files across OneDrive and SharePoint sites,
 3. **Template & Spec Discovery:**
    - Locate company document templates, project specifications, and architecture drawings quickly.
 
+## Context Window & Token Optimization
+- **Metadata First:** Query file name, webUrl, lastModifiedDateTime, and size before downloading or reading file content.
+- **Selective Section Extraction:** Extract only relevant paragraphs, tables, or sections. Never paste whole document dumps into context.
+- **Top-N Limits:** Limit search results to maximum 5 files per query (`top=5`).
+
 ## Guardrail (hard)
 - Respect file permissions and tenant access boundaries.
 - Do NOT delete or overwrite files without explicit confirmation.
