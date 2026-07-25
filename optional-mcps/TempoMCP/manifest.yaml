@@ -40,6 +40,8 @@ tools:
     - update_worklog
     - delete_worklog
     - get_user_schedule
+    - missing_days_report
+    - worklog_analytics
 
 post_install: |
   Tempo MCP (@ivelin-web/tempo-mcp-server via npx) has been configured.

@@ -893,14 +893,6 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
 
   const keyGroups = buildIamdsLiteLlmKeyGroup(vars)
 
-  if (view === 'catalog') {
-    return (
-      <SettingsContent>
-        <McpCatalogSection vars={vars} onRefreshCreds={() => void refetch()} />
-      </SettingsContent>
-    )
-  }
-
   if (view === 'keys') {
     return (
       <SettingsContent>
