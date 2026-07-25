@@ -57,18 +57,22 @@ def _get_token_cache_path() -> Path:
 
 
 def _get_msal_app() -> msal.PublicClientApplication:
-    client_id = (
+    # 1. Custom app registration client_id / tenant_id if specified in env
+    custom_client_id = (
         os.environ.get("M365_CLIENT_ID")
         or os.environ.get("OUTLOOK_CLIENT_ID")
         or os.environ.get("TEAMS_CLIENT_ID")
-        or "1950a258-227b-4e31-a9cf-717495945fc2"  # Azure PowerShell multi-tenant client ID
     )
-    tenant_id = (
+    custom_tenant_id = (
         os.environ.get("M365_TENANT_ID")
         or os.environ.get("OUTLOOK_TENANT_ID")
         or os.environ.get("TEAMS_TENANT_ID")
-        or "organizations"
     )
+
+    # Defaults: standard multi-tenant Azure CLI / PowerShell client ID for public auth
+    client_id = custom_client_id or "04b07795-8ddb-461a-bbee-02f9e1bf7b46"  # Azure CLI public multi-tenant app ID
+    tenant_id = custom_tenant_id or "organizations"
+
     if tenant_id == "common":
         tenant_id = "organizations"
     authority = f"https://login.microsoftonline.com/{tenant_id}"
