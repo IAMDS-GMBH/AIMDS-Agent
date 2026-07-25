@@ -80,10 +80,12 @@ export function AgentsView({ onClose }: AgentsViewProps) {
   const activeSessionId = useStore($activeSessionId)
   const subagentsBySession = useStore($subagentsBySession)
 
-  const activeSubagents = useMemo(
-    () => (activeSessionId ? (subagentsBySession[activeSessionId] ?? []) : []),
-    [activeSessionId, subagentsBySession]
-  )
+  const activeSubagents = useMemo(() => {
+    if (activeSessionId && subagentsBySession[activeSessionId]?.length) {
+      return subagentsBySession[activeSessionId]
+    }
+    return Object.values(subagentsBySession).flat()
+  }, [activeSessionId, subagentsBySession])
 
   const tree = useMemo(() => buildSubagentTree(activeSubagents), [activeSubagents])
 
