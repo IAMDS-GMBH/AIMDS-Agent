@@ -133,8 +133,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   { name: '/usage', description: 'Show token usage for this session', surface: exec() },
   { name: '/version', description: 'Show Hermes Agent version', surface: exec() },
 
-  // No desktop surface, but carry an alias (underscore spelling variants).
-  { name: '/reload-mcp', aliases: ['/reload_mcp'], surface: unavailable('advanced') },
+  { name: '/reload-mcp', description: 'Reload MCP servers and tools', aliases: ['/reload_mcp'], surface: exec() },
   { name: '/reload-skills', aliases: ['/reload_skills'], surface: unavailable('advanced') }
 ]
 
