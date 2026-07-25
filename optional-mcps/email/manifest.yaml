@@ -1,0 +1,84 @@
+# Nous-approved MCP catalog entry.
+manifest_version: 1
+
+name: EmailMCP
+disabled: true
+description: Standard IMAP and SMTP email integration supporting SSL/TLS, STARTTLS, and custom ports.
+source: https://github.com/IAMDS-GMBH/hermes-agent/tree/main/optional-mcps/email
+
+transport:
+  type: stdio
+  command: "${INSTALL_DIR}/.venv/bin/python"
+  args:
+    - "${INSTALL_DIR}/server.py"
+
+install:
+  type: git
+  url: https://github.com/IAMDS-GMBH/hermes-agent.git
+  ref: main
+  bootstrap:
+    - "python3 -m venv .venv"
+    - ".venv/bin/pip install -r ${INSTALL_DIR}/optional-mcps/email/requirements.txt"
+
+auth:
+  type: api_key
+  env:
+    - name: EMAIL_IMAP_HOST
+      prompt: "IMAP Host (e.g. imap.example.com)"
+      required: true
+      secret: false
+    - name: EMAIL_IMAP_PORT
+      prompt: "IMAP Port (default 993 for SSL, 143 for STARTTLS/plain)"
+      default: "993"
+      required: false
+      secret: false
+    - name: EMAIL_IMAP_USER
+      prompt: "IMAP Username/Email"
+      required: true
+      secret: false
+    - name: EMAIL_IMAP_PASSWORD
+      prompt: "IMAP Password"
+      required: true
+      secret: true
+    - name: EMAIL_IMAP_MODE
+      prompt: "IMAP SSL Mode: ssl (default), starttls, or none"
+      default: "ssl"
+      required: false
+      secret: false
+    - name: EMAIL_SMTP_HOST
+      prompt: "SMTP Host (e.g. smtp.example.com)"
+      required: true
+      secret: false
+    - name: EMAIL_SMTP_PORT
+      prompt: "SMTP Port (default 587 for STARTTLS, 465 for SSL, 25 for plain)"
+      default: "587"
+      required: false
+      secret: false
+    - name: EMAIL_SMTP_USER
+      prompt: "SMTP Username/Email"
+      required: true
+      secret: false
+    - name: EMAIL_SMTP_PASSWORD
+      prompt: "SMTP Password"
+      required: true
+      secret: true
+    - name: EMAIL_SMTP_MODE
+      prompt: "SMTP SSL Mode: starttls (default), ssl, or none"
+      default: "starttls"
+      required: false
+      secret: false
+
+tools:
+  default_enabled:
+    - email_fetch_inbox
+    - email_search_messages
+    - email_send_message
+    - email_test_connection
+
+post_install: |
+  Email MCP (IMAP/SMTP) has been installed into your catalog.
+
+  Supported Features:
+    - IMAP Mailbox Reading & Search (SSL/TLS, STARTTLS, Plain)
+    - SMTP Mail Sending (SSL/TLS, STARTTLS, Plain, HTML & Plain text)
+    - Connection diagnostics (email_test_connection)
