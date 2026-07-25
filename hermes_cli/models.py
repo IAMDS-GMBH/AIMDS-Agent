@@ -2242,33 +2242,48 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         if live:
             return live
     if normalized in ("iamds-litellm", "aimds-suite-prod", "aimds-suite-staging", "aimds-suite-dev"):
-        api_key = (
-            os.getenv("IAMDS_LITELLM_API_KEY")
-            or os.getenv("IAMDS_LITELLM_DEV_API_KEY")
-            or os.getenv("IAMDS_LITELLM_STAGING_API_KEY")
-            or os.getenv("OPENAI_API_KEY")
-            or ""
-        ).strip()
-        base_raw = (
-            os.getenv("IAMDS_LITELLM_BASE_URL")
-            or os.getenv("IAMDS_LITELLM_DEV_BASE_URL")
-            or os.getenv("IAMDS_LITELLM_STAGING_BASE_URL")
-            or os.getenv("OPENAI_BASE_URL")
-            or ""
-        ).strip()
+        api_key = ""
+        base_raw = ""
         try:
             from hermes_cli.auth import resolve_api_key_provider_credentials
 
-            for _pid in (normalized, "aimds-suite-dev", "aimds-suite-prod", "aimds-suite-staging", "iamds-litellm"):
-                creds = resolve_api_key_provider_credentials(_pid)
-                if isinstance(creds, dict) and creds.get("api_key"):
-                    api_key = str(creds.get("api_key") or api_key).strip()
-                    base_from_creds = str(creds.get("base_url") or "").strip()
-                    if base_from_creds:
-                        base_raw = base_from_creds
-                    break
+            creds = resolve_api_key_provider_credentials(normalized)
+            if isinstance(creds, dict) and creds.get("api_key"):
+                api_key = str(creds.get("api_key") or "").strip()
+                base_raw = str(creds.get("base_url") or "").strip()
         except Exception:
             pass
+
+        if normalized == "aimds-suite-staging":
+            if not base_raw:
+                base_raw = os.getenv("IAMDS_LITELLM_STAGING_BASE_URL", "").strip() or "https://staging.suite.iamds.com/litellm/v1"
+            if not api_key:
+                api_key = (
+                    os.getenv("IAMDS_LITELLM_STAGING_API_KEY", "").strip()
+                    or os.getenv("IAMDS_LITELLM_API_KEY", "").strip()
+                    or os.getenv("OPENAI_API_KEY", "").strip()
+                )
+        elif normalized == "aimds-suite-dev":
+            if not base_raw:
+                base_raw = os.getenv("IAMDS_LITELLM_DEV_BASE_URL", "").strip() or "https://dev.suite.iamds.com/litellm/v1"
+            if not api_key:
+                api_key = (
+                    os.getenv("IAMDS_LITELLM_DEV_API_KEY", "").strip()
+                    or os.getenv("IAMDS_LITELLM_API_KEY", "").strip()
+                    or os.getenv("OPENAI_API_KEY", "").strip()
+                )
+        else:
+            if not base_raw:
+                base_raw = (
+                    os.getenv("IAMDS_LITELLM_BASE_URL", "").strip()
+                    or os.getenv("OPENAI_BASE_URL", "").strip()
+                    or "https://suite.iamds.com/litellm/v1"
+                )
+            if not api_key:
+                api_key = (
+                    os.getenv("IAMDS_LITELLM_API_KEY", "").strip()
+                    or os.getenv("OPENAI_API_KEY", "").strip()
+                )
 
         if api_key and base_raw:
             live = fetch_litellm_model_info_models(api_key, base_raw)

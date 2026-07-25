@@ -50,17 +50,18 @@ def apply_anthropic_cache_control(
     api_messages: List[Dict[str, Any]],
     cache_ttl: str = "5m",
     native_anthropic: bool = False,
+    max_breakpoints: int = 4,
 ) -> List[Dict[str, Any]]:
-    """Apply system_and_3 caching strategy to messages for Anthropic models.
+    """Apply caching strategy to messages for Anthropic models.
 
-    Places up to 4 cache_control breakpoints: system prompt + last 3 non-system
+    Places up to max_breakpoints cache_control breakpoints: system prompt + non-system
     messages, all at the same TTL.
 
     Returns:
         Deep copy of messages with cache_control breakpoints injected.
     """
     messages = copy.deepcopy(api_messages)
-    if not messages:
+    if not messages or max_breakpoints <= 0:
         return messages
 
     marker = _build_marker(cache_ttl)
@@ -71,9 +72,10 @@ def apply_anthropic_cache_control(
         _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
         breakpoints_used += 1
 
-    remaining = 4 - breakpoints_used
-    non_sys = [i for i in range(len(messages)) if messages[i].get("role") != "system"]
-    for idx in non_sys[-remaining:]:
-        _apply_cache_marker(messages[idx], marker, native_anthropic=native_anthropic)
+    remaining = max_breakpoints - breakpoints_used
+    if remaining > 0:
+        non_sys = [i for i in range(len(messages)) if messages[i].get("role") != "system"]
+        for idx in non_sys[-remaining:]:
+            _apply_cache_marker(messages[idx], marker, native_anthropic=native_anthropic)
 
     return messages

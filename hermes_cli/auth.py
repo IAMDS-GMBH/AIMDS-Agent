@@ -184,6 +184,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="aimds-suite-prod",
         name="AIMDS-Suite",
         auth_type="api_key",
+        inference_base_url="https://suite.iamds.com/litellm/v1",
         api_key_env_vars=("IAMDS_LITELLM_API_KEY",),
         base_url_env_var="IAMDS_LITELLM_BASE_URL",
     ),
@@ -191,6 +192,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="aimds-suite-staging",
         name="AIMDS-Suite (Staging)",
         auth_type="api_key",
+        inference_base_url="https://staging.suite.iamds.com/litellm/v1",
         api_key_env_vars=("IAMDS_LITELLM_STAGING_API_KEY",),
         base_url_env_var="IAMDS_LITELLM_STAGING_BASE_URL",
     ),
@@ -198,6 +200,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="aimds-suite-dev",
         name="AIMDS-Suite (Development)",
         auth_type="api_key",
+        inference_base_url="https://dev.suite.iamds.com/litellm/v1",
         api_key_env_vars=("IAMDS_LITELLM_DEV_API_KEY",),
         base_url_env_var="IAMDS_LITELLM_DEV_BASE_URL",
     ),
@@ -205,6 +208,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="iamds-litellm",
         name="AIMDS-Suite",
         auth_type="api_key",
+        inference_base_url="https://suite.iamds.com/litellm/v1",
         api_key_env_vars=("IAMDS_LITELLM_API_KEY",),
         base_url_env_var="IAMDS_LITELLM_BASE_URL",
     ),
@@ -611,6 +615,12 @@ def _resolve_api_key_provider_secret(
         val = (get_env_value(env_var) or "").strip()
         if has_usable_secret(val):
             return val, env_var
+
+    if provider_id in ("aimds-suite-staging", "aimds-suite-dev"):
+        for fallback_env in ("IAMDS_LITELLM_API_KEY", "OPENAI_API_KEY"):
+            val = (get_env_value(fallback_env) or "").strip()
+            if has_usable_secret(val):
+                return val, fallback_env
 
     # Fallback: try credential pool (e.g. zai key stored via auth.json)
     try:
@@ -5811,7 +5821,7 @@ def _resolve_provider_base_url_env(provider_id: str, pconfig: ProviderConfig) ->
     env_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
     if env_url:
         return env_url
-    if provider_id in ("iamds-litellm", "aimds-suite-prod", "aimds-suite-staging", "aimds-suite-dev"):
+    if provider_id in ("iamds-litellm", "aimds-suite-prod"):
         # Backward compatibility: keep reading OPENAI_BASE_URL if the new
         # IAMDS_LITELLM_BASE_URL variable is not set.
         return os.getenv("OPENAI_BASE_URL", "").strip()

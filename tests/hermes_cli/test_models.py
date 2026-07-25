@@ -907,3 +907,41 @@ class TestNousRecommendedModels:
             patch("hermes_cli.models.check_nous_free_tier", side_effect=RuntimeError("boom")),
         ):
             assert get_nous_recommended_aux_model(vision=False) == "paid-model"
+
+
+class TestAimdsSuiteModelDiscovery:
+    def test_aimds_suite_staging_and_dev_endpoints(self):
+        from hermes_cli.models import provider_model_ids
+
+        fetched_urls = []
+
+        def fake_fetch_info(api_key, base_raw):
+            fetched_urls.append((api_key, base_raw))
+            return ["model-from-" + base_raw]
+
+        with patch("hermes_cli.models.fetch_litellm_model_info_models", side_effect=fake_fetch_info):
+            with patch.dict(
+                "os.environ",
+                {
+                    "IAMDS_LITELLM_API_KEY": "prod-key",
+                    "IAMDS_LITELLM_BASE_URL": "https://suite.iamds.com/litellm/v1",
+                    "IAMDS_LITELLM_STAGING_API_KEY": "staging-key",
+                    "IAMDS_LITELLM_STAGING_BASE_URL": "https://staging.suite.iamds.com/litellm/v1",
+                    "IAMDS_LITELLM_DEV_API_KEY": "dev-key",
+                    "IAMDS_LITELLM_DEV_BASE_URL": "https://dev.suite.iamds.com/litellm/v1",
+                },
+                clear=True,
+            ):
+                staging_models = provider_model_ids("aimds-suite-staging")
+                dev_models = provider_model_ids("aimds-suite-dev")
+                prod_models = provider_model_ids("aimds-suite-prod")
+
+                assert staging_models == ["model-from-https://staging.suite.iamds.com/litellm/v1"]
+                assert dev_models == ["model-from-https://dev.suite.iamds.com/litellm/v1"]
+                assert prod_models == ["model-from-https://suite.iamds.com/litellm/v1"]
+
+                assert fetched_urls == [
+                    ("staging-key", "https://staging.suite.iamds.com/litellm/v1"),
+                    ("dev-key", "https://dev.suite.iamds.com/litellm/v1"),
+                    ("prod-key", "https://suite.iamds.com/litellm/v1"),
+                ]

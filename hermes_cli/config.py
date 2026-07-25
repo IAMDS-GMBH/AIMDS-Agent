@@ -2689,6 +2689,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "IAMDS_LITELLM_STAGING_BASE_URL": {
+        "description": "AIMDS-Suite (Staging) Base URL",
+        "prompt": "AIMDS-Suite (Staging) Base URL",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "IAMDS_LITELLM_DEV_BASE_URL": {
+        "description": "AIMDS-Suite (Development) Base URL",
+        "prompt": "AIMDS-Suite (Development) Base URL",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "IAMDS_LITELLM_API_KEY": {
         "description": "AIMDS-Suite API key",
         "prompt": "AIMDS-Suite API key",

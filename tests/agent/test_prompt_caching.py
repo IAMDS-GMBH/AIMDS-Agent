@@ -139,3 +139,22 @@ class TestApplyAnthropicCacheControl:
             elif "cache_control" in msg:
                 count += 1
         assert count <= 4
+
+    def test_custom_max_breakpoints(self):
+        msgs = [
+            {"role": "system", "content": "System"},
+        ] + [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg{i}"}
+            for i in range(10)
+        ]
+        result = apply_anthropic_cache_control(msgs, max_breakpoints=3)
+        count = 0
+        for msg in result:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and "cache_control" in item:
+                        count += 1
+            elif "cache_control" in msg:
+                count += 1
+        assert count == 3
