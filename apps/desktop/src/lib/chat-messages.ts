@@ -835,19 +835,33 @@ export function preserveLocalAssistantErrors(
   const localById = new Map(currentMessages.map(message => [message.id, message]))
 
   const mergedNextMessages = nextMessages.map(message => {
-    if (message.role !== 'assistant' || message.error || message.hidden) {
+    if (message.role !== 'assistant' || message.hidden) {
       return message
     }
 
     const local = localById.get(message.id)
 
-    if (!local || local.role !== 'assistant' || !local.error || local.hidden) {
+    if (!local || local.role !== 'assistant' || local.hidden) {
       return message
     }
 
+    const error = message.error || local.error
+
+    const localText = chatMessageText(local).trim()
+    const nextText = chatMessageText(message).trim()
+    const localToolCount = local.parts.filter(p => p.type === 'tool-call').length
+    const nextToolCount = message.parts.filter(p => p.type === 'tool-call').length
+
+    const localHasMoreContent =
+      (localText && !nextText) ||
+      localToolCount > nextToolCount
+
+    const parts = localHasMoreContent ? local.parts : message.parts
+
     return {
       ...message,
-      error: local.error,
+      parts,
+      ...(error && { error }),
       pending: false
     }
   })
@@ -864,27 +878,62 @@ export function preserveLocalAssistantErrors(
     normalize(chatMessageText(candidate)) === tailUserText &&
     (candidate.attachmentRefs ?? []).join('\n') === tailUserRefs
 
+  const matchesUser = (left: ChatMessage, right: ChatMessage) =>
+    left.id === right.id ||
+    (left.role === 'user' &&
+      right.role === 'user' &&
+      normalize(chatMessageText(left)) === normalize(chatMessageText(right)) &&
+      (left.attachmentRefs ?? []).join('\n') === (right.attachmentRefs ?? []).join('\n'))
+
+  const hasAssistantAfterUser = (userMsg: ChatMessage) => {
+    const userIndex = mergedNextMessages.findIndex(m => matchesUser(m, userMsg))
+
+    if (userIndex < 0) {
+      return false
+    }
+
+    return mergedNextMessages.slice(userIndex + 1).some(m => m.role === 'assistant' && !m.hidden)
+  }
+
   for (let index = 0; index < currentMessages.length; index += 1) {
     const message = currentMessages[index]
 
-    if (message.role !== 'assistant' || !message.error || message.hidden || existingIds.has(message.id)) {
+    if (message.hidden || existingIds.has(message.id)) {
       continue
     }
 
-    preserveIds.add(message.id)
+    if (message.role === 'assistant') {
+      const hasContent = Boolean(message.error || message.pending || message.parts.length > 0)
 
-    for (let probe = index - 1; probe >= 0; probe -= 1) {
-      const candidate = currentMessages[probe]
-
-      if (candidate.hidden) {
+      if (!hasContent) {
         continue
       }
 
-      if (candidate.role === 'user' && !existingIds.has(candidate.id) && !matchesTailUserInNext(candidate)) {
-        preserveIds.add(candidate.id)
+      let precedingUser: ChatMessage | null = null
+
+      for (let probe = index - 1; probe >= 0; probe -= 1) {
+        const candidate = currentMessages[probe]
+
+        if (candidate.hidden) {
+          continue
+        }
+
+        if (candidate.role === 'user') {
+          precedingUser = candidate
+
+          break
+        }
       }
 
-      break
+      if (precedingUser && hasAssistantAfterUser(precedingUser) && !message.error) {
+        continue
+      }
+
+      preserveIds.add(message.id)
+
+      if (precedingUser && !existingIds.has(precedingUser.id) && !matchesTailUserInNext(precedingUser)) {
+        preserveIds.add(precedingUser.id)
+      }
     }
   }
 

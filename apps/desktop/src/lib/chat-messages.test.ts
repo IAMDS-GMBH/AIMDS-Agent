@@ -330,6 +330,91 @@ describe('preserveLocalAssistantErrors', () => {
     expect(assistant?.error).toBe('OpenRouter 403')
     expect(assistant?.pending).toBe(false)
   })
+
+  it('preserves unpersisted local assistant messages and tool calls when DB hydration lags', () => {
+    const nextMessages: ChatMessage[] = [
+      {
+        id: 'user-1',
+        parts: [{ text: 'earlier', type: 'text' }],
+        role: 'user'
+      },
+      {
+        id: 'assistant-1',
+        parts: [{ text: 'response 1', type: 'text' }],
+        role: 'assistant'
+      },
+      {
+        id: 'user-2',
+        parts: [{ text: 'show output', type: 'text' }],
+        role: 'user'
+      }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      ...nextMessages,
+      {
+        id: 'assistant-stream-2',
+        parts: [{ text: 'here is the output', type: 'text' }],
+        role: 'assistant'
+      }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(merged.map(message => message.id)).toEqual(['user-1', 'assistant-1', 'user-2', 'assistant-stream-2'])
+  })
+
+  it('replaces unpersisted local assistant message once DB hydration includes assistant response for turn', () => {
+    const nextMessages: ChatMessage[] = [
+      {
+        id: 'user-1',
+        parts: [{ text: 'earlier', type: 'text' }],
+        role: 'user'
+      },
+      {
+        id: 'assistant-1',
+        parts: [{ text: 'response 1', type: 'text' }],
+        role: 'assistant'
+      },
+      {
+        id: 'user-2',
+        parts: [{ text: 'show output', type: 'text' }],
+        role: 'user'
+      },
+      {
+        id: 'assistant-2',
+        parts: [{ text: 'here is the output from db', type: 'text' }],
+        role: 'assistant'
+      }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      {
+        id: 'user-1',
+        parts: [{ text: 'earlier', type: 'text' }],
+        role: 'user'
+      },
+      {
+        id: 'assistant-1',
+        parts: [{ text: 'response 1', type: 'text' }],
+        role: 'assistant'
+      },
+      {
+        id: 'user-2',
+        parts: [{ text: 'show output', type: 'text' }],
+        role: 'user'
+      },
+      {
+        id: 'assistant-stream-2',
+        parts: [{ text: 'here is the output', type: 'text' }],
+        role: 'assistant'
+      }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(merged.map(message => message.id)).toEqual(['user-1', 'assistant-1', 'user-2', 'assistant-2'])
+  })
 })
 
 describe('upsertToolPart', () => {
