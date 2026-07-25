@@ -1,6 +1,8 @@
+import { useStore } from '@nanostores/react'
 import { type CSSProperties, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { $tipMode, resolveIsNerdyMode } from '@/store/tip-mode'
 
 import introCopyJsonl from './intro-copy.jsonl?raw'
 
@@ -151,32 +153,79 @@ type Tip = {
   en: string
 }
 
-const TIPS_OF_THE_DAY: Tip[] = [
+const BUSINESS_TIPS_OF_THE_DAY: Tip[] = [
   {
-    de: '💡 Tipp des Tages: Gutes Prompting spart Token & Nerven. Präziser Kontext führt zu den besten Ergebnissen.',
-    en: '💡 Tip of the Day: Clear prompting saves tokens and time. Concise context yields the best results.'
+    de: '💡 Tipp des Tages: Präzise Anforderungen führen zu den besten Ergebnissen – klare Fragen liefern direkte Antworten.',
+    en: '💡 Tip of the Day: Precise instructions lead to optimal outcomes – clear questions deliver actionable answers.'
   },
+  {
+    de: '💡 Tipp des Tages: Nutzen Sie KI als Assistenten für schnelle Analysen, fundierte Entscheidungen und effiziente Dokumentation.',
+    en: '💡 Tip of the Day: Use AI as a decision-support assistant for rapid analysis, insights, and efficient documentation.'
+  },
+  {
+    de: '💡 Tipp des Tages: Strukturierte Informationen sparen Zeit und erleichtern die reibungslose Zusammenarbeit im Team.',
+    en: '💡 Tip of the Day: Structured information saves time and streamlines cross-functional collaboration.'
+  },
+  {
+    de: '💡 Tipp des Tages: Kleine, fokussierte Arbeitsschritte sichern kontinuierlichen Fortschritt und hohe Qualität.',
+    en: '💡 Tip of the Day: Small, focused work steps ensure steady progress and high-quality deliverables.'
+  },
+  {
+    de: '💡 Tipp des Tages: Automatisieren Sie wiederkehrende Routineaufgaben, um mehr Raum für strategische Aufgaben zu schaffen.',
+    en: '💡 Tip of the Day: Automate repetitive tasks to unlock more time for strategic value creation.'
+  },
+  {
+    de: '💡 Tipp des Tages: Gute Vorbereitung ist der Schlüssel: Konkrete Rahmenbedingungen bringen die präzisesten Ergebnisse.',
+    en: '💡 Tip of the Day: Preparation is key: Providing clear context yields the most accurate AI responses.'
+  }
+]
+
+const IAMDS_NERDY_TIPS_OF_THE_DAY: Tip[] = [
   {
     de: '💡 Tipp des Tages: Refactoring ohne Tests ist wie Fallschirmspringen ohne Reserveschirm – erst testen, dann umbauen!',
-    en: '💡 Tip of the Day: Refactoring without tests is skydiving without a backup chute – test before refactoring!'
+    en: '💡 Tip of the Day: Refactoring without tests is skydiving without a backup chute – test first, rewrite later!'
   },
   {
-    de: '💡 Tipp des Tages: Nutze MCP-Tools für deine Workflows (Jira, Git, Brain), um Routineaufgaben schnell zu erledigen.',
-    en: '💡 Tip of the Day: Leverage MCP tools (Jira, Git, Brain) to automate your routine workflow tasks.'
+    de: '💡 Tipp des Tages: Gutes Prompting spart Token & Nerven. Präziser Kontext bringt die besten Ergebnisse.',
+    en: '💡 Tip of the Day: Smart prompting saves tokens and nerves. Precise context gets you the best output.'
   },
   {
     de: '💡 Tipp des Tages: Ein großartiger Commit-Log erzählt das "Warum", nicht nur das "Was".',
     en: '💡 Tip of the Day: A great commit log explains the "why", not just the "what".'
   },
   {
-    de: '💡 Tipp des Tages: KI-Agenten glänzen bei iterativen Aufgaben – kleine, fokussierte Schritte führen am schnellsten ans Ziel.',
-    en: '💡 Tip of the Day: AI agents thrive on small, focused iterations to deliver working solutions fast.'
+    de: '💡 Tipp des Tages: Nutze MCP-Tools (Jira, Git, Brain), um deine Entwickler-Workflows voll zu automatisieren.',
+    en: '💡 Tip of the Day: Leverage MCP tools (Jira, Git, Brain) to fully automate your dev workflows.'
   },
   {
-    de: '💡 Tipp des Tages: Erst messen, dann optimieren – vorzeitige Optimierung ist die Wurzel vieler Bugs.',
-    en: '💡 Tip of the Day: Measure first, optimize later – premature optimization is the root of many bugs.'
+    de: '💡 Tipp des Tages: Erst messen, dann optimieren – vorzeitige Optimierung ist die Wurzel aller Bugs.',
+    en: '💡 Tip of the Day: Measure first, optimize later – premature optimization is the root of all bugs.'
+  },
+  {
+    de: '💡 Tipp des Tages: Wenn der Prompt-Cache greift, schmeckt der Kaffee gleich doppelt so gut.',
+    en: '💡 Tip of the Day: When the prompt cache hits just right, the coffee tastes twice as good.'
+  },
+  {
+    de: '💡 Tipp des Tages: Erkläre dem Agenten das Problem so, als wäre er ein sehr schlauer Praktikant mit Kaffeedurst.',
+    en: '💡 Tip of the Day: Explain the issue to the agent like a brilliant intern who really needs coffee.'
   }
 ]
+
+function detectIsIamds(): boolean {
+  try {
+    if (typeof window !== 'undefined') {
+      const cached = localStorage.getItem('is_iamds_endpoint')
+      if (cached === 'true') return true
+      if (cached === 'false') return false
+      if (typeof window.location?.href === 'string' && window.location.href.toLowerCase().includes('iamds.com')) {
+        return true
+      }
+    }
+  } catch {
+    // Ignore
+  }
+  return false
+}
 
 function resolveCopy(personality?: string, seed?: number): IntroCopy {
   const personalityKey = normalizeKey(personality)
@@ -191,13 +240,18 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
 export function Intro({ personality, seed }: IntroProps) {
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
   const { locale, t } = useI18n()
+  const tipMode = useStore($tipMode)
+  const [defaultIsIamds] = useState(detectIsIamds)
+  const isNerdy = resolveIsNerdyMode(tipMode, defaultIsIamds)
+
   const personalityKey = normalizeKey(personality)
   const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
   const isNeutral = NEUTRAL_PERSONALITIES.has(personalityKey)
   const body = isNeutral ? t.assistant.introBody : copy.body
 
   const currentSeed = mountSeed + (seed ?? 0)
-  const tipObj = TIPS_OF_THE_DAY[Math.abs(currentSeed) % TIPS_OF_THE_DAY.length]
+  const tipsList = isNerdy ? IAMDS_NERDY_TIPS_OF_THE_DAY : BUSINESS_TIPS_OF_THE_DAY
+  const tipObj = tipsList[Math.abs(currentSeed) % tipsList.length]
   const tipText = locale === 'de' ? tipObj.de : tipObj.en
 
   return (

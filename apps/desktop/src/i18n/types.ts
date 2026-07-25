@@ -223,6 +223,11 @@ export interface Translations {
       productDesc: string
       technical: string
       technicalDesc: string
+      tipModeTitle: string
+      tipModeDesc: string
+      tipModeAuto: string
+      tipModeBusiness: string
+      tipModeNerd: string
       themeTitle: string
       themeDesc: string
       themeProfileNote: (profile: string) => string

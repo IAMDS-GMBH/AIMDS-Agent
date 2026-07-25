@@ -238,7 +238,7 @@ _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 _CONFIG_LOCK = threading.RLock()
 
 # Canonical name for Hermes' single managed MCP server entry.
-SINGLE_MCP_SERVER_NAME = "IAMDS"
+SINGLE_MCP_SERVER_NAME = "AIMDS"
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
@@ -1473,7 +1473,8 @@ DEFAULT_CONFIG = {
     
     "display": {
         "compact": False,
-        "personality": "",
+        "personality": "helpful",
+        "first_day_of_week": "monday",
         "resume_display": "full",
         # Recap tuning for /resume and startup resume. The defaults match the
         # historical hardcoded values; expose them as config so power users can
@@ -5109,11 +5110,11 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     except Exception:
                         pass
 
-                # Legacy names that should be renamed to IAMDS when their URL
-                # matches an IAMDS host. "remote" was used by custom installs;
-                # "remoteMCP" was the previous constant value; "memory" is the
-                # install-script fallback name.
-                _LEGACY_IAMDS_NAMES = {"remoteMCP", "remote", "memory"}
+                # Legacy names that should be renamed to AIMDS when their URL
+                # matches an AIMDS/IAMDS host. "IAMDS" was the previous name;
+                # "remote" was used by custom installs; "remoteMCP" was the
+                # previous constant value; "memory" is the install-script fallback name.
+                _LEGACY_IAMDS_NAMES = {"IAMDS", "iamds", "remoteMCP", "remote", "memory"}
 
                 # Collect all known IAMDS hosts (prod + staging + dev) so
                 # the migration works even if the user already switched away
@@ -5154,11 +5155,11 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         old_renamed.append(sname)
                         touched_mcp = True
 
-                    # Tag with provider: iamds if untagged and name or URL
-                    # identifies this as an IAMDS server.
+                    # Tag with provider: aimds if untagged and name or URL
+                    # identifies this as an AIMDS server.
                     is_legacy_name = sname in _LEGACY_IAMDS_NAMES
                     if isinstance(new_cfg, dict) and not new_cfg.get("provider") and (is_legacy_name or is_iamds_url):
-                        new_cfg["provider"] = "iamds"
+                        new_cfg["provider"] = "aimds"
                         touched_mcp = True
 
                     updated_servers[new_name] = new_cfg
@@ -5302,11 +5303,13 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 if not isinstance(server_cfg, dict):
                     continue
                 provider_name = str(server_cfg.get("provider") or "").strip().lower()
-                # Primary selector: provider='iamds' (name-agnostic policy).
+                # Primary selector: provider='aimds' / 'iamds' (name-agnostic policy).
                 # Fallback for older configs that haven't been provider-tagged yet:
-                # treat canonical/legacy IAMDS server keys as IAMDS.
-                if provider_name != "iamds" and str(_server_name) not in {
+                # treat canonical/legacy AIMDS/IAMDS server keys as AIMDS.
+                if provider_name not in {"aimds", "iamds"} and str(_server_name) not in {
                     SINGLE_MCP_SERVER_NAME,
+                    "IAMDS",
+                    "iamds",
                     "remoteMCP",
                     "remote",
                     "memory",

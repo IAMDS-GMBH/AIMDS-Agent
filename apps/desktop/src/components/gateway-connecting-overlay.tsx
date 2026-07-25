@@ -6,6 +6,7 @@ import { $desktopBoot } from '@/store/boot'
 import { $gatewayState } from '@/store/session'
 import { useI18n } from '@/i18n'
 import { getEnvVars, getHermesConfig } from '@/hermes'
+import { $tipMode, resolveIsNerdyMode } from '@/store/tip-mode'
 
 /**
  * Check if URL belongs to IAMDS domain or its subdomains.
@@ -168,11 +169,12 @@ export function GatewayConnectingOverlay() {
   const { locale } = useI18n()
   const gatewayState = useStore($gatewayState)
   const boot = useStore($desktopBoot)
+  const tipMode = useStore($tipMode)
   const [previewing] = useState(forcedPreview)
   const [tail, setTail] = useState(TAIL)
   const [phase, setPhase] = useState<Phase>('live')
   const shownAtRef = useRef<number | null>(null)
-  const [isIamds, setIsIamds] = useState(() => {
+  const [defaultIsIamds, setIsIamds] = useState(() => {
     try {
       if (typeof window !== 'undefined') {
         const cached = localStorage.getItem('is_iamds_endpoint')
@@ -191,7 +193,7 @@ export function GatewayConnectingOverlay() {
   // resolves asynchronously), so TEAM messages never pick up mid-array where
   // BUSINESS messages left off — avoids a jumbled/"mixed" look on switch.
   const messageStartRef = useRef<number | null>(null)
-  const prevIsIamdsRef = useRef(isIamds)
+  const prevIsIamdsRef = useRef(defaultIsIamds)
 
   // Dynamic detection of whether an IAMDS endpoint is configured (best-effort)
   useEffect(() => {
@@ -414,15 +416,17 @@ export function GatewayConnectingOverlay() {
   const overlayHidden = phase === 'overlay-out' || phase === 'gone'
   const shownElapsed = Math.max(0, Date.now() - (shownAtRef.current || Date.now()))
 
-  // Select message list based on language and IAMDS endpoint presence
-  const messages = isIamds
+  const isNerdy = resolveIsNerdyMode(tipMode, defaultIsIamds)
+
+  // Select message list based on language and Nerdy / Business mode
+  const messages = isNerdy
     ? (locale === 'en' ? TEAM_MESSAGES_EN : TEAM_MESSAGES_DE)
     : (locale === 'en' ? BUSINESS_MESSAGES_EN : BUSINESS_MESSAGES_DE)
 
-  // Reset the message clock whenever isIamds changes so the newly selected
+  // Reset the message clock whenever isNerdy changes so the newly selected
   // array always starts at index 0 instead of inheriting the old elapsed time.
-  if (prevIsIamdsRef.current !== isIamds) {
-    prevIsIamdsRef.current = isIamds
+  if (prevIsIamdsRef.current !== isNerdy) {
+    prevIsIamdsRef.current = isNerdy
     messageStartRef.current = Date.now()
   }
   if (!messageStartRef.current) {

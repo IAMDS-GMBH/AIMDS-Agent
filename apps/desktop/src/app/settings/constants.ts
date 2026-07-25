@@ -239,6 +239,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'code_execution.mode': ['project', 'strict'],
   'context.engine': ['compressor', 'default', 'custom'],
   'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+  'display.first_day_of_week': ['monday', 'sunday'],
+  'display.personality': ['', ...BUILTIN_PERSONALITIES],
   'memory.provider': ['', 'builtin', 'honcho'],
   // Terminal execution backends — kept in sync with the dispatch ladder in
   // tools/terminal_tool.py::_create_environment (local/docker/singularity/
@@ -282,6 +284,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   timezone: 'Timezone',
   display: {
     personality: 'Personality',
+    firstDayOfWeek: 'First Day of Week',
     showReasoning: 'Reasoning Blocks'
   },
   agent: {
@@ -432,7 +435,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   modelContextLength: "Leave at 0 to use the selected model's detected context window.",
   fallbackProviders: 'Backup provider:model entries to try if the default model fails.',
   display: {
-    personality: 'Default assistant style for new sessions.',
+    personality: 'Default assistant style for new sessions (e.g. helpful for secretary/assistant role).',
+    firstDayOfWeek: 'Sets whether calendars and weekly views start on Monday (default in DACH) or Sunday.',
     showReasoning: 'Show reasoning sections when the backend provides them.'
   },
   timezone: 'Used when Hermes needs local time context. Blank uses the system timezone.',
@@ -509,7 +513,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'chat',
     label: 'Chat',
     icon: MessageCircle,
-    keys: ['display.personality', 'timezone', 'display.show_reasoning', 'agent.image_input_mode']
+    keys: ['display.personality', 'display.first_day_of_week', 'timezone', 'display.show_reasoning', 'agent.image_input_mode']
   },
   {
     id: 'appearance',

@@ -78,31 +78,35 @@ delegation:
 # Anbindung an Hermes über einen dünnen MCP-Wrapper (Empfehlung), der
 # memory_get/list/upsert/delete auf /v1/memory mappt. Siehe MEMORY-ARCHITEKTUR.md.
 
-# --- MCP-Server über den LiteLLM MCP Gateway --------------------------------
-# Der Gateway frontet AIMDS-AI-KB und den /memory-Wrapper.
+# --- MCP-Server über den AIMDS Suite LiteLLM MCP Gateway -------------------
+# Der Gateway frontet AIMDS-AI-KB und go-mcp-memory.
 mcp_servers:
-  IAMDS:
-    provider: iamds
+  AIMDS:
+    provider: aimds
     transport: http
-    url: "https://<litellm-host>/mcp"
+    url: "https://<litellm-host>/litellm/mcp"
     tools:
       # Office-Allowlist: nur die AIMDS-Kernwerkzeuge aus dem Gateway exponieren.
       include:
-        - mcp_IAMDS_aimds_kb_kb_search
-        - mcp_IAMDS_aimds_kb_kb_get_topic
-        - mcp_IAMDS_aimds_kb_kb_get_related
-        - mcp_IAMDS_mcp_memory_memory_context
-        - mcp_IAMDS_mcp_memory_memory_get
-        - mcp_IAMDS_mcp_memory_memory_list
-        - mcp_IAMDS_mcp_memory_memory_upsert
-        - mcp_IAMDS_mcp_memory_memory_delete
+        - mcp_AIMDS_aimds_kb_kb_search
+        - mcp_AIMDS_aimds_kb_kb_get_topic
+        - mcp_AIMDS_aimds_kb_kb_get_related
+        - mcp_AIMDS_mcp_memory_memory_context
+        - mcp_AIMDS_mcp_memory_memory_read
+        - mcp_AIMDS_mcp_memory_memory_save
+        - mcp_AIMDS_mcp_memory_memory_search
+        - mcp_AIMDS_mcp_memory_memory_list
+        - mcp_AIMDS_mcp_memory_memory_manage
+        - mcp_AIMDS_mcp_memory_memory_delete
         - aimds_kb_kb_search
         - aimds_kb_kb_get_topic
         - aimds_kb_kb_get_related
         - mcp_memory_memory_context
-        - mcp_memory_memory_get
+        - mcp_memory_memory_read
+        - mcp_memory_memory_save
+        - mcp_memory_memory_search
         - mcp_memory_memory_list
-        - mcp_memory_memory_upsert
+        - mcp_memory_memory_manage
         - mcp_memory_memory_delete
       resources: false
       prompts: false
