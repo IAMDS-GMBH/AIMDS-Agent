@@ -2068,8 +2068,11 @@ function resolveTerminalCwdFromConfig() {
     if (!terminalBlock) return null
     const cwdLine = terminalBlock[1].match(/^[ \t]+cwd\s*:\s*(.+)$/m)
     if (!cwdLine) return null
-    const val = cwdLine[1].trim().replace(/^['"]|['"]$/g, '')
+    let val = cwdLine[1].trim().replace(/^['"]|['"]$/g, '')
     if (!val || val === '.' || val === 'auto' || val === 'cwd') return null
+    for (const kw of ['HermesWorkingDirectory', 'AIMDS-Workspace']) {
+      val = val.replace(kw, 'AIMDS-Suite-WorkingDirectory')
+    }
     const resolved = path.resolve(val.startsWith('~') ? val.replace('~', app.getPath('home')) : val)
     return directoryExists(resolved) ? resolved : null
   } catch {
@@ -2240,17 +2243,26 @@ function resolveHermesCwd() {
 }
 
 function sanitizeWorkspaceCwd(cwd) {
-  const trimmed = typeof cwd === 'string' ? cwd.trim() : ''
+  let trimmed = typeof cwd === 'string' ? cwd.trim() : ''
 
   if (!trimmed || isPackagedInstallPath(trimmed)) {
     return { cwd: resolveHermesCwd(), sanitized: Boolean(trimmed) }
+  }
+
+  const legacyKeywords = ['HermesWorkingDirectory', 'AIMDS-Workspace']
+  let wasMigrated = false
+  if (legacyKeywords.some(kw => trimmed.includes(kw))) {
+    for (const kw of legacyKeywords) {
+      trimmed = trimmed.replace(kw, 'AIMDS-Suite-WorkingDirectory')
+    }
+    wasMigrated = true
   }
 
   try {
     const resolved = path.resolve(trimmed)
 
     if (directoryExists(resolved)) {
-      return { cwd: ensureWorkspaceTemplateBaseline(resolved), sanitized: false }
+      return { cwd: ensureWorkspaceTemplateBaseline(resolved), sanitized: wasMigrated }
     }
   } catch {
     // Fall through to the resolved default.
@@ -2275,7 +2287,15 @@ function readDefaultProjectDir() {
     const parsed = JSON.parse(raw)
 
     if (parsed && typeof parsed.dir === 'string' && parsed.dir.trim()) {
-      const resolved = path.resolve(parsed.dir)
+      let dirStr = parsed.dir.trim()
+      const legacyKeywords = ['HermesWorkingDirectory', 'AIMDS-Workspace']
+      if (legacyKeywords.some(kw => dirStr.includes(kw))) {
+        for (const kw of legacyKeywords) {
+          dirStr = dirStr.replace(kw, 'AIMDS-Suite-WorkingDirectory')
+        }
+        writeDefaultProjectDir(dirStr)
+      }
+      const resolved = path.resolve(dirStr)
 
       if (directoryExists(resolved)) {
         return resolved
