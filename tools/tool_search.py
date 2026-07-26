@@ -828,6 +828,7 @@ def dispatch_tool_describe(args: Dict[str, Any],
                 "name": name,
                 "description": fn.get("description", ""),
                 "parameters": fn.get("parameters", {}),
+                "usage_hint": f"Call tool_call(name='{name}', arguments={{...}}) to execute this tool.",
             }, ensure_ascii=False)
     return json.dumps({
         "error": f"Tool '{name}' is not available in this session. Use tool_search to find tools you can call.",
