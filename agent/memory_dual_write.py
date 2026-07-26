@@ -736,19 +736,22 @@ def build_mirror_recall_context(
     max_chars: int = 1200,
     scope_filter: Optional[str] = None,
 ) -> str:
-    """Score JSONL mirror records against the query and return a compact ranked block.
+    """Score memory records against the query using SQLite + Vector hybrid index.
 
-    Scoring: token overlap (primary) + recency decay + user-scope boost.
     Returns empty string when the store is empty, unreadable, or nothing is relevant.
-
-    Args:
-        query: The current user message text used as the retrieval query.
-        top_k: Maximum number of records to include in the block.
-        max_chars: Hard character cap on the returned block.
-        scope_filter: When set, only records with this scope are considered.
     """
     if not str(query or "").strip():
         return ""
+
+    try:
+        from agent.memory_vault_index import VaultMetaIndex
+        index = VaultMetaIndex()
+        index.sync_mirror_store()
+        block = index.build_recall_block(query, top_k=top_k, max_chars=max_chars, scope_filter=scope_filter)
+        if block:
+            return block
+    except Exception:
+        pass
 
     path = _memory_mirror_store_path()
     if not path.exists():

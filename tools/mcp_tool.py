@@ -90,7 +90,7 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import Any, Coroutine, Dict, List, Optional
+from typing import Any, Coroutine, Dict, List, Optional, Set
 from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
@@ -4131,6 +4131,121 @@ def _forget_mcp_tool_server(tool_name: str) -> None:
         _mcp_tool_server_names.pop(tool_name, None)
 
 
+# ---------------------------------------------------------------------------
+# Dynamic MCP Server Keyword & Alias Indexing
+# ---------------------------------------------------------------------------
+
+_MCP_DYNAMIC_KEYWORDS_MAP: Dict[str, Set[str]] = {}
+_MCP_SERVER_METADATA: Dict[str, Dict[str, Any]] = {}
+_mcp_keywords_lock = threading.Lock()
+
+
+def clear_mcp_server_keywords(server_name: Optional[str] = None) -> None:
+    """Clear dynamic MCP server keywords for a single server or reset all."""
+    with _mcp_keywords_lock:
+        if server_name is None:
+            _MCP_DYNAMIC_KEYWORDS_MAP.clear()
+            _MCP_SERVER_METADATA.clear()
+            return
+
+        toolset_name = f"mcp-{server_name}"
+        _MCP_SERVER_METADATA.pop(server_name, None)
+
+        to_remove: List[str] = []
+        for kw, mapped in _MCP_DYNAMIC_KEYWORDS_MAP.items():
+            mapped.discard(server_name)
+            mapped.discard(toolset_name)
+            if not mapped:
+                to_remove.append(kw)
+        for kw in to_remove:
+            _MCP_DYNAMIC_KEYWORDS_MAP.pop(kw, None)
+
+
+def _index_mcp_server_keywords(
+    name: str,
+    server: Any,
+    config: dict,
+    registered_names: List[str],
+) -> None:
+    """Extract explicit keywords from config and auto-extract domain terms from server/tools."""
+    with _mcp_keywords_lock:
+        toolset_name = f"mcp-{name}"
+        server_keywords: Set[str] = set()
+
+        # 1. Server name and sanitised components (e.g. atlassian-jira -> atlassian, jira)
+        for part in re.split(r"[-_.:/@\s]+", name.lower()):
+            part_clean = part.strip()
+            if len(part_clean) >= 2 and part_clean not in {"mcp", "server", "tools", "tool"}:
+                server_keywords.add(part_clean)
+
+        # 2. Configured keywords, aliases, and categories in config.yaml
+        cfg_keywords = (
+            config.get("keywords")
+            or config.get("aliases")
+            or config.get("search_keywords")
+            or config.get("tags")
+            or []
+        )
+        if isinstance(cfg_keywords, str):
+            cfg_keywords = [k.strip() for k in cfg_keywords.split(",") if k.strip()]
+        elif isinstance(cfg_keywords, dict):
+            cfg_keywords = list(cfg_keywords.keys())
+
+        if isinstance(cfg_keywords, (list, set, tuple)):
+            for k in cfg_keywords:
+                if isinstance(k, str) and k.strip():
+                    for token in re.split(r"[-_.:/@\s]+", k.strip().lower()):
+                        if len(token) >= 2:
+                            server_keywords.add(token)
+
+        # 3. Command / URL / package name inspection
+        command = str(config.get("command") or "").lower()
+        args = [str(a).lower() for a in (config.get("args") or [])]
+        url = str(config.get("url") or "").lower()
+        text_blob = f"{command} {' '.join(args)} {url}"
+        for token in re.findall(r"[a-z0-9_]{3,}", text_blob):
+            if token not in {"npx", "node", "python", "http", "https", "server", "modelcontextprotocol", "mcp"}:
+                server_keywords.add(token)
+
+        # 4. Auto-extracted terms from registered MCP tools
+        if hasattr(server, "_tools"):
+            for mcp_tool in getattr(server, "_tools", []):
+                t_name = (getattr(mcp_tool, "name", "") or "").lower()
+                t_desc = (getattr(mcp_tool, "description", "") or "").lower()
+                for token in re.split(r"[-_.:/@\s]+", f"{t_name} {t_desc}"):
+                    clean = token.strip().lower()
+                    if len(clean) >= 3 and clean not in {
+                        "the", "and", "for", "get", "list", "set", "read", "tool", "with", "this", "from"
+                    }:
+                        server_keywords.add(clean)
+
+        _MCP_SERVER_METADATA[name] = {
+            "name": name,
+            "toolset": toolset_name,
+            "keywords": sorted(list(server_keywords)),
+            "registered_names": list(registered_names),
+        }
+
+        for kw in server_keywords:
+            if kw not in _MCP_DYNAMIC_KEYWORDS_MAP:
+                _MCP_DYNAMIC_KEYWORDS_MAP[kw] = set()
+            _MCP_DYNAMIC_KEYWORDS_MAP[kw].add(name)
+            _MCP_DYNAMIC_KEYWORDS_MAP[kw].add(toolset_name)
+            _MCP_DYNAMIC_KEYWORDS_MAP[kw].update(server_keywords)
+
+
+def get_mcp_dynamic_keywords_map() -> Dict[str, List[str]]:
+    """Return a thread-safe copy of the dynamic MCP keyword mapping."""
+    with _mcp_keywords_lock:
+        return {k: sorted(list(v)) for k, v in _MCP_DYNAMIC_KEYWORDS_MAP.items()}
+
+
+def get_mcp_server_metadata() -> Dict[str, Dict[str, Any]]:
+    """Return a thread-safe copy of indexed MCP server metadata."""
+    with _mcp_keywords_lock:
+        return {k: dict(v) for k, v in _MCP_SERVER_METADATA.items()}
+
+
 def _select_utility_schemas(
     server_name: str, server: MCPServerTask, config: dict
 ) -> List[dict]:
@@ -4349,6 +4464,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 
     if registered_names:
         registry.register_toolset_alias(name, toolset_name)
+        _index_mcp_server_keywords(name, server, config, registered_names)
 
     return registered_names
 

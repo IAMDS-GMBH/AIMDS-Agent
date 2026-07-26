@@ -768,7 +768,7 @@ def _merge_directory_contents(src: Path, dst: Path) -> None:
 
 def _ensure_documents_memory_link(home: Path) -> None:
     """Ensure Documents/HermesMemory points to ``<HERMES_HOME>/memories``."""
-    docs_dir = Path.home() / "Documents"
+    docs_dir = Path("~").expanduser() / "Documents"
     memory_link = docs_dir / "HermesMemory"
     memory_target = home / "memories"
 

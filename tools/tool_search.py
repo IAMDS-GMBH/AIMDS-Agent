@@ -81,13 +81,13 @@ class ToolSearchConfig:
         """
         if raw is True:
             return cls(enabled="auto", threshold_pct=10.0,
-                       search_default_limit=5, max_search_limit=20)
+                       search_default_limit=8, max_search_limit=20)
         if raw is False:
             return cls(enabled="off", threshold_pct=10.0,
-                       search_default_limit=5, max_search_limit=20)
+                       search_default_limit=8, max_search_limit=20)
         if not isinstance(raw, dict):
             return cls(enabled="auto", threshold_pct=10.0,
-                       search_default_limit=5, max_search_limit=20)
+                       search_default_limit=8, max_search_limit=20)
 
         enabled_raw = str(raw.get("enabled", "auto")).strip().lower()
         if enabled_raw in ("true", "1", "yes"):
@@ -104,7 +104,7 @@ class ToolSearchConfig:
 
         max_search_limit = max(1, min(50, _safe_int(raw.get("max_search_limit"), 20)))
         search_default_limit = max(1, min(max_search_limit,
-                                          _safe_int(raw.get("search_default_limit"), 5)))
+                                          _safe_int(raw.get("search_default_limit"), 8)))
 
         return cls(
             enabled=enabled,
@@ -339,6 +339,22 @@ def _classify_source(name: str) -> Tuple[str, str]:
         return ("other", "")
 
 
+def _get_dynamic_mcp_keywords_map() -> Dict[str, List[str]]:
+    try:
+        from tools.mcp_tool import get_mcp_dynamic_keywords_map
+        return get_mcp_dynamic_keywords_map()
+    except Exception:
+        return {}
+
+
+def _get_mcp_server_metadata() -> Dict[str, Dict[str, Any]]:
+    try:
+        from tools.mcp_tool import get_mcp_server_metadata
+        return get_mcp_server_metadata()
+    except Exception:
+        return {}
+
+
 def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
     """Build the deferred-tool catalog from a tool-defs list.
 
@@ -346,6 +362,8 @@ def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
     returns it as the second element).
     """
     catalog: List[CatalogEntry] = []
+    mcp_meta = _get_mcp_server_metadata()
+
     for td in tool_defs:
         fn = td.get("function") or {}
         name = fn.get("name", "")
@@ -355,15 +373,25 @@ def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
         source, source_name = _classify_source(name)
         name_words = name.replace("_", " ").replace(".", " ").replace("-", " ").replace(":", " ")
         source_words = source_name.replace("_", " ").replace(".", " ").replace("-", " ").replace(":", " ")
+
+        extra_mcp_tokens: List[str] = []
+        if source == "mcp":
+            server_raw = source_name.removeprefix("mcp-")
+            if server_raw in mcp_meta:
+                extra_mcp_tokens = mcp_meta[server_raw].get("keywords", [])
+
+        extra_blob = " ".join(extra_mcp_tokens)
+        search_blob = f"{_entry_search_text(td, source_name)} {extra_blob}".strip()
+
         entry = CatalogEntry(
             name=name,
             description=desc,
             schema=td,
             source=source,
             source_name=source_name,
-            _tokens=_tokenize(_entry_search_text(td, source_name)),
+            _tokens=_tokenize(search_blob),
             _name_tokens=set(_tokenize(name_words)),
-            _source_tokens=set(_tokenize(source_words)),
+            _source_tokens=set(_tokenize(f"{source_words} {extra_blob}")),
         )
         catalog.append(entry)
     return catalog
@@ -405,8 +433,36 @@ _GENERIC_SEARCH_TERMS = frozenset({
     "create", "update", "delete", "tool", "mcp"
 })
 
+_GERMAN_SYNONYMS: Dict[str, List[str]] = {
+    "notiz": ["memory", "note", "save", "read"],
+    "notizen": ["memory", "note", "save", "read"],
+    "aufgabe": ["todo", "task", "job", "kanban", "issue", "jira"],
+    "aufgaben": ["todo", "task", "job", "kanban", "issue", "jira"],
+    "ticket": ["issue", "jira", "bug", "task"],
+    "tickets": ["issue", "jira", "bug", "task"],
+    "zeitbuchung": ["worklog", "tempo", "time", "jira"],
+    "zeitbuchungen": ["worklog", "tempo", "time", "jira"],
+    "zeiterfassung": ["worklog", "tempo", "time", "jira"],
+    "termin": ["calendar", "event", "outlook", "schedule"],
+    "termine": ["calendar", "event", "outlook", "schedule"],
+    "kalender": ["calendar", "event", "outlook"],
+    "mail": ["email", "outlook", "message"],
+    "mails": ["email", "outlook", "message"],
+    "email": ["email", "outlook", "message"],
+    "emails": ["email", "outlook", "message"],
+    "nachricht": ["message", "chat", "send"],
+    "nachrichten": ["message", "chat", "send"],
+    "suche": ["search", "find", "get", "read"],
+    "suchen": ["search", "find", "get", "read"],
+    "erstellen": ["create", "add", "new", "write"],
+    "anlegen": ["create", "add", "new", "write"],
+    "bearbeiten": ["update", "edit", "patch"],
+    "löschen": ["delete", "remove"],
+    "loeschen": ["delete", "remove"],
+}
 
-def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> List[CatalogEntry]:
+
+def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> List[CatalogEntry]:
     """Return the top-``limit`` catalog entries for ``query`` by BM25 + name relevance.
 
     Boosts tool name and toolset name matches, and filters out weak description-only
@@ -417,6 +473,16 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> L
     query_tokens = _tokenize(query)
     if not query_tokens:
         return []
+
+    # Expand query tokens with synonyms (multilingual German/English intents + dynamic MCP keywords)
+    expanded_tokens = set(query_tokens)
+    dynamic_mcp = _get_dynamic_mcp_keywords_map()
+    for qt in query_tokens:
+        if qt in _GERMAN_SYNONYMS:
+            expanded_tokens.update(_GERMAN_SYNONYMS[qt])
+        if qt in dynamic_mcp:
+            expanded_tokens.update(dynamic_mcp[qt])
+    query_tokens = list(expanded_tokens)
 
     query_lower = query.lower().strip()
     non_generic_query_tokens = [t for t in query_tokens if t not in _GENERIC_SEARCH_TERMS]
@@ -483,7 +549,21 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> L
                 scored.append((0.1, entry))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [e for _, e in scored[:limit]]
+    results = [e for _, e in scored[:limit]]
+
+    # MCP Server Grouping: if top matches belong to an MCP server/toolset,
+    # include sibling tools from the same source so the model gets related actions in 1 turn.
+    if results and len(results) < limit:
+        seen_names = {e.name for e in results}
+        top_sources = {e.source_name for e in results[:2] if e.source_name}
+        for entry in catalog:
+            if len(results) >= limit:
+                break
+            if entry.name not in seen_names and entry.source_name in top_sources:
+                results.append(entry)
+                seen_names.add(entry.name)
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +613,7 @@ def bridge_tool_schemas(deferred_count: int) -> List[Dict[str, Any]]:
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of results to return. Default 5.",
+                            "description": "Maximum number of results to return. Default 8.",
                         },
                     },
                     "required": ["query"],
@@ -720,6 +800,11 @@ def dispatch_tool_describe(args: Dict[str, Any],
                 f"Tool '{name}' is not registered or found. "
                 "Use tool_search to find the exact registered tool name."
             ),
+        }, ensure_ascii=False)
+
+    if not is_deferrable_tool_name(name):
+        return json.dumps({
+            "error": f"Tool '{name}' is a core tool and is already fully visible in your tool list.",
         }, ensure_ascii=False)
 
     for td in current_tool_defs:

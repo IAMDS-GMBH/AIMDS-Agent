@@ -612,3 +612,127 @@ class TestRegression_UnregisteredToolError:
         assert "not registered or found" in res["error"]
         assert "not a deferrable tool" not in res["error"]
 
+
+class TestDynamicMCPKeywordIndexing:
+    """Test dynamic MCP server keyword extraction, config aliases, and search expansion."""
+
+    def setup_method(self):
+        from tools.mcp_tool import clear_mcp_server_keywords
+        clear_mcp_server_keywords()
+
+    def teardown_method(self):
+        from tools.mcp_tool import clear_mcp_server_keywords
+        clear_mcp_server_keywords()
+
+    def test_indexing_auto_extracts_and_parses_config_keywords(self):
+        from tools.mcp_tool import (
+            _index_mcp_server_keywords,
+            get_mcp_dynamic_keywords_map,
+            get_mcp_server_metadata,
+        )
+
+        class DummyTool:
+            def __init__(self, name, description):
+                self.name = name
+                self.description = description
+
+        class DummyServer:
+            def __init__(self, tools):
+                self._tools = tools
+
+        server = DummyServer([
+            DummyTool("create_issue", "Create a new Jira issue ticket in project"),
+            DummyTool("add_worklog", "Add a worklog time tracking entry to Tempo"),
+        ])
+
+        config = {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-jira"],
+            "keywords": ["zeitbuchung", "atlassian", "projekte"],
+        }
+
+        registered_names = ["mcp_jira_create_issue", "mcp_jira_add_worklog"]
+        _index_mcp_server_keywords("jira", server, config, registered_names)
+
+        meta = get_mcp_server_metadata()
+        assert "jira" in meta
+        keywords = meta["jira"]["keywords"]
+
+        # Check explicit config keywords
+        assert "zeitbuchung" in keywords
+        assert "atlassian" in keywords
+        assert "projekte" in keywords
+
+        # Check auto-extracted keywords from tools/command
+        assert "issue" in keywords
+        assert "worklog" in keywords
+        assert "tempo" in keywords
+
+        # Check reverse index mapping
+        kw_map = get_mcp_dynamic_keywords_map()
+        assert "zeitbuchung" in kw_map
+        assert "mcp-jira" in kw_map["zeitbuchung"]
+
+    def test_search_catalog_ranks_via_dynamic_mcp_keywords(self):
+        from tools.mcp_tool import _index_mcp_server_keywords
+        from tools.tool_search import build_catalog, search_catalog
+
+        class DummyTool:
+            def __init__(self, name, description):
+                self.name = name
+                self.description = description
+
+        class DummyServer:
+            def __init__(self, tools):
+                self._tools = tools
+
+        server = DummyServer([
+            DummyTool("log_time", "Record worklog entry"),
+        ])
+        config = {"keywords": "zeitbuchung, zeiterfassung, tempo"}
+        registered_names = ["mcp_jira_log_time"]
+        _index_mcp_server_keywords("jira", server, config, registered_names)
+
+        tool_defs = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "mcp_jira_log_time",
+                    "description": "Record worklog entry",
+                    "parameters": {},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "mcp_github_create_repo",
+                    "description": "Create a GitHub repository",
+                    "parameters": {},
+                },
+            },
+        ]
+
+        from tools.registry import registry
+        registry.register(
+            name="mcp_jira_log_time",
+            toolset="mcp-jira",
+            schema=tool_defs[0],
+            handler=lambda x: x,
+            check_fn=lambda: True,
+            description="Record worklog entry",
+        )
+        registry.register(
+            name="mcp_github_create_repo",
+            toolset="mcp-github",
+            schema=tool_defs[1],
+            handler=lambda x: x,
+            check_fn=lambda: True,
+            description="Create a GitHub repository",
+        )
+
+        catalog = build_catalog(tool_defs)
+        results = search_catalog(catalog, query="zeiterfassung", limit=5)
+
+        assert len(results) > 0
+        assert results[0].name == "mcp_jira_log_time"
+
