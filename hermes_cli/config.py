@@ -2700,7 +2700,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 35,
+    "_config_version": 36,
 }
 
 # =============================================================================
@@ -5464,7 +5464,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             f"Legacy provider key migration (v34) failed: {_provider_mig_exc}"
         )
 
-    # ── Version 34 → 35 (+ idempotent): migrate legacy terminal.cwd in config.yaml ──
+    # ── Version 35 → 36 (+ idempotent): migrate legacy terminal.cwd in config.yaml ──
     try:
         config = read_raw_config()
         terminal_cfg = config.get("terminal")
@@ -5508,7 +5508,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
                 terminal_cfg["cwd"] = new_cwd
                 config["terminal"] = terminal_cfg
-                config["_config_version"] = 35
+                config["_config_version"] = 36
                 save_config(config)
                 results["config_added"].append(
                     f"terminal.cwd migrated to {new_cwd}"
@@ -5517,7 +5517,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     print(f"  ✓ Migrated terminal.cwd to {new_cwd}")
     except Exception as _cwd_mig_exc:
         results["warnings"].append(
-            f"Legacy terminal.cwd migration (v35) failed: {_cwd_mig_exc}"
+            f"Legacy terminal.cwd migration (v36) failed: {_cwd_mig_exc}"
         )
 
     # Check for missing config fields
