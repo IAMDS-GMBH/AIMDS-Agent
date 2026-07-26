@@ -334,9 +334,82 @@ def m365_get_email(message_id: str) -> Dict[str, Any]:
 
 @mcp.tool()
 def m365_list_calendars(top: int = 20) -> Dict[str, Any]:
-    """List all available Outlook calendars (personal, shared, office hours, vacation/URLAUB calendars)."""
-    params = {"$top": min(top, 50), "$select": "id,name,color,canEdit,isDefaultCalendar,owner"}
-    return _graph_request("GET", "/me/calendars", params=params)
+    """List all available Outlook calendars (personal, shared, calendar groups, and M365 group/team calendars like URLAUB and OFFICEZEITEN)."""
+    calendars = []
+    seen_ids = set()
+
+    # 1. Personal calendars (/me/calendars)
+    try:
+        params = {"$top": min(top, 50), "$select": "id,name,color,canEdit,isDefaultCalendar,owner"}
+        res = _graph_request("GET", "/me/calendars", params=params)
+        for c in res.get("value", []):
+            cid = c.get("id")
+            if cid and cid not in seen_ids:
+                seen_ids.add(cid)
+                c["source_type"] = "personal"
+                calendars.append(c)
+    except Exception:
+        pass
+
+    # 2. Calendar Groups (/me/calendarGroups)
+    try:
+        groups_res = _graph_request("GET", "/me/calendarGroups")
+        for cg in groups_res.get("value", []):
+            cg_id = cg.get("id")
+            cg_name = cg.get("name")
+            if not cg_id:
+                continue
+            try:
+                cals_res = _graph_request("GET", f"/me/calendarGroups/{cg_id}/calendars", params={"$select": "id,name,color,canEdit,isDefaultCalendar,owner"})
+                for c in cals_res.get("value", []):
+                    cid = c.get("id")
+                    if cid and cid not in seen_ids:
+                        seen_ids.add(cid)
+                        c["source_type"] = "calendar_group"
+                        c["calendar_group_name"] = cg_name
+                        c["calendar_group_id"] = cg_id
+                        calendars.append(c)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # 3. M365 Group / Team Calendars (/me/joinedTeams)
+    try:
+        teams_res = _graph_request("GET", "/me/joinedTeams")
+        for t in teams_res.get("value", []):
+            group_id = t.get("id")
+            group_name = t.get("displayName")
+            if not group_id:
+                continue
+            try:
+                grp_cal = _graph_request("GET", f"/groups/{group_id}/calendar", params={"$select": "id,name,color,owner"})
+                cid = grp_cal.get("id")
+                c_name = grp_cal.get("name") or group_name
+                if c_name.lower() == "calendar":
+                    c_name = group_name
+                entry = {
+                    "id": cid or f"group:{group_id}",
+                    "name": c_name,
+                    "group_id": group_id,
+                    "group_name": group_name,
+                    "source_type": "group",
+                    "canEdit": True,
+                    "isDefaultCalendar": False,
+                    "owner": {"name": group_name, "address": t.get("mail")},
+                }
+                gid_key = f"group:{group_id}"
+                if gid_key not in seen_ids and cid not in seen_ids:
+                    seen_ids.add(gid_key)
+                    if cid:
+                        seen_ids.add(cid)
+                    calendars.append(entry)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return {"value": calendars}
 
 
 @mcp.tool()
@@ -346,7 +419,7 @@ def m365_get_events(
     end_time_iso: Optional[str] = None,
     top: int = 20,
 ) -> Dict[str, Any]:
-    """Get events from any Outlook calendar (default, shared by name 'URLAUB'/'Officezeiten', calendar ID, or user email).
+    """Get events from any Outlook calendar (default, shared by name 'URLAUB'/'Officezeiten', group/team calendars, calendar ID, or user email).
 
     Args:
         calendar: Optional calendar name (e.g. 'URLAUB', 'Officezeiten'), calendar ID, or user email address. Omit for default calendar.
@@ -355,7 +428,7 @@ def m365_get_events(
         top: Max number of events to return.
     """
     target = (calendar or "").strip()
-    matched_cal_id: Optional[str] = None
+    matched_cal: Optional[Dict[str, Any]] = None
     matched_cal_name: Optional[str] = None
     target_user_email: Optional[str] = None
 
@@ -369,17 +442,31 @@ def m365_get_events(
                 for c in cals["value"]:
                     c_id = str(c.get("id") or "")
                     c_name = str(c.get("name") or "")
-                    if c_id == target or target_lower in c_name.lower() or c_name.lower() in target_lower:
-                        matched_cal_id = c_id
-                        matched_cal_name = c_name
+                    g_name = str(c.get("group_name") or "")
+                    if (
+                        c_id == target
+                        or target_lower in c_name.lower()
+                        or c_name.lower() in target_lower
+                        or (g_name and target_lower in g_name.lower())
+                    ):
+                        matched_cal = c
+                        matched_cal_name = c_name or g_name
                         break
-            if not matched_cal_id:
-                matched_cal_id = target
 
     if target_user_email:
         base_path = f"/users/{target_user_email}/calendar"
-    elif matched_cal_id:
-        base_path = f"/me/calendars/{matched_cal_id}"
+    elif matched_cal:
+        stype = matched_cal.get("source_type")
+        if stype == "group" and matched_cal.get("group_id"):
+            base_path = f"/groups/{matched_cal['group_id']}/calendar"
+        elif stype == "calendar_group" and matched_cal.get("calendar_group_id") and matched_cal.get("id"):
+            base_path = f"/me/calendarGroups/{matched_cal['calendar_group_id']}/calendars/{matched_cal['id']}"
+        elif matched_cal.get("id"):
+            base_path = f"/me/calendars/{matched_cal['id']}"
+        else:
+            base_path = f"/me/calendars/{target}"
+    elif target:
+        base_path = f"/me/calendars/{target}"
     else:
         base_path = "/me/calendar"
 
@@ -393,7 +480,18 @@ def m365_get_events(
         params["$top"] = min(top, 50)
         endpoint = f"{base_path}/events"
 
-    res = _graph_request("GET", endpoint, params=params)
+    try:
+        res = _graph_request("GET", endpoint, params=params)
+    except Exception as err:
+        if target and not target_user_email and not matched_cal:
+            try:
+                fallback_ep = f"/groups/{target}/calendar/calendarView" if (start_time_iso and end_time_iso) else f"/groups/{target}/events"
+                res = _graph_request("GET", fallback_ep, params=params)
+            except Exception:
+                raise err
+        else:
+            raise err
+
     if matched_cal_name:
         res["resolved_calendar_name"] = matched_cal_name
     return res
@@ -468,8 +566,30 @@ def m365_create_event(
 
     if target_user_email:
         endpoint = f"/users/{target_user_email}/calendar/events"
-    elif target_cal_id:
-        endpoint = f"/me/calendars/{target_cal_id}/events"
+    elif target:
+        cals = m365_list_calendars(top=50)
+        matched_cal: Optional[Dict[str, Any]] = None
+        if "value" in cals and isinstance(cals["value"], list):
+            target_lower = target.lower()
+            for c in cals["value"]:
+                c_id = str(c.get("id") or "")
+                c_name = str(c.get("name") or "")
+                g_name = str(c.get("group_name") or "")
+                if c_id == target or target_lower in c_name.lower() or c_name.lower() in target_lower or (g_name and target_lower in g_name.lower()):
+                    matched_cal = c
+                    break
+        if matched_cal:
+            stype = matched_cal.get("source_type")
+            if stype == "group" and matched_cal.get("group_id"):
+                endpoint = f"/groups/{matched_cal['group_id']}/events"
+            elif stype == "calendar_group" and matched_cal.get("calendar_group_id") and matched_cal.get("id"):
+                endpoint = f"/me/calendarGroups/{matched_cal['calendar_group_id']}/calendars/{matched_cal['id']}/events"
+            elif matched_cal.get("id"):
+                endpoint = f"/me/calendars/{matched_cal['id']}/events"
+            else:
+                endpoint = f"/me/calendars/{target}/events"
+        else:
+            endpoint = f"/me/calendars/{target}/events"
     else:
         endpoint = "/me/calendar/events"
 
@@ -663,8 +783,10 @@ def m365_list_chat_messages(chat_id: str, top: int = 10) -> Dict[str, Any]:
 @mcp.tool()
 def m365_list_joined_teams(top: int = 20) -> Dict[str, Any]:
     """List all Microsoft Teams that the current user is a member of."""
-    params = {"$top": min(top, 50)}
-    return _graph_request("GET", "/me/joinedTeams", params=params)
+    res = _graph_request("GET", "/me/joinedTeams")
+    if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
+        res["value"] = res["value"][:min(top, 50)]
+    return res
 
 
 @mcp.tool()
@@ -730,8 +852,8 @@ def m365_get_activity_feed(top_chats: int = 5, top_messages_per_chat: int = 3) -
 
     # 2. Fetch joined teams & their primary/active channels
     try:
-        teams_res = _graph_request("GET", "/me/joinedTeams", params={"$top": 10})
-        teams = teams_res.get("value", [])
+        teams_res = _graph_request("GET", "/me/joinedTeams")
+        teams = teams_res.get("value", [])[:10]
         for t in teams:
             team_id = t.get("id")
             team_name = t.get("displayName")

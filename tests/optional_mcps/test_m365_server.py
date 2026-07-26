@@ -146,7 +146,7 @@ def test_m365_activity_feed_and_channel_tools():
     with patch.object(server, "_graph_request", return_value={"value": [{"id": "team-1"}]}) as mock_req:
         res = server.m365_list_joined_teams()
         assert res["value"][0]["id"] == "team-1"
-        mock_req.assert_called_with("GET", "/me/joinedTeams", params={"$top": 20})
+        mock_req.assert_called_with("GET", "/me/joinedTeams")
 
     with patch.object(server, "_graph_request", return_value={"value": [{"id": "ch-1"}]}) as mock_req:
         res = server.m365_list_team_channels("team-1")
@@ -181,10 +181,14 @@ def test_m365_activity_feed_and_channel_tools():
 
 def test_m365_shared_calendar_tools():
     # 1. Test m365_list_calendars
-    with patch.object(server, "_graph_request", return_value={"value": [{"id": "cal-1", "name": "URLAUB"}]}) as mock_req:
+    def mock_list_cals(method, endpoint, params=None):
+        if endpoint == "/me/calendars":
+            return {"value": [{"id": "cal-1", "name": "URLAUB"}]}
+        return {"value": []}
+
+    with patch.object(server, "_graph_request", side_effect=mock_list_cals):
         res = server.m365_list_calendars()
         assert res["value"][0]["id"] == "cal-1"
-        mock_req.assert_called_with("GET", "/me/calendars", params={"$top": 20, "$select": "id,name,color,canEdit,isDefaultCalendar,owner"})
 
     # 2. Test m365_get_events resolving calendar by name and date range
     mock_cals = {"value": [{"id": "cal-office-123", "name": "Officezeiten"}]}
