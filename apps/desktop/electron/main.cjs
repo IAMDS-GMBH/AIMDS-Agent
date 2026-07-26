@@ -2078,15 +2078,33 @@ function resolveTerminalCwdFromConfig() {
 }
 
 function hermesWorkingDirectoryPath() {
-  return path.join(app.getPath('documents'), 'HermesWorkingDirectory')
+  return path.join(app.getPath('documents'), 'AIMDS-Suite-WorkingDirectory')
 }
 
 function ensureHermesWorkingDirectory() {
   const target = path.resolve(hermesWorkingDirectoryPath())
+  if (!directoryExists(target)) {
+    const legacyCandidates = [
+      path.join(app.getPath('documents'), 'HermesWorkingDirectory'),
+      path.join(app.getPath('documents'), 'AIMDS-Workspace'),
+      path.join(app.getPath('home'), 'AIMDS-Workspace')
+    ]
+    for (const candidate of legacyCandidates) {
+      if (directoryExists(candidate)) {
+        try {
+          fs.renameSync(candidate, target)
+          rememberLog(`[workspace] migrated legacy workspace directory from ${candidate} to ${target}`)
+          return target
+        } catch (error) {
+          rememberLog(`[workspace] could not migrate legacy workspace from ${candidate} to ${target}: ${error.message}`)
+        }
+      }
+    }
+  }
   try {
     fs.mkdirSync(target, { recursive: true })
   } catch (error) {
-    rememberLog(`[workspace] could not create HermesWorkingDirectory at ${target}: ${error.message}`)
+    rememberLog(`[workspace] could not create AIMDS-Suite-WorkingDirectory at ${target}: ${error.message}`)
   }
   return target
 }
@@ -2189,7 +2207,7 @@ function resolveHermesCwd() {
   // and bewilder users when "where did my files go?" is the install dir.
   // The user-configurable default project directory wins over everything,
   // followed by env hints (only honored when packaged if they point at a
-  // real directory), then the default Documents/HermesWorkingDirectory, then
+  // real directory), then the default Documents/AIMDS-Suite-WorkingDirectory, then
   // finally the home dir.
   const docsWorkspace = path.resolve(hermesWorkingDirectoryPath())
   const candidates = [
@@ -2213,7 +2231,7 @@ function resolveHermesCwd() {
     if (directoryExists(resolved)) return ensureWorkspaceTemplateBaseline(resolved)
   }
 
-  // No candidate exists: create and use Documents/HermesWorkingDirectory.
+  // No candidate exists: create and use Documents/AIMDS-Suite-WorkingDirectory.
   const ensured = ensureHermesWorkingDirectory()
   if (directoryExists(ensured)) {
     return ensureWorkspaceTemplateBaseline(ensured)

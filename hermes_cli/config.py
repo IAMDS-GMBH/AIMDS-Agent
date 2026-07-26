@@ -766,14 +766,58 @@ def _merge_directory_contents(src: Path, dst: Path) -> None:
             shutil.copy2(child, target)
 
 
-def _ensure_documents_memory_link(home: Path) -> None:
-    """Ensure Documents/HermesMemory points to ``<HERMES_HOME>/memories``."""
-    docs_dir = Path("~").expanduser() / "Documents"
-    memory_link = docs_dir / "HermesMemory"
-    memory_target = home / "memories"
+def _get_default_workspace_dir() -> Path:
+    """Return the default workspace directory path."""
+    return Path("~").expanduser() / "Documents" / "AIMDS-Suite-WorkingDirectory"
 
-    docs_dir.mkdir(parents=True, exist_ok=True)
+
+def _resolve_workspace_dir() -> Path:
+    """Resolve the active workspace directory path."""
+    try:
+        cfg = read_raw_config()
+        terminal_cwd = str(cfg_get(cfg, "terminal", "cwd", default="")).strip()
+        if terminal_cwd and terminal_cwd not in {".", "auto", "cwd", ""}:
+            return Path(terminal_cwd).expanduser().resolve()
+    except Exception:
+        pass
+    return _get_default_workspace_dir().resolve()
+
+
+def _ensure_documents_memory_link(home: Path) -> None:
+    """Ensure <workspace_dir>/HermesMemory points to ``<HERMES_HOME>/memories``.
+
+    Cleans up legacy top-level memory symlinks/directories at ~/Documents/HermesMemory
+    or ~/Documents/AIMDS-Suite-Memory so ~/Documents is not cluttered with loose folders.
+    """
+    docs_dir = Path("~").expanduser() / "Documents"
+    memory_target = home / "memories"
     memory_target.mkdir(parents=True, exist_ok=True)
+
+    # Clean up legacy top-level Documents memory links/directories if they exist
+    legacy_links = [
+        docs_dir / "HermesMemory",
+        docs_dir / "AIMDS-Suite-Memory",
+    ]
+    for legacy in legacy_links:
+        if legacy.is_symlink():
+            try:
+                legacy.unlink()
+            except OSError:
+                pass
+        elif legacy.exists():
+            if legacy.is_dir():
+                _merge_directory_contents(legacy, memory_target)
+            backup_path = legacy.with_name(
+                f"{legacy.name}.backup.{int(time.time())}"
+            )
+            try:
+                legacy.rename(backup_path)
+            except OSError:
+                pass
+
+    workspace_dir = _resolve_workspace_dir()
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    memory_link = workspace_dir / "HermesMemory"
 
     if memory_link.is_symlink():
         current_target = Path(os.readlink(memory_link))
@@ -5735,7 +5779,7 @@ def read_raw_config() -> Dict[str, Any]:
         if not isinstance(data, dict):
             data = {}
         _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(data))
-        return data
+        return copy.deepcopy(data)
 
 
 def load_config() -> Dict[str, Any]:
@@ -6042,6 +6086,8 @@ def save_config(config: Dict[str, Any]):
         )
         _secure_file(config_path)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+        _LOAD_CONFIG_CACHE.pop(str(config_path), None)
+        _RAW_CONFIG_CACHE.pop(str(config_path), None)
 
 
 def load_env() -> Dict[str, str]:
@@ -6763,6 +6809,8 @@ def set_config_value(key: str, value: str):
     ensure_hermes_home()
     from utils import atomic_yaml_write
     atomic_yaml_write(config_path, user_config, sort_keys=False)
+    _LOAD_CONFIG_CACHE.pop(str(config_path), None)
+    _RAW_CONFIG_CACHE.pop(str(config_path), None)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.

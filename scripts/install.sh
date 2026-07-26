@@ -2213,14 +2213,33 @@ copy_config_templates() {
     local workspace_template_src rel src_path dest_path
     local aimds_installer_dir aimds_memory_seed_dir python_for_seed
     local _seed_out _line
-    hermes_work_dir="$HOME/Documents/HermesWorkingDirectory"
-    memory_fs_dir="$HOME/Documents/HermesMemory"
+    hermes_work_dir="$HOME/Documents/AIMDS-Suite-WorkingDirectory"
+    memory_fs_dir="$hermes_work_dir/HermesMemory"
     created_config=0
 
     # Create ~/.hermes directory structure (config at top level, code in subdir)
     mkdir -p "$HERMES_HOME"/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,skills}
     mkdir -p "$hermes_work_dir"
     mkdir -p "$HOME/Documents"
+
+    # Clean up legacy top-level Documents memory links/directories if they exist
+    for legacy_mem in "$HOME/Documents/HermesMemory" "$HOME/Documents/AIMDS-Suite-Memory"; do
+        if [ "$legacy_mem" != "$memory_fs_dir" ]; then
+            if [ -L "$legacy_mem" ]; then
+                rm -f "$legacy_mem" 2>/dev/null || true
+            elif [ -e "$legacy_mem" ]; then
+                backup_path="${legacy_mem}.backup.$(date +%s)"
+                if [ -d "$legacy_mem" ] && [ -n "$(find "$legacy_mem" -mindepth 1 -print -quit 2>/dev/null)" ]; then
+                    if command -v rsync >/dev/null 2>&1; then
+                        rsync -a "$legacy_mem/" "$HERMES_HOME/memories/" 2>/dev/null || true
+                    else
+                        cp -R "$legacy_mem/"* "$HERMES_HOME/memories/" 2>/dev/null || true
+                    fi
+                fi
+                mv "$legacy_mem" "$backup_path" 2>/dev/null || rm -rf "$legacy_mem" 2>/dev/null || true
+            fi
+        fi
+    done
 
     # Seed/repair the managed workspace from installer template (non-destructive):
     # copy only missing files/folders so existing user content is preserved.

@@ -2901,8 +2901,8 @@ function Sync-AimdsCustomAssets {
 function Copy-ConfigTemplates {
     Write-Info "Setting up configuration files..."
 
-    $hermesWorkDir = Join-Path $HOME 'Documents\HermesWorkingDirectory'
-    $hermesMemoryDir = Join-Path $HOME 'Documents\HermesMemory'
+    $hermesWorkDir = Join-Path $HOME 'Documents\AIMDS-Suite-WorkingDirectory'
+    $hermesMemoryDir = Join-Path $hermesWorkDir 'HermesMemory'
     $createdConfig = $false
     
     # Create the HERMES_HOME directory structure ($HermesHome, default %LOCALAPPDATA%\hermes)
@@ -2917,6 +2917,35 @@ function Copy-ConfigTemplates {
     New-Item -ItemType Directory -Force -Path "$HermesHome\skills" | Out-Null
     New-Item -ItemType Directory -Force -Path $hermesWorkDir | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $HOME 'Documents') | Out-Null
+
+    # Clean up legacy top-level Documents memory links/directories if they exist
+    $memoryTarget = "$HermesHome\memories"
+    $legacyMemDirs = @(
+        (Join-Path $HOME 'Documents\HermesMemory'),
+        (Join-Path $HOME 'Documents\AIMDS-Suite-Memory')
+    )
+    foreach ($legacyMem in $legacyMemDirs) {
+        if ($legacyMem -ne $hermesMemoryDir -and (Test-Path $legacyMem)) {
+            $legacyItem = Get-Item -Path $legacyMem -Force -ErrorAction SilentlyContinue
+            $legacyIsLink = $legacyItem -and (($legacyItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+            if ($legacyIsLink) {
+                Remove-Item -Path $legacyMem -Force -ErrorAction SilentlyContinue
+            } else {
+                if ($legacyItem -and $legacyItem.PSIsContainer) {
+                    $children = Get-ChildItem -Path $legacyMem -ErrorAction SilentlyContinue
+                    if ($children) {
+                        Copy-Item -Path "$legacyMem\*" -Destination $memoryTarget -Recurse -Force -ErrorAction SilentlyContinue
+                    }
+                }
+                $backupPath = "$legacyMem.backup.$([int][double]::Parse((Get-Date -UFormat %s)))"
+                try {
+                    Move-Item -Path $legacyMem -Destination $backupPath -Force -ErrorAction Stop
+                } catch {
+                    Remove-Item -Path $legacyMem -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
 
     # Seed/repair the managed workspace from installer template (non-destructive):
     # only missing files are copied so existing user files are preserved.

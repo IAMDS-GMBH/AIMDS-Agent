@@ -7,7 +7,7 @@ audience: dev / installer
 
 This is the empty workspace scaffold every Hermes install starts from. It gives the
 agent a **structured home** so it files things consistently from turn one — instead
-of dropping files into a flat, empty `HermesWorkingDirectory`.
+of dropping files into a flat, empty `AIMDS-Suite-WorkingDirectory`.
 
 ## Why this exists
 
@@ -21,7 +21,7 @@ can write files but has no map of where things belong. This scaffold + AGENTS.md
 1. Copy this `workspace-template/` to the user's workspace location on install
    (e.g. `~/AIMDS-Workspace/` or wherever the deployment defines).
 2. Set `terminal.cwd` in `config.yaml` to that path.
-   ⚠ **Current config bug:** it points at `HermesWorkingDirectory` — change it.
+   ⚠ **Current config bug:** it points at `AIMDS-Suite-WorkingDirectory` — change it.
    (`seed-workspace-cwd.py` already exists for exactly this — use it.)
 3. `AGENTS.md` sits in the workspace root → auto-loaded every session
    (`coding_context.py:82` reads `AGENTS.md`/`CLAUDE.md` from cwd).

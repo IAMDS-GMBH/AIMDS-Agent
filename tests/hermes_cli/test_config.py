@@ -65,38 +65,40 @@ class TestEnsureHermesHome:
     @pytest.mark.skipif(sys.platform == "win32", reason="symlink perms vary on CI")
     def test_repairs_documents_memory_dir_to_symlink(self, tmp_path, monkeypatch):
         fake_home = tmp_path / "home"
-        docs_memory = fake_home / "Documents" / "HermesMemory"
-        docs_memory.mkdir(parents=True, exist_ok=True)
-        (docs_memory / "legacy.md").write_text("legacy", encoding="utf-8")
+        legacy_docs_memory = fake_home / "Documents" / "HermesMemory"
+        legacy_docs_memory.mkdir(parents=True, exist_ok=True)
+        (legacy_docs_memory / "legacy.md").write_text("legacy", encoding="utf-8")
 
         monkeypatch.setenv("HOME", str(fake_home))
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / "hermes")}):
             ensure_hermes_home()
 
         target = tmp_path / "hermes" / "memories"
-        assert docs_memory.is_symlink()
-        assert docs_memory.resolve() == target.resolve()
+        workspace_memory = fake_home / "Documents" / "AIMDS-Suite-WorkingDirectory" / "HermesMemory"
+        assert workspace_memory.is_symlink()
+        assert workspace_memory.resolve() == target.resolve()
         assert (target / "legacy.md").read_text(encoding="utf-8") == "legacy"
+        assert not legacy_docs_memory.exists() or not legacy_docs_memory.is_symlink()
         backups = list((fake_home / "Documents").glob("HermesMemory.backup.*"))
         assert backups
 
     @pytest.mark.skipif(sys.platform == "win32", reason="symlink perms vary on CI")
     def test_repairs_wrong_documents_memory_symlink(self, tmp_path, monkeypatch):
         fake_home = tmp_path / "home"
-        docs_dir = fake_home / "Documents"
-        docs_dir.mkdir(parents=True, exist_ok=True)
+        workspace_dir = fake_home / "Documents" / "AIMDS-Suite-WorkingDirectory"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
         wrong_target = tmp_path / "wrong"
         wrong_target.mkdir(parents=True, exist_ok=True)
-        docs_memory = docs_dir / "HermesMemory"
-        docs_memory.symlink_to(wrong_target, target_is_directory=True)
+        workspace_memory = workspace_dir / "HermesMemory"
+        workspace_memory.symlink_to(wrong_target, target_is_directory=True)
 
         monkeypatch.setenv("HOME", str(fake_home))
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / "hermes")}):
             ensure_hermes_home()
 
         expected = tmp_path / "hermes" / "memories"
-        assert docs_memory.is_symlink()
-        assert docs_memory.resolve() == expected.resolve()
+        assert workspace_memory.is_symlink()
+        assert workspace_memory.resolve() == expected.resolve()
 
     def test_windows_junction_fallback_when_symlink_fails(self, tmp_path, monkeypatch):
         from hermes_cli import config as cfg_mod
@@ -122,7 +124,8 @@ class TestEnsureHermesHome:
 
         ensure_hermes_home()
 
-        assert any(cmd[:3] == ["cmd", "/c", 'mklink /J "' + str(fake_home / "Documents" / "HermesMemory") + '" "' + str(tmp_path / "hermes" / "memories") + '"'] for cmd in calls)
+        expected_link = fake_home / "Documents" / "AIMDS-Suite-WorkingDirectory" / "HermesMemory"
+        assert any(cmd[:3] == ["cmd", "/c", 'mklink /J "' + str(expected_link) + '" "' + str(tmp_path / "hermes" / "memories") + '"'] for cmd in calls)
 
 
 class TestLoadConfigDefaults:
@@ -1213,6 +1216,9 @@ class TestMcpRootKeyRepairMigration:
     """Version 31→32 repairs legacy MCP root keys to mcp_servers."""
 
     def _write(self, tmp_path, body: str):
+        from hermes_cli.config import _LOAD_CONFIG_CACHE, _RAW_CONFIG_CACHE
+        _LOAD_CONFIG_CACHE.clear()
+        _RAW_CONFIG_CACHE.clear()
         (tmp_path / "config.yaml").write_text(body)
 
     def test_repairs_mcp_servers_nested_under_mcp(self, tmp_path):
@@ -1269,6 +1275,9 @@ class TestMcpMemorySaveFilterMigration:
     """Version 32→33 rewrites memory_upsert filter entries to memory_save."""
 
     def _write(self, tmp_path, body: str):
+        from hermes_cli.config import _LOAD_CONFIG_CACHE, _RAW_CONFIG_CACHE
+        _LOAD_CONFIG_CACHE.clear()
+        _RAW_CONFIG_CACHE.clear()
         (tmp_path / "config.yaml").write_text(body)
 
     def test_rewrites_include_entries_to_memory_save(self, tmp_path):
