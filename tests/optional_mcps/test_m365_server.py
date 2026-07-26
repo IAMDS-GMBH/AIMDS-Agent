@@ -179,4 +179,62 @@ def test_m365_activity_feed_and_channel_tools():
         assert feed["team_channels"][0]["team_name"] == "Dev Team"
 
 
+def test_m365_shared_calendar_tools():
+    # 1. Test m365_list_calendars
+    with patch.object(server, "_graph_request", return_value={"value": [{"id": "cal-1", "name": "URLAUB"}]}) as mock_req:
+        res = server.m365_list_calendars()
+        assert res["value"][0]["id"] == "cal-1"
+        mock_req.assert_called_with("GET", "/me/calendars", params={"$top": 20, "$select": "id,name,color,canEdit,isDefaultCalendar,owner"})
+
+    # 2. Test m365_list_events with specific calendar_id and calendarView range
+    with patch.object(server, "_graph_request", return_value={"value": [{"id": "evt-1", "subject": "Officezeiten"}]}) as mock_req:
+        res = server.m365_list_events(
+            calendar_id="cal-office-123",
+            start_datetime_iso="2026-07-26T00:00:00Z",
+            end_datetime_iso="2026-07-27T00:00:00Z",
+        )
+        assert res["value"][0]["id"] == "evt-1"
+        mock_req.assert_called_once()
+        args, kwargs = mock_req.call_args
+        assert args[0] == "GET"
+        assert args[1] == "/me/calendars/cal-office-123/calendarView"
+        assert kwargs["params"]["startDateTime"] == "2026-07-26T00:00:00Z"
+        assert kwargs["params"]["endDateTime"] == "2026-07-27T00:00:00Z"
+
+    # 3. Test m365_get_shared_calendar_events resolving by name
+    mock_cals = {"value": [{"id": "cal-vacation-999", "name": "URLAUB Team"}]}
+    mock_events = {"value": [{"id": "evt-vac-1", "subject": "Urlaub Johannes"}]}
+
+    def mock_shared_graph(method, endpoint, params=None):
+        if endpoint == "/me/calendars":
+            return mock_cals
+        if endpoint == "/me/calendars/cal-vacation-999/events":
+            return mock_events
+        return {}
+
+    with patch.object(server, "_graph_request", side_effect=mock_shared_graph):
+        res = server.m365_get_shared_calendar_events("URLAUB")
+        assert res["resolved_calendar_name"] == "URLAUB Team"
+        assert res["resolved_calendar_id"] == "cal-vacation-999"
+        assert res["value"][0]["subject"] == "Urlaub Johannes"
+
+    # 4. Test m365_create_event in shared calendar with all-day flag
+    with patch.object(server, "_graph_request", return_value={"id": "new-evt-123"}) as mock_req:
+        res = server.m365_create_event(
+            subject="Sommerurlaub",
+            start_time_iso="2026-08-01T00:00:00Z",
+            end_time_iso="2026-08-15T00:00:00Z",
+            calendar_id="cal-vacation-999",
+            is_all_day=True,
+            categories=["URLAUB"],
+        )
+        assert res["id"] == "new-evt-123"
+        mock_req.assert_called_once()
+        args, kwargs = mock_req.call_args
+        assert args[0] == "POST"
+        assert args[1] == "/me/calendars/cal-vacation-999/events"
+        assert kwargs["json_data"]["isAllDay"] is True
+        assert kwargs["json_data"]["categories"] == ["URLAUB"]
+
+
 
