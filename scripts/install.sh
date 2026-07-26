@@ -2213,7 +2213,7 @@ copy_config_templates() {
     local workspace_template_src rel src_path dest_path
     local aimds_installer_dir aimds_memory_seed_dir python_for_seed
     local _seed_out _line
-    hermes_work_dir="$HOME/Documents/AIMDS-Suite-WorkingDirectory"
+    hermes_work_dir="$HOME/AIMDS-Suite-WorkingDirectory"
     memory_fs_dir="$hermes_work_dir/HermesMemory"
     created_config=0
 

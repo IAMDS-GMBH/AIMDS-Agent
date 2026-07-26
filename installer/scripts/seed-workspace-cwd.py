@@ -13,7 +13,7 @@ Usage:
 Example (macOS):
     python3 seed-workspace-cwd.py \
         "$HOME/Library/Application Support/Hermes/Local Storage/leveldb" \
-        "$HOME/Documents/AIMDS-Suite-WorkingDirectory"
+        "$HOME/AIMDS-Suite-WorkingDirectory"
 """
 
 import os

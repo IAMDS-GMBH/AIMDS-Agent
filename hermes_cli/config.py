@@ -768,7 +768,7 @@ def _merge_directory_contents(src: Path, dst: Path) -> None:
 
 def _get_default_workspace_dir() -> Path:
     """Return the default workspace directory path."""
-    return Path("~").expanduser() / "Documents" / "AIMDS-Suite-WorkingDirectory"
+    return Path("~").expanduser() / "AIMDS-Suite-WorkingDirectory"
 
 
 def _resolve_workspace_dir() -> Path:
@@ -786,8 +786,9 @@ def _resolve_workspace_dir() -> Path:
 def _ensure_documents_memory_link(home: Path) -> None:
     """Ensure <workspace_dir>/HermesMemory points to ``<HERMES_HOME>/memories``.
 
-    Cleans up legacy top-level memory symlinks/directories at ~/Documents/HermesMemory
-    or ~/Documents/AIMDS-Suite-Memory so ~/Documents is not cluttered with loose folders.
+    Cleans up legacy top-level memory symlinks/directories at ~/Documents/HermesMemory,
+    ~/Documents/AIMDS-Suite-Memory, or ~/Documents/AIMDS-Suite-WorkingDirectory/HermesMemory
+    so ~/Documents is not cluttered with loose folders.
     """
     docs_dir = Path("~").expanduser() / "Documents"
     memory_target = home / "memories"
@@ -797,6 +798,7 @@ def _ensure_documents_memory_link(home: Path) -> None:
     legacy_links = [
         docs_dir / "HermesMemory",
         docs_dir / "AIMDS-Suite-Memory",
+        docs_dir / "AIMDS-Suite-WorkingDirectory" / "HermesMemory",
     ]
     for legacy in legacy_links:
         if legacy.is_symlink():
@@ -5468,29 +5470,41 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         terminal_cfg = config.get("terminal")
         if isinstance(terminal_cfg, dict):
             current_cwd = str(terminal_cfg.get("cwd") or "").strip()
-            legacy_keywords = ["HermesWorkingDirectory", "AIMDS-Workspace"]
+            home_dir = Path("~").expanduser()
+            target_dir = home_dir / "AIMDS-Suite-WorkingDirectory"
+            legacy_keywords = [
+                "Documents/AIMDS-Suite-WorkingDirectory",
+                "Documents/HermesWorkingDirectory",
+                "Documents/AIMDS-Workspace",
+                "HermesWorkingDirectory",
+                "AIMDS-Workspace",
+            ]
             if any(kw in current_cwd for kw in legacy_keywords):
-                new_cwd = current_cwd
-                for kw in legacy_keywords:
-                    new_cwd = new_cwd.replace(kw, "AIMDS-Suite-WorkingDirectory")
+                new_cwd = str(target_dir)
 
-                old_path = Path(current_cwd).expanduser()
-                new_path = Path(new_cwd).expanduser()
-                if old_path.exists() and old_path.is_dir() and old_path != new_path:
-                    try:
-                        if not new_path.exists():
-                            old_path.rename(new_path)
-                        else:
-                            _merge_directory_contents(old_path, new_path)
-                            backup_path = old_path.with_name(
-                                f"{old_path.name}.backup.{int(time.time())}"
-                            )
-                            try:
-                                old_path.rename(backup_path)
-                            except OSError:
-                                shutil.rmtree(old_path, ignore_errors=True)
-                    except Exception:
-                        pass
+                legacy_disk_paths = [
+                    home_dir / "Documents" / "AIMDS-Suite-WorkingDirectory",
+                    home_dir / "Documents" / "HermesWorkingDirectory",
+                    home_dir / "Documents" / "AIMDS-Workspace",
+                    home_dir / "HermesWorkingDirectory",
+                    home_dir / "AIMDS-Workspace",
+                ]
+                for old_path in legacy_disk_paths:
+                    if old_path.exists() and old_path.is_dir() and old_path.resolve() != target_dir.resolve():
+                        try:
+                            if not target_dir.exists():
+                                old_path.rename(target_dir)
+                            else:
+                                _merge_directory_contents(old_path, target_dir)
+                                backup_path = old_path.with_name(
+                                    f"{old_path.name}.backup.{int(time.time())}"
+                                )
+                                try:
+                                    old_path.rename(backup_path)
+                                except OSError:
+                                    shutil.rmtree(old_path, ignore_errors=True)
+                        except Exception:
+                            pass
 
                 terminal_cfg["cwd"] = new_cwd
                 config["terminal"] = terminal_cfg

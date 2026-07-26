@@ -74,7 +74,7 @@ class TestEnsureHermesHome:
             ensure_hermes_home()
 
         target = tmp_path / "hermes" / "memories"
-        workspace_memory = fake_home / "Documents" / "AIMDS-Suite-WorkingDirectory" / "HermesMemory"
+        workspace_memory = fake_home / "AIMDS-Suite-WorkingDirectory" / "HermesMemory"
         assert workspace_memory.is_symlink()
         assert workspace_memory.resolve() == target.resolve()
         assert (target / "legacy.md").read_text(encoding="utf-8") == "legacy"
@@ -85,7 +85,7 @@ class TestEnsureHermesHome:
     @pytest.mark.skipif(sys.platform == "win32", reason="symlink perms vary on CI")
     def test_repairs_wrong_documents_memory_symlink(self, tmp_path, monkeypatch):
         fake_home = tmp_path / "home"
-        workspace_dir = fake_home / "Documents" / "AIMDS-Suite-WorkingDirectory"
+        workspace_dir = fake_home / "AIMDS-Suite-WorkingDirectory"
         workspace_dir.mkdir(parents=True, exist_ok=True)
         wrong_target = tmp_path / "wrong"
         wrong_target.mkdir(parents=True, exist_ok=True)
@@ -124,7 +124,7 @@ class TestEnsureHermesHome:
 
         ensure_hermes_home()
 
-        expected_link = fake_home / "Documents" / "AIMDS-Suite-WorkingDirectory" / "HermesMemory"
+        expected_link = fake_home / "AIMDS-Suite-WorkingDirectory" / "HermesMemory"
         assert any(cmd[:3] == ["cmd", "/c", 'mklink /J "' + str(expected_link) + '" "' + str(tmp_path / "hermes" / "memories") + '"'] for cmd in calls)
 
 
@@ -1368,11 +1368,14 @@ class TestTerminalCwdWorkspaceMigration:
         _RAW_CONFIG_CACHE.clear()
         (tmp_path / "config.yaml").write_text(body)
 
-    def test_migrates_legacy_hermes_working_directory_cwd(self, tmp_path):
-        legacy_dir = tmp_path / "Documents" / "HermesWorkingDirectory"
+    def test_migrates_legacy_hermes_working_directory_cwd(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "home"
+        fake_home.mkdir(parents=True, exist_ok=True)
+        legacy_dir = fake_home / "Documents" / "HermesWorkingDirectory"
         legacy_dir.mkdir(parents=True, exist_ok=True)
         (legacy_dir / "test.txt").write_text("hello", encoding="utf-8")
 
+        monkeypatch.setenv("HOME", str(fake_home))
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             self._write(
                 tmp_path,
@@ -1381,7 +1384,7 @@ class TestTerminalCwdWorkspaceMigration:
             )
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
-            target_dir = tmp_path / "Documents" / "AIMDS-Suite-WorkingDirectory"
+            target_dir = fake_home / "AIMDS-Suite-WorkingDirectory"
             assert raw["terminal"]["cwd"] == str(target_dir)
             assert target_dir.exists()
             assert (target_dir / "test.txt").read_text(encoding="utf-8") == "hello"

@@ -2070,8 +2070,15 @@ function resolveTerminalCwdFromConfig() {
     if (!cwdLine) return null
     let val = cwdLine[1].trim().replace(/^['"]|['"]$/g, '')
     if (!val || val === '.' || val === 'auto' || val === 'cwd') return null
-    for (const kw of ['HermesWorkingDirectory', 'AIMDS-Workspace']) {
-      val = val.replace(kw, 'AIMDS-Suite-WorkingDirectory')
+    const legacyPatterns = [
+      'Documents/AIMDS-Suite-WorkingDirectory',
+      'Documents/HermesWorkingDirectory',
+      'Documents/AIMDS-Workspace',
+      'HermesWorkingDirectory',
+      'AIMDS-Workspace'
+    ]
+    if (legacyPatterns.some(kw => val.includes(kw))) {
+      val = path.join(app.getPath('home'), 'AIMDS-Suite-WorkingDirectory')
     }
     const resolved = path.resolve(val.startsWith('~') ? val.replace('~', app.getPath('home')) : val)
     return directoryExists(resolved) ? resolved : null
@@ -2081,15 +2088,17 @@ function resolveTerminalCwdFromConfig() {
 }
 
 function hermesWorkingDirectoryPath() {
-  return path.join(app.getPath('documents'), 'AIMDS-Suite-WorkingDirectory')
+  return path.join(app.getPath('home'), 'AIMDS-Suite-WorkingDirectory')
 }
 
 function ensureHermesWorkingDirectory() {
   const target = path.resolve(hermesWorkingDirectoryPath())
   if (!directoryExists(target)) {
     const legacyCandidates = [
+      path.join(app.getPath('documents'), 'AIMDS-Suite-WorkingDirectory'),
       path.join(app.getPath('documents'), 'HermesWorkingDirectory'),
       path.join(app.getPath('documents'), 'AIMDS-Workspace'),
+      path.join(app.getPath('home'), 'HermesWorkingDirectory'),
       path.join(app.getPath('home'), 'AIMDS-Workspace')
     ]
     for (const candidate of legacyCandidates) {
@@ -2249,12 +2258,16 @@ function sanitizeWorkspaceCwd(cwd) {
     return { cwd: resolveHermesCwd(), sanitized: Boolean(trimmed) }
   }
 
-  const legacyKeywords = ['HermesWorkingDirectory', 'AIMDS-Workspace']
+  const legacyPatterns = [
+    'Documents/AIMDS-Suite-WorkingDirectory',
+    'Documents/HermesWorkingDirectory',
+    'Documents/AIMDS-Workspace',
+    'HermesWorkingDirectory',
+    'AIMDS-Workspace'
+  ]
   let wasMigrated = false
-  if (legacyKeywords.some(kw => trimmed.includes(kw))) {
-    for (const kw of legacyKeywords) {
-      trimmed = trimmed.replace(kw, 'AIMDS-Suite-WorkingDirectory')
-    }
+  if (legacyPatterns.some(kw => trimmed.includes(kw))) {
+    trimmed = path.join(app.getPath('home'), 'AIMDS-Suite-WorkingDirectory')
     wasMigrated = true
   }
 
@@ -2288,11 +2301,15 @@ function readDefaultProjectDir() {
 
     if (parsed && typeof parsed.dir === 'string' && parsed.dir.trim()) {
       let dirStr = parsed.dir.trim()
-      const legacyKeywords = ['HermesWorkingDirectory', 'AIMDS-Workspace']
-      if (legacyKeywords.some(kw => dirStr.includes(kw))) {
-        for (const kw of legacyKeywords) {
-          dirStr = dirStr.replace(kw, 'AIMDS-Suite-WorkingDirectory')
-        }
+      const legacyPatterns = [
+        'Documents/AIMDS-Suite-WorkingDirectory',
+        'Documents/HermesWorkingDirectory',
+        'Documents/AIMDS-Workspace',
+        'HermesWorkingDirectory',
+        'AIMDS-Workspace'
+      ]
+      if (legacyPatterns.some(kw => dirStr.includes(kw))) {
+        dirStr = path.join(app.getPath('home'), 'AIMDS-Suite-WorkingDirectory')
         writeDefaultProjectDir(dirStr)
       }
       const resolved = path.resolve(dirStr)

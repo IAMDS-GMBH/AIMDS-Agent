@@ -2901,7 +2901,7 @@ function Sync-AimdsCustomAssets {
 function Copy-ConfigTemplates {
     Write-Info "Setting up configuration files..."
 
-    $hermesWorkDir = Join-Path $HOME 'Documents\AIMDS-Suite-WorkingDirectory'
+    $hermesWorkDir = Join-Path $HOME 'AIMDS-Suite-WorkingDirectory'
     $hermesMemoryDir = Join-Path $hermesWorkDir 'HermesMemory'
     $createdConfig = $false
     
