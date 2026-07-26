@@ -736,3 +736,23 @@ class TestDynamicMCPKeywordIndexing:
         assert len(results) > 0
         assert results[0].name == "mcp_jira_log_time"
 
+    def test_german_calendar_synonyms(self):
+        from tools.tool_search import build_catalog, search_catalog
+
+        tool_defs = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "m365_get_events",
+                    "description": "Get events from Outlook calendar including URLAUB and Officezeiten",
+                    "parameters": {},
+                },
+            }
+        ]
+        catalog = build_catalog(tool_defs)
+
+        for query in ("urlaub", "officezeiten", "feiertage", "abwesenheit"):
+            results = search_catalog(catalog, query)
+            assert len(results) >= 1, f"Failed for query {query}"
+            assert results[0].name == "m365_get_events"
+
