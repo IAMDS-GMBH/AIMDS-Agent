@@ -16,7 +16,29 @@ const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 // wins and new sessions ignore the user's explicit picker choice.
 let configuredDefaultProjectDir = ''
 
-export const getRememberedWorkspaceCwd = (): string => storedString(WORKSPACE_CWD_KEY)?.trim() || ''
+export const getRememberedWorkspaceCwd = (): string => {
+  let val = storedString(WORKSPACE_CWD_KEY)?.trim() || ''
+  if (!val) return ''
+
+  const legacyKeywords = [
+    'Documents/AIMDS-Suite-WorkingDirectory',
+    'Documents/HermesWorkingDirectory',
+    'Documents/AIMDS-Workspace',
+    'HermesWorkingDirectory',
+    'AIMDS-Workspace'
+  ]
+
+  if (legacyKeywords.some(kw => val.includes(kw))) {
+    const parts = val.split(/Documents[/\\]/)
+    const homePrefix = parts[0]?.replace(/[/\\]$/, '') || ''
+    val = homePrefix ? `${homePrefix}/AIMDS-Suite-WorkingDirectory` : ''
+    if (val) {
+      persistString(WORKSPACE_CWD_KEY, val)
+    }
+  }
+
+  return val
+}
 
 export const getConfiguredDefaultProjectDir = (): string => configuredDefaultProjectDir
 
@@ -48,21 +70,20 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
   await syncConfiguredDefaultProjectDir()
   const configured = getConfiguredDefaultProjectDir()
 
-  const seedLiveCwd = (cwd: string) => {
-    if (cwd && !$activeSessionId.get()) {
-      setCurrentCwd(cwd)
-    }
-  }
-
   if (configured) {
     const { cwd } = await sanitize(configured)
-    seedLiveCwd(cwd)
+    if (cwd) {
+      setCurrentCwd(cwd)
+    }
 
     return
   }
 
-  const { cwd } = await sanitize(getRememberedWorkspaceCwd())
-  seedLiveCwd(cwd)
+  const remembered = getRememberedWorkspaceCwd()
+  const { cwd } = await sanitize(remembered)
+  if (cwd) {
+    setCurrentCwd(cwd)
+  }
 }
 
 export function applyConfiguredDefaultProjectDir(dir: null | string | undefined): void {
