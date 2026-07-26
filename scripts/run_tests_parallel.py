@@ -29,7 +29,7 @@ Usage:
     ``-k 'pattern'``, ``--lf``).
 
 Environment:
-    HERMES_TEST_WORKERS  Override worker count (default: os.cpu_count())
+    HERMES_TEST_WORKERS  Override worker count (default: min(cpu_count, 8))
     HERMES_TEST_PATHS    Override discovery roots (colon-sep, default: 'tests')
 
 Exit code: 0 if every file's pytest exited 0; 1 otherwise.
@@ -699,8 +699,8 @@ def main() -> int:
         "-j",
         "--jobs",
         type=int,
-        default=int(os.environ.get("HERMES_TEST_WORKERS") or (os.cpu_count() or 4) * 2),
-        help="Parallel worker count (default: $HERMES_TEST_WORKERS or cpu_count*2)",
+        default=int(os.environ.get("HERMES_TEST_WORKERS") or min(os.cpu_count() or 4, 8)),
+        help="Parallel worker count (default: $HERMES_TEST_WORKERS or min(cpu_count, 8))",
     )
     parser.add_argument(
         "--paths",

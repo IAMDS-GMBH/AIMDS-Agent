@@ -188,12 +188,91 @@ class VaultMetaIndex:
                 continue
         return count
 
+    def sync_skills_vault(self, skills_dir: Optional[Path] = None) -> int:
+        """Scan and index all installed and bundled skills into the SQLite meta-index."""
+        try:
+            from tools.skills_tool import _find_all_skills
+            skills = _find_all_skills(skip_disabled=True)
+        except Exception:
+            return 0
+
+        count = 0
+        for s in skills:
+            if not isinstance(s, dict):
+                continue
+            name = str(s.get("name") or "").strip()
+            if not name:
+                continue
+
+            desc = str(s.get("description") or "").strip()
+            cat = str(s.get("category") or "general").strip()
+            tags = s.get("tags") or []
+            tags_list = tags if isinstance(tags, list) else [str(tags)]
+            body = str(s.get("body") or s.get("content") or "").strip()
+
+            slug = f"skill:{name}"
+            doc_id = f"skill:{cat}/{name}"
+            title = f"Skill: {name}"
+            content = f"{desc}\nCategory: {cat}\nTags: {', '.join(tags_list)}\n\n{body[:600]}".strip()
+
+            record = {
+                "id": doc_id,
+                "slug": slug,
+                "path": str(s.get("path") or ""),
+                "scope": "skill",
+                "type": "skill",
+                "title": title,
+                "content": content,
+                "tags": tags_list + [cat, "skill"],
+                "updated_at": int(s.get("updated_at") or time.time()),
+            }
+            self.sync_record(record)
+            count += 1
+        return count
+
+    def sync_mcp_tools(self) -> int:
+        """Scan and index all connected MCP tools into SQLite vector meta-index."""
+        try:
+            from tools.mcp_tool import get_mcp_server_metadata
+            mcp_meta = get_mcp_server_metadata()
+        except Exception:
+            return 0
+
+        count = 0
+        for server_name, meta in mcp_meta.items():
+            if not isinstance(meta, dict):
+                continue
+            keywords = meta.get("keywords") or []
+            tools_list = meta.get("tools") or []
+
+            slug = f"mcp:{server_name}"
+            doc_id = f"mcp:{server_name}"
+            title = f"MCP Server: {server_name}"
+            content = f"Server: {server_name}\nKeywords: {', '.join(keywords)}\nTools: {', '.join(tools_list[:10])}".strip()
+
+            record = {
+                "id": doc_id,
+                "slug": slug,
+                "path": "",
+                "scope": "mcp",
+                "type": "mcp_tool",
+                "title": title,
+                "content": content,
+                "tags": keywords + ["mcp", server_name],
+                "updated_at": int(time.time()),
+            }
+            self.sync_record(record)
+            count += 1
+        return count
+
     def sync_mirror_store(self, jsonl_path: Optional[Path] = None) -> int:
-        """Sync all records from MCP_MIRROR_MEMORY.jsonl and local filesystem vault into SQLite."""
+        """Sync all records from MCP_MIRROR_MEMORY.jsonl, filesystem vault, skills, and MCP tools into SQLite."""
         if jsonl_path is None:
             jsonl_path = get_hermes_home() / "memories" / "MCP_MIRROR_MEMORY.jsonl"
 
         count = self.sync_filesystem_vault()
+        count += self.sync_skills_vault()
+        count += self.sync_mcp_tools()
         if not jsonl_path.exists():
             return count
 

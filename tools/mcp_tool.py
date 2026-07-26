@@ -2395,14 +2395,8 @@ def _handle_auth_error_and_retry(
 
         try:
             result = retry_call()
-            try:
-                parsed = json.loads(result)
-                if "error" not in parsed:
-                    _reset_server_error(server_name)
-                    return result
-            except (json.JSONDecodeError, TypeError):
-                _reset_server_error(server_name)
-                return result
+            _reset_server_error(server_name)
+            return result
         except Exception as retry_exc:
             logger.warning(
                 "MCP %s/%s retry after auth recovery failed: %s",
@@ -2545,14 +2539,8 @@ def _handle_session_expired_and_retry(
 
     try:
         result = retry_call()
-        try:
-            parsed = json.loads(result)
-            if "error" not in parsed:
-                _server_error_counts[server_name] = 0
-                return result
-        except (json.JSONDecodeError, TypeError):
-            _server_error_counts[server_name] = 0
-            return result
+        _reset_server_error(server_name)
+        return result
     except Exception as retry_exc:
         logger.warning(
             "MCP %s/%s retry after session reconnect failed: %s",
@@ -3427,15 +3415,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         try:
             result = _call_once()
-            # Check if the MCP tool itself returned an error
-            try:
-                parsed = json.loads(result)
-                if "error" in parsed:
-                    _bump_server_error(server_name)
-                else:
-                    _reset_server_error(server_name)  # success — reset
-            except (json.JSONDecodeError, TypeError):
-                _reset_server_error(server_name)  # non-JSON = success
+            _reset_server_error(server_name)
             return result
         except InterruptedError:
             return _interrupted_call_result()

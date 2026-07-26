@@ -250,3 +250,41 @@ def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
         )
     finally:
         _cleanup(mcp_tool, "srv")
+
+
+def test_circuit_breaker_ignores_tool_application_errors(monkeypatch, tmp_path):
+    """Tool-level application/validation errors returned in the payload
+    (e.g., isError=True with 'Input validation error') indicate a connected,
+    responding MCP server and must NOT increment the circuit breaker.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    async def _call_tool_validation_error(*a, **kw):
+        result = MagicMock()
+        result.isError = True
+        block = MagicMock()
+        block.text = "Input validation error: 'title' is a required property"
+        result.content = [block]
+        result.structuredContent = None
+        return result
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_validation_error)
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        handler = _make_tool_handler("srv", "memory_save", 10.0)
+
+        # Call tool 5 times with validation errors
+        for _ in range(5):
+            res = handler({})
+            parsed = json.loads(res)
+            assert "error" in parsed
+
+        # The server error count should remain 0 because the server is reachable and responding
+        assert mcp_tool._server_error_counts.get("srv", 0) == 0
+    finally:
+        _cleanup(mcp_tool, "srv")
+

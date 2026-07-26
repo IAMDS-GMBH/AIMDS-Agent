@@ -25,6 +25,28 @@ const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
 export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
 
+export const SLIDE_IN_STEPS = VERB_PAD_LEN
+export const SLIDE_HOLD_STEPS = 18
+export const SLIDE_OUT_STEPS = VERB_PAD_LEN
+export const TOTAL_SLIDE_STEPS = SLIDE_IN_STEPS + SLIDE_HOLD_STEPS + SLIDE_OUT_STEPS
+
+export const formatSlidingVerb = (verb: string, step: number): string => {
+  const padded = padVerb(verb)
+  const currentStep = ((step % TOTAL_SLIDE_STEPS) + TOTAL_SLIDE_STEPS) % TOTAL_SLIDE_STEPS
+
+  if (currentStep < SLIDE_IN_STEPS) {
+    const offset = SLIDE_IN_STEPS - currentStep
+    return ' '.repeat(offset) + padded.slice(0, VERB_PAD_LEN - offset)
+  }
+
+  if (currentStep < SLIDE_IN_STEPS + SLIDE_HOLD_STEPS) {
+    return padded
+  }
+
+  const outStep = currentStep - (SLIDE_IN_STEPS + SLIDE_HOLD_STEPS) + 1
+  return padded.slice(outStep) + ' '.repeat(outStep)
+}
+
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
 const EMOJI_FRAMES = ['⚕ ', '🌀', '🤔', '✨', '🍵', '🔮']
@@ -118,7 +140,7 @@ export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean):
 
 function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: null | number; style: IndicatorStyle }) {
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
-  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
+  const [animStep, setAnimStep] = useState(0)
   const [now, setNow] = useState(() => Date.now())
 
   // Pre-compute cadence + verb-visibility for the active style so an
@@ -130,9 +152,8 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   useEffect(() => {
     const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
     const clock = setInterval(() => setNow(Date.now()), 1000)
-    // Verb timer is gated on `showVerb` — `unicode` style hides the verb
-    // entirely, so cycling `verbTick` would be an avoidable re-render.
-    const verb = showVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
+    // Verb slide animation timer (50ms per step)
+    const verb = showVerb ? setInterval(() => setAnimStep(s => s + 1), 50) : null
 
     return () => {
       clearInterval(glyph)
@@ -145,8 +166,10 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   }, [intervalMs, showVerb])
 
   const { frame } = renderIndicator(style, tick)
-  const verb = VERBS[verbTick % VERBS.length] ?? ''
-  const verbSegment = showVerb ? ` ${padVerb(verb)}` : ''
+  const verbIndex = Math.floor(animStep / TOTAL_SLIDE_STEPS)
+  const verb = VERBS[verbIndex % VERBS.length] ?? ''
+  const verbText = formatSlidingVerb(verb, animStep)
+  const verbSegment = showVerb ? ` ${verbText}` : ''
   // Leading space keeps a gap between the frame and the duration when the
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
   // IS shown, its trailing padding already provides the gap, so the extra

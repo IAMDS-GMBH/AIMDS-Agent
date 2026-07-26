@@ -79,3 +79,60 @@ def test_sync_filesystem_vault():
         assert results[0]["slug"] == "test-obsidian-note"
         assert "Lokaler Vault Inhalt" in results[0]["content"]
 
+
+def test_sync_skills_vault(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        db_path = tmp_path / "vault_index.sqlite"
+
+        fake_skills = [
+            {
+                "name": "m365-calendar",
+                "category": "msoffice",
+                "description": "Verwalte Termine, Kalender und Abwesenheiten in Microsoft Outlook",
+                "tags": ["outlook", "termin", "kalender"],
+                "content": "Skill instructions for m365-calendar",
+            }
+        ]
+
+        def _fake_find_skills(*a, **kw):
+            return fake_skills
+
+        monkeypatch.setattr("tools.skills_tool._find_all_skills", _fake_find_skills)
+
+        index = VaultMetaIndex(db_path=db_path)
+        count = index.sync_skills_vault()
+        assert count == 1
+
+        results = index.hybrid_search("Outlook Termine Kalender")
+        assert len(results) >= 1
+        assert results[0]["slug"] == "skill:m365-calendar"
+
+
+def test_sync_mcp_tools(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        db_path = tmp_path / "vault_index.sqlite"
+
+        fake_mcp_meta = {
+            "MSOffice365MCP": {
+                "keywords": ["outlook", "calendar", "event", "email"],
+                "tools": ["m365_get_events", "m365_send_mail"],
+            }
+        }
+
+        def _fake_get_mcp_meta():
+            return fake_mcp_meta
+
+        monkeypatch.setattr("tools.mcp_tool.get_mcp_server_metadata", _fake_get_mcp_meta)
+
+        index = VaultMetaIndex(db_path=db_path)
+        count = index.sync_mcp_tools()
+        assert count == 1
+
+        results = index.hybrid_search("Outlook Calendar Mail")
+        assert len(results) >= 1
+        assert results[0]["slug"] == "mcp:MSOffice365MCP"
+
+
+

@@ -356,6 +356,55 @@ def _get_dynamic_mcp_keywords_map() -> Dict[str, List[str]]:
         return {}
 
 
+def _get_dynamic_skill_keywords_map() -> Dict[str, List[str]]:
+    """Dynamically extract semantic query term expansions from installed and bundled skills.
+
+    Parses skill names, categories, tags, and descriptions to build reciprocal
+    keyword mappings so queries match relevant skills semantically without needing
+    manually maintained static synonym lists.
+    """
+    try:
+        from tools.skills_tool import _find_all_skills
+        skills = _find_all_skills(skip_disabled=True)
+    except Exception:
+        return {}
+
+    mapping: Dict[str, set[str]] = {}
+
+    def _add_link(term: str, target: str) -> None:
+        t = term.lower().strip()
+        tg = target.lower().strip()
+        if len(t) >= 2 and len(tg) >= 2 and t != tg:
+            mapping.setdefault(t, set()).add(tg)
+
+    for s in skills:
+        if not isinstance(s, dict):
+            continue
+        name = str(s.get("name") or "").strip()
+        if not name:
+            continue
+
+        category = str(s.get("category") or "").strip()
+        desc = str(s.get("description") or "").strip()
+        tags = s.get("tags") or []
+        tag_tokens = [str(t).strip().lower() for t in tags if str(t).strip()] if isinstance(tags, list) else [str(tags).strip().lower()]
+
+        name_parts = [p for p in re.split(r"[_\-/\s]+", name.lower()) if len(p) >= 2]
+        desc_tokens = _tokenize(desc)
+        cat_tokens = _tokenize(category)
+
+        all_tokens = set(name_parts) | set(tag_tokens) | set(cat_tokens) | set(desc_tokens)
+
+        for tok in all_tokens:
+            for name_p in name_parts:
+                _add_link(tok, name_p)
+                _add_link(name_p, tok)
+            for tag_p in tag_tokens:
+                _add_link(tok, tag_p)
+
+    return {k: list(v) for k, v in mapping.items()}
+
+
 def _get_mcp_server_metadata() -> Dict[str, Dict[str, Any]]:
     try:
         from tools.mcp_tool import get_mcp_server_metadata
@@ -503,14 +552,17 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
     if not query_tokens:
         return []
 
-    # Expand query tokens with synonyms (multilingual German/English intents + dynamic MCP keywords)
+    # Expand query tokens with synonyms (multilingual German/English intents + dynamic MCP/Skill keywords)
     expanded_tokens = set(query_tokens)
     dynamic_mcp = _get_dynamic_mcp_keywords_map()
+    dynamic_skills = _get_dynamic_skill_keywords_map()
     for qt in query_tokens:
         if qt in _GERMAN_SYNONYMS:
             expanded_tokens.update(_GERMAN_SYNONYMS[qt])
         if qt in dynamic_mcp:
             expanded_tokens.update(dynamic_mcp[qt])
+        if qt in dynamic_skills:
+            expanded_tokens.update(dynamic_skills[qt])
     query_tokens = list(expanded_tokens)
 
     query_lower = query.lower().strip()

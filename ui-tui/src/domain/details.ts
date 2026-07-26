@@ -20,9 +20,25 @@ export const SECTION_NAMES = ['thinking', 'tools', 'subagents', 'activity'] as c
 //
 // Opt out of any of these with `display.sections.<name>` in config.yaml
 // or at runtime via `/details <name> collapsed|hidden`.
+export const isDevEnvironment = (info?: { model?: string; profile_name?: string } | null): boolean => {
+  if (typeof process !== 'undefined' && (process.env?.HERMES_DEV_MODE || process.env?.HERMES_DEV_CREDITS)) {
+    return true
+  }
+  if (!info) return false
+  const model = (info.model || '').toLowerCase()
+  const profile = (info.profile_name || '').toLowerCase()
+  return model.includes('dev') || profile.includes('dev')
+}
+
+export const getSectionDefaults = (info?: { model?: string; profile_name?: string } | null): SectionVisibility => ({
+  thinking: 'expanded',
+  tools: isDevEnvironment(info) ? 'expanded' : 'collapsed',
+  activity: 'hidden'
+})
+
 const SECTION_DEFAULTS: SectionVisibility = {
   thinking: 'expanded',
-  tools: 'expanded',
+  tools: 'collapsed',
   activity: 'hidden'
 }
 
@@ -70,7 +86,8 @@ export const sectionMode = (
   name: SectionName,
   global: DetailsMode,
   sections?: SectionVisibility,
-  commandOverride = false
-): DetailsMode => sections?.[name] ?? (commandOverride ? global : (SECTION_DEFAULTS[name] ?? global))
+  commandOverride = false,
+  info?: { model?: string; profile_name?: string } | null
+): DetailsMode => sections?.[name] ?? (commandOverride ? global : (getSectionDefaults(info)[name] ?? global))
 
 export const nextDetailsMode = (m: DetailsMode): DetailsMode => MODES[(MODES.indexOf(m) + 1) % MODES.length]!

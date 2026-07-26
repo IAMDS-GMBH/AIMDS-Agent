@@ -756,3 +756,39 @@ class TestDynamicMCPKeywordIndexing:
             assert len(results) >= 1, f"Failed for query {query}"
             assert results[0].name == "m365_get_events"
 
+    def test_dynamic_skill_keywords_expansion(self, monkeypatch):
+        from tools.tool_search import _get_dynamic_skill_keywords_map, build_catalog, search_catalog
+
+        fake_skills = [
+            {
+                "name": "blogwatcher",
+                "category": "research",
+                "description": "Monitore RSS Feeds und erstelle Zusammenfassungen von Blogs",
+                "tags": ["rss", "feed", "blog"],
+            }
+        ]
+
+        def _fake_find_skills(*a, **kw):
+            return fake_skills
+
+        monkeypatch.setattr("tools.skills_tool._find_all_skills", _fake_find_skills)
+
+        mapping = _get_dynamic_skill_keywords_map()
+        assert "blog" in mapping or "rss" in mapping
+
+        tool_defs = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "blogwatcher",
+                    "description": "Monitore RSS Feeds und erstelle Zusammenfassungen von Blogs",
+                    "parameters": {},
+                },
+            }
+        ]
+        catalog = build_catalog(tool_defs)
+        results = search_catalog(catalog, query="rss feed")
+        assert len(results) >= 1
+        assert results[0].name == "blogwatcher"
+
+
