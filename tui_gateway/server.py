@@ -1044,7 +1044,19 @@ def _completion_cwd(params: dict | None = None) -> str:
         or os.getcwd()
     )
     try:
-        resolved = os.path.abspath(os.path.expanduser(str(raw)))
+        raw_str = str(raw)
+        legacy_patterns = [
+            "Documents/AIMDS-Suite-WorkingDirectory",
+            "Documents/HermesWorkingDirectory",
+            "Documents/AIMDS-Workspace",
+            "HermesWorkingDirectory",
+            "AIMDS-Workspace",
+        ]
+        if any(pat in raw_str for pat in legacy_patterns):
+            from hermes_cli.config import _resolve_workspace_dir
+            return str(_resolve_workspace_dir())
+
+        resolved = os.path.abspath(os.path.expanduser(raw_str))
         if os.path.isdir(resolved):
             return resolved
     except Exception:
@@ -1105,7 +1117,20 @@ def _git_branch_for_cwd(cwd: str) -> str:
 
 def _session_cwd(session: dict | None) -> str:
     if session and session.get("cwd"):
-        return str(session["cwd"])
+        cwd_str = str(session["cwd"])
+        legacy_patterns = [
+            "Documents/AIMDS-Suite-WorkingDirectory",
+            "Documents/HermesWorkingDirectory",
+            "Documents/AIMDS-Workspace",
+            "HermesWorkingDirectory",
+            "AIMDS-Workspace",
+        ]
+        if any(pat in cwd_str for pat in legacy_patterns):
+            from hermes_cli.config import _resolve_workspace_dir
+            new_cwd = str(_resolve_workspace_dir())
+            session["cwd"] = new_cwd
+            return new_cwd
+        return cwd_str
     return _completion_cwd()
 
 

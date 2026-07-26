@@ -1019,6 +1019,32 @@ class SessionDB:
         except sqlite3.OperationalError as exc:
             logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
 
+        # ── Migrate legacy cwd paths in sessions table ──────────────────
+        try:
+            cursor.execute(
+                """
+                UPDATE sessions
+                SET cwd = REPLACE(cwd, '/Documents/HermesWorkingDirectory', '/AIMDS-Suite-WorkingDirectory')
+                WHERE cwd LIKE '%/Documents/HermesWorkingDirectory%'
+                """
+            )
+            cursor.execute(
+                """
+                UPDATE sessions
+                SET cwd = REPLACE(cwd, '/Documents/AIMDS-Suite-WorkingDirectory', '/AIMDS-Suite-WorkingDirectory')
+                WHERE cwd LIKE '%/Documents/AIMDS-Suite-WorkingDirectory%'
+                """
+            )
+            cursor.execute(
+                """
+                UPDATE sessions
+                SET cwd = REPLACE(cwd, '/Documents/AIMDS-Workspace', '/AIMDS-Suite-WorkingDirectory')
+                WHERE cwd LIKE '%/Documents/AIMDS-Workspace%'
+                """
+            )
+        except Exception as exc:
+            logger.debug("session cwd data migration skipped: %s", exc)
+
         # Deferred indexes that reference the reconciler-added ``active``
         # column (idx_messages_session_active) — same ordering constraint.
         cursor.executescript(DEFERRED_INDEX_SQL)
