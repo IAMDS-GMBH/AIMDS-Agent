@@ -2320,7 +2320,7 @@ DEFAULT_CONFIG = {
             "threshold_pct": 10,
             # When the model calls tool_search without a ``limit`` argument,
             # how many hits to return. Range 1..max_search_limit.
-            "search_default_limit": 5,
+            "search_default_limit": 8,
             # Hard upper bound the model can request via ``limit``. Range 1..50.
             "max_search_limit": 20,
         },

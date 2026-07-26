@@ -18,7 +18,7 @@ tools:
   tool_search:
     enabled: on            # AIMDS default: always defer non-core tool schemas
     threshold_pct: 10      # bleibt relevant für spätere Umschaltung auf "auto"
-    search_default_limit: 5
+    search_default_limit: 8
     max_search_limit: 20
 
 # Claude/Anthropic Prompt Caching (wenn vom aktiven Modell/Provider unterstützt)

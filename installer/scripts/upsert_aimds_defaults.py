@@ -146,7 +146,7 @@ def upsert_aimds_defaults(config: dict) -> dict:
     tool_search = _ensure_dict(tools, "tool_search")
     tool_search["enabled"] = "on"
     tool_search["threshold_pct"] = 10
-    tool_search["search_default_limit"] = 5
+    tool_search["search_default_limit"] = 8
     tool_search["max_search_limit"] = 20
 
     prompt_caching = _ensure_dict(cfg, "prompt_caching")
