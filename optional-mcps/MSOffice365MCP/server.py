@@ -338,97 +338,69 @@ def m365_list_calendars(top: int = 20) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def m365_list_events(
-    calendar_id: Optional[str] = None,
-    top: int = 10,
-    start_datetime_iso: Optional[str] = None,
-    end_datetime_iso: Optional[str] = None,
-    user_email: Optional[str] = None,
+def m365_get_events(
+    calendar: Optional[str] = None,
+    start_time_iso: Optional[str] = None,
+    end_time_iso: Optional[str] = None,
+    top: int = 20,
 ) -> Dict[str, Any]:
-    """List upcoming calendar events in Outlook Calendar or a shared calendar (e.g. Officezeiten / URLAUB).
+    """Get events from any Outlook calendar (default, shared by name 'URLAUB'/'Officezeiten', calendar ID, or user email).
 
     Args:
-        calendar_id: Optional ID of a specific calendar (from m365_list_calendars).
+        calendar: Optional calendar name (e.g. 'URLAUB', 'Officezeiten'), calendar ID, or user email address. Omit for default calendar.
+        start_time_iso: Optional start date/time (ISO format) for date range filtering.
+        end_time_iso: Optional end date/time (ISO format) for date range filtering.
         top: Max number of events to return.
-        start_datetime_iso: Optional start date/time (ISO format) for calendarView range.
-        end_datetime_iso: Optional end date/time (ISO format) for calendarView range.
-        user_email: Optional user email if accessing another user's or shared mailbox calendar directly.
     """
-    if user_email:
-        base_path = f"/users/{user_email}/calendars/{calendar_id}" if calendar_id else f"/users/{user_email}/calendar"
+    target = (calendar or "").strip()
+    matched_cal_id: Optional[str] = None
+    matched_cal_name: Optional[str] = None
+    target_user_email: Optional[str] = None
+
+    if target:
+        if "@" in target:
+            target_user_email = target
+        else:
+            cals = m365_list_calendars(top=50)
+            if "value" in cals and isinstance(cals["value"], list):
+                target_lower = target.lower()
+                for c in cals["value"]:
+                    c_id = str(c.get("id") or "")
+                    c_name = str(c.get("name") or "")
+                    if c_id == target or target_lower in c_name.lower() or c_name.lower() in target_lower:
+                        matched_cal_id = c_id
+                        matched_cal_name = c_name
+                        break
+            if not matched_cal_id:
+                matched_cal_id = target
+
+    if target_user_email:
+        base_path = f"/users/{target_user_email}/calendar"
+    elif matched_cal_id:
+        base_path = f"/me/calendars/{matched_cal_id}"
     else:
-        base_path = f"/me/calendars/{calendar_id}" if calendar_id else "/me/calendar"
+        base_path = "/me/calendar"
 
     params: Dict[str, Any] = {"$select": "id,subject,start,end,location,organizer,attendees,isAllDay,categories"}
 
-    if start_datetime_iso and end_datetime_iso:
-        params["startDateTime"] = start_datetime_iso
-        params["endDateTime"] = end_datetime_iso
+    if start_time_iso and end_time_iso:
+        params["startDateTime"] = start_time_iso
+        params["endDateTime"] = end_time_iso
         endpoint = f"{base_path}/calendarView"
     else:
         params["$top"] = min(top, 50)
         endpoint = f"{base_path}/events"
 
-    return _graph_request("GET", endpoint, params=params)
+    res = _graph_request("GET", endpoint, params=params)
+    if matched_cal_name:
+        res["resolved_calendar_name"] = matched_cal_name
+    return res
 
 
 @mcp.tool()
-def m365_get_shared_calendar_events(
-    calendar_name_or_id: str,
-    start_datetime_iso: Optional[str] = None,
-    end_datetime_iso: Optional[str] = None,
-    top: int = 20,
-) -> Dict[str, Any]:
-    """Get events from a shared calendar by name (e.g. 'URLAUB', 'Officezeiten', 'Office Hours', 'Urlaub') or calendar ID / user email.
-
-    Args:
-        calendar_name_or_id: Name of the shared calendar (case-insensitive substring match), calendar ID, or user email address.
-        start_datetime_iso: Optional start date/time (ISO format) for date range query.
-        end_datetime_iso: Optional end date/time (ISO format) for date range query.
-        top: Max events to return.
-    """
-    target = calendar_name_or_id.strip()
-
-    cals = m365_list_calendars(top=50)
-    matched_cal_id: Optional[str] = None
-    cal_name_match: Optional[str] = None
-
-    if "value" in cals and isinstance(cals["value"], list):
-        target_lower = target.lower()
-        for cal in cals["value"]:
-            c_id = cal.get("id")
-            c_name = str(cal.get("name") or "")
-            if c_id == target or target_lower in c_name.lower() or c_name.lower() in target_lower:
-                matched_cal_id = c_id
-                cal_name_match = c_name
-                break
-
-    if matched_cal_id:
-        res = m365_list_events(
-            calendar_id=matched_cal_id,
-            top=top,
-            start_datetime_iso=start_datetime_iso,
-            end_datetime_iso=end_datetime_iso,
-        )
-        res["resolved_calendar_name"] = cal_name_match
-        res["resolved_calendar_id"] = matched_cal_id
-        return res
-
-    if "@" in target:
-        res = m365_list_events(
-            user_email=target,
-            top=top,
-            start_datetime_iso=start_datetime_iso,
-            end_datetime_iso=end_datetime_iso,
-        )
-        res["resolved_user_email"] = target
-        return res
-
-    return {
-        "error": f"Calendar '{calendar_name_or_id}' not found in user's calendar list.",
-        "available_calendars": [c.get("name") for c in cals.get("value", []) if isinstance(c, dict)],
-        "suggestion": "Use m365_list_calendars to inspect all accessible calendar names and IDs.",
-    }
+def m365_list_events(top: int = 10) -> Dict[str, Any]:
+    """List upcoming events in default Outlook Calendar (alias for m365_get_events)."""
+    return m365_get_events(top=top)
 
 
 @mcp.tool()
@@ -439,8 +411,7 @@ def m365_create_event(
     time_zone: Optional[str] = None,
     attendees: Optional[List[str]] = None,
     body: Optional[str] = None,
-    calendar_id: Optional[str] = None,
-    user_email: Optional[str] = None,
+    calendar: Optional[str] = None,
     is_all_day: bool = False,
     categories: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
@@ -453,8 +424,7 @@ def m365_create_event(
         time_zone: Time zone name (defaults to system/configured timezone).
         attendees: List of attendee email addresses.
         body: Optional description text.
-        calendar_id: Optional ID of the specific/shared calendar to create the event in.
-        user_email: Optional user email if creating in another user's / shared mailbox calendar.
+        calendar: Optional calendar name ('URLAUB', 'Officezeiten'), ID, or user email to create the event in.
         is_all_day: Set to True for all-day events (e.g. vacation / URLAUB entries).
         categories: Optional list of category tags.
     """
@@ -474,10 +444,32 @@ def m365_create_event(
     if categories:
         payload["categories"] = categories
 
-    if user_email:
-        endpoint = f"/users/{user_email}/calendars/{calendar_id}/events" if calendar_id else f"/users/{user_email}/calendar/events"
+    target = (calendar or "").strip()
+    target_cal_id: Optional[str] = None
+    target_user_email: Optional[str] = None
+
+    if target:
+        if "@" in target:
+            target_user_email = target
+        else:
+            cals = m365_list_calendars(top=50)
+            if "value" in cals and isinstance(cals["value"], list):
+                target_lower = target.lower()
+                for c in cals["value"]:
+                    c_id = str(c.get("id") or "")
+                    c_name = str(c.get("name") or "")
+                    if c_id == target or target_lower in c_name.lower() or c_name.lower() in target_lower:
+                        target_cal_id = c_id
+                        break
+            if not target_cal_id:
+                target_cal_id = target
+
+    if target_user_email:
+        endpoint = f"/users/{target_user_email}/calendar/events"
+    elif target_cal_id:
+        endpoint = f"/me/calendars/{target_cal_id}/events"
     else:
-        endpoint = f"/me/calendars/{calendar_id}/events" if calendar_id else "/me/calendar/events"
+        endpoint = "/me/calendar/events"
 
     return _graph_request("POST", endpoint, json_data=payload)
 

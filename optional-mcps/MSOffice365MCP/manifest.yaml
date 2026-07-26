@@ -47,8 +47,8 @@ tools:
     - m365_list_emails
     - m365_get_email
     - m365_list_calendars
+    - m365_get_events
     - m365_list_events
-    - m365_get_shared_calendar_events
     - m365_create_event
     - m365_list_chats
     - m365_get_chat_members
