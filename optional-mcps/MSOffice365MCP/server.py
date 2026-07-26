@@ -163,9 +163,11 @@ def _graph_request(
     extra_headers: Optional[Dict[str, str]] = None,
 ) -> Any:
     token = _get_access_token()
+    tz_name = _get_timezone_name()
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
+        "Prefer": f'outlook.timezone="{tz_name}"',
     }
     if extra_headers:
         headers.update(extra_headers)

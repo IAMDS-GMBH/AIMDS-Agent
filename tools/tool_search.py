@@ -187,6 +187,15 @@ def is_deferrable_tool_name(name: str) -> bool:
         or name.endswith("memory_search")
         or name.endswith("memory_read")
         or name.endswith("memory_list")
+        or name.endswith("memory_manage")
+        or name.endswith("memory_backlinks")
+        or name.endswith("memory_meta")
+        or name.endswith("memory_agent")
+        or name.endswith("memory_summarize_session")
+        or name.endswith("memory_upsert")
+        or name.endswith("memory_get")
+        or name.endswith("memory_delete")
+        or name.endswith("memory_transfer")
     ):
         return False
     # Check registry toolset for MCP prefix.
@@ -442,6 +451,12 @@ _GERMAN_SYNONYMS: Dict[str, List[str]] = {
     "onedrive": ["m365", "drive", "file"],
     "notiz": ["memory", "note", "save", "read"],
     "notizen": ["memory", "note", "save", "read"],
+    "gedächtnis": ["memory", "note", "save", "read", "search"],
+    "gedaechtnis": ["memory", "note", "save", "read", "search"],
+    "erinnerung": ["memory", "note", "save", "read", "search"],
+    "wissensbasis": ["memory", "note", "kb", "search", "read"],
+    "vektor": ["vector", "memory", "search", "hybrid"],
+    "vector": ["vector", "memory", "search", "hybrid"],
     "aufgabe": ["todo", "task", "job", "kanban", "issue", "jira"],
     "aufgaben": ["todo", "task", "job", "kanban", "issue", "jira"],
     "ticket": ["issue", "jira", "bug", "task"],
