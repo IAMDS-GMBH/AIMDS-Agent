@@ -140,14 +140,63 @@ class VaultMetaIndex:
                 pass
             conn.commit()
 
-    def sync_mirror_store(self, jsonl_path: Optional[Path] = None) -> int:
-        """Sync all records from MCP_MIRROR_MEMORY.jsonl into SQLite."""
-        if jsonl_path is None:
-            jsonl_path = get_hermes_home() / "memories" / "MCP_MIRROR_MEMORY.jsonl"
-        if not jsonl_path.exists():
+    def sync_filesystem_vault(self, vault_dir: Optional[Path] = None) -> int:
+        """Scan and index all local markdown (.md) memory notes from ~/.hermes/memories/."""
+        if vault_dir is None:
+            vault_dir = get_hermes_home() / "memories"
+        if not vault_dir.exists():
             return 0
 
         count = 0
+        md_files = list(vault_dir.rglob("*.md"))
+        for p in md_files:
+            try:
+                text = p.read_text(encoding="utf-8")
+                raw = str(text or "")
+                fm: Dict[str, Any] = {}
+                body = raw.strip()
+                if raw.startswith("---") and "---" in raw[3:]:
+                    parts = raw.split("---", 2)
+                    if len(parts) >= 3:
+                        try:
+                            fm = json.loads(parts[1].strip())
+                        except Exception:
+                            fm = {}
+                        body = parts[2].strip()
+
+                slug = str(fm.get("slug") or p.stem).strip()
+                scope = str(fm.get("scope") or ("user" if p.parent.name == "user" else "project")).strip()
+                mem_type = str(fm.get("type") or ("profile" if scope == "user" else "notes")).strip()
+                title = str(fm.get("title") or p.stem.replace("-", " ").strip()).strip()
+                tags = fm.get("tags") or []
+                updated_at = int(fm.get("updated_at") or int(p.stat().st_mtime))
+
+                record = {
+                    "id": str(p),
+                    "slug": slug,
+                    "path": str(p),
+                    "scope": scope,
+                    "type": mem_type,
+                    "title": title,
+                    "content": body,
+                    "tags": tags if isinstance(tags, list) else [str(tags)],
+                    "updated_at": updated_at,
+                }
+                self.sync_record(record)
+                count += 1
+            except Exception:
+                continue
+        return count
+
+    def sync_mirror_store(self, jsonl_path: Optional[Path] = None) -> int:
+        """Sync all records from MCP_MIRROR_MEMORY.jsonl and local filesystem vault into SQLite."""
+        if jsonl_path is None:
+            jsonl_path = get_hermes_home() / "memories" / "MCP_MIRROR_MEMORY.jsonl"
+
+        count = self.sync_filesystem_vault()
+        if not jsonl_path.exists():
+            return count
+
         try:
             for line in jsonl_path.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
@@ -161,7 +210,7 @@ class VaultMetaIndex:
                 except Exception:
                     continue
         except OSError:
-            return 0
+            pass
         return count
 
     def hybrid_search(

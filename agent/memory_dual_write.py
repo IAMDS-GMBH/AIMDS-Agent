@@ -744,6 +744,11 @@ def build_mirror_recall_context(
         return ""
 
     try:
+        reconcile_filesystem_memory_to_structured()
+    except Exception:
+        pass
+
+    try:
         from agent.memory_vault_index import VaultMetaIndex
         index = VaultMetaIndex()
         index.sync_mirror_store()

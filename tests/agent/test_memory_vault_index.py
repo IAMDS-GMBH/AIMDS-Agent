@@ -54,3 +54,28 @@ def test_vault_meta_index_sync_and_hybrid_search():
         block = index.build_recall_block("vector search", max_chars=500)
         assert "Relevant saved memories" in block
         assert "Hermes Vector Search Optimization" in block
+
+
+def test_sync_filesystem_vault():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        db_path = tmp_path / "vault_index.sqlite"
+        vault_dir = tmp_path / "memories"
+        user_dir = vault_dir / "user"
+        user_dir.mkdir(parents=True, exist_ok=True)
+
+        note_file = user_dir / "test-obsidian-note.md"
+        note_file.write_text(
+            '---\n{"slug": "test-obsidian-note", "title": "Obsidian Vault Test", "type": "notes", "scope": "user"}\n---\nLokaler Vault Inhalt mit Vektor Indexing.',
+            encoding="utf-8"
+        )
+
+        index = VaultMetaIndex(db_path=db_path)
+        indexed_count = index.sync_filesystem_vault(vault_dir=vault_dir)
+        assert indexed_count == 1
+
+        results = index.hybrid_search("Obsidian Vault Vektor")
+        assert len(results) >= 1
+        assert results[0]["slug"] == "test-obsidian-note"
+        assert "Lokaler Vault Inhalt" in results[0]["content"]
+
