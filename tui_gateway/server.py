@@ -1046,13 +1046,13 @@ def _completion_cwd(params: dict | None = None) -> str:
     try:
         raw_str = str(raw)
         legacy_patterns = [
-            "Documents/AIMDS-Suite-WorkingDirectory",
             "Documents/HermesWorkingDirectory",
             "Documents/AIMDS-Workspace",
             "HermesWorkingDirectory",
             "AIMDS-Workspace",
+            "AIMDS-Suite-WorkingDirectory",
         ]
-        if any(pat in raw_str for pat in legacy_patterns):
+        if any(pat in raw_str for pat in legacy_patterns) and "Documents/AIMDS-Suite-WorkingDirectory" not in raw_str:
             from hermes_cli.config import _resolve_workspace_dir
             return str(_resolve_workspace_dir())
 
@@ -1119,13 +1119,13 @@ def _session_cwd(session: dict | None) -> str:
     if session and session.get("cwd"):
         cwd_str = str(session["cwd"])
         legacy_patterns = [
-            "Documents/AIMDS-Suite-WorkingDirectory",
             "Documents/HermesWorkingDirectory",
             "Documents/AIMDS-Workspace",
             "HermesWorkingDirectory",
             "AIMDS-Workspace",
+            "AIMDS-Suite-WorkingDirectory",
         ]
-        if any(pat in cwd_str for pat in legacy_patterns):
+        if any(pat in cwd_str for pat in legacy_patterns) and "Documents/AIMDS-Suite-WorkingDirectory" not in cwd_str:
             from hermes_cli.config import _resolve_workspace_dir
             new_cwd = str(_resolve_workspace_dir())
             session["cwd"] = new_cwd

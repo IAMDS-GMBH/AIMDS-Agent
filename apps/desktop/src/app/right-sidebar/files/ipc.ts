@@ -137,14 +137,22 @@ async function filterIgnored(entries: HermesReadDirEntry[], rootPath: string, di
   return rules.length > 0 ? entries.filter(entry => !ignoredBy(rules, entry)) : entries
 }
 
+/** Hide dotfiles/dot-directories (`.git`, `.config`, `.aws`, etc.) from the
+ *  workspace file browser — noise for end users who never need to see them
+ *  and shouldn't be nudged to poke around inside them. */
+function filterHidden(entries: HermesReadDirEntry[]) {
+  return entries.filter(entry => !entry.name.startsWith('.'))
+}
+
 export async function readProjectDir(dirPath: string, rootPath = dirPath): Promise<HermesReadDirResult> {
   if (!window.hermesDesktop) {
     return { entries: [], error: 'no-bridge' }
   }
 
   const result = await window.hermesDesktop.readDir(dirPath)
+  const visible = filterHidden(result.entries)
 
-  return { ...result, entries: await filterIgnored(result.entries, rootPath, dirPath) }
+  return { ...result, entries: await filterIgnored(visible, rootPath, dirPath) }
 }
 
 export function clearProjectDirCache(rootPath?: string) {

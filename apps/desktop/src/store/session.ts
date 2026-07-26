@@ -20,18 +20,17 @@ export const getRememberedWorkspaceCwd = (): string => {
   let val = storedString(WORKSPACE_CWD_KEY)?.trim() || ''
   if (!val) return ''
 
-  const legacyKeywords = [
-    'Documents/AIMDS-Suite-WorkingDirectory',
-    'Documents/HermesWorkingDirectory',
-    'Documents/AIMDS-Workspace',
-    'HermesWorkingDirectory',
-    'AIMDS-Workspace'
-  ]
+  const legacyFolderNames = ['HermesWorkingDirectory', 'AIMDS-Workspace', 'AIMDS-Suite-WorkingDirectory']
+  const alreadyCorrect = val.includes('Documents/AIMDS-Suite-WorkingDirectory')
 
-  if (legacyKeywords.some(kw => val.includes(kw))) {
-    const parts = val.split(/Documents[/\\]/)
-    const homePrefix = parts[0]?.replace(/[/\\]$/, '') || ''
-    val = homePrefix ? `${homePrefix}/AIMDS-Suite-WorkingDirectory` : ''
+  if (!alreadyCorrect && legacyFolderNames.some(name => val.includes(name))) {
+    // Strip an optional "Documents/" segment before the legacy folder name,
+    // then rebuild as <home>/Documents/AIMDS-Suite-WorkingDirectory —
+    // covers both the pre-Documents legacy layout and the short-lived v36
+    // bare-home layout.
+    const match = val.match(/^(.*?)[/\\](?:Documents[/\\])?(?:HermesWorkingDirectory|AIMDS-Workspace|AIMDS-Suite-WorkingDirectory)/)
+    const homePrefix = match?.[1] || ''
+    val = homePrefix ? `${homePrefix}/Documents/AIMDS-Suite-WorkingDirectory` : ''
     if (val) {
       persistString(WORKSPACE_CWD_KEY, val)
     }

@@ -2071,14 +2071,14 @@ function resolveTerminalCwdFromConfig() {
     let val = cwdLine[1].trim().replace(/^['"]|['"]$/g, '')
     if (!val || val === '.' || val === 'auto' || val === 'cwd') return null
     const legacyPatterns = [
-      'Documents/AIMDS-Suite-WorkingDirectory',
       'Documents/HermesWorkingDirectory',
       'Documents/AIMDS-Workspace',
       'HermesWorkingDirectory',
-      'AIMDS-Workspace'
+      'AIMDS-Workspace',
+      'AIMDS-Suite-WorkingDirectory'
     ]
-    if (legacyPatterns.some(kw => val.includes(kw))) {
-      val = path.join(app.getPath('home'), 'AIMDS-Suite-WorkingDirectory')
+    if (legacyPatterns.some(kw => val.includes(kw)) && !val.includes('Documents/AIMDS-Suite-WorkingDirectory')) {
+      val = path.join(app.getPath('home'), 'Documents', 'AIMDS-Suite-WorkingDirectory')
     }
     const resolved = path.resolve(val.startsWith('~') ? val.replace('~', app.getPath('home')) : val)
     return directoryExists(resolved) ? resolved : null
@@ -2088,18 +2088,19 @@ function resolveTerminalCwdFromConfig() {
 }
 
 function hermesWorkingDirectoryPath() {
-  return path.join(app.getPath('home'), 'AIMDS-Suite-WorkingDirectory')
+  return path.join(app.getPath('home'), 'Documents', 'AIMDS-Suite-WorkingDirectory')
 }
 
 function ensureHermesWorkingDirectory() {
   const target = path.resolve(hermesWorkingDirectoryPath())
   if (!directoryExists(target)) {
     const legacyCandidates = [
-      path.join(app.getPath('documents'), 'AIMDS-Suite-WorkingDirectory'),
       path.join(app.getPath('documents'), 'HermesWorkingDirectory'),
       path.join(app.getPath('documents'), 'AIMDS-Workspace'),
       path.join(app.getPath('home'), 'HermesWorkingDirectory'),
-      path.join(app.getPath('home'), 'AIMDS-Workspace')
+      path.join(app.getPath('home'), 'AIMDS-Workspace'),
+      // Short-lived v36 bare-home layout.
+      path.join(app.getPath('home'), 'AIMDS-Suite-WorkingDirectory')
     ]
     for (const candidate of legacyCandidates) {
       if (directoryExists(candidate)) {
@@ -2219,8 +2220,8 @@ function resolveHermesCwd() {
   // and bewilder users when "where did my files go?" is the install dir.
   // The user-configurable default project directory wins over everything,
   // followed by env hints (only honored when packaged if they point at a
-  // real directory), then the default AIMDS-Suite-WorkingDirectory, then
-  // finally the process working directory and home dir.
+  // real directory), then the default Documents/AIMDS-Suite-WorkingDirectory,
+  // then finally the process working directory and home dir.
   const workspaceDefault = path.resolve(hermesWorkingDirectoryPath())
   const candidates = [
     readDefaultProjectDir(),
@@ -2259,15 +2260,15 @@ function sanitizeWorkspaceCwd(cwd) {
   }
 
   const legacyPatterns = [
-    'Documents/AIMDS-Suite-WorkingDirectory',
     'Documents/HermesWorkingDirectory',
     'Documents/AIMDS-Workspace',
     'HermesWorkingDirectory',
-    'AIMDS-Workspace'
+    'AIMDS-Workspace',
+    'AIMDS-Suite-WorkingDirectory'
   ]
   let wasMigrated = false
-  if (legacyPatterns.some(kw => trimmed.includes(kw))) {
-    trimmed = path.join(app.getPath('home'), 'AIMDS-Suite-WorkingDirectory')
+  if (legacyPatterns.some(kw => trimmed.includes(kw)) && !trimmed.includes('Documents/AIMDS-Suite-WorkingDirectory')) {
+    trimmed = path.join(app.getPath('home'), 'Documents', 'AIMDS-Suite-WorkingDirectory')
     wasMigrated = true
   }
 
@@ -2302,14 +2303,14 @@ function readDefaultProjectDir() {
     if (parsed && typeof parsed.dir === 'string' && parsed.dir.trim()) {
       let dirStr = parsed.dir.trim()
       const legacyPatterns = [
-        'Documents/AIMDS-Suite-WorkingDirectory',
         'Documents/HermesWorkingDirectory',
         'Documents/AIMDS-Workspace',
         'HermesWorkingDirectory',
-        'AIMDS-Workspace'
+        'AIMDS-Workspace',
+        'AIMDS-Suite-WorkingDirectory'
       ]
-      if (legacyPatterns.some(kw => dirStr.includes(kw))) {
-        dirStr = path.join(app.getPath('home'), 'AIMDS-Suite-WorkingDirectory')
+      if (legacyPatterns.some(kw => dirStr.includes(kw)) && !dirStr.includes('Documents/AIMDS-Suite-WorkingDirectory')) {
+        dirStr = path.join(app.getPath('home'), 'Documents', 'AIMDS-Suite-WorkingDirectory')
         writeDefaultProjectDir(dirStr)
       }
       const resolved = path.resolve(dirStr)

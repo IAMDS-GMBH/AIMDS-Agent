@@ -768,7 +768,7 @@ def _merge_directory_contents(src: Path, dst: Path) -> None:
 
 def _get_default_workspace_dir() -> Path:
     """Return the default workspace directory path."""
-    return Path("~").expanduser() / "AIMDS-Suite-WorkingDirectory"
+    return Path("~").expanduser() / "Documents" / "AIMDS-Suite-WorkingDirectory"
 
 
 def _resolve_workspace_dir() -> Path:
@@ -1081,7 +1081,7 @@ DEFAULT_CONFIG = {
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",
-        "cwd": "~/AIMDS-Suite-WorkingDirectory",  # Default to AIMDS Suite workspace
+        "cwd": "~/Documents/AIMDS-Suite-WorkingDirectory",  # Default to AIMDS Suite workspace
         "timeout": 180,
         # Environment variables to pass through to sandboxed execution
         # (terminal and execute_code).  Skill-declared required_environment_variables
@@ -2700,7 +2700,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 36,
+    "_config_version": 37,
 }
 
 # =============================================================================
@@ -5464,35 +5464,52 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             f"Legacy provider key migration (v34) failed: {_provider_mig_exc}"
         )
 
-    # ── Version 35 → 36 (+ idempotent): migrate legacy terminal.cwd in config.yaml ──
+    # ── Version 35 → 37 (+ idempotent): keep terminal.cwd under ~/Documents ──
+    # v36 briefly moved the default workspace to a bare ~/AIMDS-Suite-WorkingDirectory
+    # (outside Documents) to avoid cluttering it. User feedback: Documents is the
+    # expected, discoverable location for a workspace folder — reverted in v37.
+    # This migration is idempotent and handles three cases in one pass:
+    #   1. Legacy pre-v36 installs (Documents/HermesWorkingDirectory, etc.)
+    #   2. The short-lived v36 bare-home layout (~/AIMDS-Suite-WorkingDirectory)
+    #   3. Already-correct installs (no-op)
     try:
         config = read_raw_config()
         terminal_cfg = config.get("terminal")
         if isinstance(terminal_cfg, dict):
             current_cwd = str(terminal_cfg.get("cwd") or "").strip()
             home_dir = Path("~").expanduser()
-            target_dir = home_dir / "AIMDS-Suite-WorkingDirectory"
+            target_dir = home_dir / "Documents" / "AIMDS-Suite-WorkingDirectory"
             legacy_keywords = [
                 "Documents/AIMDS-Suite-WorkingDirectory",
                 "Documents/HermesWorkingDirectory",
                 "Documents/AIMDS-Workspace",
                 "HermesWorkingDirectory",
                 "AIMDS-Workspace",
+                "AIMDS-Suite-WorkingDirectory",
             ]
-            if any(kw in current_cwd for kw in legacy_keywords):
+            current_cwd_expanded = (
+                Path(current_cwd).expanduser() if current_cwd else None
+            )
+            already_correct = (
+                current_cwd_expanded is not None
+                and str(current_cwd_expanded) == str(target_dir)
+            )
+            if any(kw in current_cwd for kw in legacy_keywords) and not already_correct:
                 new_cwd = str(target_dir)
 
                 legacy_disk_paths = [
-                    home_dir / "Documents" / "AIMDS-Suite-WorkingDirectory",
                     home_dir / "Documents" / "HermesWorkingDirectory",
                     home_dir / "Documents" / "AIMDS-Workspace",
                     home_dir / "HermesWorkingDirectory",
                     home_dir / "AIMDS-Workspace",
+                    # v36's short-lived bare-home layout
+                    home_dir / "AIMDS-Suite-WorkingDirectory",
                 ]
                 for old_path in legacy_disk_paths:
                     if old_path.exists() and old_path.is_dir() and old_path.resolve() != target_dir.resolve():
                         try:
                             if not target_dir.exists():
+                                target_dir.parent.mkdir(parents=True, exist_ok=True)
                                 old_path.rename(target_dir)
                             else:
                                 _merge_directory_contents(old_path, target_dir)
@@ -5508,7 +5525,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
                 terminal_cfg["cwd"] = new_cwd
                 config["terminal"] = terminal_cfg
-                config["_config_version"] = 36
+                config["_config_version"] = 37
                 save_config(config)
                 results["config_added"].append(
                     f"terminal.cwd migrated to {new_cwd}"
@@ -5517,7 +5534,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     print(f"  ✓ Migrated terminal.cwd to {new_cwd}")
     except Exception as _cwd_mig_exc:
         results["warnings"].append(
-            f"Legacy terminal.cwd migration (v36) failed: {_cwd_mig_exc}"
+            f"Legacy terminal.cwd migration (v37) failed: {_cwd_mig_exc}"
         )
 
     # Check for missing config fields

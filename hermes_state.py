@@ -1020,26 +1020,49 @@ class SessionDB:
             logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
 
         # ── Migrate legacy cwd paths in sessions table ──────────────────
+        # Canonical target is ~/Documents/AIMDS-Suite-WorkingDirectory. Handles:
+        #   - old pre-rename dirs (HermesWorkingDirectory, AIMDS-Workspace)
+        #   - both their Documents-nested and bare-home variants
+        #   - the short-lived v36 bare-home layout (~/AIMDS-Suite-WorkingDirectory)
         try:
             cursor.execute(
                 """
                 UPDATE sessions
-                SET cwd = REPLACE(cwd, '/Documents/HermesWorkingDirectory', '/AIMDS-Suite-WorkingDirectory')
+                SET cwd = REPLACE(cwd, '/Documents/HermesWorkingDirectory', '/Documents/AIMDS-Suite-WorkingDirectory')
                 WHERE cwd LIKE '%/Documents/HermesWorkingDirectory%'
                 """
             )
             cursor.execute(
                 """
                 UPDATE sessions
-                SET cwd = REPLACE(cwd, '/Documents/AIMDS-Suite-WorkingDirectory', '/AIMDS-Suite-WorkingDirectory')
-                WHERE cwd LIKE '%/Documents/AIMDS-Suite-WorkingDirectory%'
+                SET cwd = REPLACE(cwd, '/Documents/AIMDS-Workspace', '/Documents/AIMDS-Suite-WorkingDirectory')
+                WHERE cwd LIKE '%/Documents/AIMDS-Workspace%'
+                """
+            )
+            # Bare-home variants (no /Documents/ prefix) — covers the v36
+            # regression and any pre-Documents legacy layout.
+            cursor.execute(
+                """
+                UPDATE sessions
+                SET cwd = REPLACE(cwd, '/HermesWorkingDirectory', '/Documents/AIMDS-Suite-WorkingDirectory')
+                WHERE cwd LIKE '%/HermesWorkingDirectory%'
+                  AND cwd NOT LIKE '%/Documents/AIMDS-Suite-WorkingDirectory%'
                 """
             )
             cursor.execute(
                 """
                 UPDATE sessions
-                SET cwd = REPLACE(cwd, '/Documents/AIMDS-Workspace', '/AIMDS-Suite-WorkingDirectory')
-                WHERE cwd LIKE '%/Documents/AIMDS-Workspace%'
+                SET cwd = REPLACE(cwd, '/AIMDS-Workspace', '/Documents/AIMDS-Suite-WorkingDirectory')
+                WHERE cwd LIKE '%/AIMDS-Workspace%'
+                  AND cwd NOT LIKE '%/Documents/AIMDS-Suite-WorkingDirectory%'
+                """
+            )
+            cursor.execute(
+                """
+                UPDATE sessions
+                SET cwd = REPLACE(cwd, '/AIMDS-Suite-WorkingDirectory', '/Documents/AIMDS-Suite-WorkingDirectory')
+                WHERE cwd LIKE '%/AIMDS-Suite-WorkingDirectory%'
+                  AND cwd NOT LIKE '%/Documents/AIMDS-Suite-WorkingDirectory%'
                 """
             )
         except Exception as exc:
