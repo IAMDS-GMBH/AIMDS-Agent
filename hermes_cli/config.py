@@ -1081,7 +1081,7 @@ DEFAULT_CONFIG = {
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",
-        "cwd": ".",  # Use current directory
+        "cwd": "~/AIMDS-Suite-WorkingDirectory",  # Default to AIMDS Suite workspace
         "timeout": 180,
         # Environment variables to pass through to sandboxed execution
         # (terminal and execute_code).  Skill-declared required_environment_variables

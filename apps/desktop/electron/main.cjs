@@ -2219,17 +2219,17 @@ function resolveHermesCwd() {
   // and bewilder users when "where did my files go?" is the install dir.
   // The user-configurable default project directory wins over everything,
   // followed by env hints (only honored when packaged if they point at a
-  // real directory), then the default Documents/AIMDS-Suite-WorkingDirectory, then
-  // finally the home dir.
-  const docsWorkspace = path.resolve(hermesWorkingDirectoryPath())
+  // real directory), then the default AIMDS-Suite-WorkingDirectory, then
+  // finally the process working directory and home dir.
+  const workspaceDefault = path.resolve(hermesWorkingDirectoryPath())
   const candidates = [
     readDefaultProjectDir(),
     resolveTerminalCwdFromConfig(),
     process.env.HERMES_DESKTOP_CWD,
+    workspaceDefault,
     IS_PACKAGED ? null : process.env.INIT_CWD,
     IS_PACKAGED ? null : process.cwd(),
-    !IS_PACKAGED ? SOURCE_REPO_ROOT : null,
-    docsWorkspace
+    !IS_PACKAGED ? SOURCE_REPO_ROOT : null
   ]
 
   for (const candidate of candidates) {
@@ -5955,7 +5955,7 @@ ipcMain.handle('hermes:openExternal', (_event, url) => {
 // session spawn (no app restart needed).
 ipcMain.handle('hermes:setting:defaultProjectDir:get', async () => ({
   dir: readDefaultProjectDir(),
-  defaultLabel: app.getPath('home'),
+  defaultLabel: hermesWorkingDirectoryPath(),
   resolvedCwd: resolveHermesCwd()
 }))
 
