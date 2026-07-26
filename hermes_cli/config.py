@@ -2698,7 +2698,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 34,
+    "_config_version": 35,
 }
 
 # =============================================================================
@@ -5460,6 +5460,50 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     except Exception as _provider_mig_exc:
         results["warnings"].append(
             f"Legacy provider key migration (v34) failed: {_provider_mig_exc}"
+        )
+
+    # ── Version 34 → 35 (+ idempotent): migrate legacy terminal.cwd in config.yaml ──
+    try:
+        config = read_raw_config()
+        terminal_cfg = config.get("terminal")
+        if isinstance(terminal_cfg, dict):
+            current_cwd = str(terminal_cfg.get("cwd") or "").strip()
+            legacy_keywords = ["HermesWorkingDirectory", "AIMDS-Workspace"]
+            if any(kw in current_cwd for kw in legacy_keywords):
+                new_cwd = current_cwd
+                for kw in legacy_keywords:
+                    new_cwd = new_cwd.replace(kw, "AIMDS-Suite-WorkingDirectory")
+
+                old_path = Path(current_cwd).expanduser()
+                new_path = Path(new_cwd).expanduser()
+                if old_path.exists() and old_path.is_dir() and old_path != new_path:
+                    try:
+                        if not new_path.exists():
+                            old_path.rename(new_path)
+                        else:
+                            _merge_directory_contents(old_path, new_path)
+                            backup_path = old_path.with_name(
+                                f"{old_path.name}.backup.{int(time.time())}"
+                            )
+                            try:
+                                old_path.rename(backup_path)
+                            except OSError:
+                                shutil.rmtree(old_path, ignore_errors=True)
+                    except Exception:
+                        pass
+
+                terminal_cfg["cwd"] = new_cwd
+                config["terminal"] = terminal_cfg
+                config["_config_version"] = 35
+                save_config(config)
+                results["config_added"].append(
+                    f"terminal.cwd migrated to {new_cwd}"
+                )
+                if not quiet:
+                    print(f"  ✓ Migrated terminal.cwd to {new_cwd}")
+    except Exception as _cwd_mig_exc:
+        results["warnings"].append(
+            f"Legacy terminal.cwd migration (v35) failed: {_cwd_mig_exc}"
         )
 
     # Check for missing config fields

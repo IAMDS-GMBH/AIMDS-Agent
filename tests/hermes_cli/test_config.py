@@ -1357,3 +1357,31 @@ class TestMcpMemorySaveFilterMigration:
             include_other = raw["mcp_servers"]["OTHER"]["tools"]["include"]
             assert "mcp_IAMDS_mcp_memory_memory_save" in include_iamds
             assert "mcp_OTHER_mcp_memory_memory_upsert" in include_other
+
+
+class TestTerminalCwdWorkspaceMigration:
+    """Version 34→35 migrates legacy terminal.cwd in config.yaml."""
+
+    def _write(self, tmp_path, body: str):
+        from hermes_cli.config import _LOAD_CONFIG_CACHE, _RAW_CONFIG_CACHE
+        _LOAD_CONFIG_CACHE.clear()
+        _RAW_CONFIG_CACHE.clear()
+        (tmp_path / "config.yaml").write_text(body)
+
+    def test_migrates_legacy_hermes_working_directory_cwd(self, tmp_path):
+        legacy_dir = tmp_path / "Documents" / "HermesWorkingDirectory"
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        (legacy_dir / "test.txt").write_text("hello", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 34\n"
+                f"terminal:\n  cwd: {legacy_dir}\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            target_dir = tmp_path / "Documents" / "AIMDS-Suite-WorkingDirectory"
+            assert raw["terminal"]["cwd"] == str(target_dir)
+            assert target_dir.exists()
+            assert (target_dir / "test.txt").read_text(encoding="utf-8") == "hello"
