@@ -434,6 +434,12 @@ _GENERIC_SEARCH_TERMS = frozenset({
 })
 
 _GERMAN_SYNONYMS: Dict[str, List[str]] = {
+    "m365": ["m365", "msoffice365", "outlook", "calendar", "event", "email", "teams", "sharepoint"],
+    "office365": ["m365", "msoffice365", "outlook", "calendar", "event", "email", "teams", "sharepoint"],
+    "microsoft": ["m365", "msoffice365", "outlook", "calendar", "event", "email", "teams", "sharepoint"],
+    "sharepoint": ["m365", "sharepoint", "drive", "file", "sites"],
+    "teams": ["m365", "teams", "chat", "channel", "message"],
+    "onedrive": ["m365", "drive", "file"],
     "notiz": ["memory", "note", "save", "read"],
     "notizen": ["memory", "note", "save", "read"],
     "aufgabe": ["todo", "task", "job", "kanban", "issue", "jira"],
