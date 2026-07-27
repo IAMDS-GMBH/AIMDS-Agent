@@ -1,0 +1,99 @@
+name: MCP Catalog Version Check
+
+# Optional catalog MCP servers (optional-mcps/*/manifest.yaml) pin an exact
+# uvx/npx package version deliberately -- see CONTRIBUTING.md#mcp-catalog-version-pinning-policy
+# and the comments in each manifest. That trades "always latest" for
+# reproducibility, but pins that are never revisited quietly rot (missed
+# bugfixes, and worse, missed upstream deprecations like
+# @modelcontextprotocol/server-github's).
+#
+# This workflow is detection-only, mirroring osv-scanner.yml's philosophy:
+# it does NOT bump pins or open PRs automatically. It runs weekly, compares
+# each manifest's pinned version against the package registry's current
+# latest, and opens/updates a single tracking issue listing anything
+# behind. A human decides if/when/how to move each pin -- consistent with
+# why source dependencies are excluded from Dependabot (see dependabot.yml).
+
+on:
+  schedule:
+    # Mondays 06:00 UTC -- same cadence as the dependabot github-actions schedule.
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  check-versions:
+    name: Check pinned MCP catalog versions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Compare pinned versions against registries
+        id: check
+        run: |
+          set -euo pipefail
+
+          REPORT=""
+
+          check_pypi() {
+            local name="$1" pinned="$2"
+            local latest
+            latest=$(curl -fsSL "https://pypi.org/pypi/${name}/json" | python3 -c "import json,sys; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null || echo "unknown")
+            if [ "$latest" != "unknown" ] && [ "$latest" != "$pinned" ]; then
+              REPORT="${REPORT}
+          - **${name}** (PyPI, via uvx): pinned \`${pinned}\`, latest \`${latest}\`"
+            fi
+          }
+
+          check_npm() {
+            local name="$1" pinned="$2"
+            local info latest deprecated
+            info=$(curl -fsSL "https://registry.npmjs.org/${name}/latest" || echo '{}')
+            latest=$(echo "$info" | python3 -c "import json,sys; print(json.load(sys.stdin).get('version','unknown'))" 2>/dev/null || echo "unknown")
+            deprecated=$(echo "$info" | python3 -c "import json,sys; print(json.load(sys.stdin).get('deprecated',''))" 2>/dev/null || echo "")
+            if [ -n "$deprecated" ]; then
+              REPORT="${REPORT}
+          - **${name}** (npm, via npx): ⚠️ package deprecated upstream: ${deprecated}"
+            elif [ "$latest" != "unknown" ] && [ "$latest" != "$pinned" ]; then
+              REPORT="${REPORT}
+          - **${name}** (npm, via npx): pinned \`${pinned}\`, latest \`${latest}\`"
+            fi
+          }
+
+          # Keep this list in sync with optional-mcps/*/manifest.yaml pins.
+          check_pypi "mcp-atlassian" "0.23.0"
+          check_npm "@ivelin-web/tempo-mcp-server" "1.8.0"
+          check_npm "@modelcontextprotocol/server-github" "2025.4.8"
+
+          if [ -n "$REPORT" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            printf '%s\n' "$REPORT" > /tmp/mcp-version-report.md
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update tracking issue
+        if: steps.check.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          BODY="## MCP catalog packages behind upstream
+
+          One or more \`uvx\`/\`npx\`-installed optional MCP servers under \`optional-mcps/\` have a newer upstream release (or a deprecation notice) than the version pinned in their \`manifest.yaml\`.
+
+          $(cat /tmp/mcp-version-report.md)
+
+          Review each and bump the pin deliberately if appropriate -- see \`CONTRIBUTING.md#mcp-catalog-version-pinning-policy\`. This issue is filed automatically on a weekly schedule and is safe to close; it will reopen (or a new one will be filed) next week if pins are still behind.
+          "
+
+          EXISTING=$(gh issue list --state open --label "mcp-catalog-versions" --json number --jq '.[0].number' || echo "")
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            gh issue create --title "MCP catalog packages behind upstream" --body "$BODY" --label "mcp-catalog-versions"
+          fi

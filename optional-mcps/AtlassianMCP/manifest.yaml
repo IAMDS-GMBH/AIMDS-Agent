@@ -9,8 +9,14 @@ source: https://github.com/sooperset/mcp-atlassian
 transport:
   type: stdio
   command: "uvx"
+  # Pinned exact version (see CONTRIBUTING.md#mcp-catalog-version-pinning-policy).
+  # Unpinned uvx/npx MCP commands silently install upstream's *latest* on
+  # every launch, so a breaking change (or, for mcp-atlassian specifically,
+  # its documented upcoming TOOLSETS-default change) can break tool
+  # discovery for every user overnight with no corresponding hermes-agent
+  # change to bisect. Bump deliberately; see .github/workflows/mcp-catalog-version-check.yml.
   args:
-    - "mcp-atlassian"
+    - "mcp-atlassian==0.23.0"
 
 auth:
   type: api_key

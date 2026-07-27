@@ -9,9 +9,12 @@ source: https://github.com/ivelin-web/tempo-mcp-server
 transport:
   type: stdio
   command: npx
+  # Pinned exact version (see CONTRIBUTING.md#mcp-catalog-version-pinning-policy).
+  # Unpinned npx installs whatever upstream currently tags "latest" on every
+  # launch; bump deliberately. See .github/workflows/mcp-catalog-version-check.yml.
   args:
     - "-y"
-    - "@ivelin-web/tempo-mcp-server"
+    - "@ivelin-web/tempo-mcp-server@1.8.0"
 
 auth:
   type: api_key

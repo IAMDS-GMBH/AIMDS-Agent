@@ -851,6 +851,14 @@ After the [litellm supply chain compromise](https://github.com/BerriAI/litellm/i
 
 **Reference PRs:** #2796 (litellm removal), #2810 (upper bounds pass), #9801 (SHA pinning + supply-chain-audit CI).
 
+### MCP catalog version pinning policy
+
+Optional catalog MCP servers (`optional-mcps/*/manifest.yaml`) whose `transport.command` is `uvx` or `npx` must pin an **exact** upstream package version in `transport.args` (e.g. `mcp-atlassian==0.23.0`, `@ivelin-web/tempo-mcp-server@1.8.0`). Unlike PyPI/npm deps in `pyproject.toml`/`package.json`, these are not resolved once and locked — `uvx`/`npx` re-resolve and (re-)install the named spec on every server launch. Leaving them unpinned means upstream's current "latest" changes what every Hermes user runs with no corresponding change in this repo to bisect against, and has already caused a real regression (`mcp-atlassian` shipping an undocumented tool-discovery change between patch releases).
+
+- Pin with `==` (uvx/PyPI) or `@` (npx/npm) — not a range; these are standalone subprocess tools, not importable libraries sharing our dependency graph, so there's no ceiling to compute.
+- A weekly `mcp-catalog-version-check.yml` workflow compares each pin against the registry's current latest and files/updates a tracking issue (labeled `mcp-catalog-versions`) when a pin is behind or a package is marked deprecated upstream. It does not open PRs or bump pins automatically — bumping is a deliberate, reviewed action, same rationale as excluding source deps from Dependabot below.
+- When bumping a pin, skim the package's changelog for the version range you're skipping, not just the target version's own notes.
+
 ---
 
 ## Pull Request Process
