@@ -127,6 +127,93 @@ class TestEnsureHermesHome:
         expected_link = fake_home / "Documents" / "AIMDS-Suite-WorkingDirectory" / "HermesMemory"
         assert any(cmd[:3] == ["cmd", "/c", 'mklink /J "' + str(expected_link) + '" "' + str(tmp_path / "hermes" / "memories") + '"'] for cmd in calls)
 
+    def test_junction_not_detected_by_is_symlink_does_not_crash(self, tmp_path, monkeypatch):
+        """Regression test for a SameFileError crash loop seen in the wild.
+
+        On Windows, `mklink /J` junctions (the fallback used just above when
+        a real symlink can't be created without elevated privileges) are
+        NOT detected by `Path.is_symlink()` -- `is_junction()` only exists
+        from Python 3.12, and Hermes still supports 3.11. Without
+        `_is_windows_reparse_point()`, a second `ensure_hermes_home()` call
+        (i.e. every subsequent `load_config()`, since this runs on every
+        request) would treat the junction as a plain directory and try to
+        merge its own contents into `memory_target` -- the exact same
+        directory reached via a different path -- raising
+        `shutil.SameFileError` every time.
+        """
+        from hermes_cli import config as cfg_mod
+
+        fake_home = tmp_path / "home"
+        hermes_home = tmp_path / "hermes"
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(cfg_mod, "_IS_WINDOWS", True)
+
+        # First run creates memories/ and a real symlink (this platform
+        # can't create actual NTFS junctions, but the fix path only cares
+        # about is_symlink()/_is_windows_reparse_point() detection, which
+        # we simulate below).
+        ensure_hermes_home()
+
+        legacy_memory = fake_home / "Documents" / "HermesMemory"
+        workspace_memory = (
+            fake_home / "Documents" / "AIMDS-Suite-WorkingDirectory" / "HermesMemory"
+        )
+        assert workspace_memory.is_symlink()
+        assert not legacy_memory.exists()
+
+        # Real-world crash needed a colliding filename in both "sides" of
+        # the junction (same file reached two ways) -- e.g. MEMORY.md.
+        (hermes_home / "memories" / "MEMORY.md").write_text(
+            "hello", encoding="utf-8"
+        )
+
+        # Simulate a stray legacy junction alongside the real workspace
+        # symlink, and make Path.is_symlink() blind to both -- exactly the
+        # Windows 3.11 quirk that caused the real-world crash.
+        legacy_memory.parent.mkdir(parents=True, exist_ok=True)
+        legacy_memory.symlink_to(hermes_home / "memories", target_is_directory=True)
+
+        real_is_symlink = Path.is_symlink
+
+        def _fake_is_symlink(self):
+            if self in (workspace_memory, legacy_memory):
+                return False
+            return real_is_symlink(self)
+
+        monkeypatch.setattr(Path, "is_symlink", _fake_is_symlink)
+        monkeypatch.setattr(
+            cfg_mod,
+            "_is_windows_reparse_point",
+            lambda p: Path(p) in (workspace_memory, legacy_memory),
+        )
+
+        # On real Windows, os.rmdir() on a junction removes only the
+        # reparse point, leaving its target directory untouched -- unlike
+        # POSIX, where rmdir() on a symlink-to-directory follows the link
+        # and fails (ENOTEMPTY) because the target isn't empty. Emulate the
+        # Windows behavior for our real (POSIX) test symlink so the
+        # legacy-cleanup branch's `legacy.rmdir()` call behaves the same
+        # way it would on the reporter's machine.
+        real_rmdir = Path.rmdir
+
+        def _fake_rmdir(self):
+            if self == legacy_memory:
+                os.unlink(self)
+                return
+            real_rmdir(self)
+
+        monkeypatch.setattr(Path, "rmdir", _fake_rmdir)
+
+        # Must not raise shutil.SameFileError.
+        ensure_hermes_home()
+
+        # The legacy junction is removed (its target directory untouched);
+        # the workspace link is recognized as already correct and left
+        # alone.
+        assert not legacy_memory.exists()
+        assert (hermes_home / "memories").is_dir()
+
 
 class TestLoadConfigDefaults:
     def test_returns_defaults_when_no_file(self, tmp_path):

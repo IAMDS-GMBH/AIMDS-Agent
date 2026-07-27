@@ -755,10 +755,38 @@ def _ensure_default_soul_md(home: Path) -> None:
     _secure_file(soul_path)
 
 
+def _is_windows_reparse_point(path: Path) -> bool:
+    """Return True if *path* is a Windows reparse point (junction or symlink).
+
+    ``Path.is_symlink()`` does not detect NTFS junctions -- the fallback
+    ``_ensure_documents_memory_link()`` uses when a real symlink can't be
+    created without elevated privileges (``mklink /J``). Python only gained
+    ``Path.is_junction()`` in 3.12, and Hermes still supports 3.11. Junctions
+    set the reparse-point file attribute, which ``os.stat()`` exposes on
+    Windows via ``st_file_attributes`` since Python 3.5, so check that
+    directly instead.
+    """
+    if not _IS_WINDOWS:
+        return False
+    try:
+        attrs = os.stat(path, follow_symlinks=False).st_file_attributes
+    except OSError:
+        return False
+    return bool(attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
 def _merge_directory_contents(src: Path, dst: Path) -> None:
     """Copy all direct children from ``src`` into ``dst``."""
     for child in src.iterdir():
         target = dst / child.name
+        try:
+            if target.exists() and os.path.samefile(child, target):
+                # src is itself a symlink/junction pointing at dst (or dst
+                # already has an identical hardlink) -- copying onto itself
+                # would raise shutil.SameFileError. Nothing to merge.
+                continue
+        except OSError:
+            pass
         if child.is_dir():
             shutil.copytree(child, target, dirs_exist_ok=True)
         else:
@@ -806,6 +834,20 @@ def _ensure_documents_memory_link(home: Path) -> None:
                 legacy.unlink()
             except OSError:
                 pass
+        elif _is_windows_reparse_point(legacy):
+            # A junction from an earlier run's mklink /J fallback (see
+            # below). Path.is_symlink() misses these on Python 3.11, so
+            # without this check the code below would treat the junction as
+            # a plain directory and try to merge its contents into
+            # memory_target -- but a junction resolves to the very same
+            # directory, so every file would collide with itself and
+            # shutil.copy2() would raise SameFileError on every call to
+            # ensure_hermes_home() (i.e. on every request). Just remove the
+            # junction; its target directory is untouched.
+            try:
+                legacy.rmdir()
+            except OSError:
+                pass
         elif legacy.exists():
             if legacy.is_dir():
                 _merge_directory_contents(legacy, memory_target)
@@ -828,6 +870,23 @@ def _ensure_documents_memory_link(home: Path) -> None:
         if current_target == memory_target.resolve():
             return
         memory_link.unlink()
+    elif _is_windows_reparse_point(memory_link):
+        # Junction from an earlier run's mklink /J fallback below.
+        # Path.is_symlink() misses junctions on Python 3.11 (fixed by
+        # is_junction() in 3.12), so without this branch the code would
+        # fall through to the "plain directory" case and try to merge the
+        # junction's contents into memory_target -- which is the same
+        # directory reached via a different path, guaranteeing a
+        # shutil.SameFileError crash on every ensure_hermes_home() call.
+        try:
+            if os.path.samefile(memory_link, memory_target):
+                return
+        except OSError:
+            pass
+        try:
+            memory_link.rmdir()
+        except OSError:
+            pass
     elif memory_link.exists():
         if memory_link.is_dir():
             _merge_directory_contents(memory_link, memory_target)
