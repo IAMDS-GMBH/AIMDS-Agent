@@ -3,22 +3,29 @@
 manifest_version: 1
 
 name: GithubMCP
-description: Access GitHub repositories, issues, pull requests, commits, and code using @modelcontextprotocol/server-github.
-source: https://github.com/modelcontextprotocol/servers
+description: >-
+  Access GitHub repositories, issues, pull requests, commits, code, and
+  GitHub Actions workflows/CI-CD runs using GitHub's official hosted remote
+  MCP server.
+source: https://github.com/github/github-mcp-server
 
+# Previously ran @modelcontextprotocol/server-github via npx -- upstream
+# marked that package "no longer supported" and moved development to
+# github/github-mcp-server. That package also never had any GitHub
+# Actions/workflow tools, at any version. Migrated to GitHub's own hosted
+# remote MCP server: no local process/npx/Docker to install, keep pinned, or
+# restart on every Hermes update, and it adds a full Actions/CI-CD toolset
+# (list/get workflows & runs, trigger workflow_dispatch runs, download
+# logs/artifacts) on top of everything the old tool list already covered.
+#
+# X-MCP-Toolsets combines the server's own "default" toolset (context, repos,
+# issues, pull_requests, users) with "actions", so nothing users already had
+# regresses. See https://github.com/github/github-mcp-server/blob/main/docs/remote-server.md#optional-headers
 transport:
-  type: stdio
-  command: "npx"
-  # Pinned exact version (see CONTRIBUTING.md#mcp-catalog-version-pinning-policy).
-  # NOTE: upstream marked this package "no longer supported" on npm and
-  # moved development to github/github-mcp-server (a separate Go binary /
-  # remote HTTP server, not an npm package) -- see the tracked follow-up to
-  # migrate this catalog entry's transport. Pinning here only stops this
-  # already-frozen package from silently changing under us in the meantime;
-  # it is not a substitute for that migration.
-  args:
-    - "-y"
-    - "@modelcontextprotocol/server-github@2025.4.8"
+  type: http
+  url: https://api.githubcopilot.com/mcp/
+  headers:
+    X-MCP-Toolsets: "context,repos,issues,pull_requests,users,actions"
 
 auth:
   type: oauth
@@ -27,7 +34,11 @@ auth:
   notes: >-
     Requires GitHub sign-in either way: leave the PAT blank to open an
     automatic OAuth device-code login in your browser right after install, or
-    paste a PAT below to skip that login step.
+    paste a PAT below to skip that login step. The resulting token is sent
+    as an Authorization header to GitHub's hosted MCP server -- generic MCP
+    hosts (like Hermes) aren't pre-registered with GitHub for browser-based
+    OAuth against the remote server, so a token (PAT or device-code-issued)
+    is the reliable path, not an extra step.
   scopes:
     - repo
     - read:org
@@ -49,12 +60,23 @@ tools:
     - list_pull_requests
     - get_pull_request
     - create_pull_request
+    - actions_list
+    - actions_get
+    - actions_run_trigger
 
 post_install: |
-  GitHub MCP (@modelcontextprotocol/server-github via npx) has been configured.
+  GitHub MCP now runs on GitHub's official hosted remote server
+  (https://api.githubcopilot.com/mcp/) instead of the old, no-longer-supported
+  @modelcontextprotocol/server-github npm package -- no local process to
+  install, pin, or keep alive. This also adds full GitHub Actions/CI-CD
+  support: list workflows and runs, inspect a run's jobs/logs/artifacts, and
+  trigger a workflow_dispatch run.
 
   Authentication options:
-    - Automatic / OAuth / OIDC / gh auth: Leave GITHUB_PERSONAL_ACCESS_TOKEN blank if authentication is handled via OAuth/OIDC or gh CLI env.
-    - Personal Access Token (PAT): Optional token at https://github.com/settings/tokens (recommended scopes: `repo`, `read:org`, `user`).
+    - Automatic: Leave GITHUB_PERSONAL_ACCESS_TOKEN blank to open a GitHub
+      OAuth device-code login in your browser right after install.
+    - Personal Access Token (PAT): Optional token at
+      https://github.com/settings/tokens (recommended scopes: `repo`,
+      `read:org`, `user`).
 
   Start a new Hermes session to load the GitHub tools.

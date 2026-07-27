@@ -163,6 +163,53 @@ class TestManifestParsing:
         entries = {e.name: e for e in list_catalog()}
         assert entries["demo2"].auth.notes == "Pick one auth mode."
 
+    def test_http_transport_headers_parsed(self, catalog_dir):
+        """transport.headers carries static feature-flag/toolset-selection
+        headers (e.g. GithubMCP's X-MCP-Toolsets) that must survive
+        manifest parsing untouched -- they aren't auth-related and aren't
+        collected from user input."""
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://api.example.com/mcp/",
+                "headers": {"X-MCP-Toolsets": "context,repos,actions"},
+            },
+            auth={"type": "none"},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        e = list_catalog()[0]
+        assert e.transport.headers == {"X-MCP-Toolsets": "context,repos,actions"}
+
+    def test_http_transport_headers_default_empty(self, catalog_dir):
+        _write_manifest(
+            catalog_dir,
+            "demo",
+            _basic_manifest(
+                transport={"type": "http", "url": "https://api.example.com/mcp/"},
+                auth={"type": "none"},
+            ),
+        )
+        from hermes_cli.mcp_catalog import list_catalog
+
+        assert list_catalog()[0].transport.headers == {}
+
+    def test_http_transport_headers_must_be_mapping(self, catalog_dir):
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://api.example.com/mcp/",
+                "headers": ["not", "a", "mapping"],
+            },
+            auth={"type": "none"},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        # Invalid manifests are skipped (logged, not raised) by list_catalog.
+        assert list_catalog() == []
+
     def test_install_block(self, catalog_dir):
         body = _basic_manifest(
             install={
@@ -335,6 +382,90 @@ class TestInstall:
         server = load_config()["mcp_servers"]["demo"]
         assert server["url"] == "https://mcp.example.com/sse"
         assert server["auth"] == "oauth"
+
+    def test_install_http_oauth_with_token_sends_bearer_header_not_native_oauth(
+        self, catalog_dir, monkeypatch
+    ):
+        """Regression (GithubMCP stdio->http migration): an http+oauth entry
+        with a token already saved for its env_var (pasted PAT, or one
+        obtained via a provider's device-code login at install time) must
+        send that token as an Authorization header to the remote server --
+        generic MCP hosts aren't pre-registered with every provider for
+        native browser-based OAuth against a hosted remote endpoint, so
+        falling back to `auth: oauth` there would silently never connect."""
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://api.githubcopilot.com/mcp/",
+                "headers": {"X-MCP-Toolsets": "context,repos,actions"},
+            },
+            auth={
+                "type": "oauth",
+                "provider": "github",
+                "env_var": "DEMO_GH_TOKEN",
+                "env": [{"name": "DEMO_GH_TOKEN", "prompt": "PAT", "required": False}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config, get_config_path
+
+        token_value = "ghp_faketoken"
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: token_value)
+
+        install_entry(_entry("demo"), enable=True)
+
+        # The on-disk config.yaml must store an unresolved placeholder
+        # reference, never the literal secret -- same convention as the
+        # stdio env-block substitution (see _expand_env_vars docs).
+        raw_yaml = get_config_path().read_text()
+        placeholder = "$" + "{DEMO_GH_TOKEN}"
+        assert placeholder in raw_yaml
+        assert token_value not in raw_yaml
+
+        # load_config() expands placeholders against the stored env value,
+        # so the resolved header must carry the real token at runtime.
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["url"] == "https://api.githubcopilot.com/mcp/"
+        assert "auth" not in server
+        assert server["headers"]["X-MCP-Toolsets"] == "context,repos,actions"
+        assert server["headers"]["Authorization"] == "Bearer " + token_value
+
+    def test_install_http_oauth_without_token_falls_back_to_native_oauth(
+        self, catalog_dir, monkeypatch
+    ):
+        """Same entry as above, but the user left the PAT blank and no
+        device-code login populated it either -- must still fall back to
+        `auth: oauth` (native MCP OAuth), not send an empty/broken header."""
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://api.githubcopilot.com/mcp/",
+                "headers": {"X-MCP-Toolsets": "context,repos,actions"},
+            },
+            auth={
+                "type": "oauth",
+                "provider": "github",
+                "env_var": "DEMO_GH_TOKEN",
+                "env": [{"name": "DEMO_GH_TOKEN", "prompt": "PAT", "required": False}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "")
+
+        install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["auth"] == "oauth"
+        assert "Authorization" not in server.get("headers", {})
+        assert server["headers"]["X-MCP-Toolsets"] == "context,repos,actions"
 
     def test_install_oauth_prints_auth_notes(self, catalog_dir, capsys):
         """auth.notes is parsed but was never surfaced by the CLI install

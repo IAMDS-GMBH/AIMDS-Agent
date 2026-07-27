@@ -93,6 +93,10 @@ class TransportSpec:
     args: List[str] = field(default_factory=list)
     url: Optional[str] = None
     version: Optional[str] = None  # informational, pinned
+    # Static headers for http transport (e.g. toolset/feature-flag headers
+    # like X-MCP-Toolsets). Auth headers (Authorization) are layered on top
+    # of these by _build_server_config, not declared here.
+    headers: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -201,12 +205,16 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     args = transport_raw.get("args") or []
     if not isinstance(args, list):
         raise CatalogError(f"{path}: transport.args must be a list")
+    headers_raw = transport_raw.get("headers") or {}
+    if not isinstance(headers_raw, dict):
+        raise CatalogError(f"{path}: transport.headers must be a mapping")
     transport = TransportSpec(
         type=t_type,
         command=transport_raw.get("command"),
         args=[str(a) for a in args],
         url=transport_raw.get("url"),
         version=transport_raw.get("version"),
+        headers={str(k): str(v) for k, v in headers_raw.items()},
     )
     if t_type == "stdio" and not transport.command:
         raise CatalogError(f"{path}: stdio transport requires 'command'")
@@ -565,8 +573,26 @@ def _build_server_config(
                 cfg["env"] = env_map
     elif t.type == "http":
         cfg["url"] = t.url
+        headers = dict(t.headers) if t.headers else {}
         if entry.auth.type == "oauth":
-            cfg["auth"] = "oauth"
+            # If a token has already been obtained for this entry's env_var
+            # (a PAT the user pasted in, or one collected via the device-code
+            # login flow at install time), send it as a bearer header to the
+            # remote server -- this is the only auth path a generic (not
+            # GitHub-preregistered) MCP host can rely on for e.g. GitHub's
+            # hosted MCP server. Fall back to native MCP OAuth 2.1 (handled
+            # by the MCP client at first connect) only when no token/env_var
+            # is configured at all.
+            token_present = bool(
+                entry.auth.env_var and get_env_value(entry.auth.env_var)
+                and str(get_env_value(entry.auth.env_var)).strip()
+            )
+            if token_present:
+                headers["Authorization"] = f"Bearer ${{{entry.auth.env_var}}}"
+            else:
+                cfg["auth"] = "oauth"
+        if headers:
+            cfg["headers"] = headers
     return cfg
 
 
