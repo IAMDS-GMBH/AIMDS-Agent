@@ -143,6 +143,26 @@ class TestManifestParsing:
         assert e.auth.env[1].required is False
         assert e.auth.env[1].secret is False
 
+    def test_auth_notes_optional(self, catalog_dir):
+        """auth.notes is an optional free-text clarification for the setup
+        dialog (e.g. "choose Cloud OR Server auth, not both"); absent when
+        the manifest doesn't declare one, and stripped when present."""
+        _write_manifest(catalog_dir, "demo", _basic_manifest(auth={"type": "none"}))
+        from hermes_cli.mcp_catalog import list_catalog
+
+        assert list_catalog()[0].auth.notes is None
+
+        _write_manifest(
+            catalog_dir,
+            "demo2",
+            _basic_manifest(
+                name="demo2",
+                auth={"type": "api_key", "env": [], "notes": "  Pick one auth mode.  \n"},
+            ),
+        )
+        entries = {e.name: e for e in list_catalog()}
+        assert entries["demo2"].auth.notes == "Pick one auth mode."
+
     def test_install_block(self, catalog_dir):
         body = _basic_manifest(
             install={

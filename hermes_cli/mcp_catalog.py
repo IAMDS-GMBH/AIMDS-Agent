@@ -79,6 +79,11 @@ class AuthSpec:
     provider: Optional[str] = None
     scopes: List[str] = field(default_factory=list)
     env_var: Optional[str] = None
+    # Free-text clarification shown above the install dialog's field list —
+    # e.g. "choose Cloud OR Server auth, not both" or "blank PAT triggers an
+    # OAuth login popup". Keep it short; the per-field `prompt` still carries
+    # the primary guidance.
+    notes: Optional[str] = None
 
 
 @dataclass
@@ -218,12 +223,14 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     if not isinstance(env_list_raw, list):
         raise CatalogError(f"{path}: auth.env must be a list")
     env_list = [_parse_env_spec(e) for e in env_list_raw]
+    notes_raw = auth_raw.get("notes")
     auth = AuthSpec(
         type=a_type,
         env=env_list,
         provider=auth_raw.get("provider"),
         scopes=list(auth_raw.get("scopes") or []),
         env_var=auth_raw.get("env_var"),
+        notes=str(notes_raw).strip() if notes_raw else None,
     )
 
     tools_raw = data.get("tools") or {}

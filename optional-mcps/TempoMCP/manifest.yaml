@@ -18,6 +18,11 @@ transport:
 
 auth:
   type: api_key
+  notes: >-
+    Separate credentials from AtlassianMCP (Tempo needs its own Jira context
+    even if Jira MCP is already configured); if you leave these blank and
+    AtlassianMCP is set up, Hermes auto-fills your Jira URL/email/token where
+    possible. TEMPO_API_TOKEN always required.
   env:
     - name: TEMPO_API_TOKEN
       prompt: "Tempo API Token (from Tempo Timesheets Settings > API Tokens)"

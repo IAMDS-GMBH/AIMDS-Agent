@@ -7930,6 +7930,7 @@ async def list_mcp_catalog(profile: Optional[str] = None):
                     "auth": {
                         "type": getattr(auth, "type", "none"),
                         "env": env_vars,
+                        "notes": getattr(auth, "notes", None),
                     },
                     "disabled": getattr(entry, "disabled", False),
                     "needs_install": entry.install is not None,

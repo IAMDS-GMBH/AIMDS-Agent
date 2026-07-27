@@ -98,6 +98,27 @@ class TestMcpEndpoints:
         for e in body["entries"]:
             assert {"name", "transport", "installed", "enabled", "needs_install"} <= set(e)
 
+    def test_catalog_auth_notes_and_tempo_jira_fallback(self):
+        """AtlassianMCP/TempoMCP manifests declare `auth.notes` (surfaced so
+        the setup dialog can render setup-mode clarifications), and Tempo's
+        Jira fields pre-fill from AtlassianMCP's saved credentials so the
+        dialog's "auto-fills from your Jira MCP setup" note is actually true.
+        """
+        from hermes_cli.config import save_env_value
+        save_env_value("JIRA_URL", "https://example.atlassian.net")
+        save_env_value("JIRA_PAT", "pat-from-atlassian-mcp")
+
+        entries = {e["name"]: e for e in self.client.get("/api/mcp/catalog").json()["entries"]}
+
+        assert entries["AtlassianMCP"]["auth"]["notes"]
+        assert "Cloud" in entries["AtlassianMCP"]["auth"]["notes"]
+
+        tempo_env = {ev["name"]: ev for ev in entries["TempoMCP"]["auth"]["env"]}
+        assert entries["TempoMCP"]["auth"]["notes"]
+        assert tempo_env["JIRA_BASE_URL"]["current_value"] == "https://example.atlassian.net"
+        # JIRA_API_TOKEN falls back to JIRA_PAT only when unset directly.
+        assert tempo_env["JIRA_API_TOKEN"]["current_value"] == "pat-from-atlassian-mcp"
+
     def test_build_server_config_filters_unset_env(self):
         from hermes_cli.config import save_env_value
         from hermes_cli.mcp_catalog import _build_server_config, get_entry

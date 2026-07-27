@@ -20,6 +20,10 @@ transport:
 
 auth:
   type: api_key
+  notes: >-
+    Choose ONE auth mode, not both: Jira Cloud -> fill JIRA_API_TOKEN + JIRA_USERNAME
+    and leave JIRA_PAT blank. Jira Local/Data Center/Server -> fill JIRA_PAT and
+    leave JIRA_API_TOKEN + JIRA_USERNAME blank. JIRA_URL is always required.
   env:
     - name: JIRA_URL
       prompt: "Jira instance URL (e.g. https://your-domain.atlassian.net or https://jira.company.com)"

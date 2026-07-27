@@ -24,6 +24,10 @@ auth:
   type: oauth
   provider: github
   env_var: GITHUB_PERSONAL_ACCESS_TOKEN
+  notes: >-
+    Requires GitHub sign-in either way: leave the PAT blank to open an
+    automatic OAuth device-code login in your browser right after install, or
+    paste a PAT below to skip that login step.
   scopes:
     - repo
     - read:org

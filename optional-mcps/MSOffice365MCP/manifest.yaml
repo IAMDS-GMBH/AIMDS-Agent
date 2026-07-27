@@ -24,6 +24,10 @@ auth:
   type: oauth
   provider: microsoft
   env_var: M365_ACCESS_TOKEN
+  notes: >-
+    Both fields are OPTIONAL — most users should leave them blank to sign in
+    via the default multi-tenant Microsoft login. Only set a Client/Tenant ID
+    if your organization requires its own Entra App Registration.
   env:
     - name: M365_CLIENT_ID
       prompt: "Microsoft Entra App Client ID (optional; leave blank to use default multi-tenant app)"

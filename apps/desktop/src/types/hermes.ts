@@ -632,6 +632,7 @@ export interface McpServerSummary {
 }
 
 export interface McpCatalogEnvVar {
+  current_value?: null | string
   default?: null | string
   description?: null | string
   name: string

@@ -676,11 +676,11 @@ function McpCatalogSection({
     const envVars = entry.required_env ?? entry.auth?.env ?? []
 
     for (const item of envVars) {
-      if (item.default) {
-        initialSecrets[item.name] = item.default
-      } else {
-        initialSecrets[item.name] = ''
-      }
+      // current_value already resolves cross-entry fallbacks server-side
+      // (e.g. TempoMCP reusing AtlassianMCP's Jira URL/token when its own
+      // env vars aren't set yet) — prefer it over the static manifest default
+      // so those auto-filled values actually get submitted on Install.
+      initialSecrets[item.name] = item.current_value || item.default || ''
     }
     setSecretInputs(initialSecrets)
     setInstallModalEntry(entry)
@@ -839,6 +839,12 @@ function McpCatalogSection({
               <DialogTitle>{m.catalogModalTitle(installModalEntry.name)}</DialogTitle>
               <DialogDescription>{m.catalogModalDesc}</DialogDescription>
             </DialogHeader>
+
+            {installModalEntry.auth?.notes && (
+              <p className="rounded-md bg-muted/50 px-2.5 py-2 text-xs text-muted-foreground">
+                {installModalEntry.auth.notes}
+              </p>
+            )}
 
             <div className="grid gap-3 py-2">
               {(installModalEntry.required_env ?? installModalEntry.auth?.env ?? []).map(item => {
