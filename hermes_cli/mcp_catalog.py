@@ -377,15 +377,23 @@ def _install_root() -> Path:
 
 
 def _adapt_bootstrap_command(cmd: str) -> str:
-    """Rewrite a manifest bootstrap command for the current platform.
+    """Rewrite a manifest bootstrap command for the current platform/runtime.
 
     Manifests are authored with Unix conventions (`python3`, `.venv/bin/...`).
-    On Windows, `python3` usually isn't on PATH -- substitute the interpreter
-    actually running Hermes -- and venv executables live under
-    `.venv/Scripts/`, not `.venv/bin/`.
+    A literal `python3` is always replaced with the interpreter actually
+    running Hermes (`sys.executable`), rather than relying on the child
+    process's PATH to resolve `python3` correctly. This matters most for the
+    Desktop app: launched from Finder/Explorer (not a login shell), it often
+    only sees a minimal system PATH with no Homebrew/pyenv entries -- a bare
+    `python3` there resolves to the OS-bundled Python (e.g. macOS's ancient
+    CommandLineTools Python 3.9 with pip 21.2.4), which fails to resolve
+    modern packages (``Could not find a version that satisfies the
+    requirement mcp>=1.0.0``). ``sys.executable`` is guaranteed to be a
+    working, modern-enough interpreter since it's the one running Hermes.
+
+    On Windows, venv executables additionally live under `.venv/Scripts/`,
+    not `.venv/bin/`.
     """
-    if sys.platform != "win32":
-        return cmd
     # Replacement is a callable (not a plain string) so re.sub doesn't try to
     # interpret backslashes in a Windows sys.executable path (e.g.
     # `C:\Python311\python.exe`) as regex backreference escapes.
@@ -393,7 +401,8 @@ def _adapt_bootstrap_command(cmd: str) -> str:
     adapted = re.sub(
         r"(?<![\w./-])python3(?![\w.-])", lambda _match: replacement, cmd
     )
-    adapted = adapted.replace(_VENV_BIN_UNIX, _VENV_BIN_WINDOWS)
+    if sys.platform == "win32":
+        adapted = adapted.replace(_VENV_BIN_UNIX, _VENV_BIN_WINDOWS)
     return adapted
 
 
@@ -763,7 +772,8 @@ def _apply_tool_selection(
 
 
 def install_entry(
-    entry: CatalogEntry, *, enable: bool = True, reprompt: bool = False
+    entry: CatalogEntry, *, enable: bool = True, reprompt: bool = False,
+    skip_auth_prompt: bool = False,
 ) -> None:
     """Install a catalog entry end-to-end.
 
@@ -780,6 +790,19 @@ def install_entry(
            If probe fails, fall back to the manifest's
            ``tools.default_enabled`` or all-on.
         6. Print post_install notes.
+
+    Args:
+        skip_auth_prompt: Skip step 2/3's ``_prompt_env_vars`` call entirely.
+            Set by callers (the web dashboard's install endpoint) that
+            already collected and saved credentials themselves via
+            ``save_env_value``/``remove_env_value`` before calling this
+            function. Without this, ``_prompt_env_vars`` would call
+            ``input()`` for every still-unset optional field -- there's no
+            interactive terminal behind a web request, so that call either
+            raises (non-TTY stdin closed/redirected) or hangs indefinitely
+            (stdin inherited from a non-terminal process), silently
+            aborting the install before the mcp_servers.<name> config block
+            is ever written.
     """
     print()
     print(color(f"  Installing MCP '{entry.name}'", Colors.CYAN + Colors.BOLD))
@@ -794,7 +817,9 @@ def install_entry(
         install_dir = _do_git_install(entry)
 
     # Auth
-    if entry.auth.type == "api_key":
+    if skip_auth_prompt:
+        pass
+    elif entry.auth.type == "api_key":
         print()
         print(color("  Configure credentials:", Colors.CYAN))
         _prompt_env_vars(entry.auth.env, reprompt=reprompt)

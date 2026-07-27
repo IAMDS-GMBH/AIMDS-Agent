@@ -791,6 +791,7 @@ class TestBootstrapInstallDirExpansion:
 
         monkeypatch.setattr(mcp_catalog.subprocess, "run", fake_run)
         monkeypatch.setattr(mcp_catalog.sys, "platform", "linux")
+        monkeypatch.setattr(mcp_catalog.sys, "executable", "/usr/local/bin/python3.12")
 
         dest = tmp_path / "MSOffice365MCP"
         dest.mkdir()
@@ -802,7 +803,7 @@ class TestBootstrapInstallDirExpansion:
             ],
         )
 
-        assert calls[0] == "python3 -m venv .venv"
+        assert calls[0] == '"/usr/local/bin/python3.12" -m venv .venv'
         assert "${INSTALL_DIR}" not in calls[1]
         assert calls[1] == (
             f".venv/bin/pip install -r {dest}/optional-mcps/MSOffice365MCP/requirements.txt"
@@ -837,11 +838,29 @@ class TestBootstrapInstallDirExpansion:
         assert adapted_pip == ".venv/Scripts/pip install -r requirements.txt"
 
     def test_adapt_bootstrap_command_noop_on_non_windows(self, monkeypatch):
+        """.venv/bin/... paths are left untouched on non-Windows, but a bare
+        `python3` is still replaced with sys.executable everywhere -- see
+        test_adapt_bootstrap_command_rewrites_python3_on_all_platforms."""
         from hermes_cli import mcp_catalog
 
         monkeypatch.setattr(mcp_catalog.sys, "platform", "darwin")
-        cmd = "python3 -m venv .venv"
+        cmd = ".venv/bin/pip install -r requirements.txt"
         assert mcp_catalog._adapt_bootstrap_command(cmd) == cmd
+
+    def test_adapt_bootstrap_command_rewrites_python3_on_all_platforms(self, monkeypatch):
+        """Regression: a literal `python3` in a bootstrap command must never
+        be run verbatim, even on macOS/Linux. A Desktop-app child process
+        launched without the user's shell PATH (no Homebrew/pyenv) resolves
+        a bare `python3` to the OS-bundled Python (e.g. macOS's ancient
+        CommandLineTools Python 3.9 with pip 21.2.4), which fails to resolve
+        modern packages. sys.executable -- the interpreter running Hermes
+        itself -- is always used instead."""
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(mcp_catalog.sys, "platform", "darwin")
+        monkeypatch.setattr(mcp_catalog.sys, "executable", "/opt/homebrew/bin/python3.12")
+        adapted = mcp_catalog._adapt_bootstrap_command("python3 -m venv .venv")
+        assert adapted == '"/opt/homebrew/bin/python3.12" -m venv .venv'
 
     def test_adapt_venv_executable_path_rewrites_for_windows(self, monkeypatch):
         from hermes_cli import mcp_catalog
