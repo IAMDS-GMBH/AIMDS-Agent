@@ -6,11 +6,14 @@ auto-discovery, and admin role detection.
 
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import os
 import sys
+import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 import msal
@@ -236,6 +239,136 @@ def _graph_request(
         return response.json()
 
 
+def _graph_upload(method: str, endpoint_or_url: str, data: bytes, content_type: str) -> Any:
+    """Like _graph_request but for raw binary bodies (file uploads), not JSON."""
+    token = _get_access_token()
+    headers = {
+        "Authorization": token if token.lower().startswith("bearer ") else f"Bearer {token}",
+        "Content-Type": content_type,
+    }
+    url = (
+        endpoint_or_url
+        if endpoint_or_url.startswith("http")
+        else f"{GRAPH_API_BASE}{endpoint_or_url}"
+    )
+    with httpx.Client(timeout=120.0) as client:
+        response = client.request(method, url, headers=headers, content=data)
+        if response.is_error:
+            raise RuntimeError(f"MS Graph API Error [{response.status_code}]: {response.text}")
+        if response.status_code == 204 or not response.content:
+            return {"success": True}
+        return response.json()
+
+
+# Simple (single-request) OneDrive upload only works up to this size; larger
+# files must go through a chunked upload session instead (see
+# https://learn.microsoft.com/graph/api/driveitem-createuploadsession).
+_ONEDRIVE_SIMPLE_UPLOAD_MAX_BYTES = 4 * 1024 * 1024
+_ONEDRIVE_UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024  # must be a multiple of 320 KiB
+_ONEDRIVE_ATTACHMENTS_FOLDER = "HermesAttachments"
+
+# MS Graph's sendMail only accepts attachments inlined as base64 in the JSON
+# payload -- there is no separate upload-session path for plain sendMail (only
+# for draft messages), so anything bigger than this needs OneDrive + a shared
+# link instead of a direct attachment.
+_MAIL_INLINE_ATTACHMENT_MAX_BYTES = 3 * 1024 * 1024
+
+
+def _resolve_attachment_path(file_path: str) -> Path:
+    path = Path(file_path).expanduser()
+    if not path.is_file():
+        raise ValueError(f"Attachment file not found: {file_path}")
+    return path
+
+
+def _upload_file_to_onedrive(file_path: str, folder: str = _ONEDRIVE_ATTACHMENTS_FOLDER) -> Dict[str, Any]:
+    """Upload a local file to the signed-in user's OneDrive and return the created driveItem
+    (id, name, webUrl, ...), used as the basis for a Teams chat file attachment reference."""
+    path = _resolve_attachment_path(file_path)
+    file_size = path.stat().st_size
+    content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    safe_folder = folder.strip("/")
+    item_path = f"/me/drive/root:/{safe_folder}/{path.name}:"
+
+    if file_size <= _ONEDRIVE_SIMPLE_UPLOAD_MAX_BYTES:
+        return _graph_upload("PUT", f"{item_path}/content", path.read_bytes(), content_type)
+
+    session = _graph_request(
+        "POST",
+        f"{item_path}/createUploadSession",
+        json_data={"item": {"@microsoft.graph.conflictBehavior": "rename", "name": path.name}},
+    )
+    upload_url = session.get("uploadUrl")
+    if not upload_url:
+        raise RuntimeError(f"Failed to create OneDrive upload session for '{path.name}': {session}")
+
+    result: Optional[Dict[str, Any]] = None
+    with path.open("rb") as fh, httpx.Client(timeout=120.0) as client:
+        offset = 0
+        while offset < file_size:
+            chunk = fh.read(_ONEDRIVE_UPLOAD_CHUNK_SIZE)
+            chunk_len = len(chunk)
+            end = offset + chunk_len - 1
+            resp = client.put(
+                upload_url,
+                headers={
+                    "Content-Length": str(chunk_len),
+                    "Content-Range": f"bytes {offset}-{end}/{file_size}",
+                },
+                content=chunk,
+            )
+            if resp.is_error:
+                raise RuntimeError(
+                    f"OneDrive chunked upload for '{path.name}' failed [{resp.status_code}]: {resp.text}"
+                )
+            offset += chunk_len
+            if resp.status_code in (200, 201) and resp.content:
+                result = resp.json()
+    if result is None:
+        raise RuntimeError(f"OneDrive chunked upload for '{path.name}' did not complete")
+    return result
+
+
+def _build_mail_attachment(file_path: str) -> Dict[str, Any]:
+    """Build a MS Graph fileAttachment (inline base64) for m365_send_email."""
+    path = _resolve_attachment_path(file_path)
+    file_size = path.stat().st_size
+    if file_size > _MAIL_INLINE_ATTACHMENT_MAX_BYTES:
+        raise ValueError(
+            f"Attachment '{path.name}' is {file_size / (1024 * 1024):.1f} MB, over the "
+            f"{_MAIL_INLINE_ATTACHMENT_MAX_BYTES / (1024 * 1024):.0f} MB limit m365_send_email can "
+            "inline directly. Upload it with m365_list_drive_files/OneDrive instead and share the "
+            "link in the email body."
+        )
+    content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return {
+        "@odata.type": "#microsoft.graph.fileAttachment",
+        "name": path.name,
+        "contentType": content_type,
+        "contentBytes": base64.b64encode(path.read_bytes()).decode("ascii"),
+    }
+
+
+def _build_teams_attachments(file_paths: List[str]) -> Tuple[List[Dict[str, Any]], str]:
+    """Upload local files to OneDrive and build the Teams chat-message attachment
+    payload plus the matching `<attachment id="...">` tags to embed in the HTML body."""
+    attachments: List[Dict[str, Any]] = []
+    tags: List[str] = []
+    for file_path in file_paths:
+        item = _upload_file_to_onedrive(file_path)
+        attachment_id = str(uuid.uuid4())
+        attachments.append(
+            {
+                "id": attachment_id,
+                "contentType": "reference",
+                "contentUrl": item.get("webUrl"),
+                "name": item.get("name") or Path(file_path).name,
+            }
+        )
+        tags.append(f'<attachment id="{attachment_id}"></attachment>')
+    return attachments, "".join(tags)
+
+
 # ─── Tools ───────────────────────────────────────────────────────────────────
 
 
@@ -380,6 +513,7 @@ def m365_send_email(
     body: str,
     is_html: bool = True,
     save_to_sent_items: bool = True,
+    attachments: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Send an email using Outlook Mail. Ensures saveToSentItems is respected.
 
@@ -391,6 +525,9 @@ def m365_send_email(
         is_html: 'True' (default) sends as HTML so formatting, line breaks, and
             signatures render correctly. Only set 'False' for plain-text-only mail.
         save_to_sent_items: Whether to keep a copy in Sent Items.
+        attachments: Optional local file paths to attach. Each file is inlined as
+            base64, so the combined size must stay under ~3 MB -- for larger files,
+            upload to OneDrive first (m365_list_drive_files) and share the link instead.
     """
     recipients = [{"emailAddress": {"address": addr.strip()}} for addr in to]
     final_body = body
@@ -406,15 +543,19 @@ def m365_send_email(
             final_body = "".join(formatted_p) if formatted_p else body
     content_type = "HTML" if is_html else "Text"
 
-    payload = {
-        "message": {
-            "subject": subject,
-            "body": {
-                "contentType": content_type,
-                "content": final_body,
-            },
-            "toRecipients": recipients,
+    message: Dict[str, Any] = {
+        "subject": subject,
+        "body": {
+            "contentType": content_type,
+            "content": final_body,
         },
+        "toRecipients": recipients,
+    }
+    if attachments:
+        message["attachments"] = [_build_mail_attachment(path) for path in attachments]
+
+    payload = {
+        "message": message,
         "saveToSentItems": save_to_sent_items,
     }
     return _graph_request("POST", "/me/sendMail", json_data=payload)
@@ -724,6 +865,7 @@ def m365_send_chat_message(
     message: Optional[str] = None,
     body: Optional[str] = None,
     text: Optional[str] = None,
+    attachments: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Send a message to a Microsoft Teams chat.
 
@@ -734,12 +876,16 @@ def m365_send_chat_message(
         message: Alias for content (accepted so a wrong first guess still succeeds).
         body: Alias for content (accepted so a wrong first guess still succeeds).
         text: Alias for content (accepted so a wrong first guess still succeeds).
+        attachments: Optional local file paths to attach. Each file is uploaded to
+            the signed-in user's OneDrive (folder 'HermesAttachments') and linked
+            into the chat message as a file card, same as Teams' own "Attach" button.
+            Forces content_type to HTML regardless of what was requested.
     """
     resolved_content = content if content is not None else (message if message is not None else (body if body is not None else text))
     if resolved_content is None:
         raise ValueError("m365_send_chat_message requires the message text via 'content' (or its aliases: message/body/text).")
 
-    ct = content_type.lower()
+    ct = "html" if attachments else content_type.lower()
     final_content = resolved_content
     if ct == "html":
         import re
@@ -752,12 +898,16 @@ def m365_send_chat_message(
                     formatted_p.append(f"<p>{p_clean}</p>")
             final_content = "".join(formatted_p) if formatted_p else resolved_content
 
-    payload = {
+    payload: Dict[str, Any] = {
         "body": {
             "contentType": "html" if ct == "html" else "text",
             "content": final_content,
         }
     }
+    if attachments:
+        attachment_payload, attachment_tags = _build_teams_attachments(attachments)
+        payload["attachments"] = attachment_payload
+        payload["body"]["content"] = final_content + attachment_tags
     return _graph_request("POST", f"/me/chats/{chat_id}/messages", json_data=payload)
 
 

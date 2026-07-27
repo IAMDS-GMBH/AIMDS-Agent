@@ -211,6 +211,101 @@ def test_m365_send_chat_message_formatting():
         assert json_data["body"]["content"] == "<p>Paragraph 1</p><p>Paragraph 2</p>"
 
 
+def test_m365_send_email_with_small_attachment(tmp_path):
+    attachment = tmp_path / "note.txt"
+    attachment.write_text("hello attachment")
+    with patch.object(server, "_graph_request") as mock_req:
+        mock_req.return_value = {"success": True}
+        server.m365_send_email(
+            to=["user@example.com"],
+            subject="With attachment",
+            body="See attached",
+            attachments=[str(attachment)],
+        )
+        args, kwargs = mock_req.call_args
+        attachments = kwargs["json_data"]["message"]["attachments"]
+        assert len(attachments) == 1
+        assert attachments[0]["@odata.type"] == "#microsoft.graph.fileAttachment"
+        assert attachments[0]["name"] == "note.txt"
+        import base64
+        assert base64.b64decode(attachments[0]["contentBytes"]) == b"hello attachment"
+
+
+def test_m365_send_email_attachment_missing_file():
+    with pytest.raises(ValueError, match="not found"):
+        server.m365_send_email(to=["user@example.com"], subject="x", body="y", attachments=["/no/such/file.txt"])
+
+
+def test_m365_send_email_attachment_too_large_for_inline(tmp_path):
+    big_file = tmp_path / "big.bin"
+    big_file.write_bytes(b"0" * (server._MAIL_INLINE_ATTACHMENT_MAX_BYTES + 1))
+    with pytest.raises(ValueError, match="MB"):
+        server.m365_send_email(to=["user@example.com"], subject="x", body="y", attachments=[str(big_file)])
+
+
+def test_m365_send_chat_message_with_attachment_uploads_to_onedrive_and_links(tmp_path):
+    attachment = tmp_path / "report.pdf"
+    attachment.write_bytes(b"%PDF-1.4 fake")
+
+    with patch.object(server, "_upload_file_to_onedrive") as mock_upload, \
+            patch.object(server, "_graph_request", return_value={"id": "msg-1"}) as mock_req:
+        mock_upload.return_value = {"id": "item-1", "name": "report.pdf", "webUrl": "https://onedrive/report.pdf"}
+        server.m365_send_chat_message("chat-123", "Here you go", attachments=[str(attachment)])
+
+        mock_upload.assert_called_once_with(str(attachment))
+        args, kwargs = mock_req.call_args
+        json_data = kwargs["json_data"]
+        assert json_data["body"]["contentType"] == "html"
+        assert '<attachment id="' in json_data["body"]["content"]
+        assert len(json_data["attachments"]) == 1
+        assert json_data["attachments"][0]["contentType"] == "reference"
+        assert json_data["attachments"][0]["contentUrl"] == "https://onedrive/report.pdf"
+        assert json_data["attachments"][0]["id"] in json_data["body"]["content"]
+
+
+def test_m365_send_chat_message_attachment_forces_html_content_type(tmp_path):
+    attachment = tmp_path / "img.png"
+    attachment.write_bytes(b"\x89PNG fake")
+
+    with patch.object(server, "_upload_file_to_onedrive", return_value={"id": "item-1", "name": "img.png", "webUrl": "https://onedrive/img.png"}), \
+            patch.object(server, "_graph_request", return_value={"id": "msg-2"}) as mock_req:
+        server.m365_send_chat_message("chat-123", "Look at this", content_type="text", attachments=[str(attachment)])
+        json_data = mock_req.call_args.kwargs["json_data"]
+        assert json_data["body"]["contentType"] == "html"
+
+
+def test_upload_file_to_onedrive_simple_put(tmp_path):
+    small_file = tmp_path / "small.txt"
+    small_file.write_text("small content")
+    with patch.object(server, "_graph_upload", return_value={"id": "item-1", "name": "small.txt"}) as mock_upload:
+        result = server._upload_file_to_onedrive(str(small_file))
+        assert result["id"] == "item-1"
+        mock_upload.assert_called_once()
+        args, kwargs = mock_upload.call_args
+        assert args[0] == "PUT"
+        assert "HermesAttachments/small.txt" in args[1]
+
+
+def test_upload_file_to_onedrive_chunked_for_large_files(tmp_path):
+    big_file = tmp_path / "big.bin"
+    big_file.write_bytes(b"x" * (server._ONEDRIVE_SIMPLE_UPLOAD_MAX_BYTES + 10))
+
+    fake_session = {"uploadUrl": "https://upload.example.com/session"}
+    with patch.object(server, "_graph_request", return_value=fake_session) as mock_req:
+        mock_response = MagicMock()
+        mock_response.is_error = False
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"id": "item-2", "name": "big.bin"}
+        mock_client = MagicMock()
+        mock_client.put.return_value = mock_response
+        mock_client.__enter__.return_value = mock_client
+        with patch.object(server.httpx, "Client", return_value=mock_client):
+            result = server._upload_file_to_onedrive(str(big_file))
+        assert result["id"] == "item-2"
+        mock_req.assert_called_once()
+        assert "createUploadSession" in mock_req.call_args.args[1]
+
+
 def test_m365_activity_feed_and_channel_tools():
     with patch.object(server, "_graph_request", return_value={"value": [{"id": "msg-123"}]}) as mock_req:
         res = server.m365_list_chat_messages("chat-1")
