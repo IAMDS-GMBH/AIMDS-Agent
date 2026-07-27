@@ -798,6 +798,17 @@ function renderNodeToOutput(
           // direct scrollTop writes (e.g. the alt-screen-perf test).
           if (node.stickyScroll === false && scrollTopBeforeFollow >= prevMaxScroll) {
             node.stickyScroll = true
+
+            // Also clear the manual-scroll timestamp: useVirtualHistory's
+            // "recentManual" gate otherwise stays open for its full window
+            // (getLastManualScrollAt is set unconditionally on every manual
+            // scroll call, independent of this restore) even though the
+            // view is genuinely sticky again. Leaving it open can make the
+            // virtualizer keep computing the mount range from the stale
+            // pre-restore scroll position, skip mounting a newly-arrived
+            // tail item, and cause this same sticky-follow snap to land
+            // short of the real bottom on a subsequent render.
+            node.lastManualScrollAt = 0
           }
         }
 

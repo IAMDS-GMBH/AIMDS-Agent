@@ -72,6 +72,15 @@ export type DOMElement = {
   scrollViewportHeight?: number
   scrollViewportTop?: number
   stickyScroll?: boolean
+  // Timestamp of the last explicit scrollTo/scrollBy/scrollToElement call.
+  // Lives on the node (not a React ref) so render-node-to-output can clear
+  // it the moment it positionally restores stickyScroll — otherwise a
+  // manual-scroll-that-lands-back-at-bottom (wheel tremor, click-select at
+  // max) leaves useVirtualHistory's "recentManual" gate open for its full
+  // window even though the view is genuinely sticky again, which can make
+  // the virtualizer skip mounting a newly-arrived tail item and cause the
+  // sticky-follow snap to land short of the real bottom.
+  lastManualScrollAt?: number
   notifyScrollChange?: () => void
   // Set by ScrollBox.scrollToElement; render-node-to-output reads
   // el.yogaNode.getComputedTop() (FRESH — same Yoga pass as scrollHeight)

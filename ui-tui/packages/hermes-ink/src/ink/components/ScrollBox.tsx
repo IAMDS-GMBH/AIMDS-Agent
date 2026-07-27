@@ -95,7 +95,6 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
   // forces a React render: sticky is attribute-observed, no DOM-only path.
   const [, forceRender] = useState(0)
   const listenersRef = useRef(new Set<() => void>())
-  const manualScrollAtRef = useRef(0)
   const renderQueuedRef = useRef(false)
 
   const notify = () => {
@@ -137,7 +136,7 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
         // Explicit false overrides the DOM attribute so manual scroll
         // breaks stickiness. Render code checks ?? precedence.
         el.stickyScroll = false
-        manualScrollAtRef.current = Date.now()
+        el.lastManualScrollAt = Date.now()
         el.pendingScrollDelta = undefined
         el.scrollAnchor = undefined
         el.scrollTop = Math.max(0, Math.floor(y))
@@ -151,7 +150,7 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
         }
 
         box.stickyScroll = false
-        manualScrollAtRef.current = Date.now()
+        box.lastManualScrollAt = Date.now()
         box.pendingScrollDelta = undefined
         box.scrollAnchor = {
           el,
@@ -167,7 +166,7 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
         }
 
         el.stickyScroll = false
-        manualScrollAtRef.current = Date.now()
+        el.lastManualScrollAt = Date.now()
         el.scrollAnchor = undefined
         el.pendingScrollDelta = (el.pendingScrollDelta ?? 0) + Math.floor(dy)
         scrollMutated(el)
@@ -209,7 +208,7 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
         return domRef.current?.scrollViewportTop ?? 0
       },
       getLastManualScrollAt() {
-        return manualScrollAtRef.current
+        return domRef.current?.lastManualScrollAt ?? 0
       },
       isSticky() {
         const el = domRef.current
