@@ -44,6 +44,52 @@ def test_m365_send_email_payload():
         assert args[1] == "/me/sendMail"
         assert kwargs["json_data"]["saveToSentItems"] is True
         assert kwargs["json_data"]["message"]["subject"] == "Test Subject"
+        # HTML is the default now — plain text gets auto-wrapped into a paragraph.
+        assert kwargs["json_data"]["message"]["body"]["contentType"] == "HTML"
+        assert kwargs["json_data"]["message"]["body"]["content"] == "<p>Hello World</p>"
+
+
+def test_m365_send_email_plain_text_opt_out():
+    with patch.object(server, "_graph_request") as mock_req:
+        mock_req.return_value = {"success": True}
+        server.m365_send_email(
+            to=["user@example.com"],
+            subject="Test Subject",
+            body="Hello World",
+            is_html=False,
+        )
+        args, kwargs = mock_req.call_args
+        assert kwargs["json_data"]["message"]["body"]["contentType"] == "Text"
+        assert kwargs["json_data"]["message"]["body"]["content"] == "Hello World"
+
+
+def test_m365_send_email_html_passthrough_when_already_tagged():
+    with patch.object(server, "_graph_request") as mock_req:
+        mock_req.return_value = {"success": True}
+        server.m365_send_email(
+            to=["user@example.com"],
+            subject="Test Subject",
+            body="<p>Already HTML</p>",
+        )
+        args, kwargs = mock_req.call_args
+        assert kwargs["json_data"]["message"]["body"]["content"] == "<p>Already HTML</p>"
+
+
+def test_m365_list_emails_default_folder_is_inbox():
+    with patch.object(server, "_graph_request", return_value={"value": []}) as mock_req:
+        server.m365_list_emails()
+        mock_req.assert_called_once()
+        args, kwargs = mock_req.call_args
+        assert args[0] == "GET"
+        assert args[1] == "/me/messages"
+
+
+def test_m365_list_emails_sentitems_folder_for_signature_detection():
+    with patch.object(server, "_graph_request", return_value={"value": []}) as mock_req:
+        server.m365_list_emails(folder="sentitems")
+        args, kwargs = mock_req.call_args
+        assert args[0] == "GET"
+        assert args[1] == "/me/mailFolders/sentitems/messages"
 
 
 def test_m365_token_device_flow_fallback():

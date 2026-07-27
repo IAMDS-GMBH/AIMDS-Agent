@@ -1161,6 +1161,13 @@ DEFAULT_CONFIG = {
         # identity slot (SOUL.md). Empty by default. The HERMES_ENVIRONMENT_HINT
         # env var overrides this (build-time/container mechanism).
         "environment_hint": "",
+        # Display name used when the assistant signs off messages it composes
+        # on the user's behalf (Outlook/M365 emails, Teams chat messages) —
+        # e.g. an "(Erstellt von Hermes)" attribution line after the user's
+        # own signature/closing. The user can rename the assistant (change
+        # this) or ask to drop the attribution entirely; either preference
+        # should also be persisted to memory so it survives across sessions.
+        "assistant_name": "Hermes",
         # Coding posture — on interactive coding surfaces (CLI, TUI, desktop
         # app, ACP) in a code workspace, Hermes adds a coding operating brief
         # + a live git/workspace snapshot to the system prompt. See

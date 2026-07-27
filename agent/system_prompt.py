@@ -184,6 +184,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if outlook_contact_profiling_guidance:
         stable_parts.append(outlook_contact_profiling_guidance)
 
+    ai_attribution_guidance = _r.build_ai_attribution_guidance(agent.valid_tool_names)
+    if ai_attribution_guidance:
+        stable_parts.append(ai_attribution_guidance)
+
     jira_guidance = _r.build_jira_guidance(agent.valid_tool_names)
     if jira_guidance:
         stable_parts.append(jira_guidance)

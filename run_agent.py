@@ -153,6 +153,7 @@ from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock
     build_outlook_memory_guidance,
     build_outlook_signature_guidance,
     build_outlook_contact_profiling_guidance,
+    build_ai_attribution_guidance,
     build_jira_guidance,
     load_soul_md,
 )

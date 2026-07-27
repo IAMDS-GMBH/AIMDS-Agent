@@ -308,11 +308,32 @@ def m365_send_email(
     to: List[str],
     subject: str,
     body: str,
-    is_html: bool = False,
+    is_html: bool = True,
     save_to_sent_items: bool = True,
 ) -> Dict[str, Any]:
-    """Send an email using Outlook Mail. Ensures saveToSentItems is respected."""
+    """Send an email using Outlook Mail. Ensures saveToSentItems is respected.
+
+    Args:
+        to: Recipient email addresses.
+        subject: Email subject.
+        body: Message content (HTML by default; plain text is auto-wrapped into
+            paragraphs when is_html=True so line breaks render correctly in Outlook).
+        is_html: 'True' (default) sends as HTML so formatting, line breaks, and
+            signatures render correctly. Only set 'False' for plain-text-only mail.
+        save_to_sent_items: Whether to keep a copy in Sent Items.
+    """
     recipients = [{"emailAddress": {"address": addr.strip()}} for addr in to]
+    final_body = body
+    if is_html:
+        import re
+        if not re.search(r"<(p|div|br|ul|ol|li|h[1-6])\b", body, re.IGNORECASE):
+            paragraphs = body.split("\n\n")
+            formatted_p = []
+            for p in paragraphs:
+                p_clean = p.strip().replace("\n", "<br/>")
+                if p_clean:
+                    formatted_p.append(f"<p>{p_clean}</p>")
+            final_body = "".join(formatted_p) if formatted_p else body
     content_type = "HTML" if is_html else "Text"
 
     payload = {
@@ -320,7 +341,7 @@ def m365_send_email(
             "subject": subject,
             "body": {
                 "contentType": content_type,
-                "content": body,
+                "content": final_body,
             },
             "toRecipients": recipients,
         },
@@ -330,12 +351,22 @@ def m365_send_email(
 
 
 @mcp.tool()
-def m365_list_emails(top: int = 10, search: Optional[str] = None) -> Dict[str, Any]:
-    """List recent emails from Outlook inbox."""
+def m365_list_emails(top: int = 10, search: Optional[str] = None, folder: str = "inbox") -> Dict[str, Any]:
+    """List recent emails from an Outlook mail folder.
+
+    Args:
+        top: Max number of messages to return (capped at 50).
+        search: Optional free-text search filter.
+        folder: Well-known folder name, e.g. 'inbox' (default) or 'sentitems'
+            (use 'sentitems' to inspect the user's own sent mail, for example
+            to derive their email signature/closing and writing style).
+    """
     params = {"$top": min(top, 50), "$select": "id,subject,from,receivedDateTime,isRead,bodyPreview"}
     if search:
         params["$search"] = f'"{search}"'
-    return _graph_request("GET", "/me/messages", params=params)
+    folder_segment = (folder or "inbox").strip() or "inbox"
+    endpoint = "/me/messages" if folder_segment == "inbox" else f"/me/mailFolders/{folder_segment}/messages"
+    return _graph_request("GET", endpoint, params=params)
 
 
 @mcp.tool()

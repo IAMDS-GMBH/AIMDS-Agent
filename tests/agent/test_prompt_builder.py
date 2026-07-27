@@ -4,6 +4,7 @@ import builtins
 import importlib
 import logging
 import sys
+from unittest.mock import patch
 
 import pytest
 
@@ -24,6 +25,7 @@ from agent.prompt_builder import (
     build_outlook_memory_guidance,
     build_outlook_signature_guidance,
     build_outlook_contact_profiling_guidance,
+    build_ai_attribution_guidance,
     build_jira_guidance,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
@@ -1407,6 +1409,99 @@ class TestBuildOutlookContactProfilingGuidance:
             {"outlook_search_emails", "mcp_IAMDS_mcp_memory_memory_save"}
         )
         assert "mcp_IAMDS_mcp_memory_memory_save" in text
+
+
+class TestOfficeMailGuidanceSupportsM365Catalog:
+    """The MSOffice365MCP catalog entry registers m365_* tools under an
+    mcp_MSOffice365MCP_ prefix, not outlook_* — all three cross-toolset
+    guidance builders must fire for that family too, not just the legacy
+    native outlook_* tools."""
+
+    M365_NAMES = {
+        "mcp_MSOffice365MCP_m365_send_email",
+        "mcp_MSOffice365MCP_m365_list_emails",
+        "mcp_MSOffice365MCP_m365_list_contacts",
+        "mcp_MSOffice365MCP_m365_send_chat_message",
+        "memory_save",
+    }
+
+    def test_memory_guidance_fires_for_m365_tools(self):
+        text = build_outlook_memory_guidance(self.M365_NAMES)
+        assert text
+        assert "mcp_MSOffice365MCP_m365_list_emails" in text
+        assert "mcp_MSOffice365MCP_m365_list_contacts" in text
+
+    def test_signature_guidance_fires_for_m365_tools_with_sentitems_folder(self):
+        text = build_outlook_signature_guidance(self.M365_NAMES)
+        assert text
+        assert "mcp_MSOffice365MCP_m365_send_email" in text
+        assert "mcp_MSOffice365MCP_m365_list_emails" in text
+        assert "folder='sentitems'" in text
+        # Mandatory HTML formatting for both email and Teams.
+        assert "HTML" in text
+        assert "mcp_MSOffice365MCP_m365_send_chat_message" in text
+
+    def test_contact_profiling_guidance_fires_for_m365_tools(self):
+        text = build_outlook_contact_profiling_guidance(self.M365_NAMES)
+        assert text
+        assert "mcp_MSOffice365MCP_m365_list_contacts" in text
+        assert "NEVER bulk-import" in text
+
+    def test_empty_when_only_m365_send_email_missing(self):
+        names = {"mcp_MSOffice365MCP_m365_list_calendars", "memory_save"}
+        assert build_outlook_memory_guidance(names) == ""
+        assert build_outlook_signature_guidance(names) == ""
+        assert build_outlook_contact_profiling_guidance(names) == ""
+
+
+class TestBuildAiAttributionGuidance:
+    """build_ai_attribution_guidance() must fire for either mail-tool family
+    (legacy outlook_* or MSOffice365MCP m365_*) whenever memory_save is also
+    resolvable, and must surface the configured assistant name plus the
+    memory-override instruction."""
+
+    def test_empty_when_no_mail_or_chat_tool(self):
+        assert build_ai_attribution_guidance({"memory_save", "web_search"}) == ""
+
+    def test_empty_when_no_memory_save_tool(self):
+        assert build_ai_attribution_guidance({"outlook_write_email"}) == ""
+
+    def test_empty_when_no_tools_at_all(self):
+        assert build_ai_attribution_guidance(set()) == ""
+        assert build_ai_attribution_guidance(None) == ""
+
+    def test_builds_guidance_for_outlook_family(self):
+        text = build_ai_attribution_guidance({"outlook_write_email", "memory_save"})
+        assert text
+        assert "outlook_write_email" in text
+        assert "memory_save" in text
+        assert "Erstellt von" in text
+        assert "notes" in text
+
+    def test_builds_guidance_for_m365_family_including_teams(self):
+        text = build_ai_attribution_guidance(
+            {
+                "mcp_MSOffice365MCP_m365_send_email",
+                "mcp_MSOffice365MCP_m365_send_chat_message",
+                "memory_save",
+            }
+        )
+        assert text
+        assert "mcp_MSOffice365MCP_m365_send_email" in text
+        assert "mcp_MSOffice365MCP_m365_send_chat_message" in text
+
+    def test_fires_for_chat_only_tool(self):
+        # A Teams-only install (no send_email) should still get attribution.
+        text = build_ai_attribution_guidance(
+            {"mcp_MSOffice365MCP_m365_send_chat_message", "memory_save"}
+        )
+        assert text
+        assert "mcp_MSOffice365MCP_m365_send_chat_message" in text
+
+    def test_uses_configured_assistant_name(self):
+        with patch("hermes_cli.config.load_config", return_value={"agent": {"assistant_name": "Jarvis"}}):
+            text = build_ai_attribution_guidance({"outlook_write_email", "memory_save"})
+        assert "Jarvis" in text
 
 
 class TestBuildJiraGuidance:

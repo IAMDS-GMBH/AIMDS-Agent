@@ -1454,6 +1454,58 @@ def _normalize_tool_name_for_match(name: str) -> str:
     return str(name or "").replace("-", "_")
 
 
+def _resolve_m365_tool_name(valid_tool_names: "set[str] | None", suffix: str) -> str | None:
+    """Return the callable tool name for an MSOffice365MCP tool by its
+    canonical suffix (e.g. ``m365_send_email``), across the MCP-prefixed
+    naming scheme (``mcp_MSOffice365MCP_m365_send_email``) or a bare name."""
+    names = set(valid_tool_names or set())
+    for name in names:
+        if not isinstance(name, str):
+            continue
+        normalized = _normalize_tool_name_for_match(name)
+        if normalized == suffix or normalized.endswith(f"_{suffix}"):
+            return name
+    return None
+
+
+def _resolve_office_mail_tools(valid_tool_names: "set[str] | None") -> "dict | None":
+    """Detect which Outlook-capable mail/chat tool family is active — the
+    legacy native ``outlook_*`` tools, or the MSOffice365MCP catalog entry's
+    ``m365_*`` tools — and return a dict mapping canonical actions to the
+    actual callable tool names. Returns ``None`` when neither family is
+    present, so mail/Teams guidance is skipped entirely.
+
+    Centralizing this here (instead of gating each guidance function on a
+    hardcoded ``outlook_`` prefix) is what lets memory/signature/attribution
+    guidance actually fire for MSOffice365MCP installs, not just the legacy
+    native integration.
+    """
+    names = set(valid_tool_names or set())
+    if any(str(n).startswith("outlook_") for n in names):
+        return {
+            "family": "outlook",
+            "write_email": "outlook_write_email",
+            "list_emails": "outlook_get_emails",
+            "search_emails": "outlook_search_emails",
+            "read_contacts": "outlook_read_contacts",
+            "send_chat_message": None,
+            "sent_folder_hint": "folder='sent'",
+        }
+    write_email = _resolve_m365_tool_name(names, "m365_send_email")
+    send_chat_message = _resolve_m365_tool_name(names, "m365_send_chat_message")
+    if not write_email and not send_chat_message:
+        return None
+    return {
+        "family": "m365",
+        "write_email": write_email,
+        "list_emails": _resolve_m365_tool_name(names, "m365_list_emails"),
+        "search_emails": _resolve_m365_tool_name(names, "m365_list_emails"),
+        "read_contacts": _resolve_m365_tool_name(names, "m365_list_contacts"),
+        "send_chat_message": send_chat_message,
+        "sent_folder_hint": "folder='sentitems'",
+    }
+
+
 def _resolve_memory_tool_name(valid_tool_names: "set[str] | None", suffix: str) -> str | None:
     """Generic resolver for a memory MCP tool by its canonical suffix (e.g. ``memory_context``,
     ``memory_skill_read``, ``memory_save``).
@@ -1631,42 +1683,48 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
 
 def build_outlook_memory_guidance(valid_tool_names: "set[str] | None" = None) -> str:
     """Instruct the model to use the memory MCP's ``memory_save`` tool to persist
-    Outlook follow-ups and contacts, so a later session (or after context
+    Outlook/M365 follow-ups and contacts, so a later session (or after context
     compaction) can still find the right email/person again.
 
-    Only injected when BOTH an Outlook tool and a resolvable ``memory_save``
+    Only injected when BOTH a mail tool (legacy native ``outlook_*`` or the
+    MSOffice365MCP ``m365_*`` catalog entry) and a resolvable ``memory_save``
     tool are present — this is a cross-toolset hint, so it must stay out of
-    the static Outlook tool schemas (which may be loaded without memory, or
-    vice versa) and instead be resolved dynamically here, mirroring the
+    the static tool schemas (which may be loaded without memory, or vice
+    versa) and instead be resolved dynamically here, mirroring the
     ``_resolve_memory_context_tool_name`` pattern used for the mandatory
     memory_context block above.
     """
     names = set(valid_tool_names or set())
-    if not any(name.startswith("outlook_") for name in names):
+    mail_tools = _resolve_office_mail_tools(names)
+    if not mail_tools or not mail_tools.get("write_email"):
         return ""
     tool_name = _resolve_memory_save_tool_name(names)
     if not tool_name:
         return ""
 
+    search_tool = mail_tools.get("search_emails") or mail_tools.get("list_emails")
+    contacts_tool = mail_tools.get("read_contacts")
+
     return (
-        "# Outlook + Memory\n"
+        "# Outlook/M365 + Memory\n"
         f"When you send an email and are waiting on a reply, or agree to check back on an "
-        f"Outlook thread later, save a short note via `{tool_name}` (schema `notes`) capturing "
+        f"email thread later, save a short note via `{tool_name}` (schema `notes`) capturing "
         "who you're waiting on, the subject/keywords, and the date sent — this is what lets you "
-        "(or a later session) find the right thread again with `outlook_search_emails` instead of "
+        f"(or a later session) find the right thread again with `{search_tool}` instead of "
         "asking the user to search manually or promising a check you can't actually perform later.\n"
         f"When you learn a new contact's name, role, company, or email address (from an email, a "
-        "request to send/reply to someone, or outlook_read_contacts), save/update it via "
+        f"request to send/reply to someone, or `{contacts_tool}`), save/update it via "
         f"`{tool_name}` (schema `person`) so a bare first or last name is later enough to find them "
-        "and any notes about them — don't rely on outlook_read_contacts alone for people the user "
+        f"and any notes about them — don't rely on `{contacts_tool}` alone for people the user "
         "mentions repeatedly in conversation."
     )
 
 
 def build_outlook_signature_guidance(valid_tool_names: "set[str] | None" = None) -> str:
     """Instruct the model to learn (once) and reuse the user's own email
-    signature/style, and to infer the tone actually used with each specific
-    correspondent instead of defaulting to one global register.
+    signature/style, to always compose emails and Teams messages in HTML
+    (never plain text), and to infer the tone actually used with each
+    specific correspondent instead of defaulting to one global register.
 
     This directly fixes a real mistake observed in production: the assistant
     opened a reply to a close colleague with a formal "Sehr geehrter ..."
@@ -1675,24 +1733,39 @@ def build_outlook_signature_guidance(valid_tool_names: "set[str] | None" = None)
     it must be (re-)derived per correspondent — the global part below only
     covers the user's own signature/closing, which genuinely is constant.
 
-    Only injected when BOTH an Outlook tool and a resolvable ``memory_save``
+    Only injected when BOTH a mail tool (legacy native ``outlook_*`` or the
+    MSOffice365MCP ``m365_*`` catalog entry) and a resolvable ``memory_save``
     tool are present, for the same reason as ``build_outlook_memory_guidance``:
     this is a cross-toolset hint that depends on both toolsets being active.
     """
     names = set(valid_tool_names or set())
-    if not any(name.startswith("outlook_") for name in names):
+    mail_tools = _resolve_office_mail_tools(names)
+    if not mail_tools or not mail_tools.get("write_email"):
         return ""
     tool_name = _resolve_memory_save_tool_name(names)
     if not tool_name:
         return ""
 
+    write_email = mail_tools["write_email"]
+    list_emails = mail_tools.get("list_emails") or mail_tools.get("search_emails")
+    sent_hint = mail_tools.get("sent_folder_hint", "folder='sent'")
+    chat_tool = mail_tools.get("send_chat_message")
+    html_scope = (
+        f"emails (`{write_email}`) and Teams messages (`{chat_tool}`)"
+        if chat_tool
+        else f"emails (`{write_email}`)"
+    )
+
     return (
-        "# Outlook: signature & per-contact tone\n"
+        "# Outlook/M365: HTML formatting, signature & per-contact tone\n"
+        f"Always compose {html_scope} as HTML, never plain text — this is what makes "
+        "paragraphs, line breaks, and the signature/attribution below render correctly instead "
+        "of collapsing into one unreadable block.\n"
         "Global signature (derive once, reuse silently): this is a MANDATORY prerequisite step, "
-        "not optional polish. Before your FIRST `outlook_write_email` call for a new email "
+        f"not optional polish. Before your FIRST `{write_email}` call for a new email "
         "(not a reply — replies already show the existing thread) in a session, you MUST first "
         "check memory for a previously saved note about the user's own email signature/closing. "
-        "If none exists, call `outlook_get_emails` with `folder='sent'` on a few recent messages "
+        f"If none exists, call `{list_emails}` with {sent_hint} on a few recent messages "
         "yourself — do not ask the user to describe their own style, just look it up — infer the "
         "signature/closing the user actually uses, and save it via "
         f"`{tool_name}` (schema `notes`, e.g. title 'Outlook: email signature'). Only draft the "
@@ -1709,35 +1782,96 @@ def build_outlook_signature_guidance(valid_tool_names: "set[str] | None" = None)
     )
 
 
+def build_ai_attribution_guidance(valid_tool_names: "set[str] | None" = None) -> str:
+    """Instruct the model to append a short AI-attribution line after the
+    signature in emails, and at the end of Teams messages, naming the
+    assistant — customizable/disableable per the user's own preference.
+
+    The default assistant name comes from ``agent.assistant_name`` in
+    config.yaml (falls back to "Hermes"). If the user has given the
+    assistant a different name, or asked to change/drop the attribution
+    line entirely, that preference must be looked up in memory first and
+    take priority over the config default — mirroring the signature
+    lookup-then-reuse pattern in ``build_outlook_signature_guidance``.
+
+    Only injected when a mail/chat tool (legacy ``outlook_*`` or the
+    MSOffice365MCP ``m365_*`` catalog entry) and a resolvable ``memory_save``
+    tool are both present.
+    """
+    names = set(valid_tool_names or set())
+    mail_tools = _resolve_office_mail_tools(names)
+    if not mail_tools or (not mail_tools.get("write_email") and not mail_tools.get("send_chat_message")):
+        return ""
+    tool_name = _resolve_memory_save_tool_name(names)
+    if not tool_name:
+        return ""
+
+    default_name = "Hermes"
+    try:
+        from hermes_cli.config import load_config
+
+        default_name = str(
+            (load_config().get("agent", {}) or {}).get("assistant_name") or "Hermes"
+        ).strip() or "Hermes"
+    except Exception as e:
+        logger.debug("Could not read agent.assistant_name from config: %s", e)
+
+    write_email = mail_tools.get("write_email")
+    chat_tool = mail_tools.get("send_chat_message")
+    scope_bits = [b for b in (f"emails (`{write_email}`)" if write_email else None,
+                              f"Teams messages (`{chat_tool}`)" if chat_tool else None) if b]
+    scope = " and ".join(scope_bits)
+
+    return (
+        "# AI attribution footer\n"
+        f"Append a short attribution line to {scope} you compose: for emails, on its own line "
+        f"right after the signature/closing; for Teams messages, at the very end of the message. "
+        f"Default format: '(Erstellt von {default_name})' (translate/adapt naturally to the "
+        "conversation's language). Before your first such message in a session, check memory "
+        "(schema `notes`) for a previously saved custom name or format for this — the user may "
+        "have renamed the assistant, changed the wording, or asked to drop the line entirely — "
+        f"and use that instead of the '{default_name}' default. If the user gives such an "
+        f"instruction (a new name, a different phrasing, or to omit it), persist it immediately "
+        f"via `{tool_name}` (schema `notes`, e.g. title 'Assistant: attribution preference') so "
+        "it's remembered in later sessions without asking again."
+    )
+
+
 def build_outlook_contact_profiling_guidance(valid_tool_names: "set[str] | None" = None) -> str:
     """Instruct the model to offer a one-time, opt-in backfill that builds
     memory ``person`` profiles for frequent correspondents, driven by actual
     recent mail activity — never by bulk-importing the full Outlook/Org
     contact directory.
 
-    Only injected when BOTH an Outlook tool and a resolvable ``memory_save``
+    Only injected when BOTH a mail tool (legacy native ``outlook_*`` or the
+    MSOffice365MCP ``m365_*`` catalog entry) and a resolvable ``memory_save``
     tool are present (same cross-toolset gating as the sibling guidance
     functions above).
     """
     names = set(valid_tool_names or set())
-    if not any(name.startswith("outlook_") for name in names):
+    mail_tools = _resolve_office_mail_tools(names)
+    if not mail_tools or not mail_tools.get("write_email"):
         return ""
     tool_name = _resolve_memory_save_tool_name(names)
     if not tool_name:
         return ""
 
+    list_emails = mail_tools.get("list_emails") or mail_tools.get("search_emails")
+    search_emails = mail_tools.get("search_emails") or list_emails
+    contacts_tool = mail_tools.get("read_contacts")
+
     return (
-        "# Outlook: opt-in contact profiling\n"
+        "# Outlook/M365: opt-in contact profiling\n"
         "If the user hasn't been asked before (check memory first), offer once — using the "
         "`clarify` tool with choices like ['Ja', 'Nein'] — whether they want memory `person` "
         "profiles built for the people they correspond with often. Remember that this was asked "
         f"(a `notes` entry via `{tool_name}` is enough) so you never ask again.\n"
-        "If they agree: look at the last 14 days of inbox and sent mail (`outlook_get_emails` / "
-        "`outlook_search_emails` with a matching time range), identify correspondents by actual "
+        f"If they agree: look at the last 14 days of inbox and sent mail (`{list_emails}` / "
+        f"`{search_emails}` with a matching time range), identify correspondents by actual "
         "interaction frequency, and save each one as a `person` entry (name, email, and "
         f"organisation inferred from their mail domain) via `{tool_name}`.\n"
-        "Hard rule: NEVER bulk-import the full Outlook/Org contact directory "
-        "(`outlook_read_contacts` without this activity-based filter) into memory — only people "
+        f"Hard rule: NEVER bulk-import the full Outlook/Org contact directory "
+        f"(`{contacts_tool}` without this activity-based filter) into memory — only people "
         "the user has actually exchanged mail with recently. This is a one-time backfill; new "
         "frequent correspondents going forward are picked up incrementally by the normal "
         "save-as-you-go guidance above, not by re-running this scan."
