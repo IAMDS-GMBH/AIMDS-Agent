@@ -90,7 +90,7 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import Any, Coroutine, Dict, List, Optional, Set
+from typing import Any, Coroutine, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
@@ -3925,6 +3925,25 @@ def sanitize_mcp_name_component(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]", "_", str(value or ""))
 
 
+# Small, targeted usage nudges appended to specific external MCP tools'
+# descriptions. Keyed by (server_name, tool_name) as they appear in the
+# optional-mcps catalog / config.yaml `mcp_servers` keys. This is
+# deliberately NOT a generic manifest-driven mechanism (that would need a new
+# manifest field + config.yaml plumbing) — just a couple of well-known,
+# high-value nudges for external servers whose default tool behavior is
+# token-expensive in ways the model can't discover from the schema alone.
+_MCP_TOOL_DESCRIPTION_NOTES: Dict[Tuple[str, str], str] = {
+    ("AtlassianMCP", "jira_search"): (
+        " NOTE: pass a narrow `fields` value (e.g. "
+        '"key,summary,status,priority,assignee") whenever you only need an '
+        "overview of multiple issues — the default field set includes each "
+        "issue's full description, which bloats multi-issue search results "
+        "(often 10x+ larger than needed). Fetch the full description for a "
+        "single issue via jira_get_issue instead."
+    ),
+}
+
+
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     """Convert an MCP tool listing to the Hermes registry schema format.
 
@@ -3939,10 +3958,13 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     safe_tool_name = sanitize_mcp_name_component(mcp_tool.name)
     safe_server_name = sanitize_mcp_name_component(server_name)
     prefixed_name = f"mcp_{safe_server_name}_{safe_tool_name}"
+    description = mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"
+    note = _MCP_TOOL_DESCRIPTION_NOTES.get((server_name, mcp_tool.name))
+    if note:
+        description = f"{description}{note}"
     return {
         "name": prefixed_name,
-        "description": mcp_tool.description
-        or f"MCP tool {mcp_tool.name} from {server_name}",
+        "description": description,
         "parameters": _normalize_mcp_input_schema(
             getattr(mcp_tool, "inputSchema", None)
         ),

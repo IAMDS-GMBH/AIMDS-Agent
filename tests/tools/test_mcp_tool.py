@@ -97,6 +97,38 @@ class TestSchemaConversion:
         assert schema["description"] == "Read a file"
         assert "properties" in schema["parameters"]
 
+    def test_appends_field_filtering_note_to_atlassian_jira_search(self):
+        """AtlassianMCP's jira_search defaults to a field set that includes
+        each issue's full description, which bloats multi-issue search
+        results (~500KB for 100 tickets). Nudge the model, via the tool
+        description it actually sees, to pass a narrow `fields` value for
+        overview-style searches instead of relying on the (heavier) default.
+        """
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(name="jira_search", description="Search Jira issues using JQL")
+        schema = _convert_mcp_schema("AtlassianMCP", mcp_tool)
+
+        assert "Search Jira issues using JQL" in schema["description"]
+        assert "fields" in schema["description"]
+        assert "description" in schema["description"]
+
+    def test_does_not_append_note_to_unrelated_tools(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(name="jira_get_issue", description="Get a single Jira issue")
+        schema = _convert_mcp_schema("AtlassianMCP", mcp_tool)
+
+        assert schema["description"] == "Get a single Jira issue"
+
+    def test_does_not_append_note_for_a_different_server_with_same_tool_name(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(name="jira_search", description="Search Jira issues using JQL")
+        schema = _convert_mcp_schema("some-other-server", mcp_tool)
+
+        assert schema["description"] == "Search Jira issues using JQL"
+
     def test_empty_input_schema_gets_default(self):
         from tools.mcp_tool import _convert_mcp_schema
 
