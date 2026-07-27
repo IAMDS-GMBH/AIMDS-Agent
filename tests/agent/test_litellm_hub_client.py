@@ -101,3 +101,52 @@ def test_resolve_hub_settings_does_not_fallback_to_openai_or_provider_key(monkey
         settings = resolve_litellm_hub_settings()
 
     assert settings["api_key"] == ""
+
+
+def test_resolve_hub_settings_matches_base_url_to_active_provider_key(monkeypatch):
+    """Regression test: clicking "Entdecken" (agent hub) while the active
+    provider is aimds-suite-staging must use the staging base_url together
+    with the staging API key, not the prod key (IAMDS_LITELLM_API_KEY),
+    which the staging LiteLLM proxy correctly rejects with 401.
+    """
+    monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "prod-key")
+    monkeypatch.delenv("LITELLM_KEY", raising=False)
+
+    cfg = {"skills": {"litellm_hub": {}}}
+    staging_creds = {
+        "provider": "aimds-suite-staging",
+        "api_key": "staging-key",
+        "base_url": "https://staging.suite.iamds.com/litellm/v1",
+        "source": "IAMDS_LITELLM_STAGING_API_KEY",
+    }
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.auth.get_active_provider", return_value="aimds-suite-staging"),
+        patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value=staging_creds),
+    ):
+        settings = resolve_litellm_hub_settings()
+
+    assert settings["base_url"] == "https://staging.suite.iamds.com/litellm"
+    assert settings["api_key"] == "staging-key"
+
+
+def test_resolve_hub_settings_explicit_override_wins_over_active_provider(monkeypatch):
+    monkeypatch.delenv("IAMDS_LITELLM_API_KEY", raising=False)
+    monkeypatch.delenv("LITELLM_KEY", raising=False)
+
+    cfg = {
+        "skills": {
+            "litellm_hub": {
+                "base_url": "https://custom.example.com/litellm",
+                "api_key": "custom-key",
+            }
+        }
+    }
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.auth.get_active_provider", return_value="aimds-suite-staging"),
+    ):
+        settings = resolve_litellm_hub_settings()
+
+    assert settings["base_url"] == "https://custom.example.com/litellm"
+    assert settings["api_key"] == "custom-key"

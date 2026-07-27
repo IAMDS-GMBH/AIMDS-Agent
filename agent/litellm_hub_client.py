@@ -19,11 +19,22 @@ _HUB_PATH_ALIASES = {
 def resolve_litellm_hub_settings() -> Dict[str, Any]:
     """Resolve LiteLLM hub settings from config.yaml with env fallback.
 
-    Resolution order for base_url:
-    1. skills.litellm_hub.base_url (explicit hub override)
-    2. LITELLM_PROXY_URL env var
-    3. OPENAI_BASE_URL env var
-    4. First provider entry with a base_url (the model provider is usually LiteLLM)
+    Resolution order for (base_url, api_key) -- resolved as a MATCHED PAIR
+    wherever possible, so the hub never sends one provider's API key to a
+    different provider's base_url (e.g. the prod key against the staging
+    URL, which the LiteLLM proxy correctly rejects with 401):
+    1. skills.litellm_hub.base_url/api_key (explicit hub override; both from
+       the same config block, so already consistent).
+    2. The user's actual active provider (auth.json active_provider), if it
+       is an api_key provider -- base_url and api_key resolved together via
+       resolve_api_key_provider_credentials() so they always match.
+    3. LITELLM_PROXY_URL / OPENAI_BASE_URL env vars for base_url, paired with
+       IAMDS_LITELLM_API_KEY / LITELLM_KEY / config api_key for api_key (last
+       resort fallback, kept for backward compatibility with setups that
+       don't use the provider registry at all).
+    4. First provider entry with a base_url (legacy fallback), with api_key
+       resolved from the same provider entry when possible, then any
+       AIMDS-Suite-family provider as a final attempt.
     """
     from hermes_cli.config import load_config, load_env
 
@@ -31,20 +42,11 @@ def resolve_litellm_hub_settings() -> Dict[str, Any]:
     skills_cfg = cfg.get("skills", {}) if isinstance(cfg, dict) else {}
     hub_cfg = skills_cfg.get("litellm_hub", {}) if isinstance(skills_cfg, dict) else {}
 
-    base_url = str(
-        hub_cfg.get("base_url")
-        or os.getenv("LITELLM_PROXY_URL")
-        or os.getenv("OPENAI_BASE_URL")
-        or _first_provider_base_url(cfg)
-        or ""
-    ).strip().rstrip("/")
-    if base_url.endswith("/v1"):
-        base_url = base_url[:-3]
-    # Prefer IAMDS/LiteLLM runtime secrets from ~/.hermes/.env (freshly read)
-    # over a potentially stale process env or persisted config key.
+    # Baseline (legacy) independent resolution: api_key from env/.env/config,
+    # base_url from env/.env/first-provider-with-a-base_url. Kept as the
+    # fallback for setups that don't have an active provider resolvable via
+    # the provider registry (e.g. bare env-var configuration).
     env_vars = load_env()
-    # Prefer IAMDS/LiteLLM runtime secrets from env/.env over a potentially
-    # stale key persisted in config.yaml.
     api_key = str(
         env_vars.get("IAMDS_LITELLM_API_KEY")
         or env_vars.get("LITELLM_KEY")
@@ -53,28 +55,37 @@ def resolve_litellm_hub_settings() -> Dict[str, Any]:
         or hub_cfg.get("api_key")
         or ""
     ).strip()
-    if not api_key:
-        try:
-            from hermes_cli.auth import resolve_api_key_provider_credentials
 
-            for p_id in ("aimds-suite-prod", "aimds-suite-dev", "aimds-suite-staging", "iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
-                creds = resolve_api_key_provider_credentials(p_id)
-                if isinstance(creds, dict) and creds.get("api_key"):
+    base_url = str(
+        hub_cfg.get("base_url")
+        or os.getenv("LITELLM_PROXY_URL")
+        or os.getenv("OPENAI_BASE_URL")
+        or _first_provider_base_url(cfg)
+        or ""
+    ).strip().rstrip("/")
+
+    # Resolve base_url + api_key together from the user's actual active
+    # provider (when no explicit skills.litellm_hub.base_url override is
+    # set), so a staging/dev active provider is never paired with a
+    # different environment's API key (e.g. the prod key against the
+    # staging URL, which the LiteLLM proxy correctly rejects with 401).
+    # This takes priority over the legacy independent lookups above.
+    if not str(hub_cfg.get("base_url") or "").strip():
+        try:
+            from hermes_cli.auth import get_active_provider, resolve_api_key_provider_credentials
+
+            active_provider_id = get_active_provider()
+            if active_provider_id:
+                creds = resolve_api_key_provider_credentials(active_provider_id)
+                if isinstance(creds, dict) and creds.get("base_url") and creds.get("api_key"):
+                    base_url = str(creds["base_url"]).strip().rstrip("/")
                     api_key = str(creds["api_key"]).strip()
-                    break
         except Exception:
             pass
-    if not api_key:
-        try:
-            from hermes_cli.auth import resolve_api_key_provider_credentials
 
-            for provider_id in ("aimds-suite-prod", "aimds-suite-dev", "aimds-suite-staging", "iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
-                creds = resolve_api_key_provider_credentials(provider_id)
-                if isinstance(creds, dict) and creds.get("api_key"):
-                    api_key = str(creds["api_key"]).strip()
-                    break
-        except Exception:
-            pass
+    if base_url.endswith("/v1"):
+        base_url = base_url[:-3]
+
     timeout_raw = hub_cfg.get("timeout", 20)
     try:
         timeout = max(1, int(timeout_raw))
