@@ -23,6 +23,18 @@ class TestMemorySchema:
         assert "target=user" in description
         assert "target=memory" in description
 
+    def test_frames_local_memory_as_primary_default_store(self):
+        """The local `memory` tool's own schema description must explicitly
+        differentiate it from the cloud/cross-device memory tool, since the
+        model weighs a tool's own schema description more heavily than
+        softer system-prompt guidance when choosing between similarly
+        purposed tools (see agent/prompt_builder.py build_remote_mcp_memory_prompt).
+        """
+        description = MEMORY_SCHEMA["description"]
+        assert "PRIMARY" in description
+        assert "session-specific" in description
+        assert "cross-device" in description
+
 
 # =========================================================================
 # Security scanning

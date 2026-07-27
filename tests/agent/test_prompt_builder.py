@@ -52,6 +52,18 @@ class TestGuidanceConstants:
         assert "like a diary" not in MEMORY_GUIDANCE
         assert ">80%" not in MEMORY_GUIDANCE
 
+    def test_memory_guidance_differentiates_local_default_from_cloud_tool(self):
+        """MEMORY_GUIDANCE must explain the local `memory` tool is the PRIMARY
+        default and that a separate, narrower-scoped cloud/cross-device
+        memory tool exists — without this, models default to whichever
+        memory-like tool they see regardless of scope (see
+        build_remote_mcp_memory_prompt for the companion MCP-session prompt).
+        """
+        assert "PRIMARY" in MEMORY_GUIDANCE
+        assert "session-specific" in MEMORY_GUIDANCE
+        assert "cross-device" in MEMORY_GUIDANCE
+        assert "general-purpose or default memory store" in MEMORY_GUIDANCE
+
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
@@ -1339,6 +1351,21 @@ class TestBuildRemoteMcpMemoryPrompt:
     def test_onboarding_save_hint_falls_back_to_local_memory_when_missing_mcp_save(self):
         text = build_remote_mcp_memory_prompt({"memory_context"})
         assert 'local `memory` with target="user"' in text
+
+    def test_frames_local_as_default_and_cloud_as_narrower_opt_in(self):
+        """The prompt must be directive about the default: local storage first,
+        cloud memory only for facts that specifically need cross-device
+        durability — otherwise models default to the cloud tool for
+        everything, including session-specific detail that should stay local.
+        """
+        text = build_remote_mcp_memory_prompt({"memory_context"})
+        assert "DEFAULT" in text
+        assert "narrower/opt-in" in text
+        assert "Prefer local storage UNLESS" in text
+        # Legitimate cross-device use cases must remain intact, not be
+        # suppressed by the stronger "prefer local" framing.
+        assert "durable user profile facts" in text
+        assert "standing rules/preferences, contacts" in text
 
 
 class TestBuildOutlookSignatureGuidance:

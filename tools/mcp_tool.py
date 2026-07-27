@@ -3957,6 +3957,23 @@ _MCP_TOOL_DESCRIPTION_NOTES: Dict[Tuple[str, str], str] = {
         "date format' error."
     ),
 }
+# Cloud/cross-device memory MCP tools (server key is "AIMDS" in current
+# configs, legacy "IAMDS" alias preserved for backward compatibility — see
+# installer/scripts/upsert_aimds_defaults.py). Without an explicit nudge here,
+# the model tends to default to this tool for everything since its raw,
+# server-provided description carries no signal that a narrower-scoped local
+# `memory` tool (session-specific/detailed/working info) should be preferred
+# by default; see agent/prompt_builder.py build_remote_mcp_memory_prompt()
+# for the complementary system-prompt-level guidance.
+_CLOUD_MEMORY_NOTE = (
+    " NOTE: Cross-device durable-fact store — use ONLY for information that "
+    "must persist and sync across all sessions/devices (user profile, "
+    "standing preferences, contacts). For session-specific or detailed "
+    "working notes, prefer the local `memory` tool instead."
+)
+for _server_name in ("AIMDS", "IAMDS"):
+    for _tool_name in ("mcp_memory_memory_save", "mcp_memory_memory_context"):
+        _MCP_TOOL_DESCRIPTION_NOTES[(_server_name, _tool_name)] = _CLOUD_MEMORY_NOTE
 
 
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:

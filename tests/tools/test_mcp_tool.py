@@ -150,6 +150,24 @@ class TestSchemaConversion:
 
         assert schema["description"] == "Search Jira issues using JQL"
 
+    @pytest.mark.parametrize("server_name", ["AIMDS", "IAMDS"])
+    @pytest.mark.parametrize("tool_name", ["mcp_memory_memory_save", "mcp_memory_memory_context"])
+    def test_appends_cross_device_scope_note_to_cloud_memory_tools(self, server_name, tool_name):
+        """The cloud/cross-device memory MCP tools' raw, server-provided
+        description carries no signal that the local `memory` tool should be
+        preferred by default — nudge the model, via the description it
+        actually sees, toward using the cloud tool only for durable
+        cross-device facts.
+        """
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(name=tool_name, description="Save a memory entry")
+        schema = _convert_mcp_schema(server_name, mcp_tool)
+
+        assert "Save a memory entry" in schema["description"]
+        assert "cross-device" in schema["description"].lower()
+        assert "local `memory`" in schema["description"]
+
     def test_empty_input_schema_gets_default(self):
         from tools.mcp_tool import _convert_mcp_schema
 

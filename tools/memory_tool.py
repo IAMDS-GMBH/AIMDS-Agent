@@ -884,7 +884,13 @@ _OLD_MEMORY_DESCRIPTION = (
 
 MEMORY_SCHEMA = {
     "name": "memory",
-    "description": "Store memory across sessions. Use target=user for profile, memory for notes.",
+    "description": (
+        "Store durable memory entries across sessions. This is the PRIMARY, default memory "
+        "store — use it for session-specific, detailed, or working information. Use target=user "
+        "for profile, target=memory for notes. NOT for durable cross-device facts that must sync "
+        "across all sessions/devices (user profile, standing preferences, contacts) — prefer the "
+        "cloud/cross-device memory tool for those, when available."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
