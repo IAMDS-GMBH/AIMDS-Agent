@@ -49,6 +49,7 @@ from hermes_cli.config import (
     DEFAULT_CONFIG,
     OPTIONAL_ENV_VARS,
     get_config_path,
+    get_config_parse_error,
     get_env_path,
     get_hermes_home,
     load_config,
@@ -2814,8 +2815,15 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
 async def get_config(profile: Optional[str] = None):
     with _profile_scope(profile):
         config = _normalize_config_for_web(load_config())
+        parse_error = get_config_parse_error()
     # Strip internal keys that the frontend shouldn't see or send back
-    return {k: v for k, v in config.items() if not k.startswith("_")}
+    result = {k: v for k, v in config.items() if not k.startswith("_")}
+    # config_parse_error is None when config.yaml currently parses cleanly.
+    # Surfaced (not stripped by the underscore filter above) so the Desktop
+    # UI can show a persistent notification instead of the failure being
+    # visible only in ~/.hermes/logs (see hermes_cli/config.py::_warn_config_parse_failure).
+    result["config_parse_error"] = parse_error
+    return result
 
 
 @app.get("/api/config/defaults")

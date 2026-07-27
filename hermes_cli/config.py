@@ -38,6 +38,45 @@ logger = logging.getLogger(__name__)
 # every time. Cleared automatically when the file changes (different mtime).
 _CONFIG_PARSE_WARNED: set = set()
 
+# Most recent config.yaml parse error per path, surfaced to the Desktop UI
+# via GET /api/config (see web_server.py::get_config). Log/stderr alone
+# (the pre-existing behavior) is invisible to normal end users who never
+# look at ~/.hermes/logs -- they just see their overrides silently
+# reverted to defaults with no explanation. Cleared on the next successful
+# load of the same path so a fixed config.yaml stops surfacing stale
+# errors. Not persisted across process restarts by design: a fresh
+# process re-derives this the first time it loads the (still-broken)
+# config, which happens immediately at startup.
+_LAST_CONFIG_PARSE_ERROR: Dict[str, Dict[str, Any]] = {}
+_CONFIG_PARSE_ERROR_LOCK = threading.Lock()
+
+
+def get_config_parse_error(config_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    """Return the most recent parse error for ``config_path`` (default path if omitted).
+
+    Returns ``None`` if the config currently loads cleanly (or has never
+    failed to parse in this process). Shape: ``{"message": str, "path": str,
+    "backup_path": Optional[str]}``.
+    """
+    path_key = str(config_path if config_path is not None else get_config_path())
+    with _CONFIG_PARSE_ERROR_LOCK:
+        entry = _LAST_CONFIG_PARSE_ERROR.get(path_key)
+        return dict(entry) if entry is not None else None
+
+
+def _record_config_parse_error(config_path: Path, message: str, backup_path: Optional[Path]) -> None:
+    with _CONFIG_PARSE_ERROR_LOCK:
+        _LAST_CONFIG_PARSE_ERROR[str(config_path)] = {
+            "message": message,
+            "path": str(config_path),
+            "backup_path": str(backup_path) if backup_path is not None else None,
+        }
+
+
+def _clear_config_parse_error(config_path: Path) -> None:
+    with _CONFIG_PARSE_ERROR_LOCK:
+        _LAST_CONFIG_PARSE_ERROR.pop(str(config_path), None)
+
 
 def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
     """Preserve a corrupted ``config.yaml`` by copying it to a timestamped ``.bak``.
@@ -110,17 +149,17 @@ def _warn_config_parse_failure(config_path: Path, exc: Exception) -> None:
     timestamped ``.bak`` (best-effort) so the user's recoverable content
     survives any later rewrite of ``config.yaml`` by the setup wizard or
     ``hermes config set``.
+
+    Also records the failure via ``_record_config_parse_error`` so
+    ``GET /api/config`` can surface it as a persistent Desktop UI
+    notification (see web_server.py) -- log/stderr alone is invisible to
+    normal end users who never open ~/.hermes/logs.
     """
     try:
         st = config_path.stat()
         key = (str(config_path), st.st_mtime_ns, st.st_size)
     except OSError:
         key = (str(config_path), 0, 0)
-    if key in _CONFIG_PARSE_WARNED:
-        return
-    _CONFIG_PARSE_WARNED.add(key)
-
-    backup_path = _backup_corrupt_config(config_path)
 
     msg = (
         f"Failed to parse {config_path}: {exc}. "
@@ -128,8 +167,21 @@ def _warn_config_parse_failure(config_path: Path, exc: Exception) -> None:
         f"(auxiliary providers, fallback chain, model settings) is being IGNORED. "
         f"Fix the YAML and restart."
     )
+
+    if key in _CONFIG_PARSE_WARNED:
+        # Already logged this exact broken file this process, but the
+        # Desktop-facing record may have been cleared by a later successful
+        # load of a since-fixed config that then broke again in the exact
+        # same way (same mtime/size, e.g. a revert) — keep it in sync.
+        _record_config_parse_error(config_path, msg, None)
+        return
+    _CONFIG_PARSE_WARNED.add(key)
+
+    backup_path = _backup_corrupt_config(config_path)
+
     if backup_path is not None:
         msg += f" A copy of the corrupted file was saved to {backup_path}."
+    _record_config_parse_error(config_path, msg, backup_path)
     logger.warning(msg)
     try:
         sys.stderr.write(f"⚠️  hermes config: {msg}\n")
@@ -5910,6 +5962,7 @@ def read_raw_config() -> Dict[str, Any]:
             _warn_config_parse_failure(config_path, e)
             return {}
 
+        _clear_config_parse_error(config_path)
         if not isinstance(data, dict):
             data = {}
         _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(data))
@@ -6075,6 +6128,10 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                     user_config.pop("max_turns", None)
 
                 config = _deep_merge(config, user_config)
+                # Parses cleanly now -- clear any stale error recorded from a
+                # previous (since-fixed) broken version of this file so
+                # GET /api/config stops surfacing it to the Desktop UI.
+                _clear_config_parse_error(config_path)
             except Exception as e:
                 _warn_config_parse_failure(config_path, e)
 

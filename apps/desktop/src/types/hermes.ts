@@ -171,6 +171,12 @@ export interface GatewayReadyPayload {
   skin?: unknown
 }
 
+export interface ConfigParseError {
+  message: string
+  path: string
+  backup_path: string | null
+}
+
 export interface HermesConfig {
   agent?: {
     reasoning_effort?: string
@@ -190,6 +196,8 @@ export interface HermesConfig {
   voice?: {
     max_recording_seconds?: number
   }
+  /** Null when config.yaml currently parses cleanly. See GET /api/config. */
+  config_parse_error?: ConfigParseError | null
 }
 
 export type HermesConfigRecord = Record<string, unknown>

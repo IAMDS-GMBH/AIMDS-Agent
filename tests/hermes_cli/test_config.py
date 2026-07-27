@@ -14,6 +14,7 @@ from hermes_cli.config import (
     get_hermes_home,
     ensure_hermes_home,
     get_compatible_custom_providers,
+    get_config_parse_error,
     load_config,
     load_env,
     migrate_config,
@@ -373,6 +374,52 @@ class TestLoadConfigParseFailure:
             load_config()
 
             assert not list(tmp_path.glob("config.yaml.corrupt.*.bak"))
+
+    def test_get_config_parse_error_none_when_config_is_valid(self, tmp_path):
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text("model: some/model\n")
+            load_config()
+            assert get_config_parse_error() is None
+
+    def test_get_config_parse_error_surfaces_after_parse_failure(self, tmp_path, capsys):
+        """GET /api/config (web_server.py) relies on this to show a Desktop
+        UI notification -- log/stderr alone (what _warn_config_parse_failure
+        already did) is invisible to normal end users who never open
+        ~/.hermes/logs, so a corrupt config.yaml silently reverting every
+        override to defaults previously went unnoticed."""
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text("\tbroken tab indent:\n")
+            load_config()
+
+            error = get_config_parse_error()
+            assert error is not None
+            assert error["path"] == str(config_path)
+            assert "Falling back to default config" in error["message"]
+            assert str(config_path) in error["message"]
+
+    def test_get_config_parse_error_clears_after_fix(self, tmp_path):
+        """Once the user fixes config.yaml, the next successful load must
+        clear the stale error record -- otherwise the Desktop UI keeps
+        showing a notification about a problem that's already resolved."""
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text("\tbroken tab indent:\n")
+            load_config()
+            assert get_config_parse_error() is not None
+
+            config_path.write_text("model: some/model\n")
+            load_config()
+            assert get_config_parse_error() is None
 
 
 class TestSaveAndLoadRoundtrip:
