@@ -308,12 +308,27 @@ class CatalogEntry:
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 
 def _tokenize(text: str) -> List[str]:
     if not text:
         return []
     return [t.lower() for t in _TOKEN_RE.findall(text)]
+
+
+def _split_words(text: str) -> str:
+    """Break a tool/source identifier into space-separated words for BM25.
+
+    Splits on `_`/`.`/`-`/`:` AND on camelCase boundaries — MCP server names
+    are typically registered in PascalCase (e.g. "GithubMCP", "AtlassianMCP")
+    with no separator, so without the camelCase split `_tokenize` collapses
+    them into a single opaque token ("githubmcp") that a literal query like
+    "github" can never match, silently hiding that server's tools from
+    search results.
+    """
+    separated = text.replace("_", " ").replace(".", " ").replace("-", " ").replace(":", " ")
+    return _CAMEL_BOUNDARY_RE.sub(" ", separated)
 
 
 def _entry_search_text(td: Dict[str, Any], source_name: str = "") -> str:
@@ -328,9 +343,9 @@ def _entry_search_text(td: Dict[str, Any], source_name: str = "") -> str:
     desc = fn.get("description", "") or ""
     params = ((fn.get("parameters") or {}).get("properties") or {})
     param_names = " ".join(params.keys())
-    # Break snake_case, dotted, dashed names into words for BM25.
-    name_words = name.replace("_", " ").replace(".", " ").replace("-", " ").replace(":", " ")
-    source_words = source_name.replace("_", " ").replace(".", " ").replace("-", " ").replace(":", " ")
+    # Break snake_case, dotted, dashed, and camelCase names into words for BM25.
+    name_words = _split_words(name)
+    source_words = _split_words(source_name)
     return f"{name_words} {name_words} {source_words} {desc} {param_names}"
 
 

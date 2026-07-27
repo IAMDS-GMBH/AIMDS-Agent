@@ -4204,8 +4204,14 @@ def _index_mcp_server_keywords(
         toolset_name = f"mcp-{name}"
         server_keywords: Set[str] = set()
 
-        # 1. Server name and sanitised components (e.g. atlassian-jira -> atlassian, jira)
-        for part in re.split(r"[-_.:/@\s]+", name.lower()):
+        # 1. Server name and sanitised components (e.g. atlassian-jira -> atlassian, jira).
+        # Split camelCase boundaries first (e.g. "GithubMCP" -> "Github MCP") --
+        # MCP server names are commonly registered in PascalCase with no other
+        # separator, so without this split "githubmcp" survives as one opaque
+        # keyword and a plain-English query like "github" never matches it,
+        # silently hiding that server's tools from tool_search results.
+        camel_split_name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name)
+        for part in re.split(r"[-_.:/@\s]+", camel_split_name.lower()):
             part_clean = part.strip()
             if len(part_clean) >= 2 and part_clean not in {"mcp", "server", "tools", "tool"}:
                 server_keywords.add(part_clean)

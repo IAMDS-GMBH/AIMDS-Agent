@@ -277,6 +277,69 @@ class TestRetrieval:
         assert "jira_search_issues" in names
         assert "outlook_read_contacts" not in names
 
+    def test_search_matches_camel_case_mcp_server_name(self):
+        """Regression: MCP servers registered in PascalCase (e.g. "GithubMCP")
+        must still be found by a query using their plain-English name, even
+        when the tool's own name/description share no words with the query
+        at all -- the only path to a match is the (correctly split) source
+        name. Before splitting camelCase boundaries, `_split_words("GithubMCP")`
+        produced a single opaque "githubmcp" token that a literal "github"
+        query could never match, silently dropping the entry from BM25
+        scoring entirely (see session 20260727_122011_68ef14 where the model
+        gave up and fell back to raw `git log` because
+        tool_search("github commits...") returned zero GitHub-related
+        tools, while an unrelated AtlassianMCP tool that matched on another
+        query word still scored, so the naive whole-catalog substring
+        fallback never got a chance to run either).
+        """
+        from tools.registry import registry
+        from tools.tool_search import build_catalog, search_catalog
+
+        tool_defs = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "mcp_GithubMCP_get_default_branch",
+                    "description": "Return the default branch name",
+                    "parameters": {"properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "mcp_AtlassianMCP_jira_search_issues",
+                    "description": "Search Jira issues, scoped to a repository field",
+                    "parameters": {"properties": {"jql": {"type": "string"}}},
+                },
+            },
+        ]
+        registry.register(
+            name="mcp_GithubMCP_get_default_branch",
+            toolset="mcp-GithubMCP",
+            schema=tool_defs[0],
+            handler=lambda x: x,
+            check_fn=lambda: True,
+            description="Return the default branch name",
+        )
+        registry.register(
+            name="mcp_AtlassianMCP_jira_search_issues",
+            toolset="mcp-AtlassianMCP",
+            schema=tool_defs[1],
+            handler=lambda x: x,
+            check_fn=lambda: True,
+            description="Search Jira issues, scoped to a repository field",
+        )
+
+        catalog = build_catalog(tool_defs)
+        # "repository" alone already gives the Jira tool a real, unrelated
+        # match, so the catalog-wide "nothing scored" substring fallback
+        # never triggers -- isolating the actual bug: whether the GithubMCP
+        # entry survives BM25 scoring via its source name.
+        results = search_catalog(catalog, query="github repository", limit=8)
+        names = [h.name for h in results]
+        assert "mcp_AtlassianMCP_jira_search_issues" in names
+        assert "mcp_GithubMCP_get_default_branch" in names
+
 
 # ---------------------------------------------------------------------------
 # Assembly — the full passthrough/activate decision.
