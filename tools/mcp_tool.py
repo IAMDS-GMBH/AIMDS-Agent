@@ -3941,6 +3941,16 @@ _MCP_TOOL_DESCRIPTION_NOTES: Dict[Tuple[str, str], str] = {
         "(often 10x+ larger than needed). Fetch the full description for a "
         "single issue via jira_get_issue instead."
     ),
+    ("AtlassianMCP", "jira_add_worklog"): (
+        " NOTE: always pass an explicit `started` timestamp reflecting when "
+        "the work actually began, and derive `time_spent` from the real "
+        "start→end interval (e.g. from session/turn timestamps) instead of "
+        "guessing a duration. If `started` is omitted, Jira silently backs "
+        "it with the current time, so the logged entry no longer reflects "
+        "when the work happened — only skip `started`/use an estimated "
+        "duration if the user explicitly asks for a rough time booking "
+        "rather than a start/end-based one."
+    ),
 }
 
 

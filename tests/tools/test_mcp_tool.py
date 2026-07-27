@@ -121,6 +121,22 @@ class TestSchemaConversion:
 
         assert schema["description"] == "Get a single Jira issue"
 
+    def test_appends_started_timestamp_note_to_atlassian_add_worklog(self):
+        """AtlassianMCP's jira_add_worklog defaults `started` to "now" when
+        omitted, silently detaching the logged time from when the work
+        actually happened. Nudge the model to always pass an explicit
+        `started` timestamp derived from the real start/end interval.
+        """
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(
+            name="jira_add_worklog", description="Add a worklog entry to a Jira issue"
+        )
+        schema = _convert_mcp_schema("AtlassianMCP", mcp_tool)
+
+        assert "Add a worklog entry to a Jira issue" in schema["description"]
+        assert "started" in schema["description"]
+
     def test_does_not_append_note_for_a_different_server_with_same_tool_name(self):
         from tools.mcp_tool import _convert_mcp_schema
 
