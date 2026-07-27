@@ -646,6 +646,13 @@ def _build_server_config(
             env_map = {}
             for item in entry.auth.env:
                 val = get_env_value(item.name)
+                if not val and item.name == "JIRA_PERSONAL_TOKEN":
+                    # JIRA_PAT was this field's name before it was renamed to match
+                    # what mcp-atlassian actually reads for Server/DC PAT auth
+                    # (JIRA_PAT was never a real mcp-atlassian env var, so it never
+                    # worked). Fall back to any value users already saved under the
+                    # old name so existing installs keep working without re-entry.
+                    val = get_env_value("JIRA_PAT")
                 if val and str(val).strip():
                     env_map[item.name] = f"${{{item.name}}}"
             if env_map:

@@ -178,7 +178,7 @@ class TestSchemaConversion:
         schema = _convert_mcp_schema("AtlassianMCP", mcp_tool)
 
         assert "Unexpected return value type from `jira.jql`" in schema["description"]
-        assert "JIRA_PAT" in schema["description"]
+        assert "JIRA_PERSONAL_TOKEN" in schema["description"]
         assert "JIRA_URL" in schema["description"]
 
     @pytest.mark.parametrize("server_name", ["AIMDS", "IAMDS"])
@@ -1525,6 +1525,32 @@ class TestSanitizeError:
 # ---------------------------------------------------------------------------
 # HTTP config
 # ---------------------------------------------------------------------------
+
+class TestEnvVarInterpolation:
+    """Tests for ``${VAR}`` config env-var interpolation."""
+
+    def test_unknown_var_left_as_literal_placeholder(self, monkeypatch):
+        from tools.mcp_tool import _interpolate_env_vars
+        monkeypatch.delenv("NO_SUCH_VAR_XYZ", raising=False)
+        assert _interpolate_env_vars("${NO_SUCH_VAR_XYZ}") == "${NO_SUCH_VAR_XYZ}"
+
+    def test_jira_personal_token_falls_back_to_legacy_jira_pat(self, monkeypatch):
+        """JIRA_PAT was AtlassianMCP's Server/DC field name before it was
+        renamed to JIRA_PERSONAL_TOKEN (mcp-atlassian never actually read
+        JIRA_PAT, so it silently never worked). Configs still referencing
+        ``${JIRA_PERSONAL_TOKEN}`` must resolve from a legacy ``JIRA_PAT``
+        value already present in the environment."""
+        from tools.mcp_tool import _interpolate_env_vars
+        monkeypatch.delenv("JIRA_PERSONAL_TOKEN", raising=False)
+        monkeypatch.setenv("JIRA_PAT", "legacy-pat-value")
+        assert _interpolate_env_vars("${JIRA_PERSONAL_TOKEN}") == "legacy-pat-value"
+
+    def test_jira_personal_token_prefers_its_own_value_over_legacy(self, monkeypatch):
+        from tools.mcp_tool import _interpolate_env_vars
+        monkeypatch.setenv("JIRA_PERSONAL_TOKEN", "real-pat-value")
+        monkeypatch.setenv("JIRA_PAT", "legacy-pat-value")
+        assert _interpolate_env_vars("${JIRA_PERSONAL_TOKEN}") == "real-pat-value"
+
 
 class TestHTTPConfig:
     """Tests for HTTP transport detection and handling."""

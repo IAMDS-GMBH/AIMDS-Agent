@@ -8087,6 +8087,13 @@ async def list_mcp_catalog(profile: Optional[str] = None):
                         elif e.name == "JIRA_EMAIL":
                             val = get_env_value("JIRA_USERNAME") or ""
                         elif e.name == "JIRA_API_TOKEN":
+                            val = get_env_value("JIRA_PERSONAL_TOKEN") or get_env_value("JIRA_PAT") or ""
+                        elif e.name == "JIRA_PERSONAL_TOKEN":
+                            # JIRA_PAT was this field's name before it was renamed to
+                            # match what mcp-atlassian actually reads (JIRA_PAT was
+                            # never a real mcp-atlassian env var -- Server/DC PAT auth
+                            # silently never worked through it). Keep showing any
+                            # value a user already saved under the old name.
                             val = get_env_value("JIRA_PAT") or ""
                     env_vars.append({
                         "name": e.name,

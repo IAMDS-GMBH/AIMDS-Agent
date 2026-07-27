@@ -2774,7 +2774,17 @@ def _interpolate_env_vars(value):
     if isinstance(value, str):
 
         def _replace(m):
-            return os.environ.get(m.group(1), m.group(0))
+            name = m.group(1)
+            resolved = os.environ.get(name)
+            if resolved is None and name == "JIRA_PERSONAL_TOKEN":
+                # JIRA_PAT was this AtlassianMCP field's name before it was
+                # renamed to match what mcp-atlassian actually reads for
+                # Server/DC PAT auth (JIRA_PAT was never a real mcp-atlassian
+                # env var, so it silently never worked). Fall back to any
+                # value already saved under the old name so existing installs
+                # keep working without re-entering the token.
+                resolved = os.environ.get("JIRA_PAT")
+            return resolved if resolved is not None else m.group(0)
 
         return _ENV_VAR_PATTERN.sub(_replace, value)
     if isinstance(value, dict):
@@ -3945,11 +3955,17 @@ _MCP_TOOL_DESCRIPTION_NOTES: Dict[Tuple[str, str], str] = {
         "non-JSON body (HTML/plain text) instead of search results — this "
         "is NOT a malformed-JQL error from Jira itself (those come back as "
         "JSON 400s) and retrying with simpler JQL alone will not fix it. "
-        "Likely causes: an expired/invalid JIRA_PAT (Jira silently "
-        "redirects to an HTML login page), a wrong JIRA_URL context path, "
-        "or a reverse proxy/WAF intercepting the request. Tell the user to "
-        "verify the JIRA_PAT and JIRA_URL for this server instead of "
-        "treating it as a bug in this tool."
+        "Most common cause for Jira Server/Data Center: this server is "
+        "configured with Cloud-style Basic auth (JIRA_API_TOKEN + "
+        "JIRA_USERNAME) instead of a genuine Server/DC Personal Access "
+        "Token (JIRA_PERSONAL_TOKEN) — many on-prem instances reject/"
+        "redirect Basic auth entirely, and the redirect's HTML body is what "
+        "surfaces as this error. Other possible causes: an expired/invalid "
+        "JIRA_PERSONAL_TOKEN, a wrong JIRA_URL context path, or a reverse "
+        "proxy/WAF intercepting the request. Tell the user to check this "
+        "server's auth mode and set JIRA_PERSONAL_TOKEN (not "
+        "JIRA_API_TOKEN/JIRA_USERNAME) for Server/Data Center Jira instead "
+        "of treating it as a bug in this tool."
     ),
     ("AtlassianMCP", "jira_add_worklog"): (
         " NOTE: always pass an explicit `started` timestamp reflecting when "

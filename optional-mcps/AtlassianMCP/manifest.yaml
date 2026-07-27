@@ -22,23 +22,26 @@ auth:
   type: api_key
   notes: >-
     Choose ONE auth mode, not both: Jira Cloud -> fill JIRA_API_TOKEN + JIRA_USERNAME
-    and leave JIRA_PAT blank. Jira Local/Data Center/Server -> fill JIRA_PAT and
-    leave JIRA_API_TOKEN + JIRA_USERNAME blank. JIRA_URL is always required.
+    and leave JIRA_PERSONAL_TOKEN blank. Jira Local/Data Center/Server -> fill
+    JIRA_PERSONAL_TOKEN and leave JIRA_API_TOKEN + JIRA_USERNAME blank -- Server/DC
+    instances often reject Basic Auth (JIRA_API_TOKEN + JIRA_USERNAME) entirely,
+    which mcp-atlassian surfaces as a confusing "Unexpected return value type from
+    `jira.jql`" error instead of a clear auth failure. JIRA_URL is always required.
   env:
     - name: JIRA_URL
       prompt: "Jira instance URL (e.g. https://your-domain.atlassian.net or https://jira.company.com)"
       required: true
       secret: false
     - name: JIRA_API_TOKEN
-      prompt: "Jira API Token (Cloud) or Personal Access Token PAT (Local/Data Center)"
+      prompt: "Jira API Token (Cloud only -- leave blank for Local/Data Center)"
       required: true
       secret: true
     - name: JIRA_USERNAME
-      prompt: "Jira Username or Email (required for Cloud API Token; leave blank for Local PAT)"
+      prompt: "Jira Username or Email (required for Cloud API Token; leave blank for Local/Data Center)"
       required: false
       secret: false
-    - name: JIRA_PAT
-      prompt: "Jira Personal Access Token PAT (for Local/DC Jira; leave blank if using JIRA_API_TOKEN)"
+    - name: JIRA_PERSONAL_TOKEN
+      prompt: "Jira Personal Access Token (for Local/Data Center Jira; leave blank if using JIRA_API_TOKEN)"
       required: false
       secret: true
 
@@ -60,7 +63,10 @@ post_install: |
 
   Authentication modes:
     - Jira Cloud (Default): Set JIRA_URL, JIRA_API_TOKEN, and JIRA_USERNAME (your Atlassian email).
-    - Jira Local / Data Center / Server: Set JIRA_URL and JIRA_PAT (Personal Access Token).
+    - Jira Local / Data Center / Server: Set JIRA_URL and JIRA_PERSONAL_TOKEN (Personal Access Token,
+      generated from your Jira profile's Personal Access Tokens page). Don't use JIRA_API_TOKEN +
+      JIRA_USERNAME here -- many Server/DC instances have Basic Auth disabled, which fails with a
+      confusing "Unexpected return value type from `jira.jql`" error instead of a clear auth error.
 
   Time Tracking & Worklog tools included:
     - jira_add_worklog: Log time spent on issues.

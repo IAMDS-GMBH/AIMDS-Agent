@@ -106,7 +106,7 @@ class TestMcpEndpoints:
         """
         from hermes_cli.config import save_env_value
         save_env_value("JIRA_URL", "https://example.atlassian.net")
-        save_env_value("JIRA_PAT", "pat-from-atlassian-mcp")
+        save_env_value("JIRA_PERSONAL_TOKEN", "pat-from-atlassian-mcp")
 
         entries = {e["name"]: e for e in self.client.get("/api/mcp/catalog").json()["entries"]}
 
@@ -116,8 +116,26 @@ class TestMcpEndpoints:
         tempo_env = {ev["name"]: ev for ev in entries["TempoMCP"]["auth"]["env"]}
         assert entries["TempoMCP"]["auth"]["notes"]
         assert tempo_env["JIRA_BASE_URL"]["current_value"] == "https://example.atlassian.net"
-        # JIRA_API_TOKEN falls back to JIRA_PAT only when unset directly.
+        # JIRA_API_TOKEN falls back to JIRA_PERSONAL_TOKEN only when unset directly.
         assert tempo_env["JIRA_API_TOKEN"]["current_value"] == "pat-from-atlassian-mcp"
+
+    def test_catalog_jira_api_token_falls_back_to_legacy_jira_pat(self):
+        """Regression: JIRA_PAT was AtlassianMCP's Server/DC field name before
+        it was renamed to JIRA_PERSONAL_TOKEN (mcp-atlassian never actually
+        read JIRA_PAT, so it silently never worked). Existing configs that
+        still only have a value saved under the old name must keep pre-filling
+        both AtlassianMCP's own field and Tempo's fallback."""
+        from hermes_cli.config import save_env_value
+        save_env_value("JIRA_URL", "https://jira.example.com")
+        save_env_value("JIRA_PAT", "legacy-pat-value")
+
+        entries = {e["name"]: e for e in self.client.get("/api/mcp/catalog").json()["entries"]}
+
+        atlassian_env = {ev["name"]: ev for ev in entries["AtlassianMCP"]["auth"]["env"]}
+        assert atlassian_env["JIRA_PERSONAL_TOKEN"]["current_value"] == "legacy-pat-value"
+
+        tempo_env = {ev["name"]: ev for ev in entries["TempoMCP"]["auth"]["env"]}
+        assert tempo_env["JIRA_API_TOKEN"]["current_value"] == "legacy-pat-value"
 
     def test_build_server_config_filters_unset_env(self):
         from hermes_cli.config import save_env_value
@@ -136,14 +154,14 @@ class TestMcpEndpoints:
         assert r.status_code == 404
 
     def test_catalog_install_clears_env_var_when_submitted_empty(self):
-        """Regression: clearing an optional field (e.g. JIRA_PAT) and
+        """Regression: clearing an optional field (e.g. JIRA_PERSONAL_TOKEN) and
         reinstalling must actually clear ~/.hermes/.env, not silently keep
         the previous value. Previously install_mcp_catalog_entry only ever
         wrote non-empty values, so a UI-cleared field had no effect."""
         from hermes_cli.config import get_env_value, save_env_value
 
-        save_env_value("JIRA_PAT", "stale-pat-value")
-        assert get_env_value("JIRA_PAT") == "stale-pat-value"
+        save_env_value("JIRA_PERSONAL_TOKEN", "stale-pat-value")
+        assert get_env_value("JIRA_PERSONAL_TOKEN") == "stale-pat-value"
 
         r = self.client.post(
             "/api/mcp/catalog/install",
@@ -153,12 +171,12 @@ class TestMcpEndpoints:
                     "JIRA_URL": "https://example.atlassian.net",
                     "JIRA_API_TOKEN": "tok_xyz",
                     "JIRA_USERNAME": "",
-                    "JIRA_PAT": "",
+                    "JIRA_PERSONAL_TOKEN": "",
                 },
             },
         )
         assert r.status_code == 200, r.text
-        assert get_env_value("JIRA_PAT") is None
+        assert get_env_value("JIRA_PERSONAL_TOKEN") is None
 
     def test_catalog_install_reconnects_server_live(self):
         """Regression: a synchronous catalog install (no git-bootstrap step)
