@@ -255,6 +255,17 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: apps/bootstrap-installer/src-tauri
+          # Only cache the compiled `target/` dir on the ephemeral macOS
+          # runner, where it can actually pay off. On self-hosted-windows
+          # the "Clean stale build output" step above wipes `target/` on
+          # every run regardless, so `target/` caching there only helps if
+          # the network restore hits -- and CARGO_HOME (registry/git/bin)
+          # already persists on that runner's local disk between runs
+          # independent of this action, so a `target/`-cache miss buys
+          # nothing but pays a multi-minute upload of ~500MB+ of dependency
+          # build artifacts on every save. Keep caching just the registry
+          # (small, fast) on Windows and skip the expensive target upload.
+          cache-targets: ${{ runner.os != 'Windows' }}
 
       - name: Refresh Cargo Windows crates cache (Windows only)
         if: runner.os == 'Windows'
