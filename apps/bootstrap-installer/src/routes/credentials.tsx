@@ -203,35 +203,38 @@ export default function Credentials() {
     }
   }
 
-  const handleFetchModels = async () => {
+  // Accepts optional overrides so callers that just obtained fresh
+  // credentials (e.g. handleKeycloakLogin, right after its own setFormData)
+  // can fetch with those values immediately instead of the stale `formData`
+  // this closure captured at render time -- setFormData's update isn't
+  // visible to this closure until the next render.
+  const handleFetchModels = async (overrideBaseUrl?: string, overrideApiKey?: string) => {
+    const baseUrlToUse = overrideBaseUrl ?? selectedBaseUrl
+    const apiKeyToUse = overrideApiKey ?? selectedApiKey
+
     setModelError(null)
     setIsLoadingModels(true)
 
     try {
-      if (!formData.baseUrl.trim()) {
+      if (!baseUrlToUse.trim()) {
         setModelError('Base URL is required')
         setIsLoadingModels(false)
         return
       }
-      if (!selectedBaseUrl) {
-        setModelError('Base URL is invalid')
-        setIsLoadingModels(false)
-        return
-      }
-      if (!selectedApiKey.trim()) {
+      if (!apiKeyToUse.trim()) {
         setModelError('API Key is required')
         setIsLoadingModels(false)
         return
       }
 
       const models = await invoke<string[]>('fetch_models', {
-        baseUrl: selectedBaseUrl,
-        apiKey: selectedApiKey
+        baseUrl: baseUrlToUse,
+        apiKey: apiKeyToUse
       })
 
       setAvailableModels(models)
       setModelsFetched(true)
-      setFetchedFingerprint(computeFetchFingerprint(formData))
+      setFetchedFingerprint(computeFetchFingerprint({ ...formData, baseUrl: baseUrlToUse, apiKey: apiKeyToUse }))
       setFormData((prev) => ({ ...prev, modelName: models[0] }))
 
       try {
@@ -282,6 +285,15 @@ export default function Credentials() {
       setKeycloakConnected(true)
       // Invalidate any previously fetched models since the key changed
       invalidateFetchedModels()
+
+      // Auto-fetch models now that we have a fresh key -- normal end users
+      // otherwise land on this screen post-login with an empty model
+      // dropdown and no indication they still need to press "Fetch
+      // models" themselves. Pass the just-obtained values explicitly
+      // (not via selectedBaseUrl/selectedApiKey) since this closure's
+      // `formData` won't reflect the setFormData call above until the
+      // next render.
+      void handleFetchModels(result.base_url ? normalizeInstallerBaseUrl(result.base_url) : baseUrl, result.api_key)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       console.error('Keycloak login error:', message)
@@ -437,7 +449,7 @@ export default function Credentials() {
                 <div className="mt-2 flex gap-2">
                   <button
                     type="button"
-                    onClick={handleFetchModels}
+                    onClick={() => void handleFetchModels()}
                     disabled={isLoadingModels || !selectedBaseUrl || !selectedApiKey.trim()}
                     className="flex items-center gap-2 rounded border border-input bg-muted/50 px-3 py-2 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
