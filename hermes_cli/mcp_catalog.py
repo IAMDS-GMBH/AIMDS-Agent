@@ -26,6 +26,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -44,8 +45,18 @@ from hermes_cli.cli_output import prompt as _prompt_input
 
 _MANIFEST_VERSION = 1
 
-# Substituted at install time inside `transport.command` / `transport.args`.
+# Substituted at install time inside `transport.command` / `transport.args`
+# (and, since _run_bootstrap expands it too, inside `install.bootstrap`).
 _INSTALL_DIR_VAR = "${INSTALL_DIR}"
+
+# Bootstrap commands in manifests are written using Unix conventions
+# (`python3`, `.venv/bin/...`) since that's the common case across the
+# catalog. On Windows there's typically no `python3` on PATH (only `python`
+# / the `py` launcher) and venvs place executables under `.venv/Scripts/`
+# instead of `.venv/bin/` -- so bootstrap commands are rewritten for the
+# current platform before being handed to the shell.
+_VENV_BIN_UNIX = ".venv/bin/"
+_VENV_BIN_WINDOWS = ".venv/Scripts/"
 
 
 # ─── Data classes ────────────────────────────────────────────────────────────
@@ -358,18 +369,48 @@ def _install_root() -> Path:
     return root
 
 
+def _adapt_bootstrap_command(cmd: str) -> str:
+    """Rewrite a manifest bootstrap command for the current platform.
+
+    Manifests are authored with Unix conventions (`python3`, `.venv/bin/...`).
+    On Windows, `python3` usually isn't on PATH -- substitute the interpreter
+    actually running Hermes -- and venv executables live under
+    `.venv/Scripts/`, not `.venv/bin/`.
+    """
+    if sys.platform != "win32":
+        return cmd
+    # Replacement is a callable (not a plain string) so re.sub doesn't try to
+    # interpret backslashes in a Windows sys.executable path (e.g.
+    # `C:\Python311\python.exe`) as regex backreference escapes.
+    replacement = f'"{sys.executable}"'
+    adapted = re.sub(
+        r"(?<![\w./-])python3(?![\w.-])", lambda _match: replacement, cmd
+    )
+    adapted = adapted.replace(_VENV_BIN_UNIX, _VENV_BIN_WINDOWS)
+    return adapted
+
+
 def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
     """Execute bootstrap commands in *cwd*. Raise CatalogError on first failure.
 
-    Each command runs through the shell (so `&&` etc. work). The output is
-    streamed to the user's terminal for visibility.
+    Commands are expanded for ``${INSTALL_DIR}`` -- the same placeholder used
+    in ``transport.command``/``args`` -- since manifests reference it (e.g.
+    ``pip install -r ${INSTALL_DIR}/optional-mcps/<name>/requirements.txt``)
+    and it was previously never substituted here, silently expanding to an
+    empty string via the shell and pointing `pip install -r` at a
+    nonexistent path. Commands are then adapted for the current platform
+    (see ``_adapt_bootstrap_command``). Each command runs through the shell
+    (so `&&` etc. work). The output is streamed to the user's terminal for
+    visibility.
     """
     for cmd in commands:
-        print(color(f"  $ {cmd}", Colors.DIM))
-        proc = subprocess.run(cmd, cwd=str(cwd), shell=True)
+        expanded = cmd.replace(_INSTALL_DIR_VAR, str(cwd))
+        expanded = _adapt_bootstrap_command(expanded)
+        print(color(f"  $ {expanded}", Colors.DIM))
+        proc = subprocess.run(expanded, cwd=str(cwd), shell=True)
         if proc.returncode != 0:
             raise CatalogError(
-                f"bootstrap step failed (exit {proc.returncode}): {cmd}"
+                f"bootstrap step failed (exit {proc.returncode}): {expanded}"
             )
 
 
@@ -435,6 +476,22 @@ def _expand_install_dir(value: str, install_dir: Optional[Path]) -> str:
     return value.replace(_INSTALL_DIR_VAR, str(install_dir))
 
 
+def _adapt_venv_executable_path(value: str) -> str:
+    """Rewrite a manifest's `.venv/bin/...` transport command for Windows.
+
+    Manifests are authored with Unix conventions. On Windows a venv's
+    executables live under `.venv/Scripts/` (not `.venv/bin/`) and need an
+    `.exe` suffix, since the MCP client spawns the transport command
+    directly (no shell) and Windows requires an exact executable path.
+    """
+    if sys.platform != "win32" or _VENV_BIN_UNIX not in value:
+        return value
+    adapted = value.replace(_VENV_BIN_UNIX, _VENV_BIN_WINDOWS)
+    if not adapted.lower().endswith(".exe"):
+        adapted += ".exe"
+    return adapted
+
+
 def _prompt_env_vars(
     specs: List[EnvVarSpec], *, reprompt: bool = False
 ) -> Dict[str, str]:
@@ -477,7 +534,9 @@ def _build_server_config(
     cfg: dict = {}
     t = entry.transport
     if t.type == "stdio":
-        cfg["command"] = _expand_install_dir(t.command or "", install_dir)
+        cfg["command"] = _adapt_venv_executable_path(
+            _expand_install_dir(t.command or "", install_dir)
+        )
         if t.args:
             cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
         if entry.auth and entry.auth.env:

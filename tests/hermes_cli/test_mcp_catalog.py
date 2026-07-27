@@ -746,6 +746,102 @@ class TestGitInstallShaRef:
         assert len(branch_attempts) == 1, calls
 
 
+class TestBootstrapInstallDirExpansion:
+    """Regression coverage for the bootstrap ${INSTALL_DIR} substitution bug.
+
+    _run_bootstrap previously ran install.bootstrap commands verbatim
+    through the shell without substituting ${INSTALL_DIR} (only
+    transport.command/args went through _expand_install_dir). Since
+    ${INSTALL_DIR} isn't a real shell/env variable, it silently expanded to
+    an empty string, so e.g. `pip install -r ${INSTALL_DIR}/reqs.txt` pointed
+    at a nonexistent absolute path on every platform.
+    """
+
+    def test_run_bootstrap_substitutes_install_dir(self, monkeypatch, tmp_path):
+        from hermes_cli import mcp_catalog
+
+        calls = []
+
+        class _FakeProc:
+            returncode = 0
+
+        def fake_run(cmd, cwd=None, shell=None):
+            calls.append(cmd)
+            return _FakeProc()
+
+        monkeypatch.setattr(mcp_catalog.subprocess, "run", fake_run)
+        monkeypatch.setattr(mcp_catalog.sys, "platform", "linux")
+
+        dest = tmp_path / "MSOffice365MCP"
+        dest.mkdir()
+        mcp_catalog._run_bootstrap(
+            dest,
+            [
+                "python3 -m venv .venv",
+                ".venv/bin/pip install -r ${INSTALL_DIR}/optional-mcps/MSOffice365MCP/requirements.txt",
+            ],
+        )
+
+        assert calls[0] == "python3 -m venv .venv"
+        assert "${INSTALL_DIR}" not in calls[1]
+        assert calls[1] == (
+            f".venv/bin/pip install -r {dest}/optional-mcps/MSOffice365MCP/requirements.txt"
+        )
+
+    def test_run_bootstrap_raises_on_failed_step(self, monkeypatch, tmp_path):
+        from hermes_cli import mcp_catalog
+
+        class _FakeProc:
+            returncode = 1
+
+        monkeypatch.setattr(
+            mcp_catalog.subprocess, "run", lambda *a, **k: _FakeProc()
+        )
+        monkeypatch.setattr(mcp_catalog.sys, "platform", "linux")
+
+        with pytest.raises(mcp_catalog.CatalogError):
+            mcp_catalog._run_bootstrap(tmp_path, ["false"])
+
+    def test_adapt_bootstrap_command_rewrites_for_windows(self, monkeypatch):
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(mcp_catalog.sys, "platform", "win32")
+        monkeypatch.setattr(mcp_catalog.sys, "executable", r"C:\Python311\python.exe")
+
+        adapted = mcp_catalog._adapt_bootstrap_command("python3 -m venv .venv")
+        assert adapted == r'"C:\Python311\python.exe" -m venv .venv'
+
+        adapted_pip = mcp_catalog._adapt_bootstrap_command(
+            ".venv/bin/pip install -r requirements.txt"
+        )
+        assert adapted_pip == ".venv/Scripts/pip install -r requirements.txt"
+
+    def test_adapt_bootstrap_command_noop_on_non_windows(self, monkeypatch):
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(mcp_catalog.sys, "platform", "darwin")
+        cmd = "python3 -m venv .venv"
+        assert mcp_catalog._adapt_bootstrap_command(cmd) == cmd
+
+    def test_adapt_venv_executable_path_rewrites_for_windows(self, monkeypatch):
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(mcp_catalog.sys, "platform", "win32")
+        adapted = mcp_catalog._adapt_venv_executable_path(
+            "/home/user/.hermes/mcp-installs/MSOffice365MCP/.venv/bin/python"
+        )
+        assert adapted == (
+            "/home/user/.hermes/mcp-installs/MSOffice365MCP/.venv/Scripts/python.exe"
+        )
+
+    def test_adapt_venv_executable_path_noop_on_non_windows(self, monkeypatch):
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(mcp_catalog.sys, "platform", "darwin")
+        path = "/home/user/.hermes/mcp-installs/MSOffice365MCP/.venv/bin/python"
+        assert mcp_catalog._adapt_venv_executable_path(path) == path
+
+
 # ---------------------------------------------------------------------------
 # Existing tools_config converged to tools.include
 # ---------------------------------------------------------------------------
