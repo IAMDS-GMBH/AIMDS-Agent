@@ -1,13 +1,27 @@
 'use client'
 
-import { TextMessagePartProvider, useMessagePartText } from '@assistant-ui/react'
+import { TextMessagePartProvider, useAui, useAuiState, useMessagePartText } from '@assistant-ui/react'
 import {
   type StreamdownTextComponents,
   StreamdownTextPrimitive,
   type SyntaxHighlighterProps
 } from '@assistant-ui/react-streamdown'
 import { code } from '@streamdown/code'
-import { type ComponentProps, memo, type ReactNode, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Children,
+  type ComponentProps,
+  createContext,
+  isValidElement,
+  memo,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
@@ -176,8 +190,125 @@ function childrenToText(children: unknown): string {
   return ''
 }
 
-function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
-  const mediaPath = mediaPathFromMarkdownHref(href)
+// Detects "Nächste Möglichkeiten"-style option list items so they can be made
+// clickable (see `NextOptionListItem`). Matches a leading bold "Option <id>"
+// label regardless of language, e.g. "Option A: ..." or "**Option 2**: ...".
+export const OPTION_LABEL_RE = /^option\s+\S+/i
+
+export function reactNodeToPlainText(node: ReactNode): string {
+  if (node === null || node === undefined || typeof node === 'boolean') {
+    return ''
+  }
+
+  if (typeof node === 'string' || typeof node === 'number') {
+    return String(node)
+  }
+
+  if (Array.isArray(node)) {
+    return node.map(reactNodeToPlainText).join('')
+  }
+
+  if (isValidElement<{ children?: ReactNode }>(node)) {
+    return reactNodeToPlainText(node.props.children)
+  }
+
+  return ''
+}
+
+// Splits a `<li>`'s children into its own leading content (text/inline
+// markup preceding any nested sub-list) and the nested `<ul>`/`<ol>` itself,
+// so we can make only the leading "Option X: ..." line clickable while
+// rendering nested sub-bullets unchanged underneath it.
+export function splitListItemChildren(children: ReactNode): { lead: ReactNode[]; nested: ReactNode[] } {
+  const nodes = Children.toArray(children)
+  const nestedIndex = nodes.findIndex(node => isValidElement(node) && (node.type === 'ul' || node.type === 'ol'))
+
+  if (nestedIndex === -1) {
+    return { lead: nodes, nested: [] }
+  }
+
+  return { lead: nodes.slice(0, nestedIndex), nested: nodes.slice(nestedIndex) }
+}
+
+// Tracks whether the current `<li>` is inside an ordered or unordered list,
+// so option-click detection only ever applies to top-level numbered options
+// (never to unordered sub-bullets, even if their text happened to match).
+const ListKindContext = createContext<'ordered' | 'unordered'>('unordered')
+
+// Sends the option's label text as a brand-new user message, mirroring
+// assistant-ui's own `SuggestionPrimitive.Trigger` "send" behavior
+// (see @assistant-ui/react primitives/suggestion/SuggestionTrigger.js).
+function NextOptionListItem({ className, label, lead, nested, ...props }: ComponentProps<'li'> & {
+  label: string
+  lead: ReactNode
+  nested: ReactNode
+}) {
+  const aui = useAui()
+  const disabled = useAuiState(state => state.thread.isDisabled)
+  const [sent, setSent] = useState(false)
+  const isInactive = disabled || sent
+
+  const handleActivate = useCallback(() => {
+    if (disabled || sent) {
+      return
+    }
+
+    setSent(true)
+    aui.thread().append({
+      content: [{ type: 'text', text: label }],
+      runConfig: aui.composer().getState().runConfig
+    })
+  }, [aui, disabled, label, sent])
+
+  return (
+    <li className={cn('leading-(--dt-line-height)', className)} {...props}>
+      <div
+        aria-disabled={isInactive}
+        className={cn(
+          'my-0.5 rounded-lg border border-border/70 bg-muted/25 px-2.5 py-1.5 outline-none transition-colors',
+          '[&_p]:my-0',
+          !isInactive && 'hover:border-border hover:bg-muted/45 focus-visible:ring-2 focus-visible:ring-ring',
+          isInactive && 'opacity-70'
+        )}
+        onClick={handleActivate}
+        onKeyDown={event => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            handleActivate()
+          }
+        }}
+        role="button"
+        tabIndex={isInactive ? -1 : 0}
+      >
+        {lead}
+      </div>
+      {nested}
+    </li>
+  )
+}
+
+// Renders `<li>`, promoting numbered "Option X: ..." items to clickable
+// `NextOptionListItem`s (see there) while leaving everything else unchanged.
+function ListItem({ className, children, ...props }: ComponentProps<'li'>) {
+  const listKind = useContext(ListKindContext)
+
+  if (listKind === 'ordered') {
+    const { lead, nested } = splitListItemChildren(children)
+    const label = reactNodeToPlainText(lead).trim()
+
+    if (OPTION_LABEL_RE.test(label)) {
+      return <NextOptionListItem className={className} label={label} lead={lead} nested={nested} {...props} />
+    }
+  }
+
+  return (
+    <li className={cn('leading-(--dt-line-height)', className)} {...props}>
+      {children}
+    </li>
+  )
+}
+
+function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {  const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
     return <MediaAttachment path={mediaPath} />
@@ -413,14 +544,16 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
           />
         ),
         ul: ({ className, ...props }: ComponentProps<'ul'>) => (
-          <ul className={cn('my-1 gap-0', className)} {...props} />
+          <ListKindContext.Provider value="unordered">
+            <ul className={cn('my-1 gap-0', className)} {...props} />
+          </ListKindContext.Provider>
         ),
         ol: ({ className, ...props }: ComponentProps<'ol'>) => (
-          <ol className={cn('my-1 gap-0', className)} {...props} />
+          <ListKindContext.Provider value="ordered">
+            <ol className={cn('my-1 gap-0', className)} {...props} />
+          </ListKindContext.Provider>
         ),
-        li: ({ className, ...props }: ComponentProps<'li'>) => (
-          <li className={cn('leading-(--dt-line-height)', className)} {...props} />
-        ),
+        li: ListItem,
         table: ({ className, ...props }: ComponentProps<'table'>) => (
           <div className="aui-md-table my-2 max-w-full overflow-x-auto rounded-[0.375rem] border border-border">
             <table

@@ -1,6 +1,9 @@
+import { createElement } from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
+
+import { OPTION_LABEL_RE, reactNodeToPlainText, splitListItemChildren } from './markdown-text'
 
 describe('preprocessMarkdown', () => {
   it('strips inline accidental triple-backtick starts', () => {
@@ -200,5 +203,56 @@ describe('preprocessMarkdown', () => {
     const output = preprocessMarkdown(input)
 
     expect(output).toContain('<https://example.com/a_b/c~d/page>')
+  })
+})
+
+describe('OPTION_LABEL_RE', () => {
+  it('matches a bold "Option X" prefix regardless of case or id shape', () => {
+    expect(OPTION_LABEL_RE.test('Option A: Tiefer in die Core Epics')).toBe(true)
+    expect(OPTION_LABEL_RE.test('option 2: do the thing')).toBe(true)
+    expect(OPTION_LABEL_RE.test('OPTION D: whatever')).toBe(true)
+  })
+
+  it('does not match unrelated list item text', () => {
+    expect(OPTION_LABEL_RE.test('Scroll wheel - zoom')).toBe(false)
+    expect(OPTION_LABEL_RE.test('See the optional settings below')).toBe(false)
+  })
+})
+
+describe('reactNodeToPlainText', () => {
+  it('flattens strings, numbers and nested elements to plain text', () => {
+    const node = [
+      createElement('strong', { key: 'b' }, 'Option A'),
+      ': Tiefer in die Core Epics (AIS-1, ',
+      createElement('code', { key: 'c' }, 'AIS-2'),
+      ')'
+    ]
+
+    expect(reactNodeToPlainText(node)).toBe('Option A: Tiefer in die Core Epics (AIS-1, AIS-2)')
+  })
+
+  it('ignores null/boolean children', () => {
+    expect(reactNodeToPlainText([null, false, undefined, 'text'])).toBe('text')
+  })
+})
+
+describe('splitListItemChildren', () => {
+  it('splits leading content from a nested sub-list', () => {
+    const lead = createElement('p', { key: 'p' }, 'Option A: details')
+    const nested = createElement('ul', { key: 'ul' }, createElement('li', { key: 'li' }, 'sub-bullet'))
+
+    const { lead: leadNodes, nested: nestedNodes } = splitListItemChildren([lead, nested])
+
+    expect(leadNodes).toHaveLength(1)
+    expect(nestedNodes).toHaveLength(1)
+  })
+
+  it('treats everything as lead content when there is no nested list', () => {
+    const lead = createElement('p', { key: 'p' }, 'Option A: no sub-bullets')
+
+    const { lead: leadNodes, nested: nestedNodes } = splitListItemChildren([lead])
+
+    expect(leadNodes).toHaveLength(1)
+    expect(nestedNodes).toHaveLength(0)
   })
 })

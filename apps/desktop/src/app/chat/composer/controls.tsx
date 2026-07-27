@@ -115,9 +115,9 @@ export function ComposerControls({
           >
             {busy ? (
               busyAction === 'queue' ? (
-                <Layers3 size={16} />
+                <Layers3 className="animate-pulse" size={16} />
               ) : (
-                <span className="block size-3 rounded-[0.1875rem] bg-current" />
+                <span className="block size-3 animate-pulse rounded-[0.1875rem] bg-current" />
               )
             ) : (
               <Codicon name="arrow-up" size="1rem" />
