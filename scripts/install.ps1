@@ -1222,53 +1222,63 @@ function Invoke-WithRetry {
 function Stop-ProcessesLockingPath {
     param([string]$TargetPath)
 
-    if (-not $TargetPath -or -not (Test-Path -LiteralPath $TargetPath)) { return @() }
-
-    $resolved = $null
+    # Best-effort helper: any unexpected failure anywhere below (e.g. a
+    # transient CIM/WMI hiccup, or a process disappearing mid-enumeration)
+    # must degrade to "nothing killed" rather than bubble up and fail
+    # whichever stage called us -- reproduced on a real machine as a bare
+    # "Object reference not set to an instance of an object." surfacing
+    # from this function and failing the config-templates stage outright.
     try {
-        $resolved = (Resolve-Path -LiteralPath $TargetPath).Path
-    } catch {
-        return @()
-    }
-    if (-not $resolved) { return @() }
+        if (-not $TargetPath -or -not (Test-Path -LiteralPath $TargetPath)) { return @() }
 
-    $resolved = [System.IO.Path]::GetFullPath($resolved).TrimEnd('\')
-    $escaped = [Regex]::Escape($resolved)
-    $killed = @()
-
-    $procs = @()
-    try {
-        $procs = @(Get-CimInstance Win32_Process -ErrorAction Stop)
-    } catch {
-        return @()
-    }
-
-    foreach ($proc in $procs) {
+        $resolved = $null
         try {
-            $procId = [int]$proc.ProcessId
-            if ($procId -eq $PID) { continue }
+            $resolved = (Resolve-Path -LiteralPath $TargetPath).Path
+        } catch {
+            return @()
+        }
+        if (-not $resolved) { return @() }
 
-            $exe = [string]$proc.ExecutablePath
-            $cmd = [string]$proc.CommandLine
-            $matchesTarget = $false
+        $resolved = [System.IO.Path]::GetFullPath($resolved).TrimEnd('\')
+        $escaped = [Regex]::Escape($resolved)
+        $killed = @()
 
-            if ($exe -and $exe -match "^$escaped([\\]|$)") {
-                $matchesTarget = $true
-            } elseif ($cmd -and $cmd -match $escaped) {
-                $matchesTarget = $true
-            }
+        $procs = @()
+        try {
+            $procs = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+        } catch {
+            return @()
+        }
 
-            if ($matchesTarget) {
-                Stop-Process -Id $procId -Force -ErrorAction Stop
-                $killed += $procId
-            }
-        } catch {}
+        foreach ($proc in $procs) {
+            try {
+                $procId = [int]$proc.ProcessId
+                if ($procId -eq $PID) { continue }
+
+                $exe = [string]$proc.ExecutablePath
+                $cmd = [string]$proc.CommandLine
+                $matchesTarget = $false
+
+                if ($exe -and $exe -match "^$escaped([\\]|$)") {
+                    $matchesTarget = $true
+                } elseif ($cmd -and $cmd -match $escaped) {
+                    $matchesTarget = $true
+                }
+
+                if ($matchesTarget) {
+                    Stop-Process -Id $procId -Force -ErrorAction Stop
+                    $killed += $procId
+                }
+            } catch {}
+        }
+
+        if ($killed.Count -gt 0) {
+            Start-Sleep -Milliseconds 500
+        }
+        return @($killed | Select-Object -Unique)
+    } catch {
+        return @()
     }
-
-    if ($killed.Count -gt 0) {
-        Start-Sleep -Milliseconds 500
-    }
-    return @($killed | Select-Object -Unique)
 }
 
 function Remove-InstallDirWithProcessCleanup {
@@ -2945,18 +2955,28 @@ function Copy-ConfigTemplates {
     # $HermesHome (where MEMORY.md/config.yaml actually live) is a different
     # path on a reinstall/update where the repository stage is skipped or
     # already completed, so repeat it here, scoped to $HermesHome.
-    Get-Process -Name "hermes" -ErrorAction SilentlyContinue | ForEach-Object {
-        try {
-            Stop-Process -Id $_.Id -Force -ErrorAction Stop
-            Write-Warn "Stopped running hermes process (PID $($_.Id)) before writing config templates"
-        } catch {}
-    }
-    if (Test-Path $HermesHome) {
-        $killed = @(Stop-ProcessesLockingPath -TargetPath $HermesHome)
-        if ($killed.Count -gt 0) {
-            Write-Warn ("Stopped {0} process(es) locking {1} before writing config templates: {2}" -f $killed.Count, $HermesHome, ($killed -join ", "))
-            Start-Sleep -Milliseconds 500
+    #
+    # This is best-effort housekeeping, not the stage's job: any unexpected
+    # failure here (e.g. a transient CIM/WMI hiccup enumerating processes)
+    # must not abort config-templates outright -- reproduced on a real
+    # machine as "Der Objektverweis wurde nicht auf eine Objektinstanz
+    # festgelegt." bubbling out of this block and failing the whole stage.
+    try {
+        Get-Process -Name "hermes" -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                Stop-Process -Id $_.Id -Force -ErrorAction Stop
+                Write-Warn "Stopped running hermes process (PID $($_.Id)) before writing config templates"
+            } catch {}
         }
+        if (Test-Path $HermesHome) {
+            $killed = @(Stop-ProcessesLockingPath -TargetPath $HermesHome)
+            if ($killed.Count -gt 0) {
+                Write-Warn ("Stopped {0} process(es) locking {1} before writing config templates: {2}" -f $killed.Count, $HermesHome, ($killed -join ", "))
+                Start-Sleep -Milliseconds 500
+            }
+        }
+    } catch {
+        Write-Warn "Skipping process-lock cleanup before config templates: $($_.Exception.Message)"
     }
 
     $hermesWorkDir = Join-Path $HOME 'Documents\AIMDS-Suite-Vault'
