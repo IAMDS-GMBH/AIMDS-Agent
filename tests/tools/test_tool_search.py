@@ -341,6 +341,91 @@ class TestRetrieval:
         assert "mcp_GithubMCP_get_default_branch" in names
 
 
+class TestRegression_ExactServerNameReturnsFullCatalog:
+    """Regression: session 20260727_134336_3fd877 — the model searched
+    tool_search(query="MSOffice365MCP", limit=30) for a 34-tool server and
+    only got back 20 hits, silently missing `m365_send_chat_message`
+    (and get_or_create_direct_chat, list_calendars, create_event, ...).
+    All 34 tools share the same +10 source-name boost, so once more
+    candidates than the limit are alive, plain BM25 length-normalization
+    arbitrarily favors shorter tool names over longer ones for the
+    remaining ranking -- there is nothing "relevant" about which 20 survive.
+    Searching by exact server/toolset name must return the whole catalog.
+    """
+
+    def _build_big_server_catalog(self, count: int = 34):
+        from tools.registry import registry
+        from tools.tool_search import build_catalog
+
+        tool_defs = []
+        for i in range(count):
+            name = f"mcp_BigMCP_action_number_{i:02d}_with_a_fairly_long_tool_name"
+            tool_defs.append({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": f"Do thing number {i}",
+                    "parameters": {"properties": {}},
+                },
+            })
+            registry.register(
+                name=name,
+                toolset="mcp-BigMCP",
+                schema=tool_defs[-1],
+                handler=lambda x: x,
+                check_fn=lambda: True,
+                description=f"Do thing number {i}",
+            )
+        # One deliberately short-named outlier, mirroring m365_list_chats
+        # being short while m365_send_chat_message is long.
+        short_name = "mcp_BigMCP_short"
+        tool_defs.append({
+            "type": "function",
+            "function": {
+                "name": short_name,
+                "description": "Short tool",
+                "parameters": {"properties": {}},
+            },
+        })
+        registry.register(
+            name=short_name,
+            toolset="mcp-BigMCP",
+            schema=tool_defs[-1],
+            handler=lambda x: x,
+            check_fn=lambda: True,
+            description="Short tool",
+        )
+        return build_catalog(tool_defs)
+
+    def test_exact_server_name_query_returns_every_tool(self):
+        from tools.tool_search import search_catalog
+        catalog = self._build_big_server_catalog(count=34)
+        # Model asked for limit=30, which the caller clamps to the
+        # config max (20) before this ever reaches search_catalog --
+        # exercise that exact clamped-limit scenario end to end.
+        hits = search_catalog(catalog, query="BigMCP", limit=20)
+        names = {h.name for h in hits}
+        assert len(names) == 35
+        assert "mcp_BigMCP_action_number_00_with_a_fairly_long_tool_name" in names
+        assert "mcp_BigMCP_action_number_33_with_a_fairly_long_tool_name" in names
+
+    def test_exact_source_prefix_match_ignores_mcp_dash_prefix(self):
+        """"mcp-BigMCP" (the internal source_name form) also counts as exact."""
+        from tools.tool_search import search_catalog
+        catalog = self._build_big_server_catalog(count=5)
+        hits = search_catalog(catalog, query="mcp-BigMCP", limit=8)
+        assert len(hits) == 6
+
+    def test_non_exact_query_still_uses_ranked_search(self):
+        """A query that merely mentions the server name as one of several
+        words (not an exact server-name lookup) must not dump the whole
+        catalog -- only a genuine "just the server name" query does."""
+        from tools.tool_search import search_catalog
+        catalog = self._build_big_server_catalog(count=34)
+        hits = search_catalog(catalog, query="BigMCP thing number 5", limit=3)
+        assert len(hits) <= 3
+
+
 # ---------------------------------------------------------------------------
 # Assembly — the full passthrough/activate decision.
 # ---------------------------------------------------------------------------

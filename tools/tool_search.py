@@ -555,6 +555,42 @@ _GERMAN_SYNONYMS: Dict[str, List[str]] = {
 }
 
 
+def _normalize_source_key(text: str) -> str:
+    """Collapse a source/toolset name to bare lowercase alnum for exact comparison.
+
+    e.g. "mcp-MSOffice365MCP" and "MSOffice365MCP" both normalize to
+    "msoffice365mcp" so a query naming the server matches regardless of the
+    "mcp-" prefix or original casing.
+    """
+    return re.sub(r"[^a-z0-9]", "", text.lower().removeprefix("mcp-"))
+
+
+def _match_full_source(catalog: List[CatalogEntry], query_lower: str) -> List[CatalogEntry]:
+    """Return every tool of a source whose name exactly equals the query.
+
+    When a user/model searches for e.g. "MSOffice365MCP" or "github" they are
+    almost always asking to browse that server's *entire* tool catalog, not
+    for a semantically-ranked subset. Once a server exposes more tools than
+    the search limit, plain BM25 ranking can silently drop legitimate tools
+    (all candidates get the same source-name boost, so the remaining ranking
+    is decided by BM25 length normalization, which arbitrarily favors
+    shorter tool names over longer ones like "m365_send_chat_message").
+    This exact-match fast path sidesteps that ranking entirely for the
+    server-name-lookup case.
+    """
+    norm_query = re.sub(r"[^a-z0-9]", "", query_lower)
+    if len(norm_query) < 3:
+        return []
+    by_source: Dict[str, List[CatalogEntry]] = {}
+    for entry in catalog:
+        if entry.source_name:
+            by_source.setdefault(entry.source_name, []).append(entry)
+    for source_name, entries in by_source.items():
+        if _normalize_source_key(source_name) == norm_query:
+            return sorted(entries, key=lambda e: e.name)
+    return []
+
+
 def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> List[CatalogEntry]:
     """Return the top-``limit`` catalog entries for ``query`` by BM25 + name relevance.
 
@@ -566,6 +602,14 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
     query_tokens = _tokenize(query)
     if not query_tokens:
         return []
+
+    # Fast path: query is exactly an MCP server/toolset name -> return its
+    # full tool catalog, ignoring the normal ranked limit (still capped at a
+    # sane ceiling so a single lookup can't blow up context on huge servers).
+    full_source_hits = _match_full_source(catalog, query.lower().strip())
+    if full_source_hits:
+        effective_limit = max(limit, min(len(full_source_hits), 60))
+        return full_source_hits[:effective_limit]
 
     # Expand query tokens with synonyms (multilingual German/English intents + dynamic MCP/Skill keywords)
     expanded_tokens = set(query_tokens)
