@@ -150,6 +150,37 @@ class TestSchemaConversion:
 
         assert schema["description"] == "Search Jira issues using JQL"
 
+    def test_appends_note_to_renamed_or_duplicate_atlassian_instance(self):
+        """Users can install AtlassianMCP a second time under a custom
+        config.yaml key to reach a second Jira instance (e.g. a Server/DC
+        tenant configured as "EVNAtlassianMCP" alongside the default cloud
+        "AtlassianMCP"). The server_name seen here is that user-chosen
+        config key, not the catalog manifest name -- the notes must still
+        apply via a catalog-name suffix match, not just an exact match.
+        """
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(name="jira_search", description="Search Jira issues using JQL")
+        schema = _convert_mcp_schema("EVNAtlassianMCP", mcp_tool)
+
+        assert "fields" in schema["description"]
+        assert "jira.jql" in schema["description"]
+
+    def test_jira_search_note_explains_non_json_jql_response_error(self):
+        """'Unexpected return value type from `jira.jql`: <class 'str'>' means
+        the Jira Server/DC instance returned a non-JSON body (expired PAT,
+        wrong JIRA_URL, proxy interception) -- not a malformed-JQL error, so
+        the model shouldn't just retry with simpler JQL and give up.
+        """
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(name="jira_search", description="Search Jira issues using JQL")
+        schema = _convert_mcp_schema("AtlassianMCP", mcp_tool)
+
+        assert "Unexpected return value type from `jira.jql`" in schema["description"]
+        assert "JIRA_PAT" in schema["description"]
+        assert "JIRA_URL" in schema["description"]
+
     @pytest.mark.parametrize("server_name", ["AIMDS", "IAMDS"])
     @pytest.mark.parametrize("tool_name", ["mcp_memory_memory_save", "mcp_memory_memory_context"])
     def test_appends_cross_device_scope_note_to_cloud_memory_tools(self, server_name, tool_name):

@@ -3939,7 +3939,17 @@ _MCP_TOOL_DESCRIPTION_NOTES: Dict[Tuple[str, str], str] = {
         "overview of multiple issues — the default field set includes each "
         "issue's full description, which bloats multi-issue search results "
         "(often 10x+ larger than needed). Fetch the full description for a "
-        "single issue via jira_get_issue instead."
+        "single issue via jira_get_issue instead. If this errors with "
+        "\"Unexpected return value type from `jira.jql`: <class 'str'>\", "
+        "that means the Jira Server/Data Center instance returned a "
+        "non-JSON body (HTML/plain text) instead of search results — this "
+        "is NOT a malformed-JQL error from Jira itself (those come back as "
+        "JSON 400s) and retrying with simpler JQL alone will not fix it. "
+        "Likely causes: an expired/invalid JIRA_PAT (Jira silently "
+        "redirects to an HTML login page), a wrong JIRA_URL context path, "
+        "or a reverse proxy/WAF intercepting the request. Tell the user to "
+        "verify the JIRA_PAT and JIRA_URL for this server instead of "
+        "treating it as a bug in this tool."
     ),
     ("AtlassianMCP", "jira_add_worklog"): (
         " NOTE: always pass an explicit `started` timestamp reflecting when "
@@ -3975,6 +3985,35 @@ for _server_name in ("AIMDS", "IAMDS"):
     for _tool_name in ("mcp_memory_memory_save", "mcp_memory_memory_context"):
         _MCP_TOOL_DESCRIPTION_NOTES[(_server_name, _tool_name)] = _CLOUD_MEMORY_NOTE
 
+# Catalog server names that _MCP_TOOL_DESCRIPTION_NOTES keys above are known
+# to reference, for the suffix-match fallback below.
+_CATALOG_SERVER_NAMES_WITH_NOTES = sorted(
+    {key[0] for key in _MCP_TOOL_DESCRIPTION_NOTES}, key=len, reverse=True
+)
+
+
+def _lookup_tool_description_note(server_name: str, tool_name: str) -> Optional[str]:
+    """Resolve a description-note override for a configured MCP server instance.
+
+    Users can install the same catalog entry more than once under a custom
+    config.yaml key to reach a second instance (e.g. a second Jira Server/DC
+    tenant configured as "EVNAtlassianMCP" alongside the default
+    "AtlassianMCP") — `server_name` is that user-chosen config key, not the
+    catalog manifest name, so an exact-match lookup alone would silently
+    drop these notes for every renamed/duplicate instance. Fall back to
+    matching by catalog-name suffix (case-sensitive) so any instance of a
+    known catalog server still gets its notes.
+    """
+    note = _MCP_TOOL_DESCRIPTION_NOTES.get((server_name, tool_name))
+    if note is not None:
+        return note
+    for catalog_name in _CATALOG_SERVER_NAMES_WITH_NOTES:
+        if server_name != catalog_name and server_name.endswith(catalog_name):
+            note = _MCP_TOOL_DESCRIPTION_NOTES.get((catalog_name, tool_name))
+            if note is not None:
+                return note
+    return None
+
 
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     """Convert an MCP tool listing to the Hermes registry schema format.
@@ -3991,7 +4030,7 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     safe_server_name = sanitize_mcp_name_component(server_name)
     prefixed_name = f"mcp_{safe_server_name}_{safe_tool_name}"
     description = mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"
-    note = _MCP_TOOL_DESCRIPTION_NOTES.get((server_name, mcp_tool.name))
+    note = _lookup_tool_description_note(server_name, mcp_tool.name)
     if note:
         description = f"{description}{note}"
     return {
