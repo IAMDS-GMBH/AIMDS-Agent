@@ -136,6 +136,11 @@ class TestSchemaConversion:
 
         assert "Add a worklog entry to a Jira issue" in schema["description"]
         assert "started" in schema["description"]
+        # Jira's REST API requires an exact, non-ISO-8601 timestamp shape
+        # (literal milliseconds, offset without a colon) — the note must
+        # spell out a concrete example so the model gets it right first try
+        # instead of burning several failed-format retries.
+        assert "2026-07-27T08:00:00.000+0200" in schema["description"]
 
     def test_does_not_append_note_for_a_different_server_with_same_tool_name(self):
         from tools.mcp_tool import _convert_mcp_schema

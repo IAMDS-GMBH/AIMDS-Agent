@@ -3949,7 +3949,12 @@ _MCP_TOOL_DESCRIPTION_NOTES: Dict[Tuple[str, str], str] = {
         "it with the current time, so the logged entry no longer reflects "
         "when the work happened — only skip `started`/use an estimated "
         "duration if the user explicitly asks for a rough time booking "
-        "rather than a start/end-based one."
+        "rather than a start/end-based one. `started` MUST use the exact "
+        "format `YYYY-MM-DDTHH:MM:SS.sss+HHMM` — literal milliseconds "
+        "(e.g. `.000`) and a timezone offset WITHOUT a colon, for example "
+        "`2026-07-27T08:00:00.000+0200`. Plain ISO-8601 variants like "
+        "`+02:00` or a trailing `Z` are rejected by Jira with an 'invalid "
+        "date format' error."
     ),
 }
 
