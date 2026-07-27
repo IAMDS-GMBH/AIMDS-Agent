@@ -551,9 +551,16 @@ describe('assistant-ui streaming renderer', () => {
         observer.trigger(1_200)
       }
     })
-    await wait(0)
-
-    expect(viewport.scrollTop).toBe(scrollHeight)
+    // `pinToBottom` now glides smoothly rather than snapping instantly, so
+    // poll for the animation to settle instead of asserting immediately.
+    // Target is `scrollHeight - clientHeight` (the true max scrollTop) —
+    // the smooth-scroll controller computes this directly rather than
+    // relying on the browser to clamp an overshot `scrollTop = scrollHeight`
+    // write, so this test's target no longer needs jsdom's absence of
+    // clamping to hold.
+    await waitFor(() => {
+      expect(viewport.scrollTop).toBe(scrollHeight - clientHeight)
+    })
   })
 
   it('honors the first upward wheel scroll even when a programmatic bottom-pin scroll event is still pending', async () => {

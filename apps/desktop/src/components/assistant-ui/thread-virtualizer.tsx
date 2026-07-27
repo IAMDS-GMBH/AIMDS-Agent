@@ -13,6 +13,7 @@ import {
 } from 'react'
 
 import { setMutableRef } from '@/lib/mutable-ref'
+import { createSmoothScroller, type SmoothScrollController } from '@/lib/smooth-scroll'
 import { cn } from '@/lib/utils'
 import { setThreadScrolledUp } from '@/store/thread-scroll'
 
@@ -217,10 +218,6 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
 
 export const VirtualizedThread = memo(VirtualizedThreadInner)
 
-function scrollElementToBottom(el: HTMLDivElement) {
-  el.scrollTop = el.scrollHeight
-}
-
 interface ScrollAnchorOptions {
   contentRef: React.RefObject<HTMLDivElement | null>
   enabled: boolean
@@ -249,18 +246,27 @@ function useThreadScrollAnchor({
   const lastTopRef = useRef(0)
   const lastHeightRef = useRef(0)
   const lastClientHeightRef = useRef(0)
-  // Counter that tracks how many scroll events we expect to be ours rather
-  // than the user's. `pinToBottom` writes `el.scrollTop`, which fires an
-  // async `scroll` event; without this guard the on-scroll handler can race
-  // with the programmatic write (because content also grew, the *resulting*
-  // scrollTop can be lower than `lastTopRef` from the previous frame) and
-  // misread the programmatic pin as the user scrolling up — which disarms
-  // sticky-bottom and the user's just-submitted message slides above the
-  // fold. See `apps/desktop/scripts/measure-jump.mjs` for the repro
-  // (distFromBottom 0 → 49 within one frame, sticking forever).
-  const programmaticScrollPendingRef = useRef(0)
+  // `pinToBottom` now animates scrollTop smoothly over multiple frames rather
+  // than writing it once, so a single "was this our write" event-counter no
+  // longer works — the animation itself (not one scroll event) is the unit
+  // of "ours". `scrollController.isAnimating()` covers the whole glide; see
+  // `apps/desktop/scripts/measure-jump.mjs` for the original repro this
+  // guard exists to prevent (distFromBottom 0 → 49 within one frame, a
+  // programmatic write misread as the user scrolling up, sticking forever).
+  const scrollControllerRef = useRef<SmoothScrollController | null>(null)
+  const scrollControllerElRef = useRef<HTMLDivElement | null>(null)
   const prevSessionKeyRef = useRef(sessionKey)
   const prevGroupCountRef = useRef(0)
+
+  const getScrollController = useCallback((el: HTMLDivElement) => {
+    if (scrollControllerElRef.current !== el) {
+      scrollControllerRef.current?.cancel()
+      scrollControllerRef.current = createSmoothScroller(el)
+      scrollControllerElRef.current = el
+    }
+
+    return scrollControllerRef.current
+  }, [])
 
   const pinToBottom = useCallback(() => {
     const el = scrollerRef.current
@@ -269,12 +275,10 @@ function useThreadScrollAnchor({
       return
     }
 
-    // Already parked at the bottom: writing `scrollTop` is a no-op and the
-    // browser fires NO scroll event, so arming the programmatic gate here would
-    // leave it permanently set. Repeated pins (streaming heartbeats, the
-    // post-run lock loop) then accumulate the gate, and the next genuine user
-    // scroll-up is misread as one of our programmatic scrolls — re-arming
-    // sticky-bottom and yanking the viewport back down. Refresh trackers, bail.
+    // Already parked at the bottom: no animation needed, and starting one
+    // for a no-op distance would just hold the "ours" guard open for no
+    // reason. Repeated pins (streaming heartbeats, the post-run lock loop)
+    // would otherwise re-trigger it constantly. Refresh trackers, bail.
     const distFromBottom = el.scrollHeight - (el.scrollTop + el.clientHeight)
 
     if (distFromBottom <= AT_BOTTOM_THRESHOLD) {
@@ -285,16 +289,14 @@ function useThreadScrollAnchor({
       return
     }
 
-    // Hold the disarm gate across the scroll event the next line will fire.
-    // Set to 1 rather than incrementing: coalesced writes within a frame fire a
-    // single scroll event, so a counter > 1 can never drain and would swallow a
-    // later real user scroll.
-    programmaticScrollPendingRef.current = 1
-    scrollElementToBottom(el)
+    // Retargeting an in-flight animation (rather than restarting one) is
+    // what makes repeated calls during streaming read as one continuous
+    // glide instead of a stutter of tiny re-starts.
+    getScrollController(el)?.scrollTo(el.scrollHeight - el.clientHeight)
     lastTopRef.current = el.scrollTop
     lastHeightRef.current = el.scrollHeight
     lastClientHeightRef.current = el.clientHeight
-  }, [scrollerRef])
+  }, [getScrollController, scrollerRef])
 
   const jumpToBottom = useCallback(() => {
     setMutableRef(stickyBottomRef, true)
@@ -310,7 +312,13 @@ function useThreadScrollAnchor({
     })
   }, [groupCount, pinToBottom, stickyBottomRef, virtualizer])
 
-  useEffect(() => () => setThreadScrolledUp(false), [])
+  useEffect(
+    () => () => {
+      setThreadScrolledUp(false)
+      scrollControllerRef.current?.cancel()
+    },
+    []
+  )
 
   // Track at-bottom state, dim composer when scrolled up, disarm on user
   // scroll/wheel/touch.
@@ -323,31 +331,44 @@ function useThreadScrollAnchor({
 
     const disarm = () => {
       setMutableRef(stickyBottomRef, false)
-      programmaticScrollPendingRef.current = 0
+      // Real user intervention should stop the chase immediately rather
+      // than letting an in-flight smooth-scroll finish fighting them.
+      scrollControllerRef.current?.cancel()
     }
 
     const onScroll = () => {
       const top = el.scrollTop
+      const controller = scrollControllerRef.current
 
-      // If this scroll event is the consequence of `pinToBottom` writing
-      // `el.scrollTop`, treat it as ours: don't disarm. The RO + rAF pin
-      // loop will re-pin on the next frame if the browser clamped us
-      // short of bottom (because content grew in the same frame).
-      // Without this guard the post-pin scrollTop gets misread as the
-      // user scrolling up, disarming sticky-bottom permanently and
+      // If this scroll event is a consequence of `pinToBottom`'s smooth
+      // animation writing `el.scrollTop` on each frame, treat the whole
+      // animation window as ours: don't disarm, don't flicker the
+      // scrolled-up affordance while we're still gliding toward bottom.
+      // Without this guard, an in-progress frame's scrollTop gets misread
+      // as the user scrolling up, disarming sticky-bottom permanently and
       // leaving the just-submitted message below the fold.
-      if (programmaticScrollPendingRef.current > 0) {
-        programmaticScrollPendingRef.current -= 1
+      //
+      // A bare `isAnimating()` check isn't enough though: the user can also
+      // grab the scrollbar or wheel mid-animation, which fires an ordinary
+      // scroll event indistinguishable from our own frame write by type
+      // alone. Comparing against `getExpectedTop()` (the value the
+      // animation itself last wrote) tells the two apart — a real user
+      // scroll lands somewhere the animation didn't just write, so it falls
+      // through to the normal disarm logic below instead.
+      if (controller?.isAnimating() && Math.abs(top - controller.getExpectedTop()) <= 1) {
         lastTopRef.current = top
         lastHeightRef.current = el.scrollHeight
         lastClientHeightRef.current = el.clientHeight
         // Always re-arm — sticky-bottom should hold through clamp races.
         setMutableRef(stickyBottomRef, true)
-        const atBottom = el.scrollHeight - (top + el.clientHeight) <= AT_BOTTOM_THRESHOLD
-        setThreadScrolledUp(!atBottom)
+        setThreadScrolledUp(false)
 
         return
       }
+
+      // A real scroll landed while our animation was still running: stop it
+      // immediately so the next frame doesn't overwrite the user's position.
+      controller?.cancel()
 
       // Disarm only when `scrollTop` decreases while both content height and
       // viewport height are stable. A bare `top < lastTopRef.current` check is
