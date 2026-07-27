@@ -238,10 +238,7 @@ def process_inbox_dictation(
                 "Workspace search found link candidates, but no relevant link could be selected.",
             )
         if links and added_links == 0:
-            return _fail(
-                "link",
-                "Relevant links were selected but could not be added to the workspace entry.",
-            )
+            logger.debug("Inbox entry already contained selected links: %s", path)
 
         all_paths.append(path)
         all_links.extend(links)
