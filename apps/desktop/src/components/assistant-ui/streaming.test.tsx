@@ -510,7 +510,7 @@ describe('assistant-ui streaming renderer', () => {
     expect(viewport.scrollTop).toBe(420)
   })
 
-  it('does not follow streaming content growth even while parked at the bottom', async () => {
+  it('follows streaming content growth while parked at the bottom', async () => {
     const { container } = render(<StreamingHarness />)
 
     const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
@@ -526,7 +526,6 @@ describe('assistant-ui streaming renderer', () => {
       configurable: true,
       get: () => scrollHeight
     })
-
     await wait(80)
 
     // Park the user at the bottom of the current content.
@@ -542,9 +541,9 @@ describe('assistant-ui streaming renderer', () => {
       fireEvent.scroll(viewport)
     })
 
-    // Content grows as tokens stream in. Streaming auto-follow is removed, so
-    // the viewport must NOT chase the new bottom — it stays where the user
-    // last left it.
+    // Content grows as tokens stream in while the user is still parked at
+    // the bottom (within AT_BOTTOM_THRESHOLD) — the viewport must follow the
+    // new bottom rather than staying at the pre-growth scrollTop.
     scrollHeight = 1_200
 
     await act(async () => {
@@ -554,7 +553,7 @@ describe('assistant-ui streaming renderer', () => {
     })
     await wait(0)
 
-    expect(viewport.scrollTop).toBe(760)
+    expect(viewport.scrollTop).toBe(scrollHeight)
   })
 
   it('honors the first upward wheel scroll even when a programmatic bottom-pin scroll event is still pending', async () => {

@@ -82,6 +82,7 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
   const groups = useMemo(() => buildGroups(messageSignature), [messageSignature])
   const renderEmpty = groups.length === 0 && Boolean(emptyPlaceholder)
   const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const contentRef = useRef<HTMLDivElement | null>(null)
 
   // Shared ref so scrollToFn can check whether the user is parked at the
   // bottom without needing a ref from inside useThreadScrollAnchor.
@@ -123,6 +124,7 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
   })
 
   useThreadScrollAnchor({
+    contentRef,
     enabled: !renderEmpty,
     groupCount: groups.length,
     isRunning,
@@ -160,6 +162,7 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
               'mx-auto flex w-full max-w-(--composer-width) min-w-0 flex-col px-6 pt-[calc(var(--titlebar-height)+1.5rem)]'
             )}
             data-slot="aui_thread-content"
+            ref={contentRef}
           >
             {/* Natural-flow virtualization: mounted items render as normal
                 flex siblings so `position: sticky` on the human bubble
@@ -219,6 +222,7 @@ function scrollElementToBottom(el: HTMLDivElement) {
 }
 
 interface ScrollAnchorOptions {
+  contentRef: React.RefObject<HTMLDivElement | null>
   enabled: boolean
   groupCount: number
   isRunning: boolean
@@ -229,6 +233,7 @@ interface ScrollAnchorOptions {
 }
 
 function useThreadScrollAnchor({
+  contentRef,
   enabled,
   groupCount,
   isRunning,
@@ -387,15 +392,34 @@ function useThreadScrollAnchor({
     }
   }, [scrollerRef, stickyBottomRef])
 
-  // Intentionally NO streaming auto-follow. Earlier builds ran a
-  // ResizeObserver here that re-pinned the viewport to the bottom on every
-  // content growth while a turn was running, so the chat tracked tokens as
-  // they streamed. That behavior is removed by request: once a turn is in
-  // flight the viewport stays exactly where the user left it. The viewport
-  // is still moved to the bottom ONCE per user submit / new turn / session
-  // change (see the layout effect and the session-change effect below) so a
-  // freshly submitted message lands in view — but it does not chase the
-  // stream afterward.
+  // Streaming auto-follow: while a turn is running and the user is parked at
+  // the bottom (stickyBottomRef), re-pin on every content-size change so the
+  // view tracks tokens as they stream in — the classic chat-follow behavior.
+  // Gated on `isRunning` so this never fights the user once a turn settles;
+  // `pinToBottom`'s own distFromBottom check + the shared `stickyBottomRef`
+  // disarm-on-scroll-up logic above still apply, so a manual scroll-up
+  // during streaming still releases the pin immediately.
+  useEffect(() => {
+    if (!enabled || !isRunning) {
+      return undefined
+    }
+
+    const content = contentRef.current
+
+    if (!content) {
+      return undefined
+    }
+
+    const observer = new ResizeObserver(() => {
+      if (stickyBottomRef.current) {
+        pinToBottom()
+      }
+    })
+
+    observer.observe(content)
+
+    return () => observer.disconnect()
+  }, [contentRef, enabled, isRunning, pinToBottom, stickyBottomRef])
 
   // Jump to bottom on session change OR when an empty thread first gets
   // content. Both share the same intent and the same effect.
