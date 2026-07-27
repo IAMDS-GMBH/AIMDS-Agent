@@ -62,6 +62,34 @@ def test_m365_token_device_flow_fallback():
         assert token == "mock-token-xyz"
 
 
+def test_save_cache_is_atomic_and_leaves_no_tmp_file(tmp_path):
+    """_save_cache must write-then-rename so concurrent MCP subprocess
+    restarts can never observe/leave a truncated or corrupt cache file
+    (see docstring on _save_cache for the concurrency scenario)."""
+    cache_path = tmp_path / "m365_token_cache.bin"
+    mock_app = MagicMock()
+    mock_app.token_cache.has_state_changed = True
+    mock_app.token_cache.serialize.return_value = '{"Account": {}}'
+
+    with patch.object(server, "_get_token_cache_path", return_value=cache_path):
+        server._save_cache(mock_app)
+
+    assert cache_path.read_text(encoding="utf-8") == '{"Account": {}}'
+    # No leftover .tmp.<pid> files from the write-then-rename.
+    assert list(tmp_path.glob("*.tmp.*")) == []
+
+
+def test_save_cache_noop_when_state_unchanged(tmp_path):
+    cache_path = tmp_path / "m365_token_cache.bin"
+    mock_app = MagicMock()
+    mock_app.token_cache.has_state_changed = False
+
+    with patch.object(server, "_get_token_cache_path", return_value=cache_path):
+        server._save_cache(mock_app)
+
+    assert not cache_path.exists()
+
+
 def test_m365_search_users():
     mock_res = {"value": [{"id": "user-123", "displayName": "Gonzalo Oberreuter", "mail": "gonzalo@example.com"}]}
     with patch.object(server, "_graph_request", return_value=mock_res) as mock_req:

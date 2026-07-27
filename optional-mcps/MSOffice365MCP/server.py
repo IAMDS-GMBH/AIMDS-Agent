@@ -104,10 +104,22 @@ def _get_msal_app() -> msal.PublicClientApplication:
 
 
 def _save_cache(app: msal.PublicClientApplication) -> None:
+    """Persist the MSAL token cache atomically.
+
+    Multiple Hermes sessions (TUI/dashboard/cron) can each spawn their own
+    MSOffice365MCP subprocess concurrently, all reading/refreshing the same
+    on-disk cache. A plain write_text() truncates the file before writing,
+    so a crash or a concurrent writer mid-write corrupts the JSON — the
+    next read then silently discards the cache (see the broad except in
+    _get_msal_app) and forces a full re-login. Write-then-rename makes the
+    update atomic so readers only ever see a fully-written file.
+    """
     cache = app.token_cache
     if cache.has_state_changed:
         cache_path = _get_token_cache_path()
-        cache_path.write_text(cache.serialize(), encoding="utf-8")
+        tmp_path = cache_path.with_name(f"{cache_path.name}.tmp.{os.getpid()}")
+        tmp_path.write_text(cache.serialize(), encoding="utf-8")
+        os.replace(tmp_path, cache_path)
 
 
 def _get_access_token() -> str:
