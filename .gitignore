@@ -97,7 +97,6 @@ models-dev-upstream/
 .gemini/
 .zed/
 .mcp.json
-.github/copilot-instructions.md
 opencode.json
 config/mcporter.json
 

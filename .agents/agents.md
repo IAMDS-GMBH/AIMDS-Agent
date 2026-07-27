@@ -78,9 +78,27 @@ If multiple PRs target same integration category (providers/backends/notifiers),
 - Do not replace missing real results with fabricated output.
 - Do not add telemetry/attribution without explicit user-facing opt-in gate.
 
+## Repository map
+
+- `agent/` — core agent loop, coding posture, context/session management.
+- `tools/` — built-in tool implementations + tool discovery/search (`tool_search.py`, `mcp_tool.py`).
+- `toolsets.py` — toolset definitions; wires tools into platform presets.
+- `providers/` — model-provider integrations and auth flows.
+- `plugins/` — optional plugin surface (e.g. memory backends); must not patch core.
+- `optional-mcps/`, `optional-skills/` — bundled but opt-in MCP servers / skills.
+- `skills/` — bundled skills, organized by category.
+- `hermes_cli/` — CLI entrypoints, config resolution, defaults.
+- `apps/desktop/` — Electron/Next.js desktop client.
+- `gateway/`, `tui_gateway/`, `ui-tui/` — gateway and terminal UI surfaces.
+- `cron/`, `acp_adapter/`, `acp_registry/` — scheduling and agent-communication-protocol support.
+- `docker/`, `packaging/`, `installer/`, `scripts/` — build, packaging, and installer tooling.
+- `tests/` + `scripts/run_tests.sh` — test suite and CI-parity test runner.
+- `docs/` — longer-form documentation and rationale.
+
 ## Useful references (full details)
 
-- `AGENTS.md` (full development guide)
+- `.agents/agents.md` (this file — full development guide)
+- `CONTRIBUTING.md` (contribution workflow, adding tools/skills/plugins)
 - `toolsets.py` (toolset definitions)
 - `hermes_cli/config.py` (defaults and config policy)
 - `agent/coding_context.py` (coding posture behavior)
