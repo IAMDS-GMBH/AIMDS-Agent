@@ -1184,6 +1184,41 @@ function Install-SystemPackages {
 # Installation
 # ============================================================================
 
+function Invoke-WithRetry {
+    <#
+    .SYNOPSIS
+    Retry a script block a few times with a short, doubling backoff when it
+    throws a Windows sharing-violation-style IOException -- e.g. a file
+    briefly held open by a process that Stop-ProcessesLockingPath missed, or
+    hasn't yet released its handle after being stopped. Any other exception,
+    or the same failure past the last attempt, is re-thrown so real errors
+    still surface.
+    #>
+    param(
+        [scriptblock]$Action,
+        [int]$MaxAttempts = 4,
+        [int]$DelayMilliseconds = 400
+    )
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            & $Action
+            return
+        } catch {
+            $isSharingViolation = ($_.Exception -is [System.IO.IOException]) -and (
+                $_.Exception.Message -match 'being used by another process' -or
+                $_.Exception.HResult -eq 0x80070020
+            )
+            if (-not $isSharingViolation -or $attempt -eq $MaxAttempts) {
+                throw
+            }
+            Write-Warn ("File locked by another process, retrying ({0}/{1}) after {2}ms..." -f $attempt, $MaxAttempts, $DelayMilliseconds)
+            Start-Sleep -Milliseconds $DelayMilliseconds
+            $DelayMilliseconds = $DelayMilliseconds * 2
+        }
+    }
+}
+
 function Stop-ProcessesLockingPath {
     param([string]$TargetPath)
 
@@ -2901,6 +2936,29 @@ function Sync-AimdsCustomAssets {
 function Copy-ConfigTemplates {
     Write-Info "Setting up configuration files..."
 
+    # A hermes/gateway process left running from an earlier install (in this
+    # same session, or a background gateway that never stopped) can hold
+    # files under $HermesHome -- most notably memories\MEMORY.md -- open,
+    # causing a sharing-violation error a few lines below when we
+    # repair/seed it. Install-Repository already does this same cleanup for
+    # $InstallDir\venv\Scripts during the earlier "repository" stage, but
+    # $HermesHome (where MEMORY.md/config.yaml actually live) is a different
+    # path on a reinstall/update where the repository stage is skipped or
+    # already completed, so repeat it here, scoped to $HermesHome.
+    Get-Process -Name "hermes" -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            Stop-Process -Id $_.Id -Force -ErrorAction Stop
+            Write-Warn "Stopped running hermes process (PID $($_.Id)) before writing config templates"
+        } catch {}
+    }
+    if (Test-Path $HermesHome) {
+        $killed = @(Stop-ProcessesLockingPath -TargetPath $HermesHome)
+        if ($killed.Count -gt 0) {
+            Write-Warn ("Stopped {0} process(es) locking {1} before writing config templates: {2}" -f $killed.Count, $HermesHome, ($killed -join ", "))
+            Start-Sleep -Milliseconds 500
+        }
+    }
+
     $hermesWorkDir = Join-Path $HOME 'Documents\AIMDS-Suite-WorkingDirectory'
     $hermesMemoryDir = Join-Path $hermesWorkDir 'HermesMemory'
     $createdConfig = $false
@@ -2939,7 +2997,7 @@ function Copy-ConfigTemplates {
                 }
                 $backupPath = "$legacyMem.backup.$([int][double]::Parse((Get-Date -UFormat %s)))"
                 try {
-                    Move-Item -Path $legacyMem -Destination $backupPath -Force -ErrorAction Stop
+                    Invoke-WithRetry -Action { Move-Item -Path $legacyMem -Destination $backupPath -Force -ErrorAction Stop }
                 } catch {
                     Remove-Item -Path $legacyMem -Recurse -Force -ErrorAction SilentlyContinue
                 }
@@ -3010,7 +3068,7 @@ function Copy-ConfigTemplates {
             }
             $backupPath = "$hermesMemoryDir.backup.$([int][double]::Parse((Get-Date -UFormat %s)))"
             try {
-                Move-Item -Path $hermesMemoryDir -Destination $backupPath -Force -ErrorAction Stop
+                Invoke-WithRetry -Action { Move-Item -Path $hermesMemoryDir -Destination $backupPath -Force -ErrorAction Stop }
             } catch {
                 Remove-Item -Path $hermesMemoryDir -Recurse -Force -ErrorAction SilentlyContinue
             }
