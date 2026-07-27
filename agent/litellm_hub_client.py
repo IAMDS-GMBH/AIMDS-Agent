@@ -83,6 +83,19 @@ def resolve_litellm_hub_settings() -> Dict[str, Any]:
         except Exception:
             pass
 
+    # Whenever base_url ends up pointing at a *known* provider entry (e.g. an
+    # explicit skills.litellm_hub.base_url override left api_key blank, or a
+    # legacy env-var base_url happens to match a registered provider), prefer
+    # that provider's own key_env over the blind IAMDS_LITELLM_API_KEY/
+    # LITELLM_KEY fallback above. Without this, an explicit staging/dev
+    # base_url with no matching api_key silently pairs with the prod key,
+    # which the LiteLLM proxy correctly rejects with 401. Only applies when
+    # the user hasn't explicitly set skills.litellm_hub.api_key themselves.
+    if not str(hub_cfg.get("api_key") or "").strip():
+        matched_key = _provider_key_for_base_url(cfg, base_url, env_vars)
+        if matched_key:
+            api_key = matched_key
+
     if base_url.endswith("/v1"):
         base_url = base_url[:-3]
 
@@ -97,6 +110,47 @@ def resolve_litellm_hub_settings() -> Dict[str, Any]:
         "api_key": api_key,
         "timeout": timeout,
     }
+
+
+def _provider_key_for_base_url(
+    cfg: Dict[str, Any], base_url: str, env_vars: Dict[str, str]
+) -> str:
+    """Return the API key belonging to whichever ``providers.*`` entry's
+    ``base_url`` matches *base_url*, resolved via that entry's ``key_env``.
+
+    Prevents pairing e.g. the prod ``IAMDS_LITELLM_API_KEY`` with a staging
+    or dev base_url just because the prod env var happens to be checked
+    first in the legacy fallback chain.
+    """
+    from hermes_cli.config import get_env_value
+
+    providers = cfg.get("providers", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(providers, dict) or not base_url:
+        return ""
+
+    def _norm(url: str) -> str:
+        url = url.strip().rstrip("/")
+        return url[:-3] if url.endswith("/v1") else url
+
+    target = _norm(base_url)
+    if not target:
+        return ""
+
+    for entry in providers.values():
+        if not isinstance(entry, dict):
+            continue
+        entry_url = _norm(str(entry.get("base_url") or ""))
+        if not entry_url or entry_url != target:
+            continue
+        key_env = entry.get("key_env")
+        if not key_env:
+            continue
+        val = str(
+            env_vars.get(key_env) or os.getenv(key_env) or get_env_value(key_env) or ""
+        ).strip()
+        if val:
+            return val
+    return ""
 
 
 def _first_provider_base_url(cfg: Dict[str, Any]) -> str:
