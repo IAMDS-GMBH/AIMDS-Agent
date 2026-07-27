@@ -75,7 +75,7 @@ class TestEnsureHermesHome:
             ensure_hermes_home()
 
         target = tmp_path / "hermes" / "memories"
-        workspace_memory = fake_home / "Documents" / "AIMDS-Suite-WorkingDirectory" / "HermesMemory"
+        workspace_memory = fake_home / "Documents" / "AIMDS-Suite-Vault" / "HermesMemory"
         assert workspace_memory.is_symlink()
         assert workspace_memory.resolve() == target.resolve()
         assert (target / "legacy.md").read_text(encoding="utf-8") == "legacy"
@@ -86,7 +86,7 @@ class TestEnsureHermesHome:
     @pytest.mark.skipif(sys.platform == "win32", reason="symlink perms vary on CI")
     def test_repairs_wrong_documents_memory_symlink(self, tmp_path, monkeypatch):
         fake_home = tmp_path / "home"
-        workspace_dir = fake_home / "Documents" / "AIMDS-Suite-WorkingDirectory"
+        workspace_dir = fake_home / "Documents" / "AIMDS-Suite-Vault"
         workspace_dir.mkdir(parents=True, exist_ok=True)
         wrong_target = tmp_path / "wrong"
         wrong_target.mkdir(parents=True, exist_ok=True)
@@ -125,7 +125,7 @@ class TestEnsureHermesHome:
 
         ensure_hermes_home()
 
-        expected_link = fake_home / "Documents" / "AIMDS-Suite-WorkingDirectory" / "HermesMemory"
+        expected_link = fake_home / "Documents" / "AIMDS-Suite-Vault" / "HermesMemory"
         assert any(cmd[:3] == ["cmd", "/c", 'mklink /J "' + str(expected_link) + '" "' + str(tmp_path / "hermes" / "memories") + '"'] for cmd in calls)
 
     def test_junction_not_detected_by_is_symlink_does_not_crash(self, tmp_path, monkeypatch):
@@ -158,7 +158,7 @@ class TestEnsureHermesHome:
 
         legacy_memory = fake_home / "Documents" / "HermesMemory"
         workspace_memory = (
-            fake_home / "Documents" / "AIMDS-Suite-WorkingDirectory" / "HermesMemory"
+            fake_home / "Documents" / "AIMDS-Suite-Vault" / "HermesMemory"
         )
         assert workspace_memory.is_symlink()
         assert not legacy_memory.exists()
@@ -1518,7 +1518,9 @@ class TestTerminalCwdWorkspaceMigration:
             )
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
-            target_dir = fake_home / "Documents" / "AIMDS-Suite-WorkingDirectory"
+            # migrate_config cascades through v35→37 and v37→38 in one pass,
+            # so a v34 config lands directly on the final Vault name.
+            target_dir = fake_home / "Documents" / "AIMDS-Suite-Vault"
             assert raw["terminal"]["cwd"] == str(target_dir)
             assert target_dir.exists()
             assert (target_dir / "test.txt").read_text(encoding="utf-8") == "hello"
@@ -1540,7 +1542,87 @@ class TestTerminalCwdWorkspaceMigration:
             )
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
-            target_dir = fake_home / "Documents" / "AIMDS-Suite-WorkingDirectory"
+            # Cascades through v37 (Documents/AIMDS-Suite-WorkingDirectory) and
+            # v38 (renamed to AIMDS-Suite-Vault) within the same pass.
+            target_dir = fake_home / "Documents" / "AIMDS-Suite-Vault"
             assert raw["terminal"]["cwd"] == str(target_dir)
             assert target_dir.exists()
             assert (target_dir / "test.txt").read_text(encoding="utf-8") == "hello"
+
+
+class TestWorkspaceVaultRenameMigration:
+    """Version 37→38 renames the workspace folder to AIMDS-Suite-Vault."""
+
+    def _write(self, tmp_path, body: str):
+        from hermes_cli.config import _LOAD_CONFIG_CACHE, _RAW_CONFIG_CACHE
+        _LOAD_CONFIG_CACHE.clear()
+        _RAW_CONFIG_CACHE.clear()
+        (tmp_path / "config.yaml").write_text(body)
+
+    def test_migrates_v37_working_directory_to_vault(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "home"
+        fake_home.mkdir(parents=True, exist_ok=True)
+        legacy_dir = fake_home / "Documents" / "AIMDS-Suite-WorkingDirectory"
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        (legacy_dir / "test.txt").write_text("hello", encoding="utf-8")
+
+        monkeypatch.setenv("HOME", str(fake_home))
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 37\n"
+                f"terminal:\n  cwd: {legacy_dir}\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            target_dir = fake_home / "Documents" / "AIMDS-Suite-Vault"
+            assert raw["terminal"]["cwd"] == str(target_dir)
+            assert raw["_config_version"] == 38
+            assert target_dir.exists()
+            assert not legacy_dir.exists()
+            assert (target_dir / "test.txt").read_text(encoding="utf-8") == "hello"
+
+    def test_is_idempotent_when_already_vault(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "home"
+        fake_home.mkdir(parents=True, exist_ok=True)
+        target_dir = fake_home / "Documents" / "AIMDS-Suite-Vault"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / "test.txt").write_text("hello", encoding="utf-8")
+
+        monkeypatch.setenv("HOME", str(fake_home))
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 38\n"
+                f"terminal:\n  cwd: {target_dir}\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["terminal"]["cwd"] == str(target_dir)
+            assert (target_dir / "test.txt").read_text(encoding="utf-8") == "hello"
+
+    def test_merges_existing_vault_dir_contents(self, tmp_path, monkeypatch):
+        """If Vault already exists (e.g. created manually), merge instead of clobber."""
+        fake_home = tmp_path / "home"
+        fake_home.mkdir(parents=True, exist_ok=True)
+        legacy_dir = fake_home / "Documents" / "AIMDS-Suite-WorkingDirectory"
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        (legacy_dir / "old.txt").write_text("old", encoding="utf-8")
+
+        target_dir = fake_home / "Documents" / "AIMDS-Suite-Vault"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / "new.txt").write_text("new", encoding="utf-8")
+
+        monkeypatch.setenv("HOME", str(fake_home))
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 37\n"
+                f"terminal:\n  cwd: {legacy_dir}\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["terminal"]["cwd"] == str(target_dir)
+            assert (target_dir / "old.txt").read_text(encoding="utf-8") == "old"
+            assert (target_dir / "new.txt").read_text(encoding="utf-8") == "new"
+

@@ -1020,10 +1020,12 @@ class SessionDB:
             logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
 
         # ── Migrate legacy cwd paths in sessions table ──────────────────
-        # Canonical target is ~/Documents/AIMDS-Suite-WorkingDirectory. Handles:
+        # Canonical target is ~/Documents/AIMDS-Suite-Vault. Handles:
         #   - old pre-rename dirs (HermesWorkingDirectory, AIMDS-Workspace)
         #   - both their Documents-nested and bare-home variants
         #   - the short-lived v36 bare-home layout (~/AIMDS-Suite-WorkingDirectory)
+        #   - the v37-v38 rename from AIMDS-Suite-WorkingDirectory to
+        #     AIMDS-Suite-Vault (repositioning it as a vault concept)
         try:
             cursor.execute(
                 """
@@ -1063,6 +1065,16 @@ class SessionDB:
                 SET cwd = REPLACE(cwd, '/AIMDS-Suite-WorkingDirectory', '/Documents/AIMDS-Suite-WorkingDirectory')
                 WHERE cwd LIKE '%/AIMDS-Suite-WorkingDirectory%'
                   AND cwd NOT LIKE '%/Documents/AIMDS-Suite-WorkingDirectory%'
+                """
+            )
+            # Final step: rename the now-canonical WorkingDirectory path to
+            # the new Vault name. Runs last so it also catches paths the
+            # steps above just normalized into /Documents/AIMDS-Suite-WorkingDirectory.
+            cursor.execute(
+                """
+                UPDATE sessions
+                SET cwd = REPLACE(cwd, '/Documents/AIMDS-Suite-WorkingDirectory', '/Documents/AIMDS-Suite-Vault')
+                WHERE cwd LIKE '%/Documents/AIMDS-Suite-WorkingDirectory%'
                 """
             )
         except Exception as exc:

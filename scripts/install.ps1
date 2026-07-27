@@ -2959,7 +2959,7 @@ function Copy-ConfigTemplates {
         }
     }
 
-    $hermesWorkDir = Join-Path $HOME 'Documents\AIMDS-Suite-WorkingDirectory'
+    $hermesWorkDir = Join-Path $HOME 'Documents\AIMDS-Suite-Vault'
     $hermesMemoryDir = Join-Path $hermesWorkDir 'HermesMemory'
     $createdConfig = $false
     

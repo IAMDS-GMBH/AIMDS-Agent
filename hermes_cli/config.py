@@ -848,7 +848,7 @@ def _merge_directory_contents(src: Path, dst: Path) -> None:
 
 def _get_default_workspace_dir() -> Path:
     """Return the default workspace directory path."""
-    return Path("~").expanduser() / "Documents" / "AIMDS-Suite-WorkingDirectory"
+    return Path("~").expanduser() / "Documents" / "AIMDS-Suite-Vault"
 
 
 def _resolve_workspace_dir() -> Path:
@@ -874,11 +874,30 @@ def _ensure_documents_memory_link(home: Path) -> None:
     memory_target = home / "memories"
     memory_target.mkdir(parents=True, exist_ok=True)
 
+    # Clean up HermesMemory.backup.* clutter accumulated by *earlier* calls.
+    # Every backup created below (and in the workspace-folder rename
+    # migration) is only made *after* its contents were already merged into
+    # memory_target, so a backup left over from a previous run is provably
+    # redundant -- safe to delete outright instead of letting it pile up
+    # across every ensure_hermes_home() call. This must run BEFORE the
+    # legacy-links loop below creates this run's own backup, or it would
+    # delete the backup moments after creating it. Path.glob() on a
+    # non-existent parent just yields nothing, so no existence check is
+    # needed for the (possibly already-renamed) legacy workspace folders.
+    for backup_parent in (
+        docs_dir,
+        docs_dir / "AIMDS-Suite-WorkingDirectory",
+        docs_dir / "AIMDS-Suite-Vault",
+    ):
+        for stale_backup in backup_parent.glob("HermesMemory.backup.*"):
+            shutil.rmtree(stale_backup, ignore_errors=True)
+
     # Clean up legacy top-level Documents memory links/directories if they exist
     legacy_links = [
         docs_dir / "HermesMemory",
         docs_dir / "AIMDS-Suite-Memory",
         docs_dir / "AIMDS-Suite-WorkingDirectory" / "HermesMemory",
+        docs_dir / "AIMDS-Suite-Vault" / "HermesMemory",
     ]
     for legacy in legacy_links:
         if legacy.is_symlink():
@@ -1192,7 +1211,7 @@ DEFAULT_CONFIG = {
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",
-        "cwd": "~/Documents/AIMDS-Suite-WorkingDirectory",  # Default to AIMDS Suite workspace
+        "cwd": "~/Documents/AIMDS-Suite-Vault",  # Default to AIMDS Suite workspace/vault
         "timeout": 180,
         # Environment variables to pass through to sandboxed execution
         # (terminal and execute_code).  Skill-declared required_environment_variables
@@ -2811,7 +2830,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 37,
+    "_config_version": 38,
 }
 
 # =============================================================================
@@ -5608,6 +5627,21 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if any(kw in current_cwd for kw in legacy_keywords) and not already_correct:
                 new_cwd = str(target_dir)
 
+                # Persist the new cwd BEFORE touching the filesystem below.
+                # save_config() calls ensure_hermes_home() internally, which
+                # re-derives the workspace dir from the *on-disk* config (not
+                # this in-memory `config` dict) and mkdir's it if missing. If
+                # we renamed the old directory away first, that stale-read
+                # mkdir would immediately recreate an empty directory at the
+                # old path right behind us. Saving first means the on-disk
+                # cwd still points at the old (not-yet-moved) directory, so
+                # that mkdir is a harmless no-op on a directory that still
+                # exists -- then the rename below moves it for good.
+                terminal_cfg["cwd"] = new_cwd
+                config["terminal"] = terminal_cfg
+                config["_config_version"] = 37
+                save_config(config)
+
                 legacy_disk_paths = [
                     home_dir / "Documents" / "HermesWorkingDirectory",
                     home_dir / "Documents" / "AIMDS-Workspace",
@@ -5634,10 +5668,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         except Exception:
                             pass
 
-                terminal_cfg["cwd"] = new_cwd
-                config["terminal"] = terminal_cfg
-                config["_config_version"] = 37
-                save_config(config)
                 results["config_added"].append(
                     f"terminal.cwd migrated to {new_cwd}"
                 )
@@ -5646,6 +5676,73 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     except Exception as _cwd_mig_exc:
         results["warnings"].append(
             f"Legacy terminal.cwd migration (v37) failed: {_cwd_mig_exc}"
+        )
+
+    # ── Version 37 → 38 (+ idempotent): rename workspace to AIMDS-Suite-Vault ──
+    # Repositions the workspace folder conceptually as a vault (Obsidian/PARA
+    # structure, vector-searchable via .hermes/memories) rather than a plain
+    # "working directory". ~/.hermes/memories remains the untouched source of
+    # truth; only the user-facing Documents folder name changes.
+    try:
+        config = read_raw_config()
+        terminal_cfg = config.get("terminal")
+        if isinstance(terminal_cfg, dict):
+            current_cwd = str(terminal_cfg.get("cwd") or "").strip()
+            home_dir = Path("~").expanduser()
+            target_dir = home_dir / "Documents" / "AIMDS-Suite-Vault"
+            legacy_keywords = ["AIMDS-Suite-WorkingDirectory"]
+            current_cwd_expanded = (
+                Path(current_cwd).expanduser() if current_cwd else None
+            )
+            already_correct = (
+                current_cwd_expanded is not None
+                and str(current_cwd_expanded) == str(target_dir)
+            )
+            if any(kw in current_cwd for kw in legacy_keywords) and not already_correct:
+                new_cwd = str(target_dir)
+
+                # Save first, rename the directory second -- see the matching
+                # comment in the v35→37 block above for why this order
+                # matters (save_config()'s internal ensure_hermes_home() call
+                # re-derives the workspace dir from the stale on-disk config
+                # and would otherwise recreate the old directory we just
+                # renamed away).
+                terminal_cfg["cwd"] = new_cwd
+                config["terminal"] = terminal_cfg
+                config["_config_version"] = 38
+                save_config(config)
+
+                legacy_disk_paths = [
+                    home_dir / "Documents" / "AIMDS-Suite-WorkingDirectory",
+                    # In case v37's migration hasn't run yet on this install.
+                    home_dir / "AIMDS-Suite-WorkingDirectory",
+                ]
+                for old_path in legacy_disk_paths:
+                    if old_path.exists() and old_path.is_dir() and old_path.resolve() != target_dir.resolve():
+                        try:
+                            if not target_dir.exists():
+                                target_dir.parent.mkdir(parents=True, exist_ok=True)
+                                old_path.rename(target_dir)
+                            else:
+                                _merge_directory_contents(old_path, target_dir)
+                                backup_path = old_path.with_name(
+                                    f"{old_path.name}.backup.{int(time.time())}"
+                                )
+                                try:
+                                    old_path.rename(backup_path)
+                                except OSError:
+                                    shutil.rmtree(old_path, ignore_errors=True)
+                        except Exception:
+                            pass
+
+                results["config_added"].append(
+                    f"terminal.cwd migrated to {new_cwd}"
+                )
+                if not quiet:
+                    print(f"  ✓ Migrated terminal.cwd to {new_cwd}")
+    except Exception as _vault_mig_exc:
+        results["warnings"].append(
+            f"Workspace-to-Vault rename migration (v38) failed: {_vault_mig_exc}"
         )
 
     # Check for missing config fields
