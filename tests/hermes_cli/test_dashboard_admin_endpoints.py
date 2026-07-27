@@ -135,6 +135,31 @@ class TestMcpEndpoints:
         r = self.client.post("/api/mcp/catalog/install", json={"name": "no-such-mcp-xyz"})
         assert r.status_code == 404
 
+    def test_catalog_install_clears_env_var_when_submitted_empty(self):
+        """Regression: clearing an optional field (e.g. JIRA_PAT) and
+        reinstalling must actually clear ~/.hermes/.env, not silently keep
+        the previous value. Previously install_mcp_catalog_entry only ever
+        wrote non-empty values, so a UI-cleared field had no effect."""
+        from hermes_cli.config import get_env_value, save_env_value
+
+        save_env_value("JIRA_PAT", "stale-pat-value")
+        assert get_env_value("JIRA_PAT") == "stale-pat-value"
+
+        r = self.client.post(
+            "/api/mcp/catalog/install",
+            json={
+                "name": "AtlassianMCP",
+                "env": {
+                    "JIRA_URL": "https://example.atlassian.net",
+                    "JIRA_API_TOKEN": "tok_xyz",
+                    "JIRA_USERNAME": "",
+                    "JIRA_PAT": "",
+                },
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert get_env_value("JIRA_PAT") is None
+
 
 
 class TestCredentialPoolEndpoints:

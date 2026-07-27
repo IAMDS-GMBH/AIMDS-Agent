@@ -273,9 +273,15 @@ export default function McpPage() {
       showToast(`${missing[0].prompt} required`, "error");
       return;
     }
+    // Include every known field, even cleared/empty ones, so the backend can
+    // tell "user cleared this optional field" (empty string -> clear the
+    // stored value) apart from "field was never part of this manifest"
+    // (key absent). Previously only non-empty values were sent, so clearing
+    // an optional field (e.g. M365 Client/Tenant ID) and reinstalling never
+    // actually cleared the old value in ~/.hermes/.env.
     const envMap: Record<string, string> = {};
-    Object.entries(installEnv).forEach(([k, v]) => {
-      if (v.trim()) envMap[k] = v.trim();
+    installEntry.required_env.forEach((item) => {
+      envMap[item.name] = (installEnv[item.name] ?? "").trim();
     });
     void runInstall(installEntry, envMap);
   };

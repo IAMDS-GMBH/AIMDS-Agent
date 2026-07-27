@@ -2418,6 +2418,21 @@ async def get_action_status(name: str, lines: int = 200):
                 pass
             _ACTION_RESULTS[name] = {"exit_code": exit_code, "pid": pid}
             _ACTION_PROCS.pop(name, None)
+            # mcp-install runs `hermes mcp install <name>` as a *separate*
+            # subprocess (git-bootstrap entries can take a while to clone),
+            # so it can't reach into this server process's tools.mcp_tool
+            # module state directly. Without this, a catalog install writes
+            # the mcp_servers.<name> block to config.yaml correctly, but the
+            # already-running dashboard/gateway process never notices --
+            # the new server's tools stay unavailable until Hermes is fully
+            # restarted. Trigger discovery here, exactly once, the moment
+            # this poll first observes the subprocess finished successfully.
+            if name == "mcp-install" and exit_code == 0:
+                try:
+                    from tools.mcp_tool import discover_mcp_tools
+                    await asyncio.to_thread(discover_mcp_tools)
+                except Exception:
+                    _log.debug("Post-install MCP tool discovery failed", exc_info=True)
 
     return {
         "name": name,
@@ -7999,6 +8014,16 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
             for k, v in env_vars.items():
                 if v and str(v).strip():
                     save_env_value(k, str(v).strip())
+                else:
+                    # Field explicitly submitted as empty (e.g. user cleared
+                    # an optional Client/Tenant ID and reinstalled) -- must
+                    # actually clear the stored value, not silently keep the
+                    # old one. Previously only non-empty values were ever
+                    # written, so clearing a field in the UI had no effect
+                    # on ~/.hermes/.env.
+                    from hermes_cli.config import remove_env_value
+
+                    remove_env_value(k)
 
     # Git-bootstrap entries can take a while to clone — run via the background
     # action path so the request returns immediately and the UI can tail logs.
@@ -8023,7 +8048,9 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     # setting it here works; keep it explicit for clarity).
     def _install_scoped():
         with _profile_scope(effective_profile):
-            mcp_catalog.install_entry(entry, enable=body.enable)
+            mcp_catalog.install_entry(
+                entry, enable=body.enable, skip_auth_prompt=True
+            )
 
     try:
         await asyncio.to_thread(_install_scoped)
@@ -8032,6 +8059,17 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     except Exception as exc:
         _log.exception("install_mcp_catalog_entry failed")
         raise HTTPException(status_code=400, detail=str(exc))
+
+    # Hot-reload the new server's tools into this running process immediately
+    # -- without this, an install via the catalog wrote the mcp_servers.<name>
+    # config block correctly but the already-running dashboard/gateway
+    # session never picked up its tools until Hermes was fully restarted.
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+        await asyncio.to_thread(discover_mcp_tools)
+    except Exception:
+        _log.debug("Post-install MCP tool discovery failed", exc_info=True)
+
     return {"ok": True, "name": name, "background": False}
 
 
