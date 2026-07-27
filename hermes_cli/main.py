@@ -10597,6 +10597,15 @@ def cmd_dashboard(args):
         print(f"Import error: {e}")
         sys.exit(1)
 
+    # Apply any pending config schema migration. cmd_dashboard is the
+    # Desktop app's backend entrypoint and, unlike `hermes update`, never
+    # called migrate_config() -- meaning GUI-only users could be
+    # permanently stuck on a stale config schema (e.g. the workspace->vault
+    # rename) even after the app itself auto-updates.
+    from hermes_cli.config import ensure_config_migrated
+
+    ensure_config_migrated(quiet=True)
+
     # Seed bundled skills on first dashboard launch so the desktop GUI's
     # skills picker / agent skill discovery sees the bundled library.
     # cmd_chat does this in its own pre-dispatch block; the dashboard

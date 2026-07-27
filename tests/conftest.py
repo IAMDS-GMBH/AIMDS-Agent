@@ -359,6 +359,17 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
 
+    # 3b. Redirect HERMES_DOCUMENTS_DIR to a per-test tempdir. Code that
+    #     reads ``~/Documents`` (workspace/vault folder default, the
+    #     HermesMemory symlink maintenance in _ensure_documents_memory_link)
+    #     now gets the tempdir instead of the real user's Documents folder.
+    #     Without this, running the test suite silently pollutes the real
+    #     ~/Documents with backup symlinks/directories -- confirmed to have
+    #     happened to a real user's machine.
+    fake_documents_dir = tmp_path / "documents_test"
+    fake_documents_dir.mkdir()
+    monkeypatch.setenv("HERMES_DOCUMENTS_DIR", str(fake_documents_dir))
+
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.
     monkeypatch.setenv("TZ", "UTC")

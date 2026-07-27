@@ -846,9 +846,24 @@ def _merge_directory_contents(src: Path, dst: Path) -> None:
             shutil.copy2(child, target)
 
 
+def _get_documents_dir() -> Path:
+    """Return the user's Documents directory.
+
+    Overridable via ``HERMES_DOCUMENTS_DIR`` (mirrors the ``HERMES_HOME``
+    override pattern) so tests can redirect workspace/memory-symlink logic
+    away from the real ``~/Documents`` instead of contaminating it -- without
+    this, running the test suite left stray HermesMemory.backup.* symlinks
+    (pointing at deleted pytest tempdirs) inside the real user's Documents.
+    """
+    override = os.environ.get("HERMES_DOCUMENTS_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path("~").expanduser() / "Documents"
+
+
 def _get_default_workspace_dir() -> Path:
     """Return the default workspace directory path."""
-    return Path("~").expanduser() / "Documents" / "AIMDS-Suite-Vault"
+    return _get_documents_dir() / "AIMDS-Suite-Vault"
 
 
 def _resolve_workspace_dir() -> Path:
@@ -870,7 +885,7 @@ def _ensure_documents_memory_link(home: Path) -> None:
     ~/Documents/AIMDS-Suite-Memory, or ~/Documents/AIMDS-Suite-WorkingDirectory/HermesMemory
     so ~/Documents is not cluttered with loose folders.
     """
-    docs_dir = Path("~").expanduser() / "Documents"
+    docs_dir = _get_documents_dir()
     memory_target = home / "memories"
     memory_target.mkdir(parents=True, exist_ok=True)
 
@@ -4719,6 +4734,32 @@ def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> Non
         sys.stderr.write("\n".join(lines) + "\n\n")
 
 
+def ensure_config_migrated(quiet: bool = True) -> None:
+    """Apply any pending non-interactive config schema migration.
+
+    Historically ``migrate_config()`` was only ever invoked from the
+    interactive ``hermes update`` CLI flow, ``doctor.py``, and the Docker
+    entrypoint script. Every other long-running entrypoint (Desktop app
+    dashboard backend, gateway daemon, TUI, ACP adapter) never called it, so
+    a user who only ever launches Hermes via one of those (never running
+    ``hermes update`` themselves) could have their on-disk config schema
+    permanently stuck out of sync -- including the workspace/vault folder
+    rename migrations above -- even though the app itself auto-updates.
+    Call this once, near the top of each such entrypoint's startup.
+
+    Deliberately not folded into ``ensure_hermes_home()`` (called on
+    virtually every ``save_config()``) to avoid redundant work and
+    recursion risk (``migrate_config()`` itself calls ``save_config()``).
+    Swallows all errors -- a migration failure must never block startup.
+    """
+    try:
+        current, latest = check_config_version()
+        if current < latest:
+            migrate_config(interactive=False, quiet=quiet)
+    except Exception:
+        logger.exception("ensure_config_migrated() failed; continuing startup")
+
+
 def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, Any]:
     """
     Migrate config to latest version, prompting for new required fields.
@@ -5608,7 +5649,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if isinstance(terminal_cfg, dict):
             current_cwd = str(terminal_cfg.get("cwd") or "").strip()
             home_dir = Path("~").expanduser()
-            target_dir = home_dir / "Documents" / "AIMDS-Suite-WorkingDirectory"
+            docs_dir = _get_documents_dir()
+            target_dir = docs_dir / "AIMDS-Suite-WorkingDirectory"
             legacy_keywords = [
                 "Documents/AIMDS-Suite-WorkingDirectory",
                 "Documents/HermesWorkingDirectory",
@@ -5643,8 +5685,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 save_config(config)
 
                 legacy_disk_paths = [
-                    home_dir / "Documents" / "HermesWorkingDirectory",
-                    home_dir / "Documents" / "AIMDS-Workspace",
+                    docs_dir / "HermesWorkingDirectory",
+                    docs_dir / "AIMDS-Workspace",
                     home_dir / "HermesWorkingDirectory",
                     home_dir / "AIMDS-Workspace",
                     # v36's short-lived bare-home layout
@@ -5689,7 +5731,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if isinstance(terminal_cfg, dict):
             current_cwd = str(terminal_cfg.get("cwd") or "").strip()
             home_dir = Path("~").expanduser()
-            target_dir = home_dir / "Documents" / "AIMDS-Suite-Vault"
+            docs_dir = _get_documents_dir()
+            target_dir = docs_dir / "AIMDS-Suite-Vault"
             legacy_keywords = ["AIMDS-Suite-WorkingDirectory"]
             current_cwd_expanded = (
                 Path(current_cwd).expanduser() if current_cwd else None
@@ -5713,7 +5756,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 save_config(config)
 
                 legacy_disk_paths = [
-                    home_dir / "Documents" / "AIMDS-Suite-WorkingDirectory",
+                    docs_dir / "AIMDS-Suite-WorkingDirectory",
                     # In case v37's migration hasn't run yet on this install.
                     home_dir / "AIMDS-Suite-WorkingDirectory",
                 ]

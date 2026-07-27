@@ -15798,6 +15798,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                  Useful for systemd services to avoid restart-loop deadlocks
                  when the previous process hasn't fully exited yet.
     """
+    # Apply any pending config schema migration. The gateway daemon is a
+    # long-running entrypoint that never went through the interactive
+    # `hermes update` flow (see hermes_cli.config.ensure_config_migrated).
+    try:
+        from hermes_cli.config import ensure_config_migrated
+
+        ensure_config_migrated(quiet=True)
+    except Exception:
+        logger.debug("ensure_config_migrated() failed during gateway startup", exc_info=True)
+
     # ── Duplicate-instance guard ──────────────────────────────────────
     # Prevent two gateways from running under the same HERMES_HOME.
     # The PID file is scoped to HERMES_HOME, so future multi-profile

@@ -41,6 +41,13 @@ class TestGetHermesHome:
 
 
 class TestEnsureHermesHome:
+    @pytest.fixture(autouse=True)
+    def _no_documents_dir_override(self, monkeypatch):
+        # These tests exercise the real HOME-relative Documents fallback
+        # directly; the session-wide isolation fixture's HERMES_DOCUMENTS_DIR
+        # override would otherwise short-circuit that.
+        monkeypatch.delenv("HERMES_DOCUMENTS_DIR", raising=False)
+
     def test_creates_subdirs(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             ensure_hermes_home()
@@ -1496,6 +1503,10 @@ class TestMcpMemorySaveFilterMigration:
 class TestTerminalCwdWorkspaceMigration:
     """Version 34→35 migrates legacy terminal.cwd in config.yaml."""
 
+    @pytest.fixture(autouse=True)
+    def _no_documents_dir_override(self, monkeypatch):
+        monkeypatch.delenv("HERMES_DOCUMENTS_DIR", raising=False)
+
     def _write(self, tmp_path, body: str):
         from hermes_cli.config import _LOAD_CONFIG_CACHE, _RAW_CONFIG_CACHE
         _LOAD_CONFIG_CACHE.clear()
@@ -1552,6 +1563,10 @@ class TestTerminalCwdWorkspaceMigration:
 
 class TestWorkspaceVaultRenameMigration:
     """Version 37→38 renames the workspace folder to AIMDS-Suite-Vault."""
+
+    @pytest.fixture(autouse=True)
+    def _no_documents_dir_override(self, monkeypatch):
+        monkeypatch.delenv("HERMES_DOCUMENTS_DIR", raising=False)
 
     def _write(self, tmp_path, body: str):
         from hermes_cli.config import _LOAD_CONFIG_CACHE, _RAW_CONFIG_CACHE

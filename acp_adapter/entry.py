@@ -233,6 +233,16 @@ def main(argv: list[str] | None = None) -> None:
     logger = logging.getLogger(__name__)
     logger.info("Starting hermes-agent ACP adapter")
 
+    # Apply any pending config schema migration -- the ACP adapter is a
+    # long-running entrypoint that never went through the interactive
+    # `hermes update` flow (see hermes_cli.config.ensure_config_migrated).
+    try:
+        from hermes_cli.config import ensure_config_migrated
+
+        ensure_config_migrated(quiet=True)
+    except Exception:
+        logger.debug("ensure_config_migrated() failed at ACP startup", exc_info=True)
+
     # Ensure the project root is on sys.path so ``from run_agent import AIAgent`` works
     project_root = str(Path(__file__).resolve().parent.parent)
     if project_root not in sys.path:

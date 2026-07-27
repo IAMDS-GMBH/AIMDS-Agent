@@ -259,7 +259,17 @@ def main():
     except Exception:
         # Logging setup failure shouldn't block gateway startup
         pass
-    
+
+    # Apply any pending config schema migration -- the TUI is a long-running
+    # entrypoint that never went through the interactive `hermes update`
+    # flow (see hermes_cli.config.ensure_config_migrated).
+    try:
+        from hermes_cli.config import ensure_config_migrated
+
+        ensure_config_migrated(quiet=True)
+    except Exception:
+        pass
+
     _install_sidecar_publisher()
 
     # MCP tool discovery — runs in a background daemon thread so a slow or
