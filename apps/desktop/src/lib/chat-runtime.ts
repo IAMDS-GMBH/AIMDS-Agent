@@ -31,6 +31,19 @@ const THINKING_STATUS_PREFIX_RE =
 const EMPTY_THINKING_PLACEHOLDER_RE =
   /\b(?:current rewritten thinking|next thinking to process|provide the thinking content|don't see any .*thinking)\b/i
 
+// These two strings are injected by the backend as plain role:"user"/"assistant"
+// messages so the model reads them as ordinary conversation turns (see
+// tools/todo_tool.py::format_for_injection and agent/context_compressor.py).
+// They are never real user input, so the UI reclassifies them as role:"system"
+// purely for rendering (see SystemMessage in thread.tsx) without touching the
+// underlying session data or the roles sent back to the backend.
+export const TODO_SNAPSHOT_MARKER = '[Your active task list was preserved across context compression]'
+export const CONTEXT_SUMMARY_MARKER = '--- END OF CONTEXT SUMMARY'
+
+export function isSyntheticContextNote(text: string): boolean {
+  return text.startsWith(TODO_SNAPSHOT_MARKER) || text.includes(CONTEXT_SUMMARY_MARKER)
+}
+
 export function createClientSessionState(
   storedSessionId: string | null = null,
   messages: ChatMessage[] = []
@@ -326,8 +339,12 @@ export function quickModelOptions(
 }
 
 export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
-  const role =
+  const declaredRole =
     message.role === 'user' || message.role === 'assistant' || message.role === 'system' ? message.role : 'assistant'
+  // Synthetic todo-snapshot/context-summary notes are stored with role
+  // user/assistant so the backend/model treat them as normal turns, but they
+  // must never render as a real chat bubble in the Desktop UI.
+  const role = declaredRole !== 'system' && isSyntheticContextNote(chatMessageText(message)) ? 'system' : declaredRole
 
   const createdAt = message.timestamp
     ? new Date(message.timestamp * 1000)

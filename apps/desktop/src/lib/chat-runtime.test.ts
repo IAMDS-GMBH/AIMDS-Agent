@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
+import type { ChatMessage } from '@/lib/chat-messages'
+import { textPart } from '@/lib/chat-messages'
 import type { ComposerAttachment } from '@/store/composer'
 
-import { coerceGatewayText, coerceThinkingText, optimisticAttachmentRef } from './chat-runtime'
+import {
+  coerceGatewayText,
+  coerceThinkingText,
+  isSyntheticContextNote,
+  optimisticAttachmentRef,
+  toRuntimeMessage
+} from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 
@@ -66,5 +74,67 @@ describe('coerceGatewayText', () => {
     ]
 
     expect(coerceGatewayText(value)).toBe('Clean assistant text')
+  })
+})
+
+function chatMessage(overrides: Partial<ChatMessage> & Pick<ChatMessage, 'id' | 'role'>): ChatMessage {
+  return { parts: [], ...overrides }
+}
+
+describe('isSyntheticContextNote', () => {
+  it('detects the todo-snapshot injection text (tools/todo_tool.py::format_for_injection)', () => {
+    expect(
+      isSyntheticContextNote(
+        '[Your active task list was preserved across context compression]\n- [ ] example-task. Example task'
+      )
+    ).toBe(true)
+  })
+
+  it('detects the context-summary injection text (agent/context_compressor.py)', () => {
+    expect(
+      isSyntheticContextNote(
+        'Some summary body\n--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---'
+      )
+    ).toBe(true)
+  })
+
+  it('does not flag ordinary user/assistant text', () => {
+    expect(isSyntheticContextNote('Can you check the vault folder path?')).toBe(false)
+  })
+})
+
+describe('toRuntimeMessage — synthetic context notes', () => {
+  it('reclassifies a todo-snapshot message stored as role:"user" to role:"system"', () => {
+    const message = chatMessage({
+      id: 'm1',
+      role: 'user',
+      parts: [
+        textPart(
+          '[Your active task list was preserved across context compression]\n- [ ] example-task. Example task'
+        )
+      ]
+    })
+
+    expect(toRuntimeMessage(message).role).toBe('system')
+  })
+
+  it('reclassifies a context-summary message stored as role:"assistant" to role:"system"', () => {
+    const message = chatMessage({
+      id: 'm2',
+      role: 'assistant',
+      parts: [
+        textPart(
+          'Summary of prior work...\n--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---'
+        )
+      ]
+    })
+
+    expect(toRuntimeMessage(message).role).toBe('system')
+  })
+
+  it('leaves ordinary user messages as role:"user"', () => {
+    const message = chatMessage({ id: 'm3', role: 'user', parts: [textPart('hello there')] })
+
+    expect(toRuntimeMessage(message).role).toBe('user')
   })
 })

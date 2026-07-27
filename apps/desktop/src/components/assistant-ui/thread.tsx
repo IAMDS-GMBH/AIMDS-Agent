@@ -82,7 +82,7 @@ import { Loader } from '@/components/ui/loader'
 import type { HermesGateway } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
-import { attachmentDisplayText, attachmentId, pathLabel } from '@/lib/chat-runtime'
+import { attachmentDisplayText, attachmentId, CONTEXT_SUMMARY_MARKER, pathLabel, TODO_SNAPSHOT_MARKER } from '@/lib/chat-runtime'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { LinkifiedText } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
@@ -903,10 +903,42 @@ const SLASH_STATUS_RE = /^slash:(?<command>\/[^\n]+)\n(?<output>[\s\S]*)$/
 const STEER_NOTE_RE = /^steer:(?<text>[\s\S]+)$/
 
 const SystemMessage: FC = () => {
+  const { t } = useI18n()
   const text = useAuiState(s => messageContentText(s.message.content))
 
   if (!text) {
     return null
+  }
+
+  // Synthetic todo-snapshot/context-summary notes (see isSyntheticContextNote in
+  // chat-runtime.ts): reclassified from user/assistant to system role purely
+  // for display, so they render as a compact muted label instead of the
+  // model-facing text (which includes protocol markers meant for the LLM,
+  // not the end user).
+  if (text.startsWith(TODO_SNAPSHOT_MARKER)) {
+    return (
+      <MessagePrimitive.Root
+        className="flex max-w-[min(86%,44rem)] items-center gap-1.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60"
+        data-role="system"
+        data-slot="aui_system-message-root"
+      >
+        <Codicon className="text-muted-foreground/55" name="checklist" size="0.75rem" />
+        <span className="text-muted-foreground/55">{t.assistant.thread.taskListResumed}</span>
+      </MessagePrimitive.Root>
+    )
+  }
+
+  if (text.includes(CONTEXT_SUMMARY_MARKER)) {
+    return (
+      <MessagePrimitive.Root
+        className="flex max-w-[min(86%,44rem)] items-center gap-1.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60"
+        data-role="system"
+        data-slot="aui_system-message-root"
+      >
+        <Codicon className="text-muted-foreground/55" name="history" size="0.75rem" />
+        <span className="text-muted-foreground/55">{t.assistant.thread.contextSummarized}</span>
+      </MessagePrimitive.Root>
+    )
   }
 
   const steerNote = text.match(STEER_NOTE_RE)

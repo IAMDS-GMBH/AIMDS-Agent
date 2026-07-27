@@ -1403,6 +1403,8 @@ export interface Translations {
       goForward: string
       sendEdited: string
       attachingFile: string
+      taskListResumed: string
+      contextSummarized: string
     }
     approval: {
       gatewayDisconnected: string

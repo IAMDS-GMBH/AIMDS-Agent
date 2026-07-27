@@ -1751,7 +1751,9 @@ export const de
       restoreNext: 'Nächsten Checkpoint wiederherstellen',
       goForward: 'Vorwärts',
       sendEdited: 'Bearbeitete Nachricht senden',
-      attachingFile: 'Wird angehängt…'
+      attachingFile: 'Wird angehängt…',
+      taskListResumed: 'Aufgabenliste wiederhergestellt',
+      contextSummarized: 'Kontext zusammengefasst'
     },
     approval: {
       gatewayDisconnected: 'Hermes-Gateway ist nicht verbunden',
