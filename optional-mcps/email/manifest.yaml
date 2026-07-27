@@ -10,7 +10,7 @@ transport:
   type: stdio
   command: "${INSTALL_DIR}/.venv/bin/python"
   args:
-    - "${INSTALL_DIR}/server.py"
+    - "${INSTALL_DIR}/optional-mcps/email/server.py"
 
 install:
   type: git
