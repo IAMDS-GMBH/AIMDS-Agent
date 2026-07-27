@@ -1,6 +1,9 @@
 name: Release Bootstrap Installers
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       version:
@@ -42,8 +45,62 @@ permissions:
   id-token: write
 
 jobs:
+  dispatch-from-tag:
+    name: Re-dispatch build from tag push
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      # The signing/notarization job below authenticates to Azure via OIDC,
+      # and the federated credential's subject is scoped to
+      # `repo:<org>/<repo>:ref:refs/heads/main` (see the "Enforce main
+      # workflow ref" step in build-installers). A tag push has a different
+      # OIDC subject (`ref:refs/tags/v...`), which that credential would
+      # reject. Rather than widen the Azure trust boundary, verify the tag
+      # points at current main HEAD and re-dispatch this same workflow as a
+      # normal workflow_dispatch run on main — the exact, already-trusted
+      # path — with the version derived from the tag name.
+      - name: Verify tag points at current main HEAD
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          main_sha="$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)"
+          if [ "$main_sha" != "${{ github.sha }}" ]; then
+            echo "::error::Tag '${{ github.ref_name }}' (${{ github.sha }}) does not point at current main HEAD ($main_sha). Only tag the latest main commit."
+            exit 1
+          fi
+
+      - name: Resolve version from tag name
+        id: version
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          version="${tag#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$tag' is not a valid vX.Y.Z version tag"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch workflow_dispatch run on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh workflow run release-bootstrap-installers.yml \
+            --ref main \
+            -f "version=$VERSION" \
+            -f create_release=true
+
   build-installers:
     name: Build (${{ matrix.os }})
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -62,6 +119,26 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: refs/heads/main
+
+      - name: Clean stale build output (self-hosted Windows only)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          # self-hosted-windows is the only non-ephemeral runner in this
+          # matrix — its workspace persists across runs, so leftover build
+          # output from a previous (possibly failed or interrupted) run can
+          # make an incremental Cargo/Tauri build silently stale or fail
+          # outright (e.g. locked DLLs, a half-written bundle, or a junction
+          # left behind by an older bootstrap-installer version). The
+          # macOS leg runs on an ephemeral GitHub-hosted runner and always
+          # starts from a clean checkout, so it needs no equivalent step.
+          $target = "${{ github.workspace }}\apps\bootstrap-installer\src-tauri\target"
+          if (Test-Path $target) {
+            Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop
+            Write-Host "Removed stale target directory: $target"
+          } else {
+            Write-Host "No stale target directory found."
+          }
 
       - name: Resolve installer version
         id: version
