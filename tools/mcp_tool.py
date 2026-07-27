@@ -3292,18 +3292,33 @@ def _clean_mcp_args(server: "MCPServerTask", tool_name: str, args: dict) -> dict
     if not isinstance(args, dict):
         return args
     clean = dict(args)
+
+    tool_obj = next((t for t in getattr(server, "_tools", []) if getattr(t, "name", "") == tool_name), None)
+    props: dict = {}
+    if tool_obj and hasattr(tool_obj, "inputSchema") and isinstance(tool_obj.inputSchema, dict):
+        props = tool_obj.inputSchema.get("properties") or {}
+
     for k in ("name", "tool_name"):
         if k in clean:
             val = str(clean[k])
             if val == tool_name or val == server.name or val.endswith(tool_name) or "mcp_" in val:
-                tool_obj = next((t for t in getattr(server, "_tools", []) if getattr(t, "name", "") == tool_name), None)
-                has_prop = False
-                if tool_obj and hasattr(tool_obj, "inputSchema") and isinstance(tool_obj.inputSchema, dict):
-                    props = tool_obj.inputSchema.get("properties") or {}
-                    if k in props:
-                        has_prop = True
-                if not has_prop:
+                if k not in props:
                     clean.pop(k, None)
+
+    # Some MCP servers declare a parameter as `type: string` but actually
+    # expect a JSON-encoded object/array (e.g. mcp-atlassian's Jira
+    # `update_issue(fields=...)`). Models routinely pass a real dict/list for
+    # such parameters, which the server rejects with a pydantic
+    # `type=string_type` validation error before the call ever reaches the
+    # tool. Coerce those values to JSON strings up front so the call succeeds
+    # instead of failing every time (#see item-14, session 20260727_103048_f9ef5b).
+    for key, prop_schema in props.items():
+        if not isinstance(prop_schema, dict) or prop_schema.get("type") != "string":
+            continue
+        value = clean.get(key)
+        if isinstance(value, (dict, list)):
+            clean[key] = json.dumps(value, ensure_ascii=False)
+
     return clean
 
 

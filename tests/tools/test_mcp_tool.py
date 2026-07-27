@@ -4143,3 +4143,96 @@ class TestMcpParallelToolCalls:
             register_mcp_servers(config_off)
         with _lock:
             assert sanitize_mcp_name_component("toggle_srv") not in _parallel_safe_servers
+
+
+# ---------------------------------------------------------------------------
+# _clean_mcp_args: string-typed schema properties receiving dict/list args
+# ---------------------------------------------------------------------------
+
+class TestCleanMcpArgsStringCoercion:
+    """Some MCP servers (e.g. mcp-atlassian's Jira update_issue) declare a
+    parameter as ``type: string`` but actually expect a JSON-encoded object
+    (e.g. ``fields``). Models routinely pass a real dict/list for such
+    parameters, which the server then rejects with a pydantic
+    ``type=string_type`` validation error before the call ever reaches the
+    tool. _clean_mcp_args coerces those values to JSON strings up front so
+    the call succeeds instead of failing every time.
+    """
+
+    def test_dict_value_for_string_property_is_json_encoded(self):
+        from tools.mcp_tool import _clean_mcp_args
+
+        tool = _make_mcp_tool(
+            name="update_issue",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "issue_key": {"type": "string"},
+                    "fields": {"type": "string", "description": "JSON object of fields to update"},
+                },
+                "required": ["issue_key", "fields"],
+            },
+        )
+        server = _make_mock_server("atlassian", tools=[tool])
+
+        cleaned = _clean_mcp_args(
+            server,
+            "update_issue",
+            {"issue_key": "ABC-1", "fields": {"summary": "New summary"}},
+        )
+
+        assert isinstance(cleaned["fields"], str)
+        assert json.loads(cleaned["fields"]) == {"summary": "New summary"}
+        # Untouched: already a plain string / matches declared type.
+        assert cleaned["issue_key"] == "ABC-1"
+
+    def test_list_value_for_string_property_is_json_encoded(self):
+        from tools.mcp_tool import _clean_mcp_args
+
+        tool = _make_mcp_tool(
+            name="probe",
+            input_schema={
+                "type": "object",
+                "properties": {"labels": {"type": "string"}},
+            },
+        )
+        server = _make_mock_server("srv", tools=[tool])
+
+        cleaned = _clean_mcp_args(server, "probe", {"labels": ["a", "b"]})
+
+        assert json.loads(cleaned["labels"]) == ["a", "b"]
+
+    def test_string_value_is_left_untouched(self):
+        from tools.mcp_tool import _clean_mcp_args
+
+        tool = _make_mcp_tool(
+            name="probe",
+            input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
+        )
+        server = _make_mock_server("srv", tools=[tool])
+
+        cleaned = _clean_mcp_args(server, "probe", {"query": "already a string"})
+
+        assert cleaned["query"] == "already a string"
+
+    def test_dict_value_for_object_typed_property_is_left_untouched(self):
+        from tools.mcp_tool import _clean_mcp_args
+
+        tool = _make_mcp_tool(
+            name="probe",
+            input_schema={"type": "object", "properties": {"payload": {"type": "object"}}},
+        )
+        server = _make_mock_server("srv", tools=[tool])
+
+        cleaned = _clean_mcp_args(server, "probe", {"payload": {"a": 1}})
+
+        assert cleaned["payload"] == {"a": 1}
+
+    def test_missing_tool_or_schema_is_a_no_op(self):
+        from tools.mcp_tool import _clean_mcp_args
+
+        server = _make_mock_server("srv", tools=[])
+
+        cleaned = _clean_mcp_args(server, "unknown", {"fields": {"a": 1}})
+
+        assert cleaned["fields"] == {"a": 1}
