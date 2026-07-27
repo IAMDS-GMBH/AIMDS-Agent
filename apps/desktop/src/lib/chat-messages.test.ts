@@ -200,6 +200,43 @@ describe('preserveLocalAssistantErrors', () => {
     expect(merged[2]?.error).toBe('OpenRouter 403')
   })
 
+  it('preserves an earlier turn\'s completed local assistant output while a later turn is still streaming', () => {
+    // Regression: hasAssistantAfterUser previously scanned the *entire* rest
+    // of the transcript for "any assistant message", so a later, already
+    // -persisted turn's reply made an earlier, not-yet-persisted turn look
+    // "already answered" — hiding its real output until DB hydration caught
+    // up (it looked like the previous response vanished while the next one
+    // was pending).
+    const nextMessages: ChatMessage[] = [
+      { id: 'user-1', parts: [{ text: 'first question', type: 'text' }], role: 'user' },
+      // Hydration snapshot lags: turn 1's assistant reply hasn't persisted yet.
+      { id: 'user-2', parts: [{ text: 'second question', type: 'text' }], role: 'user' },
+      { id: 'assistant-2', parts: [{ text: 'second answer', type: 'text' }], role: 'assistant' },
+      { id: 'user-3', parts: [{ text: 'third question', type: 'text' }], role: 'user' }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      { id: 'user-1', parts: [{ text: 'first question', type: 'text' }], role: 'user' },
+      { id: 'assistant-1', parts: [{ text: 'first answer', type: 'text' }], role: 'assistant' },
+      { id: 'user-2', parts: [{ text: 'second question', type: 'text' }], role: 'user' },
+      { id: 'assistant-2', parts: [{ text: 'second answer', type: 'text' }], role: 'assistant' },
+      { id: 'user-3', parts: [{ text: 'third question', type: 'text' }], role: 'user' },
+      { id: 'assistant-stream-3', parts: [{ text: 'still streaming...', type: 'text' }], pending: true, role: 'assistant' }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(merged.map(message => message.id)).toEqual([
+      'user-1',
+      'user-2',
+      'assistant-2',
+      'user-3',
+      'assistant-1',
+      'assistant-stream-3'
+    ])
+    expect(merged.find(m => m.id === 'assistant-1')?.parts).toEqual(currentMessages[1].parts)
+  })
+
   it('does not keep orphan local user turns when there is no inline assistant error', () => {
     const nextMessages: ChatMessage[] = [
       {

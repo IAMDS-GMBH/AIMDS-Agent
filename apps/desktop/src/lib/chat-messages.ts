@@ -892,7 +892,22 @@ export function preserveLocalAssistantErrors(
       return false
     }
 
-    return mergedNextMessages.slice(userIndex + 1).some(m => m.role === 'assistant' && !m.hidden)
+    // Only look within this user turn (up to the next user message), not the
+    // rest of the transcript. Otherwise a later turn's already-persisted or
+    // currently-streaming assistant reply makes this turn look "answered",
+    // hiding this turn's own local-only assistant output until hydration
+    // catches up (it looks like the previous response vanishes while the
+    // next one is still pending).
+    let turnEnd = mergedNextMessages.length
+
+    for (let i = userIndex + 1; i < mergedNextMessages.length; i += 1) {
+      if (mergedNextMessages[i].role === 'user' && !mergedNextMessages[i].hidden) {
+        turnEnd = i
+        break
+      }
+    }
+
+    return mergedNextMessages.slice(userIndex + 1, turnEnd).some(m => m.role === 'assistant' && !m.hidden)
   }
 
   for (let index = 0; index < currentMessages.length; index += 1) {
