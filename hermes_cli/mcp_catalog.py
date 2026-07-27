@@ -29,7 +29,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import yaml
 
@@ -548,6 +548,85 @@ def _prompt_env_vars(
     return collected
 
 
+def _github_device_code_login(
+    entry: "CatalogEntry", collected: Dict[str, str]
+) -> Optional[str]:
+    """Run GitHub's OAuth device-code flow (Copilot client id)."""
+    print(color("  Starting GitHub OAuth device code login...", Colors.CYAN))
+    from hermes_cli.copilot_auth import copilot_device_code_login
+
+    return copilot_device_code_login()
+
+
+def _microsoft_device_code_login(
+    entry: "CatalogEntry", collected: Dict[str, str]
+) -> Optional[str]:
+    """Run Microsoft's MSAL device-code flow, mirroring
+    optional-mcps/MSOffice365MCP/server.py's ``_get_msal_app()``.
+
+    Defaults to the same multi-tenant client id used by the MSOffice365MCP
+    server when the manifest's collected env values (``M365_CLIENT_ID`` /
+    ``M365_TENANT_ID``) are blank.
+    """
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure, FeatureUnavailable
+    except ImportError as exc:
+        print(color(
+            f"  ✗ The 'msal' package is required for Microsoft OAuth device "
+            f"code login. Install it with: pip install msal ({exc})",
+            Colors.YELLOW,
+        ))
+        return None
+
+    try:
+        _lazy_ensure("provider.msal", prompt=False)
+        import msal
+    except FeatureUnavailable as exc:
+        print(color(
+            f"  ✗ The 'msal' package is required for Microsoft OAuth device "
+            f"code login. {exc}",
+            Colors.YELLOW,
+        ))
+        return None
+
+    client_id = collected.get("M365_CLIENT_ID") or "41c29967-8ee6-4fac-b484-e87460272bda"
+    tenant_id = collected.get("M365_TENANT_ID") or "organizations"
+    if tenant_id == "common":
+        tenant_id = "organizations"
+
+    print(color("  Starting Microsoft OAuth device code login...", Colors.CYAN))
+    app = msal.PublicClientApplication(
+        client_id=client_id,
+        authority=f"https://login.microsoftonline.com/{tenant_id}",
+    )
+    flow = app.initiate_device_flow(scopes=entry.auth.scopes or ["User.Read"])
+    if "user_code" not in flow:
+        return None
+    print(color(
+        f"  Open {flow['verification_uri']} and enter code: {flow['user_code']}",
+        Colors.CYAN,
+    ))
+    result = app.acquire_token_by_device_flow(flow)
+    return result.get("access_token") if result else None
+
+
+# Provider name -> handler that runs that provider's device-code login flow
+# and returns the resulting access token (or None on failure/incompletion).
+# Add new providers here rather than branching in install_entry().
+_DEVICE_CODE_PROVIDERS: Dict[str, "Callable[[CatalogEntry, Dict[str, str]], Optional[str]]"] = {
+    "github": _github_device_code_login,
+    "microsoft": _microsoft_device_code_login,
+}
+
+# Human-readable display names for the messages printed around a device-code
+# login (e.g. "Saved GitHub OAuth token..."). Falls back to the raw provider
+# string (from AuthSpec.provider) for any provider not listed here.
+_DEVICE_CODE_PROVIDER_LABELS: Dict[str, str] = {
+    "github": "GitHub",
+    "microsoft": "Microsoft",
+}
+
+
 def _build_server_config(
     entry: CatalogEntry, install_dir: Optional[Path]
 ) -> dict:
@@ -852,33 +931,48 @@ def install_entry(
             print(color(f"  ℹ {entry.auth.notes}", Colors.DIM))
         _prompt_env_vars(entry.auth.env, reprompt=reprompt)
     elif entry.auth.type == "oauth":
+        collected: Dict[str, str] = {}
         if entry.auth.env:
             print()
             print(color("  Configure credentials:", Colors.CYAN))
             if entry.auth.notes:
                 print(color(f"  ℹ {entry.auth.notes}", Colors.DIM))
             collected = _prompt_env_vars(entry.auth.env, reprompt=reprompt)
-            has_token = any(v and v.strip() for v in collected.values())
+        elif entry.auth.notes:
+            print()
+            print(color(f"  ℹ {entry.auth.notes}", Colors.DIM))
+
+        # Whether we already have the actual access token (entry.auth.env_var)
+        # -- not just any collected config field (e.g. Microsoft's manifest
+        # also collects M365_CLIENT_ID/M365_TENANT_ID via entry.auth.env,
+        # neither of which is the token itself).
+        if entry.auth.env_var:
+            has_token = bool(
+                (collected.get(entry.auth.env_var) or get_env_value(entry.auth.env_var) or "").strip()
+            )
         else:
-            has_token = False
-            if entry.auth.notes:
-                print()
-                print(color(f"  ℹ {entry.auth.notes}", Colors.DIM))
+            has_token = any(v and v.strip() for v in collected.values())
 
         import sys as _sys
-        if not has_token and entry.auth.provider == "github":
+        handler = _DEVICE_CODE_PROVIDERS.get(entry.auth.provider) if entry.auth.provider else None
+        if not has_token and handler:
+            label = _DEVICE_CODE_PROVIDER_LABELS.get(entry.auth.provider, entry.auth.provider)
             if _sys.stdin.isatty():
-                print(color("  Starting GitHub OAuth device code login...", Colors.CYAN))
-                from hermes_cli.copilot_auth import copilot_device_code_login
-                token = copilot_device_code_login()
-                if token:
+                token: Optional[str] = None
+                try:
+                    token = handler(entry, collected)
+                except Exception as exc:
+                    print(color(f"  ✗ {label} OAuth failed: {exc}", Colors.YELLOW))
+                env_var = entry.auth.env_var
+                if token and env_var:
                     from hermes_cli.config import save_env_value
-                    save_env_value("GITHUB_PERSONAL_ACCESS_TOKEN", token)
-                    print(color("  ✓ Saved GitHub OAuth token to ~/.hermes/.env", Colors.GREEN))
+                    save_env_value(env_var, token)
+                    print(color(f"  ✓ Saved {label} OAuth token to ~/.hermes/.env", Colors.GREEN))
                 else:
-                    print(color("  ⚠ GitHub OAuth incomplete; you can set GITHUB_PERSONAL_ACCESS_TOKEN later.", Colors.YELLOW))
+                    later = f" you can set {env_var} later." if env_var else " you can authenticate later."
+                    print(color(f"  ⚠ {label} OAuth incomplete;{later}", Colors.YELLOW))
             else:
-                print(color("  GitHub OAuth required. Complete via OAuth/Settings in UI.", Colors.DIM))
+                print(color(f"  {label} OAuth required. Complete via OAuth/Settings in UI.", Colors.DIM))
         elif entry.auth.provider:
             print(color(
                 f"  This MCP uses {entry.auth.provider} OAuth. Run "

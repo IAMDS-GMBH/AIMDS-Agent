@@ -467,6 +467,207 @@ class TestInstall:
         assert "Authorization" not in server.get("headers", {})
         assert server["headers"]["X-MCP-Toolsets"] == "context,repos,actions"
 
+    def _stdio_provider_manifest(self, *, provider, env_var, extra_env=None):
+        return _basic_manifest(
+            auth={
+                "type": "oauth",
+                "provider": provider,
+                "env_var": env_var,
+                "env": extra_env or [],
+            }
+        )
+
+    def test_install_github_device_code_login_saves_token(
+        self, catalog_dir, monkeypatch
+    ):
+        """Regression: the github provider branch (now dispatched through
+        _DEVICE_CODE_PROVIDERS instead of a hardcoded if-statement) must
+        behave identically -- device-code login runs, and the resulting
+        token is saved under GITHUB_PERSONAL_ACCESS_TOKEN."""
+        body = self._stdio_provider_manifest(
+            provider="github",
+            env_var="GITHUB_PERSONAL_ACCESS_TOKEN",
+            extra_env=[{"name": "GITHUB_PERSONAL_ACCESS_TOKEN", "prompt": "PAT", "required": False}],
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        import sys as _sys
+        from hermes_cli import mcp_catalog
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import get_env_value
+
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "")
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(
+            "hermes_cli.copilot_auth.copilot_device_code_login",
+            lambda: "gho_devicecodetoken",
+        )
+
+        install_entry(_entry("demo"), enable=True)
+
+        assert get_env_value("GITHUB_PERSONAL_ACCESS_TOKEN") == "gho_devicecodetoken"
+
+    def test_install_microsoft_device_code_login_saves_token(
+        self, catalog_dir, monkeypatch
+    ):
+        body = self._stdio_provider_manifest(
+            provider="microsoft",
+            env_var="M365_ACCESS_TOKEN",
+            extra_env=[
+                {"name": "M365_CLIENT_ID", "prompt": "client id", "required": False},
+                {"name": "M365_TENANT_ID", "prompt": "tenant id", "required": False, "default": "common"},
+            ],
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        import sys as _sys
+        import msal
+        from hermes_cli import mcp_catalog
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import get_env_value
+
+        # Leave M365_CLIENT_ID blank, accept the M365_TENANT_ID default --
+        # neither is the access token itself, so device-code login must
+        # still fire (has_token must key off M365_ACCESS_TOKEN, not these).
+        def fake_prompt(question, default=None, **kwargs):
+            return default or ""
+
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", fake_prompt)
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+
+        class FakeApp:
+            def __init__(self, *a, **kw):
+                pass
+
+            def initiate_device_flow(self, scopes=None):
+                return {
+                    "user_code": "ABCD-1234",
+                    "verification_uri": "https://microsoft.com/devicelogin",
+                }
+
+            def acquire_token_by_device_flow(self, flow):
+                return {"access_token": "fake-msal-token"}
+
+        monkeypatch.setattr(msal, "PublicClientApplication", FakeApp)
+
+        install_entry(_entry("demo"), enable=True)
+
+        assert get_env_value("M365_ACCESS_TOKEN") == "fake-msal-token"
+
+    def test_install_microsoft_device_code_login_incomplete_no_crash(
+        self, catalog_dir, monkeypatch
+    ):
+        """MSAL flow returning no access_token (user cancelled/timed out)
+        must warn gracefully, not crash, and must not save a token."""
+        body = self._stdio_provider_manifest(
+            provider="microsoft",
+            env_var="M365_ACCESS_TOKEN",
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        import sys as _sys
+        import msal
+        from hermes_cli import mcp_catalog
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import get_env_value
+
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+
+        class FakeApp:
+            def __init__(self, *a, **kw):
+                pass
+
+            def initiate_device_flow(self, scopes=None):
+                return {
+                    "user_code": "ABCD-1234",
+                    "verification_uri": "https://microsoft.com/devicelogin",
+                }
+
+            def acquire_token_by_device_flow(self, flow):
+                return {"error": "authorization_declined"}
+
+        monkeypatch.setattr(msal, "PublicClientApplication", FakeApp)
+
+        install_entry(_entry("demo"), enable=True)
+
+        assert get_env_value("M365_ACCESS_TOKEN") is None
+
+    def test_install_microsoft_device_code_login_raises_no_crash(
+        self, catalog_dir, monkeypatch
+    ):
+        """If the MSAL flow raises (e.g. network error), install must
+        continue gracefully instead of propagating the exception."""
+        body = self._stdio_provider_manifest(
+            provider="microsoft",
+            env_var="M365_ACCESS_TOKEN",
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        import sys as _sys
+        import msal
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import get_env_value, load_config
+
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+
+        class FakeApp:
+            def __init__(self, *a, **kw):
+                raise RuntimeError("network unreachable")
+
+        monkeypatch.setattr(msal, "PublicClientApplication", FakeApp)
+
+        install_entry(_entry("demo"), enable=True)
+
+        assert get_env_value("M365_ACCESS_TOKEN") is None
+        assert "demo" in load_config()["mcp_servers"]
+
+    def test_install_microsoft_non_tty_shows_ui_message(
+        self, catalog_dir, monkeypatch, capsys
+    ):
+        """Non-interactive installs (web dashboard, CI) must not attempt the
+        MSAL device-code flow at all -- same guard as GitHub's."""
+        body = self._stdio_provider_manifest(
+            provider="microsoft",
+            env_var="M365_ACCESS_TOKEN",
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        import sys as _sys
+        from hermes_cli.mcp_catalog import install_entry
+
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
+
+        install_entry(_entry("demo"), enable=True)
+
+        out = capsys.readouterr().out
+        assert "Microsoft OAuth required. Complete via OAuth/Settings in UI." in out
+
+        from hermes_cli.config import get_env_value
+
+        assert get_env_value("M365_ACCESS_TOKEN") is None
+
+    def test_install_unknown_provider_falls_back_to_generic_message(
+        self, catalog_dir, monkeypatch, capsys
+    ):
+        """Providers not in the device-code dispatch table keep today's
+        exact fallback behaviour -- the generic `hermes auth <provider>`
+        message."""
+        body = self._stdio_provider_manifest(
+            provider="totally-made-up-provider",
+            env_var="MADEUP_TOKEN",
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        import sys as _sys
+        from hermes_cli.mcp_catalog import install_entry
+
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+
+        install_entry(_entry("demo"), enable=True)
+
+        out = capsys.readouterr().out
+        assert "This MCP uses totally-made-up-provider OAuth. Run `hermes auth totally-made-up-provider`" in out
+
     def test_install_oauth_prints_auth_notes(self, catalog_dir, capsys):
         """auth.notes is parsed but was never surfaced by the CLI install
         flow (only the GUI settings dialog rendered it) -- e.g. clarifying

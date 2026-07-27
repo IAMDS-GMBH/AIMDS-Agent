@@ -5250,6 +5250,16 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "status_fn": None,
     },
     {
+        "id": "microsoft",
+        "name": "Microsoft 365 (OAuth)",
+        # Backs the MSOffice365MCP catalog entry's device-code login (see
+        # hermes_cli/mcp_catalog.py's `_microsoft_device_code_login`).
+        "flow": "device_code",
+        "cli_command": "hermes mcp install MSOffice365MCP",
+        "docs_url": "https://learn.microsoft.com/en-us/graph/auth/",
+        "status_fn": None,  # dispatched via M365_ACCESS_TOKEN presence below
+    },
+    {
         "id": "nous",
         "name": "Nous Portal",
         "flow": "device_code",
@@ -5342,6 +5352,20 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
             from hermes_cli.github_auth import get_github_oauth_status
             return get_github_oauth_status()
         from hermes_cli import auth as hauth
+        if provider_id == "microsoft":
+            try:
+                from hermes_cli.config import get_env_value
+                token = (get_env_value("M365_ACCESS_TOKEN") or "").strip()
+            except Exception:
+                token = os.getenv("M365_ACCESS_TOKEN", "").strip()
+            return {
+                "logged_in": bool(token),
+                "source": "microsoft_msal",
+                "source_label": "M365_ACCESS_TOKEN",
+                "token_preview": _truncate_token(token),
+                "expires_at": None,
+                "has_refresh_token": False,
+            }
         if provider_id == "nous":
             raw = hauth.get_nous_auth_status()
             return {
@@ -5446,6 +5470,8 @@ async def list_oauth_providers():
             args = s_cfg.get("args") or []
             if "server-github" in " ".join(str(a) for a in args) or s_name.lower() in ("github", "githubmcp"):
                 enabled_mcp_providers.add("github")
+            if s_name.lower() in ("msoffice365mcp", "microsoft365", "m365"):
+                enabled_mcp_providers.add("microsoft")
 
     mcp_oauth_providers = {"github"}
 
@@ -5525,6 +5551,17 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
             return {"ok": True, "provider": provider_id}
         except Exception as e:
             _log.exception("disconnect github failed")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    if provider_id == "microsoft":
+        try:
+            from hermes_cli.config import save_env_value
+            save_env_value("M365_ACCESS_TOKEN", "")
+            os.environ.pop("M365_ACCESS_TOKEN", None)
+            _log.info("oauth/disconnect: microsoft (cleared M365_ACCESS_TOKEN)")
+            return {"ok": True, "provider": provider_id}
+        except Exception as e:
+            _log.exception("disconnect microsoft failed")
             raise HTTPException(status_code=500, detail=str(e))
 
     try:
@@ -6015,6 +6052,61 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
             "verification_url": str(device_data["verification_uri"]),
             "expires_in": expires_in_seconds,
             "poll_interval": max(2, (sess["interval_ms"] or 2000) // 1000),
+        }
+
+    if provider_id == "microsoft":
+        # Microsoft's MSAL device-code flow, mirroring
+        # hermes_cli/mcp_catalog.py's `_microsoft_device_code_login` (the
+        # CLI equivalent) and optional-mcps/MSOffice365MCP/server.py's
+        # `_get_msal_app()`. Defaults to the same multi-tenant client id
+        # used there when M365_CLIENT_ID / M365_TENANT_ID aren't set.
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure, FeatureUnavailable
+        except ImportError as e:
+            raise HTTPException(status_code=500, detail=f"msal unavailable: {e}")
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None, lambda: _lazy_ensure("provider.msal", prompt=False)
+            )
+        except FeatureUnavailable as e:
+            raise HTTPException(status_code=500, detail=f"msal unavailable: {e}")
+        import msal
+        from hermes_cli.config import get_env_value
+
+        client_id = get_env_value("M365_CLIENT_ID") or "41c29967-8ee6-4fac-b484-e87460272bda"
+        tenant_id = get_env_value("M365_TENANT_ID") or "organizations"
+        if tenant_id == "common":
+            tenant_id = "organizations"
+
+        def _do_initiate_device_flow():
+            app = msal.PublicClientApplication(
+                client_id=client_id,
+                authority=f"https://login.microsoftonline.com/{tenant_id}",
+            )
+            return app, app.initiate_device_flow(scopes=["User.Read"])
+
+        app_obj, flow = await asyncio.get_running_loop().run_in_executor(
+            None, _do_initiate_device_flow
+        )
+        if not flow or "user_code" not in flow:
+            detail = (flow or {}).get("error_description") or "Failed to start Microsoft device-code flow"
+            raise HTTPException(status_code=500, detail=detail)
+
+        sid, sess = _new_oauth_session("microsoft", "device_code")
+        sess["expires_at"] = time.time() + int(flow.get("expires_in", 900))
+
+        threading.Thread(
+            target=_microsoft_device_code_worker, args=(sid, app_obj, flow), daemon=True,
+            name=f"oauth-poll-{sid[:6]}",
+        ).start()
+
+        return {
+            "session_id": sid,
+            "flow": "device_code",
+            "user_code": str(flow["user_code"]),
+            "verification_url": str(flow.get("verification_uri", "https://microsoft.com/devicelogin")),
+            "expires_in": int(flow.get("expires_in", 900)),
+            "poll_interval": max(2, int(flow.get("interval", 5))),
         }
 
     raise HTTPException(status_code=400, detail=f"Provider {provider_id} does not support device-code flow")
@@ -6599,6 +6691,43 @@ def _minimax_poller(session_id: str) -> None:
         _log.info("oauth/device: minimax login completed (session=%s)", session_id)
     except Exception as e:
         _log.warning("minimax device-code poll failed (session=%s): %s", session_id, e)
+        with _oauth_sessions_lock:
+            sess["status"] = "error"
+            sess["error_message"] = str(e)
+
+
+def _microsoft_device_code_worker(session_id: str, app_obj: Any, flow: Dict[str, Any]) -> None:
+    """Drive a Microsoft MSAL device-code flow to completion in a thread.
+
+    ``msal``'s ``acquire_token_by_device_flow`` is a *blocking* call that
+    polls the token endpoint internally (using ``flow["interval"]``) until
+    the user completes sign-in, the code expires, or an error occurs — it
+    doesn't fit the "one non-blocking check per HTTP request" shape used by
+    the GitHub poller. So, like ``_codex_full_login_worker``, we run the
+    whole blocking call in a background thread and let the dashboard's
+    generic poll endpoint just read ``sess["status"]`` once it's done.
+    """
+    with _oauth_sessions_lock:
+        sess = _oauth_sessions.get(session_id)
+    if not sess:
+        return
+    try:
+        result = app_obj.acquire_token_by_device_flow(flow)
+        token = result.get("access_token") if result else None
+        if not token:
+            err = (result or {}).get("error_description") or (result or {}).get("error") or (
+                "Microsoft sign-in did not complete"
+            )
+            with _oauth_sessions_lock:
+                sess["status"] = "error"
+                sess["error_message"] = str(err)
+            return
+        save_env_value("M365_ACCESS_TOKEN", token)
+        with _oauth_sessions_lock:
+            sess["status"] = "approved"
+        _log.info("oauth/device: microsoft login completed (session=%s)", session_id)
+    except Exception as e:
+        _log.warning("microsoft device-code poll failed (session=%s): %s", session_id, e)
         with _oauth_sessions_lock:
             sess["status"] = "error"
             sess["error_message"] = str(e)

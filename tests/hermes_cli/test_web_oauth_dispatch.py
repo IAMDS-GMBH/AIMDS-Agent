@@ -616,3 +616,121 @@ def test_unknown_pkce_provider_rejected_cleanly():
     # 4xx — what we MUST NOT see is a 200 with claude.ai in the body.
     assert resp.status_code >= 400, resp.text
     assert "claude.ai" not in resp.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Microsoft / M365 device-code flow
+# ---------------------------------------------------------------------------
+#
+# Mirrors hermes_cli/mcp_catalog.py's `_microsoft_device_code_login` (the
+# CLI equivalent used by `hermes mcp install MSOffice365MCP`) but surfaces
+# the user_code/verification_url through the dashboard's generic device-code
+# session mechanism instead of blocking a CLI prompt. MSAL's
+# `acquire_token_by_device_flow` blocks internally while it polls, so the
+# whole call is driven by `_microsoft_device_code_worker` in a background
+# thread -- the dashboard's poll endpoint just reads `sess["status"]`.
+
+
+class _FakeMsalApp:
+    """Stand-in for msal.PublicClientApplication used across these tests."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def initiate_device_flow(self, scopes=None):
+        return {
+            "user_code": "MSFT-1234",
+            "verification_uri": "https://microsoft.com/devicelogin",
+            "expires_in": 900,
+            "interval": 5,
+        }
+
+    def acquire_token_by_device_flow(self, flow):
+        return {"access_token": "fake-msal-dashboard-token"}
+
+
+def test_microsoft_dashboard_device_flow_returns_device_code_shape(monkeypatch):
+    """Starting the microsoft flow must return the same shape as github/nous
+    (session_id, flow: device_code, user_code, verification_url, ...) so the
+    existing dashboard UI needs zero changes to render it."""
+    import msal
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setattr(msal, "PublicClientApplication", _FakeMsalApp)
+    monkeypatch.setattr(ws, "_microsoft_device_code_worker", lambda *a, **kw: None)
+
+    result = asyncio.run(ws._start_device_code_flow("microsoft"))
+    try:
+        assert result["flow"] == "device_code"
+        assert result["user_code"] == "MSFT-1234"
+        assert result["verification_url"] == "https://microsoft.com/devicelogin"
+        assert result["expires_in"] == 900
+        assert result["poll_interval"] == 5
+        assert ws._oauth_sessions[result["session_id"]]["provider"] == "microsoft"
+        assert ws._oauth_sessions[result["session_id"]]["status"] == "pending"
+    finally:
+        ws._oauth_sessions.pop(result["session_id"], None)
+
+
+def test_microsoft_dashboard_device_flow_rejects_incomplete_response(monkeypatch):
+    """If MSAL's initiate_device_flow() doesn't return a user_code (e.g. bad
+    client id), the endpoint must surface a clean error, not crash."""
+    import msal
+    from hermes_cli import web_server as ws
+
+    class _BadFlowApp(_FakeMsalApp):
+        def initiate_device_flow(self, scopes=None):
+            return {"error": "invalid_client", "error_description": "bad client id"}
+
+    monkeypatch.setattr(msal, "PublicClientApplication", _BadFlowApp)
+
+    with pytest.raises(Exception) as excinfo:
+        asyncio.run(ws._start_device_code_flow("microsoft"))
+    assert "bad client id" in str(excinfo.value) or "500" in str(excinfo.value)
+
+
+def test_microsoft_device_code_worker_saves_token(monkeypatch, tmp_path):
+    """On success the worker must save the token to M365_ACCESS_TOKEN and
+    mark the session approved -- mirroring the CLI's device-code handler."""
+    from hermes_cli import web_server as ws
+    from hermes_cli.config import get_env_value
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    sid, _ = ws._new_oauth_session("microsoft", "device_code")
+    try:
+        ws._microsoft_device_code_worker(sid, _FakeMsalApp(), {"user_code": "MSFT-1234"})
+
+        assert ws._oauth_sessions[sid]["status"] == "approved"
+        assert get_env_value("M365_ACCESS_TOKEN") == "fake-msal-dashboard-token"
+    finally:
+        ws._oauth_sessions.pop(sid, None)
+
+
+def test_microsoft_device_code_worker_no_token_marks_error(monkeypatch, tmp_path):
+    """A device-code flow that never completes (declined/expired) must mark
+    the session as errored, not crash and not save a token."""
+    from hermes_cli import web_server as ws
+    from hermes_cli.config import get_env_value
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class _DeclinedApp(_FakeMsalApp):
+        def acquire_token_by_device_flow(self, flow):
+            return {"error": "authorization_declined"}
+
+    sid, _ = ws._new_oauth_session("microsoft", "device_code")
+    try:
+        ws._microsoft_device_code_worker(sid, _DeclinedApp(), {"user_code": "MSFT-1234"})
+
+        assert ws._oauth_sessions[sid]["status"] == "error"
+        assert get_env_value("M365_ACCESS_TOKEN") is None
+    finally:
+        ws._oauth_sessions.pop(sid, None)
+
+
+def test_microsoft_listed_as_device_code_flow_in_catalog():
+    from hermes_cli import web_server as ws
+
+    entry = next(p for p in ws._OAUTH_PROVIDER_CATALOG if p["id"] == "microsoft")
+    assert entry["flow"] == "device_code"

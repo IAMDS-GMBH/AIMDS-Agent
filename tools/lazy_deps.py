@@ -86,6 +86,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # when model.auth_mode=entra_id is selected; key-based azure-foundry
     # users never pay this import.
     "provider.azure_identity": ("azure-identity==1.25.3",),
+    # MSAL — Microsoft OAuth device-code login, used both by the
+    # MSOffice365MCP optional server and by the `microsoft` device-code
+    # handler in hermes_cli/mcp_catalog.py / hermes_cli/web_server.py.
+    # Keep this pin in sync with optional-mcps/MSOffice365MCP/requirements.txt.
+    "provider.msal": ("msal==1.37.0",),
 
     # ─── Web search backends ───────────────────────────────────────────────
     "search.exa": ("exa-py==2.10.2",),

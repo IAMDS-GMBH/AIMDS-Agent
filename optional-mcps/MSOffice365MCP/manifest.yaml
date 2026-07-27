@@ -34,7 +34,11 @@ auth:
     your organization requires its own Entra App Registration; if you're a
     tenant admin and want directory-wide user search / SharePoint tools too,
     use m365_initiate_login(request_admin_scopes=True) after installing
-    instead of changing these fields.
+    instead of changing these fields. If run from an interactive terminal,
+    installing this MCP now automatically starts a Microsoft OAuth
+    device-code login (same as `m365_initiate_login`/`m365_complete_login`);
+    those in-chat tools remain available afterwards for already-installed
+    servers, non-interactive installs, or re-authenticating later.
   env:
     - name: M365_CLIENT_ID
       prompt: "Microsoft Entra App Client ID (optional; leave blank to use default multi-tenant app)"
@@ -83,12 +87,17 @@ post_install: |
   Microsoft 365 MCP (m365) has been installed into your catalog.
 
   Authentication:
+    - If installed from an interactive terminal, Hermes automatically started a
+      Microsoft OAuth device-code login just now (enter the printed code at the
+      printed URL to finish sign-in).
     - If M365_CLIENT_ID is provided, Hermes connects to your tenant's Entra App Registration.
     - Otherwise, Hermes connects via the default multi-tenant Microsoft app
       (Client ID 41c29967-8ee6-4fac-b484-e87460272bda) — no registration needed in your tenant.
     - Default sign-in requests only non-admin scopes (mail, calendar, chat, files, contacts).
       Tenant admins who also want directory-wide user search / SharePoint tools should call
       m365_initiate_login(request_admin_scopes=True) instead of setting M365_CLIENT_ID.
+    - Didn't sign in during install (non-interactive install, or skipped)? Use the in-chat
+      m365_initiate_login / m365_complete_login tools any time afterwards.
     - Token cache is automatically stored in ~/.hermes/m365_token_cache.bin.
 
   Supported Services:
