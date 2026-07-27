@@ -822,15 +822,22 @@ def install_entry(
     elif entry.auth.type == "api_key":
         print()
         print(color("  Configure credentials:", Colors.CYAN))
+        if entry.auth.notes:
+            print(color(f"  ℹ {entry.auth.notes}", Colors.DIM))
         _prompt_env_vars(entry.auth.env, reprompt=reprompt)
     elif entry.auth.type == "oauth":
         if entry.auth.env:
             print()
             print(color("  Configure credentials:", Colors.CYAN))
+            if entry.auth.notes:
+                print(color(f"  ℹ {entry.auth.notes}", Colors.DIM))
             collected = _prompt_env_vars(entry.auth.env, reprompt=reprompt)
             has_token = any(v and v.strip() for v in collected.values())
         else:
             has_token = False
+            if entry.auth.notes:
+                print()
+                print(color(f"  ℹ {entry.auth.notes}", Colors.DIM))
 
         import sys as _sys
         if not has_token and entry.auth.provider == "github":

@@ -336,6 +336,45 @@ class TestInstall:
         assert server["url"] == "https://mcp.example.com/sse"
         assert server["auth"] == "oauth"
 
+    def test_install_oauth_prints_auth_notes(self, catalog_dir, capsys):
+        """auth.notes is parsed but was never surfaced by the CLI install
+        flow (only the GUI settings dialog rendered it) -- e.g. clarifying
+        that MSOffice365MCP's default Client ID needs no tenant app
+        registration was invisible to CLI/onboarding-wizard users."""
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/sse"},
+            auth={"type": "oauth", "notes": "Default Client ID abc-123 needs no tenant registration."},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli.mcp_catalog import install_entry
+
+        install_entry(_entry("demo"), enable=True)
+
+        out = capsys.readouterr().out
+        assert "Default Client ID abc-123 needs no tenant registration." in out
+
+    def test_install_api_key_prints_auth_notes(self, catalog_dir, monkeypatch, capsys):
+        body = _basic_manifest(
+            auth={
+                "type": "api_key",
+                "notes": "Pick one auth mode.",
+                "env": [{"name": "DEMO_KEY", "prompt": "key", "secret": True}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "secret-val")
+
+        from hermes_cli.mcp_catalog import install_entry
+
+        install_entry(_entry("demo"), enable=True)
+
+        out = capsys.readouterr().out
+        assert "Pick one auth mode." in out
+
     def test_install_required_env_missing_raises(self, catalog_dir, monkeypatch):
         body = _basic_manifest(
             auth={

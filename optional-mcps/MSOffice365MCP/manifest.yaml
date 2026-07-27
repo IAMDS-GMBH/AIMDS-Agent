@@ -26,8 +26,15 @@ auth:
   env_var: M365_ACCESS_TOKEN
   notes: >-
     Both fields are OPTIONAL — most users should leave them blank to sign in
-    via the default multi-tenant Microsoft login. Only set a Client/Tenant ID
-    if your organization requires its own Entra App Registration.
+    via the default multi-tenant Microsoft app (Client ID
+    41c29967-8ee6-4fac-b484-e87460272bda, tenant "organizations"). No app
+    registration or admin install is needed in your tenant for this — sign-in
+    only requests scopes any tenant member can consent to themselves (mail,
+    calendar, chat, files, contacts). Only set a Client/Tenant ID below if
+    your organization requires its own Entra App Registration; if you're a
+    tenant admin and want directory-wide user search / SharePoint tools too,
+    use m365_initiate_login(request_admin_scopes=True) after installing
+    instead of changing these fields.
   env:
     - name: M365_CLIENT_ID
       prompt: "Microsoft Entra App Client ID (optional; leave blank to use default multi-tenant app)"
@@ -77,12 +84,16 @@ post_install: |
 
   Authentication:
     - If M365_CLIENT_ID is provided, Hermes connects to your tenant's Entra App Registration.
-    - Otherwise, Hermes connects via auto-discovery to common multi-tenant OAuth.
+    - Otherwise, Hermes connects via the default multi-tenant Microsoft app
+      (Client ID 41c29967-8ee6-4fac-b484-e87460272bda) — no registration needed in your tenant.
+    - Default sign-in requests only non-admin scopes (mail, calendar, chat, files, contacts).
+      Tenant admins who also want directory-wide user search / SharePoint tools should call
+      m365_initiate_login(request_admin_scopes=True) instead of setting M365_CLIENT_ID.
     - Token cache is automatically stored in ~/.hermes/m365_token_cache.bin.
 
   Supported Services:
-    - User Directory (m365_search_users, m365_get_user_profile)
+    - User Directory (m365_search_users, m365_get_user_profile) — directory-wide search needs admin scopes.
     - Outlook Mail & Contacts (m365_send_email, m365_list_emails, m365_get_email, m365_list_contacts)
     - Outlook Calendar (m365_list_events, m365_create_event)
     - Teams (m365_list_chats, m365_get_chat_members, m365_get_or_create_direct_chat, m365_send_chat_message)
-    - OneDrive & SharePoint (m365_list_drive_files, m365_search_drive_files, m365_get_drive_file, m365_list_sharepoint_sites, m365_list_sharepoint_drives, m365_list_sharepoint_files, m365_search_sharepoint_files)
+    - OneDrive & SharePoint (m365_list_drive_files, m365_search_drive_files, m365_get_drive_file, m365_list_sharepoint_sites, m365_list_sharepoint_drives, m365_list_sharepoint_files, m365_search_sharepoint_files) — SharePoint needs admin scopes.

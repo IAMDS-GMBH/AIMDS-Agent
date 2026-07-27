@@ -305,3 +305,79 @@ def test_m365_shared_calendar_tools():
 
 
 
+
+
+class TestRegression_ChatMessageContentAliases:
+    """m365_send_chat_message previously required the exact param name
+    'content'; a wrong first guess (e.g. 'message') raised a pydantic
+    validation error before the tool call was even attempted. Accept the
+    common aliases so a first-try guess still succeeds."""
+
+    def test_message_alias_accepted(self):
+        with patch.object(server, "_graph_request", return_value={"id": "msg-1"}) as mock_req:
+            server.m365_send_chat_message("chat-123", message="Hello via alias")
+            args, kwargs = mock_req.call_args
+            assert kwargs["json_data"]["body"]["content"] == "<p>Hello via alias</p>"
+
+    def test_body_alias_accepted(self):
+        with patch.object(server, "_graph_request", return_value={"id": "msg-2"}) as mock_req:
+            server.m365_send_chat_message("chat-123", body="Hello via body alias")
+            args, kwargs = mock_req.call_args
+            assert kwargs["json_data"]["body"]["content"] == "<p>Hello via body alias</p>"
+
+    def test_text_alias_accepted(self):
+        with patch.object(server, "_graph_request", return_value={"id": "msg-3"}) as mock_req:
+            server.m365_send_chat_message("chat-123", text="Hello via text alias")
+            args, kwargs = mock_req.call_args
+            assert kwargs["json_data"]["body"]["content"] == "<p>Hello via text alias</p>"
+
+    def test_content_takes_priority_over_aliases(self):
+        with patch.object(server, "_graph_request", return_value={"id": "msg-4"}) as mock_req:
+            server.m365_send_chat_message("chat-123", content="Real content", message="Ignored")
+            args, kwargs = mock_req.call_args
+            assert kwargs["json_data"]["body"]["content"] == "<p>Real content</p>"
+
+    def test_missing_content_and_aliases_raises_clear_error(self):
+        with pytest.raises(ValueError, match="requires the message text"):
+            server.m365_send_chat_message("chat-123")
+
+
+class TestRegression_ScopeTiering:
+    """Default sign-in must only request scopes any tenant member can
+    consent to themselves -- requesting admin-only scopes (User.Read.All,
+    Directory.Read.All, Sites.ReadWrite.All) by default blocked a brand-new
+    non-admin account from signing in at all, reproduced on a customer
+    tenant where the LLM was told an admin was required just to send mail."""
+
+    def test_base_scopes_exclude_admin_only_scopes(self):
+        admin_only = {"User.Read.All", "Directory.Read.All", "Sites.ReadWrite.All"}
+        assert not (set(server.BASE_SCOPES) & admin_only)
+
+    def test_base_scopes_cover_core_features(self):
+        core = {"Mail.ReadWrite", "Mail.Send", "Calendars.ReadWrite", "Chat.ReadWrite", "Contacts.ReadWrite"}
+        assert core.issubset(set(server.BASE_SCOPES))
+
+    def test_all_scopes_is_base_plus_admin(self):
+        assert set(server.ALL_SCOPES) == set(server.BASE_SCOPES) | set(server.ADMIN_SCOPES)
+
+    def test_initiate_login_defaults_to_base_scopes(self):
+        mock_app = MagicMock()
+        mock_app.initiate_device_flow.return_value = {"user_code": "ABC123", "verification_uri": "https://example.com"}
+        with patch.object(server, "_get_msal_app", return_value=mock_app):
+            res = server.m365_initiate_login()
+            assert res["requested_admin_scopes"] is False
+            mock_app.initiate_device_flow.assert_called_once_with(scopes=server.BASE_SCOPES)
+
+    def test_initiate_login_requests_all_scopes_when_admin_opted_in(self):
+        mock_app = MagicMock()
+        mock_app.initiate_device_flow.return_value = {"user_code": "ABC123", "verification_uri": "https://example.com"}
+        with patch.object(server, "_get_msal_app", return_value=mock_app):
+            res = server.m365_initiate_login(request_admin_scopes=True)
+            assert res["requested_admin_scopes"] is True
+            mock_app.initiate_device_flow.assert_called_once_with(scopes=server.ALL_SCOPES)
+
+    def test_check_admin_status_gives_actionable_hint_on_403(self):
+        with patch.object(server, "_graph_request", side_effect=RuntimeError("MS Graph API Error [403]: Authorization_RequestDenied")):
+            res = server.m365_check_admin_status()
+            assert "error" in res
+            assert "request_admin_scopes=True" in res["recommendation"]

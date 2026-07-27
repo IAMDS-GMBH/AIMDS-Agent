@@ -21,18 +21,43 @@ mcp = FastMCP("MSOffice365MCP")
 
 # Constants
 GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
-SCOPES = [
+
+# Scopes every regular tenant member can consent to themselves (Microsoft
+# Graph does not require a tenant admin to approve these as delegated
+# permissions). Covers Mail/Calendar/Teams/OneDrive/Contacts -- the vast
+# majority of what this MCP is used for.
+BASE_SCOPES = [
     "User.Read",
-    "User.Read.All",
     "Mail.ReadWrite",
     "Mail.Send",
     "Calendars.ReadWrite",
     "Chat.ReadWrite",
     "Files.ReadWrite.All",
-    "Directory.Read.All",
     "Contacts.ReadWrite",
+]
+
+# Scopes Microsoft classifies as requiring tenant-admin consent, because
+# they grant read/write access beyond the signed-in user (directory-wide
+# user search, org-wide SharePoint). Requesting these in the default
+# consent screen blocks sign-in entirely for non-admin users -- reproduced
+# via a customer test where a brand-new (non-admin) account got stuck on
+# an admin-approval wall just to send mail. Only requested when the caller
+# opts in (m365_initiate_login(request_admin_scopes=True)) or when a tenant
+# admin has already granted them org-wide (m365_generate_admin_consent_url),
+# in which case silent token acquisition below picks them up automatically
+# without any extra prompt.
+ADMIN_SCOPES = [
+    "User.Read.All",
+    "Directory.Read.All",
     "Sites.ReadWrite.All",
 ]
+
+ALL_SCOPES = BASE_SCOPES + ADMIN_SCOPES
+
+# Backwards-compatible alias: some tools (admin consent URL generation) and
+# any external callers still importing SCOPES directly should get the full
+# superset, since that tool is specifically for granting everything at once.
+SCOPES = ALL_SCOPES
 
 ADMIN_ROLE_IDS = {
     "62e90394-69f5-4237-9190-012177145e10": "Global Administrator",
@@ -133,16 +158,26 @@ def _get_access_token() -> str:
 
     if accounts:
         for acc in accounts:
-            result = app.acquire_token_silent(SCOPES, account=acc)
+            # Try the full scope superset first: if a tenant admin has
+            # already granted org-wide consent (m365_generate_admin_consent_url),
+            # this silently succeeds with zero extra prompts for every user
+            # in that tenant. Otherwise fall back to the base (non-admin)
+            # scopes so mail/calendar/chat/files keep working even when
+            # nobody has admin rights.
+            result = app.acquire_token_silent(ALL_SCOPES, account=acc)
+            if not result or "access_token" not in result:
+                result = app.acquire_token_silent(BASE_SCOPES, account=acc)
             if result and "access_token" in result:
                 _save_cache(app)
                 return result["access_token"]
 
     # 2. Check if running in interactive --login CLI mode
     if "--login" in sys.argv:
+        request_admin_scopes = "--admin" in sys.argv or bool(os.environ.get("M365_REQUEST_ADMIN_SCOPES"))
+        login_scopes = ALL_SCOPES if request_admin_scopes else BASE_SCOPES
         print("\n[M365 OAuth] Initiating interactive sign-in...", file=sys.stderr)
         try:
-            result = app.acquire_token_interactive(scopes=SCOPES, port=8400)
+            result = app.acquire_token_interactive(scopes=login_scopes, port=8400)
             if "access_token" in result:
                 _save_cache(app)
                 print("[M365 OAuth] Sign-in successful! Token cached in ~/.hermes/m365_token_cache.bin", file=sys.stderr)
@@ -150,7 +185,7 @@ def _get_access_token() -> str:
         except Exception as err:
             print(f"[M365 OAuth] Interactive loopback failed ({err}), trying device code flow...", file=sys.stderr)
 
-        flow = app.initiate_device_flow(scopes=SCOPES)
+        flow = app.initiate_device_flow(scopes=login_scopes)
         if "user_code" in flow:
             print(f"\n[M365 OAuth] Please open {flow['verification_uri']} and enter code: {flow['user_code']}\n", file=sys.stderr)
             result = app.acquire_token_by_device_flow(flow)
@@ -162,8 +197,9 @@ def _get_access_token() -> str:
     # 3. Running inside stdio MCP without cached token -> Return clear actionable error rather than blocking stdio!
     raise RuntimeError(
         "M365 authentication required. Please run: "
-        "'/Users/johanneshuchler/_GitHubRepos/hermes-agent/.venv/bin/python optional-mcps/MSOffice365MCP/server.py --login' "
-        "in your terminal once to complete M365 sign-in."
+        "'<hermes-install-dir>/.venv/bin/python optional-mcps/MSOffice365MCP/server.py --login' "
+        "in your terminal once to complete M365 sign-in. Tenant admins who want directory "
+        "search / SharePoint tools too can add --admin (or set M365_REQUEST_ADMIN_SCOPES=1)."
     )
 
 
@@ -190,7 +226,13 @@ def _graph_request(
         if response.status_code == 204:
             return {"success": True}
         if response.is_error:
-            raise RuntimeError(f"MS Graph API Error [{response.status_code}]: {response.text}")
+            hint = ""
+            if response.status_code == 403 or "Authorization_RequestDenied" in response.text:
+                hint = (
+                    " (this typically means the signed-in account is missing an admin-consented "
+                    "scope -- see m365_initiate_login's request_admin_scopes option)"
+                )
+            raise RuntimeError(f"MS Graph API Error [{response.status_code}]: {response.text}{hint}")
         return response.json()
 
 
@@ -242,15 +284,26 @@ def m365_generate_admin_consent_url(
 
 
 @mcp.tool()
-def m365_initiate_login() -> Dict[str, Any]:
-    """Initiate interactive Microsoft 365 OAuth sign-in flow directly via Device Code Flow or Browser Link from Hermes."""
+def m365_initiate_login(request_admin_scopes: bool = False) -> Dict[str, Any]:
+    """Initiate interactive Microsoft 365 OAuth sign-in flow directly via Device Code Flow or Browser Link from Hermes.
+
+    Args:
+        request_admin_scopes: Most users should leave this False -- it requests
+            only the scopes every tenant member can consent to themselves
+            (mail, calendar, chat, files, contacts). Set True only when the
+            signed-in user is a tenant admin and wants directory-wide user
+            search / SharePoint tools too; Microsoft will show an admin-consent
+            prompt for those extra scopes during sign-in.
+    """
     app = _get_msal_app()
-    flow = app.initiate_device_flow(scopes=SCOPES)
+    scopes = ALL_SCOPES if request_admin_scopes else BASE_SCOPES
+    flow = app.initiate_device_flow(scopes=scopes)
     if "user_code" in flow:
         return {
             "status": "pending",
             "device_code": flow["user_code"],
             "verification_url": flow["verification_uri"],
+            "requested_admin_scopes": request_admin_scopes,
             "message": (
                 f"Please open {flow['verification_uri']} in your browser and enter the code: "
                 f"**{flow['user_code']}**\n"
@@ -284,8 +337,25 @@ def m365_get_user_profile() -> Dict[str, Any]:
 
 @mcp.tool()
 def m365_check_admin_status() -> Dict[str, Any]:
-    """Check if the authenticated M365 user has Tenant/Directory Admin permissions."""
-    member_of = _graph_request("GET", "/me/memberOf")
+    """Check if the authenticated M365 user has Tenant/Directory Admin permissions.
+
+    Requires the admin-only scopes (see m365_initiate_login's
+    request_admin_scopes) -- if the current sign-in only has the base
+    scopes, this returns a hint to re-login with elevated scopes instead
+    of a raw Graph permission error.
+    """
+    try:
+        member_of = _graph_request("GET", "/me/memberOf")
+    except RuntimeError as err:
+        if "403" in str(err) or "InsufficientPrivileges" in str(err) or "Authorization_RequestDenied" in str(err):
+            return {
+                "error": "Checking admin status requires elevated (admin) scopes.",
+                "recommendation": (
+                    "Call m365_initiate_login(request_admin_scopes=True) and re-consent "
+                    "(only meaningful if this account actually has tenant admin rights)."
+                ),
+            }
+        raise
     roles = []
     is_admin = False
 
@@ -649,8 +719,11 @@ def m365_list_chats(top: int = 10) -> Dict[str, Any]:
 @mcp.tool()
 def m365_send_chat_message(
     chat_id: str,
-    content: str,
+    content: Optional[str] = None,
     content_type: str = "html",
+    message: Optional[str] = None,
+    body: Optional[str] = None,
+    text: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Send a message to a Microsoft Teams chat.
 
@@ -658,19 +731,26 @@ def m365_send_chat_message(
         chat_id: The Teams chat ID.
         content: Message content (text or HTML).
         content_type: 'html' (default) or 'text'. When 'html', Teams renders rich text, line breaks, and paragraphs.
+        message: Alias for content (accepted so a wrong first guess still succeeds).
+        body: Alias for content (accepted so a wrong first guess still succeeds).
+        text: Alias for content (accepted so a wrong first guess still succeeds).
     """
+    resolved_content = content if content is not None else (message if message is not None else (body if body is not None else text))
+    if resolved_content is None:
+        raise ValueError("m365_send_chat_message requires the message text via 'content' (or its aliases: message/body/text).")
+
     ct = content_type.lower()
-    final_content = content
+    final_content = resolved_content
     if ct == "html":
         import re
-        if not re.search(r"<(p|div|br|ul|ol|li|h[1-6])\b", content, re.IGNORECASE):
-            paragraphs = content.split("\n\n")
+        if not re.search(r"<(p|div|br|ul|ol|li|h[1-6])\b", resolved_content, re.IGNORECASE):
+            paragraphs = resolved_content.split("\n\n")
             formatted_p = []
             for p in paragraphs:
                 p_clean = p.strip().replace("\n", "<br/>")
                 if p_clean:
                     formatted_p.append(f"<p>{p_clean}</p>")
-            final_content = "".join(formatted_p) if formatted_p else content
+            final_content = "".join(formatted_p) if formatted_p else resolved_content
 
     payload = {
         "body": {
@@ -705,7 +785,12 @@ def m365_get_drive_file(file_id: str) -> Dict[str, Any]:
 
 @mcp.tool()
 def m365_search_users(query: str, top: int = 10) -> Dict[str, Any]:
-    """Search tenant user directory by display name, email, or userPrincipalName."""
+    """Search tenant user directory by display name, email, or userPrincipalName.
+
+    Requires admin-consented scopes (default sign-in doesn't request them) --
+    if this fails, call m365_initiate_login(request_admin_scopes=True) first
+    (only meaningful if the signed-in account has tenant admin rights).
+    """
     clean_q = query.replace("'", "''")
     filter_expr = f"startswith(displayName,'{clean_q}') or startswith(mail,'{clean_q}') or startswith(userPrincipalName,'{clean_q}')"
     params = {
@@ -733,7 +818,12 @@ def m365_get_chat_members(chat_id: str) -> Dict[str, Any]:
 
 @mcp.tool()
 def m365_get_or_create_direct_chat(user_id_or_upn: str) -> Dict[str, Any]:
-    """Get or create a 1:1 Teams direct chat with a tenant user by ID or email/UPN."""
+    """Get or create a 1:1 Teams direct chat with a tenant user by ID or email/UPN.
+
+    Looking up another user by email/UPN requires admin-consented scopes --
+    if this fails, call m365_initiate_login(request_admin_scopes=True) first,
+    or pass the other user's Graph user ID directly instead of their email.
+    """
     me_profile = _graph_request("GET", "/me")
     my_id = me_profile.get("id")
 
@@ -778,7 +868,12 @@ def m365_list_contacts(top: int = 20, search: Optional[str] = None) -> Dict[str,
 
 @mcp.tool()
 def m365_list_sharepoint_sites(search: Optional[str] = None, top: int = 10) -> Dict[str, Any]:
-    """List or search SharePoint sites in the tenant."""
+    """List or search SharePoint sites in the tenant.
+
+    Requires admin-consented scopes (default sign-in doesn't request them) --
+    if this fails, call m365_initiate_login(request_admin_scopes=True) first
+    (only meaningful if the signed-in account has tenant admin rights).
+    """
     if search:
         endpoint = f"/sites?search={search}"
     else:
