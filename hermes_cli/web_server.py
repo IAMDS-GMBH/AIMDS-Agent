@@ -2002,6 +2002,37 @@ def _spawn_gateway_restart() -> Tuple[subprocess.Popen, bool]:
     return _spawn_hermes_action(["gateway", "restart"], "gateway-restart"), False
 
 
+def _restart_gateway_if_running() -> dict[str, Any]:
+    """Best-effort gateway restart, but only if a gateway is actually running.
+
+    The dashboard/web_server process and the ``hermes gateway`` process are
+    separate Python processes with independent ``tools.mcp_tool`` module
+    state -- reconnecting an MCP server here only affects this process. Real
+    chat sessions (Telegram, Slack, CLI, etc.) run inside the gateway, so its
+    MCP connections stay stale after an install/reconfigure until it's
+    restarted. Skip spawning a restart when no gateway is running at all
+    (nothing to pick up the change, and we shouldn't start one that wasn't
+    running before just because an MCP was installed).
+    """
+    try:
+        if get_running_pid() is None:
+            return {"gateway_restart_started": False}
+    except Exception:
+        return {"gateway_restart_started": False}
+
+    try:
+        proc, reused = _spawn_gateway_restart()
+    except Exception as exc:
+        _log.debug("Post-install gateway restart failed to spawn: %s", exc)
+        return {"gateway_restart_started": False, "gateway_restart_error": str(exc)}
+
+    return {
+        "gateway_restart_started": True,
+        "gateway_restart_pid": proc.pid,
+        "gateway_restart_reused": reused,
+    }
+
+
 def _restart_gateway_after_webhook_enable() -> dict[str, Any]:
     """Best-effort gateway restart after enabling the webhook platform."""
     try:
@@ -2433,6 +2464,7 @@ async def get_action_status(name: str, lines: int = 200):
                     await asyncio.to_thread(discover_mcp_tools)
                 except Exception:
                     _log.debug("Post-install MCP tool discovery failed", exc_info=True)
+                _restart_gateway_if_running()
 
     return {
         "name": name,
@@ -8060,17 +8092,21 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
         _log.exception("install_mcp_catalog_entry failed")
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # Hot-reload the new server's tools into this running process immediately
-    # -- without this, an install via the catalog wrote the mcp_servers.<name>
-    # config block correctly but the already-running dashboard/gateway
-    # session never picked up its tools until Hermes was fully restarted.
+    # Hot-reload the server's tools into this running process immediately.
+    # Use reconnect_mcp_server (not the plain discover_mcp_tools) because
+    # discovery is intentionally idempotent for already-connected server
+    # names -- a *re*install that changes an existing server's transport/URL
+    # (e.g. GithubMCP moving from stdio to a remote http endpoint) would
+    # otherwise silently keep using the stale connection until the whole
+    # process was restarted, even though config.yaml was already correct.
     try:
-        from tools.mcp_tool import discover_mcp_tools
-        await asyncio.to_thread(discover_mcp_tools)
+        from tools.mcp_tool import reconnect_mcp_server
+        await asyncio.to_thread(reconnect_mcp_server, name)
     except Exception:
-        _log.debug("Post-install MCP tool discovery failed", exc_info=True)
+        _log.debug("Post-install MCP reconnect failed", exc_info=True)
 
-    return {"ok": True, "name": name, "background": False}
+    restart_result = _restart_gateway_if_running()
+    return {"ok": True, "name": name, "background": False, **restart_result}
 
 
 # Register the mcp-install action log so /api/actions/mcp-install/status works.

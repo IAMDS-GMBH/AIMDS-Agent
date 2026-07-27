@@ -160,6 +160,85 @@ class TestMcpEndpoints:
         assert r.status_code == 200, r.text
         assert get_env_value("JIRA_PAT") is None
 
+    def test_catalog_install_reconnects_server_live(self):
+        """Regression: a synchronous catalog install (no git-bootstrap step)
+        must reconnect the server in this process immediately, using the
+        dedicated reconnect path -- not the plain discover call, which is a
+        no-op for a server name that's already connected (e.g. reinstalling
+        AtlassianMCP after changing its Cloud/Server auth mode)."""
+        from unittest.mock import patch
+
+        with patch(
+            "tools.mcp_tool.reconnect_mcp_server", return_value=["mcp_atlassian_tool"]
+        ) as mock_reconnect:
+            r = self.client.post(
+                "/api/mcp/catalog/install",
+                json={
+                    "name": "AtlassianMCP",
+                    "env": {
+                        "JIRA_URL": "https://example.atlassian.net",
+                        "JIRA_API_TOKEN": "tok_xyz",
+                    },
+                },
+            )
+        assert r.status_code == 200, r.text
+        mock_reconnect.assert_called_once_with("AtlassianMCP")
+
+    def test_catalog_install_skips_gateway_restart_when_not_running(self):
+        """No gateway process running -> don't spawn one just because an MCP
+        was installed; the response must say so instead of silently lying
+        about a restart that never happened."""
+        from unittest.mock import patch
+
+        with patch("hermes_cli.web_server.get_running_pid", return_value=None), \
+             patch("tools.mcp_tool.reconnect_mcp_server", return_value=[]):
+            r = self.client.post(
+                "/api/mcp/catalog/install",
+                json={
+                    "name": "AtlassianMCP",
+                    "env": {
+                        "JIRA_URL": "https://example.atlassian.net",
+                        "JIRA_API_TOKEN": "tok_xyz",
+                    },
+                },
+            )
+        assert r.status_code == 200, r.text
+        assert r.json()["gateway_restart_started"] is False
+
+    def test_catalog_install_restarts_gateway_when_running(self):
+        """Regression: an already-running gateway is a *separate* process
+        with its own tools.mcp_tool module state -- reconnecting the server
+        in this (dashboard) process alone never reaches it, so real chat
+        sessions kept talking to the stale MCP connection until someone
+        manually restarted the gateway. Installing/reconfiguring an MCP must
+        kick off that restart automatically."""
+        from unittest.mock import MagicMock, patch
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 4242
+
+        with patch("hermes_cli.web_server.get_running_pid", return_value=12345), \
+             patch(
+                 "hermes_cli.web_server._spawn_gateway_restart",
+                 return_value=(fake_proc, False),
+             ) as mock_spawn, \
+             patch("tools.mcp_tool.reconnect_mcp_server", return_value=[]):
+            r = self.client.post(
+                "/api/mcp/catalog/install",
+                json={
+                    "name": "AtlassianMCP",
+                    "env": {
+                        "JIRA_URL": "https://example.atlassian.net",
+                        "JIRA_API_TOKEN": "tok_xyz",
+                    },
+                },
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["gateway_restart_started"] is True
+        assert body["gateway_restart_pid"] == 4242
+        mock_spawn.assert_called_once()
+
 
 
 class TestCredentialPoolEndpoints:

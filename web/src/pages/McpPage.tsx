@@ -242,6 +242,11 @@ export default function McpPage() {
         setInstallEntry(null);
         setInstallEnv({});
         await Promise.all([loadServers(), loadCatalog()]);
+        if (res.gateway_restart_started) {
+          setRestartNote(
+            "Gateway is restarting to pick up the new/updated MCP server…",
+          );
+        }
       } catch (e) {
         showToast(`Failed to install: ${e}`, "error");
       } finally {

@@ -4289,3 +4289,92 @@ class TestCleanMcpArgsStringCoercion:
         cleaned = _clean_mcp_args(server, "unknown", {"fields": {"a": 1}})
 
         assert cleaned["fields"] == {"a": 1}
+
+
+# ---------------------------------------------------------------------------
+# reconnect_mcp_server
+# ---------------------------------------------------------------------------
+
+
+class TestReconnectMcpServer:
+    """A catalog re-install that changes an existing server's config (e.g.
+    GithubMCP moving from a stdio npx package to a remote http endpoint)
+    must actually reconnect live -- discover_mcp_tools()/register_mcp_servers()
+    are intentionally idempotent for already-connected names, so without a
+    dedicated reconnect path the stale connection silently stuck around
+    until the whole process was restarted."""
+
+    def test_mcp_not_available_returns_empty(self):
+        from tools.mcp_tool import reconnect_mcp_server
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", False):
+            assert reconnect_mcp_server("srv") == []
+
+    def test_shuts_down_existing_connection_before_reconnecting(self):
+        from tools.mcp_tool import reconnect_mcp_server, _servers
+
+        mock_server = _make_mock_server("existing")
+        _servers["existing"] = mock_server
+
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._mcp_loop", None), \
+                 patch("tools.mcp_tool._load_mcp_config", return_value={"existing": {"url": "https://new.example.com/mcp"}}), \
+                 patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp_existing_tool"]) as mock_register:
+                result = reconnect_mcp_server("existing")
+
+            # Popped out of the registry so register_mcp_servers treats it as new.
+            assert "existing" not in _servers
+            mock_register.assert_called_once_with(
+                {"existing": {"url": "https://new.example.com/mcp"}}
+            )
+            assert result == ["mcp_existing_tool"]
+        finally:
+            _servers.pop("existing", None)
+
+    def test_schedules_shutdown_when_loop_is_running(self):
+        """When the MCP event loop is actually alive, the stale server's
+        shutdown() must be scheduled onto it before reconnecting -- otherwise
+        the old session (process/socket) leaks."""
+        from tools.mcp_tool import reconnect_mcp_server, _servers
+
+        mock_server = _make_mock_server("existing")
+        _servers["existing"] = mock_server
+        fake_loop = MagicMock()
+        fake_loop.is_running.return_value = True
+        fake_future = MagicMock()
+        fake_future.result.return_value = None
+
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._mcp_loop", fake_loop), \
+                 patch("tools.mcp_tool._load_mcp_config", return_value={"existing": {"url": "https://new.example.com/mcp"}}), \
+                 patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp_existing_tool"]), \
+                 patch("agent.async_utils.safe_schedule_threadsafe", return_value=fake_future) as mock_schedule:
+                reconnect_mcp_server("existing")
+
+            mock_schedule.assert_called_once()
+        finally:
+            _servers.pop("existing", None)
+
+    def test_reconnects_server_that_was_not_connected(self):
+        from tools.mcp_tool import reconnect_mcp_server, _servers
+
+        _servers.pop("fresh", None)
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._load_mcp_config", return_value={"fresh": {"command": "npx"}}), \
+             patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp_fresh_tool"]) as mock_register:
+            result = reconnect_mcp_server("fresh")
+
+        mock_register.assert_called_once_with({"fresh": {"command": "npx"}})
+        assert result == ["mcp_fresh_tool"]
+
+    def test_returns_existing_tools_when_server_no_longer_configured(self):
+        from tools.mcp_tool import reconnect_mcp_server
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._load_mcp_config", return_value={}), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=["mcp_other_tool"]):
+            result = reconnect_mcp_server("removed")
+
+        assert result == ["mcp_other_tool"]

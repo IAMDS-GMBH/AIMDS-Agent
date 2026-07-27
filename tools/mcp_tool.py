@@ -4640,6 +4640,65 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     return _existing_tool_names()
 
 
+def reconnect_mcp_server(name: str) -> List[str]:
+    """Force a live reconnect of a single already-configured MCP server.
+
+    ``discover_mcp_tools``/``register_mcp_servers`` are intentionally
+    idempotent for already-connected server names, so re-running an install
+    (e.g. the catalog install flow changing an existing server's transport
+    from stdio to http, or updating its URL/auth) silently kept using the
+    *old* connection until the whole process was restarted -- the new
+    config.yaml block was correct but never took effect live.
+
+    Pops the server out of the connection registry (shutting the old session
+    down first, if one exists) and re-registers it from the freshly-read
+    config, so it reconnects with whatever changed. Safe to call for a
+    server that isn't currently connected (acts like a plain connect).
+
+    Returns:
+        List of all registered MCP tool names after reconnecting.
+    """
+    if not _MCP_AVAILABLE:
+        return []
+
+    with _lock:
+        existing = _servers.pop(name, None)
+
+    if existing is not None:
+
+        async def _do_shutdown():
+            try:
+                await existing.shutdown()
+            except Exception:
+                logger.debug("Error shutting down MCP server '%s' for reconnect", name, exc_info=True)
+
+        with _lock:
+            loop = _mcp_loop
+        if loop is not None and loop.is_running():
+            from agent.async_utils import safe_schedule_threadsafe
+
+            fut = safe_schedule_threadsafe(
+                _do_shutdown(),
+                loop,
+                logger=logger,
+                log_message=f"MCP reconnect: shutdown of '{name}' failed to schedule",
+            )
+            if fut is not None:
+                try:
+                    fut.result(timeout=10)
+                except Exception as exc:
+                    logger.debug("MCP reconnect: shutdown of '%s' errored: %s", name, exc)
+
+    servers = _load_mcp_config()
+    cfg = servers.get(name)
+    if cfg is None:
+        # Server was removed/renamed since the caller's request -- nothing
+        # left to reconnect to.
+        return _existing_tool_names()
+
+    return register_mcp_servers({name: cfg})
+
+
 def discover_mcp_tools() -> List[str]:
     """Entry point: load config, connect to MCP servers, register tools.
 

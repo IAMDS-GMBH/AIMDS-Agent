@@ -895,14 +895,19 @@ export const api = {
     env: Record<string, string> = {},
     enable = true,
   ) =>
-    fetchJSON<{ ok: boolean; name: string; background: boolean; action?: string }>(
-      "/api/mcp/catalog/install",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, env, enable }),
-      },
-    ),
+    fetchJSON<{
+      ok: boolean;
+      name: string;
+      background: boolean;
+      action?: string;
+      gateway_restart_started?: boolean;
+      gateway_restart_pid?: number;
+      gateway_restart_reused?: boolean;
+    }>("/api/mcp/catalog/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, env, enable }),
+    }),
 
   // ── Admin: Pairing ──────────────────────────────────────────────────
   getPairing: () => fetchJSON<PairingResponse>("/api/pairing"),
