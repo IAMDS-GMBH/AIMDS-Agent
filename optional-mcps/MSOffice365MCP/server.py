@@ -199,10 +199,13 @@ def _get_access_token() -> str:
 
     # 3. Running inside stdio MCP without cached token -> Return clear actionable error rather than blocking stdio!
     raise RuntimeError(
-        "M365 authentication required. Please run: "
-        "'<hermes-install-dir>/.venv/bin/python optional-mcps/MSOffice365MCP/server.py --login' "
-        "in your terminal once to complete M365 sign-in. Tenant admins who want directory "
-        "search / SharePoint tools too can add --admin (or set M365_REQUEST_ADMIN_SCOPES=1)."
+        "M365 authentication required. Call the m365_initiate_login tool "
+        "(then m365_complete_login with the returned device code) to sign "
+        "in interactively, or tell the user to open Hermes: Einstellungen "
+        "-> Anbieter -> Konten -> 'Microsoft 365 (OAuth)' -> Connect, and "
+        "follow the printed device-code instructions there. Tenant admins "
+        "who also want directory search / SharePoint tools can pass "
+        "request_admin_scopes=True to m365_initiate_login."
     )
 
 

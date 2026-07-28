@@ -3974,11 +3974,27 @@ _MCP_TOOL_DESCRIPTION_NOTES: Dict[Tuple[str, str], str] = {
         " NOTE: this (plus the companion m365_complete_login) is the "
         "CURRENT and ONLY supported way to authenticate this server — a "
         "Microsoft device-code flow (opens a microsoft.com/devicelogin-"
-        "style URL + code), triggered from the Hermes dashboard's "
-        "'Microsoft 365 (OAuth)' button, `hermes mcp install "
-        "MSOffice365MCP`, or this tool itself. Never ask the user to "
-        "manually obtain/paste a Microsoft access token — that is not "
-        "supported; call this tool instead."
+        "style URL + code), triggered from this tool itself OR from the "
+        "Hermes dashboard: Einstellungen -> Anbieter -> Konten -> "
+        "'Microsoft 365 (OAuth)' -> Connect. If a tool call fails with an "
+        "authentication error, call this tool yourself AND tell the user "
+        "they can alternatively connect there and follow the on-screen "
+        "device-code instructions. Never ask the user to manually obtain/"
+        "paste a Microsoft access token — that is not supported."
+    ),
+    ("GithubMCP", "search_repositories"): (
+        " NOTE: if this (or any other GithubMCP tool) fails with an "
+        "authentication/authorization error, tell the user to open Hermes: "
+        "Einstellungen -> Anbieter -> Konten -> 'GitHub (OAuth)' -> "
+        "Connect, and follow the on-screen instructions there rather than "
+        "asking them to paste a token manually."
+    ),
+    ("GithubMCP", "list_issues"): (
+        " NOTE: if this (or any other GithubMCP tool) fails with an "
+        "authentication/authorization error, tell the user to open Hermes: "
+        "Einstellungen -> Anbieter -> Konten -> 'GitHub (OAuth)' -> "
+        "Connect, and follow the on-screen instructions there rather than "
+        "asking them to paste a token manually."
     ),
     ("AtlassianMCP", "jira_add_worklog"): (
         " NOTE: always pass an explicit `started` timestamp reflecting when "

@@ -5358,11 +5358,12 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                 token = (get_env_value("M365_ACCESS_TOKEN") or "").strip()
             except Exception:
                 token = os.getenv("M365_ACCESS_TOKEN", "").strip()
+            preview = _truncate_token(token)
             return {
                 "logged_in": bool(token),
                 "source": "microsoft_msal",
-                "source_label": "M365_ACCESS_TOKEN",
-                "token_preview": _truncate_token(token),
+                "source_label": f"Microsoft 365 Account Token ({preview})" if token else "M365_ACCESS_TOKEN",
+                "token_preview": preview,
                 "expires_at": None,
                 "has_refresh_token": False,
             }
