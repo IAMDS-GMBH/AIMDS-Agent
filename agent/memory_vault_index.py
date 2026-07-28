@@ -416,14 +416,18 @@ class VaultMetaIndex:
         return count
 
     def sync_mcp_tools(self) -> int:
-        """Scan and index all connected MCP tools into SQLite vector meta-index."""
+        """Scan and index all connected MCP servers and individual MCP tools into SQLite vector meta-index."""
         try:
-            from tools.mcp_tool import get_mcp_server_metadata
+            from tools.mcp_tool import get_mcp_server_metadata, get_all_mcp_tools_metadata
             mcp_meta = get_mcp_server_metadata()
+            detailed_tools = get_all_mcp_tools_metadata()
         except Exception:
             return 0
 
         count = 0
+        now = int(time.time())
+
+        # 1. Server-level stubs
         for server_name, meta in mcp_meta.items():
             if not isinstance(meta, dict):
                 continue
@@ -440,14 +444,44 @@ class VaultMetaIndex:
                 "slug": slug,
                 "path": "",
                 "scope": "mcp",
-                "type": "mcp_tool",
+                "type": "mcp_server",
                 "title": title,
                 "content": content,
                 "tags": keywords + ["mcp", server_name],
-                "updated_at": int(time.time()),
+                "updated_at": now,
+                "source": "mcp",
             }
             self.sync_record(record, rebuild_fts=False)
             count += 1
+
+        # 2. Fine-grained individual MCP tools (AIMDS, M365, Atlassian, GitHub, etc.)
+        for t in detailed_tools:
+            s_name = str(t.get("server_name") or "").strip()
+            t_name = str(t.get("tool_name") or "").strip()
+            reg_name = str(t.get("registered_name") or f"mcp_{s_name}_{t_name}").strip()
+            desc = str(t.get("description") or "").strip()
+
+            slug = f"mcp_tool:{reg_name}"
+            doc_id = slug
+            title = f"MCP Tool: {reg_name} ({s_name})"
+            content = f"Tool: {reg_name}\nServer: {s_name}\nName: {t_name}\nDescription: {desc}".strip()
+
+            keywords = [s_name, t_name, "mcp", "tool"]
+            record = {
+                "id": doc_id,
+                "slug": slug,
+                "path": "",
+                "scope": "mcp",
+                "type": "mcp_tool",
+                "title": title,
+                "content": content,
+                "tags": keywords,
+                "updated_at": now,
+                "source": "mcp",
+            }
+            self.sync_record(record, rebuild_fts=False)
+            count += 1
+
         return count
 
     def sync_mirror_store(self, jsonl_path: Optional[Path] = None) -> int:

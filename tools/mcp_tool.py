@@ -4441,6 +4441,31 @@ def get_mcp_server_metadata() -> Dict[str, Dict[str, Any]]:
         return {k: dict(v) for k, v in _MCP_SERVER_METADATA.items()}
 
 
+def get_all_mcp_tools_metadata() -> List[Dict[str, Any]]:
+    """Return detailed metadata for all registered tools across all connected MCP servers."""
+    tools_meta: List[Dict[str, Any]] = []
+    with _lock:
+        for server_name, task in _servers.items():
+            if not task or not hasattr(task, "_tools"):
+                continue
+            for mcp_tool in getattr(task, "_tools", []):
+                tool_name = getattr(mcp_tool, "name", "")
+                if not tool_name:
+                    continue
+                safe_server = sanitize_mcp_name_component(server_name)
+                registered_name = f"mcp_{safe_server}_{sanitize_mcp_name_component(tool_name)}"
+                desc = getattr(mcp_tool, "description", "") or ""
+                schema = getattr(mcp_tool, "inputSchema", {}) or {}
+                tools_meta.append({
+                    "server_name": server_name,
+                    "tool_name": tool_name,
+                    "registered_name": registered_name,
+                    "description": desc,
+                    "input_schema": schema if isinstance(schema, dict) else {},
+                })
+    return tools_meta
+
+
 def _select_utility_schemas(
     server_name: str, server: MCPServerTask, config: dict
 ) -> List[dict]:

@@ -121,18 +121,35 @@ def test_sync_mcp_tools(monkeypatch):
             }
         }
 
+        fake_detailed_tools = [
+            {
+                "server_name": "MSOffice365MCP",
+                "tool_name": "m365_get_events",
+                "registered_name": "m365_get_events",
+                "description": "Fetch upcoming calendar events from Outlook Graph API",
+            }
+        ]
+
         def _fake_get_mcp_meta():
             return fake_mcp_meta
 
+        def _fake_get_detailed_tools():
+            return fake_detailed_tools
+
         monkeypatch.setattr("tools.mcp_tool.get_mcp_server_metadata", _fake_get_mcp_meta)
+        monkeypatch.setattr("tools.mcp_tool.get_all_mcp_tools_metadata", _fake_get_detailed_tools)
 
         index = VaultMetaIndex(db_path=db_path)
         count = index.sync_mcp_tools()
-        assert count == 1
+        assert count == 2
 
         results = index.hybrid_search("Outlook Calendar Mail")
         assert len(results) >= 1
-        assert results[0]["slug"] == "mcp:MSOffice365MCP"
+        assert any(r["slug"] == "mcp:MSOffice365MCP" for r in results)
+
+        tool_results = index.hybrid_search("calendar events Outlook Graph")
+        assert len(tool_results) >= 1
+        assert any(r["slug"] == "mcp_tool:m365_get_events" for r in tool_results)
 
 
 def test_sync_workspace_vault_indexes_real_obsidian_notes():
