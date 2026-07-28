@@ -50,6 +50,16 @@ def _cosine_similarity(v1: Dict[str, float], v2: Dict[str, float]) -> float:
     return max(0.0, min(1.0, dot))
 
 
+# Directory names skipped when walking the workspace/vault root in
+# sync_workspace_vault() -- version-control/dependency/build noise that never
+# contains genuine vault notes, plus toolchain caches that would otherwise be
+# walked on every incremental sync for no benefit.
+_VAULT_SCAN_EXCLUDED_DIRS = frozenset({
+    ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv",
+    "dist", "build", ".pytest_cache", ".mypy_cache", ".tox", ".idea", ".vscode",
+})
+
+
 class VaultMetaIndex:
     """Local SQLite Meta-Index providing hybrid BM25 + Vector recall over memory stubs."""
 
@@ -82,6 +92,15 @@ class VaultMetaIndex:
                     vector_json TEXT
                 )
             """)
+            # Migration: tag each row with its sync origin ("memory-mirror",
+            # "vault", "skill", "mcp", ...) so callers (e.g. the incremental
+            # workspace-vault scan) can filter/compare without re-parsing
+            # every record. ALTER TABLE ADD COLUMN has no IF NOT EXISTS form
+            # in SQLite, so guard against re-running on an already-migrated DB.
+            try:
+                conn.execute("ALTER TABLE doc_meta ADD COLUMN source TEXT")
+            except sqlite3.OperationalError:
+                pass
             # Check if FTS table exists
             try:
                 conn.execute("""
@@ -113,6 +132,7 @@ class VaultMetaIndex:
         updated_at = int(record.get("updated_at") or time.time())
         doc_id = str(record.get("id") or slug)
         doc_path = str(record.get("path") or "")
+        source = str(record.get("source") or "").strip() or None
 
         full_text = f"{title} {content} {tags_str} {doc_type}"
         vec = _build_term_vector(full_text)
@@ -120,8 +140,8 @@ class VaultMetaIndex:
 
         with self._get_connection() as conn:
             conn.execute("""
-                INSERT INTO doc_meta (id, slug, path, scope, type, title, content, tags, updated_at, vector_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO doc_meta (id, slug, path, scope, type, title, content, tags, updated_at, vector_json, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(slug) DO UPDATE SET
                     title=excluded.title,
                     content=excluded.content,
@@ -130,8 +150,9 @@ class VaultMetaIndex:
                     vector_json=excluded.vector_json,
                     path=excluded.path,
                     scope=excluded.scope,
-                    type=excluded.type
-            """, (doc_id, slug, doc_path, scope, doc_type, title, content, tags_str, updated_at, vec_json))
+                    type=excluded.type,
+                    source=excluded.source
+            """, (doc_id, slug, doc_path, scope, doc_type, title, content, tags_str, updated_at, vec_json, source))
 
             # Sync FTS table
             try:
@@ -186,6 +207,80 @@ class VaultMetaIndex:
                 count += 1
             except Exception:
                 continue
+        return count
+
+    def sync_workspace_vault(self, workspace_dir: Optional[Path] = None) -> int:
+        """Scan and index arbitrary markdown notes from the resolved local
+        workspace/vault root (e.g. the user's real Obsidian vault content),
+        so hybrid_search()/build_recall_block() can actually surface them
+        instead of the model falling back to blind Read File exploration.
+
+        Deliberately scoped to ONLY the resolved workspace root (never the
+        whole home/Documents tree) so unrelated personal files elsewhere are
+        never scanned or embedded. Runs incrementally: files whose mtime is
+        unchanged since the last sync are skipped entirely, so this stays
+        cheap to call on every turn even for a large vault.
+
+        The `HermesMemory` subfolder is skipped here since it's a symlink
+        into `~/.hermes/memories`, already covered by sync_filesystem_vault().
+        """
+        if workspace_dir is None:
+            try:
+                from agent.runtime_cwd import resolve_agent_cwd
+                workspace_dir = resolve_agent_cwd()
+            except Exception:
+                return 0
+        if not workspace_dir or not workspace_dir.exists():
+            return 0
+
+        # Previously-indexed vault-doc mtimes, for the incremental skip below.
+        existing: Dict[str, int] = {}
+        try:
+            with self._get_connection() as conn:
+                rows = conn.execute(
+                    "SELECT slug, updated_at FROM doc_meta WHERE source = 'vault'"
+                ).fetchall()
+            existing = {row["slug"]: int(row["updated_at"] or 0) for row in rows}
+        except sqlite3.OperationalError:
+            existing = {}
+
+        count = 0
+        for p in workspace_dir.rglob("*.md"):
+            try:
+                rel_parts = p.relative_to(workspace_dir).parts[:-1]
+            except ValueError:
+                continue
+            if any(part in _VAULT_SCAN_EXCLUDED_DIRS or part == "HermesMemory" for part in rel_parts):
+                continue
+            try:
+                mtime = int(p.stat().st_mtime)
+            except OSError:
+                continue
+
+            slug = f"vault:{p.relative_to(workspace_dir).as_posix()}"
+            if existing.get(slug) == mtime:
+                continue  # unchanged since the last sync -- skip re-embedding
+
+            try:
+                text = p.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+
+            title = p.stem.replace("-", " ").replace("_", " ").strip() or p.name
+            record = {
+                "id": str(p),
+                "slug": slug,
+                "path": str(p),
+                "scope": "vault",
+                "type": "vault_note",
+                "title": title,
+                "content": text.strip(),
+                "tags": ["vault"],
+                "updated_at": mtime,
+                "source": "vault",
+            }
+            self.sync_record(record)
+            count += 1
         return count
 
     def sync_skills_vault(self, skills_dir: Optional[Path] = None) -> int:
@@ -266,11 +361,16 @@ class VaultMetaIndex:
         return count
 
     def sync_mirror_store(self, jsonl_path: Optional[Path] = None) -> int:
-        """Sync all records from MCP_MIRROR_MEMORY.jsonl, filesystem vault, skills, and MCP tools into SQLite."""
+        """Sync all records from MCP_MIRROR_MEMORY.jsonl, filesystem vault, workspace
+        vault notes, skills, and MCP tools into SQLite."""
         if jsonl_path is None:
             jsonl_path = get_hermes_home() / "memories" / "MCP_MIRROR_MEMORY.jsonl"
 
         count = self.sync_filesystem_vault()
+        try:
+            count += self.sync_workspace_vault()
+        except Exception:
+            pass
         count += self.sync_skills_vault()
         count += self.sync_mcp_tools()
         if not jsonl_path.exists():

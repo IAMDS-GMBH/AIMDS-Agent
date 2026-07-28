@@ -135,4 +135,128 @@ def test_sync_mcp_tools(monkeypatch):
         assert results[0]["slug"] == "mcp:MSOffice365MCP"
 
 
+def test_sync_workspace_vault_indexes_real_obsidian_notes():
+    """The user's actual Obsidian vault content (arbitrary .md notes outside
+    HermesMemory) must be searchable, not just Hermes-authored memory notes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        db_path = tmp_path / "vault_index.sqlite"
+        vault_dir = tmp_path / "AIMDS-Suite-Vault"
+        (vault_dir / "Projects").mkdir(parents=True, exist_ok=True)
 
+        note = vault_dir / "Projects" / "eco-tickets-uebersicht.md"
+        note.write_text("ECO Tickets Uebersicht: offene Jira Tickets fuer das ECO Projekt.", encoding="utf-8")
+
+        index = VaultMetaIndex(db_path=db_path)
+        count = index.sync_workspace_vault(workspace_dir=vault_dir)
+        assert count == 1
+
+        results = index.hybrid_search("ECO Tickets Jira")
+        assert len(results) >= 1
+        assert results[0]["slug"] == "vault:Projects/eco-tickets-uebersicht.md"
+        assert results[0]["type"] == "vault_note"
+
+
+def test_sync_workspace_vault_skips_hermes_memory_and_noise_dirs():
+    """HermesMemory is already covered by sync_filesystem_vault(); re-indexing
+    it here would double-count records. Noise dirs (node_modules/.git/...)
+    should never be walked either."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        db_path = tmp_path / "vault_index.sqlite"
+        vault_dir = tmp_path / "AIMDS-Suite-Vault"
+        (vault_dir / "HermesMemory").mkdir(parents=True, exist_ok=True)
+        (vault_dir / "node_modules" / "pkg").mkdir(parents=True, exist_ok=True)
+        (vault_dir / "real-note-dir").mkdir(parents=True, exist_ok=True)
+
+        (vault_dir / "HermesMemory" / "mirrored.md").write_text("mirrored memory note", encoding="utf-8")
+        (vault_dir / "node_modules" / "pkg" / "readme.md").write_text("dependency noise", encoding="utf-8")
+        (vault_dir / "real-note-dir" / "keep-me.md").write_text("genuine vault content", encoding="utf-8")
+
+        index = VaultMetaIndex(db_path=db_path)
+        count = index.sync_workspace_vault(workspace_dir=vault_dir)
+        assert count == 1
+
+        results = index.hybrid_search("genuine vault content")
+        assert len(results) == 1
+        assert results[0]["slug"] == "vault:real-note-dir/keep-me.md"
+
+
+def test_sync_workspace_vault_scoped_to_vault_root_not_whole_documents_tree():
+    """Sibling directories outside the resolved workspace/vault root must
+    never be scanned -- the user may keep unrelated private files elsewhere
+    in Documents that must not be indexed/embedded."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        db_path = tmp_path / "vault_index.sqlite"
+        documents_dir = tmp_path / "Documents"
+        vault_dir = documents_dir / "AIMDS-Suite-Vault"
+        other_dir = documents_dir / "Private-Finances"
+        vault_dir.mkdir(parents=True, exist_ok=True)
+        other_dir.mkdir(parents=True, exist_ok=True)
+
+        (vault_dir / "vault-note.md").write_text("legit vault note content", encoding="utf-8")
+        (other_dir / "private-note.md").write_text("banking password codes xyzzy", encoding="utf-8")
+
+        index = VaultMetaIndex(db_path=db_path)
+        count = index.sync_workspace_vault(workspace_dir=vault_dir)
+        assert count == 1
+
+        results = index.hybrid_search("banking password codes xyzzy")
+        assert len(results) == 0
+
+
+def test_sync_workspace_vault_incremental_skips_unchanged_files(monkeypatch):
+    """Re-syncing without any file changes must not re-process (re-embed)
+    unchanged notes, so calling this every turn stays cheap on a large vault."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        db_path = tmp_path / "vault_index.sqlite"
+        vault_dir = tmp_path / "vault"
+        vault_dir.mkdir(parents=True, exist_ok=True)
+        (vault_dir / "note.md").write_text("first version of the note", encoding="utf-8")
+
+        index = VaultMetaIndex(db_path=db_path)
+        first_count = index.sync_workspace_vault(workspace_dir=vault_dir)
+        assert first_count == 1
+
+        calls = []
+        original_sync_record = index.sync_record
+
+        def _tracking_sync_record(record):
+            calls.append(record)
+            return original_sync_record(record)
+
+        monkeypatch.setattr(index, "sync_record", _tracking_sync_record)
+
+        second_count = index.sync_workspace_vault(workspace_dir=vault_dir)
+        assert second_count == 0
+        assert calls == []  # no re-embedding of the unchanged file
+
+
+def test_sync_workspace_vault_reindexes_changed_files():
+    """A file whose content/mtime changed since the last sync must be
+    re-embedded so search results reflect the latest content."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        db_path = tmp_path / "vault_index.sqlite"
+        vault_dir = tmp_path / "vault"
+        vault_dir.mkdir(parents=True, exist_ok=True)
+        note = vault_dir / "note.md"
+        note.write_text("original content about apples", encoding="utf-8")
+
+        index = VaultMetaIndex(db_path=db_path)
+        index.sync_workspace_vault(workspace_dir=vault_dir)
+
+        import os
+        import time as _time
+        _time.sleep(1.1)  # ensure a distinct integer mtime
+        note.write_text("updated content about oranges", encoding="utf-8")
+        os.utime(note, None)
+
+        count = index.sync_workspace_vault(workspace_dir=vault_dir)
+        assert count == 1
+
+        results = index.hybrid_search("oranges")
+        assert len(results) >= 1
+        assert "oranges" in results[0]["content"]

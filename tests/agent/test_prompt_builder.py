@@ -4,6 +4,7 @@ import builtins
 import importlib
 import logging
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -1366,6 +1367,36 @@ class TestBuildRemoteMcpMemoryPrompt:
         # suppressed by the stronger "prefer local" framing.
         assert "durable user profile facts" in text
         assert "standing rules/preferences, contacts" in text
+
+    def test_includes_resolved_workspace_path_and_search_tool_guidance(self, monkeypatch):
+        """The prompt must state the *actual* resolved workspace/vault path
+        (never a hardcoded guess) and point at search_tool/read_file, so the
+        model stops inventing nonexistent paths (e.g. `.brain`) instead of
+        searching the real local vault."""
+        monkeypatch.setitem(
+            build_remote_mcp_memory_prompt.__globals__,
+            "resolve_agent_cwd",
+            lambda: Path("/tmp/fake-vault-root"),
+        )
+        text = build_remote_mcp_memory_prompt({"memory_context"})
+        assert "/tmp/fake-vault-root" in text
+        assert "search_tool" in text
+        assert "read_file" in text
+        assert ".brain" in text  # explicit anti-hallucination example
+
+    def test_omits_workspace_path_line_when_resolution_fails(self, monkeypatch):
+        """If cwd resolution throws for any reason, degrade gracefully instead
+        of breaking the whole memory prompt."""
+
+        def _boom():
+            raise OSError("no cwd")
+
+        monkeypatch.setitem(
+            build_remote_mcp_memory_prompt.__globals__, "resolve_agent_cwd", _boom
+        )
+        text = build_remote_mcp_memory_prompt({"memory_context"})
+        assert "search_tool" not in text
+        assert "memory_context" in text
 
 
 class TestBuildOutlookSignatureGuidance:

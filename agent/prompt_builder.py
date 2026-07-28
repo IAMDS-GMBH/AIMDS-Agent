@@ -1641,6 +1641,16 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
     skill_read_tool_name = _resolve_memory_skill_read_tool_name(names)
     memory_save_tool_name = _resolve_memory_save_tool_name(names)
     has_clarify = "clarify" in names
+    try:
+        workspace_path = str(resolve_agent_cwd())
+    except Exception:
+        workspace_path = ""
+    workspace_line = (
+        f"The local workspace/vault root is `{workspace_path}`. Use `search_tool`/`read_file` on that path to look "
+        "things up; never invent or guess paths (e.g. `.brain`) that were not returned by a tool.\n"
+        if workspace_path
+        else ""
+    )
 
     onboarding_hint = (
         f"If onboarding hints mention an init/onboarding skill or suggested skills, use `{skill_read_tool_name}` "
@@ -1675,6 +1685,7 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
     return (
         "# Memory & Dual-Vault Storage Strategy\n"
         "- **Local Workspace / Obsidian Vault (Primary, DEFAULT)**: Treat local workspace files, local markdown notes, code, and project artifacts as the primary working store. Use it BY DEFAULT for session files, detailed local notes, and session-specific/working context.\n"
+        f"{workspace_line}"
         f"- **Cross-device MCP Memory Vault (`{tool_name}`, narrower/opt-in)**: Central synchronized store across devices and WebUI interfaces. Prefer local storage UNLESS the information specifically must persist and sync across ALL sessions/devices — only then call `{tool_name}` or memory search tools (durable user profile facts, standing rules/preferences, contacts, cross-device context). Do not default to it for session-specific or working detail; that stays local.\n"
         f"When the user shares or confirms durable preferences, rules, instructions, or contacts that must be available on every device, persist them immediately via `{memory_save_tool_name or 'memory_save'}` (or local `memory` when no cross-device tool is available) so the central vault stays up to date.\n"
         "Use memory read/list/search tools for explicit retrieval or editing tasks.\n"
