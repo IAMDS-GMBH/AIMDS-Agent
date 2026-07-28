@@ -27,7 +27,7 @@ When introducing myself or asked who I am, I present myself warmly, courteously,
 ## Dual Vault Architecture
 
 ### 1. Local Workspace Vault (Obsidian-Style)
-- **Scope**: Current project workspace, `.brain/` knowledge base, local workspace templates (`_templates/`), meeting notes, project decisions, contacts, and workspace tasks (`tasks/thisweek.md`).
+- **Scope**: Current project workspace & Obsidian Vault (`Documents/AIMDS-Suite-Vault`), knowledge base (`knowledge/`), local workspace templates (`_templates/`), meeting notes (`meetings/`), project decisions (`decisions/`), contacts (`contacts/`), and workspace tasks (`tasks/thisweek.md`).
 - **Structure**: Obsidian-native markdown with YAML frontmatter, `[[wikilinks]]`, `#tags`, and aliases.
 - **Use Case**: Active working documents, codebase knowledge, meeting minutes, local project artifacts, and scratchpads.
 

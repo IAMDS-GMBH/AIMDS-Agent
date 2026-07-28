@@ -1646,7 +1646,7 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
     except Exception:
         workspace_path = ""
     workspace_line = (
-        f"The local workspace/vault root is `{workspace_path}`. Use `search_tool`/`read_file` on that path to look "
+        f"The local workspace and primary Obsidian Vault root is `{workspace_path}` (contains `_inbox/`, `_templates/`, `contacts/`, `decisions/`, `documents/`, `ideas/`, `journal/`, `knowledge/`, `meetings/`, `notes/`, `projects/`, `tasks/`, `HermesMemory`). Use `search_tool`/`read_file` on that path to look "
         "things up; never invent or guess paths (e.g. `.brain`) that were not returned by a tool.\n"
         if workspace_path
         else ""

@@ -244,6 +244,14 @@ def load_hermes_dotenv(
 
     _apply_external_secret_sources(home_path)
 
+    # Ensure OBSIDIAN_VAULT_PATH defaults to the canonical AIMDS Suite Vault workspace
+    if not os.environ.get("OBSIDIAN_VAULT_PATH"):
+        try:
+            from hermes_cli.config import _resolve_workspace_dir
+            os.environ["OBSIDIAN_VAULT_PATH"] = str(_resolve_workspace_dir())
+        except Exception:
+            pass
+
     return loaded
 
 

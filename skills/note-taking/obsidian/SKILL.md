@@ -21,7 +21,7 @@ If `OBSIDIAN_VAULT_PATH` is unset:
 3. Confirm the directory exists (or ask whether to create it).
 4. Only then proceed with note operations.
 
-Default suggestion to offer the user: `~/Documents/Obsidian/Vault`.
+Default suggestion to offer the user: `~/Documents/AIMDS-Suite-Vault`.
 
 File tools do not expand shell variables. Do not pass paths containing `$OBSIDIAN_VAULT_PATH` to `read_file`, `write_file`, `patch`, or `search_files`; resolve the vault path first and pass a concrete absolute path. Vault paths may contain spaces, which is another reason to prefer file tools over shell commands.
 

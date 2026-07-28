@@ -6,7 +6,7 @@
 
 | Vault / Layer | Types & Content | Backend / Path | Scope | Tools & Format |
 |---|---|---|---|---|
-| **Local Workspace Vault** | Drafts, working files, meeting notes, `.brain/` knowledge base | Local workspace / `.brain/` | Project / Workspace | Obsidian Markdown with `[[wikilinks]]`, `#tags`, YAML frontmatter |
+| **Local Workspace Vault** | Drafts, working files, meeting notes, knowledge base (`knowledge/`) | Local workspace / `Documents/AIMDS-Suite-Vault` | Project / Workspace | Obsidian Markdown with `[[wikilinks]]`, `#tags`, YAML frontmatter |
 | **Corporate Memory Vault** | `rule`, `profile` (address/tone), `person` (tonality), `company`, `hub` (MOCs), `project`, `task` | Central Memory MCP (`go-mcp-memory`) | Cross-device / User | `memory_save`, `memory_read`, `memory_search`, `memory_context` |
 | **Knowledge Base (KB)** | Curated company knowledge, process policies, templates | Central KB MCP | Organization-wide | Read-only semantic search (`kb_search`) |
 
