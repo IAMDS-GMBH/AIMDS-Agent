@@ -252,7 +252,10 @@ pub async fn resolve(
     }
 
     let force_remote = std::env::var("HERMES_FORCE_REMOTE_INSTALL_SCRIPT")
-        .map(|v| v.trim() == "1")
+        .map(|v| {
+            let s = v.trim().to_lowercase();
+            s == "1" || s == "true" || s == "yes"
+        })
         .unwrap_or(false);
 
     // 2. Bundled fallback. This is the default for shipped installers so the
