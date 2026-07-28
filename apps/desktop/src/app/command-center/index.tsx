@@ -615,6 +615,25 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
   const byModel = usage?.by_model ?? []
   const topSkills = usage?.skills?.top_skills ?? []
 
+  const handleExportCsv = () => {
+    if (!usage) return
+    const headers = ['Datum', 'Eingabe-Tokens', 'Ausgabe-Tokens', 'Gesamt-Tokens']
+    const rows = (usage.daily ?? []).map(d => [
+      d.day,
+      d.input_tokens || 0,
+      d.output_tokens || 0,
+      (d.input_tokens || 0) + (d.output_tokens || 0)
+    ])
+    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n')
+    const encodedUri = encodeURI(csvContent)
+    const link = document.createElement('a')
+    link.setAttribute('href', encodedUri)
+    link.setAttribute('download', `hermes-nutzung-${period}tage.csv`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+
   const maxTokens = useMemo(() => {
     if (!daily.length) {
       return 1
@@ -670,14 +689,20 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
           <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
             {cc.dailyTokens}
           </span>
-          <span className="flex items-center gap-3 text-[0.65rem] text-(--ui-text-tertiary)">
-            <span className="inline-flex items-center gap-1">
-              <span className="size-2 rounded-[1px] bg-[color:var(--dt-primary)]/60" /> {cc.input}
+          <div className="flex items-center gap-3">
+            <span className="flex items-center gap-3 text-[0.65rem] text-(--ui-text-tertiary)">
+              <span className="inline-flex items-center gap-1">
+                <span className="size-2 rounded-[1px] bg-[color:var(--dt-primary)]/60" /> {cc.input}
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="size-2 rounded-[1px] bg-emerald-500/70" /> {cc.output}
+              </span>
             </span>
-            <span className="inline-flex items-center gap-1">
-              <span className="size-2 rounded-[1px] bg-emerald-500/70" /> {cc.output}
-            </span>
-          </span>
+            <Button onClick={handleExportCsv} size="xs" variant="text">
+              <IconDownload className="size-3.5 mr-1" />
+              CSV
+            </Button>
+          </div>
         </div>
         {daily.length === 0 ? (
           <div className="grid h-24 place-items-center text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
