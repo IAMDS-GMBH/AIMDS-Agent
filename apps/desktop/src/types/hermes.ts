@@ -617,6 +617,8 @@ export interface StatusResponse {
   hermes_home: string
   latest_config_version: number
   release_date: string
+  started_at?: number
+  uptime_seconds?: number
   version: string
 }
 
@@ -624,6 +626,7 @@ export interface McpServerSummary {
   args: string[]
   auth?: string
   command?: string
+  discovered_tools?: string[]
   enabled: boolean
   env: Record<string, string>
   name: string

@@ -415,7 +415,7 @@ _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 _CONFIG_LOCK = threading.RLock()
 
 # Canonical name for Hermes' single managed MCP server entry.
-SINGLE_MCP_SERVER_NAME = "AIMDS"
+SINGLE_MCP_SERVER_NAME = "AIMDSSuiteMCP"
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
@@ -5930,6 +5930,25 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     except Exception as _vault_mig_exc:
         results["warnings"].append(
             f"Workspace-to-Vault rename migration (v38) failed: {_vault_mig_exc}"
+        )
+
+    # ── Version 38 → 39 (+ idempotent): rename mcp_servers.AIMDS to AIMDSSuiteMCP ──
+    try:
+        config = read_raw_config()
+        mcp_servers = config.get("mcp_servers")
+        if isinstance(mcp_servers, dict) and "AIMDS" in mcp_servers:
+            aimds_entry = mcp_servers.pop("AIMDS")
+            if "AIMDSSuiteMCP" not in mcp_servers:
+                mcp_servers["AIMDSSuiteMCP"] = aimds_entry
+            config["mcp_servers"] = mcp_servers
+            config["_config_version"] = 39
+            save_config(config)
+            results["config_added"].append("Renamed mcp_servers.AIMDS to AIMDSSuiteMCP")
+            if not quiet:
+                print("  ✓ Migrated mcp_servers.AIMDS to AIMDSSuiteMCP")
+    except Exception as _aimds_mig_exc:
+        results["warnings"].append(
+            f"mcp_servers.AIMDS migration (v39) failed: {_aimds_mig_exc}"
         )
 
     # Check for missing config fields

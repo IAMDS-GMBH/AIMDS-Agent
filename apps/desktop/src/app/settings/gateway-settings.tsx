@@ -3,7 +3,8 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { getHermesConfigRecord, getMcpServers, getRemoteHealthStatus, getStatus, saveHermesConfig } from '@/hermes'
+import { Tip } from '@/components/ui/tooltip'
+import { getHermesConfigRecord, getMcpServers, getRemoteHealthStatus, getStatus, restartGateway, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertCircle, Globe, Loader2, RefreshCw } from '@/lib/icons'
 import { formatAimdsProviderLabel } from '@/lib/model-status-label'
@@ -63,6 +64,26 @@ export function GatewaySettings() {
   const [savingSupportConfig, setSavingSupportConfig] = useState(false)
   const [supportKeyConfigured, setSupportKeyConfigured] = useState(false)
   const [aimdsEnv, setAimdsEnv] = useState<string | null>(null)
+  const [restartingGateway, setRestartingGateway] = useState(false)
+
+  const handleRestartGateway = async () => {
+    setRestartingGateway(true)
+    try {
+      await restartGateway()
+      notify({
+        kind: 'success',
+        title: 'Gateway Neustart',
+        message: 'Der Hermes Gateway-Prozess wird neu gestartet...'
+      })
+      setTimeout(() => {
+        void refreshLocalConnectivity()
+        setRestartingGateway(false)
+      }, 2500)
+    } catch (err) {
+      notifyError(err, 'Gateway konnte nicht neu gestartet werden')
+      setRestartingGateway(false)
+    }
+  }
 
   const refreshRemoteHealth = async () => {
     setRemoteHealthLoading(true)
@@ -315,17 +336,34 @@ export function GatewaySettings() {
               <p className="mt-1 text-xs text-muted-foreground">
                 {g.endpointLocal(localStatus?.gateway_health_url ?? 'embedded')}
               </p>
-              <p className="mt-1 text-xs text-muted-foreground">{g.checkedAt(localChecked)}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {g.checkedAt(localChecked)}
+                {localStatus?.started_at ? ` • Gestartet: ${new Date(localStatus.started_at * 1000).toLocaleString()}` : ''}
+                {localStatus?.uptime_seconds !== undefined && localStatus?.uptime_seconds !== null
+                  ? ` (Laufzeit: ${Math.floor(localStatus.uptime_seconds / 60)}m ${Math.floor(localStatus.uptime_seconds % 60)}s)`
+                  : ''}
+              </p>
             </div>
-            <Button
-              disabled={localConnectivityLoading}
-              onClick={() => void refreshLocalConnectivity()}
-              size="sm"
-              variant="text"
-            >
-              {localConnectivityLoading ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
-              {localConnectivityLoading ? g.checking : g.refresh}
-            </Button>
+            <div className="flex items-center gap-1.5">
+              <Button
+                disabled={restartingGateway}
+                onClick={() => void handleRestartGateway()}
+                size="sm"
+                variant="text"
+              >
+                {restartingGateway ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+                {restartingGateway ? 'Neu starten...' : 'Gateway neu starten'}
+              </Button>
+              <Button
+                disabled={localConnectivityLoading}
+                onClick={() => void refreshLocalConnectivity()}
+                size="sm"
+                variant="text"
+              >
+                {localConnectivityLoading ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+                {localConnectivityLoading ? g.checking : g.refresh}
+              </Button>
+            </div>
           </div>
 
           {localStatus && !localConnectivityError && (
@@ -360,21 +398,35 @@ export function GatewaySettings() {
                     {mcpServers.map(server => {
                       const count = getMcpServerToolCount(server)
                       const countLabel = count !== null ? `${count} Tool${count === 1 ? '' : 's'}` : null
+                      const toolsList = server.discovered_tools && server.discovered_tools.length > 0
+                        ? server.discovered_tools.join(', ')
+                        : null
+
+                      const badge = (
+                        <span
+                          className={cn(
+                            'font-mono cursor-help',
+                            server.enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'
+                          )}
+                        >
+                          {server.enabled
+                            ? countLabel
+                              ? `${g.statusUp} (${countLabel})`
+                              : g.statusUp
+                            : g.gatewayOptional}
+                        </span>
+                      )
+
                       return (
                         <div key={server.name} className="flex items-center justify-between pl-2 text-[11px]">
                           <span className="truncate font-mono text-foreground/80">{server.name}</span>
-                          <span
-                            className={cn(
-                              'font-mono',
-                              server.enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'
-                            )}
-                          >
-                            {server.enabled
-                              ? countLabel
-                                ? `${g.statusUp} (${countLabel})`
-                                : g.statusUp
-                              : g.gatewayOptional}
-                          </span>
+                          {toolsList ? (
+                            <Tip label={`Tools (${server.discovered_tools?.length}): ${toolsList}`}>
+                              {badge}
+                            </Tip>
+                          ) : (
+                            badge
+                          )}
                         </div>
                       )
                     })}

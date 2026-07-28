@@ -422,10 +422,25 @@ class VaultMetaIndex:
             mcp_meta = get_mcp_server_metadata()
             detailed_tools = get_all_mcp_tools_metadata()
         except Exception:
-            return 0
+            mcp_meta = {}
+            detailed_tools = []
+
+        try:
+            from hermes_cli.mcp_config import _get_mcp_servers
+            configured_servers = _get_mcp_servers()
+        except Exception:
+            configured_servers = {}
 
         count = 0
         now = int(time.time())
+
+        # Merge configured server stubs into mcp_meta if not already present
+        for s_name, s_cfg in configured_servers.items():
+            if s_name not in mcp_meta and isinstance(s_cfg, dict):
+                mcp_meta[s_name] = {
+                    "keywords": [s_name, "aimds", "mcp"],
+                    "tools": s_cfg.get("tools") or [],
+                }
 
         # 1. Server-level stubs
         for server_name, meta in mcp_meta.items():

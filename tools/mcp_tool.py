@@ -4024,7 +4024,7 @@ _CLOUD_MEMORY_NOTE = (
     " NOTE: Primary AIMDS-Suite & Local Vault Memory Store — use for durable cross-device "
     "knowledge, facts, and profile notes across sessions. (For session-specific temporary scratchpad, prefer local `memory` tool)."
 )
-for _server_name in ("AIMDS", "IAMDS"):
+for _server_name in ("AIMDSSuiteMCP", "AIMDS", "IAMDS"):
     for _tool_name in ("mcp_memory_memory_save", "mcp_memory_memory_context"):
         _MCP_TOOL_DESCRIPTION_NOTES[(_server_name, _tool_name)] = _CLOUD_MEMORY_NOTE
 
@@ -4102,12 +4102,12 @@ def _lookup_tool_description_note(
             note = _MCP_TOOL_DESCRIPTION_NOTES.get((catalog_name, tool_name))
             if note is not None:
                 return note
-    if str(provider or "").strip().lower() in ("iamds", "aimds") or server_name in ("AIMDS", "IAMDS"):
-        note = _MCP_TOOL_DESCRIPTION_NOTES.get(("AIMDS", tool_name))
+    if str(provider or "").strip().lower() in ("iamds", "aimds", "aimdssuitemcp") or server_name in ("AIMDSSuiteMCP", "AIMDS", "IAMDS"):
+        note = _MCP_TOOL_DESCRIPTION_NOTES.get(("AIMDSSuiteMCP", tool_name)) or _MCP_TOOL_DESCRIPTION_NOTES.get(("AIMDS", tool_name))
         if note is not None:
             return note
         return _CLOUD_MEMORY_NOTE
-    if "memory" in server_name.lower() and server_name not in ("AIMDS", "IAMDS"):
+    if "memory" in server_name.lower() and server_name not in ("AIMDSSuiteMCP", "AIMDS", "IAMDS"):
         return f" NOTE: Custom External MCP Server '{server_name}' — secondary store."
     return None
 

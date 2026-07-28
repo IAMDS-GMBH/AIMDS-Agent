@@ -40,6 +40,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+_SERVER_START_TIME = time.time()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -1557,6 +1558,8 @@ async def get_status():
         "env_path": str(get_env_path()),
         "config_version": current_ver,
         "latest_config_version": latest_ver,
+        "started_at": _SERVER_START_TIME,
+        "uptime_seconds": round(time.time() - _SERVER_START_TIME, 1),
         "gateway_running": gateway_running,
         "gateway_pid": gateway_pid,
         "gateway_health_url": _GATEWAY_HEALTH_URL,
@@ -1568,6 +1571,18 @@ async def get_status():
         "auth_required": auth_required,
         "auth_providers": auth_providers,
     }
+
+
+@app.get("/api/subagents")
+async def get_active_subagents():
+    """List currently active subagents/delegations in the gateway process."""
+    try:
+        from tools.delegate_tool import list_active_subagents
+        subagents = list_active_subagents()
+        return {"ok": True, "subagents": subagents}
+    except Exception as exc:
+        _log.exception("GET /api/subagents failed")
+        return {"ok": False, "subagents": [], "error": str(exc)}
 
 
 @app.get("/api/debug/remote-health")
@@ -7960,6 +7975,19 @@ def _mcp_server_summary(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
         tools = tools_cfg.get("include") if "include" in tools_cfg else tools_cfg
     else:
         tools = tools_cfg
+
+    discovered_tools = []
+    try:
+        from tools.mcp_tool import get_all_mcp_tools_metadata, get_mcp_server_metadata
+        for t in get_all_mcp_tools_metadata():
+            if str(t.get("server_name") or "").strip() == name:
+                discovered_tools.append(str(t.get("tool_name") or "").strip())
+        if not discovered_tools:
+            meta = get_mcp_server_metadata().get(name) or {}
+            discovered_tools = list(meta.get("tools") or [])
+    except Exception:
+        discovered_tools = []
+
     return {
         "name": name,
         "transport": transport,
@@ -7971,6 +7999,7 @@ def _mcp_server_summary(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
         "enabled": cfg.get("enabled", True) is not False,
         # Tool selection: list of enabled tool names, or None = all.
         "tools": tools,
+        "discovered_tools": discovered_tools,
     }
 
 

@@ -5,6 +5,7 @@ import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { BrailleSpinner } from '@/components/ui/braille-spinner'
 import { FadeText } from '@/components/ui/fade-text'
+import { getActiveSubagents } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertCircle, CheckCircle2, Sparkles } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
@@ -15,7 +16,8 @@ import {
   buildSubagentTree,
   type SubagentNode,
   type SubagentStatus,
-  type SubagentStreamEntry
+  type SubagentStreamEntry,
+  upsertSubagent
 } from '@/store/subagents'
 
 import { OverlayView } from '../overlays/overlay-view'
@@ -79,6 +81,44 @@ export function AgentsView({ onClose }: AgentsViewProps) {
   const { t } = useI18n()
   const activeSessionId = useStore($activeSessionId)
   const subagentsBySession = useStore($subagentsBySession)
+
+  useEffect(() => {
+    let cancelled = false
+    const syncActiveSubagents = async () => {
+      try {
+        const res = await getActiveSubagents()
+        if (res?.ok && Array.isArray(res.subagents) && !cancelled) {
+          const sid = activeSessionId || 'default'
+          for (const sub of res.subagents) {
+            upsertSubagent(
+              sid,
+              {
+                subagent_id: sub.subagent_id,
+                parent_id: sub.parent_id,
+                goal: sub.goal,
+                model: sub.model,
+                status: sub.status || 'running',
+                tool_count: sub.tool_count,
+                tool_name: sub.current_tool,
+                started_at: sub.started_at ? sub.started_at * 1000 : Date.now()
+              },
+              true,
+              'subagent.progress'
+            )
+          }
+        }
+      } catch (err) {
+        // quiet fallback
+      }
+    }
+
+    void syncActiveSubagents()
+    const timer = setInterval(() => void syncActiveSubagents(), 2000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [activeSessionId])
 
   const activeSubagents = useMemo(() => {
     if (activeSessionId && subagentsBySession[activeSessionId]?.length) {

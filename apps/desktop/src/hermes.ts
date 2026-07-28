@@ -797,6 +797,27 @@ export function restartGateway(): Promise<ActionResponse> {
   })
 }
 
+export interface ActiveSubagentRecord {
+  subagent_id: string
+  parent_id?: string | null
+  depth?: number
+  goal: string
+  model?: string
+  started_at: number
+  status: 'running' | 'queued' | 'completed' | 'failed' | 'interrupted'
+  tool_count?: number
+  task_index?: number
+  task_count?: number
+  current_tool?: string
+}
+
+export function getActiveSubagents(): Promise<{ ok: boolean; subagents: ActiveSubagentRecord[] }> {
+  return window.hermesDesktop.api<{ ok: boolean; subagents: ActiveSubagentRecord[] }>({
+    path: '/api/subagents',
+    method: 'GET'
+  })
+}
+
 export function updateHermes(): Promise<ActionResponse> {
   return window.hermesDesktop.api<ActionResponse>({
     path: '/api/hermes/update',
