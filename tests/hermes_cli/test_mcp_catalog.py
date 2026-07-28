@@ -727,6 +727,188 @@ class TestInstall:
 
 
 # ---------------------------------------------------------------------------
+# Multi-instance install (instance_name / list_instances)
+# ---------------------------------------------------------------------------
+
+
+class TestMultiInstance:
+    def test_install_with_instance_name_writes_custom_config_key(self, catalog_dir):
+        _write_manifest(catalog_dir, "AtlassianMCP", _basic_manifest(name="AtlassianMCP"))
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        install_entry(_entry("AtlassianMCP"), enable=True, instance_name="EVNAtlassianMCP")
+
+        cfg = load_config()
+        servers = cfg["mcp_servers"]
+        assert "EVNAtlassianMCP" in servers
+        assert "AtlassianMCP" not in servers
+        assert servers["EVNAtlassianMCP"]["enabled"] is True
+
+    def test_install_without_instance_name_uses_entry_name(self, catalog_dir):
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        install_entry(_entry("demo"), enable=True)
+
+        assert "demo" in load_config()["mcp_servers"]
+
+    def test_install_two_instances_side_by_side(self, catalog_dir):
+        _write_manifest(catalog_dir, "AtlassianMCP", _basic_manifest(name="AtlassianMCP"))
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        install_entry(_entry("AtlassianMCP"), enable=True)
+        install_entry(_entry("AtlassianMCP"), enable=True, instance_name="EVNAtlassianMCP")
+
+        servers = load_config()["mcp_servers"]
+        assert "AtlassianMCP" in servers
+        assert "EVNAtlassianMCP" in servers
+
+    def test_list_instances_exact_match(self, catalog_dir):
+        _write_manifest(catalog_dir, "AtlassianMCP", _basic_manifest(name="AtlassianMCP"))
+        from hermes_cli.mcp_catalog import install_entry, list_instances
+
+        install_entry(_entry("AtlassianMCP"), enable=True)
+
+        assert list_instances("AtlassianMCP") == ["AtlassianMCP"]
+
+    def test_list_instances_suffix_match(self, catalog_dir):
+        _write_manifest(catalog_dir, "AtlassianMCP", _basic_manifest(name="AtlassianMCP"))
+        from hermes_cli.mcp_catalog import install_entry, list_instances
+
+        install_entry(_entry("AtlassianMCP"), enable=True)
+        install_entry(_entry("AtlassianMCP"), enable=True, instance_name="EVNAtlassianMCP")
+
+        instances = list_instances("AtlassianMCP")
+        assert set(instances) == {"AtlassianMCP", "EVNAtlassianMCP"}
+
+    def test_list_instances_empty_when_none_installed(self, catalog_dir):
+        _write_manifest(catalog_dir, "AtlassianMCP", _basic_manifest(name="AtlassianMCP"))
+        from hermes_cli.mcp_catalog import list_instances
+
+        assert list_instances("AtlassianMCP") == []
+
+    def test_list_instances_does_not_match_unrelated_server(self, catalog_dir):
+        _write_manifest(catalog_dir, "AtlassianMCP", _basic_manifest(name="AtlassianMCP"))
+        _write_manifest(catalog_dir, "TempoMCP", _basic_manifest(name="TempoMCP"))
+        from hermes_cli.mcp_catalog import install_entry, list_instances
+
+        install_entry(_entry("TempoMCP"), enable=True)
+
+        assert list_instances("AtlassianMCP") == []
+
+    def test_reinstall_preserves_tool_selection_per_instance(self, catalog_dir):
+        _write_manifest(catalog_dir, "AtlassianMCP", _basic_manifest(name="AtlassianMCP"))
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        # _default_mock_probe fixture makes _probe_tools return None (probe
+        # fails), so install_entry falls back to the manifest default / no
+        # filter for each instance independently.
+        install_entry(_entry("AtlassianMCP"), enable=True, instance_name="EVNAtlassianMCP")
+        install_entry(_entry("AtlassianMCP"), enable=True)
+
+        servers = load_config()["mcp_servers"]
+        # Each instance gets its own independent config block, not a shared one.
+        assert "EVNAtlassianMCP" in servers
+        assert "AtlassianMCP" in servers
+
+    def _atlassian_manifest_with_env(self):
+        return _basic_manifest(
+            name="AtlassianMCP",
+            auth={
+                "type": "api_key",
+                "env": [
+                    {"name": "JIRA_URL", "prompt": "Jira URL", "secret": False},
+                    {"name": "JIRA_PERSONAL_TOKEN", "prompt": "Token", "secret": True},
+                ],
+            },
+        )
+
+    def test_secondary_instance_literal_env_does_not_touch_shared_dotenv(self, catalog_dir):
+        """A secondary instance's credentials must be embedded literally in
+        its own mcp_servers.<name>.env block, never written to the shared
+        ~/.hermes/.env -- otherwise a second Jira tenant's token would
+        silently overwrite the default instance's token (same env-var
+        names, shared file)."""
+        _write_manifest(catalog_dir, "AtlassianMCP", self._atlassian_manifest_with_env())
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config, get_env_path
+
+        install_entry(
+            _entry("AtlassianMCP"),
+            enable=True,
+            instance_name="EVNAtlassianMCP",
+            skip_auth_prompt=True,
+            literal_env={
+                "JIRA_URL": "https://jira.apps.evn.at",
+                "JIRA_PERSONAL_TOKEN": "evn-secret-token",
+            },
+        )
+
+        servers = load_config()["mcp_servers"]
+        assert servers["EVNAtlassianMCP"]["env"] == {
+            "JIRA_URL": "https://jira.apps.evn.at",
+            "JIRA_PERSONAL_TOKEN": "evn-secret-token",
+        }
+        # Shared .env must remain untouched by the secondary instance's
+        # install. Read the file directly rather than get_env_value(), which
+        # also falls back to the real process os.environ and would mask a
+        # regression if some other in-process test already exported these
+        # names into the environment.
+        env_path = get_env_path()
+        dotenv_content = env_path.read_text() if env_path.exists() else ""
+        assert "JIRA_URL" not in dotenv_content
+        assert "JIRA_PERSONAL_TOKEN" not in dotenv_content
+
+    def test_default_instance_still_uses_dotenv_interpolation(self, catalog_dir):
+        """The default (non-secondary) instance keeps today's behavior: the
+        on-disk config.yaml stores ${VAR} templates (resolved from the
+        shared .env at connect time), not literal embedding.
+        load_config() itself expands ${VAR} refs for runtime convenience,
+        so the raw on-disk file (read_raw_config()) is what must be
+        asserted against here, not load_config()'s expanded view."""
+        _write_manifest(catalog_dir, "AtlassianMCP", self._atlassian_manifest_with_env())
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import read_raw_config, save_env_value
+
+        save_env_value("JIRA_URL", "https://mycompany.atlassian.net")
+        save_env_value("JIRA_PERSONAL_TOKEN", "default-token")
+
+        install_entry(_entry("AtlassianMCP"), enable=True, skip_auth_prompt=True)
+
+        servers = read_raw_config()["mcp_servers"]
+        assert servers["AtlassianMCP"]["env"] == {
+            "JIRA_URL": "${JIRA_URL}",
+            "JIRA_PERSONAL_TOKEN": "${JIRA_PERSONAL_TOKEN}",
+        }
+
+    def test_two_secondary_instances_keep_independent_credentials(self, catalog_dir):
+        """Two secondary instances installed side-by-side must each keep
+        their own literal credentials, not clobber each other."""
+        _write_manifest(catalog_dir, "AtlassianMCP", self._atlassian_manifest_with_env())
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        install_entry(
+            _entry("AtlassianMCP"), enable=True, instance_name="EVNAtlassianMCP",
+            skip_auth_prompt=True,
+            literal_env={"JIRA_URL": "https://jira.evn.at", "JIRA_PERSONAL_TOKEN": "evn-token"},
+        )
+        install_entry(
+            _entry("AtlassianMCP"), enable=True, instance_name="AcmeAtlassianMCP",
+            skip_auth_prompt=True,
+            literal_env={"JIRA_URL": "https://acme.atlassian.net", "JIRA_PERSONAL_TOKEN": "acme-token"},
+        )
+
+        servers = load_config()["mcp_servers"]
+        assert servers["EVNAtlassianMCP"]["env"]["JIRA_PERSONAL_TOKEN"] == "evn-token"
+        assert servers["AcmeAtlassianMCP"]["env"]["JIRA_PERSONAL_TOKEN"] == "acme-token"
+
+
+# ---------------------------------------------------------------------------
 # Uninstall
 # ---------------------------------------------------------------------------
 

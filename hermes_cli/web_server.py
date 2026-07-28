@@ -8131,6 +8131,12 @@ async def list_mcp_catalog(profile: Optional[str] = None):
                     "needs_install": entry.install is not None,
                     "installed": installed_state.get(entry.name, (False, False))[0],
                     "enabled": installed_state.get(entry.name, (False, False))[1],
+                    "multi_instance": entry.name in _MULTI_INSTANCE_CATALOG_NAMES,
+                    "instances": (
+                        mcp_catalog.list_instances(entry.name)
+                        if entry.name in _MULTI_INSTANCE_CATALOG_NAMES
+                        else []
+                    ),
                 })
     except HTTPException:
         # Unknown/invalid profile → 404, not a silently-empty catalog.
@@ -8150,6 +8156,15 @@ async def list_mcp_catalog(profile: Optional[str] = None):
     return {"entries": entries, "diagnostics": diagnostics}
 
 
+# Catalog entries the dashboard offers a "create new instance / edit an
+# existing instance" dropdown for, instead of the normal single-instance
+# install flow. Users may have more than one Jira installation (Cloud +
+# on-prem Server/DC, or multiple tenants) and the same applies to Tempo
+# (which is tied 1:1 to an Atlassian instance). Every other MCP keeps
+# today's single-instance-per-catalog-name behavior.
+_MULTI_INSTANCE_CATALOG_NAMES = frozenset({"AtlassianMCP", "TempoMCP"})
+
+
 class MCPCatalogInstall(BaseModel):
     name: str
     # env / secrets: KEY=VALUE maps for catalog entries that declare required env vars.
@@ -8157,6 +8172,13 @@ class MCPCatalogInstall(BaseModel):
     secrets: Dict[str, str] = {}
     enable: bool = True
     profile: Optional[str] = None
+    # Config key to install this entry under, when different from `name`.
+    # Only meaningful for catalog entries that support multiple named
+    # instances (currently AtlassianMCP, TempoMCP) — e.g. a second Jira
+    # Server/DC tenant installed as "EVNAtlassianMCP" alongside the default
+    # "AtlassianMCP". Omit (or set equal to `name`) for a normal single
+    # single-instance install/reinstall.
+    instance_name: Optional[str] = None
 
 
 @app.post("/api/mcp/catalog/install")
@@ -8175,10 +8197,19 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     if entry is None:
         raise HTTPException(status_code=404, detail=f"No catalog entry '{name}'")
 
+    instance_name = (body.instance_name or "").strip() or name
+    # Only AtlassianMCP/TempoMCP are surfaced as multi-instance-capable in
+    # the UI; every other entry should still only ever install under its
+    # own catalog name, so silently ignore an instance_name mismatch for
+    # anything else rather than letting a stray/incorrect client value
+    # rename an unrelated MCP's config key.
+    if name not in _MULTI_INSTANCE_CATALOG_NAMES:
+        instance_name = name
+
     effective_profile = body.profile or profile
     if name == "TempoMCP":
         with _profile_scope(effective_profile):
-            if not mcp_catalog.is_installed("AtlassianMCP"):
+            if not mcp_catalog.list_instances("AtlassianMCP"):
                 raise HTTPException(
                     status_code=400,
                     detail="AtlassianMCP must be installed before installing TempoMCP.",
@@ -8189,7 +8220,8 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     if body.secrets:
         env_vars.update(body.secrets)
 
-    if env_vars:
+    is_secondary_instance = instance_name != name
+    if env_vars and not is_secondary_instance:
         with _profile_scope(effective_profile):
             for k, v in env_vars.items():
                 if v and str(v).strip():
@@ -8204,6 +8236,12 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
                     from hermes_cli.config import remove_env_value
 
                     remove_env_value(k)
+    # A secondary named instance (e.g. a second AtlassianMCP tenant) shares
+    # its env-var *names* with the default instance -- persisting to the
+    # shared .env here would silently overwrite/collide with the default
+    # instance's values. Instead these are embedded as literal strings
+    # directly in this instance's own mcp_servers.<name>.env block below
+    # (see install_entry's `literal_env` param), never touching .env.
 
     # Git-bootstrap entries can take a while to clone — run via the background
     # action path so the request returns immediately and the UI can tail logs.
@@ -8229,7 +8267,9 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     def _install_scoped():
         with _profile_scope(effective_profile):
             mcp_catalog.install_entry(
-                entry, enable=body.enable, skip_auth_prompt=True
+                entry, enable=body.enable, skip_auth_prompt=True,
+                instance_name=instance_name,
+                literal_env=env_vars if is_secondary_instance else None,
             )
 
     try:
@@ -8249,12 +8289,12 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     # process was restarted, even though config.yaml was already correct.
     try:
         from tools.mcp_tool import reconnect_mcp_server
-        await asyncio.to_thread(reconnect_mcp_server, name)
+        await asyncio.to_thread(reconnect_mcp_server, instance_name)
     except Exception:
         _log.debug("Post-install MCP reconnect failed", exc_info=True)
 
     restart_result = _restart_gateway_if_running()
-    return {"ok": True, "name": name, "background": False, **restart_result}
+    return {"ok": True, "name": instance_name, "background": False, **restart_result}
 
 
 # Register the mcp-install action log so /api/actions/mcp-install/status works.

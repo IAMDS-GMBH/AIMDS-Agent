@@ -517,18 +517,31 @@ def _adapt_venv_executable_path(value: str) -> str:
 
 
 def _prompt_env_vars(
-    specs: List[EnvVarSpec], *, reprompt: bool = False
+    specs: List[EnvVarSpec], *, reprompt: bool = False, persist: bool = True,
 ) -> Dict[str, str]:
     """Walk the env spec list, prompting the user for each. Writes secrets and
-    non-secrets alike to ~/.hermes/.env via save_env_value().
-    
+    non-secrets alike to ~/.hermes/.env via save_env_value() when *persist*.
+
     If reprompt=False and a variable is already set, keeps existing value.
     If reprompt=True or variable is missing, prompts with existing value as default,
     so pressing Enter keeps existing token/value.
+
+    Args:
+        persist: Save collected values to the shared ~/.hermes/.env. Must be
+            False when installing a *secondary* named instance of a
+            multi-instance-capable entry (e.g. a second AtlassianMCP/
+            TempoMCP instance) -- every instance shares the same env-var
+            *names* (JIRA_URL, JIRA_PERSONAL_TOKEN, ...), so persisting a
+            second instance's values to the shared .env would silently
+            collide with the default instance's values. Callers installing
+            a secondary instance must instead embed the collected values as
+            literal strings directly in that instance's own
+            ``mcp_servers.<name>.env`` block (see ``_build_server_config``'s
+            ``literal_env`` parameter).
     """
     collected: Dict[str, str] = {}
     for spec in specs:
-        existing = get_env_value(spec.name)
+        existing = get_env_value(spec.name) if persist else None
         if existing and not reprompt:
             print(color(f"  ✓ {spec.name} already set in .env", Colors.GREEN))
             collected[spec.name] = existing
@@ -543,7 +556,8 @@ def _prompt_env_vars(
             if spec.required:
                 raise CatalogError(f"{spec.name} is required but no value was provided")
             continue
-        save_env_value(spec.name, value)
+        if persist:
+            save_env_value(spec.name, value)
         collected[spec.name] = value
     return collected
 
@@ -628,10 +642,25 @@ _DEVICE_CODE_PROVIDER_LABELS: Dict[str, str] = {
 
 
 def _build_server_config(
-    entry: CatalogEntry, install_dir: Optional[Path]
+    entry: CatalogEntry,
+    install_dir: Optional[Path],
+    *,
+    literal_env: Optional[Dict[str, str]] = None,
 ) -> dict:
     """Translate a manifest into the ``mcp_servers.<name>`` block format used
-    by hermes_cli/mcp_config.py."""
+    by hermes_cli/mcp_config.py.
+
+    Args:
+        literal_env: When given, write these values as literal strings in
+            the ``env`` block instead of ``${VAR}`` placeholders resolved
+            against the shared ~/.hermes/.env at connect time. Required for
+            a *secondary* named instance of a multi-instance-capable entry
+            (e.g. a second AtlassianMCP/TempoMCP instance) -- every instance
+            shares the same env-var names, so ``${VAR}`` interpolation would
+            always resolve to the default instance's value, not this
+            instance's own value. Falls back to today's ``${VAR}``
+            interpolation for any declared env var not present in this dict.
+    """
     from hermes_cli.config import get_env_value
 
     cfg: dict = {}
@@ -645,6 +674,10 @@ def _build_server_config(
         if entry.auth and entry.auth.env:
             env_map = {}
             for item in entry.auth.env:
+                literal_val = (literal_env or {}).get(item.name)
+                if literal_val and str(literal_val).strip():
+                    env_map[item.name] = literal_val
+                    continue
                 val = get_env_value(item.name)
                 if not val and item.name == "JIRA_PERSONAL_TOKEN":
                     # JIRA_PAT was this field's name before it was renamed to match
@@ -745,7 +778,8 @@ def _write_tools_include(name: str, include: Optional[List[str]]) -> None:
 
 
 def _apply_tool_selection(
-    entry: CatalogEntry, *, prior_selection: Optional[List[str]]
+    entry: CatalogEntry, *, prior_selection: Optional[List[str]],
+    server_name: Optional[str] = None,
 ) -> None:
     """Probe the server and let the user pick which tools to enable.
 
@@ -762,39 +796,46 @@ def _apply_tool_selection(
       - If manifest declares ``tools.default_enabled`` → apply directly.
       - Otherwise → leave config with no filter (all on when reachable).
       - Either way, point the user at ``hermes mcp configure <name>``.
+
+    Args:
+        server_name: The config.yaml ``mcp_servers`` key this entry was
+            installed under, when it differs from ``entry.name`` (see
+            ``install_entry``'s ``instance_name`` parameter). Falls back to
+            ``entry.name`` when omitted.
     """
+    server_name = server_name or entry.name
     import sys as _sys
     if not _sys.stdin.isatty():
         if prior_selection is not None:
-            _write_tools_include(entry.name, prior_selection)
+            _write_tools_include(server_name, prior_selection)
         elif entry.tools.default_enabled:
-            _write_tools_include(entry.name, entry.tools.default_enabled)
+            _write_tools_include(server_name, entry.tools.default_enabled)
         else:
-            _write_tools_include(entry.name, None)
+            _write_tools_include(server_name, None)
         return
 
     print()
-    print(color(f"  Probing '{entry.name}' for available tools...", Colors.CYAN))
-    probed = _probe_tools(entry.name)
+    print(color(f"  Probing '{server_name}' for available tools...", Colors.CYAN))
+    probed = _probe_tools(server_name)
 
     # Probe failure path
     if probed is None:
         manifest_default = entry.tools.default_enabled
         if manifest_default:
-            _write_tools_include(entry.name, manifest_default)
+            _write_tools_include(server_name, manifest_default)
             print(color(
                 f"  Couldn\'t probe server. Applied manifest default "
                 f"({len(manifest_default)} tools). "
-                f"Run `hermes mcp configure {entry.name}` after the server "
+                f"Run `hermes mcp configure {server_name}` after the server "
                 "is reachable to refine.",
                 Colors.YELLOW,
             ))
         else:
-            _write_tools_include(entry.name, None)
+            _write_tools_include(server_name, None)
             print(color(
                 f"  Couldn\'t probe server; installed with no tool filter "
                 "(all tools enabled when reachable). "
-                f"Run `hermes mcp configure {entry.name}` after first "
+                f"Run `hermes mcp configure {server_name}` after first "
                 "connect to prune.",
                 Colors.YELLOW,
             ))
@@ -802,7 +843,7 @@ def _apply_tool_selection(
 
     if not probed:
         # Probe succeeded but server reported zero tools. Nothing to filter.
-        _write_tools_include(entry.name, None)
+        _write_tools_include(server_name, None)
         print(color("  Server reported no tools.", Colors.YELLOW))
         return
 
@@ -824,12 +865,12 @@ def _apply_tool_selection(
     if not _sys.stdin.isatty():
         if prior_selection is not None:
             include = [n for n in prior_selection if n in tool_names]
-            _write_tools_include(entry.name, include)
+            _write_tools_include(server_name, include)
         elif entry.tools.default_enabled:
             include = [n for n in entry.tools.default_enabled if n in tool_names]
-            _write_tools_include(entry.name, include)
+            _write_tools_include(server_name, include)
         else:
-            _write_tools_include(entry.name, None)
+            _write_tools_include(server_name, None)
         return
 
     print(color(
@@ -845,7 +886,7 @@ def _apply_tool_selection(
         for n, d in probed
     ]
     chosen_indices = curses_checklist(
-        f"Select tools for '{entry.name}' (SPACE toggle, ENTER confirm)",
+        f"Select tools for '{server_name}' (SPACE toggle, ENTER confirm)",
         labels,
         pre_indices,
     )
@@ -853,9 +894,9 @@ def _apply_tool_selection(
     if not chosen_indices:
         # User unchecked everything; treat as "no tools" — write empty include
         # so the server is installed but contributes nothing until reconfigured.
-        _write_tools_include(entry.name, [])
+        _write_tools_include(server_name, [])
         print(color(
-            f"  No tools selected. Run `hermes mcp configure {entry.name}` "
+            f"  No tools selected. Run `hermes mcp configure {server_name}` "
             "to change.",
             Colors.YELLOW,
         ))
@@ -867,7 +908,7 @@ def _apply_tool_selection(
         # version) will also be auto-enabled. To pin to the current set,
         # the user can re-run `hermes mcp configure <name>` and unselect a
         # tool to switch back to include-mode.
-        _write_tools_include(entry.name, None)
+        _write_tools_include(server_name, None)
         print(color(
             f"  ✓ All {len(probed)} tools enabled (no filter — new tools "
             "the server adds later will be auto-enabled).",
@@ -876,16 +917,36 @@ def _apply_tool_selection(
         return
 
     chosen_names = [tool_names[i] for i in sorted(chosen_indices)]
-    _write_tools_include(entry.name, chosen_names)
+    _write_tools_include(server_name, chosen_names)
     print(color(
         f"  ✓ {len(chosen_names)}/{len(probed)} tools enabled.",
         Colors.GREEN,
     ))
 
 
+def list_instances(catalog_name: str) -> List[str]:
+    """Return the config.yaml ``mcp_servers`` keys backing *catalog_name*.
+
+    Matches by exact name first, then by the same catalog-name-suffix
+    convention used for tool-description-note resolution (see
+    ``tools/mcp_tool.py::_lookup_tool_description_note``) — this lets a
+    renamed/duplicate instance like "EVNAtlassianMCP" (backing the
+    "AtlassianMCP" catalog entry) be discovered even though its config key
+    doesn't match the catalog name exactly. Used to populate the "existing
+    instances" dropdown for catalog entries that support multiple named
+    instances (currently AtlassianMCP, TempoMCP).
+    """
+    servers = installed_servers()
+    return [
+        name for name in servers
+        if name == catalog_name or name.endswith(catalog_name)
+    ]
+
+
 def install_entry(
     entry: CatalogEntry, *, enable: bool = True, reprompt: bool = False,
-    skip_auth_prompt: bool = False,
+    skip_auth_prompt: bool = False, instance_name: Optional[str] = None,
+    literal_env: Optional[Dict[str, str]] = None,
 ) -> None:
     """Install a catalog entry end-to-end.
 
@@ -915,9 +976,33 @@ def install_entry(
             (stdin inherited from a non-terminal process), silently
             aborting the install before the mcp_servers.<name> config block
             is ever written.
+        instance_name: Config key to install this entry under, when it
+            differs from ``entry.name``. Lets one catalog entry (currently
+            only offered in the UI for AtlassianMCP/TempoMCP) be installed
+            more than once under different names — e.g. a second Jira
+            Server/DC tenant configured as "EVNAtlassianMCP" alongside the
+            default "AtlassianMCP". Falls back to ``entry.name`` when omitted
+            so every other catalog entry keeps today's single-instance
+            behavior unchanged.
+        literal_env: Explicit env-var values (name -> value) to embed
+            literally in this instance's own ``mcp_servers.<name>.env``
+            block, bypassing ``${VAR}`` interpolation against the shared
+            ~/.hermes/.env. Required whenever ``instance_name`` differs from
+            ``entry.name`` (a *secondary* instance) since every instance
+            declares the same env-var names -- interpolating against the
+            shared .env would always resolve to the default instance's
+            value. Used by the web dashboard's install endpoint, which
+            collects a secondary instance's credentials from the request
+            body instead of prompting/persisting to .env (see
+            ``skip_auth_prompt``). When omitted for a secondary instance
+            installed interactively (CLI path, ``skip_auth_prompt=False``),
+            values collected via ``_prompt_env_vars(..., persist=False)``
+            are used instead.
     """
+    server_name = instance_name or entry.name
+    is_secondary_instance = server_name != entry.name
     print()
-    print(color(f"  Installing MCP '{entry.name}'", Colors.CYAN + Colors.BOLD))
+    print(color(f"  Installing MCP '{server_name}'", Colors.CYAN + Colors.BOLD))
     if entry.description:
         print(color(f"  {entry.description}", Colors.DIM))
     if entry.source:
@@ -929,6 +1014,7 @@ def install_entry(
         install_dir = _do_git_install(entry)
 
     # Auth
+    collected_env: Dict[str, str] = dict(literal_env or {})
     if skip_auth_prompt:
         pass
     elif entry.auth.type == "api_key":
@@ -936,7 +1022,11 @@ def install_entry(
         print(color("  Configure credentials:", Colors.CYAN))
         if entry.auth.notes:
             print(color(f"  ℹ {entry.auth.notes}", Colors.DIM))
-        _prompt_env_vars(entry.auth.env, reprompt=reprompt)
+        collected_env.update(
+            _prompt_env_vars(
+                entry.auth.env, reprompt=reprompt, persist=not is_secondary_instance,
+            )
+        )
     elif entry.auth.type == "oauth":
         collected: Dict[str, str] = {}
         if entry.auth.env:
@@ -944,7 +1034,10 @@ def install_entry(
             print(color("  Configure credentials:", Colors.CYAN))
             if entry.auth.notes:
                 print(color(f"  ℹ {entry.auth.notes}", Colors.DIM))
-            collected = _prompt_env_vars(entry.auth.env, reprompt=reprompt)
+            collected = _prompt_env_vars(
+                entry.auth.env, reprompt=reprompt, persist=not is_secondary_instance,
+            )
+            collected_env.update(collected)
         elif entry.auth.notes:
             print()
             print(color(f"  ℹ {entry.auth.notes}", Colors.DIM))
@@ -998,23 +1091,26 @@ def install_entry(
     # ── Preserve any prior user tool selection across reinstalls ────────
     # Reading BEFORE we overwrite the entry below so a reinstall pre-checks
     # whatever the user picked last time.
-    prior_selection = _read_prior_tool_selection(entry.name)
+    prior_selection = _read_prior_tool_selection(server_name)
 
     # Build and write the mcp_servers entry (without tools filter yet;
     # _apply_tool_selection() finalizes it below).
-    server_cfg = _build_server_config(entry, install_dir)
+    server_cfg = _build_server_config(
+        entry, install_dir,
+        literal_env=collected_env if is_secondary_instance else None,
+    )
     server_cfg["enabled"] = enable
 
     cfg = load_config()
-    cfg.setdefault("mcp_servers", {})[entry.name] = server_cfg
+    cfg.setdefault("mcp_servers", {})[server_name] = server_cfg
     save_config(cfg)
 
     # ── Probe + tool selection ──────────────────────────────────────────
-    _apply_tool_selection(entry, prior_selection=prior_selection)
+    _apply_tool_selection(entry, prior_selection=prior_selection, server_name=server_name)
 
     print()
     print(color(
-        f"  ✓ Installed '{entry.name}' "
+        f"  ✓ Installed '{server_name}' "
         f"({'enabled' if enable else 'disabled'}). "
         f"Start a new Hermes session to load its tools.",
         Colors.GREEN,

@@ -257,6 +257,116 @@ class TestMcpEndpoints:
         assert body["gateway_restart_pid"] == 4242
         mock_spawn.assert_called_once()
 
+    def test_catalog_install_with_instance_name_writes_custom_config_key(self):
+        """AtlassianMCP/TempoMCP support installing more than one named
+        instance (e.g. a second on-prem Jira alongside the default Cloud
+        one) via `instance_name` -- the config key used must be the instance
+        name, not the catalog entry name."""
+        from unittest.mock import patch
+        from hermes_cli.config import load_config
+
+        with patch("tools.mcp_tool.reconnect_mcp_server", return_value=[]):
+            r = self.client.post(
+                "/api/mcp/catalog/install",
+                json={
+                    "name": "AtlassianMCP",
+                    "instance_name": "EVNAtlassianMCP",
+                    "env": {
+                        "JIRA_URL": "https://evn.example.com",
+                        "JIRA_PERSONAL_TOKEN": "onprem-pat",
+                    },
+                },
+            )
+        assert r.status_code == 200, r.text
+        assert r.json()["name"] == "EVNAtlassianMCP"
+        servers = load_config()["mcp_servers"]
+        assert "EVNAtlassianMCP" in servers
+        assert "AtlassianMCP" not in servers
+
+    def test_catalog_install_secondary_instance_does_not_touch_shared_dotenv(self):
+        """A secondary instance's credentials must never be persisted to the
+        shared ~/.hermes/.env -- both instances declare the same env-var
+        names (JIRA_URL, JIRA_PERSONAL_TOKEN), so writing a second tenant's
+        values there would silently overwrite the default instance's
+        values. They must instead be embedded literally in the secondary
+        instance's own mcp_servers.<name>.env block.
+
+        Reads the .env file directly (not get_env_value(), which also
+        checks the real process os.environ -- pollutable by other tests/
+        the host's real environment) to keep this assertion precise.
+        """
+        from unittest.mock import patch
+        from hermes_cli.config import read_raw_config, get_env_path
+
+        with patch("tools.mcp_tool.reconnect_mcp_server", return_value=[]):
+            r = self.client.post(
+                "/api/mcp/catalog/install",
+                json={
+                    "name": "AtlassianMCP",
+                    "instance_name": "EVNAtlassianMCP",
+                    "env": {
+                        "JIRA_URL": "https://evn.example.com",
+                        "JIRA_PERSONAL_TOKEN": "onprem-pat",
+                    },
+                },
+            )
+        assert r.status_code == 200, r.text
+        env_path = get_env_path()
+        dotenv_content = env_path.read_text() if env_path.exists() else ""
+        assert "JIRA_URL" not in dotenv_content
+        assert "JIRA_PERSONAL_TOKEN" not in dotenv_content
+        servers = read_raw_config()["mcp_servers"]
+        assert servers["EVNAtlassianMCP"]["env"] == {
+            "JIRA_URL": "https://evn.example.com",
+            "JIRA_PERSONAL_TOKEN": "onprem-pat",
+        }
+
+    def test_catalog_install_ignores_instance_name_for_non_multi_instance_mcp(self):
+        """Only AtlassianMCP/TempoMCP are multi-instance-capable -- a client
+        sending `instance_name` for any other catalog entry must not be able
+        to rename that entry's config key."""
+        from unittest.mock import patch
+        from hermes_cli.config import load_config
+
+        with patch("tools.mcp_tool.reconnect_mcp_server", return_value=[]):
+            r = self.client.post(
+                "/api/mcp/catalog/install",
+                json={
+                    "name": "GithubMCP",
+                    "instance_name": "SomethingElseMCP",
+                },
+            )
+        assert r.status_code == 200, r.text
+        assert r.json()["name"] == "GithubMCP"
+        servers = load_config()["mcp_servers"]
+        assert "GithubMCP" in servers
+        assert "SomethingElseMCP" not in servers
+
+    def test_catalog_entry_lists_existing_instances(self):
+        """The catalog listing surfaces `instances` for multi-instance-
+        capable entries, so the UI can populate a "create new / edit
+        existing" dropdown without a second round-trip."""
+        from unittest.mock import patch
+        from hermes_cli.config import save_env_value
+
+        save_env_value("JIRA_URL", "https://example.atlassian.net")
+        save_env_value("JIRA_API_TOKEN", "tok_xyz")
+        with patch("tools.mcp_tool.reconnect_mcp_server", return_value=[]):
+            self.client.post("/api/mcp/catalog/install", json={"name": "AtlassianMCP"})
+            self.client.post(
+                "/api/mcp/catalog/install",
+                json={"name": "AtlassianMCP", "instance_name": "EVNAtlassianMCP"},
+            )
+
+        entries = {e["name"]: e for e in self.client.get("/api/mcp/catalog").json()["entries"]}
+        assert entries["AtlassianMCP"]["multi_instance"] is True
+        assert set(entries["AtlassianMCP"]["instances"]) == {"AtlassianMCP", "EVNAtlassianMCP"}
+        # A non-multi-instance entry never reports instances.
+        other = next(iter(
+            e for e in entries.values() if not e.get("multi_instance")
+        ))
+        assert other["instances"] == []
+
 
 
 class TestCredentialPoolEndpoints:
