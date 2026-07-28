@@ -59,6 +59,14 @@ _VAULT_SCAN_EXCLUDED_DIRS = frozenset({
     "dist", "build", ".pytest_cache", ".mypy_cache", ".tox", ".idea", ".vscode",
 })
 
+# Safety bounds for sync_workspace_vault(): a real personal vault is a
+# bounded set of notes. If the resolved workspace root turns out to be a
+# broad multi-repo dev directory instead (e.g. a coding-agent session whose
+# cwd is the parent of many git checkouts), refuse to index it wholesale --
+# see sync_workspace_vault()'s docstring for the incident this guards against.
+_MAX_VAULT_SCAN_FILES = 2000
+_MAX_VAULT_SYNC_PER_CALL = 200
+
 
 class VaultMetaIndex:
     """Local SQLite Meta-Index providing hybrid BM25 + Vector recall over memory stubs."""
@@ -115,8 +123,19 @@ class VaultMetaIndex:
                 pass
             conn.commit()
 
-    def sync_record(self, record: Dict[str, Any]) -> None:
-        """Upsert a single memory or vault record into the SQLite index."""
+    def sync_record(self, record: Dict[str, Any], *, rebuild_fts: bool = True) -> None:
+        """Upsert a single memory or vault record into the SQLite index.
+
+        `rebuild_fts` triggers a full `doc_fts` rebuild after the upsert.
+        This is O(table size) per call, so bulk syncers (sync_filesystem_vault,
+        sync_workspace_vault, sync_skills_vault, sync_mcp_tools, the JSONL
+        mirror loop in sync_mirror_store) must pass `rebuild_fts=False` and
+        let sync_mirror_store() do a single rebuild at the end of the whole
+        pass -- calling rebuild per-record turns an N-record sync into an
+        O(N * table_size) operation, which is what made every conversation
+        turn hang for 90+ seconds once the memory/skill corpus grew past
+        ~150 records.
+        """
         if not isinstance(record, dict) or not record:
             return
         slug = str(record.get("slug") or record.get("id") or "").strip()
@@ -154,19 +173,45 @@ class VaultMetaIndex:
                     source=excluded.source
             """, (doc_id, slug, doc_path, scope, doc_type, title, content, tags_str, updated_at, vec_json, source))
 
-            # Sync FTS table
-            try:
-                conn.execute("INSERT INTO doc_fts(doc_fts) VALUES('rebuild')")
-            except sqlite3.OperationalError:
-                pass
+            if rebuild_fts:
+                try:
+                    conn.execute("INSERT INTO doc_fts(doc_fts) VALUES('rebuild')")
+                except sqlite3.OperationalError:
+                    pass
             conn.commit()
 
+    def _rebuild_fts(self) -> None:
+        """Rebuild the doc_fts external-content index once, after a bulk sync."""
+        try:
+            with self._get_connection() as conn:
+                conn.execute("INSERT INTO doc_fts(doc_fts) VALUES('rebuild')")
+                conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
     def sync_filesystem_vault(self, vault_dir: Optional[Path] = None) -> int:
-        """Scan and index all local markdown (.md) memory notes from ~/.hermes/memories/."""
+        """Scan and index all local markdown (.md) memory notes from ~/.hermes/memories/.
+
+        Incremental: notes whose mtime is unchanged since the last sync are
+        skipped entirely (see sync_workspace_vault() for the same pattern).
+        Without this, every conversation turn re-embedded and re-committed
+        every memory note unconditionally, which is what made this call take
+        30-90+ seconds once the corpus grew past ~100 notes.
+        """
         if vault_dir is None:
             vault_dir = get_hermes_home() / "memories"
         if not vault_dir.exists():
             return 0
+
+        existing: Dict[str, int] = {}
+        try:
+            with self._get_connection() as conn:
+                rows = conn.execute(
+                    "SELECT slug, updated_at FROM doc_meta WHERE source = 'memory-mirror'"
+                ).fetchall()
+            existing = {row["slug"]: int(row["updated_at"] or 0) for row in rows}
+        except sqlite3.OperationalError:
+            existing = {}
 
         count = 0
         md_files = list(vault_dir.rglob("*.md"))
@@ -192,6 +237,9 @@ class VaultMetaIndex:
                 tags = fm.get("tags") or []
                 updated_at = int(fm.get("updated_at") or int(p.stat().st_mtime))
 
+                if existing.get(slug) == updated_at:
+                    continue  # unchanged since the last sync -- skip re-embedding
+
                 record = {
                     "id": str(p),
                     "slug": slug,
@@ -202,8 +250,9 @@ class VaultMetaIndex:
                     "content": body,
                     "tags": tags if isinstance(tags, list) else [str(tags)],
                     "updated_at": updated_at,
+                    "source": "memory-mirror",
                 }
-                self.sync_record(record)
+                self.sync_record(record, rebuild_fts=False)
                 count += 1
             except Exception:
                 continue
@@ -220,6 +269,19 @@ class VaultMetaIndex:
         never scanned or embedded. Runs incrementally: files whose mtime is
         unchanged since the last sync are skipped entirely, so this stays
         cheap to call on every turn even for a large vault.
+
+        Bails out entirely (returns 0, indexes nothing) if the resolved
+        workspace root contains more than _MAX_VAULT_SCAN_FILES markdown
+        files. A real personal vault is a bounded set of notes; a directory
+        this large is almost certainly a broad multi-repo dev workspace
+        (e.g. a coding-agent session whose cwd is a parent folder of many
+        git checkouts) rather than a vault, and treating every README/docs
+        file in there as a "vault note" both pollutes search results and
+        can turn a single rglob() into a multi-thousand-file, multi-minute
+        scan that blocks the whole turn. Also caps the number of files
+        actually (re-)embedded in a single call at _MAX_VAULT_SYNC_PER_CALL
+        so even a legitimately large first-time vault catches up over a
+        few turns instead of stalling the first one.
 
         The `HermesMemory` subfolder is skipped here since it's a symlink
         into `~/.hermes/memories`, already covered by sync_filesystem_vault().
@@ -244,8 +306,14 @@ class VaultMetaIndex:
         except sqlite3.OperationalError:
             existing = {}
 
-        count = 0
+        candidates: List[Path] = []
         for p in workspace_dir.rglob("*.md"):
+            candidates.append(p)
+            if len(candidates) > _MAX_VAULT_SCAN_FILES:
+                return 0  # not a bounded personal vault -- refuse to index it
+
+        count = 0
+        for p in candidates:
             try:
                 rel_parts = p.relative_to(workspace_dir).parts[:-1]
             except ValueError:
@@ -279,17 +347,34 @@ class VaultMetaIndex:
                 "updated_at": mtime,
                 "source": "vault",
             }
-            self.sync_record(record)
+            self.sync_record(record, rebuild_fts=False)
             count += 1
+            if count >= _MAX_VAULT_SYNC_PER_CALL:
+                break
         return count
 
     def sync_skills_vault(self, skills_dir: Optional[Path] = None) -> int:
-        """Scan and index all installed and bundled skills into the SQLite meta-index."""
+        """Scan and index all installed and bundled skills into the SQLite meta-index.
+
+        Incremental: skills whose updated_at is unchanged since the last
+        sync are skipped (same pattern as sync_workspace_vault()) -- without
+        it, every turn re-embedded and re-committed every skill unconditionally.
+        """
         try:
             from tools.skills_tool import _find_all_skills
             skills = _find_all_skills(skip_disabled=True)
         except Exception:
             return 0
+
+        existing: Dict[str, int] = {}
+        try:
+            with self._get_connection() as conn:
+                rows = conn.execute(
+                    "SELECT slug, updated_at FROM doc_meta WHERE source = 'skill'"
+                ).fetchall()
+            existing = {row["slug"]: int(row["updated_at"] or 0) for row in rows}
+        except sqlite3.OperationalError:
+            existing = {}
 
         count = 0
         for s in skills:
@@ -306,6 +391,10 @@ class VaultMetaIndex:
             body = str(s.get("body") or s.get("content") or "").strip()
 
             slug = f"skill:{name}"
+            updated_at = int(s.get("updated_at") or time.time())
+            if existing.get(slug) == updated_at:
+                continue  # unchanged since the last sync -- skip re-embedding
+
             doc_id = f"skill:{cat}/{name}"
             title = f"Skill: {name}"
             content = f"{desc}\nCategory: {cat}\nTags: {', '.join(tags_list)}\n\n{body[:600]}".strip()
@@ -319,9 +408,10 @@ class VaultMetaIndex:
                 "title": title,
                 "content": content,
                 "tags": tags_list + [cat, "skill"],
-                "updated_at": int(s.get("updated_at") or time.time()),
+                "updated_at": updated_at,
+                "source": "skill",
             }
-            self.sync_record(record)
+            self.sync_record(record, rebuild_fts=False)
             count += 1
         return count
 
@@ -356,13 +446,18 @@ class VaultMetaIndex:
                 "tags": keywords + ["mcp", server_name],
                 "updated_at": int(time.time()),
             }
-            self.sync_record(record)
+            self.sync_record(record, rebuild_fts=False)
             count += 1
         return count
 
     def sync_mirror_store(self, jsonl_path: Optional[Path] = None) -> int:
         """Sync all records from MCP_MIRROR_MEMORY.jsonl, filesystem vault, workspace
-        vault notes, skills, and MCP tools into SQLite."""
+        vault notes, skills, and MCP tools into SQLite.
+
+        Rebuilds the doc_fts index exactly once at the end of this pass
+        (not once per record -- see sync_record()'s rebuild_fts docstring),
+        and only when something actually changed.
+        """
         if jsonl_path is None:
             jsonl_path = get_hermes_home() / "memories" / "MCP_MIRROR_MEMORY.jsonl"
 
@@ -373,23 +468,25 @@ class VaultMetaIndex:
             pass
         count += self.sync_skills_vault()
         count += self.sync_mcp_tools()
-        if not jsonl_path.exists():
-            return count
 
-        try:
-            for line in jsonl_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                    if isinstance(row, dict):
-                        self.sync_record(row)
-                        count += 1
-                except Exception:
-                    continue
-        except OSError:
-            pass
+        if jsonl_path.exists():
+            try:
+                for line in jsonl_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                        if isinstance(row, dict):
+                            self.sync_record(row, rebuild_fts=False)
+                            count += 1
+                    except Exception:
+                        continue
+            except OSError:
+                pass
+
+        if count > 0:
+            self._rebuild_fts()
         return count
 
     def hybrid_search(
