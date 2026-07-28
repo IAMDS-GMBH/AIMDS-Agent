@@ -245,7 +245,9 @@ export function useStatusbarItems({
 
     const label = applying
       ? `${base} · ${updateApply.stage === 'restart' ? copy.restart : copy.update}`
-      : `${base}${behindHint}`
+      : !applying && behind > 0
+        ? `${base} · ✨ Update (+${behind})`
+        : base
 
     const tooltip = [
       applying ? updateApply.message || copy.updateInProgress : null,
@@ -258,10 +260,19 @@ export function useStatusbarItems({
       .join(' · ')
 
     return {
-      className: !applying && behind > 0 ? 'text-primary hover:text-primary' : undefined,
-      detail: appVersion && sha && !applying && !remote ? sha : undefined,
+      className:
+        !applying && behind > 0
+          ? 'rounded-full bg-primary/15 text-primary hover:bg-primary/25 border border-primary/30 px-2.5 py-0.5 font-medium transition-colors'
+          : undefined,
+      detail: appVersion && sha && !applying && !remote && behind === 0 ? sha : undefined,
       hidden: !appVersion && !sha,
-      icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
+      icon: applying ? (
+        <Loader2 className="size-3 animate-spin" />
+      ) : !applying && behind > 0 ? (
+        <Sparkles className="size-3 text-primary animate-pulse" />
+      ) : (
+        <Hash className="size-3" />
+      ),
       id: 'version-client',
       label,
       onSelect: () => openUpdateOverlayFor('client'),
@@ -294,7 +305,9 @@ export function useStatusbarItems({
 
     const label = applying
       ? `${base} · ${backendUpdateApply.stage === 'restart' ? copy.restart : copy.update}`
-      : `${base}${behindHint}`
+      : !applying && behind > 0
+        ? `${base} · ✨ Update (+${behind})`
+        : base
 
     const tooltip = [
       applying ? backendUpdateApply.message || copy.updateInProgress : null,
@@ -305,9 +318,18 @@ export function useStatusbarItems({
       .join(' · ')
 
     return {
-      className: !applying && behind > 0 ? 'text-primary hover:text-primary' : undefined,
+      className:
+        !applying && behind > 0
+          ? 'rounded-full bg-primary/15 text-primary hover:bg-primary/25 border border-primary/30 px-2.5 py-0.5 font-medium transition-colors'
+          : undefined,
       hidden: !backendVersion,
-      icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
+      icon: applying ? (
+        <Loader2 className="size-3 animate-spin" />
+      ) : !applying && behind > 0 ? (
+        <Sparkles className="size-3 text-primary animate-pulse" />
+      ) : (
+        <Hash className="size-3" />
+      ),
       id: 'version-backend',
       label,
       onSelect: () => openUpdateOverlayFor('backend'),
