@@ -277,6 +277,45 @@ class TestPowerShellCredentialConsumption:
         assert 'Apply-BootstrapCredentials' in func_body, \
             "Apply-BootstrapCredentials not called in Copy-ConfigTemplates"
 
+    def test_appdata_guarded_before_use_in_copy_config_templates(self):
+        """`$env:APPDATA` can be unset (e.g. a stripped service/scheduled-task
+        environment), and Join-Path throws when passed a null Path argument --
+        reproduced live via pwsh as the config-templates stage crashing with
+        a bare, unlocatable "Object reference not set to an instance of an
+        object." Every other environment-variable-derived path in this file
+        (`$env:LOCALAPPDATA`) is guarded with an `if ($env:...)` check before
+        use; `$env:APPDATA` must be too.
+        """
+        install_ps1 = REPO_ROOT / "scripts" / "install.ps1"
+        content = install_ps1.read_text()
+
+        match = re.search(
+            r'function Copy-ConfigTemplates\s*{.*?^}',
+            content,
+            re.MULTILINE | re.DOTALL,
+        )
+        assert match, "Copy-ConfigTemplates function not found"
+        func_body = match.group(0)
+
+        # Comment mentions aside, the only two real usages are the guard's own
+        # condition and the `Join-Path $env:APPDATA ...` call it protects --
+        # assert the guard exists and the risky Join-Path call appears after it
+        # (i.e. inside the guarded block), rather than trying to fully parse
+        # PowerShell block nesting with a regex.
+        guard_idx = func_body.find('if ($env:APPDATA)')
+        assert guard_idx != -1, (
+            "Copy-ConfigTemplates must guard $env:APPDATA with `if ($env:APPDATA) { ... }` "
+            "before using it -- Join-Path throws when passed a null Path argument, which is "
+            "how a bare, unlocatable NullReferenceException from this stage was reproduced."
+        )
+        join_path_idx = func_body.find("Join-Path $env:APPDATA")
+        assert join_path_idx != -1, "Expected a `Join-Path $env:APPDATA ...` call in Copy-ConfigTemplates"
+        assert join_path_idx > guard_idx, (
+            "Join-Path $env:APPDATA ... must appear inside the `if ($env:APPDATA)` guard"
+        )
+
+
+
 
 class TestTauriCredentialsThreading:
     """Test credentials struct and threading in Tauri layer."""

@@ -3246,12 +3246,23 @@ function Copy-ConfigTemplates {
 
     # Seed Electron localStorage so Hermes Desktop picks up the working
     # directory on first launch.
-    $seedScript = Join-Path $InstallDir 'installer\scripts\seed-workspace-cwd.py'
-    $leveldbDir = Join-Path $env:APPDATA 'Hermes\Local Storage\leveldb'
-    $pythonExeForSeed = "$InstallDir\venv\Scripts\python.exe"
-    if ((Test-Path $seedScript) -and (Test-Path $pythonExeForSeed)) {
-        Remove-Item -Recurse -Force $leveldbDir -ErrorAction SilentlyContinue
-        & $pythonExeForSeed $seedScript $leveldbDir $hermesWorkDir | Out-Null
+    # $env:APPDATA is normally always set for an interactive Windows user,
+    # but Join-Path throws (observed in the field as a bare "Object reference
+    # not set to an instance of an object." with no indication which
+    # statement threw it) when it's unexpectedly empty -- e.g. a stripped
+    # environment from a service/scheduled-task context. Guard it like the
+    # existing $env:LOCALAPPDATA checks elsewhere in this file instead of
+    # trusting it's always present.
+    if ($env:APPDATA) {
+        $seedScript = Join-Path $InstallDir 'installer\scripts\seed-workspace-cwd.py'
+        $leveldbDir = Join-Path $env:APPDATA 'Hermes\Local Storage\leveldb'
+        $pythonExeForSeed = "$InstallDir\venv\Scripts\python.exe"
+        if ((Test-Path $seedScript) -and (Test-Path $pythonExeForSeed)) {
+            Remove-Item -Recurse -Force $leveldbDir -ErrorAction SilentlyContinue
+            & $pythonExeForSeed $seedScript $leveldbDir $hermesWorkDir | Out-Null
+        }
+    } else {
+        Write-Warn "Skipping Electron localStorage seed: `$env:APPDATA is not set"
     }
     
     # Keep parity with AIMDS installer mechanics: always overwrite SOUL.md
@@ -4456,6 +4467,17 @@ function Invoke-Stage {
     } catch {
         $result.ok = $false
         $result.reason = "$_"
+        # The JSON `reason` field is a bare exception message (e.g. a generic
+        # "Object reference not set to an instance of an object." for a
+        # NullReferenceException carries no clue which statement threw it).
+        # Log the full script stack trace to stdout (captured into
+        # bootstrap-installer.log by the Tauri host) so a failure can
+        # actually be diagnosed from field logs instead of only being
+        # reproducible on the reporter's own machine.
+        Write-Warn "Stage '$($StageDef.Name)' failed: $_"
+        if ($_.ScriptStackTrace) {
+            Write-Warn "Stack trace:`n$($_.ScriptStackTrace)"
+        }
         throw
     } finally {
         $result.duration_ms = [int]([DateTime]::UtcNow - $start).TotalMilliseconds
