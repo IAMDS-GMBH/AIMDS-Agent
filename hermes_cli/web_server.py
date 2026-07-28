@@ -8206,7 +8206,14 @@ async def list_mcp_catalog(profile: Optional[str] = None):
 # on-prem Server/DC, or multiple tenants) and the same applies to Tempo
 # (which is tied 1:1 to an Atlassian instance). Every other MCP keeps
 # today's single-instance-per-catalog-name behavior.
-_MULTI_INSTANCE_CATALOG_NAMES = frozenset({"AtlassianMCP", "TempoMCP"})
+_MULTI_INSTANCE_CATALOG_NAMES = frozenset({
+    "AtlassianMCP",
+    "TempoMCP",
+    "MSOffice365MCP",
+    "EntwicklerMCP",
+    "MemoryMCP",
+    "DevMemoryMCP",
+})
 
 
 class MCPCatalogInstall(BaseModel):

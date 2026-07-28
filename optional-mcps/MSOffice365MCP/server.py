@@ -215,13 +215,25 @@ except ImportError:
         _save_msal_cache(app, cache_path=_get_token_cache_path())
 
 
-def _get_access_token() -> str:
+def _get_access_token(account: Optional[str] = None) -> str:
     # 1. Try MSAL token cache with silent refresh first (single source of truth)
     app = _get_msal_app()
     accounts = app.get_accounts()
 
     if accounts:
-        for acc in accounts:
+        target_accounts = accounts
+        if account and str(account).strip():
+            ident = str(account).strip().lower()
+            matched = [
+                a for a in accounts
+                if ident in (a.get("username") or "").lower()
+                or ident in (a.get("name") or "").lower()
+                or ident == (a.get("home_account_id") or "").lower()
+            ]
+            if matched:
+                target_accounts = matched
+
+        for acc in target_accounts:
             # Try the full scope superset first: if a tenant admin has
             # already granted org-wide consent (m365_generate_admin_consent_url),
             # this silently succeeds with zero extra prompts for every user
@@ -281,8 +293,9 @@ def _graph_request(
     json_data: Optional[Dict[str, Any]] = None,
     params: Optional[Dict[str, Any]] = None,
     extra_headers: Optional[Dict[str, str]] = None,
+    account: Optional[str] = None,
 ) -> Any:
-    token = _get_access_token()
+    token = _get_access_token(account=account)
     tz_name = _get_timezone_name()
     headers = {
         "Authorization": f"Bearer {token}",
@@ -443,6 +456,41 @@ def _build_teams_attachments(file_paths: List[str]) -> Tuple[List[Dict[str, Any]
 
 
 @mcp.tool()
+def m365_list_accounts() -> str:
+    """List all connected M365 accounts in the MSAL cache.
+
+    Returns a JSON string listing all accounts with username, display name, and default indicator.
+    """
+    try:
+        app = _get_msal_app()
+        accounts = app.get_accounts()
+        if not accounts:
+            return json.dumps({
+                "connected": False,
+                "accounts": [],
+                "message": "No M365 accounts connected. Use device flow to sign in.",
+            })
+        acc_list = []
+        for idx, acc in enumerate(accounts):
+            username = acc.get("username") or acc.get("preferred_username") or ""
+            name = acc.get("name") or username
+            acc_list.append({
+                "index": idx,
+                "username": username,
+                "name": name,
+                "home_account_id": acc.get("home_account_id") or "",
+                "is_default": idx == 0,
+            })
+        return json.dumps({
+            "connected": True,
+            "count": len(acc_list),
+            "accounts": acc_list,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"connected": False, "error": str(e)})
+
+
+@mcp.tool()
 def m365_generate_admin_consent_url(
     redirect_uri: str = "http://localhost:8400",
 ) -> Dict[str, Any]:
@@ -535,9 +583,13 @@ def m365_complete_login(flow_data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def m365_get_user_profile() -> Dict[str, Any]:
-    """Get the current authenticated user profile from Microsoft 365."""
-    return _graph_request("GET", "/me")
+def m365_get_user_profile(account: Optional[str] = None) -> Dict[str, Any]:
+    """Get the current authenticated user profile from Microsoft 365.
+
+    Args:
+        account: Optional account username, email, or account ID to use.
+    """
+    return _graph_request("GET", "/me", account=account)
 
 
 @mcp.tool()
@@ -586,6 +638,7 @@ def m365_send_email(
     is_html: bool = True,
     save_to_sent_items: bool = True,
     attachments: Optional[List[str]] = None,
+    account: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Send an email using Outlook Mail. Ensures saveToSentItems is respected.
 
@@ -600,6 +653,7 @@ def m365_send_email(
         attachments: Optional local file paths to attach. Each file is inlined as
             base64, so the combined size must stay under ~3 MB -- for larger files,
             upload to OneDrive first (m365_list_drive_files) and share the link instead.
+        account: Optional M365 account username, email, or ID to send from.
     """
     recipients = [{"emailAddress": {"address": addr.strip()}} for addr in to]
     final_body = body
@@ -630,11 +684,16 @@ def m365_send_email(
         "message": message,
         "saveToSentItems": save_to_sent_items,
     }
-    return _graph_request("POST", "/me/sendMail", json_data=payload)
+    return _graph_request("POST", "/me/sendMail", json_data=payload, account=account)
 
 
 @mcp.tool()
-def m365_list_emails(top: int = 10, search: Optional[str] = None, folder: str = "inbox") -> Dict[str, Any]:
+def m365_list_emails(
+    top: int = 10,
+    search: Optional[str] = None,
+    folder: str = "inbox",
+    account: Optional[str] = None,
+) -> Dict[str, Any]:
     """List recent emails from an Outlook mail folder.
 
     Args:
@@ -643,13 +702,14 @@ def m365_list_emails(top: int = 10, search: Optional[str] = None, folder: str = 
         folder: Well-known folder name, e.g. 'inbox' (default) or 'sentitems'
             (use 'sentitems' to inspect the user's own sent mail, for example
             to derive their email signature/closing and writing style).
+        account: Optional M365 account username, email, or ID.
     """
     params = {"$top": min(top, 50), "$select": "id,subject,from,receivedDateTime,isRead,bodyPreview"}
     if search:
         params["$search"] = f'"{search}"'
     folder_segment = (folder or "inbox").strip() or "inbox"
     endpoint = "/me/messages" if folder_segment == "inbox" else f"/me/mailFolders/{folder_segment}/messages"
-    res = _graph_request("GET", endpoint, params=params)
+    res = _graph_request("GET", endpoint, params=params, account=account)
     if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
         for msg in res["value"]:
             if isinstance(msg, dict) and "receivedDateTime" in msg:
@@ -658,9 +718,9 @@ def m365_list_emails(top: int = 10, search: Optional[str] = None, folder: str = 
 
 
 @mcp.tool()
-def m365_get_email(message_id: str) -> Dict[str, Any]:
+def m365_get_email(message_id: str, account: Optional[str] = None) -> Dict[str, Any]:
     """Get full details of a specific Outlook email message."""
-    msg = _graph_request("GET", f"/me/messages/{message_id}")
+    msg = _graph_request("GET", f"/me/messages/{message_id}", account=account)
     if isinstance(msg, dict) and "receivedDateTime" in msg:
         msg["receivedDateTime_local"] = _format_timestamp_local(msg.get("receivedDateTime"))
     return msg

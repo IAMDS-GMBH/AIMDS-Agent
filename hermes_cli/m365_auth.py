@@ -30,6 +30,54 @@ def has_valid_msal_cache() -> bool:
         return False
 
 
+def list_msal_accounts() -> list[dict[str, Any]]:
+    """Return a list of all M365 accounts currently stored in the MSAL cache."""
+    try:
+        app = get_msal_app()
+        accounts = app.get_accounts()
+        result = []
+        for acc in accounts:
+            username = acc.get("username") or acc.get("preferred_username") or ""
+            home_account_id = acc.get("home_account_id") or ""
+            name = acc.get("name") or username
+            realm = acc.get("realm") or ""
+            result.append({
+                "username": username,
+                "name": name,
+                "home_account_id": home_account_id,
+                "realm": realm,
+                "account_object": acc,
+            })
+        return result
+    except Exception:
+        return []
+
+
+def get_msal_account_by_identifier(account_identifier: Optional[str] = None) -> Optional[Any]:
+    """Retrieve MSAL account object by username/email substring or home_account_id.
+
+    If account_identifier is None or empty, returns the first/default account if available.
+    """
+    try:
+        app = get_msal_app()
+        accounts = app.get_accounts()
+        if not accounts:
+            return None
+        if not account_identifier or not str(account_identifier).strip():
+            return accounts[0]
+
+        ident = str(account_identifier).strip().lower()
+        for acc in accounts:
+            username = (acc.get("username") or "").lower()
+            name = (acc.get("name") or "").lower()
+            home_id = (acc.get("home_account_id") or "").lower()
+            if ident in username or ident in name or ident == home_id:
+                return acc
+        return accounts[0]
+    except Exception:
+        return None
+
+
 def get_msal_app(
     client_id: Optional[str] = None,
     tenant_id: Optional[str] = None,
