@@ -1645,8 +1645,15 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
         workspace_path = str(resolve_agent_cwd())
     except Exception:
         workspace_path = ""
+
+    obsidian_vault_path = os.environ.get("OBSIDIAN_VAULT_PATH") or os.path.expanduser("~/Documents/AIMDS-Suite-Vault")
+
     workspace_line = (
-        f"The local workspace and primary Obsidian Vault root is `{workspace_path}` (contains `_inbox/`, `_templates/`, `contacts/`, `decisions/`, `documents/`, `ideas/`, `journal/`, `knowledge/`, `meetings/`, `notes/`, `projects/`, `tasks/`, `HermesMemory`). Use `search_tool`/`read_file` on that path to look "
+        f"The active user execution directory / CWD is `{workspace_path}`. "
+        f"The canonical primary Obsidian Vault root for markdown notes, templates, knowledge, and documents is `{obsidian_vault_path}` "
+        "(contains `_inbox/`, `_templates/`, `contacts/`, `decisions/`, `documents/`, `ideas/`, `journal/`, `knowledge/`, `meetings/`, `notes/`, `projects/`, `tasks/`, `HermesMemory`). "
+        f"DEFAULT RULE FOR DOCUMENT/NOTE CREATION: By default, save all created or generated markdown files, notes, specs, summaries, and meeting records inside `{obsidian_vault_path}/<subfolder>/` "
+        "unless the user explicitly specifies a different custom path or target directory. Use `search_tool`/`read_file` on that path to look "
         "things up; never invent or guess paths (e.g. `.brain`) that were not returned by a tool.\n"
         if workspace_path
         else ""
