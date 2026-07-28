@@ -638,6 +638,7 @@ def _microsoft_device_code_login(
     result = app.acquire_token_by_device_flow(flow)
     if result and "access_token" in result:
         save_msal_cache(app)
+        _enable_m365_toolset_for_cli()
         return result["access_token"]
     return None
 

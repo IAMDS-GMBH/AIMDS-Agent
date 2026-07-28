@@ -6741,6 +6741,11 @@ def _microsoft_device_code_worker(session_id: str, app_obj: Any, flow: Dict[str,
         from hermes_cli.m365_auth import save_msal_cache
         save_msal_cache(app_obj)
         save_env_value("M365_ACCESS_TOKEN", token)
+        try:
+            from hermes_cli.mcp_catalog import _enable_m365_toolset_for_cli
+            _enable_m365_toolset_for_cli()
+        except Exception as exc:
+            _log.warning("oauth/device: failed to auto-enable MSOffice365MCP after login: %s", exc)
         with _oauth_sessions_lock:
             sess["status"] = "approved"
         _log.info("oauth/device: microsoft login completed (session=%s)", session_id)
