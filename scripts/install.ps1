@@ -3020,7 +3020,7 @@ function Copy-ConfigTemplates {
                         Copy-Item -Path "$legacyMem\*" -Destination $memoryTarget -Recurse -Force -ErrorAction SilentlyContinue
                     }
                 }
-                $backupPath = "$legacyMem.backup.$([int][double]::Parse((Get-Date -UFormat %s)))"
+                $backupPath = "$legacyMem.backup.$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
                 try {
                     Invoke-WithRetry -Action { Move-Item -Path $legacyMem -Destination $backupPath -Force -ErrorAction Stop }
                 } catch {
@@ -3097,7 +3097,7 @@ function Copy-ConfigTemplates {
                     Copy-Item -Path "$hermesMemoryDir\*" -Destination $memoryTarget -Recurse -Force -ErrorAction SilentlyContinue
                 }
             }
-            $backupPath = "$hermesMemoryDir.backup.$([int][double]::Parse((Get-Date -UFormat %s)))"
+            $backupPath = "$hermesMemoryDir.backup.$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
             try {
                 Invoke-WithRetry -Action { Move-Item -Path $hermesMemoryDir -Destination $backupPath -Force -ErrorAction Stop }
             } catch {
@@ -3769,7 +3769,7 @@ function Install-Desktop {
         if (Test-Path $rootPkgPath) {
             try {
                 $rootPkgJson = Get-Content $rootPkgPath -Raw | ConvertFrom-Json
-                if ($rootPkgJson.overrides.'@assistant-ui/store' -and $rootPkgJson.overrides.'@assistant-ui/tap') {
+                if ($rootPkgJson -and $rootPkgJson.overrides -and $rootPkgJson.overrides.'@assistant-ui/store' -and $rootPkgJson.overrides.'@assistant-ui/tap') {
                     $hasWorkspaceOverrides = $true
                 }
             } catch { }
