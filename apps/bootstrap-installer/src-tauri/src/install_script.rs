@@ -251,14 +251,15 @@ pub async fn resolve(
         }
     }
 
+    let force_remote = std::env::var("HERMES_FORCE_REMOTE_INSTALL_SCRIPT")
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false);
+
     // 2. Bundled fallback. This is the default for shipped installers so the
     // build always executes the scripts from the same checkout it was built
     // from. Set HERMES_FORCE_REMOTE_INSTALL_SCRIPT=1 to bypass this during
     // debugging and fetch from GitHub instead.
-    if std::env::var("HERMES_FORCE_REMOTE_INSTALL_SCRIPT")
-        .map(|v| v.trim() != "1")
-        .unwrap_or(true)
-    {
+    if !force_remote {
         let bundled = bundled_path(kind);
         materialize_bundled_script(kind, &bundled)?;
 
@@ -279,24 +280,29 @@ pub async fn resolve(
         });
     }
 
-    // 3. Network. Pin must be a real commit or a branch ref.
-    let commit_or_ref = match (&pin.commit, &pin.branch) {
-        (Some(c), _) if is_valid_commit(c) => c.clone(),
-        (_, Some(b)) if !b.trim().is_empty() => b.clone(),
-        (Some(other), _) => {
-            return Err(anyhow!(
-                "install script pin commit `{other}` is not a valid git SHA"
-            ));
-        }
-        _ => {
-            return Err(anyhow!(
-                "no install-script pin supplied — installer cannot resolve a script source"
-            ));
+    // 3. Network. When force_remote is requested, prefer branch (e.g. main)
+    // over a stale compiled commit SHA, so live remote fixes are used.
+    let commit_or_ref = if force_remote && pin.branch.is_some() {
+        pin.branch.clone().unwrap()
+    } else {
+        match (&pin.commit, &pin.branch) {
+            (Some(c), _) if is_valid_commit(c) => c.clone(),
+            (_, Some(b)) if !b.trim().is_empty() => b.clone(),
+            (Some(other), _) => {
+                return Err(anyhow!(
+                    "install script pin commit `{other}` is not a valid git SHA"
+                ));
+            }
+            _ => {
+                return Err(anyhow!(
+                    "no install-script pin supplied — installer cannot resolve a script source"
+                ));
+            }
         }
     };
 
     let cached = cached_path(kind, &commit_or_ref);
-    if cached.exists() {
+    if cached.exists() && !force_remote {
         emit_log(&format!(
             "[bootstrap] using cached {} for {}",
             kind.filename(),
