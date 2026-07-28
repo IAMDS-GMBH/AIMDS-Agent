@@ -148,11 +148,7 @@ except ImportError:
 
 
 def _get_access_token() -> str:
-    # 1. Check direct env token
-    direct_token = os.environ.get("M365_ACCESS_TOKEN")
-    if direct_token:
-        return direct_token
-
+    # 1. Try MSAL token cache with silent refresh first (single source of truth)
     app = _get_msal_app()
     accounts = app.get_accounts()
 
@@ -170,6 +166,11 @@ def _get_access_token() -> str:
             if result and "access_token" in result:
                 _save_cache(app)
                 return result["access_token"]
+
+    # 2. Legacy fallback: explicit M365_ACCESS_TOKEN env var if set and no cached MSAL account exists
+    direct_token = os.environ.get("M365_ACCESS_TOKEN")
+    if direct_token:
+        return direct_token
 
     # 2. Check if running in interactive --login CLI mode
     if "--login" in sys.argv:
