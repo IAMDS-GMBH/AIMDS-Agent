@@ -21,6 +21,15 @@ def get_m365_token_cache_path() -> Path:
     return cache_dir / "m365_token_cache.bin"
 
 
+def has_valid_msal_cache() -> bool:
+    """Return True if the shared M365 MSAL cache file exists and contains accounts."""
+    try:
+        app = get_msal_app()
+        return bool(app.get_accounts())
+    except Exception:
+        return False
+
+
 def get_msal_app(
     client_id: Optional[str] = None,
     tenant_id: Optional[str] = None,

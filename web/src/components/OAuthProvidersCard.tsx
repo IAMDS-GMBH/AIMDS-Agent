@@ -5,11 +5,15 @@ import {
   ExternalLink,
   RefreshCw,
   Terminal,
+  Settings2,
+  Check,
 } from "lucide-react";
 import { api, type OAuthProvider } from "@/lib/api";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { CopyButton } from "@nous-research/ui/ui/components/command-block";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Input } from "@nous-research/ui/ui/components/input";
+import { Label } from "@nous-research/ui/ui/components/label";
 import {
   Card,
   CardContent,
@@ -56,6 +60,10 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   const [loginFor, setLoginFor] = useState<OAuthProvider | null>(null);
   const [disconnectTarget, setDisconnectTarget] =
     useState<OAuthProvider | null>(null);
+  const [m365ConfigOpen, setM365ConfigOpen] = useState(false);
+  const [m365ClientId, setM365ClientId] = useState("");
+  const [m365TenantId, setM365TenantId] = useState("");
+  const [savingM365, setSavingM365] = useState(false);
   const { t } = useI18n();
 
   const onErrorRef = useRef(onError);
@@ -73,6 +81,48 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  const openM365Config = async () => {
+    try {
+      const vars = await api.getEnvVars();
+      let cid = "";
+      let tid = "";
+      if (vars["M365_CLIENT_ID"]?.is_set) {
+        cid = await api.revealEnvVar("M365_CLIENT_ID").then((r) => r.value).catch(() => "");
+      }
+      if (vars["M365_TENANT_ID"]?.is_set) {
+        tid = await api.revealEnvVar("M365_TENANT_ID").then((r) => r.value).catch(() => "");
+      }
+      setM365ClientId(cid);
+      setM365TenantId(tid);
+    } catch {
+      // ignore
+    }
+    setM365ConfigOpen(true);
+  };
+
+  const saveM365Config = async () => {
+    setSavingM365(true);
+    try {
+      if (m365ClientId.trim()) {
+        await api.setEnvVar("M365_CLIENT_ID", m365ClientId.trim());
+      } else {
+        await api.deleteEnvVar("M365_CLIENT_ID");
+      }
+      if (m365TenantId.trim()) {
+        await api.setEnvVar("M365_TENANT_ID", m365TenantId.trim());
+      } else {
+        await api.deleteEnvVar("M365_TENANT_ID");
+      }
+      onSuccess?.("Microsoft 365 Client ID / Tenant ID settings updated");
+      setM365ConfigOpen(false);
+      refresh();
+    } catch (e) {
+      onError?.(`Failed to save M365 settings: ${e}`);
+    } finally {
+      setSavingM365(false);
+    }
+  };
 
   const handleDisconnect = async (provider: OAuthProvider) => {
     setBusyId(provider.id);
@@ -214,6 +264,16 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0">
+                  {p.id === "microsoft" && (
+                    <Button
+                      ghost
+                      size="icon"
+                      onClick={openM365Config}
+                      title="Configure custom M365 Client ID & Tenant ID"
+                    >
+                      <Settings2 className="h-4 w-4" />
+                    </Button>
+                  )}
                   {p.docs_url && (
                     <a
                       href={p.docs_url}
@@ -282,6 +342,54 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
         destructive
         confirmLabel={t.oauth.disconnect}
       />
+      {m365ConfigOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
+          onClick={(e) => e.target === e.currentTarget && setM365ConfigOpen(false)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="relative w-full max-w-md border border-border bg-card p-6 shadow-2xl flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-semibold">Microsoft 365 App Registration</h3>
+              <Button ghost size="icon" onClick={() => setM365ConfigOpen(false)}>
+                ✕
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Configure custom Azure AD Application (Client) ID and Tenant ID. Leave blank to use default multi-tenant settings.
+            </p>
+            <div className="grid gap-3">
+              <div className="grid gap-1.5">
+                <Label htmlFor="m365-client-id">M365 Client ID</Label>
+                <Input
+                  id="m365-client-id"
+                  value={m365ClientId}
+                  onChange={(e) => setM365ClientId(e.target.value)}
+                  placeholder="e.g. 41c29967-8ee6-4fac-b484-e87460272bda"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="m365-tenant-id">M365 Tenant ID</Label>
+                <Input
+                  id="m365-tenant-id"
+                  value={m365TenantId}
+                  onChange={(e) => setM365TenantId(e.target.value)}
+                  placeholder="e.g. organizations or tenant UUID"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-2">
+              <Button outlined onClick={() => setM365ConfigOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={saveM365Config} disabled={savingM365}>
+                {savingM365 ? <Spinner /> : "Save"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </Card>
   );
 }

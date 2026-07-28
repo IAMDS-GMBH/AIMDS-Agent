@@ -3631,6 +3631,18 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "M365_CLIENT_ID": {
+        "description": "Microsoft 365 / Azure AD application (client) ID for M365 OAuth & MSOffice365MCP",
+        "prompt": "M365 Client ID",
+        "url": "https://portal.azure.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/RegisteredApps",
+        "category": "mcp",
+    },
+    "M365_TENANT_ID": {
+        "description": "Microsoft 365 / Azure AD tenant ID ('organizations', 'common', or custom tenant ID)",
+        "prompt": "M365 Tenant ID",
+        "url": "https://portal.azure.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/Overview",
+        "category": "mcp",
+    },
 
     # ── Bundled skills (opt-in: only needed if the user uses that skill) ──
     # These use category="skill" (distinct from "tool") so the sandbox

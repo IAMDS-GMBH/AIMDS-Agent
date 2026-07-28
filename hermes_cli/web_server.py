@@ -4027,6 +4027,16 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
         "prompt": "Azure AD Tenant ID",
         "url": "https://portal.azure.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/Overview",
     },
+    "M365_CLIENT_ID": {
+        "description": "Microsoft 365 Azure AD application (client) ID for M365 OAuth",
+        "prompt": "M365 Application (Client) ID",
+        "url": "https://portal.azure.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/RegisteredApps",
+    },
+    "M365_TENANT_ID": {
+        "description": "Microsoft 365 Azure AD tenant ID ('organizations', 'common', or tenant UUID)",
+        "prompt": "M365 Tenant ID",
+        "url": "https://portal.azure.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/Overview",
+    },
     "OUTLOOK_CLIENT_ID": {
         "description": "Azure AD application (client) ID with Mail.Read and Mail.Send permissions",
         "prompt": "Azure AD Application (Client) ID",
@@ -4315,9 +4325,8 @@ def _messaging_platform_payload(
     auth_ready = False
     if platform_id == "outlook":
         try:
-            from tools.outlook_tool import _has_valid_token_cache
-
-            auth_ready = bool(_has_valid_token_cache())
+            from hermes_cli.m365_auth import has_valid_msal_cache
+            auth_ready = bool(has_valid_msal_cache())
         except Exception:
             auth_ready = False
 
@@ -5359,6 +5368,23 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
         from hermes_cli import auth as hauth
         if provider_id == "microsoft":
             try:
+                from hermes_cli.m365_auth import get_msal_app, has_valid_msal_cache
+                if has_valid_msal_cache():
+                    app = get_msal_app()
+                    accounts = app.get_accounts()
+                    username = accounts[0].get("username") if accounts else None
+                    label = f"Microsoft 365 Account ({username})" if username else "Microsoft 365 MSAL Cache"
+                    return {
+                        "logged_in": True,
+                        "source": "microsoft_msal",
+                        "source_label": label,
+                        "token_preview": "msal-cached-token",
+                        "expires_at": None,
+                        "has_refresh_token": True,
+                    }
+            except Exception:
+                pass
+            try:
                 from hermes_cli.config import get_env_value
                 token = (get_env_value("M365_ACCESS_TOKEN") or "").strip()
             except Exception:
@@ -5566,9 +5592,16 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
     if provider_id == "microsoft":
         try:
             from hermes_cli.config import save_env_value
+            from hermes_cli.m365_auth import get_m365_token_cache_path
             save_env_value("M365_ACCESS_TOKEN", "")
             os.environ.pop("M365_ACCESS_TOKEN", None)
-            _log.info("oauth/disconnect: microsoft (cleared M365_ACCESS_TOKEN)")
+            cache_path = get_m365_token_cache_path()
+            if cache_path.exists():
+                try:
+                    cache_path.unlink()
+                except Exception:
+                    pass
+            _log.info("oauth/disconnect: microsoft (cleared M365_ACCESS_TOKEN and removed token cache)")
             return {"ok": True, "provider": provider_id}
         except Exception as e:
             _log.exception("disconnect microsoft failed")

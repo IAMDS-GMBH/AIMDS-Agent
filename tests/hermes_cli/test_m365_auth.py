@@ -9,8 +9,29 @@ import pytest
 from hermes_cli.m365_auth import (
     get_m365_token_cache_path,
     get_msal_app,
+    has_valid_msal_cache,
     save_msal_cache,
 )
+
+
+def test_has_valid_msal_cache_returns_true_when_accounts_exist(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.m365_auth.get_msal_app") as mock_get_app:
+        mock_app = MagicMock()
+        mock_app.get_accounts.return_value = [{"username": "user@contoso.com"}]
+        mock_get_app.return_value = mock_app
+
+        assert has_valid_msal_cache() is True
+
+
+def test_has_valid_msal_cache_returns_false_when_no_accounts(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.m365_auth.get_msal_app") as mock_get_app:
+        mock_app = MagicMock()
+        mock_app.get_accounts.return_value = []
+        mock_get_app.return_value = mock_app
+
+        assert has_valid_msal_cache() is False
 
 
 def test_get_m365_token_cache_path_respects_hermes_home(tmp_path, monkeypatch):
