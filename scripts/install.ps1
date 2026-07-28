@@ -3010,7 +3010,7 @@ function Copy-ConfigTemplates {
     foreach ($legacyMem in $legacyMemDirs) {
         if ($legacyMem -ne $hermesMemoryDir -and (Test-Path $legacyMem)) {
             $legacyItem = Get-Item -Path $legacyMem -Force -ErrorAction SilentlyContinue
-            $legacyIsLink = $legacyItem -and (($legacyItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+            $legacyIsLink = $legacyItem -and ($null -ne $legacyItem.Attributes) -and (($legacyItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
             if ($legacyIsLink) {
                 Remove-Item -Path $legacyMem -Force -ErrorAction SilentlyContinue
             } else {
@@ -3032,38 +3032,44 @@ function Copy-ConfigTemplates {
 
     # Seed/repair the managed workspace from installer template (non-destructive):
     # only missing files are copied so existing user files are preserved.
-    $workspaceTemplateSrc = Join-Path $InstallDir 'installer\workspace-template'
-    if (-not (Test-Path $workspaceTemplateSrc)) {
-        $workspaceTemplateSrc = Join-Path $InstallDir 'installer\skills-hidden\aimds-loadout\workspace'
-    }
-    if (Test-Path $workspaceTemplateSrc) {
-        Write-Info "Seeding workspace template into $hermesWorkDir ..."
-        Get-ChildItem -Path $workspaceTemplateSrc -Recurse -Force | ForEach-Object {
-            $relative = $_.FullName.Substring($workspaceTemplateSrc.Length).TrimStart('\','/')
-            if ([string]::IsNullOrWhiteSpace($relative)) { return }
-            $destination = Join-Path $hermesWorkDir $relative
-            if ($_.PSIsContainer) {
-                if (-not (Test-Path $destination)) {
-                    New-Item -ItemType Directory -Force -Path $destination | Out-Null
-                }
-            } else {
-                $parent = Split-Path -Parent $destination
-                if (-not (Test-Path $parent)) {
-                    New-Item -ItemType Directory -Force -Path $parent | Out-Null
-                }
-                if ($_.Name -eq '.gitkeep') {
-                    return
-                }
-                if (-not (Test-Path $destination)) {
-                    Copy-Item -Path $_.FullName -Destination $destination -Force
+    try {
+        $workspaceTemplateSrc = Join-Path $InstallDir 'installer\workspace-template'
+        if (-not (Test-Path $workspaceTemplateSrc)) {
+            $workspaceTemplateSrc = Join-Path $InstallDir 'installer\skills-hidden\aimds-loadout\workspace'
+        }
+        if (Test-Path $workspaceTemplateSrc) {
+            Write-Info "Seeding workspace template into $hermesWorkDir ..."
+            Get-ChildItem -Path $workspaceTemplateSrc -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+                if (-not $_ -or [string]::IsNullOrEmpty($_.FullName)) { return }
+                if ($_.FullName.Length -lt $workspaceTemplateSrc.Length) { return }
+                $relative = $_.FullName.Substring($workspaceTemplateSrc.Length).TrimStart('\','/')
+                if ([string]::IsNullOrWhiteSpace($relative)) { return }
+                $destination = Join-Path $hermesWorkDir $relative
+                if ($_.PSIsContainer) {
+                    if (-not (Test-Path $destination)) {
+                        New-Item -ItemType Directory -Force -Path $destination | Out-Null
+                    }
+                } else {
+                    $parent = Split-Path -Parent $destination
+                    if (-not (Test-Path $parent)) {
+                        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+                    }
+                    if ($_.Name -eq '.gitkeep') {
+                        return
+                    }
+                    if (-not (Test-Path $destination)) {
+                        Copy-Item -Path $_.FullName -Destination $destination -Force
+                    }
                 }
             }
+            # Repair previously-seeded clients: remove .gitkeep placeholders that
+            # were copied before filtering was added.
+            Get-ChildItem -Path $hermesWorkDir -Recurse -Force -Filter '.gitkeep' -File -ErrorAction SilentlyContinue |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+            Write-Success "Workspace template ready at $hermesWorkDir"
         }
-        # Repair previously-seeded clients: remove .gitkeep placeholders that
-        # were copied before filtering was added.
-        Get-ChildItem -Path $hermesWorkDir -Recurse -Force -Filter '.gitkeep' -File -ErrorAction SilentlyContinue |
-            Remove-Item -Force -ErrorAction SilentlyContinue
-        Write-Success "Workspace template ready at $hermesWorkDir"
+    } catch {
+        Write-Warn "Skipping workspace template seeding: $($_.Exception.Message)"
     }
 
     # Expose local memory files in Documents\HermesMemory for user visibility.
@@ -3072,7 +3078,7 @@ function Copy-ConfigTemplates {
     $memoryTarget = "$HermesHome\memories"
     if (Test-Path $hermesMemoryDir) {
         $item = Get-Item -Path $hermesMemoryDir -Force -ErrorAction SilentlyContinue
-        $isLink = $item -and (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+        $isLink = $item -and ($null -ne $item.Attributes) -and (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
         $linkOk = $false
         if ($isLink) {
             try {
