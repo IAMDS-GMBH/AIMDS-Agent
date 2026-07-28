@@ -126,11 +126,13 @@ function Get-WindowsArch {
     try {
         $proc = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop |
             Select-Object -First 1
-        switch ([int]$proc.Architecture) {
-            12 { return "arm64" }
-            9  { return "x64" }
-            0  { return "x86" }
-            5  { return "arm" }
+        if ($proc -and $proc.Architecture -ne $null) {
+            switch ([int]$proc.Architecture) {
+                12 { return "arm64" }
+                9  { return "x64" }
+                0  { return "x86" }
+                5  { return "arm" }
+            }
         }
     } catch {
         # CIM unavailable -- fall through to env-var path
@@ -850,7 +852,8 @@ function Test-Node {
         $arch = Get-WindowsArch
         $indexUrl = "https://nodejs.org/dist/latest-v${NodeVersion}.x/"
         $indexPage = Invoke-WebRequest -Uri $indexUrl -UseBasicParsing
-        $zipName = ($indexPage.Content | Select-String -Pattern "node-v${NodeVersion}\.\d+\.\d+-win-${arch}\.zip" -AllMatches).Matches[0].Value
+        $selectMatch = $indexPage.Content | Select-String -Pattern "node-v${NodeVersion}\.\d+\.\d+-win-${arch}\.zip" -AllMatches
+        $zipName = if ($selectMatch -and $selectMatch.Matches -and $selectMatch.Matches.Count -gt 0) { $selectMatch.Matches[0].Value } else { $null }
 
         if ($zipName) {
             $downloadUrl = "${indexUrl}${zipName}"
@@ -1252,8 +1255,9 @@ function Stop-ProcessesLockingPath {
 
         foreach ($proc in $procs) {
             try {
+                if (-not $proc -or $proc.ProcessId -eq $null) { continue }
                 $procId = [int]$proc.ProcessId
-                if ($procId -eq $PID) { continue }
+                if ($procId -eq 0 -or $procId -eq $PID) { continue }
 
                 $exe = [string]$proc.ExecutablePath
                 $cmd = [string]$proc.CommandLine
@@ -2485,7 +2489,7 @@ function Write-BootstrapMarker {
             try {
                 $resolved = & $gitExe rev-parse HEAD 2>$null
                 if ($LASTEXITCODE -eq 0 -and $resolved) {
-                    $pinnedCommit = $resolved.Trim()
+                    $pinnedCommit = ($resolved | Out-String).Trim()
                 }
             } catch {
                 # Ignore - pinnedCommit stays empty, marker stays invalid,
@@ -2588,9 +2592,10 @@ function Apply-BootstrapCredentials {
         # Replace model.base_url from selected endpoint root
         if (-not [string]::IsNullOrWhiteSpace($effectiveBaseUrl)) {
             $baseRoot = $effectiveBaseUrl.TrimEnd('/')
-            if ($baseRoot.EndsWith('/litellm/v1')) {
+            $baseRootLower = $baseRoot.ToLowerInvariant()
+            if ($baseRootLower.EndsWith('/litellm/v1')) {
                 $baseRoot = $baseRoot.Substring(0, $baseRoot.Length - '/litellm/v1'.Length)
-            } elseif ($baseRoot.EndsWith('/litellm/mcp')) {
+            } elseif ($baseRootLower.EndsWith('/litellm/mcp')) {
                 $baseRoot = $baseRoot.Substring(0, $baseRoot.Length - '/litellm/mcp'.Length)
             }
 
