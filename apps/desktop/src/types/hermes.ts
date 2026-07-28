@@ -49,6 +49,7 @@ export interface OAuthProvider {
   cli_command: string
   docs_url: string
   flow: 'device_code' | 'external' | 'loopback' | 'pkce'
+  hidden?: boolean
   id: string
   name: string
   status: OAuthProviderStatus

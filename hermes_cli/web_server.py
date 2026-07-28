@@ -5492,6 +5492,10 @@ async def list_oauth_providers():
             "cli_command": p["cli_command"],
             "docs_url": p["docs_url"],
             "status": status,
+            # Defense-in-depth: hidden catalog entries are already excluded
+            # above, but surface the flag too so any consumer that reuses
+            # this response elsewhere still respects it.
+            "hidden": bool(p.get("hidden", False)),
         })
     return {"providers": providers}
 
@@ -6078,12 +6082,20 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
         if tenant_id == "common":
             tenant_id = "organizations"
 
+        # Request the same scopes as the CLI's `_microsoft_device_code_login`
+        # (hermes_cli/mcp_catalog.py) and the MSOffice365MCP catalog manifest,
+        # not just "User.Read" — a dashboard-initiated login otherwise grants
+        # too little for the MCP's Mail/Calendar/Teams/etc. tools to work.
+        from hermes_cli import mcp_catalog
+        m365_entry = mcp_catalog.get_entry("MSOffice365MCP")
+        scopes = (m365_entry.auth.scopes if m365_entry else None) or ["User.Read"]
+
         def _do_initiate_device_flow():
             app = msal.PublicClientApplication(
                 client_id=client_id,
                 authority=f"https://login.microsoftonline.com/{tenant_id}",
             )
-            return app, app.initiate_device_flow(scopes=["User.Read"])
+            return app, app.initiate_device_flow(scopes=scopes)
 
         app_obj, flow = await asyncio.get_running_loop().run_in_executor(
             None, _do_initiate_device_flow

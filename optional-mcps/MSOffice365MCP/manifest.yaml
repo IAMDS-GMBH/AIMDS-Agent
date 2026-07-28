@@ -39,6 +39,21 @@ auth:
     device-code login (same as `m365_initiate_login`/`m365_complete_login`);
     those in-chat tools remain available afterwards for already-installed
     servers, non-interactive installs, or re-authenticating later.
+  # Mirrors server.py's BASE_SCOPES (non-admin default) so any device-code
+  # login initiated outside of m365_initiate_login (e.g. the dashboard's
+  # "Microsoft 365 (OAuth)" button, or `hermes mcp install MSOffice365MCP`)
+  # requests the same permissions the MCP's tools actually need, instead of
+  # falling back to a bare "User.Read". Admin-only scopes are intentionally
+  # excluded here — those are only requested via
+  # m365_initiate_login(request_admin_scopes=True).
+  scopes:
+    - User.Read
+    - Mail.ReadWrite
+    - Mail.Send
+    - Calendars.ReadWrite
+    - Chat.ReadWrite
+    - Files.ReadWrite.All
+    - Contacts.ReadWrite
   env:
     - name: M365_CLIENT_ID
       prompt: "Microsoft Entra App Client ID (optional; leave blank to use default multi-tenant app)"

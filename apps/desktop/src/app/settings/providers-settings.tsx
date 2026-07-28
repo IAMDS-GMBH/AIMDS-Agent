@@ -520,7 +520,7 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
   )
 }
 
-function OAuthAccountsPanel() {
+export function OAuthAccountsPanel() {
   const [providers, setProviders] = useState<OAuthProvider[]>([])
   const [loading, setLoading] = useState(true)
   const [disconnecting, setDisconnecting] = useState<null | string>(null)
@@ -529,8 +529,10 @@ function OAuthAccountsPanel() {
     try {
       const res = await listOAuthProviders()
       const all = res.providers || []
-      const githubOnly = all.filter(p => p.id === 'github')
-      setProviders(githubOnly.length > 0 ? githubOnly : all)
+      // Respect the backend's own `hidden` flag (e.g. iamds-keycloak, which
+      // is surfaced elsewhere) instead of re-implementing an ad-hoc
+      // allowlist here — do NOT filter to GitHub only.
+      setProviders(all.filter(p => !p.hidden))
     } catch (err) {
       console.error('Failed to load OAuth providers', err)
     } finally {

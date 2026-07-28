@@ -734,3 +734,37 @@ def test_microsoft_listed_as_device_code_flow_in_catalog():
 
     entry = next(p for p in ws._OAUTH_PROVIDER_CATALOG if p["id"] == "microsoft")
     assert entry["flow"] == "device_code"
+
+
+def test_microsoft_dashboard_device_flow_requests_manifest_scopes(monkeypatch):
+    """The dashboard-initiated Microsoft device-code login must request the
+    MSOffice365MCP catalog manifest's declared scopes (Mail/Calendar/Teams/
+    etc.), not just "User.Read" -- a User.Read-only login is insufficient
+    for any of the MCP's actual tools to work."""
+    import msal
+    from hermes_cli import mcp_catalog
+    from hermes_cli import web_server as ws
+
+    requested_scopes = {}
+
+    class _ScopeCapturingApp(_FakeMsalApp):
+        def initiate_device_flow(self, scopes=None):
+            requested_scopes["scopes"] = scopes
+            return super().initiate_device_flow(scopes=scopes)
+
+    monkeypatch.setattr(msal, "PublicClientApplication", _ScopeCapturingApp)
+    monkeypatch.setattr(ws, "_microsoft_device_code_worker", lambda *a, **kw: None)
+
+    entry = mcp_catalog.get_entry("MSOffice365MCP")
+    assert entry is not None and entry.auth.scopes, (
+        "MSOffice365MCP manifest must declare auth.scopes for this test to "
+        "be meaningful"
+    )
+
+    result = asyncio.run(ws._start_device_code_flow("microsoft"))
+    try:
+        assert requested_scopes["scopes"] == entry.auth.scopes
+        assert "User.Read" in requested_scopes["scopes"]
+        assert requested_scopes["scopes"] != ["User.Read"]
+    finally:
+        ws._oauth_sessions.pop(result["session_id"], None)

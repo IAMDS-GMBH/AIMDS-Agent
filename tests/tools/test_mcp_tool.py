@@ -142,6 +142,25 @@ class TestSchemaConversion:
         # instead of burning several failed-format retries.
         assert "2026-07-27T08:00:00.000+0200" in schema["description"]
 
+    def test_appends_login_guidance_note_to_m365_initiate_login(self):
+        """m365_initiate_login (plus its companion m365_complete_login) is the
+        only supported way to authenticate MSOffice365MCP, via a Microsoft
+        device-code flow. Nudge the model away from ever asking the user to
+        manually paste a Microsoft access token.
+        """
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(
+            name="m365_initiate_login",
+            description="Initiate interactive Microsoft 365 OAuth sign-in flow",
+        )
+        schema = _convert_mcp_schema("MSOffice365MCP", mcp_tool)
+
+        assert "Initiate interactive Microsoft 365 OAuth sign-in flow" in schema["description"]
+        assert "m365_complete_login" in schema["description"]
+        assert "device-code" in schema["description"]
+        assert "paste" in schema["description"]
+
     def test_does_not_append_note_for_a_different_server_with_same_tool_name(self):
         from tools.mcp_tool import _convert_mcp_schema
 

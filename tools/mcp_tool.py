@@ -3967,6 +3967,16 @@ _MCP_TOOL_DESCRIPTION_NOTES: Dict[Tuple[str, str], str] = {
         "JIRA_API_TOKEN/JIRA_USERNAME) for Server/Data Center Jira instead "
         "of treating it as a bug in this tool."
     ),
+    ("MSOffice365MCP", "m365_initiate_login"): (
+        " NOTE: this (plus the companion m365_complete_login) is the "
+        "CURRENT and ONLY supported way to authenticate this server — a "
+        "Microsoft device-code flow (opens a microsoft.com/devicelogin-"
+        "style URL + code), triggered from the Hermes dashboard's "
+        "'Microsoft 365 (OAuth)' button, `hermes mcp install "
+        "MSOffice365MCP`, or this tool itself. Never ask the user to "
+        "manually obtain/paste a Microsoft access token — that is not "
+        "supported; call this tool instead."
+    ),
     ("AtlassianMCP", "jira_add_worklog"): (
         " NOTE: always pass an explicit `started` timestamp reflecting when "
         "the work actually began, and derive `time_spent` from the real "
