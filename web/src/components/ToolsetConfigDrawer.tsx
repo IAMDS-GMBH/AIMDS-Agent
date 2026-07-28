@@ -331,15 +331,20 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
                   {/* API key inputs */}
                   {provider.env_vars.length > 0 && (
                     <div className="mt-3 space-y-2.5">
-                      {provider.env_vars.map((ev) => (
+                      {provider.env_vars.map((ev, idx) => (
                         <div key={ev.key} className="space-y-1">
                           <div className="flex items-center justify-between gap-2">
-                            <Label
-                              htmlFor={`env-${ev.key}`}
-                              className="text-xs font-mono"
-                            >
-                              {ev.key}
-                            </Label>
+                            <div className="flex items-center gap-1.5">
+                              <Label
+                                htmlFor={`env-${ev.key}`}
+                                className="text-xs font-mono"
+                              >
+                                {ev.key}
+                              </Label>
+                              <span className="text-[10px] text-muted-foreground font-sans">
+                                {idx === 0 ? "• Required" : "• Optional"}
+                              </span>
+                            </div>
                             {isSet[ev.key] && (
                               <Badge tone="success" className="text-xs">
                                 Saved

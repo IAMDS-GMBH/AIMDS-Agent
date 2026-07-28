@@ -351,40 +351,59 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
         >
           <div className="relative w-full max-w-md border border-border bg-card p-6 shadow-2xl flex flex-col gap-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-base font-semibold">Microsoft 365 App Registration</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-semibold">Microsoft 365 Configuration</h3>
+                <Badge tone="outline" className="text-xs">Custom App Registration</Badge>
+              </div>
               <Button ghost size="icon" onClick={() => setM365ConfigOpen(false)}>
                 ✕
               </Button>
             </div>
             <p className="text-xs text-muted-foreground">
-              Configure custom Azure AD Application (Client) ID and Tenant ID. Leave blank to use default multi-tenant settings.
+              Direct device-code OAuth flow ready. Default settings work out-of-the-box.
             </p>
-            <div className="grid gap-3">
-              <div className="grid gap-1.5">
-                <Label htmlFor="m365-client-id">M365 Client ID</Label>
-                <Input
-                  id="m365-client-id"
-                  value={m365ClientId}
-                  onChange={(e) => setM365ClientId(e.target.value)}
-                  placeholder="e.g. 41c29967-8ee6-4fac-b484-e87460272bda"
-                />
+            
+            <details className="group border border-border/70 rounded-md p-3 text-xs bg-muted/20" open={Boolean(m365ClientId || m365TenantId)}>
+              <summary className="cursor-pointer font-medium text-xs flex items-center justify-between text-foreground">
+                <span>⚙ Advanced Settings / Custom Azure AD App</span>
+                <span className="text-muted-foreground group-open:rotate-180 transition-transform">▼</span>
+              </summary>
+              <div className="grid gap-3 mt-3 pt-2 border-t border-border/40">
+                <div className="grid gap-1.5">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="m365-client-id" className="text-xs font-mono">M365_CLIENT_ID</Label>
+                    <span className="text-[10px] text-muted-foreground">Optional (Default: Multi-tenant)</span>
+                  </div>
+                  <Input
+                    id="m365-client-id"
+                    value={m365ClientId}
+                    onChange={(e) => setM365ClientId(e.target.value)}
+                    placeholder="e.g. 41c29967-8ee6-4fac-b484-e87460272bda"
+                    className="h-8 text-xs font-mono"
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="m365-tenant-id" className="text-xs font-mono">M365_TENANT_ID</Label>
+                    <span className="text-[10px] text-muted-foreground">Optional (Default: organizations)</span>
+                  </div>
+                  <Input
+                    id="m365-tenant-id"
+                    value={m365TenantId}
+                    onChange={(e) => setM365TenantId(e.target.value)}
+                    placeholder="e.g. organizations or tenant UUID"
+                    className="h-8 text-xs font-mono"
+                  />
+                </div>
               </div>
-              <div className="grid gap-1.5">
-                <Label htmlFor="m365-tenant-id">M365 Tenant ID</Label>
-                <Input
-                  id="m365-tenant-id"
-                  value={m365TenantId}
-                  onChange={(e) => setM365TenantId(e.target.value)}
-                  placeholder="e.g. organizations or tenant UUID"
-                />
-              </div>
-            </div>
+            </details>
+
             <div className="flex justify-end gap-2 mt-2">
               <Button outlined onClick={() => setM365ConfigOpen(false)}>
                 Cancel
               </Button>
               <Button onClick={saveM365Config} disabled={savingM365}>
-                {savingM365 ? <Spinner /> : "Save"}
+                {savingM365 ? <Spinner /> : "Save Settings"}
               </Button>
             </div>
           </div>
