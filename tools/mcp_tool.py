@@ -4239,7 +4239,7 @@ def _normalized_tool_filter_key(name: str) -> str:
 def _tool_filter_aliases(name: str) -> set[str]:
     """Return normalized aliases for a tool/filter name.
 
-    Includes separator normalization, prefix stripping (mcp_*, aimds_*),
+    Includes separator normalization, prefix stripping (mcp_*, aimds_*, atlassian_*),
     and memory-save/upsert compatibility aliases so configs keep working regardless
     of server prefixing.
     """
@@ -4248,13 +4248,18 @@ def _tool_filter_aliases(name: str) -> set[str]:
 
     curr = normalized
     while True:
-        stripped = re.sub(r"^(mcp_[a-zA-Z0-9]+_|aimds_[a-zA-Z0-9]+_|mcp_|aimds_)", "", curr)
+        stripped = re.sub(r"^(mcp_[a-zA-Z0-9]+_|aimds_[a-zA-Z0-9]+_|mcp_|aimds_|atlassian_jira_|atlassian_)", "", curr)
         if stripped == curr or not stripped:
             break
         aliases.add(stripped)
         curr = stripped
 
     for a in list(aliases):
+        if a.startswith("atlassian_jira_"):
+            aliases.add(a[15:])
+            aliases.add(a[10:])
+        elif a.startswith("atlassian_"):
+            aliases.add(a[10:])
         if a.endswith("_memory_upsert") or a == "memory_upsert":
             aliases.add(a.replace("memory_upsert", "memory_save"))
         if a.endswith("_memory_save") or a == "memory_save":
