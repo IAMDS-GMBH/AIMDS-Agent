@@ -80,6 +80,70 @@ def _get_timezone_name() -> str:
         return "Europe/Berlin"
 
 
+def _format_timestamp_local(dt_value: Any) -> str:
+    """Format an ISO timestamp or Graph API dateTime object into local/configured timezone string.
+
+    Handles:
+    - ISO strings ending with 'Z' or offset: e.g. '2026-07-28T10:21:46Z' -> '2026-07-28 12:21:46 CEST'
+    - Dict object: e.g. {'dateTime': '2026-07-28T10:21:46.0000000', 'timeZone': 'UTC'}
+    """
+    if not dt_value:
+        return ""
+
+    raw_dt_str = ""
+    source_tz_name = "UTC"
+
+    if isinstance(dt_value, dict):
+        raw_dt_str = str(dt_value.get("dateTime") or "")
+        source_tz_name = str(dt_value.get("timeZone") or "UTC")
+    elif isinstance(dt_value, str):
+        raw_dt_str = dt_value
+    else:
+        return str(dt_value)
+
+    if not raw_dt_str:
+        return ""
+
+    try:
+        from datetime import datetime
+        try:
+            from zoneinfo import ZoneInfo
+        except ImportError:
+            from backports.zoneinfo import ZoneInfo  # type: ignore
+
+        clean_str = raw_dt_str.replace("Z", "+00:00")
+        if "." in clean_str:
+            parts = clean_str.split(".")
+            second_part = parts[1]
+            tz_offset = ""
+            for idx, char in enumerate(second_part):
+                if char in ("+", "-", "Z"):
+                    tz_offset = second_part[idx:]
+                    second_part = second_part[:idx]
+                    break
+            second_part = second_part[:6]
+            clean_str = f"{parts[0]}.{second_part}{tz_offset}"
+
+        dt = datetime.fromisoformat(clean_str)
+
+        if dt.tzinfo is None:
+            try:
+                dt = dt.replace(tzinfo=ZoneInfo(source_tz_name))
+            except Exception:
+                dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+
+        target_tz_name = _get_timezone_name()
+        try:
+            target_tz = ZoneInfo(target_tz_name)
+        except Exception:
+            target_tz = datetime.now().astimezone().tzinfo
+
+        dt_local = dt.astimezone(target_tz)
+        return dt_local.strftime("%Y-%m-%d %H:%M:%S %Z").strip()
+    except Exception:
+        return raw_dt_str
+
+
 try:
     from hermes_cli.m365_auth import (
         get_m365_token_cache_path as _get_token_cache_path,
@@ -578,13 +642,21 @@ def m365_list_emails(top: int = 10, search: Optional[str] = None, folder: str = 
         params["$search"] = f'"{search}"'
     folder_segment = (folder or "inbox").strip() or "inbox"
     endpoint = "/me/messages" if folder_segment == "inbox" else f"/me/mailFolders/{folder_segment}/messages"
-    return _graph_request("GET", endpoint, params=params)
+    res = _graph_request("GET", endpoint, params=params)
+    if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
+        for msg in res["value"]:
+            if isinstance(msg, dict) and "receivedDateTime" in msg:
+                msg["receivedDateTime_local"] = _format_timestamp_local(msg.get("receivedDateTime"))
+    return res
 
 
 @mcp.tool()
 def m365_get_email(message_id: str) -> Dict[str, Any]:
     """Get full details of a specific Outlook email message."""
-    return _graph_request("GET", f"/me/messages/{message_id}")
+    msg = _graph_request("GET", f"/me/messages/{message_id}")
+    if isinstance(msg, dict) and "receivedDateTime" in msg:
+        msg["receivedDateTime_local"] = _format_timestamp_local(msg.get("receivedDateTime"))
+    return msg
 
 
 @mcp.tool()
@@ -749,6 +821,15 @@ def m365_get_events(
 
     if matched_cal_name:
         res["resolved_calendar_name"] = matched_cal_name
+
+    if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
+        for evt in res["value"]:
+            if isinstance(evt, dict):
+                if "start" in evt:
+                    evt["start_local"] = _format_timestamp_local(evt.get("start"))
+                if "end" in evt:
+                    evt["end_local"] = _format_timestamp_local(evt.get("end"))
+
     return res
 
 
@@ -1066,7 +1147,12 @@ def m365_search_sharepoint_files(site_id: str, query: str) -> Dict[str, Any]:
 def m365_list_chat_messages(chat_id: str, top: int = 10) -> Dict[str, Any]:
     """List recent messages in a specific Microsoft Teams chat (1:1 or group chat)."""
     params = {"$top": min(top, 50)}
-    return _graph_request("GET", f"/me/chats/{chat_id}/messages", params=params)
+    res = _graph_request("GET", f"/me/chats/{chat_id}/messages", params=params)
+    if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
+        for msg in res["value"]:
+            if isinstance(msg, dict) and "createdDateTime" in msg:
+                msg["createdDateTime_local"] = _format_timestamp_local(msg.get("createdDateTime"))
+    return res
 
 
 @mcp.tool()
@@ -1088,7 +1174,12 @@ def m365_list_team_channels(team_id: str) -> Dict[str, Any]:
 def m365_list_channel_messages(team_id: str, channel_id: str, top: int = 10) -> Dict[str, Any]:
     """List recent messages in a specific Microsoft Teams channel."""
     params = {"$top": min(top, 50)}
-    return _graph_request("GET", f"/teams/{team_id}/channels/{channel_id}/messages", params=params)
+    res = _graph_request("GET", f"/teams/{team_id}/channels/{channel_id}/messages", params=params)
+    if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
+        for msg in res["value"]:
+            if isinstance(msg, dict) and "createdDateTime" in msg:
+                msg["createdDateTime_local"] = _format_timestamp_local(msg.get("createdDateTime"))
+    return res
 
 
 @mcp.tool()
@@ -1123,12 +1214,12 @@ def m365_get_activity_feed(top_chats: int = 5, top_messages_per_chat: int = 3) -
                     "chat_id": chat_id,
                     "topic": topic,
                     "chat_type": c.get("chatType"),
-                    "last_updated": c.get("lastUpdatedDateTime"),
+                    "last_updated": _format_timestamp_local(c.get("lastUpdatedDateTime")),
                     "recent_messages": [
                         {
                             "id": m.get("id"),
                             "from": m.get("from", {}).get("user", {}).get("displayName"),
-                            "created_at": m.get("createdDateTime"),
+                            "created_at": _format_timestamp_local(m.get("createdDateTime")),
                             "body_preview": m.get("body", {}).get("content", "")[:200],
                         }
                         for m in msgs if m.get("messageType") == "message"
@@ -1172,7 +1263,7 @@ def m365_get_activity_feed(top_chats: int = 5, top_messages_per_chat: int = 3) -
                                 {
                                     "id": m.get("id"),
                                     "from": m.get("from", {}).get("user", {}).get("displayName"),
-                                    "created_at": m.get("createdDateTime"),
+                                    "created_at": _format_timestamp_local(m.get("createdDateTime")),
                                     "body_preview": m.get("body", {}).get("content", "")[:200],
                                 }
                                 for m in ch_msgs if m.get("messageType") == "message"

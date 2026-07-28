@@ -9,7 +9,21 @@ server = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(server)
 
 
-def test_m365_generate_admin_consent_url():
+def test_format_timestamp_local():
+    with patch.dict(server.os.environ, {"HERMES_TIMEZONE": "Europe/Berlin"}):
+        # 1. UTC ISO string
+        formatted = server._format_timestamp_local("2026-07-28T10:21:46Z")
+        assert "2026-07-28 12:21:46" in formatted
+        assert "CEST" in formatted or "CEST" in formatted or "+02" in formatted or "Europe/Berlin" in formatted
+
+        # 2. Graph API dateTime dictionary
+        dict_val = {"dateTime": "2026-07-28T10:21:46.0000000", "timeZone": "UTC"}
+        formatted_dict = server._format_timestamp_local(dict_val)
+        assert "2026-07-28 12:21:46" in formatted_dict
+
+        # 3. Empty or invalid values pass through safely
+        assert server._format_timestamp_local(None) == ""
+        assert server._format_timestamp_local("not-a-date") == "not-a-date"
     with patch.dict(server.os.environ, {"M365_CLIENT_ID": "app-123", "M365_TENANT_ID": "tenant-456"}):
         res = server.m365_generate_admin_consent_url(redirect_uri="http://localhost:8400")
         assert res["success"] is True
