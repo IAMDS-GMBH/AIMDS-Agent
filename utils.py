@@ -1,10 +1,12 @@
 """Shared utility functions for hermes-agent."""
 
+import contextlib
 import json
 import logging
 import os
 import stat
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -12,6 +14,19 @@ from urllib.parse import urlparse
 import yaml
 
 logger = logging.getLogger(__name__)
+
+# fcntl is Unix-only; on Windows use msvcrt for advisory file locking.
+# Mirrors the platform-detection pattern already used in
+# tools/memory_tool.py and tools/skill_usage.py.
+try:
+    import fcntl
+    _msvcrt = None
+except ImportError:
+    fcntl = None
+    try:
+        import msvcrt as _msvcrt
+    except ImportError:
+        _msvcrt = None
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
@@ -80,6 +95,91 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
     os.replace(str(tmp_path), real_path)
     return real_path
+
+
+@contextlib.contextmanager
+def advisory_file_lock(path: Union[str, Path], *, timeout: float = 5.0):
+    """Best-effort cross-process advisory lock for a config file.
+
+    Acquires an exclusive lock on a sibling ``<path>.lock`` file so
+    concurrent writers (e.g. the ``hermes update`` AIMDS-defaults-upsert
+    subprocess and an in-process ``save_config()`` call from the desktop
+    app or gateway) don't interleave writes to the same target file. The
+    lock file is separate from ``path`` itself so the protected file can
+    still be swapped atomically via ``os.replace()`` inside the
+    ``with`` block.
+
+    This is deliberately fail-open: if the lock can't be acquired within
+    ``timeout`` seconds (e.g. a stale lock left behind by a crashed
+    process), a warning is logged and the caller proceeds without the
+    lock rather than hanging or aborting the write. A rare missed-lock
+    race is far better than bricking every config save because of an
+    orphaned lock file.
+
+    Uses ``fcntl.flock`` on POSIX and ``msvcrt.locking`` on Windows,
+    following the same platform-detection pattern already used in
+    ``tools/memory_tool.py`` / ``tools/skill_usage.py``.
+    """
+    path = Path(path)
+    lock_path = path.with_name(path.name + ".lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        yield
+        return
+
+    if fcntl is None and _msvcrt is None:
+        # No locking primitive available on this platform — proceed
+        # without coordination rather than failing the write outright.
+        yield
+        return
+
+    fd = None
+    locked = False
+    try:
+        try:
+            fd = open(lock_path, "a+", encoding="utf-8")
+        except OSError:
+            yield
+            return
+
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:
+                    fd.seek(0)
+                    _msvcrt.locking(fd.fileno(), _msvcrt.LK_NBLCK, 1)
+                locked = True
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    logger.warning(
+                        "Could not acquire advisory lock %s within %.1fs "
+                        "(possibly a stale lock from a crashed process); "
+                        "proceeding without it.",
+                        lock_path,
+                        timeout,
+                    )
+                    break
+                time.sleep(0.1)
+        yield
+    finally:
+        if locked and fd is not None:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                else:
+                    fd.seek(0)
+                    _msvcrt.locking(fd.fileno(), _msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        if fd is not None:
+            try:
+                fd.close()
+            except OSError:
+                pass
 
 
 def atomic_json_write(

@@ -189,6 +189,131 @@ def _warn_config_parse_failure(config_path: Path, exc: Exception) -> None:
     except Exception:
         pass
 
+
+# Detects "two mapping entries glued onto one physical line" corruption,
+# e.g. ``trusted: false  IAMDS:`` where a second ``key:`` was spliced
+# directly onto the tail of a scalar value's line with no newline in
+# between (see #<config.yaml race> — a classic symptom of two writers
+# racing on the same file without coordination; see
+# utils.py::advisory_file_lock and save_config()). Requires >=2 spaces of
+# separation between the first value and the second key so we don't
+# false-positive on legitimate multi-word scalars like
+# ``description: some  value`` (no trailing ``key:`` there) or values
+# that simply contain a colon (e.g. URLs), since ``key2`` must match a
+# bare identifier immediately followed by ``:`` at end of line.
+_CONFIG_YAML_SPLICE_RE = re.compile(
+    r"^(?P<indent>[ \t]*)(?P<key1>[A-Za-z_][\w.\-]*)\s*:\s*"
+    r"(?P<val1>.*?)"
+    r"(?P<gap>[ \t]{2,})"
+    r"(?P<key2>[A-Za-z_][\w.\-]*)\s*:\s*$"
+)
+
+
+def _sanitize_config_yaml_lines(lines: List[str]) -> Tuple[List[str], bool]:
+    """Split "glued mapping keys on one physical line" corruption back apart.
+
+    Mirrors ``_sanitize_env_lines`` (the equivalent repair for ``.env``
+    files) but targets config.yaml's specific known corruption shape: a
+    scalar value's line has a second ``key:`` spliced onto its tail with
+    no line break, and the line that originally followed the second key
+    ends up at a shallower indentation than the glued line (the
+    "indentation jump" symptom). We use that following line's indentation
+    as the strongest available signal of where the glued key was meant to
+    start.
+
+    This is a narrow, best-effort structural repair — not a general YAML
+    fixer. It only rewrites lines matching the specific glued-key shape;
+    everything else (including lines it can't confidently interpret) is
+    left untouched.
+
+    Returns ``(lines, changed)`` where ``changed`` is ``True`` iff at
+    least one line was split.
+    """
+    changed = False
+    result: List[str] = []
+    n = len(lines)
+    for i, line in enumerate(lines):
+        raw = line.rstrip("\r\n")
+        stripped = raw.strip()
+
+        if not stripped or stripped.startswith("#"):
+            result.append(line)
+            continue
+
+        match = _CONFIG_YAML_SPLICE_RE.match(raw)
+        if not match:
+            result.append(line)
+            continue
+
+        indent = match.group("indent")
+        key1 = match.group("key1")
+        val1 = match.group("val1").strip()
+        key2 = match.group("key2")
+
+        if not val1:
+            # No scalar value between key1 and key2 (e.g. "foo:  bar:") —
+            # more likely a genuine nested-mapping typo than the glued-line
+            # corruption we're targeting here. Don't guess.
+            result.append(line)
+            continue
+
+        next_indent = len(indent)
+        if i + 1 < n:
+            next_line = lines[i + 1]
+            next_stripped = next_line.strip()
+            if next_stripped and not next_stripped.startswith("#"):
+                next_indent_candidate = len(next_line) - len(next_line.lstrip(" \t"))
+                if next_indent_candidate < len(indent):
+                    next_indent = next_indent_candidate
+
+        result.append(f"{indent}{key1}: {val1}\n")
+        result.append(f"{' ' * next_indent}{key2}:\n")
+        changed = True
+
+    return result, changed
+
+
+def _repair_corrupt_config_yaml(config_path: Path, raw: str) -> Optional[Dict[str, Any]]:
+    """Attempt to auto-repair a config.yaml that failed to parse.
+
+    Tries the known "glued mapping keys on one line" splice pattern (see
+    ``_sanitize_config_yaml_lines``) before ``load_config()`` /
+    ``read_raw_config()`` give up and fall back to ``DEFAULT_CONFIG`` —
+    which otherwise silently discards every user override. Returns the
+    parsed dict on success, or ``None`` if the file doesn't match the
+    pattern, or still doesn't parse after the attempted repair. Callers
+    should fall back to the existing backup + ``DEFAULT_CONFIG`` behavior
+    in that case — this function never raises.
+    """
+    try:
+        lines = raw.splitlines(keepends=True)
+        sanitized_lines, changed = _sanitize_config_yaml_lines(lines)
+        if not changed:
+            return None
+        sanitized_text = "".join(sanitized_lines)
+        try:
+            repaired = yaml.safe_load(sanitized_text)
+        except yaml.YAMLError:
+            return None
+        if not isinstance(repaired, dict):
+            return None
+    except Exception:
+        return None
+
+    msg = (
+        f"Auto-repaired a glued-key splice corruption in {config_path} "
+        "(two settings were spliced onto one physical line). Using the "
+        "repaired config instead of silently discarding overrides to "
+        "DEFAULT_CONFIG."
+    )
+    logger.warning(msg)
+    try:
+        sys.stderr.write(f"⚠️  hermes config: {msg}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+    return repaired
+
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -6104,11 +6229,17 @@ def read_raw_config() -> Dict[str, Any]:
 
         try:
             with open(config_path, encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
+                raw_text = f.read()
+            try:
+                data = yaml.safe_load(raw_text) or {}
+            except yaml.YAMLError:
+                repaired = _repair_corrupt_config_yaml(config_path, raw_text)
+                if repaired is None:
+                    raise
+                data = repaired
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
             return {}
-
         _clear_config_parse_error(config_path)
         if not isinstance(data, dict):
             data = {}
@@ -6265,7 +6396,14 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         if cache_key is not None:
             try:
                 with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
+                    raw_text = f.read()
+                try:
+                    user_config = yaml.safe_load(raw_text) or {}
+                except yaml.YAMLError:
+                    repaired = _repair_corrupt_config_yaml(config_path, raw_text)
+                    if repaired is None:
+                        raise
+                    user_config = repaired
 
                 if "max_turns" in user_config:
                     agent_user_config = dict(user_config.get("agent") or {})
@@ -6388,7 +6526,7 @@ def save_config(config: Dict[str, Any]):
         if is_managed():
             managed_error("save configuration")
             return
-        from utils import atomic_yaml_write
+        from utils import advisory_file_lock, atomic_yaml_write
 
         ensure_hermes_home()
         config_path = get_config_path()
@@ -6417,11 +6555,18 @@ def save_config(config: Dict[str, Any]):
         if not fb_is_valid:
             parts.append(_FALLBACK_COMMENT)
 
-        atomic_yaml_write(
-            config_path,
-            normalized,
-            extra_content="".join(parts) if parts else None,
-        )
+        # Cross-process advisory lock: coordinates with other writers of
+        # this same config.yaml (e.g. installer/scripts/upsert_aimds_defaults.py
+        # running as a subprocess during `hermes update`) so a read-modify-write
+        # from one process can't interleave with another's write. Fails open
+        # (proceeds without the lock) after a short timeout — see
+        # utils.py::advisory_file_lock.
+        with advisory_file_lock(config_path):
+            atomic_yaml_write(
+                config_path,
+                normalized,
+                extra_content="".join(parts) if parts else None,
+            )
         _secure_file(config_path)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
         _LOAD_CONFIG_CACHE.pop(str(config_path), None)

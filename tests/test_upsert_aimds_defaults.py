@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
+
+import pytest
 
 
 _SCRIPT_PATH = (
@@ -135,3 +138,77 @@ def test_upsert_targets_provider_iamds_even_with_custom_server_name():
     assert "kb_search" in include
     assert "memory_context" in include
     assert out["mcp_servers"]["custom-tools"].get("tools") is None
+
+
+class TestMainUsesAtomicWrite:
+    """Root-cause regression coverage: main() must write config.yaml via
+    the same atomic temp-file + fsync + os.replace primitive as
+    hermes_cli/config.py::save_config(), not a bare path.write_text()
+    (which could leave the file partially written / racing with another
+    writer -- see incident: two mapping entries spliced onto one line).
+    """
+
+    def test_main_calls_atomic_yaml_write(self, tmp_path, monkeypatch):
+        import yaml as _yaml
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(_yaml.safe_dump({"model": {"default": "x"}}), encoding="utf-8")
+
+        calls = []
+        original_atomic_yaml_write = _MODULE.atomic_yaml_write
+
+        def _spy(path, data, **kwargs):
+            calls.append((path, data))
+            return original_atomic_yaml_write(path, data, **kwargs)
+
+        monkeypatch.setattr(_MODULE, "atomic_yaml_write", _spy)
+        monkeypatch.setattr(sys, "argv", ["upsert_aimds_defaults.py", str(config_path)])
+
+        rc = _MODULE.main(["upsert_aimds_defaults.py", str(config_path)])
+
+        assert rc == 0
+        assert len(calls) == 1
+        assert calls[0][0] == config_path
+        # Confirm the write actually landed and is parseable.
+        result = _yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert result["aimds_defaults_version"] == _MODULE._AIMDS_DEFAULTS_VERSION
+
+    def test_main_does_not_use_bare_write_text(self, tmp_path, monkeypatch):
+        import yaml as _yaml
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(_yaml.safe_dump({"model": {"default": "x"}}), encoding="utf-8")
+
+        def _fail_if_called(*args, **kwargs):
+            raise AssertionError("Path.write_text must not be used for config.yaml writes")
+
+        monkeypatch.setattr(Path, "write_text", _fail_if_called)
+
+        rc = _MODULE.main(["upsert_aimds_defaults.py", str(config_path)])
+
+        assert rc == 0
+        result = _yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert result["aimds_defaults_version"] == _MODULE._AIMDS_DEFAULTS_VERSION
+
+    def test_write_survives_simulated_mid_write_crash(self, tmp_path, monkeypatch):
+        """A crash mid-dump must leave the previous valid file intact
+        (never a partially-written/corrupted config.yaml)."""
+        import yaml as _yaml
+
+        config_path = tmp_path / "config.yaml"
+        original_text = _yaml.safe_dump({"model": {"default": "untouched"}})
+        config_path.write_text(original_text, encoding="utf-8")
+
+        class SimulatedCrash(BaseException):
+            pass
+
+        monkeypatch.setattr(_MODULE.yaml, "dump", lambda *a, **k: (_ for _ in ()).throw(SimulatedCrash()))
+
+        with pytest.raises(SimulatedCrash):
+            _MODULE.main(["upsert_aimds_defaults.py", str(config_path)])
+
+        # No leftover temp files, and the original file is untouched.
+        tmp_files = [f for f in tmp_path.iterdir() if ".tmp" in f.name]
+        assert tmp_files == []
+        assert config_path.read_text(encoding="utf-8") == original_text
+

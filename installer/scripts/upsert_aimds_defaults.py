@@ -14,6 +14,20 @@ from pathlib import Path
 
 import yaml
 
+# This script runs as a standalone subprocess (see
+# hermes_cli/main.py::_apply_aimds_defaults_after_update, which invokes it
+# via `subprocess.run([sys.executable, script_path, config_path])`), so it
+# does not import the rest of the hermes_cli package. utils.py is a
+# top-level module at the repo root; when hermes-agent is installed
+# (editable or otherwise) it's importable directly. The sys.path fallback
+# below only matters for the rare case where this script is invoked from
+# an environment where the package isn't on sys.path at all.
+try:
+    from utils import advisory_file_lock, atomic_yaml_write
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+    from utils import advisory_file_lock, atomic_yaml_write
+
 _AIMDS_DEFAULTS_VERSION = 14
 _AIMDS_DEFAULTS_VERSION_KEY = "aimds_defaults_version"
 
@@ -228,10 +242,19 @@ def main(argv: list[str]) -> int:
 
     updated, _changed, status = migrate_aimds_defaults(parsed)
     try:
-        path.write_text(
-            yaml.safe_dump(updated, sort_keys=False, allow_unicode=True),
-            encoding="utf-8",
-        )
+        # Root-cause fix (data-loss bug): this used to be a non-atomic
+        # path.write_text() call. If this subprocess (or another writer,
+        # e.g. hermes_cli.config.save_config running concurrently in the
+        # desktop app / gateway) was interrupted or raced mid-write, the
+        # two writes could interleave and splice YAML keys onto one
+        # physical line, producing an unparseable config.yaml that then
+        # gets silently replaced by DEFAULT_CONFIG on next load. Use the
+        # same atomic temp-file + fsync + os.replace primitive as
+        # hermes_cli/config.py::save_config(), guarded by the same
+        # advisory cross-process lock, so a write here is always either
+        # fully applied or not applied at all.
+        with advisory_file_lock(path):
+            atomic_yaml_write(path, updated, sort_keys=False)
     except OSError as exc:
         print(f"write-error: {exc}", file=sys.stderr)
         return 5
