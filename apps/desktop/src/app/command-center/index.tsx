@@ -61,6 +61,22 @@ function formatTimestamp(value?: number | null): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
 }
 
+function workspaceLabel(cwd: null | string | undefined): string {
+  const path = cwd?.trim()
+
+  if (!path) {
+    return ''
+  }
+
+  return (
+    path
+      .replace(/[/\\]+$/, '')
+      .split(/[/\\]/)
+      .filter(Boolean)
+      .pop() ?? path
+  )
+}
+
 function useDebouncedValue<T>(value: T, delayMs: number): T {
   const [debounced, setDebounced] = useState(value)
 
@@ -381,32 +397,59 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
               {!sessionListHasResults ? (
                 <EmptyPanel description={debouncedQuery ? cc.noResults : cc.noSessions} />
               ) : (
-                <ul>
+                <ul className="grid gap-2 pr-1">
                   {filteredSessions.map(session => {
                     const pinId = sessionPinId(session)
                     const pinned = pinnedSessionIds.includes(pinId)
+                    const workspace = workspaceLabel(session.cwd)
 
                     return (
-                      <li className="group flex items-center gap-2 py-2" key={session.id}>
+                      <li
+                        className="group flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-card/60 p-3.5 transition-all hover:border-border hover:bg-accent/40 shadow-2xs"
+                        key={session.id}
+                      >
                         <button
                           className="min-w-0 flex-1 text-left"
                           onClick={() => onOpenSession(session.id)}
                           type="button"
                         >
-                          <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-                            {sessionTitle(session)}
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-semibold text-foreground">
+                              {sessionTitle(session)}
+                            </span>
+                            {pinned && (
+                              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[0.65rem] font-medium text-primary border border-primary/20">
+                                <IconBookmarkFilled className="size-2.5" />
+                                <span>Angeheftet</span>
+                              </span>
+                            )}
                           </div>
-                          <div className="truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                            {formatTimestamp(session.last_active || session.started_at)}
+                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                            <span>{formatTimestamp(session.last_active || session.started_at)}</span>
+                            {session.message_count ? (
+                              <>
+                                <span>·</span>
+                                <span>{session.message_count} {session.message_count === 1 ? 'Nachricht' : 'Nachrichten'}</span>
+                              </>
+                            ) : null}
+                            {workspace && (
+                              <>
+                                <span>·</span>
+                                <span className="inline-flex items-center gap-1 rounded-md bg-muted/60 px-1.5 py-0.5 text-[0.65rem] font-mono text-muted-foreground">
+                                  📁 {workspace}
+                                </span>
+                              </>
+                            )}
                           </div>
                         </button>
-                        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+
+                        <div className="flex shrink-0 items-center gap-1 opacity-80 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
                           <RowIconButton
                             onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
                             title={pinned ? cc.unpinSession : cc.pinSession}
                           >
                             {pinned ? (
-                              <IconBookmarkFilled className="size-3.5" />
+                              <IconBookmarkFilled className="size-3.5 text-primary" />
                             ) : (
                               <IconBookmark className="size-3.5" />
                             )}
