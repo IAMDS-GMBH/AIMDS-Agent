@@ -4021,10 +4021,8 @@ _MCP_TOOL_DESCRIPTION_NOTES: Dict[Tuple[str, str], str] = {
 # by default; see agent/prompt_builder.py build_remote_mcp_memory_prompt()
 # for the complementary system-prompt-level guidance.
 _CLOUD_MEMORY_NOTE = (
-    " NOTE: Cross-device durable-fact store — use ONLY for information that "
-    "must persist and sync across all sessions/devices (user profile, "
-    "standing preferences, contacts). For session-specific or detailed "
-    "working notes, prefer the local `memory` tool instead."
+    " NOTE: Primary AIMDS-Suite & Local Vault Memory Store — use for durable cross-device "
+    "knowledge, facts, and profile notes across sessions. (For session-specific temporary scratchpad, prefer local `memory` tool)."
 )
 for _server_name in ("AIMDS", "IAMDS"):
     for _tool_name in ("mcp_memory_memory_save", "mcp_memory_memory_context"):
@@ -4104,10 +4102,13 @@ def _lookup_tool_description_note(
             note = _MCP_TOOL_DESCRIPTION_NOTES.get((catalog_name, tool_name))
             if note is not None:
                 return note
-    if str(provider or "").strip().lower() == "iamds":
+    if str(provider or "").strip().lower() in ("iamds", "aimds") or server_name in ("AIMDS", "IAMDS"):
         note = _MCP_TOOL_DESCRIPTION_NOTES.get(("AIMDS", tool_name))
         if note is not None:
             return note
+        return _CLOUD_MEMORY_NOTE
+    if "memory" in server_name.lower() and server_name not in ("AIMDS", "IAMDS"):
+        return f" NOTE: Custom External MCP Server '{server_name}' — secondary store."
     return None
 
 
