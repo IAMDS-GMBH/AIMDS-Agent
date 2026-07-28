@@ -80,6 +80,27 @@ def get_msal_app(
     )
 
 
+AADSTS_ERROR_MAP = {
+    "AADSTS50011": "The reply URL specified in the request does not match the reply URLs configured for the application (Azure Portal Redirect URI mismatch).",
+    "AADSTS50076": "Multi-Factor Authentication (MFA) or conditional access policy is required by your tenant administrator.",
+    "AADSTS65001": "The user or administrator has not consented to use the application. Call m365_generate_admin_consent_url or request tenant admin approval.",
+    "AADSTS700016": "Application ID (client_id) was not found in the directory.",
+    "AADSTS90002": "Tenant ID was not found or is invalid.",
+    "AADSTS50105": "The signed in user is not assigned to a role for the application in Azure Active Directory.",
+    "AADSTS7000215": "Invalid client secret provided.",
+}
+
+
+def translate_aadsts_error(error_text: str) -> str:
+    """Translate raw Azure Active Directory AADSTS error codes into user-friendly explanation."""
+    if not error_text:
+        return ""
+    for code, explanation in AADSTS_ERROR_MAP.items():
+        if code in str(error_text):
+            return f"\n[M365 OAuth Hint ({code})]: {explanation}"
+    return ""
+
+
 def save_msal_cache(app: Any, cache_path: Optional[Path] = None) -> None:
     """Atomically persist MSAL token cache to disk if state has changed."""
     cache = getattr(app, "token_cache", None)

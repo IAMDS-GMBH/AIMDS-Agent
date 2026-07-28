@@ -149,12 +149,16 @@ try:
         get_m365_token_cache_path as _get_token_cache_path,
         get_msal_app as _get_msal_app,
         save_msal_cache as _save_msal_cache,
+        translate_aadsts_error as _translate_aadsts_error,
     )
 
     def _save_cache(app: msal.PublicClientApplication) -> None:
         """Persist the MSAL token cache atomically."""
         _save_msal_cache(app, cache_path=_get_token_cache_path())
 except ImportError:
+    def _translate_aadsts_error(err: str) -> str:
+        return ""
+
     def _get_token_cache_path() -> Path:
         hermes_home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
         cache_dir = Path(hermes_home)
@@ -300,7 +304,8 @@ def _graph_request(
                     " (this typically means the signed-in account is missing an admin-consented "
                     "scope -- see m365_initiate_login's request_admin_scopes option)"
                 )
-            raise RuntimeError(f"MS Graph API Error [{response.status_code}]: {response.text}{hint}")
+            aadsts_hint = _translate_aadsts_error(response.text)
+            raise RuntimeError(f"MS Graph API Error [{response.status_code}]: {response.text}{hint}{aadsts_hint}")
         return response.json()
 
 
@@ -524,7 +529,9 @@ def m365_complete_login(flow_data: Dict[str, Any]) -> Dict[str, Any]:
             "message": "Sign-in successful! Token cached in ~/.hermes/m365_token_cache.bin",
             "account": result.get("id_token_claims", {}).get("preferred_username"),
         }
-    return {"error": "Sign-in incomplete or failed", "details": result}
+    err_text = str(result)
+    hint = _translate_aadsts_error(err_text)
+    return {"error": f"Sign-in incomplete or failed.{hint}", "details": result}
 
 
 @mcp.tool()

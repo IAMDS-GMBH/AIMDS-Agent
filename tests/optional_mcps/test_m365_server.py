@@ -9,6 +9,13 @@ server = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(server)
 
 
+def test_translate_aadsts_error():
+    err_msg = "Error acquire token: AADSTS65001: The user or administrator has not consented to use the application"
+    translated = server._translate_aadsts_error(err_msg)
+    assert "[M365 OAuth Hint (AADSTS65001)]" in translated
+    assert "consent" in translated.lower()
+
+
 def test_format_timestamp_local():
     with patch.dict(server.os.environ, {"HERMES_TIMEZONE": "Europe/Berlin"}):
         # 1. UTC ISO string
