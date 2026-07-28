@@ -4406,6 +4406,64 @@ def test_snapshot_restore_is_blocked_from_tui_worker():
     )
 
 
+def test_reload_mcp_rejected_from_slash_worker_falls_back_to_command_dispatch(
+    monkeypatch,
+):
+    """Regression: /reload-mcp shows an interactive prompt_toolkit modal in
+    the classic CLI, which has no TTY inside the SlashWorker subprocess and
+    used to hang until the slash-worker timeout, ultimately surfacing as
+    "not a quick/plugin/skill command: reload-mcp" once callers fell back to
+    command.dispatch (which didn't understand the command either). Now
+    slash.exec rejects it immediately (no hang) and command.dispatch handles
+    it natively via the same confirm/always flow as the reload.mcp RPC.
+    """
+    monkeypatch.setattr(
+        server,
+        "_do_reload_mcp",
+        lambda session, sid, confirm, always: (
+            {
+                "status": "confirm_required",
+                "message": "confirm first",
+            }
+            if not confirm
+            else {"status": "reloaded", "ok": True, "message": "MCP servers reloaded"}
+        ),
+    )
+
+    server._sessions["sid"] = _session()
+    try:
+        worker_resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {"command": "reload-mcp", "session_id": "sid"},
+            }
+        )
+        confirm_resp = server.handle_request(
+            {
+                "id": "2",
+                "method": "command.dispatch",
+                "params": {"name": "reload-mcp", "arg": "", "session_id": "sid"},
+            }
+        )
+        reload_resp = server.handle_request(
+            {
+                "id": "3",
+                "method": "command.dispatch",
+                "params": {"name": "reload-mcp", "arg": "now", "session_id": "sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert worker_resp["error"]["code"] == 4018
+    assert "use command.dispatch for /reload-mcp" in worker_resp["error"]["message"]
+    assert confirm_resp["result"]["type"] == "exec"
+    assert confirm_resp["result"]["output"] == "confirm first"
+    assert reload_resp["result"]["type"] == "exec"
+    assert reload_resp["result"]["output"] == "MCP servers reloaded"
+
+
 def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
     monkeypatch.setattr(
         server,

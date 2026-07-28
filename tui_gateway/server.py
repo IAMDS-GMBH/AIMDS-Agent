@@ -7676,102 +7676,119 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5010, str(e))
 
 
+def _do_reload_mcp(session: dict | None, target_session_id: str, confirm: bool, always: bool) -> dict:
+    """Shared implementation for MCP hot-reload.
+
+    Used by both the ``reload.mcp`` RPC method (the Ink TUI's ops.ts and the
+    desktop app's settings/chat surfaces call this directly) and
+    ``command.dispatch``'s native ``reload-mcp`` branch (the fallback for any
+    client that can't call ``reload.mcp`` directly). Deliberately NOT run
+    through the classic CLI's ``/reload-mcp`` — that command shows an
+    interactive prompt_toolkit confirmation modal which has no real TTY to
+    read from when invoked via the ``_SlashWorker`` subprocess (piped
+    stdin/stdout), so it either hangs until the slash-worker timeout or
+    silently self-cancels. This structured confirm/always flow works
+    headlessly in any RPC-driven surface instead.
+    """
+    # Gate: /reload-mcp invalidates the prompt cache for this session.
+    # Respect the ``approvals.mcp_reload_confirm`` config toggle — if
+    # set (default true) AND the caller did not pass ``confirm=true``
+    # in params, surface a warning to the transcript instead of just
+    # reloading silently.  Users pass confirm=true either by
+    # re-invoking after reading the warning, or by setting the
+    # config key to false permanently.
+    if not confirm:
+        try:
+            from hermes_cli.config import load_config as _load_config
+
+            _cfg = _load_config()
+            _approvals = _cfg.get("approvals") if isinstance(_cfg, dict) else None
+            _confirm_required = True
+            if isinstance(_approvals, dict):
+                _confirm_required = bool(_approvals.get("mcp_reload_confirm", True))
+        except Exception:
+            _confirm_required = True
+        if _confirm_required:
+            # Return a structured response the Ink client can surface
+            # as a warning/confirmation without actually reloading yet.
+            # Ink's ops.ts reads ``status`` and prints ``message`` to
+            # the transcript; a follow-up invocation with confirm=true
+            # (or an `always` choice that flips the config) proceeds.
+            return {
+                "status": "confirm_required",
+                "message": (
+                    "⚠️  /reload-mcp invalidates the prompt cache (next "
+                    "message re-sends full input tokens). Reply `/reload-mcp "
+                    "now` to proceed, or `/reload-mcp always` to proceed and "
+                    "silence this prompt permanently."
+                ),
+            }
+
+    from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, get_mcp_status
+
+    shutdown_mcp_servers()
+    discover_mcp_tools()
+    # Rebuild the cached agent's tool snapshot so the current session picks
+    # up added/removed MCP tools without `/new` (which discards history).
+    # The user already consented to prompt-cache invalidation via the
+    # confirm gate above.
+    if session:
+        _refresh_cached_agent_tools(target_session_id)
+    else:
+        # Desktop settings can issue reload.mcp without an active session id.
+        # Refresh all live sessions so the running chat picks up newly
+        # discovered MCP tools even when reload was triggered outside chat.
+        _refresh_cached_agent_tools()
+
+    status_rows = get_mcp_status()
+    enabled_rows = [row for row in status_rows if not row.get("disabled")]
+    connected_rows = [row for row in enabled_rows if row.get("connected")]
+    failed_rows = [row for row in enabled_rows if not row.get("connected")]
+
+    # Honor `always=true` by persisting the opt-out to config.
+    if always:
+        try:
+            from cli import save_config_value as _save_cfg
+
+            _save_cfg("approvals.mcp_reload_confirm", False)
+        except Exception as _exc:
+            logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)
+
+    if failed_rows:
+        failed_names = [str(row.get("name", "<unknown>")) for row in failed_rows]
+        message = (
+            "MCP reload finished with disconnected servers: "
+            + ", ".join(failed_names)
+        )
+        logger.warning(message)
+    else:
+        message = "MCP servers reloaded"
+
+    return {
+        "status": "reloaded",
+        "ok": len(failed_rows) == 0,
+        "message": message,
+        "summary": {
+            "configured_enabled": len(enabled_rows),
+            "connected": len(connected_rows),
+            "failed": len(failed_rows),
+            "failed_servers": [str(row.get("name", "<unknown>")) for row in failed_rows],
+        },
+    }
+
+
 @method("reload.mcp")
 def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
     try:
-        # Gate: /reload-mcp invalidates the prompt cache for this session.
-        # Respect the ``approvals.mcp_reload_confirm`` config toggle — if
-        # set (default true) AND the caller did not pass ``confirm=true``
-        # in params, surface a warning to the transcript instead of just
-        # reloading silently.  Users pass confirm=true either by
-        # re-invoking after reading the warning, or by setting the
-        # config key to false permanently.
-        user_confirm = bool(params.get("confirm", False))
-        if not user_confirm:
-            try:
-                from hermes_cli.config import load_config as _load_config
-
-                _cfg = _load_config()
-                _approvals = _cfg.get("approvals") if isinstance(_cfg, dict) else None
-                _confirm_required = True
-                if isinstance(_approvals, dict):
-                    _confirm_required = bool(_approvals.get("mcp_reload_confirm", True))
-            except Exception:
-                _confirm_required = True
-            if _confirm_required:
-                # Return a structured response the Ink client can surface
-                # as a warning/confirmation without actually reloading yet.
-                # Ink's ops.ts reads ``status`` and prints ``message`` to
-                # the transcript; a follow-up invocation with confirm=true
-                # (or an `always` choice that flips the config) proceeds.
-                return _ok(
-                    rid,
-                    {
-                        "status": "confirm_required",
-                        "message": (
-                            "⚠️  /reload-mcp invalidates the prompt cache (next "
-                            "message re-sends full input tokens). Reply `/reload-mcp "
-                            "now` to proceed, or `/reload-mcp always` to proceed and "
-                            "silence this prompt permanently."
-                        ),
-                    },
-                )
-
-        from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, get_mcp_status
-
-        shutdown_mcp_servers()
-        discover_mcp_tools()
-        # Rebuild the cached agent's tool snapshot so the current session picks
-        # up added/removed MCP tools without `/new` (which discards history).
-        # The user already consented to prompt-cache invalidation via the
-        # confirm gate above.
-        target_session_id = params.get("session_id", "")
-        if session:
-            _refresh_cached_agent_tools(target_session_id)
-        else:
-            # Desktop settings can issue reload.mcp without an active session id.
-            # Refresh all live sessions so the running chat picks up newly
-            # discovered MCP tools even when reload was triggered outside chat.
-            _refresh_cached_agent_tools()
-
-        status_rows = get_mcp_status()
-        enabled_rows = [row for row in status_rows if not row.get("disabled")]
-        connected_rows = [row for row in enabled_rows if row.get("connected")]
-        failed_rows = [row for row in enabled_rows if not row.get("connected")]
-
-        # Honor `always=true` by persisting the opt-out to config.
-        if bool(params.get("always", False)):
-            try:
-                from cli import save_config_value as _save_cfg
-
-                _save_cfg("approvals.mcp_reload_confirm", False)
-            except Exception as _exc:
-                logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)
-
-        if failed_rows:
-            failed_names = [str(row.get("name", "<unknown>")) for row in failed_rows]
-            message = (
-                "MCP reload finished with disconnected servers: "
-                + ", ".join(failed_names)
-            )
-            logger.warning(message)
-        else:
-            message = "MCP servers reloaded"
-
         return _ok(
             rid,
-            {
-                "status": "reloaded",
-                "ok": len(failed_rows) == 0,
-                "message": message,
-                "summary": {
-                    "configured_enabled": len(enabled_rows),
-                    "connected": len(connected_rows),
-                    "failed": len(failed_rows),
-                    "failed_servers": [str(row.get("name", "<unknown>")) for row in failed_rows],
-                },
-            },
+            _do_reload_mcp(
+                session,
+                params.get("session_id", ""),
+                bool(params.get("confirm", False)),
+                bool(params.get("always", False)),
+            ),
         )
     except Exception as e:
         return _err(rid, 5015, str(e))
@@ -7833,6 +7850,13 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "goal",
         "undo",
         "project-path",
+        # The classic CLI's /reload-mcp shows an interactive prompt_toolkit
+        # confirmation modal, which has no real TTY to read from inside the
+        # SlashWorker subprocess (piped stdin/stdout) -- it hangs until the
+        # slash-worker timeout instead of resolving. command.dispatch handles
+        # it natively via the same confirm/always flow reload.mcp uses.
+        "reload-mcp",
+        "reload_mcp",
     }
 )
 
@@ -8089,6 +8113,22 @@ def _(rid, params: dict) -> dict:
     # ── Commands that queue messages onto _pending_input in the CLI ───
     # In the TUI the slash worker subprocess has no reader for that queue,
     # so we handle them here and return a structured payload.
+
+    if name in {"reload-mcp", "reload_mcp"}:
+        a = (arg or "").strip().lower()
+        confirm = a in {"now", "approve", "once", "yes", "always"}
+        always = a == "always"
+        session_id = params.get("session_id", "")
+        try:
+            result = _do_reload_mcp(session, session_id, confirm, always)
+        except Exception as e:
+            return _err(rid, 5015, str(e))
+        if result.get("status") == "confirm_required":
+            return _ok(rid, {"type": "exec", "output": result.get("message", "")})
+        message = result.get("message", "MCP servers reloaded")
+        if always:
+            message += " · future /reload-mcp will run without confirmation"
+        return _ok(rid, {"type": "exec", "output": message})
 
     if name in {"queue", "q"}:
         if not arg:
