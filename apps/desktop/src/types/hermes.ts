@@ -656,6 +656,12 @@ export interface McpCatalogEntry {
   disabled?: boolean
   enabled?: boolean
   installed?: boolean
+  // True for catalog entries that support installing more than one named
+  // instance (currently only AtlassianMCP and TempoMCP, e.g. a Cloud
+  // instance plus a second on-prem Server/DC instance). `instances` lists
+  // the config.yaml keys of already-installed instances of this entry.
+  multi_instance?: boolean
+  instances?: string[]
   name: string
   post_install?: null | string
   required_env?: McpCatalogEnvVar[]
@@ -673,12 +679,20 @@ export interface McpCatalogInstallRequest {
   name: string
   env?: Record<string, string>
   secrets?: Record<string, string>
+  // Config key to install this entry under, when different from `name`.
+  // Only meaningful for multi_instance-capable entries — see
+  // McpCatalogEntry.multi_instance.
+  instance_name?: string
 }
 
 export interface McpCatalogInstallResponse {
   message: string
   ok: boolean
   server?: McpServerSummary
+  // Config key the entry was actually installed/updated under -- equals
+  // the request's instance_name for multi-instance entries, otherwise the
+  // catalog name.
+  name?: string
 }
 
 export interface McpServersResponse {

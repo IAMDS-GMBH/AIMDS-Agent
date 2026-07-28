@@ -10,6 +10,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   disconnectOAuthProvider,
   getEnvVars,
@@ -629,9 +630,15 @@ export function OAuthAccountsPanel() {
   )
 }
 
+// Sentinel for the multi-instance install dialog's instance picker,
+// meaning "create a new named instance" rather than editing one of the
+// entry's already-installed instances (see McpCatalogEntry.instances).
+const NEW_INSTANCE_VALUE = '__new__'
+
 function McpCatalogSection({
   vars,
   onRefreshCreds
+
 }: {
   vars: Record<string, EnvVarInfo>
   onRefreshCreds?: () => void
@@ -644,6 +651,12 @@ function McpCatalogSection({
   const [secretInputs, setSecretInputs] = useState<Record<string, string>>({})
   const [installing, setInstalling] = useState(false)
   const [loading, setLoading] = useState(true)
+  // Multi-instance install/edit picker (AtlassianMCP/TempoMCP only, per
+  // McpCatalogEntry.multi_instance). '__new__' means "create a new named
+  // instance"; any other value is the name of an already-installed
+  // instance being edited in place.
+  const [instancePickerValue, setInstancePickerValue] = useState<string>(NEW_INSTANCE_VALUE)
+  const [newInstanceName, setNewInstanceName] = useState('')
 
   const loadCatalogAndConfig = async () => {
     setLoading(true)
@@ -672,21 +685,53 @@ function McpCatalogSection({
     void loadCatalogAndConfig()
   }, [])
 
+  const envValuesForInstance = (entry: McpCatalogEntry, instanceName: string): Record<string, string> => {
+    const envVars = entry.required_env ?? entry.auth?.env ?? []
+    const serverCfg = installedServers[instanceName] as { env?: Record<string, string> } | undefined
+    const values: Record<string, string> = {}
+    for (const item of envVars) {
+      const raw = serverCfg?.env?.[item.name]
+      // A secondary instance's credentials are stored as literal strings
+      // (see hermes_cli/mcp_catalog.py's literal_env); a ${VAR} template
+      // means "resolved from the shared .env", so fall back to the same
+      // current_value/default flow used for a fresh/default install.
+      if (raw && !(raw.startsWith('${') && raw.endsWith('}'))) {
+        values[item.name] = raw
+      } else {
+        values[item.name] = item.current_value || item.default || ''
+      }
+    }
+    return values
+  }
+
   const openInstallModal = (entry: McpCatalogEntry) => {
     if (entry.disabled) return
-    const initialSecrets: Record<string, string> = {}
-    const envVars = entry.required_env ?? entry.auth?.env ?? []
-
-    for (const item of envVars) {
-      // current_value already resolves cross-entry fallbacks server-side
-      // (e.g. TempoMCP reusing AtlassianMCP's Jira URL/token when its own
-      // env vars aren't set yet) — prefer it over the static manifest default
-      // so those auto-filled values actually get submitted on Install.
-      initialSecrets[item.name] = item.current_value || item.default || ''
-    }
-    setSecretInputs(initialSecrets)
+    const hasExistingInstances = (entry.instances?.length ?? 0) > 0
+    setInstancePickerValue(NEW_INSTANCE_VALUE)
+    // First-ever install of a multi-instance entry still defaults to the
+    // plain catalog name (e.g. "AtlassianMCP"); once at least one instance
+    // exists, "create new" starts blank so the user must name the new one.
+    setNewInstanceName(entry.multi_instance && !hasExistingInstances ? entry.name : '')
+    setSecretInputs(entry.multi_instance ? {} : envValuesForInstance(entry, entry.name))
     setInstallModalEntry(entry)
   }
+
+  const handleInstancePickerChange = (value: string) => {
+    if (!installModalEntry) return
+    setInstancePickerValue(value)
+    if (value === NEW_INSTANCE_VALUE) {
+      setNewInstanceName('')
+      setSecretInputs({})
+    } else {
+      setSecretInputs(envValuesForInstance(installModalEntry, value))
+    }
+  }
+
+  const resolvedInstanceName = installModalEntry?.multi_instance
+    ? instancePickerValue === NEW_INSTANCE_VALUE
+      ? newInstanceName.trim() || installModalEntry.name
+      : instancePickerValue
+    : installModalEntry?.name
 
   const handleInstallCatalog = async () => {
     if (!installModalEntry) return
@@ -697,13 +742,14 @@ function McpCatalogSection({
         enable: true,
         name: installModalEntry.name,
         env: secretInputs,
-        secrets: secretInputs
+        secrets: secretInputs,
+        ...(installModalEntry.multi_instance ? { instance_name: resolvedInstanceName } : {})
       })
 
       if (result.ok) {
         notify({
           kind: 'success',
-          message: m.catalogInstallSuccessMessage(installModalEntry.name),
+          message: m.catalogInstallSuccessMessage(result.name ?? installModalEntry.name),
           title: m.catalogInstallSuccessTitle
         })
         await loadCatalogAndConfig()
@@ -848,9 +894,43 @@ function McpCatalogSection({
               </p>
             )}
 
+            {installModalEntry.multi_instance && (
+              <div className="grid gap-1.5 pt-1">
+                <span className="font-medium text-xs">{m.catalogInstancePickerLabel}</span>
+                <Select onValueChange={handleInstancePickerChange} value={instancePickerValue}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NEW_INSTANCE_VALUE}>{m.catalogInstanceCreateNew}</SelectItem>
+                    {(installModalEntry.instances ?? []).map(name => (
+                      <SelectItem key={name} value={name}>
+                        {name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {instancePickerValue === NEW_INSTANCE_VALUE && (
+                  <Input
+                    onChange={e => setNewInstanceName(e.target.value)}
+                    placeholder={installModalEntry.name}
+                    value={newInstanceName}
+                  />
+                )}
+              </div>
+            )}
+
             <div className="grid gap-3 py-2">
               {(installModalEntry.required_env ?? installModalEntry.auth?.env ?? []).map(item => {
-                const isSet = vars[item.name]?.is_set
+                // The "already in .env" hint only applies to the shared
+                // ~/.hermes/.env, which secondary named instances never
+                // touch (their credentials live as literal strings in
+                // their own mcp_servers.<name>.env block) -- showing it
+                // here would incorrectly imply a secondary instance's
+                // field is already filled in when it isn't.
+                const isSecondaryInstance =
+                  installModalEntry.multi_instance && instancePickerValue !== NEW_INSTANCE_VALUE
+                const isSet = !isSecondaryInstance && vars[item.name]?.is_set
                 return (
                   <label className="grid gap-1" key={item.name}>
                     <div className="flex items-center justify-between">
@@ -881,9 +961,9 @@ function McpCatalogSection({
 
             <DialogFooter className="flex items-center justify-between sm:justify-between">
               <div>
-                {Boolean(installedServers[installModalEntry.name]) && (
+                {Boolean(resolvedInstanceName && installedServers[resolvedInstanceName]) && (
                   <Button
-                    onClick={() => void handleUninstall(installModalEntry.name)}
+                    onClick={() => void handleUninstall(resolvedInstanceName as string)}
                     size="xs"
                     variant="ghost"
                     className="text-destructive hover:bg-destructive/10 hover:text-destructive"

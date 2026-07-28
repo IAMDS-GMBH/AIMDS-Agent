@@ -552,6 +552,8 @@ export const de
       catalogSecretsNotice: 'Secrets werden sicher in deiner .env-Konfiguration gespeichert.',
       catalogInstallSuccessTitle: 'MCP installiert',
       catalogInstallSuccessMessage: (name: string) => `${name} wurde zu deiner MCP-Konfiguration hinzugefügt.`,
+      catalogInstancePickerLabel: 'Instanz',
+      catalogInstanceCreateNew: '+ Neue Instanz anlegen',
       customServersTitle: 'Benutzerdefinierte MCP-Server'
     },
     model: {

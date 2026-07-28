@@ -551,6 +551,8 @@ export const en: Translations = {
       catalogSecretsNotice: 'Secrets will be stored securely in your .env configuration.',
       catalogInstallSuccessTitle: 'MCP Installed',
       catalogInstallSuccessMessage: (name: string) => `${name} has been added to your MCP configuration.`,
+      catalogInstancePickerLabel: 'Instance',
+      catalogInstanceCreateNew: '+ Create new instance',
       customServersTitle: 'Custom MCP Servers'
     },
     model: {

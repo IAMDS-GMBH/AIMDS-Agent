@@ -457,6 +457,8 @@ export interface Translations {
       catalogSecretsNotice: string
       catalogInstallSuccessTitle: string
       catalogInstallSuccessMessage: (name: string) => string
+      catalogInstancePickerLabel: string
+      catalogInstanceCreateNew: string
       customServersTitle: string
     }
     model: {
