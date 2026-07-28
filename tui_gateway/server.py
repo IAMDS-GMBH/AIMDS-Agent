@@ -11558,9 +11558,9 @@ def _(rid, params: dict) -> dict:
                 toolset_enabled = False
                 toolset_enable_error = None
                 try:
-                    from tools.outlook_tool import _enable_outlook_toolset_for_cli
+                    from hermes_cli.mcp_catalog import _enable_m365_toolset_for_cli
 
-                    toolset_enabled, toolset_enable_error = _enable_outlook_toolset_for_cli()
+                    toolset_enabled, toolset_enable_error = _enable_m365_toolset_for_cli()
                 except Exception as exc:
                     toolset_enable_error = str(exc)
                 if toolset_enable_error:

@@ -1350,7 +1350,7 @@ class TestWebServerEndpoints:
         assert telegram["enabled"] is False
 
     def test_update_outlook_platform_auto_enables_toolset_after_credential_save(self, monkeypatch):
-        import tools.outlook_tool as outlook_tool
+        import hermes_cli.mcp_catalog as mcp_catalog
         from hermes_cli.config import load_config
 
         calls = {"count": 0}
@@ -1359,7 +1359,7 @@ class TestWebServerEndpoints:
             calls["count"] += 1
             return True, None
 
-        monkeypatch.setattr(outlook_tool, "_enable_outlook_toolset_for_cli", fake_enable)
+        monkeypatch.setattr(mcp_catalog, "_enable_m365_toolset_for_cli", fake_enable)
 
         resp = self.client.put(
             "/api/messaging/platforms/outlook",

@@ -572,6 +572,22 @@ def _github_device_code_login(
     return copilot_device_code_login()
 
 
+def _enable_m365_toolset_for_cli() -> tuple[bool, Optional[str]]:
+    """Ensure MSOffice365MCP is installed and enabled in Hermes config.yaml."""
+    try:
+        entry = get_entry("MSOffice365MCP")
+        if not entry:
+            return False, "MSOffice365MCP catalog entry not found"
+        install_entry(entry, enable=True, skip_auth_prompt=True)
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
+
+
+# Backwards compatibility alias
+_enable_outlook_toolset_for_cli = _enable_m365_toolset_for_cli
+
+
 def _microsoft_device_code_login(
     entry: "CatalogEntry", collected: Dict[str, str]
 ) -> Optional[str]:
@@ -608,11 +624,10 @@ def _microsoft_device_code_login(
     if tenant_id == "common":
         tenant_id = "organizations"
 
+    from hermes_cli.m365_auth import get_msal_app, save_msal_cache
+
     print(color("  Starting Microsoft OAuth device code login...", Colors.CYAN))
-    app = msal.PublicClientApplication(
-        client_id=client_id,
-        authority=f"https://login.microsoftonline.com/{tenant_id}",
-    )
+    app = get_msal_app(client_id=client_id, tenant_id=tenant_id)
     flow = app.initiate_device_flow(scopes=entry.auth.scopes or ["User.Read"])
     if "user_code" not in flow:
         return None
@@ -621,7 +636,10 @@ def _microsoft_device_code_login(
         Colors.CYAN,
     ))
     result = app.acquire_token_by_device_flow(flow)
-    return result.get("access_token") if result else None
+    if result and "access_token" in result:
+        save_msal_cache(app)
+        return result["access_token"]
+    return None
 
 
 # Provider name -> handler that runs that provider's device-code login flow

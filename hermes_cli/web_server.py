@@ -4107,6 +4107,11 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
     except Exception:
         _log.debug("plugin platform registry unavailable", exc_info=True)
 
+    for platform_id in _PLATFORM_OVERRIDES:
+        if platform_id not in seen:
+            seen.add(platform_id)
+            entries.append(_build_catalog_entry(platform_id))
+
     order = {pid: idx for idx, pid in enumerate(_PLATFORM_ORDER)}
     entries.sort(
         key=lambda e: (order.get(e["id"], len(_PLATFORM_ORDER)), e["name"].lower())
@@ -4833,9 +4838,9 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
                     _write_platform_enabled(platform_id, True)
             if platform_id == "outlook":
                 try:
-                    from tools.outlook_tool import _enable_outlook_toolset_for_cli
+                    from hermes_cli.mcp_catalog import _enable_m365_toolset_for_cli
 
-                    changed, toolset_error = _enable_outlook_toolset_for_cli()
+                    changed, toolset_error = _enable_m365_toolset_for_cli()
                     if toolset_error:
                         _log.warning(
                             "Outlook credentials saved but auto-enable of outlook toolset failed: %s",
@@ -4996,9 +5001,9 @@ async def outlook_authenticate_start(body: OutlookAuthStart):
                 toolset_enabled = False
                 toolset_enable_error = None
                 try:
-                    from tools.outlook_tool import _enable_outlook_toolset_for_cli
+                    from hermes_cli.mcp_catalog import _enable_m365_toolset_for_cli
 
-                    toolset_enabled, toolset_enable_error = _enable_outlook_toolset_for_cli()
+                    toolset_enabled, toolset_enable_error = _enable_m365_toolset_for_cli()
                 except Exception as exc:
                     toolset_enable_error = str(exc)
                 if toolset_enable_error:
@@ -6092,10 +6097,8 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
         scopes = (m365_entry.auth.scopes if m365_entry else None) or ["User.Read"]
 
         def _do_initiate_device_flow():
-            app = msal.PublicClientApplication(
-                client_id=client_id,
-                authority=f"https://login.microsoftonline.com/{tenant_id}",
-            )
+            from hermes_cli.m365_auth import get_msal_app
+            app = get_msal_app(client_id=client_id, tenant_id=tenant_id)
             return app, app.initiate_device_flow(scopes=scopes)
 
         app_obj, flow = await asyncio.get_running_loop().run_in_executor(
@@ -6735,6 +6738,8 @@ def _microsoft_device_code_worker(session_id: str, app_obj: Any, flow: Dict[str,
                 sess["status"] = "error"
                 sess["error_message"] = str(err)
             return
+        from hermes_cli.m365_auth import save_msal_cache
+        save_msal_cache(app_obj)
         save_env_value("M365_ACCESS_TOKEN", token)
         with _oauth_sessions_lock:
             sess["status"] = "approved"

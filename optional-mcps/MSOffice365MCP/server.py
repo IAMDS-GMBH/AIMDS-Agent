@@ -80,74 +80,71 @@ def _get_timezone_name() -> str:
         return "Europe/Berlin"
 
 
-def _get_token_cache_path() -> Path:
-    hermes_home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
-    cache_dir = Path(hermes_home)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir / "m365_token_cache.bin"
-
-
-def _get_msal_app() -> msal.PublicClientApplication:
-    # 1. Custom app registration client_id / tenant_id if specified in env
-    custom_client_id = (
-        os.environ.get("M365_CLIENT_ID")
-        or os.environ.get("OUTLOOK_CLIENT_ID")
-        or os.environ.get("TEAMS_CLIENT_ID")
-    )
-    custom_tenant_id = (
-        os.environ.get("M365_TENANT_ID")
-        or os.environ.get("OUTLOOK_TENANT_ID")
-        or os.environ.get("TEAMS_TENANT_ID")
+try:
+    from hermes_cli.m365_auth import (
+        get_m365_token_cache_path as _get_token_cache_path,
+        get_msal_app as _get_msal_app,
+        save_msal_cache as _save_msal_cache,
     )
 
-    # Defaults: standard multi-tenant client app if no custom app registration provided
-    client_id = custom_client_id or "41c29967-8ee6-4fac-b484-e87460272bda"  # Microsoft Intune / Office multi-tenant app ID
-    tenant_id = custom_tenant_id or "organizations"
-
-    if tenant_id == "common":
-        tenant_id = "organizations"
-
-    cache = msal.SerializableTokenCache()
-    cache_path = _get_token_cache_path()
-    if cache_path.exists():
-        try:
-            cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
-            accounts = cache_data.get("Account", {})
-            if accounts and tenant_id == "organizations":
-                first_acc = next(iter(accounts.values()))
-                if first_acc.get("realm"):
-                    tenant_id = first_acc["realm"]
-            cache.deserialize(json.dumps(cache_data))
-        except Exception:
-            pass
-
-    authority = f"https://login.microsoftonline.com/{tenant_id}"
-
-    app = msal.PublicClientApplication(
-        client_id=client_id,
-        authority=authority,
-        token_cache=cache,
-    )
-    return app
+    def _save_cache(app: msal.PublicClientApplication) -> None:
+        """Persist the MSAL token cache atomically."""
+        _save_msal_cache(app, cache_path=_get_token_cache_path())
+except ImportError:
+    def _get_token_cache_path() -> Path:
+        hermes_home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+        cache_dir = Path(hermes_home)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir / "m365_token_cache.bin"
 
 
-def _save_cache(app: msal.PublicClientApplication) -> None:
-    """Persist the MSAL token cache atomically.
+    def _get_msal_app() -> msal.PublicClientApplication:
+        # 1. Custom app registration client_id / tenant_id if specified in env
+        custom_client_id = (
+            os.environ.get("M365_CLIENT_ID")
+            or os.environ.get("OUTLOOK_CLIENT_ID")
+            or os.environ.get("TEAMS_CLIENT_ID")
+        )
+        custom_tenant_id = (
+            os.environ.get("M365_TENANT_ID")
+            or os.environ.get("OUTLOOK_TENANT_ID")
+            or os.environ.get("TEAMS_TENANT_ID")
+        )
 
-    Multiple Hermes sessions (TUI/dashboard/cron) can each spawn their own
-    MSOffice365MCP subprocess concurrently, all reading/refreshing the same
-    on-disk cache. A plain write_text() truncates the file before writing,
-    so a crash or a concurrent writer mid-write corrupts the JSON — the
-    next read then silently discards the cache (see the broad except in
-    _get_msal_app) and forces a full re-login. Write-then-rename makes the
-    update atomic so readers only ever see a fully-written file.
-    """
-    cache = app.token_cache
-    if cache.has_state_changed:
+        # Defaults: standard multi-tenant client app if no custom app registration provided
+        client_id = custom_client_id or "41c29967-8ee6-4fac-b484-e87460272bda"  # Microsoft Intune / Office multi-tenant app ID
+        tenant_id = custom_tenant_id or "organizations"
+
+        if tenant_id == "common":
+            tenant_id = "organizations"
+
+        cache = msal.SerializableTokenCache()
         cache_path = _get_token_cache_path()
-        tmp_path = cache_path.with_name(f"{cache_path.name}.tmp.{os.getpid()}")
-        tmp_path.write_text(cache.serialize(), encoding="utf-8")
-        os.replace(tmp_path, cache_path)
+        if cache_path.exists():
+            try:
+                cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
+                accounts = cache_data.get("Account", {})
+                if accounts and tenant_id == "organizations":
+                    first_acc = next(iter(accounts.values()))
+                    if first_acc.get("realm"):
+                        tenant_id = first_acc["realm"]
+                cache.deserialize(json.dumps(cache_data))
+            except Exception:
+                pass
+
+        authority = f"https://login.microsoftonline.com/{tenant_id}"
+
+        app = msal.PublicClientApplication(
+            client_id=client_id,
+            authority=authority,
+            token_cache=cache,
+        )
+        return app
+
+
+    def _save_cache(app: msal.PublicClientApplication) -> None:
+        """Persist the MSAL token cache atomically."""
+        _save_msal_cache(app, cache_path=_get_token_cache_path())
 
 
 def _get_access_token() -> str:
