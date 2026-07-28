@@ -4018,7 +4018,9 @@ _CATALOG_SERVER_NAMES_WITH_NOTES = sorted(
 )
 
 
-def _lookup_tool_description_note(server_name: str, tool_name: str) -> Optional[str]:
+def _lookup_tool_description_note(
+    server_name: str, tool_name: str, provider: Optional[str] = None
+) -> Optional[str]:
     """Resolve a description-note override for a configured MCP server instance.
 
     Users can install the same catalog entry more than once under a custom
@@ -4029,6 +4031,14 @@ def _lookup_tool_description_note(server_name: str, tool_name: str) -> Optional[
     drop these notes for every renamed/duplicate instance. Fall back to
     matching by catalog-name suffix (case-sensitive) so any instance of a
     known catalog server still gets its notes.
+
+    The cloud memory MCP is name-agnostic in config.yaml — the installer
+    (see `installer/scripts/upsert_aimds_defaults.py::_resolve_target_mcp_server_name`)
+    targets whichever entry declares `provider: iamds`, regardless of its
+    config key (commonly "IAMDS"/"AIMDS", but also "memory", "aimds-gateway",
+    "remoteMCP", or "remote" in real-world configs). Without a provider-based
+    fallback here, any of those non-"AIMDS"/"IAMDS" keys would silently never
+    get the cross-device-scope note, even though it's the exact same server.
     """
     note = _MCP_TOOL_DESCRIPTION_NOTES.get((server_name, tool_name))
     if note is not None:
@@ -4038,16 +4048,25 @@ def _lookup_tool_description_note(server_name: str, tool_name: str) -> Optional[
             note = _MCP_TOOL_DESCRIPTION_NOTES.get((catalog_name, tool_name))
             if note is not None:
                 return note
+    if str(provider or "").strip().lower() == "iamds":
+        note = _MCP_TOOL_DESCRIPTION_NOTES.get(("AIMDS", tool_name))
+        if note is not None:
+            return note
     return None
 
 
-def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
+def _convert_mcp_schema(server_name: str, mcp_tool, provider: Optional[str] = None) -> dict:
     """Convert an MCP tool listing to the Hermes registry schema format.
 
     Args:
         server_name: The logical server name for prefixing.
         mcp_tool:    An MCP ``Tool`` object with ``.name``, ``.description``,
                      and ``.inputSchema``.
+        provider:    Optional `mcp_servers.<name>.provider` config value, used
+                     to resolve description notes for name-agnostic servers
+                     (e.g. the cloud memory MCP, matched by `provider: iamds`
+                     regardless of its config key) — see
+                     `_lookup_tool_description_note`.
 
     Returns:
         A dict suitable for ``registry.register(schema=...)``.
@@ -4056,7 +4075,7 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     safe_server_name = sanitize_mcp_name_component(server_name)
     prefixed_name = f"mcp_{safe_server_name}_{safe_tool_name}"
     description = mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"
-    note = _lookup_tool_description_note(server_name, mcp_tool.name)
+    note = _lookup_tool_description_note(server_name, mcp_tool.name, provider=provider)
     if note:
         description = f"{description}{note}"
     return {
@@ -4441,7 +4460,9 @@ def _existing_tool_names() -> List[str]:
             names.extend(server._registered_tool_names)
             continue
         for mcp_tool in server._tools:
-            schema = _convert_mcp_schema(server.name, mcp_tool)
+            schema = _convert_mcp_schema(
+                server.name, mcp_tool, provider=(server._config or {}).get("provider")
+            )
             names.append(schema["name"])
     return names
 
@@ -4515,7 +4536,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
         if not config.get("trusted", False):
             _scan_mcp_description(name, mcp_tool.name, mcp_tool.description or "")
 
-        schema = _convert_mcp_schema(name, mcp_tool)
+        schema = _convert_mcp_schema(name, mcp_tool, provider=config.get("provider"))
         tool_name_prefixed = schema["name"]
 
         # Guard against collisions with built-in (non-MCP) tools.

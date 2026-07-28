@@ -218,6 +218,39 @@ class TestSchemaConversion:
         assert "cross-device" in schema["description"].lower()
         assert "local `memory`" in schema["description"]
 
+    @pytest.mark.parametrize("server_name", ["memory", "aimds-gateway", "remoteMCP", "remote", "MyCloudMemory"])
+    @pytest.mark.parametrize("tool_name", ["mcp_memory_memory_save", "mcp_memory_memory_context"])
+    def test_appends_cross_device_scope_note_via_iamds_provider_regardless_of_server_name(
+        self, server_name, tool_name
+    ):
+        """The cloud memory MCP is name-agnostic in config.yaml -- the
+        installer (upsert_aimds_defaults.py::_resolve_target_mcp_server_name)
+        targets whichever entry declares `provider: iamds`, not a fixed
+        "AIMDS"/"IAMDS" key. Real-world configs use "memory" (or other
+        installer-recognized aliases) as the config key, so the note must
+        still be attached when `provider: iamds` is set, even though neither
+        exact-name nor suffix matching would catch it.
+        """
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(name=tool_name, description="Save a memory entry")
+        schema = _convert_mcp_schema(server_name, mcp_tool, provider="iamds")
+
+        assert "cross-device" in schema["description"].lower()
+        assert "local `memory`" in schema["description"]
+
+    def test_no_cross_device_note_for_non_iamds_provider_and_unrelated_name(self):
+        """Guard against over-matching: a server with neither an AIMDS/IAMDS
+        name nor an iamds provider must not get the cloud-memory note just
+        because its tool happens to be named like a memory tool.
+        """
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(name="mcp_memory_memory_save", description="Save a memory entry")
+        schema = _convert_mcp_schema("SomeOtherServer", mcp_tool, provider="anthropic")
+
+        assert schema["description"] == "Save a memory entry"
+
     def test_empty_input_schema_gets_default(self):
         from tools.mcp_tool import _convert_mcp_schema
 
