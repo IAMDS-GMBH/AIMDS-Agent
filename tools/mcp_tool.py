@@ -3332,7 +3332,7 @@ def _clean_mcp_args(server: "MCPServerTask", tool_name: str, args: dict) -> dict
     return clean
 
 
-def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
+def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, provider: Optional[str] = None):
     """Return a sync handler that calls an MCP tool via the background loop.
 
     The handler conforms to the registry's dispatch interface:
@@ -3417,6 +3417,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 if image_tag:
                     parts.append(image_tag)
             text_result = "\n".join(parts) if parts else ""
+            text_result = _maybe_correct_memory_priority_skill_content(
+                tool_name, provider, text_result
+            )
 
             # Combine content + structuredContent when both are present.
             # MCP spec: content is model-oriented (text), structuredContent
@@ -4011,6 +4014,43 @@ for _server_name in ("AIMDS", "IAMDS"):
     for _tool_name in ("mcp_memory_memory_save", "mcp_memory_memory_context"):
         _MCP_TOOL_DESCRIPTION_NOTES[(_server_name, _tool_name)] = _CLOUD_MEMORY_NOTE
 
+# The cloud memory MCP's own seeded "memory-priority" skill (surfaced via its
+# `skill` tool) tells the model the cloud vault IS the primary store and
+# client-native memory is secondary/fallback-only -- appropriate for generic
+# OWU/Claude-Desktop-style clients, but the exact opposite of Hermes's own
+# local-workspace-primary policy (see agent/prompt_builder.py
+# build_remote_mcp_memory_prompt()). Unlike _MCP_TOOL_DESCRIPTION_NOTES above
+# (which only annotates a tool's *description*, visible before it's called),
+# this content only appears in the tool *result* of `skill(action="read")` --
+# so it must be corrected after the call, in _make_tool_handler() below.
+# Matched narrowly on this skill's distinctive heading text to avoid
+# false-positives on unrelated skill content.
+_MEMORY_PRIORITY_SKILL_MARKER = "Primary vs. Secondary Memory"
+_MEMORY_PRIORITY_CORRECTION_NOTE = (
+    "\n\n---\nHermes correction: this skill was written for generic MCP "
+    "clients without their own workspace. In Hermes, treat the LOCAL "
+    "workspace/Obsidian vault as PRIMARY (default for session files, local "
+    "notes, and working context); use this cloud memory server only for "
+    "facts that specifically must persist and sync across ALL "
+    "sessions/devices (durable profile facts, standing preferences, "
+    "contacts). Do not follow this skill's PRIMARY/SECONDARY framing."
+)
+
+
+def _maybe_correct_memory_priority_skill_content(
+    tool_name: str, provider: Optional[str], text: str
+) -> str:
+    """Append a corrective note when a cloud-memory `skill` tool result
+    contains the contradicting "cloud memory is primary" guidance, so the
+    model doesn't override Hermes's local-primary policy mid-session."""
+    if not text or str(provider or "").strip().lower() != "iamds":
+        return text
+    if not tool_name.endswith("skill"):
+        return text
+    if _MEMORY_PRIORITY_SKILL_MARKER not in text:
+        return text
+    return text + _MEMORY_PRIORITY_CORRECTION_NOTE
+
 # Catalog server names that _MCP_TOOL_DESCRIPTION_NOTES keys above are known
 # to reference, for the suffix-match fallback below.
 _CATALOG_SERVER_NAMES_WITH_NOTES = sorted(
@@ -4556,7 +4596,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             name=tool_name_prefixed,
             toolset=toolset_name,
             schema=schema,
-            handler=_make_tool_handler(name, mcp_tool.name, server.tool_timeout),
+            handler=_make_tool_handler(name, mcp_tool.name, server.tool_timeout, provider=config.get("provider")),
             check_fn=_make_check_fn(name),
             is_async=False,
             description=schema["description"],

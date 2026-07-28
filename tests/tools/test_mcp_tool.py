@@ -656,6 +656,99 @@ class TestToolHandler:
         finally:
             _servers.pop("test_srv", None)
 
+    def test_iamds_skill_result_gets_memory_priority_correction(self):
+        """A skill(action='read') result from an iamds-provider server carrying
+        the cloud-memory-is-primary framing must be corrected so the model
+        doesn't override Hermes's local-primary policy."""
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        contradicting_content = (
+            "# Memory Priority\n\n## Primary vs. Secondary Memory\n\n"
+            "- **PRIMARY**: memory_*/skill\n- **SECONDARY**: client-native memory"
+        )
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result(contradicting_content, is_error=False)
+        )
+        server = _make_mock_server("memory", session=mock_session)
+        _servers["memory"] = server
+
+        try:
+            handler = _make_tool_handler("memory", "skill", 120, provider="iamds")
+            with self._patch_mcp_loop():
+                result = json.loads(handler({"action": "read", "id": "memory-priority"}))
+            assert "Hermes correction" in result["result"]
+            assert "local" in result["result"].lower()
+            assert contradicting_content in result["result"]
+        finally:
+            _servers.pop("memory", None)
+
+    def test_non_iamds_skill_result_is_not_corrected(self):
+        """The correction must only apply to the iamds cloud memory provider,
+        never to unrelated skill servers, even with matching text."""
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        contradicting_content = "## Primary vs. Secondary Memory\n- PRIMARY: memory_*"
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result(contradicting_content, is_error=False)
+        )
+        server = _make_mock_server("some_other_server", session=mock_session)
+        _servers["some_other_server"] = server
+
+        try:
+            handler = _make_tool_handler("some_other_server", "skill", 120, provider=None)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({"action": "read"}))
+            assert "Hermes correction" not in result["result"]
+            assert result["result"] == contradicting_content
+        finally:
+            _servers.pop("some_other_server", None)
+
+    def test_iamds_skill_result_without_marker_text_is_untouched(self):
+        """Unrelated skill content (no priority-framing marker) from the same
+        iamds server must pass through unchanged."""
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        benign_content = "# Some Other Skill\n\nJust regular instructions."
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result(benign_content, is_error=False)
+        )
+        server = _make_mock_server("memory", session=mock_session)
+        _servers["memory"] = server
+
+        try:
+            handler = _make_tool_handler("memory", "skill", 120, provider="iamds")
+            with self._patch_mcp_loop():
+                result = json.loads(handler({"action": "read", "id": "other-skill"}))
+            assert result["result"] == benign_content
+        finally:
+            _servers.pop("memory", None)
+
+    def test_iamds_non_skill_tool_result_is_not_corrected(self):
+        """The correction is scoped to the skill tool only -- other tools on
+        the same iamds server (e.g. memory_search) must never be touched,
+        even if their result happens to contain the marker text."""
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        contradicting_content = "## Primary vs. Secondary Memory\n- PRIMARY: memory_*"
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result(contradicting_content, is_error=False)
+        )
+        server = _make_mock_server("memory", session=mock_session)
+        _servers["memory"] = server
+
+        try:
+            handler = _make_tool_handler("memory", "memory_search", 120, provider="iamds")
+            with self._patch_mcp_loop():
+                result = json.loads(handler({"query": "test"}))
+            assert "Hermes correction" not in result["result"]
+            assert result["result"] == contradicting_content
+        finally:
+            _servers.pop("memory", None)
+
     def test_mcp_error_result(self):
         from tools.mcp_tool import _make_tool_handler, _servers
 
