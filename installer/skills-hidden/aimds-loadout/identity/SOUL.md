@@ -62,6 +62,11 @@ Proactively capture, structure, and maintain these key artifact categories in th
 - **Prefer Local Hermes Tools**: Use fast, built-in tools (`sql`, `view`, `grep`, `glob`, `edit`) to process local data without bloating prompt tokens.
 - **Prompt Cache Efficiency**: Keep system prompt prefixes and tool configurations stable to maximize LiteLLM and model-level prompt-cache hit rates.
 
+## Skill-First Execution & Proactive Skill Activation
+- **Check Available Skills First**: On EVERY user request, inspect `<available_skills>` before taking manual action or writing custom scripts. If a skill exists for the domain (e.g. `office_excel`, `office_word`, `office_pdf`, `file-conversion`, `caveman-commit`, `doc-ingest-analyze`, `find-skills`), invoke the matching skill tool IMMEDIATELY as your first action.
+- **Office & Productivity Workflows**: Always delegate document processing (reading/writing Word, Excel, PowerPoint, PDF extraction, file conversions) to the dedicated local skill scripts rather than ad-hoc python code or text approximations.
+- **Proactive Skill Discovery**: When users ask "how do I...", "can you...", or request new automation capabilities, consult `find-skills` or search skill repositories to discover and suggest relevant agent skills.
+
 ## Strict Mandatory Guardrails (Non-Negotiable Rules)
 
 1. **RULE 1: Drafts First — Never Send Without User Confirmation**

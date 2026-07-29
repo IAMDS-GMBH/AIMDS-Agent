@@ -1032,13 +1032,19 @@ def _ensure_documents_memory_link(home: Path) -> None:
         for stale_backup in backup_parent.glob("HermesMemory.backup.*"):
             shutil.rmtree(stale_backup, ignore_errors=True)
 
-    # Clean up legacy top-level Documents memory links/directories if they exist
+    workspace_dir = _resolve_workspace_dir()
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    memory_link = workspace_dir / "HermesMemory"
+
+    # Clean up legacy top-level Documents memory links/directories if they exist.
+    # Exclude active memory_link so we don't destroy/backup the target folder on every run!
     legacy_links = [
         docs_dir / "HermesMemory",
         docs_dir / "AIMDS-Suite-Memory",
         docs_dir / "AIMDS-Suite-WorkingDirectory" / "HermesMemory",
         docs_dir / "AIMDS-Suite-Vault" / "HermesMemory",
     ]
+    legacy_links = [loc for loc in legacy_links if loc.resolve() != memory_link.resolve()]
     for legacy in legacy_links:
         if legacy.is_symlink():
             try:
@@ -1070,10 +1076,6 @@ def _ensure_documents_memory_link(home: Path) -> None:
             except OSError:
                 pass
 
-    workspace_dir = _resolve_workspace_dir()
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-    memory_link = workspace_dir / "HermesMemory"
-
     if memory_link.is_symlink():
         current_target = Path(os.readlink(memory_link))
         if not current_target.is_absolute():
@@ -1101,10 +1103,8 @@ def _ensure_documents_memory_link(home: Path) -> None:
     elif memory_link.exists():
         if memory_link.is_dir():
             _merge_directory_contents(memory_link, memory_target)
-        backup_path = memory_link.with_name(
-            f"{memory_link.name}.backup.{int(time.time())}"
-        )
-        memory_link.rename(backup_path)
+            # If it's already a regular directory containing memories, it's functional.
+            return
 
     try:
         memory_link.symlink_to(memory_target, target_is_directory=True)
@@ -1123,16 +1123,16 @@ def _ensure_documents_memory_link(home: Path) -> None:
                 )
                 return
             except (OSError, subprocess.CalledProcessError) as junc_err:
-                logger.warning(
-                    "Failed to create HermesMemory junction at %s: %s",
+                logger.debug(
+                    "Could not create HermesMemory junction at %s: %s",
                     memory_link,
                     junc_err,
                 )
-        logger.warning(
-            "Failed to create HermesMemory symlink at %s: %s",
-            memory_link,
-            exc,
-        )
+        # Fallback: create plain directory if symlink & junction both failed (e.g. non-admin Windows)
+        try:
+            memory_link.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
 
 
 def ensure_hermes_home():
