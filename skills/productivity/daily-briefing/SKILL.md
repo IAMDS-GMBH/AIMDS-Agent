@@ -18,8 +18,10 @@ This skill acts as an executive Chief of Staff agent, compiling a comprehensive,
    - Query pending tasks using `m365_list_todo_tasks` or local task/todo databases.
    - Highlight high-priority items, due/overdue deadlines, and open action items from previous days.
 
-3. **Urgent Messages & Call History**:
-   - Scan recent unread emails or urgent chat messages via `m365_list_messages` or `m365_list_teams_calls`.
+3. **Outlook Email & Teams Message Summary**:
+   - Query today's emails via `m365_list_emails` / `m365_search_emails` or Outlook tools (`received >= today`).
+   - Group emails by sender, urgency, and action required (e.g. decision requested, FYIs, client inquiries).
+   - Scan recent unread Teams chat messages or call logs via `m365_list_messages` or `m365_list_teams_calls`.
    - Identify missed calls, direct mentions, or out-of-office status flags (`m365_get_mailbox_settings`).
 
 4. **Briefing Output Format**:
@@ -31,13 +33,21 @@ This skill acts as an executive Chief of Staff agent, compiling a comprehensive,
 - **09:00 – 09:30**: [Meeting Title] (with [Attendees]) — *[Key Context/Objective]*
 - **11:00 – 12:00**: [Meeting Title] — 🔗 [Teams Link/Room]
 
+## 📧 Today's Email Summary ([Count] Messages Received Today)
+- **🔴 Action Required**:
+  - **[Sender]** — *[Subject]*: [1-sentence summary of request/deadline]
+- **🟡 Important Updates**:
+  - **[Sender]** — *[Subject]*: [Summary]
+- **🟢 FYIs & General**:
+  - [Key takeaway]
+
 ## 🎯 Top Priority Action Items
 1. 🔴 **[Urgent/Overdue Task]**: [Details & Deadline]
 2. 🟡 **[Important Task]**: [Details]
 3. 🟢 **[Follow-Up]**: [Details]
 
-## 📩 Important Signals & Unread Highlights
-- **Email/Chat**: [Summary of key message or mention]
+## 💬 Teams & Call Highlights
+- **Teams Messages**: [Summary of key user mentions or chat updates today]
 - **Calls**: [Missed calls or recent group meeting logs]
 
 ## 💡 Executive Summary & Focus Advice
