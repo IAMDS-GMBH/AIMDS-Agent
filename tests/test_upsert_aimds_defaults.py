@@ -36,11 +36,11 @@ def test_upsert_aimds_defaults_creates_required_sections():
     for slot in ("goal_judge", "compression", "approval", "mcp", "title_generation"):
         assert slot not in out.get("auxiliary", {})
 
-    include = out["mcp_servers"]["IAMDS"]["tools"]["include"]
+    include = out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["include"]
     assert "kb_search" in include
     assert "memory_context" in include
-    assert out["mcp_servers"]["IAMDS"]["tools"]["resources"] is False
-    assert out["mcp_servers"]["IAMDS"]["tools"]["prompts"] is False
+    assert out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["resources"] is False
+    assert out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["prompts"] is False
 
 
 def test_upsert_aimds_defaults_overrides_existing_conflicting_values():
@@ -56,8 +56,8 @@ def test_upsert_aimds_defaults_overrides_existing_conflicting_values():
     assert out["tools"]["tool_search"]["threshold_pct"] == 10
     assert out["prompt_caching"]["cache_ttl"] == "5m"
     assert "goal_judge" not in out["auxiliary"]
-    assert "kb_search" in out["mcp_servers"]["IAMDS"]["tools"]["include"]
-    assert out["mcp_servers"]["IAMDS"]["tools"]["resources"] is False
+    assert "kb_search" in out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["include"]
+    assert out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["resources"] is False
 
 
 def test_migrate_aimds_defaults_sets_version_and_applies_when_missing():
@@ -88,6 +88,25 @@ def test_migrate_aimds_defaults_reenforces_policy_when_already_current():
     assert out["memory"]["session_start_bootstrap_contract_enabled"] is False
 
 
+def test_upsert_removes_synthetic_iamds_stub_and_migrates_to_aimds_suite_mcp():
+    cfg = {
+        "mcp_servers": {
+            "IAMDS": {
+                "tools": {
+                    "include": [
+                        "kb_search",
+                        "memory_context",
+                    ],
+                }
+            },
+        }
+    }
+    out = upsert_aimds_defaults(cfg)
+    assert "IAMDS" not in out["mcp_servers"]
+    assert "AIMDSSuiteMCP" in out["mcp_servers"]
+    assert "kb_search" in out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["include"]
+
+
 def test_upsert_removes_synthetic_aimds_gateway_when_iamds_exists():
     cfg = {
         "mcp_servers": {
@@ -115,7 +134,7 @@ def test_upsert_removes_synthetic_aimds_gateway_when_iamds_exists():
     }
     out = upsert_aimds_defaults(cfg)
     assert "aimds-gateway" not in out["mcp_servers"]
-    assert "kb_search" in out["mcp_servers"]["IAMDS"]["tools"]["include"]
+    assert "kb_search" in out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["include"]
 
 
 def test_upsert_targets_provider_iamds_even_with_custom_server_name():

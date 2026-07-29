@@ -137,11 +137,13 @@ async function filterIgnored(entries: HermesReadDirEntry[], rootPath: string, di
   return rules.length > 0 ? entries.filter(entry => !ignoredBy(rules, entry)) : entries
 }
 
-/** Hide dotfiles/dot-directories (`.git`, `.config`, `.aws`, etc.) from the
- *  workspace file browser — noise for end users who never need to see them
- *  and shouldn't be nudged to poke around inside them. */
+/** Hide dotfiles/dot-directories (`.git`, `.config`, `.aws`, etc.) and system junk
+ *  (`__MACOSX`, `desktop.ini`, `thumbs.db`) from the workspace file browser. */
 function filterHidden(entries: HermesReadDirEntry[]) {
-  return entries.filter(entry => !entry.name.startsWith('.'))
+  const junkNames = new Set(['__MACOSX', 'desktop.ini', 'thumbs.db', '$RECYCLE.BIN'])
+  return entries.filter(
+    entry => !entry.name.startsWith('.') && !junkNames.has(entry.name) && !junkNames.has(entry.name.toUpperCase())
+  )
 }
 
 export async function readProjectDir(dirPath: string, rootPath = dirPath): Promise<HermesReadDirResult> {

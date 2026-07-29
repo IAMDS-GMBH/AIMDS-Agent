@@ -112,7 +112,7 @@ def _coerce_version(value: object) -> int:
 
 def _resolve_target_mcp_server_name(mcp_servers: dict) -> str:
     if not isinstance(mcp_servers, dict):
-        return "IAMDS"
+        return "AIMDSSuiteMCP"
 
     # Name-agnostic primary rule: target whichever MCP entry declares
     # provider: iamds.
@@ -120,7 +120,7 @@ def _resolve_target_mcp_server_name(mcp_servers: dict) -> str:
         if isinstance(cfg, dict) and str(cfg.get("provider", "")).strip().lower() == "iamds":
             return str(name)
 
-    for preferred in ("IAMDS", "memory", "aimds-gateway", "remoteMCP", "remote"):
+    for preferred in ("AIMDSSuiteMCP", "IAMDS", "memory", "aimds-gateway", "remoteMCP", "remote"):
         if preferred in mcp_servers and isinstance(mcp_servers.get(preferred), dict):
             return preferred
 
@@ -128,7 +128,7 @@ def _resolve_target_mcp_server_name(mcp_servers: dict) -> str:
         if isinstance(cfg, dict):
             return str(name)
 
-    return "IAMDS"
+    return "AIMDSSuiteMCP"
 
 
 def _is_upsert_only_aimds_gateway(entry: object) -> bool:
@@ -179,6 +179,17 @@ def upsert_aimds_defaults(config: dict) -> dict:
                 auxiliary.pop(slot, None)
 
     mcp_servers = _ensure_dict(cfg, "mcp_servers")
+
+    # Clean up legacy synthetic IAMDS stubs before resolving target name
+    if "IAMDS" in mcp_servers:
+        iamds_entry = mcp_servers.get("IAMDS")
+        if _is_upsert_only_aimds_gateway(iamds_entry):
+            mcp_servers.pop("IAMDS", None)
+        elif isinstance(iamds_entry, dict) and "AIMDSSuiteMCP" not in mcp_servers:
+            # Migrate real IAMDS entry to AIMDSSuiteMCP
+            mcp_servers["AIMDSSuiteMCP"] = iamds_entry
+            mcp_servers.pop("IAMDS", None)
+
     target_name = _resolve_target_mcp_server_name(mcp_servers)
     target_server = _ensure_dict(mcp_servers, target_name)
 
@@ -193,11 +204,16 @@ def upsert_aimds_defaults(config: dict) -> dict:
     aimds_tools["prompts"] = False
 
     # Repair from v1 behavior: avoid introducing a separate synthetic
-    # "aimds-gateway" MCP entry when the real server is IAMDS.
+    # "aimds-gateway" or legacy "IAMDS" stub when the real server is AIMDSSuiteMCP.
     if target_name != "aimds-gateway":
         legacy = mcp_servers.get("aimds-gateway")
         if _is_upsert_only_aimds_gateway(legacy):
             mcp_servers.pop("aimds-gateway", None)
+
+    if target_name != "IAMDS":
+        legacy_iamds = mcp_servers.get("IAMDS")
+        if _is_upsert_only_aimds_gateway(legacy_iamds) or "AIMDSSuiteMCP" in mcp_servers:
+            mcp_servers.pop("IAMDS", None)
 
     return cfg
 

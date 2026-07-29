@@ -1370,7 +1370,7 @@ function emitUpdateProgress(payload) {
 // "ref absent" (exit 2), never on a transient network error, so a flaky
 // connection can't strand a user on the wrong branch.
 async function resolveHealedBranch(updateRoot, branch) {
-  if (!branch || branch === 'main') {
+  if (!branch || branch === 'main' || branch === 'tags' || branch === 'stable') {
     return branch || 'main'
   }
 
@@ -1404,7 +1404,66 @@ async function checkUpdates() {
   }
 
   branch = await resolveHealedBranch(updateRoot, branch)
+  const isTagsChannel = branch === 'tags' || branch === 'stable'
   const originUrl = await getOriginUrl(updateRoot)
+
+  if (isTagsChannel) {
+    const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
+    const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
+
+    if (!isOfficialSshRemote(originUrl)) {
+      await runGit(['fetch', '--quiet', '--tags', 'origin'], { cwd: updateRoot })
+    }
+
+    const lsTags = await runGit(['ls-remote', '--tags', '--sort=-v:refname', remote], { cwd: updateRoot })
+    if (lsTags.code !== 0 || !lsTags.stdout.trim()) {
+      return {
+        supported: true,
+        branch,
+        error: 'fetch-failed',
+        message: firstLine(lsTags.stderr) || 'git ls-remote --tags failed.',
+        hermesRoot: updateRoot,
+        fetchedAt: Date.now()
+      }
+    }
+
+    const lines = lsTags.stdout.split('\n').map(l => l.trim()).filter(Boolean)
+    const validTagLine = lines.find(l => !l.endsWith('^{}'))
+    if (!validTagLine) {
+      return {
+        supported: true,
+        branch,
+        error: 'no-tags-found',
+        message: 'No valid git tags found on remote.',
+        hermesRoot: updateRoot,
+        fetchedAt: Date.now()
+      }
+    }
+
+    const [targetSha, tagRef] = validTagLine.split(/\s+/)
+    const tagName = tagRef ? tagRef.replace(/^refs\/tags\//, '') : ''
+
+    const [currentSha, dirtyStr, currentBranch] = await Promise.all([
+      git(['rev-parse', 'HEAD']),
+      git(['status', '--porcelain']),
+      git(['rev-parse', '--abbrev-ref', 'HEAD'])
+    ])
+
+    return {
+      supported: true,
+      branch,
+      currentBranch,
+      behind: currentSha && currentSha === targetSha ? 0 : 1,
+      currentSha,
+      targetSha,
+      targetTag: tagName,
+      commits: [],
+      dirty: dirtyStr.length > 0,
+      hermesRoot: updateRoot,
+      fetchedAt: Date.now()
+    }
+  }
+
   if (isOfficialSshRemote(originUrl)) {
     const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
     const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
@@ -1438,7 +1497,7 @@ async function checkUpdates() {
     }
   }
 
-  const fetched = await runGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
+  const fetched = await runGit(['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { cwd: updateRoot })
   if (fetched.code !== 0) {
     return {
       supported: true,
@@ -2226,14 +2285,14 @@ function resolveHermesCwd() {
   // and bewilder users when "where did my files go?" is the install dir.
   // The user-configurable default project directory wins over everything,
   // followed by env hints (only honored when packaged if they point at a
-  // real directory), then the default Documents/AIMDS-Suite-Vault,
-  // then finally the process working directory and home dir.
-  const workspaceDefault = path.resolve(hermesWorkingDirectoryPath())
+  // real directory), then the user home directory,
+  // then finally the process working directory.
+  const userHome = app.getPath('home')
   const candidates = [
     readDefaultProjectDir(),
     resolveTerminalCwdFromConfig(),
     process.env.HERMES_DESKTOP_CWD,
-    workspaceDefault,
+    userHome,
     IS_PACKAGED ? null : process.env.INIT_CWD,
     IS_PACKAGED ? null : process.cwd(),
     !IS_PACKAGED ? SOURCE_REPO_ROOT : null
@@ -2247,15 +2306,10 @@ function resolveHermesCwd() {
       continue
     }
 
-    if (directoryExists(resolved)) return ensureWorkspaceTemplateBaseline(resolved)
+    if (directoryExists(resolved)) return resolved
   }
 
-  // No candidate exists: create and use Documents/AIMDS-Suite-Vault.
-  const ensured = ensureHermesWorkingDirectory()
-  if (directoryExists(ensured)) {
-    return ensureWorkspaceTemplateBaseline(ensured)
-  }
-  return app.getPath('home')
+  return userHome
 }
 
 function sanitizeWorkspaceCwd(cwd) {
