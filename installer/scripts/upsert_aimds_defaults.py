@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 from copy import deepcopy
+import os
 import re
 import sys
 from pathlib import Path
@@ -110,22 +111,31 @@ def _coerce_version(value: object) -> int:
         return 0
 
 
+def _build_iamds_mcp_url(base_url: str) -> str:
+    base = str(base_url or "").strip().rstrip("/")
+    if not base or "<litellm-host>" in base:
+        return ""
+    for suffix in ("/litellm/v1", "/litellm/mcp", "/v1"):
+        if base.endswith(suffix):
+            base = base[:-len(suffix)]
+            break
+    return f"{base}/litellm/mcp"
+
+
 def _resolve_target_mcp_server_name(mcp_servers: dict) -> str:
     if not isinstance(mcp_servers, dict):
         return "AIMDSSuiteMCP"
 
-    # Name-agnostic primary rule: target whichever MCP entry declares
-    # provider: iamds.
-    for name, cfg in mcp_servers.items():
-        if isinstance(cfg, dict) and str(cfg.get("provider", "")).strip().lower() == "iamds":
-            return str(name)
+    if "AIMDSSuiteMCP" in mcp_servers and isinstance(mcp_servers.get("AIMDSSuiteMCP"), dict):
+        return "AIMDSSuiteMCP"
 
-    for preferred in ("AIMDSSuiteMCP", "IAMDS", "memory", "aimds-gateway", "remoteMCP", "remote"):
-        if preferred in mcp_servers and isinstance(mcp_servers.get(preferred), dict):
-            return preferred
+    # Check for legacy names that migrate to AIMDSSuiteMCP
+    for legacy in ("IAMDS", "AIMDS", "memory", "aimds-gateway", "remoteMCP", "remote"):
+        if legacy in mcp_servers and isinstance(mcp_servers.get(legacy), dict):
+            return "AIMDSSuiteMCP"
 
     for name, cfg in mcp_servers.items():
-        if isinstance(cfg, dict):
+        if isinstance(cfg, dict) and str(cfg.get("provider", "")).strip().lower() in ("iamds", "aimds"):
             return str(name)
 
     return "AIMDSSuiteMCP"
@@ -180,18 +190,26 @@ def upsert_aimds_defaults(config: dict) -> dict:
 
     mcp_servers = _ensure_dict(cfg, "mcp_servers")
 
-    # Clean up legacy synthetic IAMDS stubs before resolving target name
-    if "IAMDS" in mcp_servers:
-        iamds_entry = mcp_servers.get("IAMDS")
-        if _is_upsert_only_aimds_gateway(iamds_entry):
-            mcp_servers.pop("IAMDS", None)
-        elif isinstance(iamds_entry, dict) and "AIMDSSuiteMCP" not in mcp_servers:
-            # Migrate real IAMDS entry to AIMDSSuiteMCP
-            mcp_servers["AIMDSSuiteMCP"] = iamds_entry
-            mcp_servers.pop("IAMDS", None)
-
     target_name = _resolve_target_mcp_server_name(mcp_servers)
-    target_server = _ensure_dict(mcp_servers, target_name)
+    target_server = mcp_servers.get(target_name)
+    if not isinstance(target_server, dict):
+        target_server = {}
+
+    # Migrate and remove any legacy server entries (IAMDS, AIMDS, aimds-gateway, remote, etc.)
+    legacy_keys = {"IAMDS", "iamds", "AIMDS", "aimds", "aimds-gateway", "remoteMCP", "remote", "memory"}
+    for legacy in list(mcp_servers.keys()):
+        if legacy in legacy_keys and legacy != target_name:
+            legacy_entry = mcp_servers.pop(legacy, None)
+            if isinstance(legacy_entry, dict):
+                # Copy properties from legacy entry if target_server lacks them
+                for k, v in legacy_entry.items():
+                    if k not in target_server or not target_server[k]:
+                        target_server[k] = v
+
+    mcp_servers[target_name] = target_server
+
+    target_server["provider"] = "aimds"
+    target_server["transport"] = target_server.get("transport") or "http"
 
     headers = _ensure_dict(target_server, "headers")
     auth_val = str(headers.get("Authorization") or "").strip()
@@ -203,17 +221,21 @@ def upsert_aimds_defaults(config: dict) -> dict:
     aimds_tools["resources"] = False
     aimds_tools["prompts"] = False
 
-    # Repair from v1 behavior: avoid introducing a separate synthetic
-    # "aimds-gateway" or legacy "IAMDS" stub when the real server is AIMDSSuiteMCP.
-    if target_name != "aimds-gateway":
-        legacy = mcp_servers.get("aimds-gateway")
-        if _is_upsert_only_aimds_gateway(legacy):
-            mcp_servers.pop("aimds-gateway", None)
-
-    if target_name != "IAMDS":
-        legacy_iamds = mcp_servers.get("IAMDS")
-        if _is_upsert_only_aimds_gateway(legacy_iamds) or "AIMDSSuiteMCP" in mcp_servers:
-            mcp_servers.pop("IAMDS", None)
+    # Resolve URL if missing or placeholder
+    url_val = str(target_server.get("url") or "").strip()
+    if not url_val or "<litellm-host>" in url_val:
+        base_url = str(
+            cfg.get("base_url")
+            or cfg.get("providers", {}).get("iamds-litellm", {}).get("base_url")
+            or os.environ.get("IAMDS_LITELLM_BASE_URL", "")
+            or os.environ.get("HERMES_BOOTSTRAP_BASE_URL", "")
+            or ""
+        ).strip()
+        derived_url = _build_iamds_mcp_url(base_url)
+        if derived_url:
+            target_server["url"] = derived_url
+        else:
+            target_server["url"] = "${IAMDS_LITELLM_BASE_URL}/litellm/mcp"
 
     return cfg
 

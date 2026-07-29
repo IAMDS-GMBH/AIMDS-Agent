@@ -3007,7 +3007,7 @@ def _build_provider_aware_mcp_config(
       Authorization header is already present and *new_api_key* is non-empty.
     """
     cfg = _interpolate_env_vars(raw_cfg)
-    if new_base_url and isinstance(cfg.get("url"), str):
+    if new_base_url:
         new_url = _build_iamds_mcp_url(new_base_url)
         if new_url:
             cfg["url"] = new_url
@@ -3045,9 +3045,9 @@ def _persist_iamds_mcp_config(
         if not isinstance(entry, dict):
             return
         changed = False
-        if new_base_url and isinstance(entry.get("url"), str):
+        if new_base_url:
             new_url = _build_iamds_mcp_url(new_base_url)
-            if new_url and new_url != entry["url"]:
+            if new_url and entry.get("url") != new_url:
                 entry["url"] = new_url
                 changed = True
         if new_api_key:
@@ -3266,7 +3266,25 @@ def _load_mcp_config() -> Dict[str, dict]:
             load_hermes_dotenv()
         except Exception:
             pass
-        return {name: _interpolate_env_vars(cfg) for name, cfg in servers.items()}
+
+        result = {}
+        for name, cfg in servers.items():
+            if not isinstance(cfg, dict):
+                continue
+            item = _interpolate_env_vars(cfg)
+            # Fail-safe URL resolution for AIMDSSuiteMCP / IAMDS servers
+            if (name in ("AIMDSSuiteMCP", "AIMDS", "IAMDS") or str(item.get("provider", "")).lower() in ("aimds", "iamds")) and not item.get("url") and not item.get("command"):
+                base_url = str(
+                    config.get("base_url")
+                    or (config.get("providers", {}).get("iamds-litellm", {}) if isinstance(config.get("providers"), dict) else {}).get("base_url")
+                    or os.environ.get("IAMDS_LITELLM_BASE_URL")
+                    or os.environ.get("HERMES_BOOTSTRAP_BASE_URL")
+                    or ""
+                ).strip()
+                if base_url:
+                    item["url"] = _build_iamds_mcp_url(base_url)
+            result[name] = item
+        return result
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
         return {}

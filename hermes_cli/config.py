@@ -5500,7 +5500,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 # matches an AIMDS/IAMDS host. "IAMDS" was the previous name;
                 # "remote" was used by custom installs; "remoteMCP" was the
                 # previous constant value; "memory" is the install-script fallback name.
-                _LEGACY_IAMDS_NAMES = {"IAMDS", "iamds", "remoteMCP", "remote", "memory"}
+                _LEGACY_IAMDS_NAMES = {"IAMDS", "iamds", "AIMDS", "aimds", "aimds-gateway", "remoteMCP", "remote", "memory"}
 
                 # Collect all known IAMDS hosts (prod + staging + dev) so
                 # the migration works even if the user already switched away
@@ -5520,35 +5520,48 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 updated_servers: Dict[str, Any] = {}
                 touched_mcp = False
                 old_renamed: list = []
+
+                # Ensure target server dict exists
+                target_server = dict(mcp_servers.get(SINGLE_MCP_SERVER_NAME) or {}) if isinstance(mcp_servers.get(SINGLE_MCP_SERVER_NAME), dict) else {}
+
                 for sname, scfg in mcp_servers.items():
-                    new_name = sname
-                    new_cfg = dict(scfg) if isinstance(scfg, dict) else scfg
-
-                    # Determine if this server's URL host matches any IAMDS host.
-                    srv_host = ""
-                    if isinstance(new_cfg, dict) and new_cfg.get("url"):
-                        try:
-                            srv_host = _urlparse(str(new_cfg["url"])).hostname or ""
-                        except Exception:
-                            pass
-                    is_iamds_url = bool(srv_host and (srv_host in iamds_hosts or not iamds_hosts))
-
-                    # Rename legacy names unconditionally — these names are
-                    # exclusively created by the IAMDS installer, so we don't
-                    # need URL matching to be sure they belong to IAMDS.
-                    if sname in _LEGACY_IAMDS_NAMES and SINGLE_MCP_SERVER_NAME not in mcp_servers:
-                        new_name = SINGLE_MCP_SERVER_NAME  # "IAMDS"
+                    if not isinstance(scfg, dict):
+                        continue
+                    if sname in _LEGACY_IAMDS_NAMES and sname != SINGLE_MCP_SERVER_NAME:
+                        # Migrate fields from legacy server into target server if missing
+                        for k, v in scfg.items():
+                            if k not in target_server or not target_server[k]:
+                                target_server[k] = v
                         old_renamed.append(sname)
                         touched_mcp = True
+                    elif sname != SINGLE_MCP_SERVER_NAME:
+                        updated_servers[sname] = dict(scfg)
 
-                    # Tag with provider: aimds if untagged and name or URL
-                    # identifies this as an AIMDS server.
-                    is_legacy_name = sname in _LEGACY_IAMDS_NAMES
-                    if isinstance(new_cfg, dict) and not new_cfg.get("provider") and (is_legacy_name or is_iamds_url):
-                        new_cfg["provider"] = "aimds"
+                # Update target server properties
+                if not target_server.get("provider"):
+                    target_server["provider"] = "aimds"
+                    touched_mcp = True
+
+                if not target_server.get("url"):
+                    # Resolve URL from base_url or env var
+                    effective_base = (
+                        (get_env_value("IAMDS_LITELLM_BASE_URL") or os.environ.get("IAMDS_LITELLM_BASE_URL", "")).strip()
+                        or config.get("base_url", "")
+                        or ""
+                    )
+                    if effective_base and "<litellm-host>" not in effective_base:
+                        b = effective_base.rstrip("/")
+                        for suf in ("/litellm/v1", "/litellm/mcp", "/v1"):
+                            if b.endswith(suf):
+                                b = b[:-len(suf)]
+                                break
+                        target_server["url"] = f"{b}/litellm/mcp"
+                        touched_mcp = True
+                    else:
+                        target_server["url"] = "${IAMDS_LITELLM_BASE_URL}/litellm/mcp"
                         touched_mcp = True
 
-                    updated_servers[new_name] = new_cfg
+                updated_servers[SINGLE_MCP_SERVER_NAME] = target_server
 
                 if touched_mcp:
                     config["mcp_servers"] = updated_servers
