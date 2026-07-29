@@ -1044,7 +1044,7 @@ def _ensure_documents_memory_link(home: Path) -> None:
         docs_dir / "AIMDS-Suite-WorkingDirectory" / "HermesMemory",
         docs_dir / "AIMDS-Suite-Vault" / "HermesMemory",
     ]
-    legacy_links = [loc for loc in legacy_links if loc.resolve() != memory_link.resolve()]
+    legacy_links = [loc for loc in legacy_links if loc != memory_link]
     for legacy in legacy_links:
         if legacy.is_symlink():
             try:
