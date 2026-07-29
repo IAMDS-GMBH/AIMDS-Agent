@@ -57,18 +57,6 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
     return
   }
 
-  await syncConfiguredDefaultProjectDir()
-  const configured = getConfiguredDefaultProjectDir()
-
-  if (configured) {
-    const { cwd } = await sanitize(configured)
-    if (cwd) {
-      setCurrentCwd(cwd)
-    }
-
-    return
-  }
-
   const rootSetting = storedString(FILE_PICKER_ROOT_STORAGE_KEY)
   if (rootSetting === 'userDir') {
     const { cwd: homeCwd } = await sanitize('~')
@@ -82,6 +70,17 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
     const { cwd: sanitizedVault } = await sanitize(vaultPath)
     if (sanitizedVault) {
       setCurrentCwd(sanitizedVault)
+      return
+    }
+  }
+
+  await syncConfiguredDefaultProjectDir()
+  const configured = getConfiguredDefaultProjectDir()
+
+  if (configured) {
+    const { cwd } = await sanitize(configured)
+    if (cwd) {
+      setCurrentCwd(cwd)
       return
     }
   }

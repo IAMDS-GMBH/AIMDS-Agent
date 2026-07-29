@@ -8,6 +8,8 @@ import {
   $currentCwd,
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
+  ensureDefaultWorkspaceCwd,
+  FILE_PICKER_ROOT_STORAGE_KEY,
   getRecentlySettledSessionIds,
   mergeSessionPage,
   sessionPinId,
@@ -178,6 +180,40 @@ describe('mergeSessionPage', () => {
     const merged = mergeSessionPage(previous, incoming, ['b'])
 
     expect(merged.map(s => s.id)).toEqual(['b', 'a-new'])
+  })
+})
+
+describe('ensureDefaultWorkspaceCwd', () => {
+  afterEach(() => {
+    applyConfiguredDefaultProjectDir(null)
+    $currentCwd.set('')
+    window.localStorage.removeItem('hermes.desktop.workspace-cwd')
+    window.localStorage.removeItem(FILE_PICKER_ROOT_STORAGE_KEY)
+    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  })
+
+  it('honors filePickerRoot setting when userDir is selected', async () => {
+    window.localStorage.setItem(FILE_PICKER_ROOT_STORAGE_KEY, 'userDir')
+    ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = {
+      sanitizeWorkspaceCwd: async (cwd: string) => ({ cwd: cwd === '~' ? '/Users/test' : cwd }),
+      settings: { getDefaultProjectDir: async () => ({ dir: '/some/configured/path' }) }
+    }
+
+    await ensureDefaultWorkspaceCwd()
+    expect($currentCwd.get()).toBe('/Users/test')
+  })
+
+  it('honors filePickerRoot setting when vault is selected', async () => {
+    window.localStorage.setItem(FILE_PICKER_ROOT_STORAGE_KEY, 'vault')
+    ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = {
+      sanitizeWorkspaceCwd: async (cwd: string) => ({
+        cwd: cwd === '~' ? '/Users/test' : cwd === '~/AIMDS-Suite-Vault' || cwd === '/Users/test/AIMDS-Suite-Vault' ? '/Users/test/AIMDS-Suite-Vault' : cwd
+      }),
+      settings: { getDefaultProjectDir: async () => ({ dir: '/some/configured/path' }) }
+    }
+
+    await ensureDefaultWorkspaceCwd()
+    expect($currentCwd.get()).toBe('/Users/test/AIMDS-Suite-Vault')
   })
 })
 

@@ -632,6 +632,14 @@ export function ConfigSettings({
                         triggerHaptic('selection')
                         setFilePickerRoot(id as 'userDir' | 'vault')
                         persistString(FILE_PICKER_ROOT_STORAGE_KEY, id)
+                        void ensureDefaultWorkspaceCwd()
+                        const setProjectDir = window.hermesDesktop?.settings?.setDefaultProjectDir
+                        if (setProjectDir) {
+                          const targetDir = id === 'userDir' ? '~' : '~/AIMDS-Suite-Vault'
+                          void window.hermesDesktop?.sanitizeWorkspaceCwd?.(targetDir).then(res => {
+                            if (res?.cwd) void setProjectDir(res.cwd)
+                          })
+                        }
                         notify({ kind: 'info', title: c.restartNoticeTitle, message: c.restartNoticeDesc })
                       }}
                       options={filePickerRootOptions}
