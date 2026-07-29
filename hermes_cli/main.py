@@ -6740,7 +6740,12 @@ def _detect_concurrent_hermes_instances(
             exe_norm = str(Path(exe).resolve()).lower()
         except (OSError, ValueError):
             exe_norm = str(exe).lower()
-        if exe_norm in shim_paths:
+        is_shim = exe_norm in shim_paths
+        is_venv_python = (
+            Path(exe_norm).name.lower() in ("python.exe", "pythonw.exe")
+            and str(Path(exe_norm).parent.resolve()).lower() == str(scripts_dir.resolve()).lower()
+        )
+        if is_shim or is_venv_python:
             name = info.get("name") or Path(exe).name
             matches.append((int(pid), str(name)))
 
@@ -6773,6 +6778,31 @@ def _format_concurrent_instances_message(
     return "\n".join(lines)
 
 
+def _try_terminate_concurrent_instances(matches: list[tuple[int, str]]) -> None:
+    """Best-effort termination of concurrent Hermes processes on Windows."""
+    if not matches or not _is_windows():
+        return
+    try:
+        import psutil
+        procs = []
+        for pid, _name in matches:
+            try:
+                p = psutil.Process(pid)
+                p.terminate()
+                procs.append(p)
+            except Exception:
+                pass
+        if procs:
+            _, alive = psutil.wait_procs(procs, timeout=1.5)
+            for p in alive:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 def _quarantine_running_hermes_exe(
     scripts_dir: Path, *, max_attempts: int = 7
 ) -> list[tuple[Path, Path]]:
@@ -6788,29 +6818,10 @@ def _quarantine_running_hermes_exe(
     fresh shims at the original paths. The ``.old`` files are cleaned up on
     the next hermes invocation by ``_cleanup_quarantined_exes``.
 
-    Rename can still fail when *another* process has opened the .exe without
-    ``FILE_SHARE_DELETE`` — typically AV real-time scanners with transient
-    handles (recovers in <1s), or the Hermes Desktop backend child process
-    (won't recover until the user closes it). We mitigate:
-
-    1. Retry up to ``max_attempts`` times with exponential backoff
-       (100/250/500/1000/2000/2000 ms — ~5.85s total). Covers both the
-       quick AV-scanner rescan and the slower case where a just-closed
-       Hermes Desktop app still has a backend child process winding down
-       and releasing its handle on the shim a few seconds later.
-    2. If all retries fail, schedule the .exe for replacement on next
-       reboot via ``MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)``. This still
-       lets uv create a fresh shim at the original path (Windows will keep
-       the old file's content under a new name until the reboot), so the
-       update can complete; the user just needs to reboot to fully unload
-       the stale image.
-    3. Print a clear warning naming the most likely culprit (running
-       Hermes Desktop / gateway / REPL) and pointing to ``--force``.
-
     Returns the list of (original, quarantined) pairs so the caller can roll
-    back if the install itself fails before uv writes a replacement. Pairs
-    where we used ``MOVEFILE_DELAY_UNTIL_REBOOT`` are NOT returned — they
-    are already deferred and roll-back is meaningless.
+    back if the install itself fails before uv writes a replacement.
+    Raises ``PermissionError`` if a shim remains locked and cannot be moved,
+    preventing an unhandled ``os error 32`` crash during ``uv pip install``.
     """
     moved: list[tuple[Path, Path]] = []
     if not _is_windows():
@@ -6819,12 +6830,6 @@ def _quarantine_running_hermes_exe(
     import time
 
     stamp = int(time.time() * 1000)
-    # Backoff schedule: first attempt is immediate, subsequent ones sleep.
-    # 100ms/250ms/500ms covers the typical AV-scanner re-scan window; the
-    # trailing 1000ms/2000ms/2000ms steps give a just-closed Hermes Desktop
-    # app's backend child process time to fully exit and release its handle
-    # on the shim (Windows process teardown + Node/Electron event-loop
-    # drain commonly takes 1-5s, longer than the original ~850ms budget).
     backoff_ms = [0, 100, 250, 500, 1000, 2000, 2000]
     attempts = max(1, min(max_attempts, len(backoff_ms)))
 
@@ -6850,11 +6855,21 @@ def _quarantine_running_hermes_exe(
         if last_exc is None:
             continue
 
+        # If rename failed, try terminating concurrent processes holding the venv
+        concurrent = _detect_concurrent_hermes_instances(scripts_dir)
+        if concurrent:
+            _try_terminate_concurrent_instances(concurrent)
+            time.sleep(0.5)
+            try:
+                shim.rename(target)
+                moved.append((shim, target))
+                last_exc = None
+                continue
+            except OSError as e:
+                last_exc = e
+
         # All in-process renames failed. Try MoveFileEx with
-        # MOVEFILE_DELAY_UNTIL_REBOOT as a last resort. This succeeds in the
-        # exact case where the inline rename failed (another process holds
-        # the handle without share-delete), at the cost of requiring a
-        # reboot to fully reclaim the old .exe.
+        # MOVEFILE_DELAY_UNTIL_REBOOT as a last resort.
         scheduled = _schedule_replace_on_reboot(shim, target)
         if scheduled:
             print(
@@ -6862,23 +6877,24 @@ def _quarantine_running_hermes_exe(
                 f"replacement on next reboot."
             )
             print(
-                "    The new shim was written at the same path, but a "
-                "reboot is needed to fully unload the old one."
+                "    A reboot is required to fully unload the old process image."
             )
-            # Do NOT append to ``moved``: we don't want roll-back to undo a
-            # reboot-deferred operation.
-            continue
 
-        # Truly couldn't budge the .exe. Print an actionable warning and let
-        # uv try its luck — sometimes uv's own retry handling pulls through.
-        print(
-            f"  ⚠ Could not quarantine {shim.name} ({last_exc.__class__.__name__}: "
-            f"another process is holding it open)."
-        )
-        print(
-            "    Close Hermes Desktop, exit other `hermes` REPLs, stop the "
-            "gateway, or pause AV scanning, then re-run `hermes update`."
-        )
+        # If the shim is STILL present at its original path, uv pip install
+        # will fail with OS error 32 when trying to delete it. Fail cleanly here.
+        if shim.exists():
+            print(
+                f"  ✗ Could not quarantine {shim.name} ({last_exc.__class__.__name__ if last_exc else 'OSError'}: "
+                f"file is locked by another process)."
+            )
+            print(
+                "    Close Hermes Desktop, exit other `hermes` REPLs, stop the "
+                "gateway, or pause AV scanning, then re-run `hermes update`."
+            )
+            raise PermissionError(
+                f"Could not quarantine {shim.name}: file is locked by another process. "
+                "Close all Hermes processes and retry."
+            )
 
     return moved
 

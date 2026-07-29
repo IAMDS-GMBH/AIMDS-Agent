@@ -452,22 +452,25 @@ async fn wait_for_venv_free(install_root: &Path, app: &AppHandle) {
                 "[update] Hermes still holding the venv shim; force-killing stragglers…",
             );
             force_kill_other_hermes();
-            tokio::time::sleep(Duration::from_millis(800)).await;
-            if !is_locked(&shim) {
-                emit_log(
-                    app,
-                    Some("update"),
-                    LogStream::Stdout,
-                    "[update] venv shim freed after force-kill",
-                );
-            } else {
-                emit_log(
-                    app,
-                    Some("update"),
-                    LogStream::Stdout,
-                    "[update] venv shim still locked; proceeding (--force + quarantine will handle it)",
-                );
+            let retry_deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < retry_deadline {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                if !is_locked(&shim) {
+                    emit_log(
+                        app,
+                        Some("update"),
+                        LogStream::Stdout,
+                        "[update] venv shim freed after force-kill",
+                    );
+                    return;
+                }
             }
+            emit_log(
+                app,
+                Some("update"),
+                LogStream::Stdout,
+                "[update] venv shim is still locked by another process or antivirus scanner.",
+            );
             return;
         }
         tokio::time::sleep(DESKTOP_EXIT_POLL).await;
@@ -500,6 +503,19 @@ fn force_kill_other_hermes() {
                 "/T",
                 "/IM",
                 "hermes.exe",
+                "/FI",
+                &format!("PID ne {my_pid}"),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+
+        let _ = std::process::Command::new("taskkill")
+            .args([
+                "/F",
+                "/T",
+                "/IM",
+                "hermes-gateway.exe",
                 "/FI",
                 &format!("PID ne {my_pid}"),
             ])

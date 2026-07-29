@@ -390,7 +390,7 @@ def test_quarantine_retries_then_succeeds(_winp, tmp_path, monkeypatch):
 
 @patch.object(cli_main, "_is_windows", return_value=True)
 def test_quarantine_falls_back_to_reboot_schedule(_winp, tmp_path, capsys, monkeypatch):
-    """When every retry fails, we schedule via MoveFileEx and warn helpfully."""
+    """When every retry fails, we schedule via MoveFileEx, warn, and raise PermissionError."""
     shim = tmp_path / "hermes.exe"
     shim.write_bytes(b"locked")
 
@@ -407,15 +407,13 @@ def test_quarantine_falls_back_to_reboot_schedule(_winp, tmp_path, capsys, monke
     with patch.object(Path, "rename", always_fails), patch.object(
         cli_main, "_schedule_replace_on_reboot", fake_schedule
     ), patch("time.sleep", lambda *_a, **_k: None):
-        pairs = cli_main._quarantine_running_hermes_exe(tmp_path)
+        with pytest.raises(PermissionError):
+            cli_main._quarantine_running_hermes_exe(tmp_path)
 
     captured = capsys.readouterr().out
 
     # The reboot-deferred path was used.
     assert scheduled_calls and scheduled_calls[0][0] == shim
-    # It is NOT added to the returned roll-back list (the issue calls this
-    # out — don't undo a deferred operation).
-    assert pairs == []
     # The user got a clear message, not raw [WinError 32].
     assert "scheduled" in captured.lower()
     assert "reboot" in captured.lower()
@@ -425,7 +423,7 @@ def test_quarantine_falls_back_to_reboot_schedule(_winp, tmp_path, capsys, monke
 def test_quarantine_actionable_warning_when_everything_fails(
     _winp, tmp_path, capsys, monkeypatch
 ):
-    """When even MoveFileEx fails we should print remediation hints, not a bare error."""
+    """When even MoveFileEx fails we should print remediation hints and raise PermissionError."""
     shim = tmp_path / "hermes.exe"
     shim.write_bytes(b"locked")
 
@@ -436,10 +434,10 @@ def test_quarantine_actionable_warning_when_everything_fails(
     with patch.object(Path, "rename", always_fails), patch.object(
         cli_main, "_schedule_replace_on_reboot", lambda *_a, **_k: False
     ), patch("time.sleep", lambda *_a, **_k: None):
-        pairs = cli_main._quarantine_running_hermes_exe(tmp_path)
+        with pytest.raises(PermissionError):
+            cli_main._quarantine_running_hermes_exe(tmp_path)
 
     captured = capsys.readouterr().out
-    assert pairs == []
     # New message format: no raw "[WinError 32]" dump; instead names the cause
     # and tells the user what to do.
     assert "another process" in captured.lower()
