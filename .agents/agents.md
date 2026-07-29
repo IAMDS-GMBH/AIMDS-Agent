@@ -33,6 +33,15 @@ If multiple PRs target same integration category (providers/backends/notifiers),
 - Maintain type safety; avoid `as any` style escapes unless truly unavoidable.
 - Keep edits surgical but complete; avoid unrelated drive-by changes.
 
+## Commit and changelog guidelines
+
+- Follow Conventional Commits format: `<type>(<scope>): <short imperative summary>`.
+  - Common types: `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `chore`, `build`, `ci`.
+  - Common scopes: `desktop`, `cli`, `mcp`, `gateway`, `installer`, `skills`, `vault`.
+- Write subject lines in the imperative mood ("add", "fix", "remove" — not "added" or "fixing").
+- Keep subject lines under 50–72 characters without trailing period.
+- User-facing impact: commit messages directly populate the in-app update changelog (`readCommitLog`); make subject lines human-readable, describing *what* changed and *why* for end users.
+
 ## Testing and validation
 
 - Use `scripts/run_tests.sh` (not raw `pytest`) for parity with CI.

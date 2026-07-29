@@ -12,3 +12,4 @@ Quick pointers:
   adding new core tools — see the footprint ladder in `.agents/agents.md`.
 - Reproduce bugs on `main` first; fix root cause and sibling paths, not just
   the reported symptom.
+- Follow Conventional Commits (`type(scope): summary`) for clear, user-facing release changelogs.
