@@ -196,7 +196,8 @@ function IdleView({
     )
   }
 
-  const groups = buildCommitChangelog(commits)
+  const { locale } = useI18n()
+  const groups = buildCommitChangelog(commits, { locale })
   const shownItems = totalItems(groups)
   const remaining = Math.max(0, behind - shownItems)
 
@@ -211,7 +212,15 @@ function IdleView({
       <div className="flex flex-col items-center gap-3 text-center">
         <BrandMark className="size-16" />
 
-        <DialogTitle className="text-center text-xl">{title}</DialogTitle>
+        <div className="flex flex-col items-center gap-1">
+          <DialogTitle className="text-center text-xl">{title}</DialogTitle>
+          <div className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-0.5 text-[0.7rem] font-medium text-primary">
+            <span>{status?.branch ? `Branch: ${status.branch}` : 'Hermes Update'}</span>
+            <span>•</span>
+            <span>+{behind} {locale === 'de' ? (behind === 1 ? 'Änderung' : 'Änderungen') : (behind === 1 ? 'Commit' : 'Commits')}</span>
+          </div>
+        </div>
+
         <DialogDescription className="text-center text-sm">
           {body}
         </DialogDescription>

@@ -29,18 +29,19 @@ export interface CommitChangelogInput {
   summary?: string
 }
 
-interface BuildOptions {
+export interface BuildOptions {
   maxGroups?: number
   maxPerGroup?: number
   maxTotal?: number
+  locale?: string
 }
 
-const GROUP_META: Record<CommitGroupId, { label: string; order: number }> = {
-  new: { label: "What's new", order: 0 },
-  fixed: { label: 'Fixed', order: 1 },
-  faster: { label: 'Faster', order: 2 },
-  improved: { label: 'Improved', order: 3 },
-  other: { label: 'Other improvements', order: 4 }
+const GROUP_META: Record<CommitGroupId, { label: Record<string, string>; order: number }> = {
+  new: { label: { en: "What's new", de: "Neuerungen" }, order: 0 },
+  fixed: { label: { en: 'Fixed', de: 'Fehlerbehebungen' }, order: 1 },
+  faster: { label: { en: 'Faster', de: 'Performance' }, order: 2 },
+  improved: { label: { en: 'Improved', de: 'Verbesserungen' }, order: 3 },
+  other: { label: { en: 'Other improvements', de: 'Weitere Änderungen' }, order: 4 }
 }
 
 const TYPE_TO_GROUP: Record<string, CommitGroupId> = {
@@ -74,9 +75,26 @@ const HIDDEN_TYPES = new Set([
   'wip'
 ])
 
-const FALLBACK_GROUP: CommitGroup = { id: 'other', items: ['Improvements and fixes'], label: 'In this update' }
+function getFallbackGroup(lang: string): CommitGroup {
+  const isDe = lang.startsWith('de')
+  return {
+    id: 'other',
+    items: [isDe ? 'Allgemeine Verbesserungen und Stabilitätsoptimierungen' : 'General improvements and stability fixes'],
+    label: isDe ? 'In diesem Update' : 'In this update'
+  }
+}
 
 const CONVENTIONAL_HEADER = /^(?<type>[a-zA-Z][a-zA-Z0-9_-]*)(?:\((?<scope>[^)]+)\))?(?<bang>!)?:\s+(?<subject>.+)$/
+
+/** Infer a type for unclassified commits using common English/German keywords */
+function inferCommitType(subject: string): string | null {
+  const s = subject.toLowerCase()
+  if (/\b(fix|fixed|fixes|bug|bugfix|hotfix|korrektur|behoben|revert)\b/.test(s)) return 'fix'
+  if (/\b(add|adds|added|feat|feature|new|neu|erstellt|unterstützung)\b/.test(s)) return 'feat'
+  if (/\b(perf|performance|faster|speed|schneller|beschleunigt)\b/.test(s)) return 'perf'
+  if (/\b(improve|improved|optimization|optimize|refactor|ui|ux|redesign|verbessert|optimiert)\b/.test(s)) return 'refactor'
+  return null
+}
 
 /** Parse a single commit header line per Conventional Commits 1.0. */
 export function parseCommitHeader(raw: string): ParsedCommit {
@@ -122,7 +140,8 @@ export function buildCommitChangelog(
   commits: readonly CommitChangelogInput[] | undefined,
   options: BuildOptions = {}
 ): CommitGroup[] {
-  const { maxGroups = 3, maxPerGroup = 4, maxTotal = 6 } = options
+  const { maxGroups = 3, maxPerGroup = 4, maxTotal = 6, locale = 'en' } = options
+  const lang = locale.startsWith('de') ? 'de' : 'en'
   const groups = new Map<CommitGroupId, string[]>()
   const seen = new Set<string>()
   let total = 0
@@ -138,7 +157,8 @@ export function buildCommitChangelog(
       continue
     }
 
-    const groupId: CommitGroupId = parsed.type ? (TYPE_TO_GROUP[parsed.type] ?? 'other') : 'other'
+    const effectiveType = parsed.type ?? inferCommitType(parsed.subject)
+    const groupId: CommitGroupId = effectiveType ? (TYPE_TO_GROUP[effectiveType] ?? 'other') : 'other'
     const subject = tidySubject(parsed.subject)
 
     if (!subject) {
@@ -164,13 +184,18 @@ export function buildCommitChangelog(
   }
 
   const result = Array.from(groups.entries())
-    .map(([id, items]) => ({ id, items, label: GROUP_META[id].label, order: GROUP_META[id].order }))
+    .map(([id, items]) => ({
+      id,
+      items,
+      label: GROUP_META[id].label[lang] ?? GROUP_META[id].label.en,
+      order: GROUP_META[id].order
+    }))
     .sort((a, b) => a.order - b.order)
     .slice(0, maxGroups)
     .map(({ id, items, label }): CommitGroup => ({ id, items, label }))
 
   if (result.length === 0) {
-    return [FALLBACK_GROUP]
+    return [getFallbackGroup(lang)]
   }
 
   return result

@@ -77,7 +77,13 @@ describe('buildCommitChangelog', () => {
   it('falls back to a neutral placeholder when every commit is filtered or empty', () => {
     const groups = buildCommitChangelog([{ summary: 'chore: bump' }, { summary: 'ci: stuff' }])
 
-    expect(groups).toEqual([{ id: 'other', items: ['Improvements and fixes'], label: 'In this update' }])
+    expect(groups).toEqual([{ id: 'other', items: ['General improvements and stability fixes'], label: 'In this update' }])
+  })
+
+  it('provides German localized group labels and fallbacks', () => {
+    const groups = buildCommitChangelog([{ summary: 'fix: null reference' }], { locale: 'de' })
+
+    expect(groups[0].label).toBe('Fehlerbehebungen')
   })
 
   it('dedupes identical subjects and caps the items per group', () => {
