@@ -402,28 +402,24 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-artifacts
-          cp -v apps/bootstrap-installer/src-tauri/target/release/bundle/dmg/*.dmg release-artifacts/
+          shopt -s nullglob
+          dmg_files=(apps/bootstrap-installer/src-tauri/target/release/bundle/dmg/*.dmg)
+          if [ ${#dmg_files[@]} -gt 0 ]; then
+            cp -v "${dmg_files[0]}" release-artifacts/HermesSetup.dmg
+          else
+            echo "No DMG artifact found under target/release/bundle/dmg"
+            exit 1
+          fi
 
       - name: Collect Windows artifacts
         if: runner.os == 'Windows'
         shell: powershell
-        env:
-          INSTALLER_VERSION: ${{ steps.version.outputs.installer_version }}
         run: |
           New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
           $candidates = @(
-            "apps/bootstrap-installer/src-tauri/target/release/*.exe",
-            "apps/bootstrap-installer/src-tauri/target/release/bundle/*/*.exe"
+            "apps/bootstrap-installer/src-tauri/target/release/bundle/*/*.exe",
+            "apps/bootstrap-installer/src-tauri/target/release/*.exe"
           )
-
-          $version = $env:INSTALLER_VERSION
-          if (-not $version) {
-            $pkg = Get-Content -LiteralPath "apps/bootstrap-installer/package.json" -Raw | ConvertFrom-Json
-            $version = [string]$pkg.version
-          }
-          if (-not $version) {
-            throw "Could not resolve installer version for Windows artifact naming"
-          }
 
           $files = @()
           foreach ($pattern in $candidates) {
@@ -435,16 +431,8 @@ jobs:
             throw "No Windows .exe artifacts found under target/release"
           }
 
-          $files | ForEach-Object {
-            $base = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
-            $ext = [System.IO.Path]::GetExtension($_.Name)
-            if ($base -match [regex]::Escape($version)) {
-              $targetName = "$base$ext"
-            } else {
-              $targetName = "$base-$version$ext"
-            }
-            Copy-Item -Path $_.FullName -Destination (Join-Path "release-artifacts" $targetName) -Force
-          }
+          $primary = $files[0]
+          Copy-Item -Path $primary.FullName -Destination "release-artifacts\HermesSetup.exe" -Force
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -538,8 +526,7 @@ jobs:
           git push origin HEAD:main
           echo "target_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Ensure release exists (workflow_dispatch)
-        if: github.event_name == 'workflow_dispatch'
+      - name: Ensure release exists
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -548,13 +535,14 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists"
+            echo "Release $TAG already exists; setting as prerelease..."
+            gh release edit "$TAG" --prerelease
           else
             gh release create "$TAG" \
-              --draft \
+              --prerelease \
               --target "$TARGET_SHA" \
               --title "Bootstrap Installer $TAG" \
-              --notes "Automated bootstrap installer release from workflow_dispatch."
+              --notes "Automated bootstrap installer release."
           fi
 
       - name: Generate release notes from commits (GitHub Models)
@@ -684,7 +672,7 @@ jobs:
           NOTES_FILE: ${{ steps.ai_notes.outputs.notes_file }}
         run: |
           set -euo pipefail
-          gh release edit "$TAG" --notes-file "$NOTES_FILE"
+          gh release edit "$TAG" --prerelease --notes-file "$NOTES_FILE"
 
       - name: Download all installer artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -699,7 +687,10 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(release-assets/**/*.dmg release-assets/**/*.exe)
+          files=(release-assets/**/HermesSetup.dmg release-assets/**/HermesSetup.exe)
+          if [ ${#files[@]} -eq 0 ]; then
+            files=(release-assets/**/*.dmg release-assets/**/*.exe)
+          fi
           if [ ${#files[@]} -eq 0 ]; then
             echo "No release artifacts found"
             exit 1
