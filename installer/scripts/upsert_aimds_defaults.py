@@ -119,7 +119,7 @@ def _build_iamds_mcp_url(base_url: str) -> str:
         if base.endswith(suffix):
             base = base[:-len(suffix)]
             break
-    return f"{base}/litellm/mcp"
+    return f"{base}/litellm/mcp/"
 
 
 def _resolve_target_mcp_server_name(mcp_servers: dict) -> str:
@@ -208,8 +208,10 @@ def upsert_aimds_defaults(config: dict) -> dict:
 
     mcp_servers[target_name] = target_server
 
-    target_server["provider"] = "aimds"
-    target_server["transport"] = target_server.get("transport") or "http"
+    target_server["provider"] = "iamds"
+    target_server["connect_timeout"] = target_server.get("connect_timeout") or 60
+    target_server["timeout"] = target_server.get("timeout") or 180
+    target_server["trusted"] = True
 
     headers = _ensure_dict(target_server, "headers")
     auth_val = str(headers.get("Authorization") or "").strip()
@@ -235,7 +237,7 @@ def upsert_aimds_defaults(config: dict) -> dict:
         if derived_url:
             target_server["url"] = derived_url
         else:
-            target_server["url"] = "${IAMDS_LITELLM_BASE_URL}/litellm/mcp"
+            target_server["url"] = "https://suite.iamds.com/litellm/mcp/"
 
     return cfg
 

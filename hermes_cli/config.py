@@ -5538,9 +5538,10 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         updated_servers[sname] = dict(scfg)
 
                 # Update target server properties
-                if not target_server.get("provider"):
-                    target_server["provider"] = "aimds"
-                    touched_mcp = True
+                target_server["provider"] = "iamds"
+                target_server["connect_timeout"] = target_server.get("connect_timeout") or 60
+                target_server["timeout"] = target_server.get("timeout") or 180
+                target_server["trusted"] = True
 
                 if not target_server.get("url"):
                     # Resolve URL from base_url or env var
@@ -5555,10 +5556,10 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                             if b.endswith(suf):
                                 b = b[:-len(suf)]
                                 break
-                        target_server["url"] = f"{b}/litellm/mcp"
+                        target_server["url"] = f"{b}/litellm/mcp/"
                         touched_mcp = True
                     else:
-                        target_server["url"] = "${IAMDS_LITELLM_BASE_URL}/litellm/mcp"
+                        target_server["url"] = "https://suite.iamds.com/litellm/mcp/"
                         touched_mcp = True
 
                 updated_servers[SINGLE_MCP_SERVER_NAME] = target_server
