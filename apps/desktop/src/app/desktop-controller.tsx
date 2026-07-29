@@ -12,6 +12,7 @@ import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
+import { translateNow } from '@/i18n'
 import {
   bulkDeleteSessions,
   getCronJobs,
@@ -59,6 +60,7 @@ import {
   $currentCwd,
   $freshDraftReady,
   $gatewayState,
+  $cronSessions,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
@@ -665,12 +667,49 @@ export function DesktopController() {
       const clippedTitle =
         titleText.length > CRON_TOAST_TITLE_MAX ? `${titleText.slice(0, CRON_TOAST_TITLE_MAX)}…` : titleText
 
+      const action = success
+        ? {
+            label: translateNow('common.open') || 'Öffnen',
+            onClick: () => {
+              void (async () => {
+                try {
+                  const conn = await window.hermesDesktop?.getConnection(activeGatewayProfile)
+                  if (conn) {
+                    const res = await fetch(`${conn.baseUrl}/api/cron/jobs/${jobId}/runs?limit=1`)
+                    if (res.ok) {
+                      const runs = await res.json()
+                      if (Array.isArray(runs) && runs.length > 0 && runs[0]?.id) {
+                        navigate(sessionRoute(runs[0].id))
+                        return
+                      }
+                    }
+                  }
+                } catch (_) {}
+                const matchRun = $cronSessions.get().find((s: { id: string }) => s.id.startsWith(`cron_${jobId}_`))
+                if (matchRun) {
+                  navigate(sessionRoute(matchRun.id))
+                } else {
+                  navigate(CRON_ROUTE)
+                }
+              })()
+            }
+          }
+        : undefined
+
       notify({
         kind: success ? 'success' : 'error',
         title: `${success ? 'Cron job completed' : 'Cron job failed'} · ${clippedTitle}`,
         message: success ? 'Execution finished.' : error || 'Execution failed.',
-        durationMs: success ? 5000 : 0
+        action,
+        durationMs: success ? 8000 : 0
       })
+
+      if (window.hermesDesktop?.notify) {
+        void window.hermesDesktop.notify({
+          title: success ? `Cron-Job abgeschlossen: ${clippedTitle}` : `Cron-Job fehlerhaft: ${clippedTitle}`,
+          body: success ? 'Klicken um den Bericht/Ausführung zu öffnen.' : error || 'Ausführung fehlgeschlagen.'
+        })
+      }
 
       // Refresh immediately after surfacing completion, then once more shortly
       // after to absorb eventual persistence lag from scheduler/session writes.
@@ -679,7 +718,7 @@ export function DesktopController() {
         void refreshSessions().catch(() => undefined)
       }, 800)
     },
-    [refreshSessions]
+    [activeGatewayProfile, navigate, refreshSessions]
   )
 
   // Cron trigger requests are routed through the primary backend (no `profile`

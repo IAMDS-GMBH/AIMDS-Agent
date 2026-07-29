@@ -27,7 +27,8 @@ LEGACY_MARKER_FILE = ".aimds-default-cron-seeded"
 # Version 3: enforce planning-oriented weekly output contract with concise sections.
 # Version 4: weekly review contract includes explicit stale-project section.
 # Version 5: weekly review contract adds OPEN_QUESTION_NEEDED marker requirement.
-CURRENT_DEFAULT_CRON_VERSION = 5
+# Version 6: M365 integration, language awareness, preview notes, and work week boundaries.
+CURRENT_DEFAULT_CRON_VERSION = 6
 JOBS_FILE_REL = Path("cron") / "jobs.json"
 _SOURCE = "aimds-default-cron"
 
@@ -37,7 +38,12 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
         "seed_key": "morning-brief",
         "name": "Morning Brief",
         "schedule": "0 8 * * 1-5",
-        "prompt": "Create the morning brief using digest and related context.",
+        "prompt": (
+            "Create the morning brief using digest and available context in the user's language (German or English). "
+            "If MSOffice365MCP is active/connected, query Outlook calendar appointments, unread/actionable emails, and Teams updates. "
+            "Restrict the schedule/task focus strictly to the current work week (Mon-Fri) or over weekends to the next working day (Monday). "
+            "Prepare preview notes for tomorrow/next working day in workspace/memory so queries like 'what is scheduled for tomorrow?' can be answered immediately."
+        ),
         "skill": "digest",
         "deliver": "local",
         "enabled": True,
@@ -47,12 +53,14 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
         "name": "Weekly Review",
         "schedule": "0 16 * * 5",
         "prompt": (
-            "Create a concise weekly review in this exact structure: "
+            "Create a concise weekly review in the user's language (German or English) in this exact structure: "
             "1) Key outcomes this week, "
             "2) Carry-over items, "
             "3) Next week top 3 priorities, "
             "4) Stale active projects (>=14 days inactivity), "
             "5) Risks/open questions needing decisions. "
+            "If MSOffice365MCP is active/connected, include relevant emails, meetings, and team updates from the current work week. "
+            "Restrict focus strictly to the current work week (and next working day over weekends). "
             "If any decision/input is missing, include exactly one line: "
             "OPEN_QUESTION_NEEDED: <what decision or input is required>."
         ),
@@ -275,6 +283,21 @@ def _upgrade_jobs_for_version(
                 if not _job_matches_alias(job, weekly_aliases):
                     continue
                 target_prompt = str(weekly_spec.get("prompt") or "").strip()
+                if str(job.get("prompt") or "").strip() != target_prompt:
+                    job["prompt"] = target_prompt
+                    updated += 1
+
+    # v6 migration: M365 integration, language awareness, preview notes, and work week boundaries.
+    if from_version < 6 <= to_version:
+        for spec in _DEFAULT_SPECS:
+            s_key = _canonical_seed_key(spec["seed_key"])
+            s_aliases = _aliases(s_key)
+            target_prompt = str(spec.get("prompt") or "").strip()
+            for job in jobs:
+                if not _job_is_aimds_default(job):
+                    continue
+                if not _job_matches_alias(job, s_aliases):
+                    continue
                 if str(job.get("prompt") or "").strip() != target_prompt:
                     job["prompt"] = target_prompt
                     updated += 1

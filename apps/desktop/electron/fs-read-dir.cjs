@@ -24,6 +24,42 @@ const FS_READDIR_HIDDEN = new Set([
   'venv'
 ])
 
+// Windows user directory system/hidden files, junctions, and metadata
+const WIN32_SYSTEM_NAMES = new Set([
+  'appdata',
+  'application data',
+  'cookies',
+  'desktop.ini',
+  'local settings',
+  'my documents',
+  'nethood',
+  'ntuser.ini',
+  'ntuser.pol',
+  'printhood',
+  'recent',
+  'sendto',
+  'start menu',
+  'templates',
+  'thumbs.db',
+  '$recycle.bin',
+  'system volume information'
+])
+
+function isWindowsSystemOrHidden(name) {
+  if (!name) return false
+  const lower = name.toLowerCase()
+  if (WIN32_SYSTEM_NAMES.has(lower)) {
+    return true
+  }
+  if (lower.startsWith('ntuser.') || lower.startsWith('ntuser.dat')) {
+    return true
+  }
+  if (lower.startsWith('$')) {
+    return true
+  }
+  return false
+}
+
 function direntIsDirectory(dirent) {
   return typeof dirent.isDirectory === 'function' && dirent.isDirectory()
 }
@@ -96,7 +132,11 @@ async function readDirForIpc(dirPath, options = {}) {
 
   try {
     const dirents = await fsImpl.promises.readdir(resolved, { withFileTypes: true })
-    const visibleDirents = dirents.filter(dirent => !FS_READDIR_HIDDEN.has(dirent.name))
+    const visibleDirents = dirents.filter(dirent => {
+      if (FS_READDIR_HIDDEN.has(dirent.name)) return false
+      if (process.platform === 'win32' && isWindowsSystemOrHidden(dirent.name)) return false
+      return true
+    })
     const entries = await mapWithStatConcurrency(visibleDirents, dirent =>
       entryForDirent(dirent, resolved, fsImpl)
     )
