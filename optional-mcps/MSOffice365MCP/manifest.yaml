@@ -99,6 +99,8 @@ tools:
     - m365_list_joined_teams
     - m365_list_team_channels
     - m365_list_channel_messages
+    - m365_list_teams_message_attachments
+    - m365_download_teams_message_attachment
     - m365_get_activity_feed
 
 post_install: |

@@ -497,3 +497,61 @@ class TestRegression_ScopeTiering:
             res = server.m365_check_admin_status()
             assert "error" in res
             assert "request_admin_scopes=True" in res["recommendation"]
+
+
+class TestTeamsAttachmentsAndVaultResolution:
+    def test_resolve_save_path_defaults_to_vault_if_present(self, tmp_path, monkeypatch):
+        vault_dir = tmp_path / "AIMDS-Suite-Vault"
+        vault_dir.mkdir()
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(vault_dir))
+
+        resolved = server._resolve_save_path(None, "doc.pdf", subfolder="m365_downloads")
+        assert resolved == vault_dir / "m365_downloads" / "doc.pdf"
+        assert (vault_dir / "m365_downloads").is_dir()
+
+    def test_resolve_save_path_uses_explicit_path(self, tmp_path):
+        target = tmp_path / "custom" / "file.txt"
+        resolved = server._resolve_save_path(str(target), "default.txt")
+        assert resolved == target
+        assert target.parent.is_dir()
+
+    def test_enrich_teams_message_adds_attachments_summary(self):
+        msg = {
+            "id": "m123",
+            "createdDateTime": "2026-07-29T10:00:00Z",
+            "body": {"content": "Check this file <img src='hostedContents/hc789/$value'/>"},
+            "attachments": [{"id": "att1", "name": "report.pdf", "contentType": "reference", "contentUrl": "https://example.com/report.pdf"}],
+        }
+        enriched = server._enrich_teams_message(msg, chat_id="c123")
+        assert enriched["has_attachments"] is True
+        assert len(enriched["attachments_summary"]) == 2
+        assert enriched["attachments_summary"][0]["name"] == "report.pdf"
+        assert enriched["attachments_summary"][1]["hosted_content_id"] == "hc789"
+
+    def test_list_teams_message_attachments(self):
+        mock_msg = {
+            "attachments": [{"id": "att1", "name": "file.docx", "contentType": "reference", "contentUrl": "https://example.com/file.docx"}]
+        }
+        mock_hc = {"value": [{"id": "hc1", "contentType": "image/png"}]}
+
+        def fake_graph(method, endpoint, **kwargs):
+            if "hostedContents" in endpoint:
+                return mock_hc
+            return mock_msg
+
+        with patch.object(server, "_graph_request", side_effect=fake_graph):
+            res = server.m365_list_teams_message_attachments(message_id="m123", chat_id="c123")
+            assert res["attachments_count"] == 2
+            assert res["attachments"][0]["name"] == "file.docx"
+            assert res["attachments"][1]["hosted_content_id"] == "hc1"
+
+    def test_download_teams_message_attachment_hosted_content(self, tmp_path):
+        with patch.object(server, "_graph_download_bytes", return_value=b"pngdata"):
+            res = server.m365_download_teams_message_attachment(
+                message_id="m123",
+                chat_id="c123",
+                hosted_content_id="hc1",
+                save_path=str(tmp_path / "out.png"),
+            )
+            assert res["success"] is True
+            assert (tmp_path / "out.png").read_bytes() == b"pngdata"

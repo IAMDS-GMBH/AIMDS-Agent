@@ -382,6 +382,93 @@ def _resolve_attachment_path(file_path: str) -> Path:
     return path
 
 
+def _resolve_save_path(
+    save_path: Optional[str],
+    default_filename: str,
+    subfolder: str = "m365_downloads",
+) -> Path:
+    """Resolve destination path for downloaded files, defaulting to AIMDS Suite Vault if present."""
+    if save_path:
+        out_file = Path(save_path).expanduser().resolve()
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        return out_file
+
+    vault_env = os.getenv("HERMES_VAULT_PATH") or os.getenv("VAULT_PATH")
+    candidate_vaults = []
+    if vault_env:
+        candidate_vaults.append(Path(vault_env).expanduser().resolve())
+
+    default_aimds_vault = Path("~/Documents/AIMDS-Suite-Vault").expanduser().resolve()
+    candidate_vaults.append(default_aimds_vault)
+
+    hermes_home_vault = Path("~/.hermes/vault").expanduser().resolve()
+    candidate_vaults.append(hermes_home_vault)
+
+    for v in candidate_vaults:
+        if v.exists() and v.is_dir():
+            target_dir = v / subfolder
+            target_dir.mkdir(parents=True, exist_ok=True)
+            return target_dir / default_filename
+
+    cwd = Path(os.getenv("TERMINAL_CWD") or os.getcwd()).resolve()
+    target_dir = cwd / subfolder
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return target_dir / default_filename
+
+
+def _enrich_teams_message(
+    msg: Dict[str, Any],
+    chat_id: Optional[str] = None,
+    team_id: Optional[str] = None,
+    channel_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Enrich a Teams message with local timestamps and an attachments_summary."""
+    if not isinstance(msg, dict):
+        return msg
+
+    if "createdDateTime" in msg and "createdDateTime_local" not in msg:
+        msg["createdDateTime_local"] = _format_timestamp_local(msg.get("createdDateTime"))
+
+    attachments_summary = []
+
+    # 1. File & card attachments
+    raw_atts = msg.get("attachments")
+    if isinstance(raw_atts, list):
+        for att in raw_atts:
+            if isinstance(att, dict):
+                content_type = att.get("contentType") or ""
+                name = att.get("name") or att.get("id") or "Attachment"
+                content_url = att.get("contentUrl") or ""
+                attachments_summary.append({
+                    "id": att.get("id"),
+                    "name": name,
+                    "contentType": content_type,
+                    "contentUrl": content_url,
+                    "type": "file_reference" if content_url or "reference" in content_type else "attachment",
+                })
+
+    # 2. Inline hosted contents (images in body)
+    body_obj = msg.get("body") or {}
+    body_content = body_obj.get("content") or "" if isinstance(body_obj, dict) else ""
+    if "hostedContents" in body_content or "<img" in body_content:
+        import re
+        hc_matches = re.findall(r'hostedContents/([a-zA-Z0-9_-]+)/\$value', body_content)
+        for hc_id in hc_matches:
+            if not any(a.get("id") == hc_id or a.get("hosted_content_id") == hc_id for a in attachments_summary):
+                attachments_summary.append({
+                    "id": hc_id,
+                    "name": f"inline_image_{hc_id[:8]}.png",
+                    "type": "hosted_content",
+                    "hosted_content_id": hc_id,
+                })
+
+    if attachments_summary:
+        msg["attachments_summary"] = attachments_summary
+        msg["has_attachments"] = True
+
+    return msg
+
+
 def _upload_file_to_onedrive(file_path: str, folder: str = _ONEDRIVE_ATTACHMENTS_FOLDER) -> Dict[str, Any]:
     """Upload a local file to the signed-in user's OneDrive and return the created driveItem
     (id, name, webUrl, ...), used as the basis for a Teams chat file attachment reference."""
@@ -795,9 +882,7 @@ def m365_download_email_attachment(
         content_bytes = _graph_download_bytes(f"/me/messages/{message_id}/attachments/{attachment_id}/$value", account=account)
 
     if not save_path:
-        out_dir = Path(os.getenv("TERMINAL_CWD") or os.getcwd()) / "attachments"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_file = out_dir / name
+        out_file = _resolve_save_path(None, name, subfolder="documents/m365_attachments")
     else:
         out_file = Path(save_path).expanduser().resolve()
         out_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1179,9 +1264,7 @@ def m365_download_drive_file(
     content_bytes = _graph_download_bytes(f"/me/drive/items/{file_id}/content", account=account)
 
     if not save_path:
-        out_dir = Path(os.getenv("TERMINAL_CWD") or os.getcwd()) / "downloads"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_file = out_dir / name
+        out_file = _resolve_save_path(None, name, subfolder="documents/m365_downloads")
     else:
         out_file = Path(save_path).expanduser().resolve()
         out_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1332,9 +1415,7 @@ def m365_list_chat_messages(chat_id: str, top: int = 10) -> Dict[str, Any]:
     params = {"$top": min(top, 50)}
     res = _graph_request("GET", f"/me/chats/{chat_id}/messages", params=params)
     if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
-        for msg in res["value"]:
-            if isinstance(msg, dict) and "createdDateTime" in msg:
-                msg["createdDateTime_local"] = _format_timestamp_local(msg.get("createdDateTime"))
+        res["value"] = [_enrich_teams_message(msg, chat_id=chat_id) for msg in res["value"]]
     return res
 
 
@@ -1359,10 +1440,168 @@ def m365_list_channel_messages(team_id: str, channel_id: str, top: int = 10) -> 
     params = {"$top": min(top, 50)}
     res = _graph_request("GET", f"/teams/{team_id}/channels/{channel_id}/messages", params=params)
     if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
-        for msg in res["value"]:
-            if isinstance(msg, dict) and "createdDateTime" in msg:
-                msg["createdDateTime_local"] = _format_timestamp_local(msg.get("createdDateTime"))
+        res["value"] = [_enrich_teams_message(msg, team_id=team_id, channel_id=channel_id) for msg in res["value"]]
     return res
+
+
+@mcp.tool()
+def m365_list_teams_message_attachments(
+    message_id: str,
+    chat_id: Optional[str] = None,
+    team_id: Optional[str] = None,
+    channel_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List file attachments and inline images (hosted contents) for a specific Microsoft Teams chat or channel message.
+
+    Args:
+        message_id: The ID of the Teams message.
+        chat_id: The Teams chat ID (for 1:1 or group chats).
+        team_id: The Team ID (required if querying a channel message).
+        channel_id: The Channel ID (required if querying a channel message).
+    """
+    if not chat_id and not (team_id and channel_id):
+        raise ValueError("Either chat_id OR both team_id and channel_id must be provided.")
+
+    if chat_id:
+        endpoint = f"/me/chats/{chat_id}/messages/{message_id}"
+        hc_endpoint = f"/me/chats/{chat_id}/messages/{message_id}/hostedContents"
+    else:
+        endpoint = f"/teams/{team_id}/channels/{channel_id}/messages/{message_id}"
+        hc_endpoint = f"/teams/{team_id}/channels/{channel_id}/messages/{message_id}/hostedContents"
+
+    msg = _graph_request("GET", endpoint)
+    attachments = []
+
+    raw_atts = msg.get("attachments") if isinstance(msg, dict) else []
+    if isinstance(raw_atts, list):
+        for att in raw_atts:
+            if isinstance(att, dict):
+                attachments.append({
+                    "id": att.get("id"),
+                    "name": att.get("name") or "Unnamed Attachment",
+                    "contentType": att.get("contentType"),
+                    "contentUrl": att.get("contentUrl"),
+                    "type": "file_reference",
+                })
+
+    try:
+        hc_res = _graph_request("GET", hc_endpoint)
+        if isinstance(hc_res, dict) and "value" in hc_res and isinstance(hc_res["value"], list):
+            for hc in hc_res["value"]:
+                if isinstance(hc, dict):
+                    hc_id = hc.get("id")
+                    attachments.append({
+                        "id": hc_id,
+                        "name": f"inline_image_{hc_id[:8]}.png" if hc_id else "inline_image.png",
+                        "contentType": hc.get("contentType") or "image/png",
+                        "type": "hosted_content",
+                        "hosted_content_id": hc_id,
+                    })
+    except Exception:
+        pass
+
+    return {
+        "message_id": message_id,
+        "chat_id": chat_id,
+        "team_id": team_id,
+        "channel_id": channel_id,
+        "attachments_count": len(attachments),
+        "attachments": attachments,
+    }
+
+
+@mcp.tool()
+def m365_download_teams_message_attachment(
+    message_id: str,
+    chat_id: Optional[str] = None,
+    team_id: Optional[str] = None,
+    channel_id: Optional[str] = None,
+    hosted_content_id: Optional[str] = None,
+    attachment_id: Optional[str] = None,
+    attachment_name: Optional[str] = None,
+    content_url: Optional[str] = None,
+    save_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Download a Teams message attachment (inline image/hostedContent or file reference) to the local workspace/Vault.
+
+    Args:
+        message_id: The ID of the Teams message.
+        chat_id: The Teams chat ID (for 1:1 or group chats).
+        team_id: The Team ID (required if channel message).
+        channel_id: The Channel ID (required if channel message).
+        hosted_content_id: ID of the hosted content (inline image), if downloading an inline image.
+        attachment_id: ID of the attachment in the message's attachments array.
+        attachment_name: Name of the attachment file.
+        content_url: Direct SharePoint / OneDrive content URL from the attachment object.
+        save_path: Optional local destination path. Defaults to Vault or ./attachments/<filename>.
+    """
+    if not chat_id and not (team_id and channel_id):
+        raise ValueError("Either chat_id OR both team_id and channel_id must be provided.")
+
+    content_bytes = None
+    filename = attachment_name or "teams_attachment"
+
+    # Case 1: Hosted Content (Inline image)
+    if hosted_content_id:
+        if chat_id:
+            hc_url = f"/me/chats/{chat_id}/messages/{message_id}/hostedContents/{hosted_content_id}/$value"
+        else:
+            hc_url = f"/teams/{team_id}/channels/{channel_id}/messages/{message_id}/hostedContents/{hosted_content_id}/$value"
+        content_bytes = _graph_download_bytes(hc_url)
+        if not attachment_name:
+            filename = f"inline_image_{hosted_content_id[:8]}.png"
+
+    # Case 2: File attachment lookup or content_url
+    else:
+        target_url = content_url
+        if not target_url and (attachment_id or attachment_name):
+            atts_info = m365_list_teams_message_attachments(
+                message_id=message_id, chat_id=chat_id, team_id=team_id, channel_id=channel_id
+            )
+            for att in atts_info.get("attachments", []):
+                if (attachment_id and att.get("id") == attachment_id) or \
+                   (attachment_name and att.get("name") == attachment_name):
+                    if att.get("type") == "hosted_content":
+                        hosted_content_id = att.get("hosted_content_id")
+                        if chat_id:
+                            hc_url = f"/me/chats/{chat_id}/messages/{message_id}/hostedContents/{hosted_content_id}/$value"
+                        else:
+                            hc_url = f"/teams/{team_id}/channels/{channel_id}/messages/{message_id}/hostedContents/{hosted_content_id}/$value"
+                        content_bytes = _graph_download_bytes(hc_url)
+                        if not attachment_name:
+                            filename = att.get("name") or "inline_image.png"
+                        break
+                    else:
+                        target_url = att.get("contentUrl")
+                        filename = att.get("name") or filename
+                        break
+
+        if content_bytes is None and target_url:
+            b64_url = base64.urlsafe_b64encode(target_url.encode("utf-8")).decode("utf-8").rstrip("=")
+            share_token = f"u!{b64_url}"
+            try:
+                content_bytes = _graph_download_bytes(f"/shares/{share_token}/driveItem/content")
+            except Exception:
+                if filename:
+                    try:
+                        search_res = _graph_download_bytes(f"/me/drive/root:/Microsoft Teams Chat Files/{filename}:/content")
+                        if search_res:
+                            content_bytes = search_res
+                    except Exception:
+                        pass
+
+    if content_bytes is None:
+        raise RuntimeError(f"Failed to locate or download attachment for Teams message '{message_id}'. Ensure a valid hosted_content_id, attachment_id, attachment_name, or content_url is provided.")
+
+    out_file = _resolve_save_path(save_path, filename, subfolder="documents/m365_attachments")
+    out_file.write_bytes(content_bytes)
+    return {
+        "success": True,
+        "message_id": message_id,
+        "filename": filename,
+        "saved_path": str(out_file),
+        "size_bytes": len(content_bytes),
+    }
 
 
 @mcp.tool()
