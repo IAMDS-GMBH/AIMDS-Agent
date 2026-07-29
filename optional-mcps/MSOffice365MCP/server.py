@@ -39,6 +39,7 @@ BASE_SCOPES = [
     "Contacts.ReadWrite",
     "Presence.Read",
     "OnlineMeetings.Read",
+    "Tasks.ReadWrite",
 ]
 
 # Scopes Microsoft classifies as requiring tenant-admin consent, because
@@ -1965,6 +1966,132 @@ def m365_get_user_presence(user_id_or_upn: Optional[str] = None) -> Dict[str, An
         endpoint = "/me/presence"
 
     return _graph_request("GET", endpoint)
+
+
+@mcp.tool()
+def m365_get_schedule(
+    schedules: List[str],
+    start_time_iso: str,
+    end_time_iso: str,
+    availability_view_interval: int = 30,
+) -> Dict[str, Any]:
+    """Get free/busy schedule availability for one or more users (colleagues/teammates).
+
+    Used to find common free time slots for scheduling meetings without inspecting private details.
+
+    Args:
+        schedules: List of user email addresses or UPNs to check availability for.
+        start_time_iso: Start date/time in ISO format.
+        end_time_iso: End date/time in ISO format.
+        availability_view_interval: Minutes per slot in the availability view (default: 30).
+    """
+    tz_name = _get_timezone_name()
+    start_clean, _ = _normalize_datetime_input(start_time_iso)
+    end_clean, _ = _normalize_datetime_input(end_time_iso)
+
+    payload = {
+        "schedules": [s.strip() for s in schedules],
+        "startTime": {"dateTime": start_clean, "timeZone": tz_name},
+        "endTime": {"dateTime": end_clean, "timeZone": tz_name},
+        "availabilityViewInterval": availability_view_interval,
+    }
+    res = _graph_request("POST", "/me/calendar/getSchedule", json_data=payload)
+
+    if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
+        for item in res["value"]:
+            if isinstance(item, dict) and "scheduleItems" in item and isinstance(item["scheduleItems"], list):
+                for s_item in item["scheduleItems"]:
+                    if isinstance(s_item, dict):
+                        if "start" in s_item:
+                            s_item["start_local"] = _format_timestamp_local(s_item.get("start"))
+                        if "end" in s_item:
+                            s_item["end_local"] = _format_timestamp_local(s_item.get("end"))
+
+    return res
+
+
+@mcp.tool()
+def m365_list_todo_tasks(
+    list_id: Optional[str] = None,
+    top: int = 20,
+) -> Dict[str, Any]:
+    """List task lists and tasks in Microsoft To Do / Outlook Tasks.
+
+    Args:
+        list_id: Optional task list ID. If omitted, returns all task lists and tasks from the default list.
+        top: Max number of tasks to return.
+    """
+    if not list_id:
+        lists_res = _graph_request("GET", "/me/todo/lists")
+        lists = lists_res.get("value", []) if isinstance(lists_res, dict) else []
+        default_list = next((l for l in lists if l.get("wellknownListName") == "defaultList"), lists[0] if lists else None)
+        target_list_id = default_list.get("id") if default_list else None
+    else:
+        target_list_id = list_id
+        lists = []
+
+    tasks = []
+    if target_list_id:
+        endpoint = f"/me/todo/lists/{target_list_id}/tasks"
+        params = {"$top": min(top, 50)}
+        tasks_res = _graph_request("GET", endpoint, params=params)
+        tasks = tasks_res.get("value", []) if isinstance(tasks_res, dict) else []
+
+        for t in tasks:
+            if isinstance(t, dict):
+                if "createdDateTime" in t:
+                    t["createdDateTime_local"] = _format_timestamp_local(t.get("createdDateTime"))
+                if "dueDateTime" in t and t.get("dueDateTime"):
+                    t["dueDateTime_local"] = _format_timestamp_local(t.get("dueDateTime"))
+
+    return {
+        "lists": lists,
+        "active_list_id": target_list_id,
+        "count": len(tasks),
+        "tasks": tasks,
+    }
+
+
+@mcp.tool()
+def m365_create_todo_task(
+    title: str,
+    list_id: Optional[str] = None,
+    due_date_iso: Optional[str] = None,
+    body: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create a new task in Microsoft To Do / Outlook Tasks.
+
+    Args:
+        title: Task title/summary.
+        list_id: Optional task list ID (defaults to user's default To Do list).
+        due_date_iso: Optional due date/time in ISO format.
+        body: Optional task notes/description.
+    """
+    if not list_id:
+        lists_res = _graph_request("GET", "/me/todo/lists")
+        lists = lists_res.get("value", []) if isinstance(lists_res, dict) else []
+        default_list = next((l for l in lists if l.get("wellknownListName") == "defaultList"), lists[0] if lists else None)
+        target_list_id = default_list.get("id") if default_list else "tasks"
+    else:
+        target_list_id = list_id
+
+    tz_name = _get_timezone_name()
+    payload: Dict[str, Any] = {"title": title}
+
+    if body:
+        payload["body"] = {"contentType": "text", "content": body}
+
+    if due_date_iso:
+        clean_due, tz_due = _normalize_datetime_input(due_date_iso)
+        payload["dueDateTime"] = {"dateTime": clean_due, "timeZone": tz_due}
+
+    return _graph_request("POST", f"/me/todo/lists/{target_list_id}/tasks", json_data=payload)
+
+
+@mcp.tool()
+def m365_get_mailbox_settings() -> Dict[str, Any]:
+    """Get Outlook mailbox settings including Out-Of-Office / Automatic Reply status, working hours, and language."""
+    return _graph_request("GET", "/me/mailboxSettings")
 
 
 if __name__ == "__main__":

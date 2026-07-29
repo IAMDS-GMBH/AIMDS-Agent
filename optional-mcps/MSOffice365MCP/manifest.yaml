@@ -54,6 +54,9 @@ auth:
     - Chat.ReadWrite
     - Files.ReadWrite.All
     - Contacts.ReadWrite
+    - Presence.Read
+    - OnlineMeetings.Read
+    - Tasks.ReadWrite
   env:
     - name: M365_CLIENT_ID
       prompt: "Microsoft Entra App Client ID (optional; leave blank to use default multi-tenant app)"
@@ -102,6 +105,12 @@ tools:
     - m365_list_teams_message_attachments
     - m365_download_teams_message_attachment
     - m365_get_activity_feed
+    - m365_list_teams_calls
+    - m365_get_user_presence
+    - m365_get_schedule
+    - m365_list_todo_tasks
+    - m365_create_todo_task
+    - m365_get_mailbox_settings
 
 post_install: |
   Microsoft 365 MCP (m365) has been installed into your catalog.
