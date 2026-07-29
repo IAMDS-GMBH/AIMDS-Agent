@@ -37,6 +37,8 @@ BASE_SCOPES = [
     "Chat.ReadWrite",
     "Files.ReadWrite.All",
     "Contacts.ReadWrite",
+    "Presence.Read",
+    "OnlineMeetings.Read",
 ]
 
 # Scopes Microsoft classifies as requiring tenant-admin consent, because
@@ -142,6 +144,68 @@ def _format_timestamp_local(dt_value: Any) -> str:
         return dt_local.strftime("%Y-%m-%d %H:%M:%S %Z").strip()
     except Exception:
         return raw_dt_str
+
+
+def _normalize_datetime_input(dt_str: Optional[str], default_tz: Optional[str] = None) -> Tuple[str, str]:
+    """Normalize any user/LLM datetime input string into Graph API compatible format.
+
+    Returns (clean_iso_str_without_offset, tz_name).
+
+    Handles:
+    - Naive ISO: '2026-07-29T17:00:00' or '2026-07-29 17:00' -> ('2026-07-29T17:00:00', 'Europe/Berlin')
+    - ISO with Z: '2026-07-29T15:00:00Z' -> converts to local tz 'Europe/Berlin' -> ('2026-07-29T17:00:00', 'Europe/Berlin')
+    - ISO with offset: '2026-07-29T17:00:00+02:00' -> converts to local tz -> ('2026-07-29T17:00:00', 'Europe/Berlin')
+    - Date only: '2026-07-29' -> ('2026-07-29T00:00:00', 'Europe/Berlin')
+    """
+    if not dt_str or not str(dt_str).strip():
+        return "", default_tz or _get_timezone_name()
+
+    raw = str(dt_str).strip()
+    target_tz_name = default_tz or _get_timezone_name()
+
+    try:
+        from datetime import datetime
+        try:
+            from zoneinfo import ZoneInfo
+        except ImportError:
+            from backports.zoneinfo import ZoneInfo  # type: ignore
+
+        target_tz = ZoneInfo(target_tz_name)
+
+        # Handle simple date-only string 'YYYY-MM-DD'
+        if len(raw) == 10 and raw.count("-") == 2:
+            raw = f"{raw}T00:00:00"
+
+        raw_clean = raw.replace(" ", "T")
+        raw_clean_z = raw_clean.replace("Z", "+00:00")
+
+        # Trim fractional seconds if needed
+        if "." in raw_clean_z:
+            parts = raw_clean_z.split(".")
+            second_part = parts[1]
+            tz_offset = ""
+            for idx, char in enumerate(second_part):
+                if char in ("+", "-"):
+                    tz_offset = second_part[idx:]
+                    second_part = second_part[:idx]
+                    break
+            second_part = second_part[:6]
+            raw_clean_z = f"{parts[0]}.{second_part}{tz_offset}"
+
+        dt = datetime.fromisoformat(raw_clean_z)
+
+        # Convert to target timezone
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=target_tz)
+        else:
+            dt = dt.astimezone(target_tz)
+
+        clean_iso = dt.strftime("%Y-%m-%dT%H:%M:%S")
+        return clean_iso, target_tz_name
+    except Exception:
+        # Fallback: strip Z and offsets naively if parsing fails
+        clean_raw = raw.replace(" ", "T").split("+")[0].split("Z")[0]
+        return clean_raw, target_tz_name
 
 
 try:
@@ -1039,8 +1103,10 @@ def m365_get_events(
     params: Dict[str, Any] = {"$select": "id,subject,start,end,location,organizer,attendees,isAllDay,categories"}
 
     if start_time_iso and end_time_iso:
-        params["startDateTime"] = start_time_iso
-        params["endDateTime"] = end_time_iso
+        start_clean, _ = _normalize_datetime_input(start_time_iso)
+        end_clean, _ = _normalize_datetime_input(end_time_iso)
+        params["startDateTime"] = start_clean
+        params["endDateTime"] = end_clean
         endpoint = f"{base_path}/calendarView"
     else:
         params["$top"] = min(top, 50)
@@ -1066,8 +1132,15 @@ def m365_get_events(
             if isinstance(evt, dict):
                 if "start" in evt:
                     evt["start_local"] = _format_timestamp_local(evt.get("start"))
+                    evt["start_iso_local"], _ = _normalize_datetime_input(
+                        evt.get("start", {}).get("dateTime") if isinstance(evt.get("start"), dict) else evt.get("start")
+                    )
                 if "end" in evt:
                     evt["end_local"] = _format_timestamp_local(evt.get("end"))
+                    evt["end_iso_local"], _ = _normalize_datetime_input(
+                        evt.get("end", {}).get("dateTime") if isinstance(evt.get("end"), dict) else evt.get("end")
+                    )
+                evt["timezone"] = _get_timezone_name()
 
     return res
 
@@ -1092,6 +1165,9 @@ def m365_create_event(
 ) -> Dict[str, Any]:
     """Create a new event or meeting in Outlook Calendar or a shared calendar (e.g. URLAUB / Officezeiten).
 
+    Note: Datetimes are automatically normalized into local timezone format.
+    Pass ISO strings (e.g. '2026-07-29T17:00:00' or '2026-07-29T15:00:00Z').
+
     Args:
         subject: Event title.
         start_time_iso: Start date/time in ISO format.
@@ -1104,10 +1180,13 @@ def m365_create_event(
         categories: Optional list of category tags.
     """
     tz_name = time_zone or _get_timezone_name()
+    start_clean, tz_start = _normalize_datetime_input(start_time_iso, default_tz=tz_name)
+    end_clean, tz_end = _normalize_datetime_input(end_time_iso, default_tz=tz_name)
+
     payload: Dict[str, Any] = {
         "subject": subject,
-        "start": {"dateTime": start_time_iso, "timeZone": tz_name},
-        "end": {"dateTime": end_time_iso, "timeZone": tz_name},
+        "start": {"dateTime": start_clean, "timeZone": tz_start},
+        "end": {"dateTime": end_clean, "timeZone": tz_end},
         "isAllDay": is_all_day,
     }
     if body:
@@ -1699,6 +1778,194 @@ def m365_get_activity_feed(top_chats: int = 5, top_messages_per_chat: int = 3) -
         activity["errors"].append(f"List teams error: {err}")
 
     return activity
+
+
+@mcp.tool()
+def m365_list_teams_calls(
+    top_chats: int = 15,
+    top_messages_per_chat: int = 20,
+    search_query: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Query recent Teams 1:1 calls, group calls, and online meeting calls across chat history and calendar.
+
+    Extracts call history (start time, duration, participants, call type: groupCall / oneOnOne / meeting)
+    from Teams system messages and online meetings so you know when and with whom calls took place.
+
+    Args:
+        top_chats: Max number of recent chats to inspect for call events.
+        top_messages_per_chat: Max messages per chat to inspect.
+        search_query: Optional filter string to match participant name or call topic.
+    """
+    calls = []
+    seen_call_ids = set()
+
+    # 1. Scan chats for call event details
+    try:
+        chats_res = _graph_request("GET", "/me/chats", params={"$top": min(top_chats, 30)})
+        chats = chats_res.get("value", []) if isinstance(chats_res, dict) else []
+        for c in chats:
+            chat_id = c.get("id")
+            topic = c.get("topic") or c.get("chatType") or "Teams Chat"
+            chat_type = c.get("chatType")
+            if not chat_id:
+                continue
+
+            try:
+                msgs_res = _graph_request(
+                    "GET",
+                    f"/me/chats/{chat_id}/messages",
+                    params={"$top": min(top_messages_per_chat, 50)},
+                )
+                msgs = msgs_res.get("value", []) if isinstance(msgs_res, dict) else []
+
+                for m in msgs:
+                    if not isinstance(m, dict):
+                        continue
+
+                    evt_detail = m.get("eventDetail")
+                    msg_type = m.get("messageType")
+                    body_content = (m.get("body") or {}).get("content", "")
+
+                    # Check for explicit eventDetail (callEnded, callStarted, etc.)
+                    if isinstance(evt_detail, dict):
+                        odata_type = str(evt_detail.get("@odata.type") or "").lower()
+                        is_call = "call" in odata_type or "meeting" in odata_type
+                        if is_call:
+                            call_id = m.get("id")
+                            if call_id and call_id in seen_call_ids:
+                                continue
+                            if call_id:
+                                seen_call_ids.add(call_id)
+
+                            dur_seconds = evt_detail.get("callDuration")
+                            dur_str = ""
+                            if isinstance(dur_seconds, (int, float)):
+                                mins = int(dur_seconds // 60)
+                                secs = int(dur_seconds % 60)
+                                dur_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+                            elif isinstance(dur_seconds, str):
+                                dur_str = dur_seconds
+
+                            participants = []
+                            raw_parts = evt_detail.get("callParticipants") or []
+                            if isinstance(raw_parts, list):
+                                for p in raw_parts:
+                                    if isinstance(p, dict):
+                                        p_user = p.get("user") or p.get("target") or {}
+                                        p_name = p_user.get("displayName") or p_user.get("id")
+                                        if p_name and p_name not in participants:
+                                            participants.append(p_name)
+
+                            initiator = (evt_detail.get("initiator") or {}).get("user", {}).get("displayName") or m.get("from", {}).get("user", {}).get("displayName") or "Unknown"
+
+                            calls.append({
+                                "chat_id": chat_id,
+                                "chat_topic": topic,
+                                "chat_type": chat_type,
+                                "call_type": evt_detail.get("callEventType") or ("groupCall" if chat_type == "group" else "oneOnOne"),
+                                "event_type": odata_type.split(".")[-1].replace("MessageDetail", ""),
+                                "created_at_utc": m.get("createdDateTime"),
+                                "created_at_local": _format_timestamp_local(m.get("createdDateTime")),
+                                "duration": dur_str or "N/A",
+                                "duration_seconds": dur_seconds,
+                                "initiator": initiator,
+                                "participants": participants,
+                            })
+
+                    # Fallback check for call notification system messages in body
+                    elif msg_type == "systemEventMessage" or "call" in body_content.lower():
+                        if "started a call" in body_content.lower() or "call ended" in body_content.lower() or "group call" in body_content.lower():
+                            call_id = m.get("id")
+                            if call_id and call_id not in seen_call_ids:
+                                seen_call_ids.add(call_id)
+                                calls.append({
+                                    "chat_id": chat_id,
+                                    "chat_topic": topic,
+                                    "chat_type": chat_type,
+                                    "call_type": "groupCall" if chat_type == "group" else "oneOnOne",
+                                    "event_type": "systemCallNotice",
+                                    "created_at_utc": m.get("createdDateTime"),
+                                    "created_at_local": _format_timestamp_local(m.get("createdDateTime")),
+                                    "body_summary": body_content[:150],
+                                    "from": m.get("from", {}).get("user", {}).get("displayName") or "System",
+                                })
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # 2. Check scheduled / online meetings in calendar with Teams provider
+    try:
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        start_search = (now - timedelta(days=14)).isoformat()
+        end_search = (now + timedelta(days=7)).isoformat()
+        cal_events = m365_get_events(start_time_iso=start_search, end_time_iso=end_search, top=50)
+
+        for evt in cal_events.get("value", []):
+            if not isinstance(evt, dict):
+                continue
+            is_teams = evt.get("isOnlineMeeting") or "teams" in str(evt.get("location", {})).lower() or "join.teams" in str(evt).lower()
+            if is_teams:
+                evt_id = evt.get("id")
+                if evt_id and evt_id not in seen_call_ids:
+                    seen_call_ids.add(evt_id)
+                    attendees_list = [
+                        a.get("emailAddress", {}).get("name") or a.get("emailAddress", {}).get("address")
+                        for a in evt.get("attendees", []) if isinstance(a, dict)
+                    ]
+                    calls.append({
+                        "event_id": evt_id,
+                        "chat_topic": evt.get("subject"),
+                        "call_type": "scheduledMeeting",
+                        "event_type": "onlineMeeting",
+                        "start_time_local": evt.get("start_local") or _format_timestamp_local(evt.get("start")),
+                        "end_time_local": evt.get("end_local") or _format_timestamp_local(evt.get("end")),
+                        "organizer": (evt.get("organizer") or {}).get("emailAddress", {}).get("name"),
+                        "participants": attendees_list,
+                        "is_online_meeting": True,
+                    })
+    except Exception:
+        pass
+
+    # Optional search filtering
+    if search_query:
+        q_lower = search_query.lower()
+        filtered = []
+        for c in calls:
+            topic_match = q_lower in str(c.get("chat_topic", "")).lower()
+            initiator_match = q_lower in str(c.get("initiator", "")).lower()
+            part_match = any(q_lower in str(p).lower() for p in c.get("participants", []))
+            if topic_match or initiator_match or part_match:
+                filtered.append(c)
+        calls = filtered
+
+    return {
+        "count": len(calls),
+        "calls": calls,
+    }
+
+
+@mcp.tool()
+def m365_get_user_presence(user_id_or_upn: Optional[str] = None) -> Dict[str, Any]:
+    """Get real-time presence, call, and availability status (e.g. InACall, InAMeeting, Busy, Available, Offline).
+
+    Args:
+        user_id_or_upn: Optional user ID or email/UPN. If omitted, returns current user's presence.
+    """
+    if user_id_or_upn and str(user_id_or_upn).strip():
+        uid = str(user_id_or_upn).strip()
+        if "@" in uid:
+            search_res = m365_search_users(uid, top=1)
+            users = search_res.get("value", [])
+            if users:
+                uid = users[0].get("id")
+        endpoint = f"/users/{uid}/presence"
+    else:
+        endpoint = "/me/presence"
+
+    return _graph_request("GET", endpoint)
+
 
 if __name__ == "__main__":
     if "--login" in sys.argv:
