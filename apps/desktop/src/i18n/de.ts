@@ -391,7 +391,9 @@ export const de
       failedLoad: 'Einstellungen konnten nicht geladen werden',
       autosaveFailed: 'Automatisches Speichern fehlgeschlagen',
       imported: 'Konfiguration importiert',
-      invalidJson: 'Ungültiges Konfigurations-JSON'
+      invalidJson: 'Ungültiges Konfigurations-JSON',
+      restartNoticeTitle: 'Neustart empfohlen',
+      restartNoticeDesc: 'Einige Konfigurationsänderungen (z. B. Update-Kanal oder Backend-Einstellungen) werden erst nach einem Neustart von Hermes wirksam.'
     },
     credentials: {
       pasteKey: 'Schlüssel einfügen',

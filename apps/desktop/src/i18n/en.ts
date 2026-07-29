@@ -390,7 +390,9 @@ export const en: Translations = {
       failedLoad: 'Settings failed to load',
       autosaveFailed: 'Autosave failed',
       imported: 'Config imported',
-      invalidJson: 'Invalid config JSON'
+      invalidJson: 'Invalid config JSON',
+      restartNoticeTitle: 'Restart Recommended',
+      restartNoticeDesc: 'Some configuration changes (such as the Update Channel or backend settings) will take full effect after restarting Hermes.'
     },
     credentials: {
       pasteKey: 'Paste key',

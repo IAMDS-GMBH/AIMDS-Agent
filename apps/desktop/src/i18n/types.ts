@@ -302,6 +302,8 @@ export interface Translations {
       autosaveFailed: string
       imported: string
       invalidJson: string
+      restartNoticeTitle: string
+      restartNoticeDesc: string
     }
     credentials: {
       pasteKey: string

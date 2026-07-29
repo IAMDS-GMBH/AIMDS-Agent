@@ -604,6 +604,7 @@ export function ConfigSettings({
                       const branchName = id === 'stable' ? 'tags' : 'main'
                       setUpdateChannel(id as 'stable' | 'main')
                       window.hermesDesktop?.updates?.setBranch?.(branchName).catch(() => {})
+                      notify({ kind: 'info', title: c.restartNoticeTitle, message: c.restartNoticeDesc })
                     }}
                     options={updateChannelOptions}
                     value={updateChannel}
