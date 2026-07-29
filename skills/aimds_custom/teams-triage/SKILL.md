@@ -6,8 +6,9 @@ description: Monitors MS Teams DMs and channels, filters relevant messages, extr
 # Teams Triage & Activity Monitor
 
 ## Procedure
-1. **Fetch Activity Feed:** Call `m365_get_activity_feed` (or `m365_list_chats` / `m365_list_channel_messages`).
-2. **Filter & Prioritize:**
+1. **Fetch Activity Feed & Calls:** Call `m365_get_activity_feed` (or `m365_list_chats` / `m365_list_channel_messages`). To inspect call history or group calls, call `m365_list_teams_calls`.
+2. **Check Real-Time Status:** Call `m365_get_user_presence` to verify if the user or colleague is currently `InACall` or `InAMeeting`.
+3. **Filter & Prioritize:**
    - 🔴 **DMs / 1:1 Messages:** Direct personal questions or urgent requests requiring immediate focus.
    - 🟡 **Team Channel Mentions:** Direct @mentions or critical project updates in joined channels.
    - ⚪ **General Channel Noise:** Ignore general chatter, automated notifications, CI/CD bots, and GitHub alerts.
