@@ -244,6 +244,11 @@ export interface Translations {
       updateChannelDesc: string
       updateChannelStable: string
       updateChannelMain: string
+      filePickerRootTitle: string
+      filePickerRootDesc: string
+      filePickerRootUserDir: string
+      filePickerRootVault: string
+      relaunchClient: string
       sectionUpdateOptions: string
       sectionCustomerExperience: string
       sectionAdvancedConfig: string
@@ -1334,6 +1339,8 @@ export interface Translations {
     binaryBody: (label: string) => string
     largeTitle: string
     largeBody: (label: string, size: string) => string
+    openInDefaultApp: string
+    officeDocumentDescription: string
     previewAnyway: string
     truncated: string
     noInlineTitle: string

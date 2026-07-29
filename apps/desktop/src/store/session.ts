@@ -9,6 +9,7 @@ import type { SessionInfo, UsageStats } from '@/types/hermes'
 type Updater<T> = T | ((current: T) => T)
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
+export const FILE_PICKER_ROOT_STORAGE_KEY = 'hermes.desktop.filePickerRoot'
 
 // Cached copy of Settings → Sessions → Default project directory. The main
 // process persists this in project-dir.json, but the renderer must also honor it
@@ -66,6 +67,17 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
     }
 
     return
+  }
+
+  const rootSetting = storedString(FILE_PICKER_ROOT_STORAGE_KEY)
+  if (rootSetting === 'vault') {
+    const { cwd: homeCwd } = await sanitize('~')
+    const vaultPath = homeCwd ? `${homeCwd.replace(/[/\\]+$/, '')}/AIMDS-Suite-Vault` : '~/AIMDS-Suite-Vault'
+    const { cwd: sanitizedVault } = await sanitize(vaultPath)
+    if (sanitizedVault) {
+      setCurrentCwd(sanitizedVault)
+      return
+    }
   }
 
   const remembered = getRememberedWorkspaceCwd()

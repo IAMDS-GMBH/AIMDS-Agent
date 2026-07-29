@@ -56,6 +56,8 @@ declare global {
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       showItemInFolder?: (filePath: string) => Promise<boolean>
+      openPath?: (filePath: string) => Promise<string>
+      relaunchApp?: () => Promise<{ ok: boolean }>
       fetchLinkTitle: (url: string) => Promise<string>
       sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>
       settings: {

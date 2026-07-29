@@ -195,9 +195,27 @@ export function useLinkTitle(url?: null | string): string {
 }
 
 export function openExternalLink(href: string): void {
-  if (href) {
-    void window.hermesDesktop?.openExternal?.(href)
+  if (!href) {
+    return
   }
+
+  if (href.startsWith('file:') || href.startsWith('/') || /^[a-zA-Z]:[/\\]/.test(href)) {
+    let cleanPath = href
+    try {
+      if (href.startsWith('file:')) {
+        cleanPath = decodeURIComponent(new URL(href).pathname)
+      }
+    } catch {
+      cleanPath = href
+    }
+
+    if (window.hermesDesktop?.openPath) {
+      void window.hermesDesktop.openPath(cleanPath)
+      return
+    }
+  }
+
+  void window.hermesDesktop?.openExternal?.(href)
 }
 
 interface ExternalLinkProps extends Omit<ComponentProps<'a'>, 'href' | 'target'> {

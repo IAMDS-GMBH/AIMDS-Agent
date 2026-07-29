@@ -217,6 +217,7 @@ function ProjectTreeRow({
           node.toggle()
         } else {
           node.select()
+          onPreviewFile?.(node.data.id)
         }
       }}
       onDoubleClick={event => {
@@ -243,7 +244,14 @@ function ProjectTreeRow({
       style={style}
     >
       {isFolder && !isPlaceholder && (
-        <span aria-hidden className="flex w-3 items-center justify-center">
+        <span
+          aria-hidden
+          className="flex w-3 items-center justify-center hover:text-foreground"
+          onClick={event => {
+            event.stopPropagation()
+            node.toggle()
+          }}
+        >
           <Codicon
             className="text-(--ui-text-tertiary)"
             name={node.isOpen ? 'chevron-down' : 'chevron-right'}

@@ -25,6 +25,8 @@ import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $tipMode, setTipMode } from '@/store/tip-mode'
+import { persistString, storedString } from '@/lib/storage'
+import { FILE_PICKER_ROOT_STORAGE_KEY } from '@/store/session'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
@@ -407,6 +409,10 @@ export function ConfigSettings({
   const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
   const [updateChannel, setUpdateChannel] = useState<'stable' | 'main'>('main')
+  const [filePickerRoot, setFilePickerRoot] = useState<'userDir' | 'vault'>(() => {
+    const saved = storedString(FILE_PICKER_ROOT_STORAGE_KEY)
+    return saved === 'vault' ? 'vault' : 'userDir'
+  })
   const saveVersionRef = useRef(0)
   const [saveVersion, setSaveVersion] = useState(0)
 
@@ -426,6 +432,11 @@ export function ConfigSettings({
   const updateChannelOptions = [
     { id: 'stable', label: a.updateChannelStable },
     { id: 'main', label: a.updateChannelMain }
+  ] as const
+
+  const filePickerRootOptions = [
+    { id: 'userDir', label: a.filePickerRootUserDir },
+    { id: 'vault', label: a.filePickerRootVault }
   ] as const
 
   const toolOptions = [
@@ -612,6 +623,35 @@ export function ConfigSettings({
                 }
                 description={a.updateChannelDesc}
                 title={a.updateChannelTitle}
+              />
+              <ListRow
+                action={
+                  <div className="flex items-center gap-2">
+                    <SegmentedControl
+                      onChange={id => {
+                        triggerHaptic('selection')
+                        setFilePickerRoot(id as 'userDir' | 'vault')
+                        persistString(FILE_PICKER_ROOT_STORAGE_KEY, id)
+                        notify({ kind: 'info', title: c.restartNoticeTitle, message: c.restartNoticeDesc })
+                      }}
+                      options={filePickerRootOptions}
+                      value={filePickerRoot}
+                    />
+                    {Boolean(window.hermesDesktop?.relaunchApp) && (
+                      <Button
+                        onClick={() => {
+                          void window.hermesDesktop?.relaunchApp?.()
+                        }}
+                        size="sm"
+                        variant="outline"
+                      >
+                        {a.relaunchClient}
+                      </Button>
+                    )}
+                  </div>
+                }
+                description={a.filePickerRootDesc}
+                title={a.filePickerRootTitle}
               />
             </div>
           </div>

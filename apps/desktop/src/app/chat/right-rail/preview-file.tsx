@@ -13,6 +13,7 @@ import { Streamdown } from 'streamdown'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { PageLoader } from '@/components/page-loader'
 import { translateNow, useI18n } from '@/i18n'
+import { previewName } from '@/lib/preview-targets'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
 
@@ -411,12 +412,47 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
   )
 }
 
+const OFFICE_EXT_RE = /\.(docx?|xlsx?|pptx?|vsd[xz]?|odt|ods|odp|pdf|rtf|msg|eml|csv)$/i
+
+function isOfficeDocument(target: PreviewTarget, filePath: string): boolean {
+  return OFFICE_EXT_RE.test(filePath) || OFFICE_EXT_RE.test(target.label || '') || OFFICE_EXT_RE.test(target.url || '')
+}
+
 export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; target: PreviewTarget }) {
   const { t } = useI18n()
   const [state, setState] = useState<LocalPreviewState>({ loading: true })
   const [forcePreview, setForcePreview] = useState(false)
   const [renderMarkdownAsSource, setRenderMarkdownAsSource] = useState(false)
   const filePath = filePathForTarget(target)
+
+  if (isOfficeDocument(target, filePath)) {
+    const handleOpen = () => {
+      if (window.hermesDesktop?.openPath) {
+        void window.hermesDesktop.openPath(filePath)
+      } else if (window.hermesDesktop?.openExternal) {
+        void window.hermesDesktop.openExternal(target.url)
+      }
+    }
+
+    const handleShowInFolder = () => {
+      void window.hermesDesktop?.showItemInFolder?.(filePath)
+    }
+
+    return (
+      <PreviewEmptyState
+        body={
+          <div className="grid gap-2">
+            <span className="break-all font-mono text-xs text-muted-foreground">{filePath}</span>
+            <span className="text-xs text-muted-foreground/80">{t.preview.officeDocumentDescription}</span>
+          </div>
+        }
+        primaryAction={{ label: t.preview.openInDefaultApp, onClick: handleOpen }}
+        secondaryAction={{ label: t.rightSidebar.showInFolder, onClick: handleShowInFolder }}
+        title={target.label || previewName(filePath)}
+      />
+    )
+  }
+
   const isImage = target.previewKind === 'image'
 
   // HTML files are rendered as source code, not in a webview - so they take

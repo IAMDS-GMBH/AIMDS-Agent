@@ -41,7 +41,11 @@ function activePreviewSessionId(
 }
 
 function looksLikePreviewTarget(value: string): boolean {
-  return /^https?:\/\//i.test(value) || /^file:\/\//i.test(value) || /^(?:\/|\.{1,2}\/|~\/).+/.test(value)
+  if (/^https?:\/\//i.test(value) || /^file:\/\//i.test(value) || /^(?:\/|\.{1,2}\/|~\/).+/.test(value)) {
+    return true
+  }
+
+  return /\.(md|markdown|txt|html?|json|ya?ml|py|ts|tsx|js|jsx|css|docx?|xlsx?|pptx?|pdf)$/i.test(value) || value.includes('/')
 }
 
 function stripAnsi(value: string): string {
@@ -64,10 +68,36 @@ function htmlPathFromInlineDiff(value: string): string {
 
 function structuredPreviewCandidate(payload: unknown): string {
   const record = asRecord(payload)
-  const fields = ['url', 'target', 'path', 'file', 'filepath', 'preview']
+  const fields = [
+    'url',
+    'target',
+    'path',
+    'file',
+    'filepath',
+    'file_path',
+    'location',
+    'vault_path',
+    'note_path',
+    'filename',
+    'preview'
+  ]
 
   for (const field of fields) {
     const value = record[field]
+
+    if (typeof value === 'string') {
+      const target = value.trim()
+
+      if (target && looksLikePreviewTarget(target)) {
+        return target
+      }
+    }
+  }
+
+  const args = asRecord(record.arguments || record.args || record.arguments_json || record.tool_start_args)
+
+  for (const field of fields) {
+    const value = args[field]
 
     if (typeof value === 'string') {
       const target = value.trim()

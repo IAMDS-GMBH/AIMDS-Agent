@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   showItemInFolder: filePath => ipcRenderer.invoke('hermes:showItemInFolder', filePath),
+  openPath: filePath => ipcRenderer.invoke('hermes:openPath', filePath),
+  relaunchApp: () => ipcRenderer.invoke('hermes:app:relaunch'),
   fetchLinkTitle: url => ipcRenderer.invoke('hermes:fetchLinkTitle', url),
   sanitizeWorkspaceCwd: cwd => ipcRenderer.invoke('hermes:workspace:sanitize', cwd),
   settings: {

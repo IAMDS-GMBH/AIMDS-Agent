@@ -6022,6 +6022,13 @@ ipcMain.handle('hermes:showItemInFolder', (_event, filePath) => {
   return false
 })
 
+ipcMain.handle('hermes:openPath', async (_event, filePath) => {
+  if (filePath && typeof filePath === 'string') {
+    return shell.openPath(filePath)
+  }
+  return 'Invalid path'
+})
+
 // User-configurable default project directory. The renderer reads this on
 // settings mount and seeds the value into the picker; writing back persists
 // it via writeDefaultProjectDir so resolveHermesCwd picks it up on the next
@@ -6729,6 +6736,12 @@ async function runDesktopUninstall(mode) {
   setTimeout(() => app.quit(), 800)
   return { ok: true, mode: effectiveMode, willRemoveAppBundle: Boolean(removeBundle), scriptPath }
 }
+
+ipcMain.handle('hermes:app:relaunch', async () => {
+  app.relaunch()
+  app.exit(0)
+  return { ok: true }
+})
 
 ipcMain.handle('hermes:uninstall:summary', async () => getUninstallSummary())
 ipcMain.handle('hermes:uninstall:run', async (_event, payload) => {

@@ -107,6 +107,41 @@ function clearProjectTree() {
   $projectTree.set({ ...initialState, requestId: nextRootRequestId })
 }
 
+async function loadOpenChildrenRecursively(
+  nodes: TreeNode[],
+  cwd: string,
+  openState: Record<string, boolean>
+): Promise<TreeNode[]> {
+  return Promise.all(
+    nodes.map(async node => {
+      if (!node.isDirectory || !openState[node.id]) {
+        return node
+      }
+
+      const { entries, error } = await readProjectDir(node.id, cwd)
+
+      if (error) {
+        return {
+          ...node,
+          loading: false,
+          error,
+          children: [errorChild(node.id, error)]
+        }
+      }
+
+      const rawChildren = entries.map(e => makeNode(e.path, e.name, e.isDirectory))
+      const children = await loadOpenChildrenRecursively(rawChildren, cwd, openState)
+
+      return {
+        ...node,
+        loading: false,
+        error: undefined,
+        children
+      }
+    })
+  )
+}
+
 async function loadRoot(cwd: string, { force = false }: { force?: boolean } = {}) {
   if (!cwd) {
     clearProjectTree()
@@ -141,6 +176,12 @@ async function loadRoot(cwd: string, { force = false }: { force?: boolean } = {}
 
   const { entries, error } = await readProjectDir(cwd, cwd)
 
+  let rootData = error ? [] : entries.map(e => makeNode(e.path, e.name, e.isDirectory))
+
+  if (!error && current.cwd === cwd && Object.values(current.openState).some(Boolean)) {
+    rootData = await loadOpenChildrenRecursively(rootData, cwd, current.openState)
+  }
+
   setProjectTree(latest => {
     if (latest.cwd !== cwd || latest.requestId !== requestId) {
       return latest
@@ -148,7 +189,7 @@ async function loadRoot(cwd: string, { force = false }: { force?: boolean } = {}
 
     return {
       ...latest,
-      data: error ? [] : entries.map(e => makeNode(e.path, e.name, e.isDirectory)),
+      data: rootData,
       loaded: true,
       rootError: error || null,
       rootLoading: false
@@ -249,6 +290,24 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
 
   useEffect(() => {
     void loadRoot(cwd)
+  }, [cwd])
+
+  useEffect(() => {
+    if (!cwd) {
+      return
+    }
+
+    function handleRefresh() {
+      void loadRoot(cwd, { force: true })
+    }
+
+    window.addEventListener('focus', handleRefresh)
+    window.addEventListener('hermes:file-tree-refresh', handleRefresh)
+
+    return () => {
+      window.removeEventListener('focus', handleRefresh)
+      window.removeEventListener('hermes:file-tree-refresh', handleRefresh)
+    }
   }, [cwd])
 
   return useMemo(

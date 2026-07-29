@@ -448,6 +448,10 @@ class VaultMetaIndex:
                 continue
             keywords = meta.get("keywords") or []
             tools_list = meta.get("tools") or []
+            if isinstance(tools_list, dict):
+                tools_list = tools_list.get("include") or []
+            if not isinstance(tools_list, list):
+                tools_list = [str(x) for x in list(tools_list)]
 
             slug = f"mcp:{server_name}"
             doc_id = f"mcp:{server_name}"
