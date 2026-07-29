@@ -26,7 +26,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $tipMode, setTipMode } from '@/store/tip-mode'
 import { persistString, storedString } from '@/lib/storage'
-import { FILE_PICKER_ROOT_STORAGE_KEY } from '@/store/session'
+import { FILE_PICKER_ROOT_STORAGE_KEY, ensureDefaultWorkspaceCwd } from '@/store/session'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'

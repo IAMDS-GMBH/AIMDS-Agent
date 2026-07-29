@@ -6,7 +6,6 @@ import {
   RefreshCw,
   Terminal,
   Settings2,
-  Check,
 } from "lucide-react";
 import { api, type OAuthProvider } from "@/lib/api";
 import { Button } from "@nous-research/ui/ui/components/button";
