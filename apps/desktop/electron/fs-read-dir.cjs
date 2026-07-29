@@ -45,16 +45,21 @@ function shouldStatDirent(dirent) {
 async function entryForDirent(dirent, resolved, fsImpl) {
   const fullPath = path.join(resolved, dirent.name)
   let isDirectory = direntIsDirectory(dirent)
+  let mtimeMs = 0
 
-  if (!isDirectory && shouldStatDirent(dirent)) {
-    try {
-      isDirectory = (await fsImpl.promises.stat(fullPath)).isDirectory()
-    } catch {
+  try {
+    const stats = await fsImpl.promises.stat(fullPath)
+    mtimeMs = stats.mtimeMs || 0
+    if (!isDirectory) {
+      isDirectory = stats.isDirectory()
+    }
+  } catch {
+    if (!isDirectory && shouldStatDirent(dirent)) {
       isDirectory = false
     }
   }
 
-  return { name: dirent.name, path: fullPath, isDirectory }
+  return { name: dirent.name, path: fullPath, isDirectory, mtimeMs }
 }
 
 async function mapWithStatConcurrency(items, mapper) {
@@ -96,9 +101,19 @@ async function readDirForIpc(dirPath, options = {}) {
       entryForDirent(dirent, resolved, fsImpl)
     )
 
-    entries.sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.localeCompare(b.name))
+    entries.sort((a, b) => {
+      if (a.isDirectory !== b.isDirectory) {
+        return Number(b.isDirectory) - Number(a.isDirectory)
+      }
+      if (a.isDirectory) {
+        return a.name.localeCompare(b.name)
+      }
+      return (b.mtimeMs || 0) - (a.mtimeMs || 0) || a.name.localeCompare(b.name)
+    })
 
-    return { entries }
+    const sanitizedEntries = entries.map(({ name, path, isDirectory }) => ({ name, path, isDirectory }))
+
+    return { entries: sanitizedEntries }
   } catch (error) {
     return { entries: [], error: error?.code || 'read-error' }
   }

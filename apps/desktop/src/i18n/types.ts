@@ -1310,6 +1310,11 @@ export interface Translations {
     loadingFiles: string
     terminalHide: string
     addToChat: string
+    attachToChat: string
+    copyPath: string
+    copyRelativePath: string
+    openPreview: string
+    showInFolder: string
   }
 
   preview: {

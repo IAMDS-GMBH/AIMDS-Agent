@@ -1656,7 +1656,12 @@ export const de
     loadingTree: 'Verzeichnisbaum wird geladen',
     loadingFiles: 'Dateien werden geladen',
     terminalHide: 'Terminal ausblenden',
-    addToChat: 'Zum Chat hinzufügen'
+    addToChat: 'Zum Chat hinzufügen',
+    attachToChat: 'An Chat anhängen',
+    copyPath: 'Pfad kopieren',
+    copyRelativePath: 'Relativen Pfad kopieren',
+    openPreview: 'Vorschau öffnen',
+    showInFolder: 'Im Dateimanager anzeigen'
   },
 
   preview: {

@@ -1654,7 +1654,12 @@ export const en: Translations = {
     loadingTree: 'Loading file tree',
     loadingFiles: 'Loading files',
     terminalHide: 'Hide terminal',
-    addToChat: 'Add to chat'
+    addToChat: 'Add to chat',
+    attachToChat: 'Attach to Chat',
+    copyPath: 'Copy Path',
+    copyRelativePath: 'Copy Relative Path',
+    openPreview: 'Open Preview',
+    showInFolder: 'Reveal in File Manager'
   },
 
   preview: {

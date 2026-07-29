@@ -88,6 +88,36 @@ test('readDirForIpc returns directories before files and sorts by name within gr
   }
 })
 
+test('readDirForIpc sorts files by modification time newest first', async () => {
+  const root = mkTmpDir()
+
+  try {
+    fs.mkdirSync(path.join(root, 'b-folder'))
+    fs.mkdirSync(path.join(root, 'a-folder'))
+
+    const oldFilePath = path.join(root, 'old-file.txt')
+    const newFilePath = path.join(root, 'new-file.txt')
+
+    fs.writeFileSync(oldFilePath, 'old')
+    const oldTime = new Date('2024-01-01T00:00:00Z')
+    const newTime = new Date('2025-01-01T00:00:00Z')
+    fs.utimesSync(oldFilePath, oldTime, oldTime)
+
+    fs.writeFileSync(newFilePath, 'new')
+    fs.utimesSync(newFilePath, newTime, newTime)
+
+    const result = await readDirForIpc(root)
+
+    assert.equal(result.error, undefined)
+    assert.deepEqual(
+      result.entries.map(entry => entry.name),
+      ['a-folder', 'b-folder', 'new-file.txt', 'old-file.txt']
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('readDirForIpc accepts file URLs for directories', async () => {
   const root = mkTmpDir()
 
@@ -279,7 +309,12 @@ test('readDirForIpc stats symbolic links and unknown entries without dropping th
   assert.equal(result.error, undefined)
   assert.deepEqual(
     statCalls.sort(),
-    [path.join(resolved, 'broken-link'), path.join(resolved, 'linked-dir'), path.join(resolved, 'unknown-entry')].sort()
+    [
+      path.join(resolved, 'broken-link'),
+      path.join(resolved, 'linked-dir'),
+      path.join(resolved, 'plain.txt'),
+      path.join(resolved, 'unknown-entry')
+    ].sort()
   )
   assert.deepEqual(result.entries, [
     { name: 'linked-dir', path: path.join(resolved, 'linked-dir'), isDirectory: true },

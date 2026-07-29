@@ -3,6 +3,13 @@ import { type NodeApi, type NodeRendererProps, Tree, type TreeApi } from 'react-
 
 import { PageLoader } from '@/components/page-loader'
 import { Codicon } from '@/components/ui/codicon'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger
+} from '@/components/ui/context-menu'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
@@ -109,6 +116,7 @@ export function ProjectTree({
           {props => (
             <ProjectTreeRow
               {...props}
+              cwd={cwd}
               onAttachFile={onActivateFile}
               onAttachFolder={onActivateFolder}
               onPreviewFile={onPreviewFile}
@@ -129,6 +137,7 @@ function TreeSizingState() {
 }
 
 function ProjectTreeRow({
+  cwd,
   dragHandle,
   node,
   onAttachFile,
@@ -136,10 +145,13 @@ function ProjectTreeRow({
   onPreviewFile,
   style
 }: NodeRendererProps<TreeNode> & {
+  cwd: string
   onAttachFile: (path: string) => void
   onAttachFolder: (path: string) => void
   onPreviewFile?: (path: string) => void
 }) {
+  const { t } = useI18n()
+
   if (!node.data) {
     return <div style={style} />
   }
@@ -148,7 +160,37 @@ function ProjectTreeRow({
   const isPlaceholder = Boolean(node.data.placeholder)
   const isErrorPlaceholder = node.data.placeholder === 'error'
 
-  return (
+  const handleCopyPath = () => {
+    void navigator.clipboard.writeText(node.data.id)
+  }
+
+  const handleCopyRelativePath = () => {
+    let relPath = node.data.id
+    if (cwd && node.data.id.startsWith(cwd)) {
+      relPath = node.data.id.slice(cwd.length).replace(/^[/\\]+/, '')
+    }
+    void navigator.clipboard.writeText(relPath || node.data.name)
+  }
+
+  const handleAttach = () => {
+    if (isFolder) {
+      onAttachFolder(node.data.id)
+    } else {
+      onAttachFile(node.data.id)
+    }
+  }
+
+  const handlePreview = () => {
+    if (!isFolder) {
+      onPreviewFile?.(node.data.id)
+    }
+  }
+
+  const handleShowInFolder = () => {
+    void window.hermesDesktop?.showItemInFolder?.(node.data.id)
+  }
+
+  const rowContent = (
     <div
       aria-expanded={isFolder ? node.isOpen : undefined}
       aria-selected={node.isSelected}
@@ -223,5 +265,45 @@ function ProjectTreeRow({
       </span>
       <span className="min-w-0 flex-1 truncate">{node.data.name}</span>
     </div>
+  )
+
+  if (isPlaceholder) {
+    return rowContent
+  }
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{rowContent}</ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onClick={handleCopyPath}>
+          <Codicon name="copy" />
+          <span>{t.rightSidebar.copyPath}</span>
+        </ContextMenuItem>
+        <ContextMenuItem onClick={handleCopyRelativePath}>
+          <Codicon name="files" />
+          <span>{t.rightSidebar.copyRelativePath}</span>
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onClick={handleAttach}>
+          <Codicon name="add" />
+          <span>{t.rightSidebar.attachToChat}</span>
+        </ContextMenuItem>
+        {!isFolder && onPreviewFile && (
+          <ContextMenuItem onClick={handlePreview}>
+            <Codicon name="eye" />
+            <span>{t.rightSidebar.openPreview}</span>
+          </ContextMenuItem>
+        )}
+        {Boolean(window.hermesDesktop?.showItemInFolder) && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onClick={handleShowInFolder}>
+              <Codicon name="folder" />
+              <span>{t.rightSidebar.showInFolder}</span>
+            </ContextMenuItem>
+          </>
+        )}
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
