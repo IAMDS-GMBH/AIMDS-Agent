@@ -207,13 +207,18 @@ describe('ensureDefaultWorkspaceCwd', () => {
     window.localStorage.setItem(FILE_PICKER_ROOT_STORAGE_KEY, 'vault')
     ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = {
       sanitizeWorkspaceCwd: async (cwd: string) => ({
-        cwd: cwd === '~' ? '/Users/test' : cwd === '~/AIMDS-Suite-Vault' || cwd === '/Users/test/AIMDS-Suite-Vault' ? '/Users/test/AIMDS-Suite-Vault' : cwd
+        cwd:
+          cwd === '~'
+            ? '/Users/test'
+            : cwd.includes('AIMDS-Suite-Vault')
+              ? '/Users/test/Documents/AIMDS-Suite-Vault'
+              : cwd
       }),
       settings: { getDefaultProjectDir: async () => ({ dir: '/some/configured/path' }) }
     }
 
     await ensureDefaultWorkspaceCwd()
-    expect($currentCwd.get()).toBe('/Users/test/AIMDS-Suite-Vault')
+    expect($currentCwd.get()).toBe('/Users/test/Documents/AIMDS-Suite-Vault')
   })
 })
 

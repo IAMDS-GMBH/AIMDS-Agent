@@ -2301,7 +2301,12 @@ function sanitizeWorkspaceCwd(cwd) {
   }
 
   try {
-    const resolved = path.resolve(trimmed)
+    const expanded = expandUserPath(trimmed)
+    let resolved = path.resolve(expanded)
+
+    if (!directoryExists(resolved) && (trimmed.includes('AIMDS-Suite-Vault') || trimmed === 'vault')) {
+      resolved = ensureHermesWorkingDirectory()
+    }
 
     if (directoryExists(resolved)) {
       return { cwd: ensureWorkspaceTemplateBaseline(resolved), sanitized: wasMigrated }

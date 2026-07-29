@@ -26,7 +26,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $tipMode, setTipMode } from '@/store/tip-mode'
 import { persistString, storedString } from '@/lib/storage'
-import { FILE_PICKER_ROOT_STORAGE_KEY, ensureDefaultWorkspaceCwd } from '@/store/session'
+import { FILE_PICKER_ROOT_STORAGE_KEY, ensureDefaultWorkspaceCwd, setCurrentCwd } from '@/store/session'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
@@ -630,15 +630,20 @@ export function ConfigSettings({
                     <SegmentedControl
                       onChange={id => {
                         triggerHaptic('selection')
-                        setFilePickerRoot(id as 'userDir' | 'vault')
-                        persistString(FILE_PICKER_ROOT_STORAGE_KEY, id)
-                        void ensureDefaultWorkspaceCwd()
+                        const rootType = id as 'userDir' | 'vault'
+                        setFilePickerRoot(rootType)
+                        persistString(FILE_PICKER_ROOT_STORAGE_KEY, rootType)
                         const setProjectDir = window.hermesDesktop?.settings?.setDefaultProjectDir
+                        const targetDir = rootType === 'userDir' ? '~' : '~/Documents/AIMDS-Suite-Vault'
                         if (setProjectDir) {
-                          const targetDir = id === 'userDir' ? '~' : '~/AIMDS-Suite-Vault'
                           void window.hermesDesktop?.sanitizeWorkspaceCwd?.(targetDir).then(res => {
-                            if (res?.cwd) void setProjectDir(res.cwd)
+                            if (res?.cwd) {
+                              void setProjectDir(res.cwd)
+                              setCurrentCwd(res.cwd)
+                            }
                           })
+                        } else {
+                          void ensureDefaultWorkspaceCwd()
                         }
                         notify({ kind: 'info', title: c.restartNoticeTitle, message: c.restartNoticeDesc })
                       }}

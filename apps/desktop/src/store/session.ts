@@ -66,7 +66,9 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
     }
   } else if (rootSetting === 'vault') {
     const { cwd: homeCwd } = await sanitize('~')
-    const vaultPath = homeCwd ? `${homeCwd.replace(/[/\\]+$/, '')}/AIMDS-Suite-Vault` : '~/AIMDS-Suite-Vault'
+    const vaultPath = homeCwd
+      ? `${homeCwd.replace(/[/\\]+$/, '')}/Documents/AIMDS-Suite-Vault`
+      : '~/Documents/AIMDS-Suite-Vault'
     const { cwd: sanitizedVault } = await sanitize(vaultPath)
     if (sanitizedVault) {
       setCurrentCwd(sanitizedVault)
