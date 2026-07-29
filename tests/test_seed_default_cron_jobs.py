@@ -33,14 +33,14 @@ def test_seeds_defaults_once(tmp_path):
 
     result = seed_default_cron_jobs(home)
     assert result["status"] == "seeded"
-    assert result["added"] == "2"
+    assert result["added"] == "4"
     jobs = _read_jobs(home / "cron" / "jobs.json")
     seed_keys = {
         job.get("origin", {}).get("seed_key")
         for job in jobs
         if job.get("origin", {}).get("source") == "aimds-default-cron"
     }
-    assert seed_keys == {"morning-brief", "weekly-review"}
+    assert seed_keys == {"morning-brief", "weekly-review", "m365-mail-check", "m365-teams-check"}
     state_file = home / SEED_STATE_FILE_REL
     assert state_file.is_file()
     state = json.loads(state_file.read_text(encoding="utf-8"))
@@ -69,7 +69,7 @@ def test_respects_existing_weekly_digest_alias(tmp_path):
 
     result = seed_default_cron_jobs(home)
     assert result["status"] == "seeded"
-    assert result["added"] == "1"
+    assert result["added"] == "3"
     assert result["skipped_existing"] == "1"
 
     jobs = _read_jobs(home / "cron" / "jobs.json")
@@ -91,11 +91,11 @@ def test_seeds_when_cron_runtime_import_is_unavailable(tmp_path, monkeypatch):
 
     result = seed_default_cron_jobs(home)
     assert result["status"] == "seeded"
-    assert result["added"] == "2"
+    assert result["added"] == "4"
     assert (home / SEED_STATE_FILE_REL).is_file()
 
     jobs = _read_jobs(home / "cron" / "jobs.json")
-    assert len(jobs) == 2
+    assert len(jobs) == 4
     for job in jobs:
         assert job["schedule"]["kind"] == "cron"
         assert "expr" in job["schedule"]

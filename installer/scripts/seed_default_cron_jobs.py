@@ -28,7 +28,8 @@ LEGACY_MARKER_FILE = ".aimds-default-cron-seeded"
 # Version 4: weekly review contract includes explicit stale-project section.
 # Version 5: weekly review contract adds OPEN_QUESTION_NEEDED marker requirement.
 # Version 6: M365 integration, language awareness, preview notes, and work week boundaries.
-CURRENT_DEFAULT_CRON_VERSION = 6
+# Version 7: Add M365 Mail Check (every 2 hours) and Teams Check (every 15 mins).
+CURRENT_DEFAULT_CRON_VERSION = 7
 JOBS_FILE_REL = Path("cron") / "jobs.json"
 _SOURCE = "aimds-default-cron"
 
@@ -63,6 +64,32 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
             "Restrict focus strictly to the current work week (and next working day over weekends). "
             "If any decision/input is missing, include exactly one line: "
             "OPEN_QUESTION_NEEDED: <what decision or input is required>."
+        ),
+        "skill": "digest",
+        "deliver": "local",
+        "enabled": True,
+    },
+    {
+        "seed_key": "m365-mail-check",
+        "name": "M365 Mail Check",
+        "schedule": "0 */2 * * 1-5",
+        "prompt": (
+            "Check Outlook inbox for new unread or actionable emails using MSOffice365MCP/email tools. "
+            "If there are no new unread or actionable emails, report 'nothing new'. "
+            "If new actionable customer emails arrive, summarize them compactly in the user's language and highlight required actions."
+        ),
+        "skill": "digest",
+        "deliver": "local",
+        "enabled": True,
+    },
+    {
+        "seed_key": "m365-teams-check",
+        "name": "M365 Teams Check",
+        "schedule": "*/15 * * * 1-5",
+        "prompt": (
+            "Check Teams Activity Feed and chat messages for new unread mentions or messages using MSOffice365MCP/Teams tools. "
+            "If there are no new unread mentions or messages, report 'nothing new'. "
+            "If new messages or mentions exist, summarize them compactly in the user's language and highlight required actions."
         ),
         "skill": "digest",
         "deliver": "local",
@@ -289,6 +316,21 @@ def _upgrade_jobs_for_version(
 
     # v6 migration: M365 integration, language awareness, preview notes, and work week boundaries.
     if from_version < 6 <= to_version:
+        for spec in _DEFAULT_SPECS:
+            s_key = _canonical_seed_key(spec["seed_key"])
+            s_aliases = _aliases(s_key)
+            target_prompt = str(spec.get("prompt") or "").strip()
+            for job in jobs:
+                if not _job_is_aimds_default(job):
+                    continue
+                if not _job_matches_alias(job, s_aliases):
+                    continue
+                if str(job.get("prompt") or "").strip() != target_prompt:
+                    job["prompt"] = target_prompt
+                    updated += 1
+
+    # v7 migration: update M365 Mail Check and Teams Check prompts for existing jobs.
+    if from_version < 7 <= to_version:
         for spec in _DEFAULT_SPECS:
             s_key = _canonical_seed_key(spec["seed_key"])
             s_aliases = _aliases(s_key)
