@@ -67,11 +67,13 @@ describe('buildCommitChangelog', () => {
     expect(groups[0].items).toEqual(['Real new feature'])
   })
 
-  it('routes unparseable commits to the "Other improvements" bucket', () => {
-    const groups = buildCommitChangelog([{ summary: 'Update sidebar styling' }])
+  it('routes unparseable commits to the "Other improvements" bucket or infers type from keywords', () => {
+    const groups = buildCommitChangelog([{ summary: 'Update sidebar styling' }, { summary: 'Windows installer fix for powershell' }])
 
-    expect(groups[0].id).toBe('other')
-    expect(groups[0].items).toEqual(['Update sidebar styling'])
+    expect(groups[0].id).toBe('fixed')
+    expect(groups[0].items).toEqual(['Windows installer fix for powershell'])
+    expect(groups[1].id).toBe('other')
+    expect(groups[1].items).toEqual(['Update sidebar styling'])
   })
 
   it('falls back to a neutral placeholder when every commit is filtered or empty', () => {
