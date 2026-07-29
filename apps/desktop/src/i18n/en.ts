@@ -325,7 +325,14 @@ export const en: Translations = {
       installError: 'Could not install that theme.',
       installed: name => `Installed “${name}”.`,
       removeTheme: 'Remove theme',
-      importedBadge: 'Imported'
+      importedBadge: 'Imported',
+      updateChannelTitle: 'Update Channel',
+      updateChannelDesc: 'Choose between stable release versions (tags) or continuous developer updates (main).',
+      updateChannelStable: 'Stable (Tags)',
+      updateChannelMain: 'Main (Branch)',
+      sectionUpdateOptions: 'Update Options',
+      sectionCustomerExperience: 'AIMDS Customer Experience',
+      sectionAdvancedConfig: 'Advanced Hermes Configuration'
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,

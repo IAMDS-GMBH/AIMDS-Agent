@@ -2629,16 +2629,7 @@ function Apply-BootstrapCredentials {
                     }
                 }
             } catch {}
-            $memoryEntry = @"
-              ${mcpServerName}:
-                provider: iamds
-                url: $mcpServerUrl
-                headers:
-                  Authorization: "Bearer $bootstrapApiKey"
-                timeout: 180
-                connect_timeout: 60
-                trusted: false
-"@
+            $memoryEntry = "  ${mcpServerName}:`n    provider: iamds`n    url: $mcpServerUrl`n    headers:`n      Authorization: `"******`"`n    timeout: 180`n    connect_timeout: 60`n    trusted: false`n"
             $mcpMatch = [regex]::Match($config, '(?ms)^mcp_servers:\r?\n(.*?)(?=^\S|\z)')
             if ($mcpMatch.Success) {
                 $body = $mcpMatch.Groups[1].Value

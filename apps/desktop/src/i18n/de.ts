@@ -326,7 +326,14 @@ export const de
       installError: 'Theme konnte nicht installiert werden.',
       installed: name => `„${name}" installiert.`,
       removeTheme: 'Theme entfernen',
-      importedBadge: 'Importiert'
+      importedBadge: 'Importiert',
+      updateChannelTitle: 'Update-Kanal',
+      updateChannelDesc: 'Wähle zwischen stabilen Release-Versionen (Tags) oder Entwickler-Updates (Main).',
+      updateChannelStable: 'Stable (Tags)',
+      updateChannelMain: 'Main (Branch)',
+      sectionUpdateOptions: 'Update-Optionen',
+      sectionCustomerExperience: 'AIMDS Customer Experience',
+      sectionAdvancedConfig: 'Erweiterte Hermes-Konfiguration'
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,

@@ -191,20 +191,17 @@ def _warn_config_parse_failure(config_path: Path, exc: Exception) -> None:
 
 
 # Detects "two mapping entries glued onto one physical line" corruption,
-# e.g. ``trusted: false  IAMDS:`` where a second ``key:`` was spliced
+# e.g. ``trusted: false IAMDS:`` where a second ``key:`` was spliced
 # directly onto the tail of a scalar value's line with no newline in
 # between (see #<config.yaml race> — a classic symptom of two writers
 # racing on the same file without coordination; see
-# utils.py::advisory_file_lock and save_config()). Requires >=2 spaces of
-# separation between the first value and the second key so we don't
-# false-positive on legitimate multi-word scalars like
-# ``description: some  value`` (no trailing ``key:`` there) or values
-# that simply contain a colon (e.g. URLs), since ``key2`` must match a
-# bare identifier immediately followed by ``:`` at end of line.
+# utils.py::advisory_file_lock and save_config()). Supports >=1 space of
+# separation between the first value and the second key, since ``key2``
+# must match a bare identifier immediately followed by ``:`` at end of line.
 _CONFIG_YAML_SPLICE_RE = re.compile(
     r"^(?P<indent>[ \t]*)(?P<key1>[A-Za-z_][\w.\-]*)\s*:\s*"
     r"(?P<val1>.*?)"
-    r"(?P<gap>[ \t]{2,})"
+    r"(?P<gap>[ \t]{1,})"
     r"(?P<key2>[A-Za-z_][\w.\-]*)\s*:\s*(?P<rest>.*)$"
 )
 

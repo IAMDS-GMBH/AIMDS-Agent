@@ -47,6 +47,23 @@ class TestSanitizeConfigYamlLines:
         assert "trusted: false\n" in joined
         assert "    IAMDS:\n" in joined
 
+    def test_detects_and_splits_single_space_glued_keys(self):
+        raw = (
+            "mcp_servers:\n"
+            "  IAMDS:\n"
+            "    provider: iamds\n"
+            "    trusted: false IAMDS:\n"
+            "    provider: iamds\n"
+        )
+        lines = raw.splitlines(keepends=True)
+        new_lines, changed = _sanitize_config_yaml_lines(lines)
+
+        assert changed is True
+        joined = "".join(new_lines)
+        assert "trusted: false IAMDS:" not in joined
+        assert "    trusted: false\n" in joined
+        assert "    IAMDS:\n" in joined
+
     def test_leaves_clean_yaml_untouched(self):
         raw = "a:\n  b: 1\n  c: 2\n"
         lines = raw.splitlines(keepends=True)

@@ -406,6 +406,7 @@ jobs:
           dmg_files=(apps/bootstrap-installer/src-tauri/target/release/bundle/dmg/*.dmg)
           if [ ${#dmg_files[@]} -gt 0 ]; then
             cp -v "${dmg_files[0]}" release-artifacts/HermesSetup.dmg
+            cp -v "${dmg_files[0]}" release-artifacts/HermesSetup-debug.dmg
           else
             echo "No DMG artifact found under target/release/bundle/dmg"
             exit 1
@@ -433,6 +434,7 @@ jobs:
 
           $primary = $files[0]
           Copy-Item -Path $primary.FullName -Destination "release-artifacts\HermesSetup.exe" -Force
+          Copy-Item -Path $primary.FullName -Destination "release-artifacts\HermesSetup-debug.exe" -Force
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -687,7 +689,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(release-assets/**/HermesSetup.dmg release-assets/**/HermesSetup.exe)
+          files=(release-assets/**/HermesSetup.dmg release-assets/**/HermesSetup.exe release-assets/**/HermesSetup-debug.dmg release-assets/**/HermesSetup-debug.exe)
           if [ ${#files[@]} -eq 0 ]; then
             files=(release-assets/**/*.dmg release-assets/**/*.exe)
           fi

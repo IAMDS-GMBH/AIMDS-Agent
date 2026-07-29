@@ -406,8 +406,27 @@ export function ConfigSettings({
   const [schema, setSchema] = useState<Record<string, ConfigFieldSchema> | null>(null)
   const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
+  const [updateChannel, setUpdateChannel] = useState<'stable' | 'main'>('main')
   const saveVersionRef = useRef(0)
   const [saveVersion, setSaveVersion] = useState(0)
+
+  useEffect(() => {
+    if (window.hermesDesktop?.updates?.getBranch) {
+      window.hermesDesktop.updates
+        .getBranch()
+        .then(res => {
+          if (res?.branch) {
+            setUpdateChannel(res.branch === 'tags' || res.branch === 'stable' ? 'stable' : 'main')
+          }
+        })
+        .catch(() => {})
+    }
+  }, [])
+
+  const updateChannelOptions = [
+    { id: 'stable', label: a.updateChannelStable },
+    { id: 'main', label: a.updateChannelMain }
+  ] as const
 
   const toolOptions = [
     { id: 'product', label: a.product },
@@ -571,35 +590,74 @@ export function ConfigSettings({
         </div>
       )}
       {activeSectionId === 'advanced' && (
-        <div className="mb-4 divide-y divide-(--ui-stroke-tertiary) rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1">
-          <ListRow
-            action={
-              <SegmentedControl
-                onChange={id => {
-                  triggerHaptic('selection')
-                  setToolViewMode(id)
-                }}
-                options={toolOptions}
-                value={toolViewMode}
+        <div className="mb-6 space-y-6">
+          <div>
+            <h3 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              {a.sectionUpdateOptions}
+            </h3>
+            <div className="divide-y divide-(--ui-stroke-tertiary) rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1">
+              <ListRow
+                action={
+                  <SegmentedControl
+                    onChange={id => {
+                      triggerHaptic('selection')
+                      const branchName = id === 'stable' ? 'tags' : 'main'
+                      setUpdateChannel(id as 'stable' | 'main')
+                      window.hermesDesktop?.updates?.setBranch?.(branchName).catch(() => {})
+                    }}
+                    options={updateChannelOptions}
+                    value={updateChannel}
+                  />
+                }
+                description={a.updateChannelDesc}
+                title={a.updateChannelTitle}
               />
-            }
-            description={a.toolViewDesc}
-            title={a.toolViewTitle}
-          />
-          <ListRow
-            action={
-              <SegmentedControl
-                onChange={id => {
-                  triggerHaptic('selection')
-                  setTipMode(id)
-                }}
-                options={tipOptions}
-                value={tipMode}
+            </div>
+          </div>
+
+          <div>
+            <h3 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              {a.sectionCustomerExperience}
+            </h3>
+            <div className="divide-y divide-(--ui-stroke-tertiary) rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1">
+              <ListRow
+                action={
+                  <SegmentedControl
+                    onChange={id => {
+                      triggerHaptic('selection')
+                      setToolViewMode(id)
+                    }}
+                    options={toolOptions}
+                    value={toolViewMode}
+                  />
+                }
+                description={a.toolViewDesc}
+                title={a.toolViewTitle}
               />
-            }
-            description={a.tipModeDesc}
-            title={a.tipModeTitle}
-          />
+              <ListRow
+                action={
+                  <SegmentedControl
+                    onChange={id => {
+                      triggerHaptic('selection')
+                      setTipMode(id)
+                    }}
+                    options={tipOptions}
+                    value={tipMode}
+                  />
+                }
+                description={a.tipModeDesc}
+                title={a.tipModeTitle}
+              />
+            </div>
+          </div>
+
+          {fields.length > 0 && (
+            <div>
+              <h3 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                {a.sectionAdvancedConfig}
+              </h3>
+            </div>
+          )}
         </div>
       )}
       {fields.length === 0 ? (

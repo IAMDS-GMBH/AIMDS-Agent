@@ -240,6 +240,13 @@ export interface Translations {
       installed: (name: string) => string
       removeTheme: string
       importedBadge: string
+      updateChannelTitle: string
+      updateChannelDesc: string
+      updateChannelStable: string
+      updateChannelMain: string
+      sectionUpdateOptions: string
+      sectionCustomerExperience: string
+      sectionAdvancedConfig: string
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
