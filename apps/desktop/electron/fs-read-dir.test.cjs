@@ -324,6 +324,34 @@ test('readDirForIpc stats symbolic links and unknown entries without dropping th
   ])
 })
 
+test('readDirForIpc filters macOS system directories on darwin', async t => {
+  if (process.platform !== 'darwin') {
+    t.skip('macOS system directory filtering is darwin-specific')
+    return
+  }
+
+  const root = mkTmpDir()
+
+  try {
+    fs.mkdirSync(path.join(root, 'Music'))
+    fs.mkdirSync(path.join(root, 'Movies'))
+    fs.mkdirSync(path.join(root, 'Pictures'))
+    fs.mkdirSync(path.join(root, 'Library'))
+    fs.mkdirSync(path.join(root, 'projects'))
+    fs.writeFileSync(path.join(root, 'notes.txt'), 'hello')
+
+    const result = await readDirForIpc(root)
+
+    assert.equal(result.error, undefined)
+    assert.deepEqual(
+      result.entries.map(entry => entry.name),
+      ['projects', 'notes.txt']
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('readDirForIpc bounds concurrent stats while preserving complete sorted output', async () => {
   const input = path.join('virtual-root')
   const resolved = path.resolve(input)

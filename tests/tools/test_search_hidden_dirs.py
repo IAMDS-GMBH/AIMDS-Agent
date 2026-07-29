@@ -122,6 +122,34 @@ class TestRipgrepAlreadyExcludesHidden:
         assert "SKILL.md" in result.stdout
 
 
+class TestSearchExcludesSystemMediaDirs:
+    """Verify search tools exclude system/media directories (Music, Movies, Pictures, Library, .Trash)."""
+
+    def test_find_skips_media_dirs(self, tmp_path):
+        music_dir = tmp_path / "Music" / "iTunes"
+        music_dir.mkdir(parents=True)
+        (music_dir / "song.mp3").write_text("audio data")
+
+        cmd = f"find {tmp_path} -not -path '*/.*' -not -path '*/Music/*' -type f -name '*.mp3'"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        assert "song.mp3" not in result.stdout
+
+    @pytest.mark.skipif(
+        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
+        reason="ripgrep not installed",
+    )
+    def test_rg_skips_media_dirs(self, tmp_path):
+        music_dir = tmp_path / "Music"
+        music_dir.mkdir(parents=True)
+        (music_dir / "song.txt").write_text("secret_media_content")
+
+        result = subprocess.run(
+            ["rg", "--no-heading", "-g", "!Music/**", "-g", "!**/Music/**", "secret_media_content", str(tmp_path)],
+            capture_output=True, text=True,
+        )
+        assert "secret_media_content" not in result.stdout
+
+
 class TestIgnoreFileWritten:
     """_write_index_cache should create .ignore in .hub/ directory."""
 

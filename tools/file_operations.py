@@ -1954,7 +1954,10 @@ class ShellFileOperations(FileOperations):
 
         # Exclude hidden directories (matching ripgrep's default behavior).
         hidden_exclude = "-not -path '*/.*'" if not has_hidden_path_ancestor else ""
-        hidden_filter_expr = f" {hidden_exclude}" if hidden_exclude else ""
+        sys_find_exclude = " ".join(f"-not -path {self._escape_shell_arg(f'*/{d}/*')}" for d in ("Music", "Movies", "Pictures", "Library", ".Trash"))
+        hidden_filter_expr = f" {hidden_exclude} {sys_find_exclude}".strip()
+        if hidden_filter_expr:
+            hidden_filter_expr = f" {hidden_filter_expr}"
 
         # Use shell pagination for standard roots. For hidden roots, gather full
         # output so we can re-apply hidden-descendant filtering while allowing
@@ -2022,9 +2025,10 @@ class ShellFileOperations(FileOperations):
             glob_pattern = pattern
 
         fetch_limit = limit + offset
+        sys_excludes = " ".join(f"-g {self._escape_shell_arg(f'!{d}/**')} -g {self._escape_shell_arg(f'!**/{d}/**')}" for d in ("Music", "Movies", "Pictures", "Library", ".Trash"))
         # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
         cmd_sorted = (
-            f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
+            f"rg --files --sortr=modified {sys_excludes} -g {self._escape_shell_arg(glob_pattern)} "
             f"{self._escape_shell_arg(path)} 2>/dev/null "
             f"| head -n {fetch_limit}"
         )
@@ -2034,7 +2038,7 @@ class ShellFileOperations(FileOperations):
         if not all_files:
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
-                f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
+                f"rg --files {sys_excludes} -g {self._escape_shell_arg(glob_pattern)} "
                 f"{self._escape_shell_arg(path)} 2>/dev/null "
                 f"| head -n {fetch_limit}"
             )
@@ -2070,6 +2074,11 @@ class ShellFileOperations(FileOperations):
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Search using ripgrep."""
         cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
+        
+        # Exclude system/media directories that trigger OS permission prompts
+        for sys_dir in ("Music", "Movies", "Pictures", "Library", ".Trash"):
+            cmd_parts.extend(["--glob", self._escape_shell_arg(f"!{sys_dir}/**")])
+            cmd_parts.extend(["--glob", self._escape_shell_arg(f"!**/{sys_dir}/**")])
         
         # Add context if requested
         if context > 0:
@@ -2185,9 +2194,11 @@ class ShellFileOperations(FileOperations):
         """Fallback search using grep."""
         cmd_parts = ["grep", "-rnH"]  # -H forces filename even for single-file searches
         
-        # Exclude hidden directories (matching ripgrep's default behavior).
-        # This prevents searching inside .hub/index-cache/, .git/, etc.
+        # Exclude hidden and system/media directories.
+        # This prevents searching inside .hub/index-cache/, .git/, Music/, Movies/, etc.
         cmd_parts.append("--exclude-dir='.*'")
+        for sys_dir in ("Music", "Movies", "Pictures", "Library", ".Trash"):
+            cmd_parts.extend(["--exclude-dir", self._escape_shell_arg(sys_dir)])
         
         # Add context if requested
         if context > 0:

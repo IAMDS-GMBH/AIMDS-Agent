@@ -45,6 +45,20 @@ const WIN32_SYSTEM_NAMES = new Set([
   'system volume information'
 ])
 
+// macOS user directory system/media/protected directories that trigger TCC prompts
+const DARWIN_SYSTEM_NAMES = new Set([
+  'music',
+  'movies',
+  'pictures',
+  'library',
+  '.trash'
+])
+
+function isDarwinSystemOrHidden(name) {
+  if (!name) return false
+  return DARWIN_SYSTEM_NAMES.has(name.toLowerCase())
+}
+
 function isWindowsSystemOrHidden(name) {
   if (!name) return false
   const lower = name.toLowerCase()
@@ -135,6 +149,7 @@ async function readDirForIpc(dirPath, options = {}) {
     const visibleDirents = dirents.filter(dirent => {
       if (FS_READDIR_HIDDEN.has(dirent.name)) return false
       if (process.platform === 'win32' && isWindowsSystemOrHidden(dirent.name)) return false
+      if (process.platform === 'darwin' && isDarwinSystemOrHidden(dirent.name)) return false
       return true
     })
     const entries = await mapWithStatConcurrency(visibleDirents, dirent =>

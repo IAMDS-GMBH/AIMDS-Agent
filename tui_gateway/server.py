@@ -5546,7 +5546,6 @@ def _notification_poller_loop(
 
         rid = f"__notif__{int(time.time() * 1000)}"
         try:
-            _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, text)
         except Exception as exc:
             print(
@@ -5589,7 +5588,6 @@ def _notification_poller_loop(
 
         rid = f"__notif__{int(time.time() * 1000)}"
         try:
-            _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, text)
         except Exception as exc:
             print(
@@ -5665,6 +5663,10 @@ def _run_prompt_submit(
             prompt = text
             auto_text = display_text if isinstance(display_text, str) else prompt
             _maybe_auto_set_project_output_subfolder(session, auto_text, sid)
+
+            # Emit message.start at the START of the turn so frontend stream state initializes
+            # before message.delta events arrive.
+            _emit("message.start", sid)
 
             if isinstance(prompt, str) and "@" in prompt:
                 from agent.context_references import preprocess_context_references
@@ -5781,7 +5783,6 @@ def _run_prompt_submit(
             
             last_reasoning = None
             status_note = None
-            message_start_deferred = False  # Flag to emit message.start AFTER history is persisted
             
             if isinstance(result, dict):
                 if isinstance(result.get("messages"), list):
@@ -5800,13 +5801,6 @@ def _run_prompt_submit(
                         if current_version == history_version:
                             session["history"] = result["messages"]
                             session["history_version"] = history_version + 1
-                            # CRITICAL: Defer message.start emission until AFTER history is persisted.
-                            # This prevents the race condition where Desktop fetches messages
-                            # before they're written to the database.
-                            import logging as _logging_for_debug
-                            _debug_logger = _logging_for_debug.getLogger(__name__)
-                            _debug_logger.info(f"[MESSAGE.START] Deferred until after history persistence")
-                            message_start_deferred = True
                         else:
                             # History mutated externally during the turn
                             # (undo/compress/retry/rollback now guard on
@@ -5861,15 +5855,6 @@ def _run_prompt_submit(
             else:
                 raw = str(result)
                 status = "complete"
-
-            # CRITICAL FIX: Emit message.start AFTER history is updated (if deferred).
-            # This prevents the race condition where Desktop fetches messages
-            # before they're persisted to the database.
-            if message_start_deferred:
-                import logging as _logging_for_debug_deferred
-                _debug_logger_deferred = _logging_for_debug_deferred.getLogger(__name__)
-                _debug_logger_deferred.info(f"[MESSAGE.START] Emitting NOW (after history persisted)")
-                _emit("message.start", sid)
 
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
             if last_reasoning:
