@@ -1464,40 +1464,8 @@ async function checkUpdates() {
     }
   }
 
-  if (isOfficialSshRemote(originUrl)) {
-    const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
-    const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
-      git(['rev-parse', 'HEAD']),
-      runGit(['ls-remote', OFFICIAL_REPO_HTTPS_URL, `refs/heads/${branch}`], { cwd: updateRoot }),
-      git(['status', '--porcelain']),
-      git(['rev-parse', '--abbrev-ref', 'HEAD'])
-    ])
-    const targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
-    if (target.code !== 0 || !targetSha) {
-      return {
-        supported: true,
-        branch,
-        error: 'fetch-failed',
-        message: firstLine(target.stderr) || 'git ls-remote failed.',
-        hermesRoot: updateRoot,
-        fetchedAt: Date.now()
-      }
-    }
-    return {
-      supported: true,
-      branch,
-      currentBranch,
-      behind: currentSha && currentSha === targetSha ? 0 : 1,
-      currentSha,
-      targetSha,
-      commits: [],
-      dirty: dirtyStr.length > 0,
-      hermesRoot: updateRoot,
-      fetchedAt: Date.now()
-    }
-  }
-
-  const fetched = await runGit(['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { cwd: updateRoot })
+  const fetchRemote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
+  const fetched = await runGit(['fetch', '--quiet', fetchRemote, `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { cwd: updateRoot })
   if (fetched.code !== 0) {
     return {
       supported: true,
