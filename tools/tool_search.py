@@ -507,12 +507,17 @@ _GENERIC_SEARCH_TERMS = frozenset({
 })
 
 _GERMAN_SYNONYMS: Dict[str, List[str]] = {
-    "m365": ["m365", "msoffice365", "outlook", "calendar", "event", "email", "teams", "sharepoint"],
-    "office365": ["m365", "msoffice365", "outlook", "calendar", "event", "email", "teams", "sharepoint"],
-    "microsoft": ["m365", "msoffice365", "outlook", "calendar", "event", "email", "teams", "sharepoint"],
-    "sharepoint": ["m365", "sharepoint", "drive", "file", "sites"],
-    "teams": ["m365", "teams", "chat", "channel", "message"],
-    "onedrive": ["m365", "drive", "file"],
+    "m365": ["m365", "msoffice365", "msoffice365mcp", "outlook", "calendar", "event", "email", "teams", "sharepoint", "onedrive"],
+    "office365": ["m365", "msoffice365", "msoffice365mcp", "outlook", "calendar", "event", "email", "teams", "sharepoint", "onedrive"],
+    "microsoft": ["m365", "msoffice365", "msoffice365mcp", "outlook", "calendar", "event", "email", "teams", "sharepoint", "onedrive"],
+    "sharepoint": ["m365", "msoffice365", "msoffice365mcp", "sharepoint", "drive", "file", "sites"],
+    "teams": ["m365", "msoffice365", "msoffice365mcp", "teams", "chat", "channel", "message"],
+    "onedrive": ["m365", "msoffice365", "msoffice365mcp", "onedrive", "drive", "file"],
+    "outlook": ["m365", "msoffice365", "msoffice365mcp", "outlook", "mail", "email", "calendar", "event"],
+    "kalender": ["m365", "msoffice365", "msoffice365mcp", "outlook", "calendar", "event"],
+    "calendar": ["m365", "msoffice365", "msoffice365mcp", "outlook", "calendar", "event"],
+    "email": ["m365", "msoffice365", "msoffice365mcp", "outlook", "email", "mail"],
+    "mail": ["m365", "msoffice365", "msoffice365mcp", "outlook", "email", "mail"],
     "notiz": ["memory", "note", "save", "read"],
     "notizen": ["memory", "note", "save", "read"],
     "gedächtnis": ["memory", "note", "save", "read", "search"],
