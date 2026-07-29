@@ -2776,14 +2776,16 @@ def _interpolate_env_vars(value):
         def _replace(m):
             name = m.group(1)
             resolved = os.environ.get(name)
-            if resolved is None and name == "JIRA_PERSONAL_TOKEN":
-                # JIRA_PAT was this AtlassianMCP field's name before it was
-                # renamed to match what mcp-atlassian actually reads for
-                # Server/DC PAT auth (JIRA_PAT was never a real mcp-atlassian
-                # env var, so it silently never worked). Fall back to any
-                # value already saved under the old name so existing installs
-                # keep working without re-entering the token.
-                resolved = os.environ.get("JIRA_PAT")
+            if (not resolved or resolved in ("******", "Bearer ******")) and name in ("GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOKEN"):
+                resolved = os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN") or os.environ.get("GITHUB_TOKEN")
+                if not resolved or resolved in ("******", "Bearer ******"):
+                    try:
+                        from hermes_cli.copilot_auth import _try_gh_cli_token
+                        resolved = _try_gh_cli_token()
+                    except Exception:
+                        pass
+            if not resolved and name in ("JIRA_PERSONAL_TOKEN", "JIRA_PAT"):
+                resolved = os.environ.get("JIRA_PERSONAL_TOKEN") or os.environ.get("JIRA_PAT")
             return resolved if resolved is not None else m.group(0)
 
         return _ENV_VAR_PATTERN.sub(_replace, value)
@@ -3283,6 +3285,35 @@ def _load_mcp_config() -> Dict[str, dict]:
                 ).strip()
                 if base_url:
                     item["url"] = _build_iamds_mcp_url(base_url)
+            # Fail-safe auth resolution for GithubMCP / GitHub hosted MCP server:
+            if name in ("GithubMCP", "github") or "api.githubcopilot.com" in str(item.get("url", "")):
+                token = (
+                    os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN")
+                    or os.environ.get("GITHUB_TOKEN")
+                    or ""
+                ).strip()
+                if not token or token in ("******", "Bearer ******"):
+                    try:
+                        from hermes_cli.copilot_auth import _try_gh_cli_token
+                        token = _try_gh_cli_token() or ""
+                    except Exception:
+                        pass
+                if token and token not in ("******", "Bearer ******"):
+                    headers = item.get("headers")
+                    if not isinstance(headers, dict):
+                        headers = {}
+                    auth_hdr = str(headers.get("Authorization", "")).strip()
+                    if not auth_hdr or auth_hdr in ("******", "Bearer ******", "Bearer ") or "oauth" in str(item.get("auth", "")):
+                        headers["Authorization"] = f"Bearer {token}"
+                        item["headers"] = headers
+                        item.pop("auth", None)
+
+                # Clean up any leftover empty/invalid 'Bearer ' header if no token was resolved
+                headers = item.get("headers")
+                if isinstance(headers, dict):
+                    auth_val = str(headers.get("Authorization", "")).strip()
+                    if auth_val in ("Bearer", "Bearer ") or auth_val.endswith("Bearer "):
+                        headers.pop("Authorization", None)
             result[name] = item
         return result
     except Exception as exc:

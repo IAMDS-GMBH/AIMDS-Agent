@@ -26,23 +26,54 @@ const FS_READDIR_HIDDEN = new Set([
 
 // Windows user directory system/hidden files, junctions, and metadata
 const WIN32_SYSTEM_NAMES = new Set([
+  '3d objects',
+  '3d-objekte',
+  'anwendungsdaten',
   'appdata',
   'application data',
+  'contacts',
   'cookies',
   'desktop.ini',
+  'druckumgebung',
+  'eigene bilder',
+  'eigene dateien',
+  'eigene musik',
+  'eigene videos',
+  'favorites',
+  'favoriten',
+  'gespeicherte spiele',
+  'kontakte',
+  'links',
   'local settings',
+  'lokale einstellungen',
+  'music',
   'my documents',
+  'my music',
+  'my pictures',
+  'my videos',
   'nethood',
+  'netzwerkumgebung',
   'ntuser.ini',
   'ntuser.pol',
   'printhood',
   'recent',
+  'saved games',
+  'searches',
   'sendto',
   'start menu',
+  'startmenu',
+  'startmenü',
+  'start menü',
+  'suchvorgänge',
+  'system volume information',
   'templates',
   'thumbs.db',
-  '$recycle.bin',
-  'system volume information'
+  'videos',
+  'vorlagen',
+  'wsl',
+  'wsl$',
+  'wsl.localhost',
+  '$recycle.bin'
 ])
 
 // macOS user directory system/media/protected directories that trigger TCC prompts
@@ -103,7 +134,10 @@ async function entryForDirent(dirent, resolved, fsImpl) {
     if (!isDirectory) {
       isDirectory = stats.isDirectory()
     }
-  } catch {
+  } catch (error) {
+    if (direntIsSymbolicLink(dirent) && (error?.code === 'EPERM' || error?.code === 'EACCES')) {
+      return null
+    }
     if (!isDirectory && shouldStatDirent(dirent)) {
       isDirectory = false
     }
@@ -152,9 +186,11 @@ async function readDirForIpc(dirPath, options = {}) {
       if (process.platform === 'darwin' && isDarwinSystemOrHidden(dirent.name)) return false
       return true
     })
-    const entries = await mapWithStatConcurrency(visibleDirents, dirent =>
-      entryForDirent(dirent, resolved, fsImpl)
-    )
+    const entries = (
+      await mapWithStatConcurrency(visibleDirents, dirent =>
+        entryForDirent(dirent, resolved, fsImpl)
+      )
+    ).filter(Boolean)
 
     entries.sort((a, b) => {
       if (a.isDirectory !== b.isDirectory) {

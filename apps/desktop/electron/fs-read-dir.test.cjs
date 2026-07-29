@@ -352,6 +352,94 @@ test('readDirForIpc filters macOS system directories on darwin', async t => {
   }
 })
 
+test('readDirForIpc filters Windows system directories and legacy junctions on win32', async t => {
+  const input = path.join('virtual-win32-root')
+  const resolved = path.resolve(input)
+  const systemNames = [
+    'Anwendungsdaten',
+    'Contacts',
+    'Druckumgebung',
+    'Favorites',
+    'Links',
+    'Lokale Einstellungen',
+    'Music',
+    'Netzwerkumgebung',
+    'Searches',
+    'Startmenü',
+    'Videos',
+    'WSL',
+    'Eigene Dateien',
+    'Vorlagen',
+    'AppData',
+    'Desktop.ini'
+  ]
+
+  const fsImpl = {
+    promises: {
+      readdir: async () => [
+        ...systemNames.map(name => fakeDirent(name, { directory: true })),
+        fakeDirent('Documents', { directory: true }),
+        fakeDirent('file.txt', { file: true })
+      ],
+      stat: async fullPath => {
+        if (fullPath === resolved) return { isDirectory: () => true }
+        if (fullPath.endsWith('Documents')) return { isDirectory: () => true }
+        return { isDirectory: () => false, mtimeMs: 100 }
+      }
+    }
+  }
+
+  // Force win32 platform check logic
+  const origPlatform = process.platform
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+
+  try {
+    const result = await readDirForIpc(input, { fs: fsImpl })
+    assert.equal(result.error, undefined)
+    assert.deepEqual(
+      result.entries.map(entry => entry.name),
+      ['Documents', 'file.txt']
+    )
+  } finally {
+    Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true })
+  }
+})
+
+test('readDirForIpc filters out symlinks or junctions that fail with EPERM or EACCES', async () => {
+  const input = path.join('virtual-eperm-root')
+  const resolved = path.resolve(input)
+  const fsImpl = {
+    promises: {
+      readdir: async () => [
+        fakeDirent('eperm-junction', { symlink: true }),
+        fakeDirent('eacces-junction', { symlink: true }),
+        fakeDirent('valid-folder', { directory: true }),
+        fakeDirent('valid-file.txt', { file: true })
+      ],
+      stat: async fullPath => {
+        if (fullPath === resolved) return { isDirectory: () => true }
+        if (fullPath.endsWith('valid-folder')) return { isDirectory: () => true }
+        if (fullPath.endsWith('valid-file.txt')) return { isDirectory: () => false }
+        if (fullPath.endsWith('eperm-junction')) {
+          throw Object.assign(new Error('eperm'), { code: 'EPERM' })
+        }
+        if (fullPath.endsWith('eacces-junction')) {
+          throw Object.assign(new Error('eacces'), { code: 'EACCES' })
+        }
+        return { isDirectory: () => false }
+      }
+    }
+  }
+
+  const result = await readDirForIpc(input, { fs: fsImpl })
+
+  assert.equal(result.error, undefined)
+  assert.deepEqual(
+    result.entries.map(entry => entry.name),
+    ['valid-folder', 'valid-file.txt']
+  )
+})
+
 test('readDirForIpc bounds concurrent stats while preserving complete sorted output', async () => {
   const input = path.join('virtual-root')
   const resolved = path.resolve(input)
