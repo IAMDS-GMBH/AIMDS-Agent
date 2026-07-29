@@ -15,6 +15,7 @@ description: Organizes the inbox, clusters by urgency, extracts tasks, and prepa
 
 ## Context Window & Token Optimization
 - **Preview & Subject Search First:** Use `$select=id,subject,from,receivedDateTime,isRead,bodyPreview` with `$top: 10` max.
+- **Attachment Handling:** If `hasAttachments` is `true`, use `m365_list_email_attachments` to list files, and `m365_download_email_attachment` to save attachments locally for review.
 - **Strip Footers & Quotes:** Strip disclaimers, repeated email threads, and HTML styling before processing.
 - **Ultra-Compact Bullet Output:** Summarize emails in 1 line each. Do not quote full bodies in response.
 

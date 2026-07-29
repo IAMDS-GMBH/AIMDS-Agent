@@ -15,6 +15,7 @@ description: Ordnet den Posteingang, clustert nach Dringlichkeit, extrahiert Auf
 
 ## Kontext- & Token-Optimierung
 - **Vorschau & Betreff zuerst:** Nutze `$select=id,subject,from,receivedDateTime,isRead,bodyPreview` mit max. `$top: 10`.
+- **Anhänge verarbeiten:** Wenn `hasAttachments` auf `true` steht, nutze `m365_list_email_attachments` zum Auflisten und `m365_download_email_attachment` zum Herunterladen/Speichern von Anhängen.
 - **Boilerplate & Signaturen filtern:** Entferne Disclaimer, zitierte Historien und HTML-Formatierungen vor der Verarbeitung.
 - **Kompakte Ausgabe:** Maximal 1 Zeile pro E-Mail. Keine vollständigen Texte in den Kontext spiegeln.
 

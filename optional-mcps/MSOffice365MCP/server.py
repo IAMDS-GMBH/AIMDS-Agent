@@ -343,6 +343,24 @@ def _graph_upload(method: str, endpoint_or_url: str, data: bytes, content_type: 
         return response.json()
 
 
+def _graph_download_bytes(endpoint_or_url: str, account: Optional[str] = None) -> bytes:
+    """Download raw binary bytes from MS Graph API (e.g. attachment content or OneDrive file)."""
+    token = _get_access_token(account=account)
+    headers = {
+        "Authorization": token if token.lower().startswith("bearer ") else f"Bearer {token}",
+    }
+    url = (
+        endpoint_or_url
+        if endpoint_or_url.startswith("http")
+        else f"{GRAPH_API_BASE}{endpoint_or_url}"
+    )
+    with httpx.Client(timeout=120.0, follow_redirects=True) as client:
+        response = client.get(url, headers=headers)
+        if response.is_error:
+            raise RuntimeError(f"MS Graph API Download Error [{response.status_code}]: {response.text}")
+        return response.content
+
+
 # Simple (single-request) OneDrive upload only works up to this size; larger
 # files must go through a chunked upload session instead (see
 # https://learn.microsoft.com/graph/api/driveitem-createuploadsession).
@@ -719,11 +737,80 @@ def m365_list_emails(
 
 @mcp.tool()
 def m365_get_email(message_id: str, account: Optional[str] = None) -> Dict[str, Any]:
-    """Get full details of a specific Outlook email message."""
+    """Get full details of a specific Outlook email message, including attachment summary if attachments are present."""
     msg = _graph_request("GET", f"/me/messages/{message_id}", account=account)
-    if isinstance(msg, dict) and "receivedDateTime" in msg:
-        msg["receivedDateTime_local"] = _format_timestamp_local(msg.get("receivedDateTime"))
+    if isinstance(msg, dict):
+        if "receivedDateTime" in msg:
+            msg["receivedDateTime_local"] = _format_timestamp_local(msg.get("receivedDateTime"))
+        if msg.get("hasAttachments"):
+            try:
+                atts_res = _graph_request("GET", f"/me/messages/{message_id}/attachments", params={"$select": "id,name,contentType,size,isInline"}, account=account)
+                msg["attachments_summary"] = [
+                    {
+                        "id": a.get("id"),
+                        "name": a.get("name"),
+                        "contentType": a.get("contentType"),
+                        "size": a.get("size"),
+                        "isInline": a.get("isInline", False),
+                    }
+                    for a in atts_res.get("value", [])
+                ]
+            except Exception as e:
+                msg["attachments_summary_error"] = str(e)
     return msg
+
+
+@mcp.tool()
+def m365_list_email_attachments(message_id: str, account: Optional[str] = None) -> Dict[str, Any]:
+    """List all attachments (files, images, documents) for a specific Outlook email message."""
+    res = _graph_request("GET", f"/me/messages/{message_id}/attachments", account=account)
+    attachments = []
+    for att in res.get("value", []):
+        attachments.append({
+            "id": att.get("id"),
+            "name": att.get("name"),
+            "contentType": att.get("contentType"),
+            "size": att.get("size"),
+            "isInline": att.get("isInline", False),
+            "type": att.get("@odata.type", "").replace("#microsoft.graph.", ""),
+        })
+    return {"message_id": message_id, "count": len(attachments), "attachments": attachments}
+
+
+@mcp.tool()
+def m365_download_email_attachment(
+    message_id: str,
+    attachment_id: str,
+    save_path: Optional[str] = None,
+    account: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Download a specific email attachment from Outlook and save it to the local workspace/file system."""
+    att = _graph_request("GET", f"/me/messages/{message_id}/attachments/{attachment_id}", account=account)
+    name = att.get("name") or f"attachment_{attachment_id}"
+    content_bytes = None
+
+    if isinstance(att, dict) and att.get("contentBytes"):
+        content_bytes = base64.b64decode(att["contentBytes"])
+    else:
+        content_bytes = _graph_download_bytes(f"/me/messages/{message_id}/attachments/{attachment_id}/$value", account=account)
+
+    if not save_path:
+        out_dir = Path(os.getenv("TERMINAL_CWD") or os.getcwd()) / "attachments"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / name
+    else:
+        out_file = Path(save_path).expanduser().resolve()
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+
+    out_file.write_bytes(content_bytes)
+    return {
+        "success": True,
+        "message_id": message_id,
+        "attachment_id": attachment_id,
+        "name": name,
+        "size_bytes": len(content_bytes),
+        "saved_path": str(out_file),
+    }
 
 
 @mcp.tool()
@@ -1078,6 +1165,35 @@ def m365_search_drive_files(query: str) -> Dict[str, Any]:
 def m365_get_drive_file(file_id: str) -> Dict[str, Any]:
     """Get file metadata and download URL from OneDrive."""
     return _graph_request("GET", f"/me/drive/items/{file_id}")
+
+
+@mcp.tool()
+def m365_download_drive_file(
+    file_id: str,
+    save_path: Optional[str] = None,
+    account: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Download a file from OneDrive or SharePoint to the local file system."""
+    meta = _graph_request("GET", f"/me/drive/items/{file_id}", account=account)
+    name = meta.get("name") or f"drive_file_{file_id}"
+    content_bytes = _graph_download_bytes(f"/me/drive/items/{file_id}/content", account=account)
+
+    if not save_path:
+        out_dir = Path(os.getenv("TERMINAL_CWD") or os.getcwd()) / "downloads"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / name
+    else:
+        out_file = Path(save_path).expanduser().resolve()
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+
+    out_file.write_bytes(content_bytes)
+    return {
+        "success": True,
+        "file_id": file_id,
+        "name": name,
+        "size_bytes": len(content_bytes),
+        "saved_path": str(out_file),
+    }
 
 
 
