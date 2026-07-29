@@ -43,8 +43,8 @@ const TAIL = 'ECTING'
 // nousnet-web download-button decode effect).
 const SCRAMBLE_CHARS = '/\\|-_=+<>~:*'
 const TICK_MS = 45
-const MESSAGE_STEP_MS = 1100
-const STARTUP_MIN_MS = MESSAGE_STEP_MS * 4
+const MESSAGE_STEP_MS = 2800
+const STARTUP_MIN_MS = MESSAGE_STEP_MS * 3
 const TEAM_MESSAGES_DE = [
   'Martin beendet gerade das EVN-Meeting.',
   'Tobias behebt gerade EasyPart-Shops.',
@@ -187,7 +187,7 @@ export function GatewayConnectingOverlay() {
     } catch {
       // Ignore
     }
-    return true // Default to true so IAMDS team messages show immediately without delay
+    return false
   })
   // Message rotation restarts from index 0 whenever isIamds flips (detection
   // resolves asynchronously), so TEAM messages never pick up mid-array where

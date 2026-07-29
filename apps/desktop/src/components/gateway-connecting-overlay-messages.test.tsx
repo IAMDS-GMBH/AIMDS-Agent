@@ -34,6 +34,7 @@ function resetStores() {
   mockLocale = 'de'
   mockConfig = { model: { base_url: '' } }
   mockEnvVars = {}
+  try { localStorage.clear() } catch {}
   $desktopBoot.set({
     error: null,
     fakeMode: false,
