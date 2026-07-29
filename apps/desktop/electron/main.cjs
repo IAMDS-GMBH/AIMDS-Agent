@@ -1666,6 +1666,7 @@ async function applyUpdates(opts = {}) {
     throw new Error('An update is already in progress.')
   }
   updateInFlight = true
+  let handedOff = false
 
   try {
     const updater = resolveUpdaterBinary()
@@ -1743,13 +1744,16 @@ async function applyUpdates(opts = {}) {
 
     // Give the OS a beat to register the new process, then quit. The updater
     // rebuilds and relaunches us when it's done.
+    handedOff = true
     setTimeout(() => {
       app.quit()
     }, 600)
 
     return { ok: true, handedOff: true, updater }
   } finally {
-    updateInFlight = false
+    if (!handedOff) {
+      updateInFlight = false
+    }
   }
 }
 
@@ -5100,6 +5104,10 @@ async function prepareProfileDeleteRequest(request) {
 }
 
 async function startHermes() {
+  if (updateInFlight) {
+    rememberLog('[boot] Skipping startHermes(): update in flight')
+    throw new Error('Update in progress')
+  }
   // Latched-failure short-circuit: once bootstrap has failed in this
   // process, every subsequent startHermes() call re-throws the same error
   // without re-running install.ps1. This prevents the renderer's

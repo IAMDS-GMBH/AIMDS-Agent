@@ -205,7 +205,7 @@ _CONFIG_YAML_SPLICE_RE = re.compile(
     r"^(?P<indent>[ \t]*)(?P<key1>[A-Za-z_][\w.\-]*)\s*:\s*"
     r"(?P<val1>.*?)"
     r"(?P<gap>[ \t]{2,})"
-    r"(?P<key2>[A-Za-z_][\w.\-]*)\s*:\s*$"
+    r"(?P<key2>[A-Za-z_][\w.\-]*)\s*:\s*(?P<rest>.*)$"
 )
 
 
@@ -249,6 +249,7 @@ def _sanitize_config_yaml_lines(lines: List[str]) -> Tuple[List[str], bool]:
         key1 = match.group("key1")
         val1 = match.group("val1").strip()
         key2 = match.group("key2")
+        rest = (match.group("rest") or "").strip()
 
         if not val1:
             # No scalar value between key1 and key2 (e.g. "foo:  bar:") —
@@ -267,7 +268,10 @@ def _sanitize_config_yaml_lines(lines: List[str]) -> Tuple[List[str], bool]:
                     next_indent = next_indent_candidate
 
         result.append(f"{indent}{key1}: {val1}\n")
-        result.append(f"{' ' * next_indent}{key2}:\n")
+        if rest:
+            result.append(f"{' ' * next_indent}{key2}: {rest}\n")
+        else:
+            result.append(f"{' ' * next_indent}{key2}:\n")
         changed = True
 
     return result, changed
@@ -281,9 +285,9 @@ def _repair_corrupt_config_yaml(config_path: Path, raw: str) -> Optional[Dict[st
     ``read_raw_config()`` give up and fall back to ``DEFAULT_CONFIG`` —
     which otherwise silently discards every user override. Returns the
     parsed dict on success, or ``None`` if the file doesn't match the
-    pattern, or still doesn't parse after the attempted repair. Callers
-    should fall back to the existing backup + ``DEFAULT_CONFIG`` behavior
-    in that case — this function never raises.
+    pattern, or still doesn't parse after the attempted repair. Writes
+    the repaired YAML back to disk to permanently fix the file.
+    Never raises.
     """
     try:
         lines = raw.splitlines(keepends=True)
@@ -297,6 +301,14 @@ def _repair_corrupt_config_yaml(config_path: Path, raw: str) -> Optional[Dict[st
             return None
         if not isinstance(repaired, dict):
             return None
+
+        # Write repaired text back to disk so future loads succeed natively
+        try:
+            bak_path = config_path.with_name(f"{config_path.name}.corrupt.{_timestamp_id()}.bak")
+            config_path.rename(bak_path)
+            config_path.write_text(sanitized_text, encoding="utf-8")
+        except Exception as exc:
+            logger.debug("Failed to write auto-repaired config.yaml back to disk: %s", exc)
     except Exception:
         return None
 
