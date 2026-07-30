@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
+import { ReportIssueDialog } from '@/components/report-issue-dialog'
 import { Button } from '@/components/ui/button'
 import { ErrorIcon } from '@/components/ui/error-state'
 import { LogView } from '@/components/ui/log-view'
@@ -164,6 +165,7 @@ export function BootFailureOverlay() {
   }
 
   const openLogs = () => void window.hermesDesktop?.revealLogs().catch(() => undefined)
+  const [reportOpen, setReportOpen] = useState(false)
   const sendSupportLogs = async () => {
     setBusy('support')
     try {
@@ -243,11 +245,18 @@ export function BootFailureOverlay() {
                 <FileText />
                 {copy.openLogs}
               </Button>
-              <Button disabled={Boolean(busy)} onClick={() => void sendSupportLogs()} variant="ghost">
-                {busy === 'support' ? <Loader2 className="animate-spin" /> : <FileText />}
-                Send support logs
+              <Button disabled={Boolean(busy)} onClick={() => setReportOpen(true)} variant="ghost">
+                <FileText />
+                Problem melden
               </Button>
             </div>
+            <ReportIssueDialog
+              contextType="boot_error"
+              defaultCategory="connection_error"
+              defaultSummary={`Boot-Fehler: ${boot.error || 'Unbekannt'}`}
+              onOpenChange={setReportOpen}
+              open={reportOpen}
+            />
             <p className="text-xs text-muted-foreground">
               {remoteReauth ? copy.remoteSignInHint : copy.repairHint}
             </p>

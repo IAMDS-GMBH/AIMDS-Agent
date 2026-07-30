@@ -4,6 +4,38 @@ import type { Translations } from './types'
 
 export const de
 : Translations = {
+  reportIssue: {
+    title: 'Problem melden',
+    description: 'Senden Sie ein Fehlerprotokoll und Details direkt an das Support-Team.',
+    categoryLabel: 'Kategorie',
+    severityLabel: 'Schweregrad',
+    summaryLabel: 'Zusammenfassung',
+    summaryPlaceholder: 'Kurze Beschreibung des Problems',
+    detailsLabel: 'Details / Beschreibung',
+    detailsPlaceholder: 'Was ist passiert? Welche Schritte führen zum Fehler?',
+    attachSession: 'Chat-Verlauf und Diagnose-Logs anhängen',
+    submit: 'Problem absenden',
+    submitting: 'Wird gesendet…',
+    successTitle: 'Problem erfolgreich gemeldet!',
+    successMessage: 'Ihr Support-Ticket wurde erstellt:',
+    referenceId: 'Referenz-ID',
+    close: 'Schließen',
+    errorTitle: 'Senden fehlgeschlagen',
+    categories: {
+      llm_timeout: 'LLM Connection / Timeout',
+      ui_bug: 'Benutzeroberfläche / Anzeigefehler',
+      connection_error: 'Verbindungsfehler',
+      performance: 'Performance / Verlangsamung',
+      installation_update: 'Installation / Update',
+      other: 'Sonstiges'
+    },
+    severities: {
+      low: 'Niedrig',
+      medium: 'Mittel',
+      high: 'Hoch',
+      critical: 'Kritisch'
+    }
+  },
   common: {
     apply: 'Übernehmen',
     back: 'Zurück',
@@ -1210,6 +1242,7 @@ export const de
       failed: 'Sitzungsbereinigung fehlgeschlagen'
     },
     row: {
+      reportIssue: 'Problem melden',
       pin: 'Anheften',
       unpin: 'Lösen',
       copyId: 'ID kopieren',

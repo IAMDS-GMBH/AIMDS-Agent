@@ -6060,6 +6060,35 @@ async function runSupportLogUpload(rawPayload = {}) {
   if (Number.isFinite(payload.maxLines) && payload.maxLines > 0) {
     args.push('--max-lines', String(Math.floor(payload.maxLines)))
   }
+  if (typeof payload.category === 'string' && payload.category.trim()) {
+    args.push('--category', payload.category.trim())
+  }
+  if (typeof payload.severity === 'string' && payload.severity.trim()) {
+    args.push('--severity', payload.severity.trim())
+  }
+  if (typeof payload.summary === 'string' && payload.summary.trim()) {
+    args.push('--summary', payload.summary.trim())
+  }
+  if (typeof payload.userDescription === 'string' && payload.userDescription.trim()) {
+    args.push('--user-description', payload.userDescription.trim())
+  }
+  if (typeof payload.sessionId === 'string' && payload.sessionId.trim()) {
+    args.push('--session-id', payload.sessionId.trim())
+  }
+  if (typeof payload.sessionJson === 'string' && payload.sessionJson.trim()) {
+    args.push('--session-json', payload.sessionJson.trim())
+  }
+  const clientType = typeof payload.clientType === 'string' && payload.clientType.trim() ? payload.clientType.trim() : 'hermes-desktop'
+  args.push('--client-type', clientType)
+  if (typeof payload.clientVersion === 'string' && payload.clientVersion.trim()) {
+    args.push('--client-version', payload.clientVersion.trim())
+  }
+  if (typeof payload.installType === 'string' && payload.installType.trim()) {
+    args.push('--install-type', payload.installType.trim())
+  }
+  if (typeof payload.contextType === 'string' && payload.contextType.trim()) {
+    args.push('--context-type', payload.contextType.trim())
+  }
 
   return new Promise(resolve => {
     let stdout = ''
@@ -6156,6 +6185,7 @@ ipcMain.handle('hermes:logs:reveal', async () => {
 
 ipcMain.handle('hermes:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, lines: hermesLog.slice(-200) }))
 ipcMain.handle('hermes:support:sendLogs', async (_event, payload) => runSupportLogUpload(payload))
+ipcMain.handle('hermes:support:reportIssue', async (_event, payload) => runSupportLogUpload(payload))
 
 function isExecutableFile(filePath) {
   if (!filePath || !path.isAbsolute(filePath)) {

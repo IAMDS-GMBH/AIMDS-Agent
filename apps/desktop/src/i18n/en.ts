@@ -3,6 +3,38 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  reportIssue: {
+    title: 'Report Issue',
+    description: 'Send a diagnostic log and issue details directly to the support team.',
+    categoryLabel: 'Category',
+    severityLabel: 'Severity',
+    summaryLabel: 'Summary',
+    summaryPlaceholder: 'Short summary of the issue',
+    detailsLabel: 'Details / Description',
+    detailsPlaceholder: 'What happened? Steps to reproduce?',
+    attachSession: 'Attach chat history and diagnostic logs',
+    submit: 'Submit Report',
+    submitting: 'Submitting…',
+    successTitle: 'Issue reported successfully!',
+    successMessage: 'Your support ticket has been created:',
+    referenceId: 'Reference ID',
+    close: 'Close',
+    errorTitle: 'Submission failed',
+    categories: {
+      llm_timeout: 'LLM Connection / Timeout',
+      ui_bug: 'User Interface / Display Bug',
+      connection_error: 'Connection Error',
+      performance: 'Performance / Slowness',
+      installation_update: 'Installation / Update',
+      other: 'Other'
+    },
+    severities: {
+      low: 'Low',
+      medium: 'Medium',
+      high: 'High',
+      critical: 'Critical'
+    }
+  },
   common: {
     apply: 'Apply',
     back: 'Back',
@@ -1208,6 +1240,7 @@ export const en: Translations = {
       failed: 'Session cleanup failed'
     },
     row: {
+      reportIssue: 'Report issue',
       pin: 'Pin',
       unpin: 'Unpin',
       copyId: 'Copy ID',

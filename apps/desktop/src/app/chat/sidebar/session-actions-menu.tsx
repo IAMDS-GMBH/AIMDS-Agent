@@ -1,6 +1,7 @@
 import type * as React from 'react'
 import { useEffect, useRef, useState } from 'react'
 
+import { ReportIssueDialog } from '@/components/report-issue-dialog'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
@@ -48,6 +49,7 @@ function useSessionActions({ sessionId, title, pinned = false, profile, onPin, o
   const { t } = useI18n()
   const r = t.sidebar.row
   const [renameOpen, setRenameOpen] = useState(false)
+  const [reportIssueOpen, setReportIssueOpen] = useState(false)
 
   const items: ItemSpec[] = [
     {
@@ -93,6 +95,15 @@ function useSessionActions({ sessionId, title, pinned = false, profile, onPin, o
     },
     {
       disabled: !sessionId,
+      icon: 'warning',
+      label: (r as any).reportIssue || 'Problem melden',
+      onSelect: () => {
+        triggerHaptic('selection')
+        setReportIssueOpen(true)
+      }
+    },
+    {
+      disabled: !sessionId,
       icon: 'edit',
       label: r.rename,
       onSelect: () => {
@@ -131,13 +142,22 @@ function useSessionActions({ sessionId, title, pinned = false, profile, onPin, o
     ))
 
   const renameDialog = (
-    <RenameSessionDialog
-      currentTitle={title}
-      onOpenChange={setRenameOpen}
-      open={renameOpen}
-      profile={profile}
-      sessionId={sessionId}
-    />
+    <>
+      <RenameSessionDialog
+        currentTitle={title}
+        onOpenChange={setRenameOpen}
+        open={renameOpen}
+        profile={profile}
+        sessionId={sessionId}
+      />
+      <ReportIssueDialog
+        contextType="chat_session"
+        defaultSummary={title ? `Problem in Session: ${title}` : 'Problem in Chat-Session'}
+        onOpenChange={setReportIssueOpen}
+        open={reportIssueOpen}
+        sessionId={sessionId}
+      />
+    </>
   )
 
   return { renameDialog, renderItems }

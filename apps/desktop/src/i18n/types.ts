@@ -18,6 +18,38 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  reportIssue: {
+    title: string
+    description: string
+    categoryLabel: string
+    severityLabel: string
+    summaryLabel: string
+    summaryPlaceholder: string
+    detailsLabel: string
+    detailsPlaceholder: string
+    attachSession: string
+    submit: string
+    submitting: string
+    successTitle: string
+    successMessage: string
+    referenceId: string
+    close: string
+    errorTitle: string
+    categories: {
+      llm_timeout: string
+      ui_bug: string
+      connection_error: string
+      performance: string
+      installation_update: string
+      other: string
+    }
+    severities: {
+      low: string
+      medium: string
+      high: string
+      critical: string
+    }
+  }
   common: {
     apply: string
     back: string
@@ -948,6 +980,7 @@ export interface Translations {
       failed: string
     }
     row: {
+      reportIssue: string
       pin: string
       unpin: string
       copyId: string

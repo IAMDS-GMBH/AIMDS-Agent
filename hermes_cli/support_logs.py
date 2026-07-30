@@ -27,6 +27,18 @@ from hermes_constants import display_hermes_home, get_hermes_home
 _LOG_FILES = ("desktop.log", "agent.log", "errors.log", "gateway.log", "gui.log")
 _DEFAULT_MAX_LINES_PER_FILE = 1200
 _DEFAULT_TIMEOUT_SECONDS = 45
+_DEFAULT_UPLOAD_URL = "https://suite-support.iamds.com/api/v1/upload"
+
+
+def normalize_upload_url(url: str) -> str:
+    raw = (url or "").strip()
+    if not raw:
+        return _DEFAULT_UPLOAD_URL
+    if raw in {"https://suite-support.iamds.com", "https://suite-support.iamds.com/"}:
+        return _DEFAULT_UPLOAD_URL
+    if not raw.endswith("/api/v1/upload") and not raw.endswith("/upload"):
+        return raw.rstrip("/") + "/api/v1/upload"
+    return raw
 
 
 def _read_last_lines(path: Path, count: int) -> list[str]:
@@ -87,7 +99,9 @@ def _support_config() -> dict[str, Any]:
     return support if isinstance(support, dict) else {}
 
 
-def _collect_payload(*, include_dump: bool, max_lines_per_file: int) -> tuple[dict[str, str], dict[str, Any]]:
+def _collect_payload(
+    args: Any = None, *, include_dump: bool = True, max_lines_per_file: int = _DEFAULT_MAX_LINES_PER_FILE
+) -> tuple[dict[str, str], dict[str, Any]]:
     hermes_home = get_hermes_home()
     log_dir = hermes_home / "logs"
     files: dict[str, str] = {}
@@ -113,18 +127,124 @@ def _collect_payload(*, include_dump: bool, max_lines_per_file: int) -> tuple[di
     if include_dump:
         files["dump.txt"] = redact_sensitive_text(_capture_dump_text(), force=True)
 
+    # Process session export if provided via args
+    session_data: dict[str, Any] | None = None
+    session_json_input = getattr(args, "session_json", None) or ""
+    if session_json_input:
+        raw_text = ""
+        p = Path(session_json_input).expanduser()
+        if p.exists() and p.is_file():
+            try:
+                raw_text = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                pass
+        else:
+            raw_text = session_json_input
+
+        if raw_text:
+            try:
+                session_data = json.loads(raw_text)
+                files["session.json"] = json.dumps(session_data, indent=2, ensure_ascii=False) + "\n"
+            except json.JSONDecodeError:
+                files["session.json"] = raw_text
+
+    cfg = load_config()
+    support_cfg = cfg.get("support", {}) if isinstance(cfg.get("support"), dict) else {}
+    model_used = (cfg.get("model") or {}).get("default") or "AIMDS-Suite-Auto"
+    provider_name = (cfg.get("model") or {}).get("provider") or "aimds-suite-prod"
+    providers = cfg.get("providers") or {}
+    provider_cfg = providers.get(provider_name) if isinstance(providers.get(provider_name), dict) else {}
+    litellm_url = provider_cfg.get("base_url") or "https://suite.iamds.com/litellm/v1"
+    mcp_servers = list((cfg.get("mcp_servers") or {}).keys())
+    active_skills = list((cfg.get("skills") or {}).get("inline") or [])
+
+    now_utc = datetime.now(timezone.utc)
+    support_case_id = f"SUP-{now_utc.strftime('%Y%m%d-%H%M%S')}"
+
+    files_manifest: list[dict[str, Any]] = []
+    for rel_path, content in files.items():
+        category = "log"
+        mime = "text/plain"
+        if rel_path.endswith(".json"):
+            mime = "application/json"
+            category = "chat_history" if "session" in rel_path else "config"
+        elif rel_path.endswith(".txt"):
+            category = "system_info"
+
+        files_manifest.append(
+            {
+                "path": rel_path,
+                "mime_type": mime,
+                "size_bytes": len(content.encode("utf-8")),
+                "content_category": category,
+            }
+        )
+
+    session_id_val = getattr(args, "session_id", "") or (session_data.get("session_id") if session_data else "")
+    session_title_val = session_data.get("title") if session_data else ""
+    session_turn_count = session_data.get("message_count") if session_data else 0
+
+    user_id_val = os.getenv("USER") or os.getenv("USERNAME") or "unknown"
+    try:
+        import getpass
+        user_id_val = getpass.getuser() or user_id_val
+    except Exception:
+        pass
+
+    metadata = {
+        "schema_version": "1.1.0",
+        "support_case_id": support_case_id,
+        "customer_id": os.getenv("IAMDS_CUSTOMER_ID") or support_cfg.get("customer_id") or "cust-iamds",
+        "customer_name": os.getenv("IAMDS_CUSTOMER_NAME") or support_cfg.get("customer_name") or "IAMDS GmbH",
+        "litellm_url": litellm_url,
+        "model_used": model_used,
+        "embedding_model_used": "text-embedding-3-small",
+        "environment": os.getenv("HERMES_ENV") or "production",
+        "timestamp": now_utc.isoformat(),
+        "client_info": {
+            "client_type": getattr(args, "client_type", None) or "hermes-cli",
+            "client_version": getattr(args, "client_version", None) or "v1.0.75",
+            "os": f"{platform.system()} {platform.release()} ({platform.machine()})",
+            "user_id": user_id_val,
+        },
+        "issue_details": {
+            "category": getattr(args, "category", None) or "other",
+            "severity": getattr(args, "severity", None) or "medium",
+            "summary": getattr(args, "summary", None) or getattr(args, "reason", "manual"),
+            "user_description": getattr(args, "user_description", None) or "",
+        },
+        "session_context": {
+            "session_id": session_id_val,
+            "session_title": session_title_val,
+            "turn_count": session_turn_count,
+            "loaded_mcp_tools": mcp_servers,
+            "active_skills": active_skills,
+        },
+        "context_type": getattr(args, "context_type", None) or ("chat_session" if session_id_val else "manual"),
+        "install_type": getattr(args, "install_type", None) or None,
+        "lifecycle": {
+            "retention_days": 14,
+            "max_size_kb": 25600,
+        },
+        "files": files_manifest,
+    }
+
+    files["metadata.json"] = json.dumps(metadata, indent=2, ensure_ascii=False) + "\n"
+
     manifest = {
         "schema": 1,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": now_utc.isoformat(),
         "hostname": socket.gethostname(),
         "platform": platform.platform(),
         "python": sys.version.split()[0],
         "hermes_home": display_hermes_home(),
         "included_files": included_files,
         "includes_dump": include_dump,
+        "metadata": metadata,
     }
     files["manifest.json"] = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
-    return files, manifest
+
+    return files, metadata
 
 
 def _write_bundle(files: dict[str, str], *, keep_path: str | None = None) -> Path:
@@ -170,15 +290,19 @@ def _upload_bundle(
             except json.JSONDecodeError:
                 parsed = {"raw": body}
 
+        job_id = parsed.get("job_id") or parsed.get("id") or ""
+        support_case_id = parsed.get("support_case_id") or parsed.get("case_id") or ""
         reference_id = (
-            parsed.get("reference_id")
-            or parsed.get("case_id")
+            job_id
+            or support_case_id
+            or parsed.get("reference_id")
             or parsed.get("ticket_id")
-            or parsed.get("id")
         )
         return {
-            "status_code": int(getattr(response, "status", 200)),
+            "status_code": int(getattr(response, "status", 202)),
             "elapsed_ms": elapsed_ms,
+            "job_id": job_id,
+            "support_case_id": support_case_id,
             "reference_id": reference_id,
             "server": parsed,
             "bytes_sent": len(payload),
@@ -229,7 +353,7 @@ def run_send_logs(args) -> int:
 
     bundle_path: Path | None = None
     try:
-        files, manifest = _collect_payload(include_dump=include_dump, max_lines_per_file=max_lines)
+        files, metadata = _collect_payload(args, include_dump=include_dump, max_lines_per_file=max_lines)
         if len(files) <= 1:  # only manifest.json
             payload = {"ok": False, "error": "No log content available to upload."}
             if json_mode:
@@ -252,7 +376,9 @@ def run_send_logs(args) -> int:
             "upload_url": upload_url,
             "bundle_path": str(bundle_path),
             "bundle_bytes": bundle_path.stat().st_size,
-            "files": manifest.get("included_files", []),
+            "job_id": upload.get("job_id"),
+            "support_case_id": upload.get("support_case_id"),
+            "files": metadata.get("files", []),
             "includes_dump": include_dump,
             "status_code": upload["status_code"],
             "elapsed_ms": upload["elapsed_ms"],

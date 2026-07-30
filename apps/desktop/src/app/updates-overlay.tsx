@@ -1,3 +1,4 @@
+import { ReportIssueDialog } from '@/components/report-issue-dialog'
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
@@ -358,26 +359,40 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
 function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss: () => void; onRetry: () => void }) {
   const { t } = useI18n()
   const u = t.updates
+  const [reportOpen, setReportOpen] = useState(false)
 
   return (
-    <ErrorState
-      className="px-6 pb-6 pt-7 pr-8"
-      description={
-        <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
-          {message || u.errorBody}
-        </DialogDescription>
-      }
-      title={
-        <DialogTitle className="text-center text-xl font-semibold tracking-tight">{u.errorTitle}</DialogTitle>
-      }
-    >
-      <Button className="font-semibold" onClick={onRetry} size="lg">
-        {u.tryAgain}
-      </Button>
-      <Button onClick={onDismiss} variant="text">
-        {u.notNow}
-      </Button>
-    </ErrorState>
+    <>
+      <ErrorState
+        className="px-6 pb-6 pt-7 pr-8"
+        description={
+          <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
+            {message || u.errorBody}
+          </DialogDescription>
+        }
+        title={
+          <DialogTitle className="text-center text-xl font-semibold tracking-tight">{u.errorTitle}</DialogTitle>
+        }
+      >
+        <Button className="font-semibold" onClick={onRetry} size="lg">
+          {u.tryAgain}
+        </Button>
+        <Button onClick={() => setReportOpen(true)} variant="outline">
+          Problem melden
+        </Button>
+        <Button onClick={onDismiss} variant="text">
+          {u.notNow}
+        </Button>
+      </ErrorState>
+      <ReportIssueDialog
+        contextType="update_error"
+        defaultCategory="installation_update"
+        defaultSummary={`Update-Fehler: ${message || 'Unbekannt'}`}
+        installType="update"
+        onOpenChange={setReportOpen}
+        open={reportOpen}
+      />
+    </>
   )
 }
 

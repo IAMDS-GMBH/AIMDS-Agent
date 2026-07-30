@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { ReportIssueDialog } from '@/components/report-issue-dialog'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
 import { LogView } from '@/components/ui/log-view'
@@ -315,6 +316,8 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
     }
   }, [state.error])
 
+  const [reportOpen, setReportOpen] = useState(false)
+
   // Mount logic: show whenever a bootstrap is in flight, completed-with-error,
   // or actively running with a manifest. Hide entirely after a successful
   // completion so the rest of the UI can take over.
@@ -567,6 +570,13 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
                   {copied ? copy.copiedOutput : copy.copyOutput}
                 </Button>
                 <Button
+                  onClick={() => setReportOpen(true)}
+                  size="sm"
+                  variant="outline"
+                >
+                  Problem melden
+                </Button>
+                <Button
                   onClick={async () => {
                     // Tell main.cjs to clear its latched failure BEFORE we
                     // reload. Otherwise the renderer reload calls getConnection
@@ -590,6 +600,14 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
           </div>
         )}
       </div>
+      <ReportIssueDialog
+        contextType="install_error"
+        defaultCategory="installation_update"
+        defaultSummary={`Installationsfehler: ${state.error || 'Unbekannt'}`}
+        installType="fresh_install"
+        onOpenChange={setReportOpen}
+        open={reportOpen}
+      />
     </div>
   )
 }
