@@ -13,6 +13,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -261,6 +262,32 @@ def _write_bundle(files: dict[str, str], *, keep_path: str | None = None) -> Pat
     return bundle_path
 
 
+def _build_multipart_payload(
+    file_bytes: bytes,
+    filename: str,
+    support_case_id: str = "",
+) -> tuple[bytes, str]:
+    boundary = f"----HermesBoundary{uuid.uuid4().hex}"
+    body = bytearray()
+
+    if support_case_id:
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(b'Content-Disposition: form-data; name="support_case_id"\r\n\r\n')
+        body.extend(f"{support_case_id}\r\n".encode("utf-8"))
+
+    zip_filename = filename if filename.lower().endswith(".zip") else f"{filename}.zip"
+    body.extend(f"--{boundary}\r\n".encode("utf-8"))
+    body.extend(f'Content-Disposition: form-data; name="file"; filename="{zip_filename}"\r\n'.encode("utf-8"))
+    body.extend(b"Content-Type: application/zip\r\n\r\n")
+    body.extend(file_bytes)
+    body.extend(b"\r\n")
+
+    body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+
+    content_type = f"multipart/form-data; boundary={boundary}"
+    return bytes(body), content_type
+
+
 def _upload_bundle(
     *,
     upload_url: str,
@@ -268,11 +295,17 @@ def _upload_bundle(
     bundle_path: Path,
     timeout_seconds: int,
     reason: str,
+    support_case_id: str = "",
 ) -> dict[str, Any]:
-    payload = bundle_path.read_bytes()
+    file_bytes = bundle_path.read_bytes()
+    payload, content_type = _build_multipart_payload(
+        file_bytes=file_bytes,
+        filename=bundle_path.name,
+        support_case_id=support_case_id,
+    )
     headers = {
         "Authorization": f"Bearer {api_key}" if api_key else "Bearer anonymous",
-        "Content-Type": "application/zip",
+        "Content-Type": content_type,
         "User-Agent": "hermes-support-log-export/1",
         "X-Hermes-Reason": reason or "manual",
         "X-Hermes-Filename": bundle_path.name,
@@ -336,12 +369,14 @@ def run_send_logs(args) -> int:
 
         keep_path = getattr(args, "output", None)
         bundle_path = _write_bundle(files, keep_path=keep_path)
+        support_case_id = metadata.get("support_case_id", "") if isinstance(metadata, dict) else ""
         upload = _upload_bundle(
             upload_url=upload_url,
             api_key=api_key,
             bundle_path=bundle_path,
             timeout_seconds=timeout_seconds,
             reason=reason,
+            support_case_id=support_case_id,
         )
         payload = {
             "ok": True,
