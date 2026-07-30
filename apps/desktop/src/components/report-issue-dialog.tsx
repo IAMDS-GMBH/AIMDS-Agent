@@ -13,6 +13,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
 import { AlertCircle, CheckCircle2, HelpCircle } from '@/lib/icons'
+import { addSupportTicket } from '@/store/support-tickets'
 
 export interface ReportIssueDialogProps {
   contextType?: 'chat_session' | 'boot_error' | 'update_error' | 'install_error' | 'manual'
@@ -115,7 +116,17 @@ export function ReportIssueDialog({
       } as any)
 
       if (res.ok) {
-        setReferenceId(res.reference_id || res.referenceId || 'SUP-SUCCESS')
+        const refId = res.reference_id || res.referenceId || 'SUP-SUCCESS'
+        setReferenceId(refId)
+        addSupportTicket({
+          jobId: (res as any).job_id || (res as any).jobId || refId,
+          caseId: (res as any).support_case_id || refId,
+          referenceId: refId,
+          summary: summary.trim(),
+          category,
+          severity,
+          createdAt: Date.now()
+        })
       } else {
         setError(res.error || 'Upload vom Support-Server abgelehnt.')
       }

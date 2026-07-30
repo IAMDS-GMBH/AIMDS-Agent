@@ -1,16 +1,19 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useState } from 'react'
 
+import { ReportIssueDialog } from '@/components/report-issue-dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigRecord, getMcpServers, getRemoteHealthStatus, getStatus, restartGateway, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { AlertCircle, Globe, Loader2, RefreshCw } from '@/lib/icons'
+import { AlertCircle, Globe, HelpCircle, Loader2, RefreshCw, Trash2 } from '@/lib/icons'
+import { getMcpServerToolCount } from '@/lib/mcp-helpers'
 import { formatAimdsProviderLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $profiles, refreshActiveProfile } from '@/store/profile'
+import { $supportTickets, addSupportTicket, clearSupportTickets } from '@/store/support-tickets'
 import type { McpServerSummary, RemoteHealthResponse, StatusResponse } from '@/types/hermes'
 
 import { EmptyState, LoadingState, Pill, SectionHeading, SettingsContent } from './primitives'
@@ -40,7 +43,12 @@ function ScopeChip({ active, label, onSelect }: { active: boolean; label: string
   )
 }
 
-import { getMcpServerToolCount } from '@/lib/mcp-helpers'
+interface TicketStatusData {
+  status?: string
+  case_status?: string
+  case_summary?: string
+  resolution_note?: string
+}
 
 export function GatewaySettings() {
   const { t } = useI18n()
@@ -49,6 +57,7 @@ export function GatewaySettings() {
   const [state, setState] = useState<GatewaySettingsState>(EMPTY_STATE)
   const [scope, setScope] = useState<null | string>(null)
   const profiles = useStore($profiles)
+  const tickets = useStore($supportTickets)
 
   const [remoteHealth, setRemoteHealth] = useState<null | RemoteHealthResponse>(null)
   const [remoteHealthLoading, setRemoteHealthLoading] = useState(false)
@@ -57,7 +66,9 @@ export function GatewaySettings() {
   const [localConnectivityLoading, setLocalConnectivityLoading] = useState(false)
   const [localConnectivityError, setLocalConnectivityError] = useState('')
   const [localCheckedAt, setLocalCheckedAt] = useState<null | number>(null)
+
   const [sendingSupportLogs, setSendingSupportLogs] = useState(false)
+  const [reportIssueOpen, setReportIssueOpen] = useState(false)
   const [supportUploadUrl, setSupportUploadUrl] = useState('')
   const [supportApiKey, setSupportApiKey] = useState('')
   const [supportConfigLoaded, setSupportConfigLoaded] = useState(false)
@@ -65,6 +76,9 @@ export function GatewaySettings() {
   const [supportKeyConfigured, setSupportKeyConfigured] = useState(false)
   const [aimdsEnv, setAimdsEnv] = useState<string | null>(null)
   const [restartingGateway, setRestartingGateway] = useState(false)
+
+  const [ticketStatusMap, setTicketStatusMap] = useState<Record<string, TicketStatusData>>({})
+  const [refreshingTickets, setRefreshingTickets] = useState(false)
 
   const handleRestartGateway = async () => {
     setRestartingGateway(true)
@@ -111,6 +125,31 @@ export function GatewaySettings() {
     }
   }
 
+  const refreshTicketStatuses = async () => {
+    if (tickets.length === 0) return
+    setRefreshingTickets(true)
+    const baseUrl = supportUploadUrl.trim()
+      ? supportUploadUrl.trim().replace(/\/upload\/?$/, '')
+      : 'https://suite-support.iamds.com/api/v1'
+
+    const newMap: Record<string, TicketStatusData> = { ...ticketStatusMap }
+    await Promise.all(
+      tickets.map(async item => {
+        try {
+          const res = await fetch(`${baseUrl}/jobs/${item.jobId}`)
+          if (res.ok) {
+            const data = await res.json()
+            newMap[item.jobId] = data
+          }
+        } catch {
+          // ignore fetch error
+        }
+      })
+    )
+    setTicketStatusMap(newMap)
+    setRefreshingTickets(false)
+  }
+
   useEffect(() => {
     void refreshActiveProfile()
   }, [])
@@ -147,6 +186,12 @@ export function GatewaySettings() {
     void refreshRemoteHealth()
     void refreshLocalConnectivity()
   }, [])
+
+  useEffect(() => {
+    if (tickets.length > 0) {
+      void refreshTicketStatuses()
+    }
+  }, [tickets.length])
 
   useEffect(() => {
     let cancelled = false
@@ -188,6 +233,13 @@ export function GatewaySettings() {
       const result = await window.hermesDesktop?.sendSupportLogs?.({ reason: 'on_demand_settings' })
       if (result?.ok) {
         const reference = result.reference_id || result.referenceId
+        addSupportTicket({
+          jobId: reference || `job-${Date.now()}`,
+          referenceId: reference,
+          summary: 'Support-Logs gesendet',
+          category: 'support_logs',
+          createdAt: Date.now()
+        })
         notify({
           kind: 'success',
           title: 'Support logs sent',
@@ -276,9 +328,175 @@ export function GatewaySettings() {
     )
   }
 
+  const getStatusBadge = (itemJobId: string) => {
+    const live = ticketStatusMap[itemJobId]
+    const statusText = live?.case_status || live?.status || 'QUEUED'
+
+    if (statusText === 'RESOLVED' || statusText === 'COMPLETED') {
+      return (
+        <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+          {g.statusLabels?.resolved || 'Behoben'}
+        </span>
+      )
+    }
+    if (statusText === 'OPEN' || statusText === 'PROCESSING') {
+      return (
+        <span className="rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-semibold text-blue-700 dark:text-blue-300">
+          {g.statusLabels?.processing || 'In Bearbeitung'}
+        </span>
+      )
+    }
+    if (statusText === 'FAILED') {
+      return (
+        <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] font-semibold text-destructive">
+          {g.statusLabels?.failed || 'Fehlgeschlagen'}
+        </span>
+      )
+    }
+    return (
+      <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+        {g.statusLabels?.queued || 'Warteschlange'}
+      </span>
+    )
+  }
+
   return (
     <SettingsContent>
-      <div className="mb-5">
+      {/* 1. SUPPORT & DIAGNOSE-LOGS (ALWAYS FIRST AT TOP OF DIAGNOSTICS) */}
+      <div className="rounded-xl border border-border/70 bg-muted/20 p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-sm font-semibold">{g.supportTitle}</p>
+            <p className="text-xs text-muted-foreground">{g.supportDesc}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              onClick={() => setReportIssueOpen(true)}
+              size="sm"
+              variant="default"
+            >
+              <HelpCircle className="mr-1.5 size-3.5" />
+              {g.reportIssueButton || 'Problem melden'}
+            </Button>
+            <Button
+              disabled={sendingSupportLogs || !supportConfigured}
+              onClick={() => void handleSendSupportLogs()}
+              size="sm"
+              variant="outline"
+            >
+              {sendingSupportLogs ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}
+              {sendingSupportLogs ? g.sendingSupportLogs : g.sendSupportLogs}
+            </Button>
+          </div>
+        </div>
+
+        {!supportConfigured && supportConfigLoaded && (
+          <p className="mb-3 text-xs text-amber-700 dark:text-amber-300">
+            {g.supportNotConfigured}
+          </p>
+        )}
+
+        {/* Support Upload Config */}
+        <div className="mb-4 grid gap-2 rounded-lg border border-border/70 bg-background/40 p-3">
+          <p className="text-xs font-medium">{g.supportLogSettings}</p>
+          <Input
+            onChange={event => setSupportUploadUrl(event.target.value)}
+            placeholder={g.supportUploadUrlPlaceholder}
+            value={supportUploadUrl}
+          />
+          <Input
+            onChange={event => setSupportApiKey(event.target.value)}
+            placeholder={supportKeyConfigured ? g.apiKeySetPlaceholder : g.apiKeyPlaceholder}
+            type="password"
+            value={supportApiKey}
+          />
+          <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+            <span>{supportKeyConfigured ? g.apiKeyConfigured : g.apiKeyNotConfigured}</span>
+            <Button
+              disabled={savingSupportConfig || !supportUploadUrl.trim() || (!supportKeyConfigured && !supportApiKey.trim())}
+              onClick={() => void saveSupportConfig()}
+              size="sm"
+            >
+              {savingSupportConfig ? g.savingLabel : g.saveSupportSettings}
+            </Button>
+          </div>
+        </div>
+
+        {/* Support Ticket Status & History Tracker */}
+        <div className="rounded-lg border border-border/70 bg-background/40 p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div>
+              <p className="text-xs font-semibold">{g.supportTicketsTitle || 'Support-Tickets Status & Verlauf'}</p>
+              <p className="text-[11px] text-muted-foreground">{g.supportTicketsDesc || 'Übersicht Ihrer Support-Fälle.'}</p>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Button
+                disabled={refreshingTickets || tickets.length === 0}
+                onClick={() => void refreshTicketStatuses()}
+                size="sm"
+                variant="text"
+              >
+                {refreshingTickets ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+                {g.supportTicketRefresh || 'Aktualisieren'}
+              </Button>
+              {tickets.length > 0 && (
+                <Button
+                  onClick={() => clearSupportTickets()}
+                  size="sm"
+                  variant="text"
+                >
+                  <Trash2 className="size-3 text-destructive" />
+                  {g.supportTicketClear || 'Leeren'}
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {tickets.length === 0 ? (
+            <p className="py-2 text-center text-xs text-muted-foreground">
+              {g.supportTicketNoTickets || 'Noch keine Support-Tickets gemeldet.'}
+            </p>
+          ) : (
+            <div className="grid gap-2 pt-1">
+              {tickets.map(item => {
+                const live = ticketStatusMap[item.jobId]
+                return (
+                  <div
+                    className="flex flex-col gap-1 rounded-md border border-border/60 bg-background/60 p-2.5 text-xs"
+                    key={item.jobId}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono font-semibold text-primary">
+                        {item.referenceId || item.jobId}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-muted-foreground">
+                          {new Date(item.createdAt).toLocaleString()}
+                        </span>
+                        {getStatusBadge(item.jobId)}
+                      </div>
+                    </div>
+                    {item.summary && (
+                      <p className="font-medium text-foreground/90">{item.summary}</p>
+                    )}
+                    {live?.resolution_note && (
+                      <div className="mt-1 rounded bg-emerald-500/10 p-2 text-[11px] text-emerald-800 dark:text-emerald-200">
+                        <span className="font-semibold">{g.supportTicketHeaderResolution || 'Lösungs-Hinweis'}: </span>
+                        {live.resolution_note}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <ReportIssueDialog onOpenChange={setReportIssueOpen} open={reportIssueOpen} />
+
+      {/* 2. DIAGNOSE & CONNECTIVITY TITLE */}
+      <div className="mb-5 mt-6">
         <div className="flex items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium">
           <Globe className="size-4 text-muted-foreground" />
           {g.title}
@@ -321,6 +539,7 @@ export function GatewaySettings() {
         </div>
       ) : null}
 
+      {/* 3. LOKALE VERBINDUNG & STATUS */}
       <div className="mt-5">
         <SectionHeading icon={Globe} title={g.localConnTitle} />
         <div className={cn('rounded-xl border px-4 py-3 text-sm', localToneClass)}>
@@ -438,6 +657,7 @@ export function GatewaySettings() {
         </div>
       </div>
 
+      {/* 4. REMOTE-VERBINDUNG & STATUS */}
       <div className="mt-5">
         <SectionHeading icon={Globe} title={g.remoteConnTitle} />
         <div className={cn('rounded-xl border px-4 py-3 text-sm', remoteToneClass)}>
@@ -480,49 +700,6 @@ export function GatewaySettings() {
               ))}
             </div>
           )}
-        </div>
-      </div>
-
-      <div className="mt-5 rounded-xl border border-border/70 bg-muted/20 p-4">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <p className="text-sm font-medium">{g.supportTitle}</p>
-          <Button
-            disabled={sendingSupportLogs || !supportConfigured}
-            onClick={() => void handleSendSupportLogs()}
-            size="sm"
-            variant="text"
-          >
-            {sendingSupportLogs ? g.sendingSupportLogs : g.sendSupportLogs}
-          </Button>
-        </div>
-        {!supportConfigured && supportConfigLoaded && (
-          <p className="mb-3 text-xs text-amber-700 dark:text-amber-300">
-            {g.supportNotConfigured}
-          </p>
-        )}
-        <div className="grid gap-2 rounded-lg border border-border/70 bg-background/40 p-3">
-          <p className="text-xs font-medium">{g.supportLogSettings}</p>
-          <Input
-            onChange={event => setSupportUploadUrl(event.target.value)}
-            placeholder={g.supportUploadUrlPlaceholder}
-            value={supportUploadUrl}
-          />
-          <Input
-            onChange={event => setSupportApiKey(event.target.value)}
-            placeholder={supportKeyConfigured ? g.apiKeySetPlaceholder : g.apiKeyPlaceholder}
-            type="password"
-            value={supportApiKey}
-          />
-          <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-            <span>{supportKeyConfigured ? g.apiKeyConfigured : g.apiKeyNotConfigured}</span>
-            <Button
-              disabled={savingSupportConfig || !supportUploadUrl.trim() || (!supportKeyConfigured && !supportApiKey.trim())}
-              onClick={() => void saveSupportConfig()}
-              size="sm"
-            >
-              {savingSupportConfig ? g.savingLabel : g.saveSupportSettings}
-            </Button>
-          </div>
         </div>
       </div>
     </SettingsContent>

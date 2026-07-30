@@ -440,6 +440,27 @@ export interface Translations {
       apiKeyNotConfigured: string
       saveSupportSettings: string
       savingLabel: string
+      supportDesc: string;
+      reportIssueButton: string;
+      supportTicketsTitle: string;
+      supportTicketsDesc: string;
+      supportTicketNoTickets: string;
+      supportTicketRefresh: string;
+      supportTicketClear: string;
+      supportTicketHeaderReference: string;
+      supportTicketHeaderSummary: string;
+      supportTicketHeaderDate: string;
+      supportTicketHeaderStatus: string;
+      supportTicketHeaderResolution: string;
+      statusLabels: {
+        queued: string;
+        processing: string;
+        completed: string;
+        failed: string;
+        open: string;
+        resolved: string;
+        archived: string;
+      };
       incompleteTitle: string
       incompleteSignIn: string
       incompleteToken: string
