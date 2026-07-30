@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
 import { useI18n } from '@/i18n'
 import { notify, notifyError } from '@/store/notifications'
+import { addSupportTicket } from '@/store/support-tickets'
 
 export interface ErrorBoundaryFallbackProps {
   error: Error
@@ -63,6 +64,13 @@ function RootErrorFallback({ error, reset }: ErrorBoundaryFallbackProps) {
       const result = await window.hermesDesktop?.sendSupportLogs?.({ reason: 'renderer_error_boundary' })
       if (result?.ok) {
         const reference = result.reference_id || result.referenceId
+        addSupportTicket({
+          jobId: reference || `job-${Date.now()}`,
+          referenceId: reference,
+          summary: 'Support-Logs gesendet (Anwendungsfehler)',
+          category: 'ui_bug',
+          createdAt: Date.now()
+        })
         notify({
           kind: 'success',
           title: 'Support logs sent',

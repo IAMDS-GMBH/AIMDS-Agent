@@ -1077,7 +1077,9 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
     
     # Combine all reasoning parts
     if reasoning_parts:
-        return "\n\n".join(reasoning_parts)
+        str_parts = [str(part) for part in reasoning_parts if part is not None]
+        if str_parts:
+            return "\n\n".join(str_parts)
     
     return None
 

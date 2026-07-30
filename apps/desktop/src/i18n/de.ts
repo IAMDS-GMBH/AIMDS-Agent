@@ -541,6 +541,7 @@ export const de
       supportTicketsDesc: 'Übersicht und aktueller Bearbeitungsstand Ihrer gemeldeten Support-Fälle.',
       supportTicketNoTickets: 'Noch keine Support-Tickets gemeldet.',
       supportTicketRefresh: 'Status aktualisieren',
+      supportTicketClearResolved: 'Gelöste bereinigen',
       supportTicketClear: 'Verlauf leeren',
       supportTicketHeaderReference: 'Ticket-ID',
       supportTicketHeaderSummary: 'Zusammenfassung',

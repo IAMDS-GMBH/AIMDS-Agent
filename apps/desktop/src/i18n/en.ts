@@ -540,6 +540,7 @@ export const en: Translations = {
       supportTicketsDesc: 'Overview and current status of your submitted support tickets.',
       supportTicketNoTickets: 'No support tickets submitted yet.',
       supportTicketRefresh: 'Refresh Status',
+      supportTicketClearResolved: 'Clear resolved',
       supportTicketClear: 'Clear History',
       supportTicketHeaderReference: 'Ticket ID',
       supportTicketHeaderSummary: 'Summary',

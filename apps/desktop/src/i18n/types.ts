@@ -446,6 +446,7 @@ export interface Translations {
       supportTicketsDesc: string;
       supportTicketNoTickets: string;
       supportTicketRefresh: string;
+      supportTicketClearResolved: string;
       supportTicketClear: string;
       supportTicketHeaderReference: string;
       supportTicketHeaderSummary: string;

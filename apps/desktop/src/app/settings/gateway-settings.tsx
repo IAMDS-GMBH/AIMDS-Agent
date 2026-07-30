@@ -13,7 +13,14 @@ import { formatAimdsProviderLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $profiles, refreshActiveProfile } from '@/store/profile'
-import { $supportTickets, addSupportTicket, clearSupportTickets } from '@/store/support-tickets'
+import {
+  $supportTickets,
+  addSupportTicket,
+  clearResolvedSupportTickets,
+  clearSupportTickets,
+  removeSupportTicket,
+  updateAndCleanupSupportTickets
+} from '@/store/support-tickets'
 import type { McpServerSummary, RemoteHealthResponse, StatusResponse } from '@/types/hermes'
 
 import { EmptyState, LoadingState, Pill, SectionHeading, SettingsContent } from './primitives'
@@ -70,9 +77,7 @@ export function GatewaySettings() {
   const [sendingSupportLogs, setSendingSupportLogs] = useState(false)
   const [reportIssueOpen, setReportIssueOpen] = useState(false)
   const [supportUploadUrl, setSupportUploadUrl] = useState('')
-  const [supportApiKey, setSupportApiKey] = useState('')
   const [supportConfigLoaded, setSupportConfigLoaded] = useState(false)
-  const [savingSupportConfig, setSavingSupportConfig] = useState(false)
   const [supportKeyConfigured, setSupportKeyConfigured] = useState(false)
   const [aimdsEnv, setAimdsEnv] = useState<string | null>(null)
   const [restartingGateway, setRestartingGateway] = useState(false)
@@ -147,6 +152,7 @@ export function GatewaySettings() {
       })
     )
     setTicketStatusMap(newMap)
+    updateAndCleanupSupportTickets(newMap)
     setRefreshingTickets(false)
   }
 
@@ -259,36 +265,6 @@ export function GatewaySettings() {
     }
   }
 
-  const saveSupportConfig = async () => {
-    setSavingSupportConfig(true)
-    try {
-      const config = await getHermesConfigRecord()
-      const currentSupport =
-        config?.support && typeof config.support === 'object' ? (config.support as Record<string, unknown>) : {}
-      const nextApiKey = supportApiKey.trim() ? supportApiKey.trim() : String(currentSupport.api_key ?? '')
-      const nextConfig = {
-        ...config,
-        support: {
-          ...currentSupport,
-          upload_url: supportUploadUrl.trim(),
-          api_key: nextApiKey
-        }
-      }
-      await saveHermesConfig(nextConfig)
-      setSupportKeyConfigured(nextApiKey.length > 0)
-      setSupportApiKey('')
-      notify({
-        kind: 'success',
-        title: 'Support endpoint saved',
-        message: 'Support upload URL and API key settings were saved.'
-      })
-    } catch (err) {
-      notifyError(err, 'Could not save support settings')
-    } finally {
-      setSavingSupportConfig(false)
-    }
-  }
-
   const namedProfiles = useMemo(() => profiles.filter(profile => profile.name !== 'default'), [profiles])
   const enabledMcpServers = mcpServers.filter(server => server.enabled)
   const remoteSeverity = remoteHealth?.severity ?? (remoteHealth?.ok ? 'healthy' : 'critical')
@@ -313,7 +289,7 @@ export function GatewaySettings() {
         ? 'border-amber-500/35 bg-amber-500/10 text-foreground'
         : 'border-border/70 bg-muted/20 text-foreground'
   const localChecked = localCheckedAt ? new Date(localCheckedAt).toLocaleString() : 'n/a'
-  const supportConfigured = supportUploadUrl.trim().length > 0 && (supportKeyConfigured || supportApiKey.trim().length > 0)
+  const supportConfigured = supportUploadUrl.trim().length > 0 || supportKeyConfigured
 
   if (loading) {
     return <LoadingState label={g.loading} />
@@ -396,32 +372,6 @@ export function GatewaySettings() {
           </p>
         )}
 
-        {/* Support Upload Config */}
-        <div className="mb-4 grid gap-2 rounded-lg border border-border/70 bg-background/40 p-3">
-          <p className="text-xs font-medium">{g.supportLogSettings}</p>
-          <Input
-            onChange={event => setSupportUploadUrl(event.target.value)}
-            placeholder={g.supportUploadUrlPlaceholder}
-            value={supportUploadUrl}
-          />
-          <Input
-            onChange={event => setSupportApiKey(event.target.value)}
-            placeholder={supportKeyConfigured ? g.apiKeySetPlaceholder : g.apiKeyPlaceholder}
-            type="password"
-            value={supportApiKey}
-          />
-          <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-            <span>{supportKeyConfigured ? g.apiKeyConfigured : g.apiKeyNotConfigured}</span>
-            <Button
-              disabled={savingSupportConfig || !supportUploadUrl.trim() || (!supportKeyConfigured && !supportApiKey.trim())}
-              onClick={() => void saveSupportConfig()}
-              size="sm"
-            >
-              {savingSupportConfig ? g.savingLabel : g.saveSupportSettings}
-            </Button>
-          </div>
-        </div>
-
         {/* Support Ticket Status & History Tracker */}
         <div className="rounded-lg border border-border/70 bg-background/40 p-3">
           <div className="mb-2 flex items-center justify-between gap-2">
@@ -439,6 +389,15 @@ export function GatewaySettings() {
                 {refreshingTickets ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
                 {g.supportTicketRefresh || 'Aktualisieren'}
               </Button>
+              {tickets.length > 0 && (
+                <Button
+                  onClick={() => clearResolvedSupportTickets(ticketStatusMap)}
+                  size="sm"
+                  variant="text"
+                >
+                  {g.supportTicketClearResolved || 'Gelöste bereinigen'}
+                </Button>
+              )}
               {tickets.length > 0 && (
                 <Button
                   onClick={() => clearSupportTickets()}
@@ -474,6 +433,14 @@ export function GatewaySettings() {
                           {new Date(item.createdAt).toLocaleString()}
                         </span>
                         {getStatusBadge(item.jobId)}
+                        <Button
+                          className="h-5 w-5 p-0 text-muted-foreground hover:text-destructive"
+                          onClick={() => removeSupportTicket(item.jobId)}
+                          size="sm"
+                          variant="text"
+                        >
+                          <Trash2 className="size-3" />
+                        </Button>
                       </div>
                     </div>
                     {item.summary && (

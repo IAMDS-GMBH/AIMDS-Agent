@@ -8,22 +8,51 @@ export interface SavedSupportTicket {
   category?: string
   severity?: string
   createdAt: number
+  status?: string
+  resolvedAt?: number
 }
 
 const STORAGE_KEY = 'hermes_support_tickets_history'
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000
+
+export function isTicketResolved(status?: string): boolean {
+  if (!status) return false
+  const s = status.toUpperCase()
+  return s === 'RESOLVED' || s === 'COMPLETED' || s === 'ARCHIVED'
+}
 
 function loadSavedTickets(): SavedSupportTicket[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return []
     const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
+    if (!Array.isArray(parsed)) return []
+
+    const now = Date.now()
+    return parsed.filter((ticket: SavedSupportTicket) => {
+      if (isTicketResolved(ticket.status)) {
+        const resolvedTime = ticket.resolvedAt || ticket.createdAt
+        if (now - resolvedTime > SEVEN_DAYS_MS) {
+          return false
+        }
+      }
+      return true
+    })
   } catch {
     return []
   }
 }
 
 export const $supportTickets = atom<SavedSupportTicket[]>(loadSavedTickets())
+
+function persistTickets(tickets: SavedSupportTicket[]) {
+  $supportTickets.set(tickets)
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(tickets))
+  } catch {
+    // best-effort
+  }
+}
 
 export function addSupportTicket(ticket: Omit<SavedSupportTicket, 'createdAt'> & { createdAt?: number }) {
   if (!ticket.jobId && !ticket.referenceId && !ticket.caseId) return
@@ -35,26 +64,69 @@ export function addSupportTicket(ticket: Omit<SavedSupportTicket, 'createdAt'> &
     summary: ticket.summary || 'Support Report',
     category: ticket.category || 'other',
     severity: ticket.severity || 'medium',
-    createdAt: ticket.createdAt || Date.now()
+    createdAt: ticket.createdAt || Date.now(),
+    status: ticket.status || 'OPEN',
+    resolvedAt: ticket.resolvedAt
   }
 
   const current = $supportTickets.get()
   const filtered = current.filter(t => t.jobId !== item.jobId && t.caseId !== item.caseId)
   const updated = [item, ...filtered].slice(0, 30)
-  $supportTickets.set(updated)
+  persistTickets(updated)
+}
 
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated))
-  } catch {
-    // best-effort
+export function removeSupportTicket(jobId: string) {
+  const current = $supportTickets.get()
+  const filtered = current.filter(t => t.jobId !== jobId && t.caseId !== jobId && t.referenceId !== jobId)
+  persistTickets(filtered)
+}
+
+export function updateAndCleanupSupportTickets(
+  statusMap: Record<string, { case_status?: string; status?: string }>
+) {
+  const current = $supportTickets.get()
+  const now = Date.now()
+  const updated: SavedSupportTicket[] = []
+
+  for (const ticket of current) {
+    const live = statusMap[ticket.jobId] || statusMap[ticket.referenceId || ''] || statusMap[ticket.caseId || '']
+    const liveStatus = live?.case_status || live?.status || ticket.status
+    const resolved = isTicketResolved(liveStatus)
+
+    let resolvedAt = ticket.resolvedAt
+    if (resolved && !resolvedAt) {
+      resolvedAt = now
+    }
+
+    if (resolved) {
+      const resolvedTime = resolvedAt || ticket.createdAt
+      if (now - resolvedTime > SEVEN_DAYS_MS) {
+        continue
+      }
+    }
+
+    updated.push({
+      ...ticket,
+      status: liveStatus,
+      resolvedAt: resolved ? resolvedAt : undefined
+    })
   }
+
+  persistTickets(updated)
+}
+
+export function clearResolvedSupportTickets(
+  statusMap?: Record<string, { case_status?: string; status?: string }>
+) {
+  const current = $supportTickets.get()
+  const filtered = current.filter(ticket => {
+    const live = statusMap ? (statusMap[ticket.jobId] || statusMap[ticket.referenceId || ''] || statusMap[ticket.caseId || '']) : undefined
+    const status = live?.case_status || live?.status || ticket.status
+    return !isTicketResolved(status)
+  })
+  persistTickets(filtered)
 }
 
 export function clearSupportTickets() {
-  $supportTickets.set([])
-  try {
-    localStorage.removeItem(STORAGE_KEY)
-  } catch {
-    // best-effort
-  }
+  persistTickets([])
 }

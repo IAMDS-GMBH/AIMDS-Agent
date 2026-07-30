@@ -11,6 +11,7 @@ import { FileText, Loader2, LogIn, RefreshCw, Wrench } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
+import { addSupportTicket } from '@/store/support-tickets'
 
 import type { RemoteReauth } from './boot-failure-reauth'
 import { deriveProviderShape, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
@@ -172,6 +173,13 @@ export function BootFailureOverlay() {
       const result = await window.hermesDesktop?.sendSupportLogs?.({ reason: 'boot_failure' })
       if (result?.ok) {
         const reference = result.reference_id || result.referenceId
+        addSupportTicket({
+          jobId: reference || `job-${Date.now()}`,
+          referenceId: reference,
+          summary: 'Support-Logs gesendet (Boot-Fehler)',
+          category: 'connection_error',
+          createdAt: Date.now()
+        })
         notify({
           kind: 'success',
           title: 'Support logs sent',

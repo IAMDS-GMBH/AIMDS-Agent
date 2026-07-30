@@ -202,7 +202,12 @@ def test_enforce_initial_memory_context_call_tracks_ready_bootstrap_status_witho
     workspace = tmp_path / "workspace"
     (workspace / "tasks").mkdir(parents=True)
     (workspace / "tasks" / "thisweek.md").write_text("# Focus\n- [ ] Bootstrap\n", encoding="utf-8")
+    (workspace / "CONTEXT.md").write_text("# Context\n", encoding="utf-8")
+    (workspace / "SOUL.md").write_text("# Soul\n", encoding="utf-8")
+    (workspace / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
     monkeypatch.setattr("agent.conversation_loop.resolve_agent_cwd", lambda: workspace)
+    monkeypatch.setattr("agent.session_bootstrap.check_soul_md", lambda *a, **kw: True)
+    monkeypatch.setattr("agent.session_bootstrap.check_agents_md", lambda *a, **kw: True)
 
     def _mock_execute_tool_calls(assistant_message, messages, _effective_task_id, _api_call_count):
         tc = assistant_message.tool_calls[0]
@@ -211,7 +216,7 @@ def test_enforce_initial_memory_context_call_tracks_ready_bootstrap_status_witho
                 "role": "tool",
                 "name": tc.function.name,
                 "tool_call_id": tc.id,
-                "content": json.dumps({"context_missing": True}),
+                "content": json.dumps({"context_missing": False}),
             }
         )
 
