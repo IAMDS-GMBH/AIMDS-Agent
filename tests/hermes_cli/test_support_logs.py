@@ -16,26 +16,91 @@ def _parse(argv: list[str]):
     return parser.parse_args(["support", "send-logs", *argv])
 
 
-def test_send_logs_requires_upload_url(monkeypatch, capsys):
-    monkeypatch.setattr(support_logs, "_support_config", lambda: {"api_key": "abc"})
+def test_send_logs_defaults_upload_url_and_anonymous_auth(tmp_path, monkeypatch, capsys):
+    hermes_home = tmp_path / ".hermes"
+    logs_dir = hermes_home / "logs"
+    logs_dir.mkdir(parents=True)
+    (logs_dir / "desktop.log").write_text("sample log line\n", encoding="utf-8")
+
+    monkeypatch.setattr(support_logs, "get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(support_logs, "display_hermes_home", lambda: "~/.hermes")
+    monkeypatch.setattr(support_logs, "_support_config", lambda: {})
+    monkeypatch.setattr(support_logs, "_capture_dump_text", lambda: "dump info\n")
+
+    captured = {}
+
+    class _Resp:
+        status = 202
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"job_id":"job-123","reference_id":"SUP-2026-001"}'
+
+    def _fake_urlopen(req, timeout=0):
+        captured["url"] = req.full_url
+        captured["headers"] = dict(req.header_items())
+        captured["data"] = req.data
+        return _Resp()
+
+    monkeypatch.setattr(support_logs.urllib.request, "urlopen", _fake_urlopen)
+
     args = _parse(["--json"])
-
     code = support_logs.run_send_logs(args)
-    assert code == 1
+    assert code == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["ok"] is False
-    assert "support.upload_url" in payload["error"]
+    assert payload["ok"] is True
+    assert captured["url"] == "https://suite-support.iamds.com/api/v1/upload"
+    assert captured["headers"]["Authorization"] == "Bearer anonymous"
 
 
-def test_send_logs_requires_api_key(monkeypatch, capsys):
-    monkeypatch.setattr(support_logs, "_support_config", lambda: {"upload_url": "https://support.example/upload"})
+def test_send_logs_uses_custom_url_and_api_key(tmp_path, monkeypatch, capsys):
+    hermes_home = tmp_path / ".hermes"
+    logs_dir = hermes_home / "logs"
+    logs_dir.mkdir(parents=True)
+    (logs_dir / "desktop.log").write_text("sample log line\n", encoding="utf-8")
+
+    monkeypatch.setattr(support_logs, "get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(support_logs, "display_hermes_home", lambda: "~/.hermes")
+    monkeypatch.setattr(
+        support_logs,
+        "_support_config",
+        lambda: {"upload_url": "https://custom-support.example.com", "api_key": "my-key"},
+    )
+    monkeypatch.setattr(support_logs, "_capture_dump_text", lambda: "dump info\n")
+
+    captured = {}
+
+    class _Resp:
+        status = 202
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"job_id":"job-456"}'
+
+    def _fake_urlopen(req, timeout=0):
+        captured["url"] = req.full_url
+        captured["headers"] = dict(req.header_items())
+        return _Resp()
+
+    monkeypatch.setattr(support_logs.urllib.request, "urlopen", _fake_urlopen)
+
     args = _parse(["--json"])
-
     code = support_logs.run_send_logs(args)
-    assert code == 1
+    assert code == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["ok"] is False
-    assert "support.api_key" in payload["error"]
+    assert payload["ok"] is True
+    assert captured["url"] == "https://custom-support.example.com/api/v1/upload"
+    assert captured["headers"]["Authorization"] == "Bearer my-key"
 
 
 def test_send_logs_uploads_redacted_bundle(tmp_path, monkeypatch, capsys):

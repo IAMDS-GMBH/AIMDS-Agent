@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -77,6 +77,15 @@ export function ReportIssueDialog({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [referenceId, setReferenceId] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (open) {
+      setSummary(defaultSummary)
+      setCategory(defaultCategory)
+      setSeverity(defaultSeverity)
+      setIncludeSession(Boolean(sessionId))
+    }
+  }, [open, defaultSummary, defaultCategory, defaultSeverity, sessionId])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

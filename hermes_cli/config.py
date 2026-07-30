@@ -2178,7 +2178,7 @@ DEFAULT_CONFIG = {
     # Support log export/upload target. Used by `hermes support send-logs`
     # and desktop support-log upload actions.
     "support": {
-        "upload_url": "",
+        "upload_url": "https://suite-support.iamds.com/api/v1/upload",
         "api_key": "",
         "timeout_seconds": 45,
     },

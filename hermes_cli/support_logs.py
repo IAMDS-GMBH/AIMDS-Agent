@@ -127,7 +127,6 @@ def _collect_payload(
     if include_dump:
         files["dump.txt"] = redact_sensitive_text(_capture_dump_text(), force=True)
 
-    # Process session export if provided via args
     session_data: dict[str, Any] | None = None
     session_json_input = getattr(args, "session_json", None) or ""
     if session_json_input:
@@ -272,7 +271,7 @@ def _upload_bundle(
 ) -> dict[str, Any]:
     payload = bundle_path.read_bytes()
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {api_key}" if api_key else "Bearer anonymous",
         "Content-Type": "application/zip",
         "User-Agent": "hermes-support-log-export/1",
         "X-Hermes-Reason": reason or "manual",
@@ -311,7 +310,8 @@ def _upload_bundle(
 
 def run_send_logs(args) -> int:
     support_cfg = _support_config()
-    upload_url = str(getattr(args, "url", "") or support_cfg.get("upload_url", "") or os.getenv("SUPPORT_UPLOAD_URL", "")).strip()
+    raw_url = str(getattr(args, "url", "") or support_cfg.get("upload_url", "") or os.getenv("SUPPORT_UPLOAD_URL", "")).strip()
+    upload_url = normalize_upload_url(raw_url)
     api_key = str(getattr(args, "api_key", "") or support_cfg.get("api_key", "") or os.getenv("SUPPORT_API_KEY", "")).strip()
     timeout_seconds = int(
         getattr(args, "timeout", 0)
@@ -322,34 +322,6 @@ def run_send_logs(args) -> int:
     include_dump = bool(getattr(args, "include_dump", True))
     reason = str(getattr(args, "reason", "manual") or "manual").strip()
     json_mode = bool(getattr(args, "json", False))
-
-    if not upload_url:
-        payload = {
-            "ok": False,
-            "error": (
-                "Missing support.upload_url. Configure it in ~/.hermes/config.yaml "
-                "or pass --url."
-            ),
-        }
-        if json_mode:
-            print(json.dumps(payload))
-        else:
-            print(payload["error"], file=sys.stderr)
-        return 1
-
-    if not api_key:
-        payload = {
-            "ok": False,
-            "error": (
-                "Missing support.api_key. Configure it in ~/.hermes/config.yaml "
-                "or pass --api-key."
-            ),
-        }
-        if json_mode:
-            print(json.dumps(payload))
-        else:
-            print(payload["error"], file=sys.stderr)
-        return 1
 
     bundle_path: Path | None = None
     try:
@@ -421,4 +393,3 @@ def support_command(args) -> int:
 
     print("Usage: hermes support send-logs [--json]", file=sys.stderr)
     return 2
-
