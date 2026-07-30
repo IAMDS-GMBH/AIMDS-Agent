@@ -41,7 +41,8 @@ export interface Translations {
       connection_error: string
       performance: string
       installation_update: string
-      other: string
+      feature_request: string;
+      other: string;
     }
     severities: {
       low: string
@@ -190,7 +191,8 @@ export interface Translations {
     unmuteHaptics: string
     openSettings: string
     openKeybinds: string
-  }
+    reportIssue: string;
+  };
 
   keybinds: {
     title: string

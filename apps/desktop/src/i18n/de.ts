@@ -27,6 +27,7 @@ export const de
       connection_error: 'Verbindungsfehler',
       performance: 'Performance / Verlangsamung',
       installation_update: 'Installation / Update',
+      feature_request: 'Verbesserungsvorschlag / Feature-Wunsch',
       other: 'Sonstiges'
     },
     severities: {
@@ -179,7 +180,8 @@ export const de
     muteHaptics: 'Haptik stummschalten',
     unmuteHaptics: 'Haptik aktivieren',
     openSettings: 'Einstellungen öffnen',
-    openKeybinds: 'Tastaturkürzel'
+    openKeybinds: 'Tastaturkürzel',
+    reportIssue: 'Problem melden / Feedback'
   },
 
   keybinds: {

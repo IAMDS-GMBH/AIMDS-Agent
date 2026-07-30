@@ -26,6 +26,7 @@ export const en: Translations = {
       connection_error: 'Connection Error',
       performance: 'Performance / Slowness',
       installation_update: 'Installation / Update',
+      feature_request: 'Improvement Suggestion / Feature Request',
       other: 'Other'
     },
     severities: {
@@ -178,7 +179,8 @@ export const en: Translations = {
     muteHaptics: 'Mute haptics',
     unmuteHaptics: 'Unmute haptics',
     openSettings: 'Open settings',
-    openKeybinds: 'Keyboard shortcuts'
+    openKeybinds: 'Keyboard Shortcuts',
+    reportIssue: 'Report Issue / Feedback'
   },
 
   keybinds: {

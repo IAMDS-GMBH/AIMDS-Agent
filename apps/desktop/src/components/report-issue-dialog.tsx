@@ -60,6 +60,7 @@ export function ReportIssueDialog({
       connection_error: 'Verbindungsfehler',
       performance: 'Performance / Verlangsamung',
       installation_update: 'Installation / Update',
+      feature_request: 'Verbesserungsvorschlag / Feature-Wunsch',
       other: 'Sonstiges'
     },
     severities: {
@@ -196,6 +197,7 @@ export function ReportIssueDialog({
                   <option value="connection_error">{copy.categories.connection_error}</option>
                   <option value="performance">{copy.categories.performance}</option>
                   <option value="installation_update">{copy.categories.installation_update}</option>
+                  <option value="feature_request">{copy.categories.feature_request}</option>
                   <option value="other">{copy.categories.other}</option>
                 </select>
               </div>

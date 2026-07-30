@@ -1,6 +1,9 @@
 import { useStore } from '@nanostores/react'
 import type { ComponentProps, ReactNode } from 'react'
+import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
+
+import { ReportIssueDialog } from '@/components/report-issue-dialog'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -53,6 +56,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const sidebarOpen = useStore($sidebarOpen)
   const panesFlipped = useStore($panesFlipped)
+  const [reportIssueOpen, setReportIssueOpen] = useState(false)
 
   const toggleHaptics = () => {
     if (!hapticsMuted) {
@@ -124,6 +128,15 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       onSelect: () => {
         triggerHaptic('open')
         toggleKeybindPanel()
+      }
+    },
+    {
+      icon: <Codicon name="feedback" />,
+      id: 'report-issue',
+      label: t.titlebar.reportIssue || 'Problem melden / Feedback',
+      onSelect: () => {
+        triggerHaptic('open')
+        setReportIssueOpen(true)
       }
     },
     {
@@ -199,6 +212,8 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         {settingsTool && <TitlebarToolButton navigate={navigate} tool={settingsTool} />}
         <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
       </div>
+
+      <ReportIssueDialog onOpenChange={setReportIssueOpen} open={reportIssueOpen} />
     </>
   )
 }
