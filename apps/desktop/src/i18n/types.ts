@@ -1341,6 +1341,8 @@ export interface Translations {
     largeBody: (label: string, size: string) => string
     openInDefaultApp: string
     officeDocumentDescription: string
+    jsonYamlDocumentDescription: string
+    viewAsSource: string
     previewAnyway: string
     truncated: string
     noInlineTitle: string

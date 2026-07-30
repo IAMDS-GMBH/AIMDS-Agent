@@ -17,7 +17,7 @@ import { $currentCwd } from '@/store/session'
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
 import { ProjectTree } from './files/tree'
-import { useProjectTree } from './files/use-project-tree'
+import { resetProjectTreeState, useProjectTree } from './files/use-project-tree'
 
 interface RightSidebarPaneProps {
   onActivateFile: (path: string) => void
@@ -268,7 +268,10 @@ function FileTreeBody({
           <EmptyState body={r.treeErrorBody} title={r.treeErrorTitle} />
           <button
             className="text-[0.68rem] font-medium text-muted-foreground transition hover:text-foreground"
-            onClick={reset}
+            onClick={() => {
+              resetProjectTreeState()
+              reset()
+            }}
             type="button"
           >
             {r.tryAgain}

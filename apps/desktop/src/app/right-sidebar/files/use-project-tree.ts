@@ -27,6 +27,25 @@ function makeNode(path: string, name: string, isDirectory: boolean): TreeNode {
   return { id: path, isDirectory, name }
 }
 
+export function deduplicateNodes(nodes: TreeNode[], seenIds: Set<string> = new Set()): TreeNode[] {
+  const result: TreeNode[] = []
+  for (const node of nodes) {
+    if (!node || !node.id || seenIds.has(node.id)) {
+      continue
+    }
+    seenIds.add(node.id)
+    if (node.children && node.children.length > 0) {
+      result.push({
+        ...node,
+        children: deduplicateNodes(node.children, seenIds)
+      })
+    } else {
+      result.push(node)
+    }
+  }
+  return result
+}
+
 function patchNode(nodes: TreeNode[] | undefined | null, id: string, patch: (n: TreeNode) => TreeNode): TreeNode[] {
   if (!nodes) {
     return []
@@ -110,14 +129,16 @@ function clearProjectTree() {
 async function loadOpenChildrenRecursively(
   nodes: TreeNode[],
   cwd: string,
-  openState: Record<string, boolean>
+  openState: Record<string, boolean>,
+  visited: Set<string> = new Set()
 ): Promise<TreeNode[]> {
   return Promise.all(
     nodes.map(async node => {
-      if (!node.isDirectory || !openState[node.id]) {
+      if (!node.isDirectory || !openState[node.id] || visited.has(node.id)) {
         return node
       }
 
+      visited.add(node.id)
       const { entries, error } = await readProjectDir(node.id, cwd)
 
       if (error) {
@@ -130,7 +151,7 @@ async function loadOpenChildrenRecursively(
       }
 
       const rawChildren = entries.map(e => makeNode(e.path, e.name, e.isDirectory))
-      const children = await loadOpenChildrenRecursively(rawChildren, cwd, openState)
+      const children = await loadOpenChildrenRecursively(rawChildren, cwd, openState, visited)
 
       return {
         ...node,
@@ -181,6 +202,8 @@ async function loadRoot(cwd: string, { force = false }: { force?: boolean } = {}
   if (!error && current.cwd === cwd && Object.values(current.openState).some(Boolean)) {
     rootData = await loadOpenChildrenRecursively(rootData, cwd, current.openState)
   }
+
+  rootData = deduplicateNodes(rootData)
 
   setProjectTree(latest => {
     if (latest.cwd !== cwd || latest.requestId !== requestId) {
@@ -274,14 +297,16 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
           return current
         }
 
+        const patched = patchNode(current.data, id, n => ({
+          ...n,
+          loading: false,
+          error: error || undefined,
+          children: error ? [errorChild(n.id, error)] : entries.map(e => makeNode(e.path, e.name, e.isDirectory))
+        }))
+
         return {
           ...current,
-          data: patchNode(current.data, id, n => ({
-            ...n,
-            loading: false,
-            error: error || undefined,
-            children: error ? [errorChild(n.id, error)] : entries.map(e => makeNode(e.path, e.name, e.isDirectory))
-          }))
+          data: deduplicateNodes(patched)
         }
       })
     },

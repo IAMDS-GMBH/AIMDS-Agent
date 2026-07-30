@@ -1686,6 +1686,8 @@ export const en: Translations = {
     largeBody: (label, size) => `${label} is ${size}. Hermes will only show the first 512 KB.`,
     openInDefaultApp: 'Open in Default App',
     officeDocumentDescription: 'Office document – Click above to open this file directly in your desktop application (e.g. Word, Excel, PowerPoint).',
+    jsonYamlDocumentDescription: 'JSON/YAML file – Click below to open in your default app or view as source text.',
+    viewAsSource: 'View as source text',
     previewAnyway: 'Preview anyway',
     truncated: 'Showing first 512 KB.',
     noInlineTitle: 'No inline preview',

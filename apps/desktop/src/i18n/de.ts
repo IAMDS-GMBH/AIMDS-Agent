@@ -1688,6 +1688,8 @@ export const de
     largeBody: (label, size) => `${label} ist ${size}. Hermes zeigt nur die ersten 512 KB.`,
     openInDefaultApp: 'In Standardanwendung öffnen',
     officeDocumentDescription: 'Office-Dokument – Klicken Sie oben, um die Datei direkt in Ihrer Anwendung (z. B. Word, Excel, PowerPoint) zu öffnen.',
+    jsonYamlDocumentDescription: 'JSON/YAML-Datei – Klicken Sie unten, um die Datei in Ihrer Standardanwendung zu öffnen oder als Quelltext anzuzeigen.',
+    viewAsSource: 'Als Quelltext anzeigen',
     previewAnyway: 'Trotzdem anzeigen',
     truncated: 'Zeige erste 512 KB.',
     noInlineTitle: 'Keine Inline-Vorschau',

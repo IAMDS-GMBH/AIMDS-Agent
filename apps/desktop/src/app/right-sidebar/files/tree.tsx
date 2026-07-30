@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { type NodeApi, type NodeRendererProps, Tree, type TreeApi } from 'react-arborist'
 
 import { PageLoader } from '@/components/page-loader'
@@ -14,7 +14,7 @@ import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
-import type { TreeNode } from './use-project-tree'
+import { deduplicateNodes, type TreeNode } from './use-project-tree'
 
 const ROW_HEIGHT = 22
 const INDENT = 10
@@ -92,12 +92,14 @@ export function ProjectTree({
     [onPreviewFile]
   )
 
+  const sanitizedData = useMemo(() => deduplicateNodes(data), [data])
+
   return (
     <div className="min-h-0 flex-1 overflow-hidden" ref={containerRef}>
       {size.height > 0 && size.width > 0 ? (
         <Tree<TreeNode>
           childrenAccessor={node => (node?.isDirectory ? (node.children ?? []) : null)}
-          data={data}
+          data={sanitizedData}
           disableDrag
           disableDrop
           disableEdit
