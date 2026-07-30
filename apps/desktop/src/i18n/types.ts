@@ -38,8 +38,22 @@ export interface Translations {
     translating?: string
     translateSuccess?: string
     close: string
-    categories?: Record<string, string>
-    severities?: Record<string, string>
+    errorTitle: string
+    categories: {
+      llm_timeout: string
+      ui_bug: string
+      connection_error: string
+      performance: string
+      installation_update: string
+      feature_request: string
+      other: string
+    }
+    severities: {
+      low: string
+      medium: string
+      high: string
+      critical: string
+    }
   }
 
   feedbackPrompts?: {
@@ -60,22 +74,6 @@ export interface Translations {
     promptAction: string
     disabledSuccess: string
     enabledSuccess: string
-    errorTitle: string
-    categories: {
-      llm_timeout: string
-      ui_bug: string
-      connection_error: string
-      performance: string
-      installation_update: string
-      feature_request: string;
-      other: string;
-    }
-    severities: {
-      low: string
-      medium: string
-      high: string
-      critical: string
-    }
   }
   common: {
     apply: string

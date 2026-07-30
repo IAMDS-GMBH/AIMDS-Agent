@@ -1,5 +1,6 @@
 import { type CSSProperties } from 'react'
 import { useStore } from '@nanostores/react'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import { Button } from '../components/button'
 import {
   $logPath,
@@ -9,7 +10,7 @@ import {
   startUpdate,
   type BootstrapStateModel
 } from '../store'
-import { RefreshCw, FileText } from 'lucide-react'
+import { RefreshCw, FileText, LifeBuoy } from 'lucide-react'
 
 interface FailureProps {
   bootstrap: BootstrapStateModel
@@ -19,13 +20,20 @@ interface FailureProps {
  * Failure screen. Same hero treatment as Welcome/Success — the wordmark
  * carries the brand, so we keep it across every terminal state.
  *
- * The actual error message lives below in muted text. Two clear
- * affordances: Retry (primary) and Open log folder (secondary).
+ * The actual error message lives below in muted text. Three clear
+ * affordances: Retry (primary), Open log folder (secondary), and Report issue.
  */
 export default function Failure({ bootstrap }: FailureProps) {
   const logPath = useStore($logPath)
   const mode = useStore($mode)
   const isUpdate = mode === 'update'
+
+  const handleReportIssue = () => {
+    const url = 'https://github.com/NousResearch/Hermes-Agent/issues/new'
+    void openUrl(url).catch(() => {
+      window.open(url, '_blank')
+    })
+  }
 
   return (
     <div className="hermes-fade-in flex h-full flex-col items-center justify-center gap-6 px-12 py-10">
@@ -54,7 +62,7 @@ export default function Failure({ bootstrap }: FailureProps) {
         </p>
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center justify-center gap-3">
         <Button
           onClick={() => void (isUpdate ? startUpdate() : startInstall())}
           size="lg"
@@ -71,6 +79,15 @@ export default function Failure({ bootstrap }: FailureProps) {
         >
           <FileText size={16} />
           Open log folder
+        </Button>
+        <Button
+          variant="outline"
+          size="lg"
+          onClick={handleReportIssue}
+          className="inline-flex items-center gap-2"
+        >
+          <LifeBuoy size={16} />
+          Report issue
         </Button>
       </div>
 
