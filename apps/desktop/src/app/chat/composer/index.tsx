@@ -1359,18 +1359,21 @@ export function ChatBar({
     [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain]
   )
 
-  // Auto-drain on busy → false (turn settled). Queued turns always flow once
-  // the session is idle again — whether the turn finished naturally or the
-  // user interrupted it. Interrupting to reach a queued message is the whole
-  // point of the queue, so we never suppress the drain. To cancel queued
-  // turns, the user deletes them from the panel.
+  const initialMountRef = useRef(true)
+
+  // Auto-drain on busy → false (turn settled) or initial idle mount. Queued
+  // turns always flow once the session is idle again — whether the turn finished
+  // naturally, was interrupted, or was restored from persistent storage.
   useEffect(() => {
     const wasBusy = previousBusyRef.current
+    const isInitialMount = initialMountRef.current
+    initialMountRef.current = false
     previousBusyRef.current = busy
 
     if (
       shouldAutoDrainOnSettle({
         isBusy: busy,
+        isInitialMount,
         queueLength: queuedPrompts.length,
         wasBusy
       })

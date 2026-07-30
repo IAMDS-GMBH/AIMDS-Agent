@@ -35,6 +35,7 @@ import {
   terminalContextBlocksFromDraft,
   updateComposerAttachment
 } from '@/store/composer'
+import { enqueueQueuedPrompt } from '@/store/composer-queue'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -543,7 +544,26 @@ export function usePromptActions({
       // bounce the drained send. The drain lock serializes them; the user path
       // keeps the guard so a stray Enter mid-turn can't double-submit.
       const hasSendable = Boolean(submittedText || terminalContextBlocks || attachments.length || hasImage)
-      if (!hasSendable || (!options?.fromQueue && busyRef.current)) {
+      if (!hasSendable) {
+        return false
+      }
+
+      if (!options?.fromQueue && busyRef.current) {
+        const targetSid = options?.sessionId || activeSessionId || activeSessionIdRef.current
+
+        if (targetSid) {
+          enqueueQueuedPrompt(targetSid, {
+            text: rawText,
+            attachments
+          })
+
+          if (usingComposerAttachments) {
+            clearComposerAttachments()
+          }
+
+          return true
+        }
+
         return false
       }
 

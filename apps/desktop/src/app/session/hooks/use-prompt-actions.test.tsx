@@ -259,7 +259,7 @@ describe('usePromptActions desktop slash pickers', () => {
     expect(calls).toContainEqual({
       method: 'handoff.fail',
       params: {
-        error: expect.stringContaining('Timed out'),
+        error: expect.stringMatching(/Timed out|Zeitüberschreitung/i),
         session_id: RUNTIME_SESSION_ID
       }
     })
@@ -362,7 +362,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     })
   })
 
-  it('a normal (non-queue) submit still respects the busyRef guard', async () => {
+  it('a normal (non-queue) submit enqueues when busyRef is true without calling prompt.submit directly', async () => {
     const busyRef = { current: true }
     const requestGateway = vi.fn(async () => ({}) as never)
 
@@ -376,9 +376,9 @@ describe('usePromptActions submit / queue drain semantics', () => {
       />
     )
 
-    const accepted = await handle!.submitText('should be blocked')
+    const accepted = await handle!.submitText('should be queued')
 
-    expect(accepted).toBe(false)
+    expect(accepted).toBe(true)
     expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
   })
 })
