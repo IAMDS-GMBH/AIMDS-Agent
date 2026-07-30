@@ -39,6 +39,8 @@ function totalItems(groups: readonly CommitGroup[]) {
 export function UpdatesOverlay() {
   const open = useStore($updateOverlayOpen)
   const target = useStore($updateOverlayTarget)
+  const [reportOpen, setReportOpen] = useState(false)
+  const [reportSummary, setReportSummary] = useState('Problem beim Update')
 
   const clientStatus = useStore($updateStatus)
   const clientChecking = useStore($updateChecking)
@@ -87,36 +89,54 @@ export function UpdatesOverlay() {
     void install()
   }
 
+  const handleReportIssue = (summary?: string) => {
+    if (summary) setReportSummary(summary)
+    setReportOpen(true)
+  }
+
   return (
-    <Dialog onOpenChange={handleClose} open={open}>
-      <DialogContent
-        className="max-w-sm overflow-hidden border-border/70 p-0 gap-0"
-        showCloseButton={phase !== 'applying'}
-      >
-        {phase === 'applying' && <ApplyingView apply={apply} isBackend={isBackend} />}
+    <>
+      <Dialog onOpenChange={handleClose} open={open}>
+        <DialogContent
+          className="max-w-sm overflow-hidden border-border/70 p-0 gap-0"
+          showCloseButton={phase !== 'applying'}
+        >
+          {phase === 'applying' && (
+            <ApplyingView apply={apply} isBackend={isBackend} onReportIssue={() => handleReportIssue('Update hängt / abgebrochen')} />
+          )}
 
-        {phase === 'manual' && (
-          <ManualView command={apply.command ?? 'hermes update'} onDone={() => handleClose(false)} />
-        )}
+          {phase === 'manual' && (
+            <ManualView command={apply.command ?? 'hermes update'} onDone={() => handleClose(false)} onReportIssue={() => handleReportIssue('Manuelles Update fehlgeschlagen')} />
+          )}
 
-        {phase === 'error' && (
-          <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
-        )}
+          {phase === 'error' && (
+            <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onReportIssue={() => handleReportIssue(`Update-Fehler: ${apply.message || 'Unbekannt'}`)} onRetry={handleInstall} />
+          )}
 
-        {phase === 'idle' && (
-          <IdleView
-            behind={behind}
-            checking={checking}
-            commits={status?.commits ?? []}
-            onInstall={handleInstall}
-            onLater={() => handleClose(false)}
-            onRetryCheck={() => void check()}
-            status={status}
-            target={target}
-          />
-        )}
-      </DialogContent>
-    </Dialog>
+          {phase === 'idle' && (
+            <IdleView
+              behind={behind}
+              checking={checking}
+              commits={status?.commits ?? []}
+              onInstall={handleInstall}
+              onLater={() => handleClose(false)}
+              onReportIssue={handleReportIssue}
+              onRetryCheck={() => void check()}
+              status={status}
+              target={target}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+      <ReportIssueDialog
+        contextType="update_error"
+        defaultCategory="installation_update"
+        defaultSummary={reportSummary}
+        installType="update"
+        onOpenChange={setReportOpen}
+        open={reportOpen}
+      />
+    </>
   )
 }
 
@@ -126,6 +146,7 @@ function IdleView({
   commits,
   onInstall,
   onLater,
+  onReportIssue,
   onRetryCheck,
   status,
   target
@@ -135,6 +156,7 @@ function IdleView({
   commits: readonly DesktopUpdateCommit[]
   onInstall: () => void
   onLater: () => void
+  onReportIssue: (summary?: string) => void
   onRetryCheck: () => void
   status: DesktopUpdateStatus | null
   target: UpdateTarget
@@ -152,9 +174,14 @@ function IdleView({
     return (
       <CenteredStatus
         action={
-          <Button onClick={onRetryCheck} size="sm">
-            {u.tryAgain}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button onClick={onRetryCheck} size="sm">
+              {u.tryAgain}
+            </Button>
+            <Button onClick={() => onReportIssue('Update-Prüfung fehlgeschlagen')} size="sm" variant="outline">
+              Problem melden
+            </Button>
+          </div>
         }
         icon={<ErrorIcon />}
         title={u.checkFailedTitle}
@@ -176,9 +203,14 @@ function IdleView({
     return (
       <CenteredStatus
         action={
-          <Button disabled={checking} onClick={onRetryCheck} size="sm">
-            {u.tryAgain}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button disabled={checking} onClick={onRetryCheck} size="sm">
+              {u.tryAgain}
+            </Button>
+            <Button onClick={() => onReportIssue('Verbindungsfehler bei Update-Prüfung')} size="sm" variant="outline">
+              Problem melden
+            </Button>
+          </div>
         }
         body={u.connectionRetry}
         icon={<ErrorIcon />}
@@ -247,9 +279,14 @@ function IdleView({
         <Button className="font-semibold" onClick={onInstall} size="lg">
           {u.updateNow}
         </Button>
-        <Button className="font-medium" onClick={onLater} type="button" variant="text">
-          {u.maybeLater}
-        </Button>
+        <div className="flex items-center justify-between gap-2 px-1">
+          <Button className="font-medium" onClick={onLater} type="button" variant="text">
+            {u.maybeLater}
+          </Button>
+          <Button onClick={() => onReportIssue('Problem beim Update')} size="xs" type="button" variant="text">
+            Problem melden
+          </Button>
+        </div>
       </div>
 
       {remaining > 0 && (
@@ -261,7 +298,7 @@ function IdleView({
   )
 }
 
-function ManualView({ command, onDone }: { command: string; onDone: () => void }) {
+function ManualView({ command, onDone, onReportIssue }: { command: string; onDone: () => void; onReportIssue: () => void }) {
   const { t } = useI18n()
   const u = t.updates
   const [copied, setCopied] = useState(false)
@@ -312,14 +349,19 @@ function ManualView({ command, onDone }: { command: string; onDone: () => void }
         {u.manualPickedUp}
       </p>
 
-      <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
-        {u.done}
-      </Button>
+      <div className="grid gap-2">
+        <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
+          {u.done}
+        </Button>
+        <Button onClick={onReportIssue} size="xs" type="button" variant="text">
+          Problem melden
+        </Button>
+      </div>
     </div>
   )
 }
 
-function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend: boolean }) {
+function ApplyingView({ apply, isBackend, onReportIssue }: { apply: UpdateApplyState; isBackend: boolean; onReportIssue: () => void }) {
   const { t } = useI18n()
   const u = t.updates
   const label = u.stages[apply.stage as DesktopUpdateStage] ?? u.stages.idle
@@ -351,48 +393,42 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
         />
       </div>
 
-      <p className="text-center text-xs text-muted-foreground">{u.applyingClose}</p>
+      <div className="flex flex-col items-center gap-1">
+        <p className="text-center text-xs text-muted-foreground">{u.applyingClose}</p>
+        <Button onClick={onReportIssue} size="xs" type="button" variant="text">
+          Problem melden
+        </Button>
+      </div>
     </div>
   )
 }
 
-function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss: () => void; onRetry: () => void }) {
+function ErrorView({ message, onDismiss, onReportIssue, onRetry }: { message: string; onDismiss: () => void; onReportIssue: () => void; onRetry: () => void }) {
   const { t } = useI18n()
   const u = t.updates
-  const [reportOpen, setReportOpen] = useState(false)
 
   return (
-    <>
-      <ErrorState
-        className="px-6 pb-6 pt-7 pr-8"
-        description={
-          <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
-            {message || u.errorBody}
-          </DialogDescription>
-        }
-        title={
-          <DialogTitle className="text-center text-xl font-semibold tracking-tight">{u.errorTitle}</DialogTitle>
-        }
-      >
-        <Button className="font-semibold" onClick={onRetry} size="lg">
-          {u.tryAgain}
-        </Button>
-        <Button onClick={() => setReportOpen(true)} variant="outline">
-          Problem melden
-        </Button>
-        <Button onClick={onDismiss} variant="text">
-          {u.notNow}
-        </Button>
-      </ErrorState>
-      <ReportIssueDialog
-        contextType="update_error"
-        defaultCategory="installation_update"
-        defaultSummary={`Update-Fehler: ${message || 'Unbekannt'}`}
-        installType="update"
-        onOpenChange={setReportOpen}
-        open={reportOpen}
-      />
-    </>
+    <ErrorState
+      className="px-6 pb-6 pt-7 pr-8"
+      description={
+        <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
+          {message || u.errorBody}
+        </DialogDescription>
+      }
+      title={
+        <DialogTitle className="text-center text-xl font-semibold tracking-tight">{u.errorTitle}</DialogTitle>
+      }
+    >
+      <Button className="font-semibold" onClick={onRetry} size="lg">
+        {u.tryAgain}
+      </Button>
+      <Button onClick={onReportIssue} variant="outline">
+        Problem melden
+      </Button>
+      <Button onClick={onDismiss} variant="text">
+        {u.notNow}
+      </Button>
+    </ErrorState>
   )
 }
 
