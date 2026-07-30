@@ -33,7 +33,33 @@ export interface Translations {
     successTitle: string
     successMessage: string
     referenceId: string
+    diagnosticsLocationHint?: string
+    translateToEnglish?: string
+    translating?: string
+    translateSuccess?: string
     close: string
+    categories?: Record<string, string>
+    severities?: Record<string, string>
+  }
+
+  feedbackPrompts?: {
+    toggleLabel: string
+    toggleDesc: string
+    disableDialogTitle: string
+    disableDialogDesc: string
+    reasonLabel: string
+    reasonPlaceholder: string
+    reasonRequired: string
+    submitDisable: string
+    submitting: string
+    cancel: string
+    reenabledTitle: string
+    reenabledMessage: (version: string) => string
+    promptTitle: string
+    promptMessage: string
+    promptAction: string
+    disabledSuccess: string
+    enabledSuccess: string
     errorTitle: string
     categories: {
       llm_timeout: string

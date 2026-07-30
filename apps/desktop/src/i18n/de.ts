@@ -19,6 +19,10 @@ export const de
     successTitle: 'Problem erfolgreich gemeldet!',
     successMessage: 'Ihr Support-Ticket wurde erstellt:',
     referenceId: 'Referenz-ID',
+    diagnosticsLocationHint: 'Sie finden den Status Ihrer Tickets jederzeit in den Einstellungen unter Gateway → Support-Tickets.',
+    translateToEnglish: 'In Englisch übersetzen',
+    translating: 'Wird übersetzt…',
+    translateSuccess: 'Erfolgreich ins Englische übersetzt.',
     close: 'Schließen',
     errorTitle: 'Senden fehlgeschlagen',
     categories: {
@@ -36,6 +40,26 @@ export const de
       high: 'Hoch',
       critical: 'Kritisch'
     }
+  },
+
+  feedbackPrompts: {
+    toggleLabel: 'Regelmäßige Feedback-Hinweise',
+    toggleDesc: 'Gelegentliche Erinnerung im Client zur Abgabe von Feedback',
+    disableDialogTitle: 'Feedback-Hinweise deaktivieren',
+    disableDialogDesc: 'Bitte geben Sie eine Begründung an, warum Sie keine regelmäßigen Feedback-Hinweise mehr erhalten möchten. Diese wird an den Support gesendet.',
+    reasonLabel: 'Begründung (erforderlich)',
+    reasonPlaceholder: 'Warum möchten Sie keine Feedback-Erinnerungen mehr erhalten?',
+    reasonRequired: 'Eine Begründung ist erforderlich, um die Hinweise zu deaktivieren.',
+    submitDisable: 'Deaktivieren & Absenden',
+    submitting: 'Wird übermittelt…',
+    cancel: 'Abbrechen',
+    reenabledTitle: 'Feedback-Hinweise wieder aktiviert',
+    reenabledMessage: (version: string) => `Die regelmäßigen Feedback-Hinweise wurden nach dem Update auf Version v${version} automatisch wieder aktiviert.`,
+    promptTitle: 'Ihre Meinung zu Hermes',
+    promptMessage: 'Haben Sie Feedback oder einen Verbesserungswunsch? Wir freuen uns über Ihre Rückmeldung!',
+    promptAction: 'Feedback geben',
+    disabledSuccess: 'Feedback-Hinweise deaktiviert und Begründung an den Support gesendet.',
+    enabledSuccess: 'Feedback-Hinweise wieder aktiviert.'
   },
   common: {
     apply: 'Übernehmen',

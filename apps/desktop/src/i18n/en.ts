@@ -18,6 +18,10 @@ export const en: Translations = {
     successTitle: 'Issue reported successfully!',
     successMessage: 'Your support ticket has been created:',
     referenceId: 'Reference ID',
+    diagnosticsLocationHint: 'You can check the status of your tickets anytime in Settings under Gateway → Support Tickets.',
+    translateToEnglish: 'Translate to English',
+    translating: 'Translating…',
+    translateSuccess: 'Successfully translated to English.',
     close: 'Close',
     errorTitle: 'Submission failed',
     categories: {
@@ -35,6 +39,26 @@ export const en: Translations = {
       high: 'High',
       critical: 'Critical'
     }
+  },
+
+  feedbackPrompts: {
+    toggleLabel: 'Periodic feedback prompts',
+    toggleDesc: 'Occasional reminders in the client to submit feedback',
+    disableDialogTitle: 'Disable feedback prompts',
+    disableDialogDesc: 'Please provide a reason why you wish to disable periodic feedback prompts. This will be submitted to support.',
+    reasonLabel: 'Reason (required)',
+    reasonPlaceholder: 'Why do you wish to disable feedback prompts?',
+    reasonRequired: 'A reason is required to disable feedback prompts.',
+    submitDisable: 'Disable & Send to Support',
+    submitting: 'Submitting…',
+    cancel: 'Cancel',
+    reenabledTitle: 'Feedback prompts re-enabled',
+    reenabledMessage: (version: string) => `Periodic feedback prompts were automatically re-enabled following the update to version v${version}.`,
+    promptTitle: 'Your feedback on Hermes',
+    promptMessage: 'Have feedback or a feature suggestion for Hermes? We would love to hear from you!',
+    promptAction: 'Give feedback',
+    disabledSuccess: 'Feedback prompts disabled and reason sent to support.',
+    enabledSuccess: 'Feedback prompts re-enabled.'
   },
   common: {
     apply: 'Apply',

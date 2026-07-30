@@ -419,16 +419,25 @@ export function GatewaySettings() {
             <div className="grid gap-2 pt-1">
               {tickets.map(item => {
                 const live = ticketStatusMap[item.jobId]
+                const isFeedback = item.category === 'feature_request'
+                const typePrefix = isFeedback ? 'Feedback' : 'Problemmeldung'
+                const displayTitle = item.summary ? `${typePrefix}: ${item.summary}` : (item.referenceId || item.jobId)
+
                 return (
                   <div
                     className="flex flex-col gap-1 rounded-md border border-border/60 bg-background/60 p-2.5 text-xs"
                     key={item.jobId}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-mono font-semibold text-primary">
-                        {item.referenceId || item.jobId}
-                      </span>
-                      <div className="flex items-center gap-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex flex-col gap-0.5 min-w-0">
+                        <span className="font-semibold text-foreground truncate">
+                          {displayTitle}
+                        </span>
+                        <span className="font-mono text-[11px] text-muted-foreground">
+                          ID: {item.referenceId || item.jobId}
+                        </span>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
                         <span className="text-[10px] text-muted-foreground">
                           {new Date(item.createdAt).toLocaleString()}
                         </span>
@@ -443,9 +452,6 @@ export function GatewaySettings() {
                         </Button>
                       </div>
                     </div>
-                    {item.summary && (
-                      <p className="font-medium text-foreground/90">{item.summary}</p>
-                    )}
                     {live?.resolution_note && (
                       <div className="mt-1 rounded bg-emerald-500/10 p-2 text-[11px] text-emerald-800 dark:text-emerald-200">
                         <span className="font-semibold">{g.supportTicketHeaderResolution || 'Lösungs-Hinweis'}: </span>

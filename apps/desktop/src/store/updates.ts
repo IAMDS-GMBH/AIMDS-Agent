@@ -16,6 +16,7 @@ import type {
 import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
+import { checkAndTriggerFeedbackPrompt, initFeedbackPrompts } from '@/store/feedback-prompts'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $connection } from '@/store/session'
 import type { BackendUpdateCheckResponse } from '@/types/hermes'
@@ -181,6 +182,9 @@ export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null
 
     if (next) {
       $desktopVersion.set(next)
+      if (next.appVersion) {
+        initFeedbackPrompts(next.appVersion)
+      }
     }
 
     return next ?? null
@@ -445,6 +449,7 @@ export function startUpdatePoller(): void {
   void checkUpdates()
   void checkBackendUpdates()
   void refreshDesktopVersion()
+  checkAndTriggerFeedbackPrompt()
   bridge.onProgress(ingestProgress)
 
   // The poller starts at mount, before the gateway connects — so the first

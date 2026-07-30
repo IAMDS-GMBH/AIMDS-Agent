@@ -1,5 +1,7 @@
 import { atom } from 'nanostores'
 
+import { notify } from '@/store/notifications'
+
 export interface SavedSupportTicket {
   jobId: string
   caseId?: string
@@ -91,6 +93,26 @@ export function updateAndCleanupSupportTickets(
   for (const ticket of current) {
     const live = statusMap[ticket.jobId] || statusMap[ticket.referenceId || ''] || statusMap[ticket.caseId || '']
     const liveStatus = live?.case_status || live?.status || ticket.status
+    const oldStatus = ticket.status
+
+    if (liveStatus && oldStatus && liveStatus.toUpperCase() !== oldStatus.toUpperCase()) {
+      notify({
+        id: `ticket-status-change-${ticket.jobId}-${liveStatus}`,
+        kind: isTicketResolved(liveStatus) ? 'success' : 'info',
+        title: 'Support-Ticket Status-Update',
+        message: `Status für „${ticket.summary || ticket.referenceId}“ hat sich von ${oldStatus} auf ${liveStatus} geändert.`,
+        durationMs: 10000,
+        action: {
+          label: 'Tickets anzeigen',
+          onClick: () => {
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('hermes:open-gateway-settings', { detail: { tab: 'support' } }))
+            }
+          }
+        }
+      })
+    }
+
     const resolved = isTicketResolved(liveStatus)
 
     let resolvedAt = ticket.resolvedAt
