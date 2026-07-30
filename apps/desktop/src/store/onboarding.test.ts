@@ -115,6 +115,20 @@ describe('refreshOnboarding', () => {
     expect($desktopOnboarding.get().providers?.map(p => p.id)).toEqual(['cached'])
   })
 
+  it('does not wipe configured state when readiness check fails with fallback transport error', async () => {
+    window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
+    $desktopOnboarding.set(baseState({ configured: true }))
+
+    const fallbackGateway: OnboardingContext['requestGateway'] = async () => {
+      throw new Error('WebSocket is not open')
+    }
+
+    const ready = await refreshOnboarding(onboardingContext(fallbackGateway))
+
+    expect(ready).toBe(false)
+    expect($desktopOnboarding.get().configured).toBe(true)
+  })
+
   it('deduplicates concurrent provider refresh calls', async () => {
     let resolveProviders!: (value: { providers: OAuthProvider[] }) => void
 

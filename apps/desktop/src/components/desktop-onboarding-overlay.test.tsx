@@ -59,13 +59,13 @@ describe('onboarding Picker', () => {
     render(<Picker ctx={ctx} />)
 
     expect(screen.getByText('Nous Portal')).toBeTruthy()
-    expect(screen.getByText('Recommended')).toBeTruthy()
+    expect(screen.getByText(/^Recommended$|^Empfohlen$/i)).toBeTruthy()
     expect(screen.queryByText('Anthropic API Key')).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Other providers' }))
+    fireEvent.click(screen.getByRole('button', { name: /Other providers|Andere Anbieter/i }))
 
     expect(screen.getByText('Anthropic API Key')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Collapse' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Collapse|Einklappen/i })).toBeTruthy()
   })
 
   it('shows every provider directly when Nous Portal is absent', () => {
@@ -82,7 +82,7 @@ describe('onboarding Picker', () => {
     setProviders([provider('nous', 'Nous Portal')])
     render(<Picker ctx={ctx} />)
 
-    const skip = screen.getByRole('button', { name: "I'll choose a provider later" })
+    const skip = screen.getByRole('button', { name: /I'll choose a provider later|Anbieter später wählen/i })
 
     fireEvent.click(skip)
 

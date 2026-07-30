@@ -486,6 +486,16 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
     return true
   }
 
+  // If the readiness check failed due to a transient transport/fallback error
+  // (e.g. gateway socket still connecting or reconnecting), do NOT wipe `configured`
+  // or flash the onboarding overlay for an already-configured user.
+  if (
+    runtime.source === 'fallback' &&
+    (readCachedConfigured() === true || $desktopOnboarding.get().configured === true)
+  ) {
+    return false
+  }
+
   const state = $desktopOnboarding.get()
   const reason = runtime.reason || state.reason || DEFAULT_ONBOARDING_REASON
 
