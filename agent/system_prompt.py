@@ -427,15 +427,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
-    from hermes_time import now as _hermes_now
+    from hermes_time import get_calendar_context, now as _hermes_now
     now = _hermes_now()
-    # Date-only (not minute-precision) so the system prompt is byte-stable
-    # for the full day.  Minute-precision changes invalidate prefix-cache KV
-    # on every rebuild path (compression boundary, fresh-agent gateway turns,
-    # session resume without a stored prompt).  The model can still query the
-    # exact wall-clock time via tools when it actually needs it.
-    # Credit: @iamfoz (PR #20451).
-    timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
+    cal_ctx = get_calendar_context(now)
+    timestamp_line = cal_ctx["formatted_prompt"]
     if agent.pass_session_id and agent.session_id:
         timestamp_line += f"\nSession ID: {agent.session_id}"
     if agent.model:
@@ -443,6 +438,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if agent.provider:
         timestamp_line += f"\nProvider: {agent.provider}"
     volatile_parts.append(timestamp_line)
+
+    # Track date string for automatic mid-session date change cache invalidation
+    agent._cached_system_prompt_date = now.strftime("%Y-%m-%d")
 
     return {
         "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),

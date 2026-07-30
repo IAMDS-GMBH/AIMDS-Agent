@@ -443,3 +443,39 @@ class TestDefaultTimezoneName:
         with patch.object(hermes_time, "_resolve_timezone_name", return_value=""), \
              patch.object(hermes_time, "_resolve_os_timezone_name", return_value=""):
             assert hermes_time.default_timezone_name() == "UTC"
+
+
+# =========================================================================
+# hermes_time.get_calendar_context() & get_public_holidays()
+# =========================================================================
+
+class TestGermanHolidaysAndCalendar:
+    """Test ISO 8601 calendar calculations and regional German holidays."""
+
+    def test_easter_calculation(self):
+        """Verify Meeus Easter algorithm for known years."""
+        assert hermes_time.get_easter_sunday(2026) == datetime(2026, 4, 5).date()
+        assert hermes_time.get_easter_sunday(2025) == datetime(2025, 4, 20).date()
+
+    def test_german_holidays_bw(self):
+        """Verify Baden-Württemberg holidays in 2026."""
+        holidays_bw = hermes_time.get_public_holidays(2026, "BW")
+        # Karfreitag 2026-04-03, Tag der Arbeit 2026-05-01, Allerheiligen 2026-11-01
+        assert datetime(2026, 4, 3).date() in holidays_bw
+        assert holidays_bw[datetime(2026, 4, 3).date()] == "Karfreitag"
+        assert datetime(2026, 11, 1).date() in holidays_bw
+        assert holidays_bw[datetime(2026, 11, 1).date()] == "Allerheiligen"
+
+    def test_calendar_context_formatting(self):
+        """Verify ISO 8601 week number, day of week, and prompt text."""
+        test_dt = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+        ctx = hermes_time.get_calendar_context(test_dt, state="BW")
+        assert ctx["iso_date"] == "2026-07-30"
+        assert ctx["iso_week"] == 31
+        assert ctx["iso_day"] == 4
+        assert ctx["day_de"] == "Donnerstag"
+        assert ctx["monday_date"] == "2026-07-27"
+        assert ctx["sunday_date"] == "2026-08-02"
+        assert "KW 31" in ctx["formatted_prompt"]
+        assert "ISO 8601 Standard" in ctx["formatted_prompt"]
+

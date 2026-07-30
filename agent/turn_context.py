@@ -229,6 +229,14 @@ def build_turn_context(
             f"{'...' if len(_print_preview) > 60 else ''}'"
         )
 
+    # Check if local calendar date has changed since system prompt was cached
+    from hermes_time import now as _hermes_now
+    today_str = _hermes_now().strftime("%Y-%m-%d")
+    cached_date = getattr(agent, "_cached_system_prompt_date", None)
+    if cached_date and cached_date != today_str:
+        logger.info("Date changed from %s to %s — invalidating system prompt cache", cached_date, today_str)
+        agent._cached_system_prompt = None
+
     # ── System prompt (cached per session for prefix caching) ──
     if agent._cached_system_prompt is None:
         restore_or_build_system_prompt(agent, system_message, conversation_history)

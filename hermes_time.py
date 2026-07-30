@@ -20,6 +20,10 @@ from datetime import datetime
 from hermes_constants import get_config_path
 from typing import Optional
 
+from datetime import date, datetime, timedelta
+from hermes_constants import get_config_path
+from typing import Any, Dict, List, Optional
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -37,6 +41,147 @@ _cache_resolved: bool = False
 # Separate cache for the *named* zone used by external APIs (e.g. Microsoft
 # Graph) that require a real zone name rather than a numeric offset.
 _cached_default_tz_name: Optional[str] = None
+_cached_state_code: Optional[str] = None
+
+
+def _resolve_state_code() -> str:
+    """Read configured German state / Bundesland code (e.g. 'BW', 'BY', 'BE')."""
+    global _cached_state_code
+    if _cached_state_code is not None:
+        return _cached_state_code
+
+    state_env = os.getenv("HERMES_STATE", "").strip().upper()
+    if state_env:
+        _cached_state_code = state_env
+        return state_env
+
+    try:
+        import yaml
+        config_path = get_config_path()
+        if config_path.exists():
+            with open(config_path, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            st_cfg = cfg.get("state") or cfg.get("bundesland") or ""
+            if isinstance(st_cfg, str) and st_cfg.strip():
+                _cached_state_code = st_cfg.strip().upper()
+                return _cached_state_code
+    except Exception:
+        pass
+
+    _cached_state_code = "BW"
+    return "BW"
+
+
+def get_easter_sunday(year: int) -> date:
+    """Compute Easter Sunday date for a given year (Meeus/Jones/Butcher algorithm)."""
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def get_public_holidays(year: int, state: str = "BW") -> Dict[date, str]:
+    """Compute German public holidays (Feiertage) for year and state code."""
+    st = (state or "BW").upper()
+    easter = get_easter_sunday(year)
+
+    # Fixed holidays nationwide
+    holidays: Dict[date, str] = {
+        date(year, 1, 1): "Neujahr",
+        date(year, 5, 1): "Tag der Arbeit",
+        date(year, 10, 3): "Tag der Deutschen Einheit",
+        date(year, 12, 25): "1. Weihnachtstag",
+        date(year, 12, 26): "2. Weihnachtstag",
+        # Movable nationwide
+        easter - timedelta(days=2): "Karfreitag",
+        easter + timedelta(days=1): "Ostermontag",
+        easter + timedelta(days=39): "Christi Himmelfahrt",
+        easter + timedelta(days=50): "Pfingstmonat",
+    }
+
+    # State specific fixed holidays
+    if st in ("BW", "BY", "ST"):
+        holidays[date(year, 1, 6)] = "Heilige Drei Könige"
+    if st in ("BE", "MV"):
+        holidays[date(year, 3, 8)] = "Internationaler Frauentag"
+    if st in ("BY", "SL"):
+        holidays[date(year, 8, 15)] = "Mariä Himmelfahrt"
+    if st == "TH":
+        holidays[date(year, 9, 20)] = "Weltkindertag"
+    if st in ("BB", "HB", "HH", "MV", "NI", "SN", "ST", "SH", "TH"):
+        holidays[date(year, 10, 31)] = "Reformationstag"
+    if st in ("BW", "BY", "NW", "RP", "SL"):
+        holidays[date(year, 11, 1)] = "Allerheiligen"
+
+    # State specific movable holidays
+    if st in ("BW", "BY", "HE", "NW", "RP", "SL"):
+        holidays[easter + timedelta(days=60)] = "Fronleichnam"
+    if st == "BB":
+        holidays[easter] = "Ostersonntag"
+        holidays[easter + timedelta(days=49)] = "Pfingstsonntag"
+
+    return dict(sorted(holidays.items()))
+
+
+def get_calendar_context(dt: Optional[datetime] = None, state: Optional[str] = None) -> Dict[str, Any]:
+    """Calculate comprehensive ISO-8601 calendar, week, day, and holiday details."""
+    if dt is None:
+        dt = now()
+
+    st_code = (state or _resolve_state_code()).upper()
+    iso_year, iso_week, iso_day = dt.isocalendar()
+
+    day_de = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"][iso_day - 1]
+    day_en = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][iso_day - 1]
+
+    curr_date = dt.date()
+    monday_date = curr_date - timedelta(days=iso_day - 1)
+    sunday_date = monday_date + timedelta(days=6)
+
+    holidays = get_public_holidays(dt.year, st_code)
+    today_holiday = holidays.get(curr_date)
+
+    upcoming = [(d, name) for d, name in holidays.items() if d >= curr_date]
+    next_holiday_str = f"{upcoming[0][1]} ({upcoming[0][0].strftime('%Y-%m-%d')})" if upcoming else "Keine weiteren im Jahr"
+
+    hol_status = f"FEIERTAG: {today_holiday}" if today_holiday else f"Kein Feiertag (Nächster in {st_code}: {next_holiday_str})"
+
+    prompt_text = (
+        f"Current Local Time & Date: {dt.strftime('%A, %B %d, %Y %H:%M:%S')} ({dt.tzname() or 'Local'})\n"
+        f"ISO Date: {curr_date.strftime('%Y-%m-%d')}\n"
+        f"ISO Calendar Week (KW): KW {iso_week:02d} (ISO {iso_year}-W{iso_week:02d}: Montag {monday_date.strftime('%Y-%m-%d')} bis Sonntag {sunday_date.strftime('%Y-%m-%d')})\n"
+        f"ISO Day of Week: Tag {iso_day} ({day_de} / {day_en})\n"
+        f"ISO 8601 Standard: Montag ist Tag 1 der Woche, Sonntag ist Tag 7.\n"
+        f"Region / Bundesland: {st_code}\n"
+        f"Feiertags-Status ({st_code}): {hol_status}"
+    )
+
+    return {
+        "datetime": dt,
+        "iso_date": curr_date.strftime("%Y-%m-%d"),
+        "iso_week": iso_week,
+        "iso_year": iso_year,
+        "iso_day": iso_day,
+        "day_de": day_de,
+        "day_en": day_en,
+        "monday_date": monday_date.strftime("%Y-%m-%d"),
+        "sunday_date": sunday_date.strftime("%Y-%m-%d"),
+        "state": st_code,
+        "today_holiday": today_holiday,
+        "next_holiday": next_holiday_str,
+        "formatted_prompt": prompt_text,
+    }
 
 
 def _resolve_timezone_name() -> str:
@@ -100,11 +245,12 @@ def reset_cache() -> None:
     config edit or ``HERMES_TIMEZONE`` update) to force ``get_timezone()`` /
     ``now()`` to read the new value instead of the value cached at first use.
     """
-    global _cached_tz, _cached_tz_name, _cache_resolved, _cached_default_tz_name
+    global _cached_tz, _cached_tz_name, _cache_resolved, _cached_default_tz_name, _cached_state_code
     _cached_tz = None
     _cached_tz_name = None
     _cache_resolved = False
     _cached_default_tz_name = None
+    _cached_state_code = None
 
 
 def now() -> datetime:

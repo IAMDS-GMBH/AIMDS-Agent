@@ -560,6 +560,21 @@ _GERMAN_SYNONYMS: Dict[str, List[str]] = {
 }
 
 
+SOURCE_ALIASES: Dict[str, str] = {
+    "office": "MSOffice365MCP",
+    "msoffice": "MSOffice365MCP",
+    "msoffice365": "MSOffice365MCP",
+    "ms365": "MSOffice365MCP",
+    "office365": "MSOffice365MCP",
+    "officetools": "MSOffice365MCP",
+    "m365": "MSOffice365MCP",
+    "outlook": "MSOffice365MCP",
+    "teams": "MSOffice365MCP",
+    "sharepoint": "MSOffice365MCP",
+    "onedrive": "MSOffice365MCP",
+}
+
+
 def _normalize_source_key(text: str) -> str:
     """Collapse a source/toolset name to bare lowercase alnum for exact comparison.
 
@@ -567,23 +582,22 @@ def _normalize_source_key(text: str) -> str:
     "msoffice365mcp" so a query naming the server matches regardless of the
     "mcp-" prefix or original casing.
     """
-    return re.sub(r"[^a-z0-9]", "", text.lower().removeprefix("mcp-"))
+    raw = text.lower().removeprefix("mcp-")
+    norm = re.sub(r"[^a-z0-9]", "", raw)
+    if norm in SOURCE_ALIASES:
+        return re.sub(r"[^a-z0-9]", "", SOURCE_ALIASES[norm].lower())
+    return norm
 
 
 def _match_full_source(catalog: List[CatalogEntry], query_lower: str) -> List[CatalogEntry]:
-    """Return every tool of a source whose name exactly equals the query.
+    """Return every tool of a source whose name or alias matches the query.
 
-    When a user/model searches for e.g. "MSOffice365MCP" or "github" they are
-    almost always asking to browse that server's *entire* tool catalog, not
-    for a semantically-ranked subset. Once a server exposes more tools than
-    the search limit, plain BM25 ranking can silently drop legitimate tools
-    (all candidates get the same source-name boost, so the remaining ranking
-    is decided by BM25 length normalization, which arbitrarily favors
-    shorter tool names over longer ones like "m365_send_chat_message").
-    This exact-match fast path sidesteps that ranking entirely for the
-    server-name-lookup case.
+    When a user/model searches for e.g. "MSOffice365MCP", "office", or "github"
+    they are asking to browse that server's *entire* tool catalog.
     """
     norm_query = re.sub(r"[^a-z0-9]", "", query_lower)
+    if norm_query in SOURCE_ALIASES:
+        norm_query = re.sub(r"[^a-z0-9]", "", SOURCE_ALIASES[norm_query].lower())
     if len(norm_query) < 3:
         return []
     by_source: Dict[str, List[CatalogEntry]] = {}
@@ -596,27 +610,71 @@ def _match_full_source(catalog: List[CatalogEntry], query_lower: str) -> List[Ca
     return []
 
 
-def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> List[CatalogEntry]:
-    """Return the top-``limit`` catalog entries for ``query`` by BM25 + name relevance.
+def _build_vector(text: str) -> Dict[str, float]:
+    """Build a term-frequency vector with sub-word tokenization for vector similarity."""
+    tokens = _tokenize(_split_words(text))
+    if not tokens:
+        return {}
+    counts: Dict[str, float] = {}
+    for t in tokens:
+        counts[t] = counts.get(t, 0.0) + 1.0
+    norm = math.sqrt(sum(c * c for c in counts.values()))
+    if norm <= 0:
+        return {}
+    return {t: c / norm for t, c in counts.items()}
 
-    Boosts tool name and toolset name matches, and filters out weak description-only
-    matches when specific query terms were supplied.
+
+def _cosine_sim(v1: Dict[str, float], v2: Dict[str, float]) -> float:
+    """Compute cosine similarity between two term-frequency vectors."""
+    if not v1 or not v2:
+        return 0.0
+    # Iterate over smaller vector for performance
+    if len(v1) > len(v2):
+        v1, v2 = v2, v1
+    return sum(weight * v2[term] for term, weight in v1.items() if term in v2)
+
+
+def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> List[CatalogEntry]:
+    """Return top catalog entries using vector-first similarity + BM25 keyword fallback.
+
+    Performs vector cosine similarity across tool names, descriptions, parameters,
+    source aliases, and tags first, then applies BM25/keyword scoring as a secondary
+    refinement.
     """
     if not catalog or limit <= 0:
         return []
-    query_tokens = _tokenize(query)
+    query_raw = str(query or "").strip()
+    if not query_raw:
+        return []
+    query_tokens = _tokenize(_split_words(query_raw))
     if not query_tokens:
         return []
 
-    # Fast path: query is exactly an MCP server/toolset name -> return its
-    # full tool catalog, ignoring the normal ranked limit (still capped at a
-    # sane ceiling so a single lookup can't blow up context on huge servers).
-    full_source_hits = _match_full_source(catalog, query.lower().strip())
+    # Fast path: query is an MCP server/toolset name or source alias -> return full tool catalog
+    full_source_hits = _match_full_source(catalog, query_raw.lower())
     if full_source_hits:
         effective_limit = max(limit, min(len(full_source_hits), 60))
         return full_source_hits[:effective_limit]
 
-    # Expand query tokens with synonyms (multilingual German/English intents + dynamic MCP/Skill keywords)
+    # Vector-first scoring setup
+    query_vec = _build_vector(query_raw)
+
+    # Optional VaultIndex vector search lookup (if local index is present)
+    vault_vector_hits: Set[str] = set()
+    try:
+        from agent.memory_vault_index import VaultIndex
+        v_index = VaultIndex()
+        v_results = v_index.hybrid_search(query_raw, top_k=limit * 2, scope_filter="mcp")
+        for vr in v_results:
+            if isinstance(vr, dict):
+                v_title = str(vr.get("title") or "").lower()
+                v_slug = str(vr.get("slug") or "").lower()
+                vault_vector_hits.add(v_title)
+                vault_vector_hits.add(v_slug)
+    except Exception:
+        pass
+
+    # Expand query tokens with synonyms for BM25 fallback
     expanded_tokens = set(query_tokens)
     dynamic_mcp = _get_dynamic_mcp_keywords_map()
     dynamic_skills = _get_dynamic_skill_keywords_map()
@@ -627,7 +685,7 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
             expanded_tokens.update(dynamic_mcp[qt])
         if qt in dynamic_skills:
             expanded_tokens.update(dynamic_skills[qt])
-    query_tokens = list(expanded_tokens)
+    expanded_query_tokens = list(expanded_tokens)
 
     query_lower = query.lower().strip()
     non_generic_query_tokens = [t for t in query_tokens if t not in _GENERIC_SEARCH_TERMS]
@@ -645,6 +703,20 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
     b = 0.75
     scored: List[Tuple[float, CatalogEntry]] = []
     for entry in catalog:
+        # Build entry term vector combining sub-word split name, source, description, parameters
+        entry_text = f"{_split_words(entry.name)} {_split_words(entry.source_name)} {entry.description}"
+        entry_vec = _build_vector(entry_text)
+        vec_sim = _cosine_sim(query_vec, entry_vec)
+
+        vault_hit = False
+        if vault_vector_hits:
+            e_name_low = entry.name.lower()
+            e_src_low = entry.source_name.lower()
+            for vh in vault_vector_hits:
+                if vh in e_name_low or vh in e_src_low or e_name_low in vh:
+                    vault_hit = True
+                    break
+
         doc_tf: Dict[str, int] = {}
         for t in entry._tokens:
             doc_tf[t] = doc_tf.get(t, 0) + 1
@@ -654,7 +726,7 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
         matched_specific_tokens: set[str] = set()
         matched_name_tokens: set[str] = set()
 
-        for q in set(query_tokens):
+        for q in set(expanded_query_tokens):
             if q in doc_tf:
                 matched_query_tokens.add(q)
                 if q not in _GENERIC_SEARCH_TERMS:
@@ -667,7 +739,7 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
                 norm = tf * (k1 + 1) / (tf + k1 * (1 - b + b * len(entry._tokens) / max(avg_dl, 1.0)))
                 bm25_score += idf * norm
 
-        if bm25_score <= 0 and not matched_query_tokens:
+        if vec_sim <= 0 and not vault_hit and bm25_score <= 0 and not matched_query_tokens:
             continue
 
         boost = 0.0
@@ -677,11 +749,14 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
             boost += 10.0
 
         boost += len(matched_name_tokens) * 5.0
-        total_score = bm25_score + boost
+        
+        # Vector similarity receives primary weighting
+        vector_score = (vec_sim * 100.0) + (50.0 if vault_hit else 0.0)
+        total_score = vector_score + bm25_score + boost
 
         # Filtering: if user searched specific terms (e.g. 'jira'), but entry matched ONLY generic terms (e.g. 'search')
-        # in description and zero specific or name terms, drop this false positive.
-        if non_generic_query_tokens and not matched_specific_tokens and not matched_name_tokens:
+        # in description and zero specific or name terms, drop this false positive unless vector similarity is strong (>0.2).
+        if non_generic_query_tokens and not matched_specific_tokens and not matched_name_tokens and vec_sim < 0.2 and not vault_hit:
             continue
 
         scored.append((total_score, entry))
