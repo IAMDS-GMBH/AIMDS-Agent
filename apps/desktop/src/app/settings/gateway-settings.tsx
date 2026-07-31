@@ -354,15 +354,6 @@ export function GatewaySettings() {
               <HelpCircle className="mr-1.5 size-3.5" />
               {g.reportIssueButton || 'Problem melden'}
             </Button>
-            <Button
-              disabled={sendingSupportLogs || !supportConfigured}
-              onClick={() => void handleSendSupportLogs()}
-              size="sm"
-              variant="outline"
-            >
-              {sendingSupportLogs ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}
-              {sendingSupportLogs ? g.sendingSupportLogs : g.sendSupportLogs}
-            </Button>
           </div>
         </div>
 
@@ -416,7 +407,7 @@ export function GatewaySettings() {
               {g.supportTicketNoTickets || 'Noch keine Support-Tickets gemeldet.'}
             </p>
           ) : (
-            <div className="grid gap-2 pt-1">
+            <div className="grid max-h-60 gap-2 overflow-y-auto pr-1 pt-1">
               {tickets.map(item => {
                 const live = ticketStatusMap[item.jobId]
                 const isFeedback = item.category === 'feature_request'

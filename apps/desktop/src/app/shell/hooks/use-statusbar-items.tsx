@@ -13,6 +13,7 @@ import {
   Clock,
   Command,
   Hash,
+  HelpCircle,
   Loader2,
   Sparkles,
   Terminal,
@@ -46,6 +47,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { $subagentsBySession, activeSubagentCount } from '@/store/subagents'
+import { $supportTickets, isTicketResolved } from '@/store/support-tickets'
 import {
   $backendUpdateApply,
   $backendUpdateStatus,
@@ -117,6 +119,7 @@ export function useStatusbarItems({
   const backendUpdateApply = useStore($backendUpdateApply)
   const desktopVersion = useStore($desktopVersion)
   const connection = useStore($connection)
+  const supportTickets = useStore($supportTickets)
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
@@ -231,6 +234,32 @@ export function useStatusbarItems({
     : gatewayDegraded
       ? 'text-amber-600 hover:text-amber-600'
       : 'text-destructive hover:text-destructive'
+
+  const supportTicketItem = useMemo<StatusbarItem | null>(() => {
+    if (supportTickets.length === 0) {
+      return null
+    }
+
+    const openCount = supportTickets.filter(t => !isTicketResolved(t.status)).length
+
+    return {
+      className:
+        openCount > 0
+          ? 'rounded-full bg-blue-500/15 text-blue-700 dark:text-blue-300 border border-blue-500/30 px-2 py-0.5 text-xs font-medium'
+          : undefined,
+      hidden: supportTickets.length === 0,
+      icon: <HelpCircle className="size-3 text-primary" />,
+      id: 'support-tickets-status',
+      label: openCount > 0 ? `Support: ${openCount} offen` : 'Support: Tickets',
+      onSelect: () => {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('hermes:open-gateway-settings', { detail: { tab: 'support' } }))
+        }
+      },
+      title: 'Support-Tickets Status & Übersicht in Einstellungen öffnen',
+      variant: 'action'
+    }
+  }, [supportTickets])
 
   const clientVersionItem = useMemo<StatusbarItem>(() => {
     const appVersion = desktopVersion?.appVersion
@@ -502,6 +531,7 @@ export function useStatusbarItems({
         title: terminalTakeover ? copy.hideTerminal : copy.showTerminal,
         variant: 'action'
       },
+      ...(supportTicketItem ? [supportTicketItem] : []),
       clientVersionItem,
       ...(backendVersionItem ? [backendVersionItem] : [])
     ],

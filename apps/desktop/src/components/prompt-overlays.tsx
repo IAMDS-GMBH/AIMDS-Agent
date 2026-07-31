@@ -69,7 +69,11 @@ function SudoDialog() {
         triggerHaptic('submit')
         clearSudoRequest(request.sessionId, request.requestId)
       } catch (error) {
-        notifyError(error, copy.sudoSendFailed)
+        clearSudoRequest(request.sessionId, request.requestId)
+        const msg = error instanceof Error ? error.message : String(error)
+        if (!msg.toLowerCase().includes('no pending')) {
+          notifyError(error, copy.sudoSendFailed)
+        }
         setSubmitting(false)
       }
     },
@@ -165,7 +169,11 @@ function SecretDialog() {
         triggerHaptic('submit')
         clearSecretRequest(request.sessionId, request.requestId)
       } catch (error) {
-        notifyError(error, copy.secretSendFailed)
+        clearSecretRequest(request.sessionId, request.requestId)
+        const msg = error instanceof Error ? error.message : String(error)
+        if (!msg.toLowerCase().includes('no pending')) {
+          notifyError(error, copy.secretSendFailed)
+        }
         setSubmitting(false)
       }
     },

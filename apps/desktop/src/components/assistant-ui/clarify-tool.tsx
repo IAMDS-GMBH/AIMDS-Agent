@@ -94,6 +94,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const [typing, setTyping] = useState(false)
   const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const isSubmittingRef = useRef(false)
   const [selectedChoice, setSelectedChoice] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
@@ -104,6 +105,10 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
   const respond = useCallback(
     async (answer: string) => {
+      if (isSubmittingRef.current || submitting) {
+        return
+      }
+
       if (!ready || !matchingRequest) {
         notifyError(new Error(copy.notReady), copy.sendFailed)
 
@@ -116,6 +121,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         return
       }
 
+      isSubmittingRef.current = true
       setSubmitting(true)
 
       try {
@@ -128,11 +134,16 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         // The matching tool.complete will land shortly after, swapping this
         // panel for the ToolFallback view above.
       } catch (error) {
-        notifyError(error, copy.sendFailed)
+        clearClarifyRequest(matchingRequest.requestId, matchingRequest.sessionId)
+        const msg = error instanceof Error ? error.message : String(error)
+        if (!msg.toLowerCase().includes('no pending')) {
+          notifyError(error, copy.sendFailed)
+        }
         setSubmitting(false)
+        isSubmittingRef.current = false
       }
     },
-    [gateway, matchingRequest, ready]
+    [copy.gatewayDisconnected, copy.notReady, copy.sendFailed, gateway, matchingRequest, ready, submitting]
   )
 
   const handleTextareaKey = useCallback(

@@ -57,7 +57,7 @@ export function ReportIssueDialog({
     successTitle: 'Problem erfolgreich gemeldet!',
     successMessage: 'Ihr Support-Ticket wurde erstellt:',
     referenceId: 'Referenz-ID',
-    diagnosticsLocationHint: 'Sie finden den Status Ihrer Tickets jederzeit in den Einstellungen unter Gateway → Support-Tickets.',
+    diagnosticsLocationHint: 'Sie finden den Status Ihrer Tickets jederzeit in den Einstellungen unter ⚙️ Diagnose (Zahnrad).',
     translateToEnglish: 'In Englisch übersetzen',
     translating: 'Wird übersetzt…',
     translateSuccess: 'Erfolgreich ins Englische übersetzt.',
