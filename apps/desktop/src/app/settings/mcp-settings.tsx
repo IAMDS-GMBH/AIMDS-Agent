@@ -194,13 +194,9 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
       })
 
       if (result?.ok === false) {
-        const failedNames = result.summary?.failed_servers?.join(', ')
-
         notify({
           kind: 'warning',
-          message: failedNames
-            ? `${result.message ?? m.reloadedMessage} (${failedNames})`
-            : (result.message ?? m.reloadedMessage),
+          message: result?.message ?? m.reloadedMessage,
           title: m.reloadedTitle
         })
       } else {

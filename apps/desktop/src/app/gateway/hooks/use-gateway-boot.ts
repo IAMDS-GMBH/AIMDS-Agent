@@ -388,13 +388,10 @@ export function useGatewayBoot({
               return
             }
             if (result?.ok === false) {
-              const failedNames = result.summary?.failed_servers?.join(', ')
               notify({
                 kind: 'warning',
                 title: 'MCP reload on startup incomplete',
-                message: failedNames
-                  ? `${result.message ?? 'Some MCP servers are disconnected.'} (${failedNames})`
-                  : (result.message ?? 'Some MCP servers are disconnected.')
+                message: result.message ?? 'Some MCP servers are disconnected.'
               })
               return
             }
