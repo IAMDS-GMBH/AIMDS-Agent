@@ -43,6 +43,13 @@ auth:
 
 tools:
   default_enabled:
+    - retrieveWorklogs
+    - createWorklog
+    - bulkCreateWorklogs
+    - editWorklog
+    - deleteWorklog
+    - getMissingWorklogDays
+    - getWorklogAnalytics
     - get_worklogs
     - create_worklog
     - update_worklog

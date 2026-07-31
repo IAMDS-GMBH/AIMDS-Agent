@@ -4320,6 +4320,27 @@ class TestMcpParallelToolCalls:
             for tool_name in registered:
                 registry.deregister(tool_name)
 
+    def test_register_server_tools_include_matches_camelcase_and_snakecase(self):
+        """tools.include snake_case entries should match camelCase tool names from server."""
+        from tools.registry import registry
+        from tools.mcp_tool import _register_server_tools
+
+        server = _make_mock_server(
+            "TempoMCP",
+            tools=[
+                _make_mcp_tool("createWorklog", "Create worklog"),
+                _make_mcp_tool("retrieveWorklogs", "Retrieve worklogs"),
+            ],
+        )
+        config = {"tools": {"include": ["create_worklog", "retrieve_worklogs"]}}
+
+        registered = _register_server_tools("TempoMCP", server, config)
+        try:
+            assert set(registered) == {"mcp_TempoMCP_createWorklog", "mcp_TempoMCP_retrieveWorklogs"}
+        finally:
+            for tool_name in registered:
+                registry.deregister(tool_name)
+
     def test_register_server_tools_exclude_accepts_memory_upsert_alias_for_save(self):
         """Legacy exclude entries with memory_upsert should also match memory_save tools."""
         from tools.registry import registry

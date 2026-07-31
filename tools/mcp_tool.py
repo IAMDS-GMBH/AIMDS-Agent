@@ -2791,7 +2791,19 @@ def _interpolate_env_vars(value):
             if not resolved and name == "JIRA_API_TOKEN":
                 resolved = os.environ.get("JIRA_API_TOKEN") or os.environ.get("JIRA_PERSONAL_TOKEN") or os.environ.get("JIRA_PAT")
             if not resolved and name in ("JIRA_EMAIL", "JIRA_USERNAME"):
-                resolved = os.environ.get("JIRA_EMAIL") or os.environ.get("JIRA_USERNAME")
+                resolved = (
+                    os.environ.get("JIRA_EMAIL")
+                    or os.environ.get("JIRA_USERNAME")
+                    or (
+                        "user@domain.com"
+                        if (
+                            os.environ.get("JIRA_API_TOKEN")
+                            or os.environ.get("JIRA_PERSONAL_TOKEN")
+                            or os.environ.get("JIRA_PAT")
+                        )
+                        else ""
+                    )
+                )
             return resolved if resolved is not None else m.group(0)
 
         return _ENV_VAR_PATTERN.sub(_replace, value)
@@ -4313,13 +4325,27 @@ def _tool_filter_aliases(name: str) -> set[str]:
         aliases.add(stripped)
         curr = stripped
 
-    for a in list(aliases):
-        if a.endswith("_memory_upsert") or a == "memory_upsert":
-            aliases.add(a.replace("memory_upsert", "memory_save"))
-        if a.endswith("_memory_save") or a == "memory_save":
-            aliases.add(a.replace("memory_save", "memory_upsert"))
+    expanded = set()
+    for a in aliases:
+        expanded.add(a)
+        expanded.add(a.lower())
+        expanded.add(a.lower().replace("_", ""))
+        snake = re.sub(r"(?<!^)(?=[A-Z])", "_", a).lower()
+        expanded.add(snake)
+        expanded.add(snake.replace("_", ""))
+        words = a.split("_")
+        if len(words) > 1:
+            camel = words[0].lower() + "".join(w.capitalize() for w in words[1:])
+            expanded.add(camel)
+            expanded.add(camel.lower())
 
-    return aliases
+    for a in list(expanded):
+        if a.endswith("_memory_upsert") or a == "memory_upsert":
+            expanded.add(a.replace("memory_upsert", "memory_save"))
+        if a.endswith("_memory_save") or a == "memory_save":
+            expanded.add(a.replace("memory_save", "memory_upsert"))
+
+    return expanded
 
 
 def _parse_boolish(value: Any, default: bool = True) -> bool:
