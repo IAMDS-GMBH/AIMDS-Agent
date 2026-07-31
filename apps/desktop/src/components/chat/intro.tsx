@@ -155,6 +155,10 @@ type Tip = {
 
 const BUSINESS_TIPS_OF_THE_DAY: Tip[] = [
   {
+    de: '💡 Tipp des Tages: Hast du Feedback oder eine Verbesserungsidee? Über ⚙️ Einstellungen → Problem melden erreichst du direkt unser Support-Team.',
+    en: '💡 Tip of the Day: Have feedback or an improvement idea? Send a message directly via ⚙️ Settings → Report Issue.'
+  },
+  {
     de: '💡 Tipp des Tages: Präzise Anforderungen führen zu den besten Ergebnissen – klare Fragen liefern direkte Antworten.',
     en: '💡 Tip of the Day: Precise instructions lead to optimal outcomes – clear questions deliver actionable answers.'
   },
@@ -181,6 +185,10 @@ const BUSINESS_TIPS_OF_THE_DAY: Tip[] = [
 ]
 
 const IAMDS_NERDY_TIPS_OF_THE_DAY: Tip[] = [
+  {
+    de: '💡 Tipp des Tages: Bug entdeckt oder Wunscheigenschaft vermisst? Gib uns direkt Feedback über ⚙️ Einstellungen → Problem melden!',
+    en: '💡 Tip of the Day: Found a bug or missing a feature? Send us feedback directly via ⚙️ Settings → Report Issue!'
+  },
   {
     de: '💡 Tipp des Tages: Refactoring ohne Tests ist wie Fallschirmspringen ohne Reserveschirm – erst testen, dann umbauen!',
     en: '💡 Tip of the Day: Refactoring without tests is skydiving without a backup chute – test first, rewrite later!'

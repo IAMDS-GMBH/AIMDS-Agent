@@ -40,13 +40,15 @@ function isIamdsUrl(url: string): boolean {
 const PREFIX = 'CONN'
 const TAIL = 'ECTING'
 // Even-weight mono ascii so cycling glyphs don't jump width (matches the
-// nousnet-web download-button decode effect).
-const SCRAMBLE_CHARS = '/\\|-_=+<>~:*'
+// nousnet-web download-button decode effect). Clean alphanumerics + standard symbols
+// ensure cross-platform compatibility across Windows, macOS, and Linux font engines.
+const SCRAMBLE_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ#$@%&*!?'
 const TICK_MS = 45
 const MESSAGE_STEP_MS = 2800
 const STARTUP_MIN_MS = MESSAGE_STEP_MS * 3
 const TEAM_MESSAGES_DE = [
   'Martin beendet gerade das EVN-Meeting.',
+  'Michael sammelt Feedback & Verbesserungsvorschläge...',
   'Tobias behebt gerade EasyPart-Shops.',
   'Michael kümmert sich gerade um organisatorische Themen.',
   'Johannes macht gerade das Dev-Deployment.',
@@ -74,6 +76,7 @@ const TEAM_MESSAGES_DE = [
 
 const TEAM_MESSAGES_EN = [
   'Martin is wrapping up the EVN meeting.',
+  'Michael is collecting feedback & improvement ideas...',
   'Tobias is fixing EasyPart shops.',
   'Michael is taking care of organizational topics.',
   'Johannes is running the dev deployment.',
@@ -101,6 +104,7 @@ const TEAM_MESSAGES_EN = [
 
 const BUSINESS_MESSAGES_DE = [
   'Kompiliere Kaffee-Zufuhr...',
+  'Prüfe Feedback & Verbesserungsvorschläge...',
   'Berechne optimales KPI-Reporting...',
   'Richte künstliche Intelligenz auf Umsatzziele aus...',
   'Schreibe passiv-aggressive E-Mails an das Management...',
@@ -119,6 +123,7 @@ const BUSINESS_MESSAGES_DE = [
 
 const BUSINESS_MESSAGES_EN = [
   'Compiling coffee supply...',
+  'Checking feedback & improvement ideas...',
   'Calculating optimal KPI reporting...',
   'Aligning artificial intelligence with revenue goals...',
   'Drafting passive-aggressive emails to management...',
