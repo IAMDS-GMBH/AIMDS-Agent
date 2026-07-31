@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { Codicon } from '@/components/ui/codicon'
 import type { SetTitlebarToolGroup, TitlebarTool } from '@/app/shell/titlebar-controls'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
@@ -604,17 +605,47 @@ export function PreviewPane({
     <aside className="relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-transparent text-muted-foreground">
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {!embedded && (
-          <div className="pointer-events-none flex min-h-(--titlebar-height) items-center gap-1.5 border-b border-border/60 bg-background px-2 py-1">
+          <div className="flex min-h-(--titlebar-height) items-center gap-1.5 border-b border-border/60 bg-background px-2 py-1">
             <div className="min-w-0 flex-1">
               <Tip label={copy.openTarget(currentUrl)}>
                 <a
-                  className="pointer-events-auto inline max-w-full truncate text-left text-xs font-medium text-foreground underline-offset-4 decoration-current/20 transition-colors hover:text-primary hover:underline"
+                  className="inline max-w-full truncate text-left text-xs font-medium text-foreground underline-offset-4 decoration-current/20 transition-colors hover:text-primary hover:underline"
                   href={currentUrl}
                   rel="noreferrer"
                   target="_blank"
                 >
                   {previewLabel || copy.fallbackTitle}
                 </a>
+              </Tip>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <Tip label={t.rightSidebar.copyPath}>
+                <button
+                  className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(currentUrl)
+                    notify({
+                      kind: 'info',
+                      title: t.rightSidebar.copyPath,
+                      message: currentUrl,
+                      durationMs: 3000
+                    })
+                  }}
+                  type="button"
+                >
+                  <Codicon name="copy" size="0.8125rem" />
+                </button>
+              </Tip>
+              <Tip label={t.rightSidebar.showInFolder}>
+                <button
+                  className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  onClick={() => {
+                    void window.hermesDesktop?.showItemInFolder?.(currentUrl)
+                  }}
+                  type="button"
+                >
+                  <Codicon name="folder-opened" size="0.8125rem" />
+                </button>
               </Tip>
             </div>
           </div>

@@ -289,7 +289,7 @@ const MARKDOWN_COMPONENTS = {
 
 function MarkdownPreview({ text }: { text: string }) {
   return (
-    <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground">
+    <div className="preview-markdown select-text cursor-text mx-auto max-w-3xl px-4 py-3 text-sm text-foreground">
       <Streamdown components={MARKDOWN_COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false}>
         {text}
       </Streamdown>
