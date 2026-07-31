@@ -201,6 +201,7 @@ export function GatewayConnectingOverlay() {
   // BUSINESS messages left off — avoids a jumbled/"mixed" look on switch.
   const messageStartRef = useRef<number | null>(null)
   const prevIsIamdsRef = useRef(defaultIsIamds)
+  const startIndexRef = useRef<number | null>(null)
 
   // Dynamic detection of whether an IAMDS endpoint is configured (best-effort)
   useEffect(() => {
@@ -430,19 +431,23 @@ export function GatewayConnectingOverlay() {
     ? (locale === 'en' ? TEAM_MESSAGES_EN : TEAM_MESSAGES_DE)
     : (locale === 'en' ? BUSINESS_MESSAGES_EN : BUSINESS_MESSAGES_DE)
 
-  // Reset the message clock whenever isNerdy changes so the newly selected
-  // array always starts at index 0 instead of inheriting the old elapsed time.
+  if (startIndexRef.current === null) {
+    startIndexRef.current = Math.floor(Math.random() * messages.length)
+  }
+
+  // Reset the message clock and pick a new random start index whenever isNerdy changes
   if (prevIsIamdsRef.current !== isNerdy) {
     prevIsIamdsRef.current = isNerdy
     messageStartRef.current = Date.now()
+    startIndexRef.current = Math.floor(Math.random() * messages.length)
   }
   if (!messageStartRef.current) {
     messageStartRef.current = Date.now()
   }
   const messageElapsed = Math.max(0, Date.now() - messageStartRef.current)
 
-  // Modulo-based cycling so messages repeat if the connection takes longer
-  const messageIndex = Math.floor(messageElapsed / MESSAGE_STEP_MS) % messages.length
+  // Modulo-based cycling starting from a random index so messages vary each connection
+  const messageIndex = (startIndexRef.current + Math.floor(messageElapsed / MESSAGE_STEP_MS)) % messages.length
   const progressPct = Math.min(100, Math.round((shownElapsed / STARTUP_MIN_MS) * 100))
   const currentMessage = messages[messageIndex]
 

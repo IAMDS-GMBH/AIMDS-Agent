@@ -52,9 +52,13 @@ afterEach(cleanup)
 // uppercase span; match that node specifically so the recovery overlay's
 // "Lost connection…" copy doesn't read as a false positive.
 const isConnectingShown = () =>
-  screen.queryAllByText((_, el) => /^CONN[/\\|\-_=+<>~:*A-Z]*$/.test(el?.textContent?.trim() ?? '')).length > 0
+  screen.queryAllByText((_, el) => /^CONN[0-9A-Z#$@%&*!?/\\|\-_=+<>~:*]*$/.test(el?.textContent?.trim() ?? '')).length > 0
 const isRecoveryShown = () =>
-  Boolean(screen.queryByText(/use local gateway/i) || screen.queryByText(/retry/i) || screen.queryByText(/sign in/i))
+  Boolean(
+    screen.queryByText(/use local gateway|lokales gateway/i) ||
+      screen.queryByText(/retry|erneut versuchen/i) ||
+      screen.queryByText(/sign in|anmelden/i)
+  )
 
 describe('connecting overlay vs recovery surface', () => {
   it('hard initial-boot failure surfaces the recovery overlay (the working path)', () => {
@@ -137,7 +141,7 @@ describe('connecting overlay vs recovery surface', () => {
 
     // Escape hatch is now reachable; the connecting overlay bows out.
     expect(isRecoveryShown()).toBe(true)
-    expect(screen.getByText(/use local gateway/i)).toBeTruthy()
+    expect(screen.getByText(/use local gateway|lokales gateway/i)).toBeTruthy()
     expect(isConnectingShown()).toBe(false)
   })
 })

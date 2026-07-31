@@ -49,6 +49,7 @@ function resetStores() {
 
 beforeEach(() => {
   resetStores()
+  vi.spyOn(Math, 'random').mockReturnValue(0)
   // Assign directly to existing window to avoid clobbering JSDOM globals like setInterval
   ;(window as any).hermesDesktop = {
     getConnectionConfig: async () => ({
@@ -60,6 +61,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
   delete (window as any).hermesDesktop
 })
 
