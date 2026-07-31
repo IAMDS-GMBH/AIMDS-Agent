@@ -133,4 +133,15 @@ describe('preview store', () => {
     expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_PREVIEW_TAB_ID)
     expect($previewTarget.get()).toEqual(withRenderMode(live, 'preview'))
   })
+
+  it('accumulates multiple file tabs when multiple non-HTML files are emitted or inspected', () => {
+    const fileA: PreviewTarget = { kind: 'file', label: 'a.ts', path: '/work/a.ts', previewKind: 'text', source: '/work/a.ts', url: 'file:///work/a.ts' }
+    const fileB: PreviewTarget = { kind: 'file', label: 'b.json', path: '/work/b.json', previewKind: 'text', source: '/work/b.json', url: 'file:///work/b.json' }
+
+    setCurrentSessionPreviewTarget(fileA, 'tool-result')
+    setCurrentSessionPreviewTarget(fileB, 'tool-result')
+
+    expect($filePreviewTabs.get().map(tab => tab.target.url)).toEqual(['file:///work/a.ts', 'file:///work/b.json'])
+    expect($rightRailActiveTabId.get()).toBe('file:file:///work/b.json')
+  })
 })

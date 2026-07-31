@@ -133,13 +133,17 @@ function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSour
 }
 
 function tryOpenFilePreview(target: PreviewTarget, source: PreviewRecordSource): boolean {
-  if (target.kind !== 'file' || !isFilePreviewSource(source)) {
+  if (target.kind !== 'file') {
     return false
   }
 
-  openFilePreviewTarget(previewTargetForSource(target, source))
+  if (isFilePreviewSource(source) || target.previewKind !== 'html') {
+    openFilePreviewTarget(previewTargetForSource(target, source))
 
-  return true
+    return true
+  }
+
+  return false
 }
 
 function isPreviewTarget(value: unknown): value is PreviewTarget {
