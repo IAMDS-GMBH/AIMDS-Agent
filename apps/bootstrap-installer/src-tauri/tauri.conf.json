@@ -41,7 +41,9 @@
     "targets": [
       "app",
       "dmg",
-      "appimage"
+      "appimage",
+      "deb",
+      "rpm"
     ],
     "icon": [
       "icons/32x32.png",

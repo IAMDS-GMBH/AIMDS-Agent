@@ -49,6 +49,7 @@ const STARTUP_MIN_MS = MESSAGE_STEP_MS * 3
 const TEAM_MESSAGES_DE = [
   'Martin beendet gerade das EVN-Meeting.',
   'Michael sammelt Feedback & Verbesserungsvorschläge...',
+  'Julian freut sich riesig über den Hermes Linux Client...',
   'Tobias behebt gerade EasyPart-Shops.',
   'Michael kümmert sich gerade um organisatorische Themen.',
   'Johannes macht gerade das Dev-Deployment.',
@@ -77,6 +78,7 @@ const TEAM_MESSAGES_DE = [
 const TEAM_MESSAGES_EN = [
   'Martin is wrapping up the EVN meeting.',
   'Michael is collecting feedback & improvement ideas...',
+  'Julian is celebrating the Hermes Linux Client...',
   'Tobias is fixing EasyPart shops.',
   'Michael is taking care of organizational topics.',
   'Johannes is running the dev deployment.',
