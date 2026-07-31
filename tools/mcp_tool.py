@@ -1927,6 +1927,50 @@ class MCPServerTask:
             async with self._rpc_lock:
                 tools_result = await self.session.list_tools()
             self._tools = tools_result.tools if hasattr(tools_result, "tools") else []
+            
+            # Workaround for MCP servers with delayed tool registration (e.g., some
+            # stdio servers where tools aren't available immediately after connection).
+            # If list_tools() returned 0 tools, retry up to 3 times with exponential backoff.
+            # This handles race conditions where the server hasn't finished registering
+            # its tools by the time the client calls list_tools().
+            retry_count = 0
+            max_retries = 3
+            while not self._tools and retry_count < max_retries:
+                retry_count += 1
+                backoff_seconds = 0.3 * (2 ** (retry_count - 1))  # 0.3s, 0.6s, 1.2s
+                logger.debug(
+                    "MCP server '%s': list_tools() returned 0 tools; "
+                    "retrying in %.1fs (attempt %d/%d)",
+                    self.name,
+                    backoff_seconds,
+                    retry_count,
+                    max_retries,
+                )
+                await asyncio.sleep(backoff_seconds)
+                try:
+                    async with self._rpc_lock:
+                        tools_result = await asyncio.wait_for(
+                            self.session.list_tools(), timeout=10.0
+                        )
+                    self._tools = (
+                        tools_result.tools if hasattr(tools_result, "tools") else []
+                    )
+                except Exception as e:
+                    logger.debug(
+                        "MCP server '%s': retry %d/%d failed: %s",
+                        self.name,
+                        retry_count,
+                        max_retries,
+                        e,
+                    )
+            
+            if not self._tools and retry_count >= max_retries:
+                logger.warning(
+                    "MCP server '%s': list_tools() returned 0 tools after %d retries; "
+                    "server may not have finished initialization",
+                    self.name,
+                    max_retries,
+                )
         self._registered_tool_names = _register_server_tools(
             self.name, self, self._config
         )
@@ -4781,6 +4825,9 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     """Connect to a single MCP server, discover tools, and register them.
 
     Returns list of registered tool names.
+    
+    Handles race conditions where servers may delay tool registration until
+    after the initial connection is established (e.g., waiting for auth).
     """
     connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
     server = await asyncio.wait_for(
@@ -4790,6 +4837,9 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     with _lock:
         _servers[name] = server
 
+    # Trigger initial discovery with retry logic (handles delayed tool registration)
+    await server._discover_tools()
+    
     registered_names = _register_server_tools(name, server, config)
     server._registered_tool_names = list(registered_names)
 
