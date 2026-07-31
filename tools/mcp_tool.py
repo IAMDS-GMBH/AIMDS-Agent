@@ -2786,6 +2786,12 @@ def _interpolate_env_vars(value):
                         pass
             if not resolved and name in ("JIRA_PERSONAL_TOKEN", "JIRA_PAT"):
                 resolved = os.environ.get("JIRA_PERSONAL_TOKEN") or os.environ.get("JIRA_PAT")
+            if not resolved and name in ("JIRA_BASE_URL", "JIRA_URL"):
+                resolved = os.environ.get("JIRA_BASE_URL") or os.environ.get("JIRA_URL")
+            if not resolved and name == "JIRA_API_TOKEN":
+                resolved = os.environ.get("JIRA_API_TOKEN") or os.environ.get("JIRA_PERSONAL_TOKEN") or os.environ.get("JIRA_PAT")
+            if not resolved and name in ("JIRA_EMAIL", "JIRA_USERNAME"):
+                resolved = os.environ.get("JIRA_EMAIL") or os.environ.get("JIRA_USERNAME")
             return resolved if resolved is not None else m.group(0)
 
         return _ENV_VAR_PATTERN.sub(_replace, value)

@@ -41,11 +41,12 @@ function activePreviewSessionId(
 }
 
 function looksLikePreviewTarget(value: string): boolean {
-  if (/^https?:\/\//i.test(value) || /^file:\/\//i.test(value) || /^(?:\/|\.{1,2}\/|~\/).+/.test(value)) {
+  if (/^https?:\/\//i.test(value) || /^file:\/\//i.test(value) || value.startsWith('#preview')) {
     return true
   }
 
-  return /\.(md|markdown|txt|html?|json|ya?ml|py|ts|tsx|js|jsx|css|docx?|xlsx?|pptx?|pdf)$/i.test(value) || value.includes('/')
+  // Only auto-open visual/rendered output formats for tool results (HTML, images, documents)
+  return /\.(html?|svg|pdf|png|jpe?g|webp|gif|docx?|xlsx?|pptx?)$/i.test(value)
 }
 
 function stripAnsi(value: string): string {

@@ -8287,13 +8287,6 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
         instance_name = name
 
     effective_profile = body.profile or profile
-    if name == "TempoMCP":
-        with _profile_scope(effective_profile):
-            if not mcp_catalog.list_instances("AtlassianMCP"):
-                raise HTTPException(
-                    status_code=400,
-                    detail="AtlassianMCP must be installed before installing TempoMCP.",
-                )
     env_vars: Dict[str, str] = {}
     if body.env:
         env_vars.update(body.env)

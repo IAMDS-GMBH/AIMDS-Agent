@@ -83,14 +83,14 @@ describe('preview store', () => {
     expect(getSessionPreviewRecord('session-1')?.dismissedAt).toBeUndefined()
   })
 
-  it('replaces the session preview instead of keeping a back stack', () => {
+  it('stores multi-tab session previews in session registry', () => {
     const first = previewTarget('/work/first.html')
     const second = previewTarget('/work/second.html')
 
     setCurrentSessionPreviewTarget(first, 'tool-result')
     setCurrentSessionPreviewTarget(second, 'tool-result')
 
-    expect($sessionPreviewRegistry.get()['session-1']).toHaveLength(1)
+    expect($sessionPreviewRegistry.get()['session-1']).toHaveLength(2)
     expect(getSessionPreviewRecord('session-1')?.normalized).toEqual(withRenderMode(second, 'preview'))
 
     dismissPreviewTarget()
@@ -98,7 +98,8 @@ describe('preview store', () => {
     expect($previewTarget.get()).toBeNull()
     expect(getSessionPreviewRecord('session-1')).toBeNull()
     expect($sessionPreviewRegistry.get()['session-1']?.map(record => record.normalized.url)).toEqual([
-      'file:///work/second.html'
+      'file:///work/second.html',
+      'file:///work/first.html'
     ])
   })
 

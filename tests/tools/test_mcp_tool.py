@@ -1696,6 +1696,19 @@ class TestEnvVarInterpolation:
         monkeypatch.setenv("JIRA_PAT", "legacy-pat-value")
         assert _interpolate_env_vars("${JIRA_PERSONAL_TOKEN}") == "real-pat-value"
 
+    def test_jira_tempo_fallback_env_vars(self, monkeypatch):
+        from tools.mcp_tool import _interpolate_env_vars
+        monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+        monkeypatch.delenv("JIRA_EMAIL", raising=False)
+        monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
+        monkeypatch.setenv("JIRA_URL", "https://jira.company.com")
+        monkeypatch.setenv("JIRA_USERNAME", "user@company.com")
+        monkeypatch.setenv("JIRA_PERSONAL_TOKEN", "pat-xyz")
+
+        assert _interpolate_env_vars("${JIRA_BASE_URL}") == "https://jira.company.com"
+        assert _interpolate_env_vars("${JIRA_EMAIL}") == "user@company.com"
+        assert _interpolate_env_vars("${JIRA_API_TOKEN}") == "pat-xyz"
+
 
 class TestHTTPConfig:
     """Tests for HTTP transport detection and handling."""

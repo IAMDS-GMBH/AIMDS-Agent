@@ -17,15 +17,17 @@ Guides and assists users with reporting bugs, submitting support logs, or propos
    - **Automated Support Log Export:** If using CLI or when requested, run `hermes support send-logs` to upload diagnostic logs directly to support server.
 3. **Formulate the Report:**
    - Help the user write a structured summary and user description.
-   - Set category (`feature_request`, `ui_bug`, `llm_timeout`, `connection_error`, `performance`, `installation_update`, `other`) and severity (`low`, `medium`, `high`, `critical`).
+   - Set category (`chat_issue`, `mcp_tools`, `feature_request`, `ui_bug`, `llm_timeout`, `connection_error`, `performance`, `installation_update`, `other`) and severity (`low`, `medium`, `high`, `critical`).
 4. **Track Status:**
    - Give the user their ticket reference ID and explain that status can be tracked under Settings -> Support Tickets.
 
 ## Key Categories
-- `feature_request`: Verbesserungsvorschlag / Feature-Wunsch
-- `ui_bug`: Benutzeroberfläche / Anzeigefehler
-- `llm_timeout`: Connection or model timeout
-- `connection_error`: Gateway/Network connectivity issue
-- `performance`: Speed / lag issues
-- `installation_update`: Install or update issues
+- `chat_issue`: Chat & Antworten (Problem im Chat / KI antwortet nicht)
+- `mcp_tools`: MCP & Tools (Werkzeug oder Server nicht gefunden / fehlerhaft)
+- `feature_request`: Verbesserungsvorschlag & Idee
+- `ui_bug`: Benutzeroberfläche & Anzeige
+- `llm_timeout`: KI-Verbindung & Timeout
+- `connection_error`: Gateway/Netzwerk-Verbindung
+- `performance`: Performance & Tempo
+- `installation_update`: Installation & Update
 - `other`: Sonstiges

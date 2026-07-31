@@ -40,6 +40,8 @@ export interface Translations {
     close: string
     errorTitle: string
     categories: {
+      chat_issue: string
+      mcp_tools: string
       llm_timeout: string
       ui_bug: string
       connection_error: string

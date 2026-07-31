@@ -46,12 +46,12 @@ export interface SessionPreviewRecord {
 type SessionPreviewRegistry = Record<string, SessionPreviewRecord[]>
 
 export interface FilePreviewTab {
-  id: `file:${string}`
+  id: `file:${string}` | `url:${string}`
   target: PreviewTarget
 }
 
 const REGISTRY_STORAGE_KEY = 'hermes.desktop.sessionPreviews.v1'
-const MAX_RECORDS_PER_SESSION = 1
+const MAX_RECORDS_PER_SESSION = 12
 const MAX_SESSIONS = 120
 
 export const $previewTarget = atom<PreviewTarget | null>(null)
@@ -104,8 +104,8 @@ export function setPreviewTarget(target: PreviewTarget | null) {
   }
 }
 
-export function filePreviewTabId(target: PreviewTarget): `file:${string}` {
-  return `file:${target.url}`
+export function filePreviewTabId(target: PreviewTarget): `file:${string}` | `url:${string}` {
+  return target.kind === 'url' ? `url:${target.url}` : `file:${target.url}`
 }
 
 function openFilePreviewTarget(target: PreviewTarget) {
@@ -266,6 +266,7 @@ export function registerSessionPreview(
   const now = Date.now()
   const records = current[id] ?? []
   const existing = records.find(record => record.normalized.url === target.url)
+  const filtered = records.filter(record => record.normalized.url !== target.url)
   const normalized = previewTargetForSource(target, source)
 
   const nextRecord: SessionPreviewRecord = {
@@ -281,7 +282,7 @@ export function registerSessionPreview(
   $sessionPreviewRegistry.set(
     pruneRegistry({
       ...current,
-      [id]: [nextRecord]
+      [id]: [nextRecord, ...filtered]
     })
   )
 
@@ -375,7 +376,7 @@ export function dismissPreviewTarget() {
 }
 
 function closeFilePreviewTab(tabId: RightRailTabId) {
-  if (!tabId.startsWith('file:')) {
+  if (!tabId.startsWith('file:') && !tabId.startsWith('url:')) {
     return
   }
 

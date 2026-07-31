@@ -177,6 +177,10 @@ export function useGatewayBoot({
         return
       }
 
+      if (reconnectAttempt >= 6) {
+        failDesktopBoot(translateNow('boot.errors.connectionFailed'))
+      }
+
       // 1s, 2s, 4s … capped at 15s.
       const delay = Math.min(15_000, 1_000 * 2 ** Math.min(reconnectAttempt, 4))
       reconnectAttempt += 1

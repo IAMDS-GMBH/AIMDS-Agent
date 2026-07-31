@@ -25,12 +25,14 @@ export const en: Translations = {
     close: 'Close',
     errorTitle: 'Submission failed',
     categories: {
-      llm_timeout: 'LLM Connection / Timeout',
-      ui_bug: 'User Interface / Display Bug',
-      connection_error: 'Connection Error',
-      performance: 'Performance / Slowness',
-      installation_update: 'Installation / Update',
-      feature_request: 'Improvement Suggestion / Feature Request',
+      chat_issue: 'Chat & AI Responses (Chat problem / AI not responding)',
+      mcp_tools: 'MCP & Tools (Tool or MCP Server missing / error)',
+      ui_bug: 'User Interface & Display (Layout, buttons, formatting bug)',
+      llm_timeout: 'AI Connection & Timeout (Response hangs / times out)',
+      connection_error: 'Network & Gateway (Connection to server failed)',
+      performance: 'Performance & Speed (Client lag / high usage)',
+      installation_update: 'Installation & Updates (Startup / update failure)',
+      feature_request: 'Feature Request & Idea (Improvement suggestion)',
       other: 'Other'
     },
     severities: {

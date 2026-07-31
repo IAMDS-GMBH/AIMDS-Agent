@@ -26,12 +26,14 @@ export const de
     close: 'Schließen',
     errorTitle: 'Senden fehlgeschlagen',
     categories: {
-      llm_timeout: 'LLM Connection / Timeout',
-      ui_bug: 'Benutzeroberfläche / Anzeigefehler',
-      connection_error: 'Verbindungsfehler',
-      performance: 'Performance / Verlangsamung',
-      installation_update: 'Installation / Update',
-      feature_request: 'Verbesserungsvorschlag / Feature-Wunsch',
+      chat_issue: 'Chat & Antworten (Problem im Chat / KI antwortet nicht)',
+      mcp_tools: 'MCP & Tools (Werkzeug oder Server nicht gefunden / fehlerhaft)',
+      ui_bug: 'Benutzeroberfläche & Anzeige (Layout, Buttons, Formatierung)',
+      llm_timeout: 'KI-Verbindung & Timeout (Antwort bricht ab / Abbruch)',
+      connection_error: 'Netzwerk & Gateway (Verbindung zum Server fehlgeschlagen)',
+      performance: 'Performance & Tempo (Client langsam / hohe Auslastung)',
+      installation_update: 'Installation & Updates (Client-Start / Update-Fehler)',
+      feature_request: 'Verbesserungsvorschlag & Idee (Neues Feature)',
       other: 'Sonstiges'
     },
     severities: {
