@@ -97,6 +97,89 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Configuration Migration Helper
+# ---------------------------------------------------------------------------
+#
+# Hermes config evolution: remove obsolete MCP server tool filters that
+# block modern functionality. This runs once per startup to auto-migrate
+# stale config entries without user intervention.
+
+def _migrate_mcp_config():
+    """Auto-migrate stale MCP server configurations.
+    
+    TempoMCP v1.8.0 uses camelCase tool names (retrieveWorklogs, createWorklog, etc),
+    but older config may have snake_case filters (get_worklogs, create_worklog, etc)
+    that block all tools from registering. Since Hermes uses vector search to find tools,
+    per-server tool filters are unnecessary and should be removed.
+    """
+    try:
+        from hermes_cli.config import load_config, save_config
+        
+        config = load_config()
+        mcp_servers = config.get("mcp_servers") or {}
+        if not isinstance(mcp_servers, dict):
+            return
+        
+        # List of MCP servers known to have had stale filter configs.
+        # Key = server name, value = True if config was modified.
+        servers_to_migrate = {
+            "TempoMCP": {
+                "old_tool_names": {
+                    "get_worklogs", "create_worklog", "update_worklog",
+                    "delete_worklog", "get_user_schedule", "missing_days_report",
+                    "worklog_analytics"
+                }
+            }
+        }
+        
+        config_modified = False
+        for server_name, migration_info in servers_to_migrate.items():
+            if server_name not in mcp_servers:
+                continue
+            
+            server_config = mcp_servers[server_name]
+            if not isinstance(server_config, dict):
+                continue
+            
+            tools_config = server_config.get("tools") or {}
+            if not isinstance(tools_config, dict):
+                continue
+            
+            # Check if include/exclude list contains only old snake_case names.
+            # If so, remove the filter to allow vector search to find all new tools.
+            include_list = tools_config.get("include") or []
+            exclude_list = tools_config.get("exclude") or []
+            
+            all_tools_old_style = (
+                include_list and
+                all(str(t) in migration_info["old_tool_names"] for t in include_list)
+            ) or (
+                exclude_list and
+                all(str(t) in migration_info["old_tool_names"] for t in exclude_list)
+            )
+            
+            if all_tools_old_style and (include_list or exclude_list):
+                logger.info(
+                    "MCP config migration: removing obsolete tool filter from '%s' "
+                    "(old snake_case names blocked modern camelCase tools)",
+                    server_name
+                )
+                # Remove the tools filter entirely — modern Hermes uses vector search.
+                server_config.pop("tools", None)
+                config_modified = True
+        
+        if config_modified:
+            save_config(config)
+            logger.info("MCP config migration: saved updated configuration")
+    
+    except Exception as e:
+        logger.debug("MCP config migration failed (non-fatal): %s", e)
+
+# Run migration once at module import
+_migrate_mcp_config()
+
+
+# ---------------------------------------------------------------------------
 # Stdio subprocess stderr redirection
 # ---------------------------------------------------------------------------
 #
