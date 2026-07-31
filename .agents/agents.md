@@ -68,6 +68,12 @@ If multiple PRs target same integration category (providers/backends/notifiers),
 
 - Keep model-tool cross-references out of static schema descriptions when referenced tools may be absent; add dynamic hints in `get_tool_definitions()` logic.
 - For MCP-backed memory/tools, call on demand: when users ask about projects or personal information, call the configured AIMDS server toolset first (specially the memory read/write tools); do not run memory MCP calls on every generic turn.
+- **Dual-Memory Partitioning**:
+  - **Memory MCP**: Stores concise global rules, directives, preferences, and high-level architectural invariants (< 1-2 KB per entry).
+  - **Local Vault Index / Brain / Obsidian (`.md` files)**: Stores detailed documentation, specifications, logs, and changelogs. Never store large documents in Memory MCP; write them to `.md` files indexed via local vector search.
+- **Chat Response & Preview Efficiency**:
+  - Keep chat responses concise.
+  - When generating or updating large files/documents (e.g. changelogs, reports), do NOT dump full file content into chat output. Provide a short 2-3 line summary and path reference so the desktop preview UI renders the file.
 - For gateway running-session controls, ensure approval/control commands bypass both message guards where required.
 - Avoid wiring dead/unused code into live paths without end-to-end validation.
 

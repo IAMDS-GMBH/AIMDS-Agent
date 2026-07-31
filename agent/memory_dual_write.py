@@ -181,6 +181,14 @@ def _write_record_filesystem(record: Dict[str, Any]) -> None:
         }
         _save_filesystem_index(index)
 
+    # Automatically sync real-time write to VaultMetaIndex (local vector & BM25 hybrid index)
+    try:
+        from agent.memory_vault_index import VaultMetaIndex
+        v_index = VaultMetaIndex()
+        v_index.sync_record(record)
+    except Exception:
+        pass
+
 
 def _delete_record_filesystem(slug: str) -> None:
     if not slug:

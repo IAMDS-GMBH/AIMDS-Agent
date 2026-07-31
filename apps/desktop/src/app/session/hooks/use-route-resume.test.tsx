@@ -12,7 +12,7 @@ interface HarnessProps {
   freshDraftReady: boolean
   gatewayState: string
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean, profile?: string) => Promise<unknown>
+  resumeSession: (sessionId: string, focus: boolean, profile?: string, forceFullResume?: boolean) => Promise<unknown>
   routedSessionId: null | string
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: null | string
@@ -135,7 +135,7 @@ describe('useRouteResume', () => {
     )
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
-    expect(resumeSession).toHaveBeenCalledWith('session-1', true, undefined)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true, undefined, false)
   })
 
   it('resumes when pathname changes to a routed session', () => {
@@ -185,7 +185,7 @@ describe('useRouteResume', () => {
     )
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
-    expect(resumeSession).toHaveBeenCalledWith('session-2', true, undefined)
+    expect(resumeSession).toHaveBeenCalledWith('session-2', true, undefined, false)
   })
 
   it('resumes the selected route again when the gateway reconnects', () => {
@@ -253,6 +253,6 @@ describe('useRouteResume', () => {
     )
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
-    expect(resumeSession).toHaveBeenCalledWith('session-1', true, undefined)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true, undefined, true)
   })
 })

@@ -471,7 +471,12 @@ export function useSessionActions({
   }, [navigate, selectedStoredSessionId])
 
   const resumeSession = useCallback(
-    async (storedSessionId: string, replaceRoute = false, profileOverride?: string) => {
+    async (
+      storedSessionId: string,
+      replaceRoute = false,
+      profileOverride?: string,
+      forceFullResume = false
+    ) => {
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
 
@@ -489,7 +494,7 @@ export function useSessionActions({
       const cachedRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
       const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
 
-      if (cachedRuntimeId && cachedState) {
+      if (!forceFullResume && cachedRuntimeId && cachedState) {
         const stored = $sessions.get().find(session => session.id === storedSessionId)
         const cachedViewState =
           !cachedState.model && stored?.model != null
@@ -657,11 +662,13 @@ export function useSessionActions({
         // snapshot was available.
 
         const preferredMessages =
-          localSnapshot.length > 0
-            ? localSnapshot
-            : chatMessageArraysEquivalent(currentMessages, resumedMessages)
-              ? currentMessages
-              : resumedMessages
+          resumedMessages.length >= localSnapshot.length
+            ? resumedMessages
+            : localSnapshot.length > 0
+              ? localSnapshot
+              : chatMessageArraysEquivalent(currentMessages, resumedMessages)
+                ? currentMessages
+                : resumedMessages
 
         const messagesForView = preserveLocalAssistantErrors(preferredMessages, previousMessages)
 
@@ -687,13 +694,33 @@ export function useSessionActions({
           return
         }
 
-        const fallback = await getSessionMessages(storedSessionId, sessionProfile)
+        let fallbackMessages: ChatMessage[] = []
+        try {
+          const fallback = await getSessionMessages(storedSessionId, sessionProfile)
+          fallbackMessages = preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get())
+        } catch {
+          fallbackMessages = $messages.get()
+        }
 
         if (!isCurrentResume()) {
           return
         }
 
-        setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
+        setActiveSessionId(storedSessionId)
+        activeSessionIdRef.current = storedSessionId
+        setMessages(fallbackMessages)
+
+        updateSessionState(
+          storedSessionId,
+          state => ({
+            ...state,
+            messages: fallbackMessages,
+            busy: false,
+            awaitingResponse: false
+          }),
+          storedSessionId
+        )
+
         notifyError(err, copy.resumeFailed)
       } finally {
         if (isCurrentResume()) {

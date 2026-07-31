@@ -1,5 +1,16 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { type NodeApi, type NodeRendererProps, Tree, type TreeApi } from 'react-arborist'
+import { createDragDropManager, type DragDropManager } from 'dnd-core'
+import { HTML5Backend } from 'react-dnd-html5-backend'
+
+let sharedDndManager: DragDropManager | null = null
+
+function getSharedDndManager(): DragDropManager {
+  if (!sharedDndManager) {
+    sharedDndManager = createDragDropManager(HTML5Backend)
+  }
+  return sharedDndManager
+}
 
 import { PageLoader } from '@/components/page-loader'
 import { Codicon } from '@/components/ui/codicon'
@@ -103,6 +114,7 @@ export function ProjectTree({
           disableDrag
           disableDrop
           disableEdit
+          dndManager={getSharedDndManager()}
           height={size.height}
           indent={INDENT}
           initialOpenState={openState}

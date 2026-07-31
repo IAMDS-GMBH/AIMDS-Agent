@@ -1252,10 +1252,84 @@ def m365_create_event(
 
 
 @mcp.tool()
-def m365_list_chats(top: int = 10) -> Dict[str, Any]:
-    """List recent Microsoft Teams chats."""
+def m365_list_chats(
+    top: int = 10,
+    expand_members: bool = True,
+    search_query: Optional[str] = None,
+    chat_type: Optional[str] = None,
+    account: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List recent Microsoft Teams chats (1:1 direct chats, group chats, or meeting chats) with member details and optional search filtering.
+
+    Args:
+        top: Max number of recent chats to inspect or return (capped at 50).
+        expand_members: 'True' (default) expands participant details (displayName, email, userPrincipalName) for each chat.
+        search_query: Optional search filter to match against member names, email addresses, chat topic/title, or message content.
+        chat_type: Optional filter by chat type ('oneOnOne', 'group', or 'meeting').
+        account: Optional M365 account username, email, or ID.
+    """
     params = {"$top": min(top, 50)}
-    return _graph_request("GET", "/me/chats", params=params)
+    if expand_members:
+        params["$expand"] = "members,lastMessagePreview"
+
+    try:
+        res = _graph_request("GET", "/me/chats", params=params, account=account)
+    except Exception:
+        # Fallback without $expand if tenant or Graph API rejects expand query
+        fallback_params = {"$top": min(top, 50)}
+        res = _graph_request("GET", "/me/chats", params=fallback_params, account=account)
+
+    chats = res.get("value", []) if isinstance(res, dict) and "value" in res else []
+
+    # If members were not expanded inline by Graph, fetch members per chat if requested or searching
+    if chats and (expand_members or search_query):
+        for c in chats:
+            if not isinstance(c, dict):
+                continue
+            chat_id = c.get("id")
+            if not chat_id:
+                continue
+            if "members" not in c or not c["members"]:
+                try:
+                    members_res = _graph_request("GET", f"/me/chats/{chat_id}/members", account=account)
+                    c["members"] = members_res.get("value", []) if isinstance(members_res, dict) else []
+                except Exception:
+                    pass
+
+    # Filter by chat_type if specified
+    if chat_type and chats:
+        ct_clean = chat_type.strip().lower()
+        chats = [c for c in chats if isinstance(c, dict) and str(c.get("chatType", "")).lower() == ct_clean]
+
+    # Filter by search_query if specified (matches member name, email, chat topic, or preview message)
+    if search_query and chats:
+        q_clean = search_query.strip().lower()
+        filtered = []
+        for c in chats:
+            if not isinstance(c, dict):
+                continue
+            topic = str(c.get("topic") or "").lower()
+            chat_id = str(c.get("id") or "").lower()
+            preview = str((c.get("lastMessagePreview") or {}).get("body", {}).get("content") or "").lower()
+
+            members = c.get("members") or []
+            member_match = False
+            for m in members:
+                if isinstance(m, dict):
+                    display_name = str(m.get("displayName") or "").lower()
+                    email = str(m.get("email") or m.get("userPrincipalName") or "").lower()
+                    if q_clean in display_name or q_clean in email:
+                        member_match = True
+                        break
+
+            if q_clean in topic or q_clean in chat_id or q_clean in preview or member_match:
+                filtered.append(c)
+        chats = filtered
+
+    if isinstance(res, dict):
+        res["value"] = chats
+        res["count"] = len(chats)
+    return res
 
 
 @mcp.tool()
@@ -1396,26 +1470,24 @@ def m365_get_chat_members(chat_id: str) -> Dict[str, Any]:
 
 @mcp.tool()
 def m365_get_or_create_direct_chat(user_id_or_upn: str) -> Dict[str, Any]:
-    """Get or create a 1:1 Teams direct chat with a tenant user by ID or email/UPN.
+    """Get or create a 1:1 Teams direct chat with a tenant user by Graph user ID, email/UPN, or first/last name.
 
-    Looking up another user by email/UPN requires admin-consented scopes --
-    if this fails, call m365_initiate_login(request_admin_scopes=True) first,
-    or pass the other user's Graph user ID directly instead of their email.
+    Looking up another user by email/UPN/name uses directory search (m365_search_users).
+    If directory search is restricted, pass the other user's Graph user ID or full email address directly.
     """
     me_profile = _graph_request("GET", "/me")
     my_id = me_profile.get("id")
 
     other_user = user_id_or_upn
-    if "@" in user_id_or_upn:
-        search_res = m365_search_users(user_id_or_upn, top=1)
-        users = search_res.get("value", [])
-        if users:
-            other_user = users[0].get("id")
-        else:
-            # Fallback: get user directly by UPN
-            user_by_upn = _graph_request("GET", f"/users/{user_id_or_upn}")
-            if "id" in user_by_upn:
-                other_user = user_by_upn["id"]
+    search_res = m365_search_users(user_id_or_upn, top=1)
+    users = search_res.get("value", []) if isinstance(search_res, dict) else []
+    if users:
+        other_user = users[0].get("id")
+    elif "@" in user_id_or_upn:
+        # Fallback: get user directly by UPN
+        user_by_upn = _graph_request("GET", f"/users/{user_id_or_upn}")
+        if isinstance(user_by_upn, dict) and "id" in user_by_upn:
+            other_user = user_by_upn["id"]
 
     payload = {
         "chatType": "oneOnOne",

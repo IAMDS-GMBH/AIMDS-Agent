@@ -30,7 +30,10 @@ Never issue unbounded queries or request full issue dumps (`limit=50` or `fields
 3. If more results are needed, fetch the next block with `limit: 10, start_at: 10`. Never request 50+ at once.
 
 ## Tempo & Zeiterfassung (Time Tracking & Worklogs)
-- **Reading Worklogs**: Use `jira_get_worklog(issue_key="<KEY>")` to retrieve logged work for an issue, or `jira_search` with targeted JQL (e.g. `worklogAuthor = currentUser() AND worklogDate >= -7d`).
+- **Time Restriction Rule**: ALWAYS restrict worklog queries by date/range (e.g. month `YYYY-MM` or `worklogDate >= -30d`) BEFORE fetching to prevent massive context dumps.
+- **Actual Comments vs. Jira Marker**:
+  - Jira's standard API (`jira_get_worklog`) displays generic `"comment": "time-tracking"` for Tempo-booked entries because Jira only stores Tempo's sync marker.
+  - To retrieve the **actual user comments & descriptions** (e.g., `"Team Azure Daily"`, `"ECO-838: LZ Provisioner"`), use `TempoMCP` (`get_worklogs(from=..., to=..., issue_key=...)`).
 - **Logging Time (Zeiterfassung)**:
   - Call `jira_add_worklog`: `issue_key="<KEY>"`, `time_spent="1h 30m"`, `started` ISO string (e.g. `"2026-07-24T09:00:00.000+0000"`), and a markdown `comment`.
   - Always summarize worklog activity concisely in response text or store key summaries in Memory MCP via `memory_save`.

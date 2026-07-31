@@ -1,6 +1,6 @@
 ---
 name: m365-workspace
-description: Comprehensive Microsoft 365, Outlook Mail/Calendar, Teams Calls, Free/Busy Schedule, and Microsoft To Do workflow. Trigger when user asks about emails, calendar events, meeting availability, Teams calls, presence, or To Do tasks.
+description: Comprehensive Microsoft 365, Office, Outlook Mail/Calendar, Teams Chat, Group Chat, Teams Calls, Free/Busy Schedule, and Microsoft To Do workflow. Trigger when user asks about office, m365, msoffice, emails, calendar events, meeting availability, Teams chat, group chat, Gruppenchat, presence, or To Do tasks.
 ---
 
 # Microsoft 365 Workspace & Productivity Workflow
