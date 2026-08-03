@@ -42,8 +42,8 @@ _HERMES_CORE_TOOLS = [
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
     # (disabled — browser tools removed from core toolset)
-    # Tasks & memory
-    "todo", "memory",
+    # Tasks, database & memory
+    "todo", "memory", "sql",
     # Clarifying questions
     "clarify",
     # Code execution
