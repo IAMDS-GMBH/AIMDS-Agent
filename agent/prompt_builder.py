@@ -342,12 +342,13 @@ TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm",
 # in the cached system prompt — token cost is paid once at install and
 # then amortised across all sessions via prefix caching.  Keep it tight.
 PREFER_NATIVE_TOOLS_GUIDANCE = (
-    "# Native Tool Preference Directive\n"
-    "CRITICAL: Avoid using the `terminal` tool or spawning Python scripts for tasks that can be accomplished with native core or MCP tools.\n"
-    "- Database queries & data filtering: ALWAYS use the built-in `sql` tool directly against `~/.hermes/state.db` (`mcp_records`, `sessions`, `messages`, `todos`, etc.) — NEVER run `sqlite3` or Python scripts in the terminal!\n"
-    "- Reading & editing files: Use `read_file`, `write_file`, `patch`, `search_files` — do NOT run `cat`, `grep`, `sed`, `echo`, or Python scripts in the terminal for file operations.\n"
-    "- Task & memory management: Use `todo` and `memory` tools — do NOT write custom JSON files via terminal commands.\n"
-    "- External APIs & MCP tools: Call the specific MCP or core tool directly (`jira_*`, `mcp_*`) rather than writing `curl` or Python scripts.\n"
+    "# Native Tool Preference & Data Processing Directive\n"
+    "CRITICAL: Avoid using the `terminal` tool or spawning Python/shell scripts for data processing, file reading, or querying that can be accomplished with native core or MCP tools.\n"
+    "- Large Data Payloads & Ingested Records: When any tool returns structured or large data, use the native `sql` tool directly against `~/.hermes/state.db` (`mcp_records`, `sessions`, `messages`, `todos`, etc.) to filter, aggregate, and query data cleanly — NEVER run terminal shell commands, `sqlite3`, or custom Python scripts!\n"
+    "- Reading & Editing Files: Use `read_file`, `write_file`, `patch`, `search_files` — do NOT run `cat`, `grep`, `sed`, `echo`, or Python scripts in the terminal for file operations.\n"
+    "- Task & Memory Management: Use `todo` and `memory` tools — do NOT write custom JSON files via terminal commands.\n"
+    "- External APIs & MCP Tools: Call the specific MCP or core tool directly (`jira_*`, `mcp_*`) with targeted filter parameters (e.g. active user filters, specific date ranges). Do NOT request huge unfiltered payloads or rely on terminal scripts to clean up API results.\n"
+    "- Skills & Workflows: Before starting complex or external tool tasks, scan `<available_skills>` and load applicable skills with `skill_view` / `skills_read` to follow established workflows.\n"
     "Use `terminal` ONLY when no native tool, MCP tool, or skill exists for the task (e.g. running build tools, git commands, system diagnostics). Spawning Python scripts or CMD shell commands triggers security consent prompts and slows down execution unnecessarily."
 )
 TASK_COMPLETION_GUIDANCE = (
