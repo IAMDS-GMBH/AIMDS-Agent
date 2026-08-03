@@ -309,6 +309,14 @@ export function getMcpServers(): Promise<McpServersResponse> {
   })
 }
 
+export function reloadMcpServers(): Promise<{ ok: boolean; reloaded: number; message: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; reloaded: number; message: string }>({
+    ...profileScoped(),
+    method: 'POST',
+    path: '/api/mcp/reload'
+  })
+}
+
 export function getMcpCatalog(): Promise<McpCatalogResponse> {
   return window.hermesDesktop.api<McpCatalogResponse>({
     ...profileScoped(),

@@ -5102,6 +5102,34 @@ def reconnect_mcp_server(name: str) -> List[str]:
     return register_mcp_servers({name: cfg})
 
 
+def reload_all_mcp_servers() -> int:
+    """Force a live reconnect of ALL configured MCP servers and re-discover tools.
+
+    Shuts down all existing MCP connections, re-reads config.yaml, and re-connects
+    all enabled MCP servers.
+
+    Returns:
+        Number of reloaded MCP servers.
+    """
+    if not _MCP_AVAILABLE:
+        return 0
+
+    servers = _load_mcp_config()
+    if not servers:
+        return 0
+
+    reloaded_count = 0
+    for name in list(servers.keys()):
+        try:
+            reconnect_mcp_server(name)
+            reloaded_count += 1
+        except Exception as exc:
+            logger.warning("Failed to reconnect MCP server '%s': %s", name, exc)
+
+    discover_mcp_tools()
+    return reloaded_count
+
+
 def discover_mcp_tools() -> List[str]:
     """Entry point: load config, connect to MCP servers, register tools.
 

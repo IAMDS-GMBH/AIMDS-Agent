@@ -5,7 +5,7 @@ import { ReportIssueDialog } from '@/components/report-issue-dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tip } from '@/components/ui/tooltip'
-import { getHermesConfigRecord, getMcpServers, getRemoteHealthStatus, getStatus, restartGateway, saveHermesConfig } from '@/hermes'
+import { getHermesConfigRecord, getMcpServers, getRemoteHealthStatus, getStatus, reloadMcpServers, restartGateway, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertCircle, Globe, HelpCircle, Loader2, RefreshCw, Trash2 } from '@/lib/icons'
 import { getMcpServerToolCount } from '@/lib/mcp-helpers'
@@ -75,6 +75,24 @@ export function SystemStatusContent() {
 
   const [aimdsEnv, setAimdsEnv] = useState<string | null>(null)
   const [restartingGateway, setRestartingGateway] = useState(false)
+  const [reloadingMcp, setReloadingMcp] = useState(false)
+
+  const handleReloadMcp = async () => {
+    setReloadingMcp(true)
+    try {
+      const res = await reloadMcpServers()
+      notify({
+        kind: 'success',
+        title: 'MCP-Server',
+        message: res.message || `${res.reloaded} MCP-Server erfolgreich neu geladen.`
+      })
+      await refreshLocalConnectivity()
+    } catch (err) {
+      notifyError(err, 'MCP-Server konnten nicht neu geladen werden')
+    } finally {
+      setReloadingMcp(false)
+    }
+  }
 
   const handleRestartGateway = async () => {
     setRestartingGateway(true)
@@ -278,6 +296,15 @@ export function SystemStatusContent() {
             </div>
             <div className="flex items-center gap-1.5">
               <Button
+                disabled={reloadingMcp}
+                onClick={() => void handleReloadMcp()}
+                size="sm"
+                variant="text"
+              >
+                {reloadingMcp ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+                {reloadingMcp ? 'MCPs laden...' : 'MCP neu laden'}
+              </Button>
+              <Button
                 disabled={restartingGateway}
                 onClick={() => void handleRestartGateway()}
                 size="sm"
@@ -318,12 +345,24 @@ export function SystemStatusContent() {
               <div className="rounded border border-border/60 bg-background/40 p-2 text-xs">
                 <div className="flex items-center justify-between font-medium">
                   <span className="truncate">{g.configuredMcp}</span>
-                  <span className="font-mono text-muted-foreground">
-                    {enabledMcpServers.length}/{mcpServers.length}
-                    {mcpServers.some(s => getMcpServerToolCount(s) !== null)
-                      ? ` (${enabledMcpServers.reduce((sum, s) => sum + (getMcpServerToolCount(s) ?? 0), 0)} Tools)`
-                      : ''}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      className="h-5 px-1.5 text-[10px]"
+                      disabled={reloadingMcp}
+                      onClick={() => void handleReloadMcp()}
+                      size="xs"
+                      variant="outline"
+                    >
+                      {reloadingMcp ? <Loader2 className="mr-1 size-2.5 animate-spin" /> : <RefreshCw className="mr-1 size-2.5" />}
+                      Neu laden
+                    </Button>
+                    <span className="font-mono text-muted-foreground">
+                      {enabledMcpServers.length}/{mcpServers.length}
+                      {mcpServers.some(s => getMcpServerToolCount(s) !== null)
+                        ? ` (${enabledMcpServers.reduce((sum, s) => sum + (getMcpServerToolCount(s) ?? 0), 0)} Tools)`
+                        : ''}
+                    </span>
+                  </div>
                 </div>
                 {mcpServers.length > 0 && (
                   <div className="mt-2 grid gap-1 border-t border-border/40 pt-1.5">

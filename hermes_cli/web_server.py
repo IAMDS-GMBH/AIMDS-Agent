@@ -8108,6 +8108,16 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
     }
 
 
+@app.post("/api/mcp/reload")
+@app.post("/api/mcp/servers/reload")
+async def reload_all_mcp_servers_endpoint(profile: Optional[str] = None):
+    """Reload and reconnect all configured MCP servers."""
+    from tools.mcp_tool import reload_all_mcp_servers
+    with _profile_scope(profile):
+        count = await asyncio.to_thread(reload_all_mcp_servers)
+    return {"ok": True, "reloaded": count, "message": f"{count} MCP-Server neu geladen"}
+
+
 class MCPEnabledToggle(BaseModel):
     enabled: bool
     profile: Optional[str] = None
