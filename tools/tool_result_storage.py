@@ -112,7 +112,11 @@ def _build_persisted_message(
     msg += f"This tool result was too large ({original_size:,} characters, {size_str}).\n"
     msg += f"Full output saved to: {file_path}\n"
     if ingest_count > 0:
-        msg += f"[Auto-Ingested {ingest_count} records into SQLite table 'mcp_records' in ~/.hermes/state.db. Query directly using 'sql' tool or sqlite3!]\n"
+        msg += (
+            f"[Auto-Ingested {ingest_count} records into SQLite table 'mcp_records' in ~/.hermes/state.db. "
+            "Columns: (id, tool_name, reference_key, timestamp, user_id, duration_seconds, category, comment, raw_data). "
+            "ALWAYS query 'mcp_records' directly using the built-in 'sql' tool — DO NOT use terminal/bash commands!]\n"
+        )
     msg += "Use the read_file tool with offset and limit to access specific sections of this output.\n\n"
     msg += f"Preview (first {len(preview)} chars):\n"
     msg += preview
@@ -157,14 +161,22 @@ def maybe_persist_tool_result(
         except Exception as exc:
             logger.debug("Auto-ingest failed for %s: %s", tool_use_id, exc)
 
+    ingest_hint = ""
+    if ingest_count > 0:
+        ingest_hint = (
+            f"\n\n[Auto-Ingested {ingest_count} records into SQLite table 'mcp_records' in ~/.hermes/state.db. "
+            "Columns: (id, tool_name, reference_key, timestamp, user_id, duration_seconds, category, comment, raw_data). "
+            "ALWAYS query 'mcp_records' directly using the built-in 'sql' tool — DO NOT use terminal/bash commands!]"
+        )
+
     if effective_threshold == float("inf"):
         if ingest_count > 0 and isinstance(content, str):
-            content += f"\n\n[Auto-Ingested {ingest_count} records into SQLite table 'mcp_records' in ~/.hermes/state.db. Query directly using 'sql' tool or sqlite3!]"
+            content += ingest_hint
         return content
 
     if len(content) <= effective_threshold:
         if ingest_count > 0 and isinstance(content, str):
-            content += f"\n\n[Auto-Ingested {ingest_count} records into SQLite table 'mcp_records' in ~/.hermes/state.db. Query directly using 'sql' tool or sqlite3!]"
+            content += ingest_hint
         return content
 
     storage_dir = _resolve_storage_dir(env)
@@ -186,11 +198,8 @@ def maybe_persist_tool_result(
         "Inline-truncating large tool result: %s (%d chars, no sandbox write)",
         tool_name, len(content),
     )
-    ingest_msg = ""
-    if ingest_count > 0:
-        ingest_msg = f"\n\n[Auto-Ingested {ingest_count} records into SQLite table 'mcp_records' in ~/.hermes/state.db. Query directly using 'sql' tool or sqlite3!]"
     return (
-        f"{preview}{ingest_msg}\n\n"
+        f"{preview}{ingest_hint}\n\n"
         f"[Truncated: tool response was {len(content):,} chars. "
         f"Full output could not be saved to sandbox.]"
     )
