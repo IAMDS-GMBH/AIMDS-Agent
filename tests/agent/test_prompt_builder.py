@@ -1585,6 +1585,27 @@ class TestBuildJiraGuidance:
             assert "fields" in text.lower()
             assert "paginate" in text.lower()
 
+    def test_no_worklog_specific_section_without_worklog_tool(self):
+        text = build_jira_guidance({"jira_search"})
+        assert "jira_get_worklog" not in text
+
+    def test_warns_about_jira_get_worklog_when_no_tempo(self):
+        text = build_jira_guidance({"jira_search", "mcp_AtlassianMCP_jira_get_worklog"})
+        assert "jira_get_worklog has no filters" in text
+        assert "Tempo sync bot" in text
+        assert "TempoMCP" not in text.split("jira_get_worklog has no filters")[0]
+
+    def test_prefers_tempo_mcp_when_both_available(self):
+        text = build_jira_guidance({
+            "jira_search",
+            "mcp_AtlassianMCP_jira_get_worklog",
+            "mcp_TempoMCP_retrieveWorklogs",
+        })
+        assert "prefer TempoMCP over jira_get_worklog" in text
+        assert "retrieveWorklogs" in text
+        assert "startDate" in text
+        assert "Tempo sync bot" in text
+
 
 class TestTaskCompletionGuidance:
     """TASK_COMPLETION_GUIDANCE contains task execution and data verification rules."""

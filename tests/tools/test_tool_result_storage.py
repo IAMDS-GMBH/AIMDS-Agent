@@ -569,7 +569,26 @@ class TestPerToolThresholds:
         )
 
         assert "Auto-Ingested 100 records into SQLite table 'mcp_records'" in result
+        assert "Note on jira_get_worklog" in result
+        assert "Tempo sync bot" in result
+        assert "TempoMCP" in result
 
         conn = sqlite3.connect(str(DEFAULT_DB_PATH))
         count = conn.execute("SELECT COUNT(*) FROM mcp_records WHERE tool_use_id = 'call_no_env'").fetchone()[0]
         assert count == 100
+
+    def test_ingest_hint_no_worklog_warning_for_other_tools(self):
+        from tools.tool_result_storage import _build_ingest_hint
+
+        hint = _build_ingest_hint("jira_search", 10)
+        assert "Auto-Ingested 10 records" in hint
+        assert "Note on jira_get_worklog" not in hint
+
+    def test_ingest_hint_worklog_warning_for_jira_get_worklog_variants(self):
+        from tools.tool_result_storage import _build_ingest_hint
+
+        for name in ["jira_get_worklog", "mcp_AtlassianMCP_jira_get_worklog", "getWorklog"]:
+            hint = _build_ingest_hint(name, 5)
+            assert "Note on jira_get_worklog" in hint
+            assert "Tempo sync bot" in hint
+            assert "TempoMCP" in hint

@@ -1936,7 +1936,13 @@ def build_jira_guidance(valid_tool_names: "set[str] | None" = None) -> str:
     if not any("jira" in name.lower() for name in names):
         return ""
 
-    return (
+    has_worklog_tool = any(
+        "get_worklog" in name.lower() or "getworklog" in name.lower()
+        for name in names
+    )
+    has_tempo_tool = any("tempo" in name.lower() for name in names)
+
+    guidance = (
         "# Jira Query & Result Optimization Strategy\n"
         "- **Scope queries to active user**: When querying tickets, worklogs, or timesheets (e.g. 'meine Tickets', 'Urlaub', 'Arbeitszeiten'), ALWAYS filter JQL or query parameters by the active user (e.g., `assignee = currentUser()`, `worklogAuthor = currentUser()`, or filter by user ID/name). Do NOT fetch unfiltered company-wide or team-wide ticket lists unless explicitly asked!\n"
         "- **Keep JQL specific**: Use precise JQL filters (e.g., `project = AIS AND assignee = currentUser() AND statusCategory != Done`). Avoid broad or unbounded JQL queries.\n"
@@ -1944,6 +1950,35 @@ def build_jira_guidance(valid_tool_names: "set[str] | None" = None) -> str:
         "- **Select essential fields only**: Always use `fields` parameter to request specific fields (e.g., `fields=\"key,summary,status,priority,assignee,updated\"`) rather than fetching full issue structures.\n"
         "- **Paginate when fetching sets**: Use `start_at` or pagination tokens for additional results across multiple small turns rather than requesting high limits at once."
     )
+
+    if has_worklog_tool and has_tempo_tool:
+        guidance += (
+            "\n\n# Worklogs, timesheets & vacation: prefer TempoMCP over jira_get_worklog\n"
+            "`jira_get_worklog` (AtlassianMCP) takes ONLY an `issue_key` — it has NO date or "
+            "user filter and auto-paginates through the ENTIRE worklog history of that issue "
+            "(every employee, every year, for shared issues like vacation-tracking tickets). "
+            "Its `author` field is often the Tempo sync bot, not the real person, so filtering "
+            "the result by user afterwards is unreliable.\n"
+            "ALWAYS prefer TempoMCP's `retrieveWorklogs` (with required `startDate`/`endDate` "
+            "and optional `users`, which defaults to the token owner's own worklogs) or "
+            "`getWorklogAnalytics` for worklog/timesheet/vacation/Urlaub questions — these hit "
+            "Tempo's own API with correct per-user attribution and real date-range filtering. "
+            "Only fall back to `jira_get_worklog` for issues you already know have a handful of "
+            "worklog entries (e.g. a single task you personally logged time on)."
+        )
+    elif has_worklog_tool:
+        guidance += (
+            "\n\n# jira_get_worklog has no filters — use with caution\n"
+            "`jira_get_worklog` takes ONLY an `issue_key` — it has NO date or user filter and "
+            "auto-paginates through the ENTIRE worklog history of that issue (every employee, "
+            "every year, for shared issues like vacation-tracking tickets). Its `author` field "
+            "is often the Tempo sync bot, not the real person, so filtering the ingested result "
+            "by `user_id` is unreliable — filter by `timestamp`/date only. Before calling it on "
+            "a large shared issue, warn the user that the full unfiltered history will be "
+            "fetched, or ask if a TempoMCP-equivalent integration is available instead."
+        )
+
+    return guidance
 
 
 # =========================================================================

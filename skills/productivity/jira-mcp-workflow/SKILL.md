@@ -30,6 +30,7 @@ Never issue unbounded queries or request full issue dumps (`limit=50` or `fields
 3. If more results are needed, fetch the next block with `limit: 10, start_at: 10`. Never request 50+ at once.
 
 ## Tempo & Zeiterfassung (Time Tracking & Worklogs)
+- **Prefer TempoMCP for reads**: `jira_get_worklog` takes ONLY `issue_key` — it has NO date or user filter and auto-paginates through the issue's ENTIRE worklog history (every employee, every year, for shared issues). Its `author` field is frequently the Tempo sync bot, not the real person, so filtering by author/user afterwards is unreliable. Whenever TempoMCP is configured, ALWAYS use `retrieveWorklogs`/`get_worklogs(startDate=..., endDate=..., users=[...])` instead — it filters by real date range and user server-side with correct attribution (defaults to the token owner's own worklogs).
 - **Time Restriction Rule**: ALWAYS restrict worklog queries by date/range (e.g. month `YYYY-MM` or `worklogDate >= -30d`) BEFORE fetching to prevent massive context dumps.
 - **Actual Comments vs. Jira Marker**:
   - Jira's standard API (`jira_get_worklog`) displays generic `"comment": "time-tracking"` for Tempo-booked entries because Jira only stores Tempo's sync marker.

@@ -94,12 +94,46 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     return result.get("returncode", 1) == 0
 
 
+def _is_jira_get_worklog_tool(tool_name: str) -> bool:
+    """True if tool_name is mcp-atlassian's unfiltered jira_get_worklog tool."""
+    name = (tool_name or "").lower()
+    return "get_worklog" in name or "getworklog" in name
+
+
+def _build_ingest_hint(tool_name: str, ingest_count: int) -> str:
+    """Build the auto-ingest hint appended/prefixed to a tool result.
+
+    For jira_get_worklog specifically (mcp-atlassian's unfiltered, no-date/
+    no-user-param worklog tool), append an extra warning: the ingested
+    user_id often reflects the Tempo sync bot rather than the real author
+    for Tempo-synced entries, so filtering by user_id on this data is
+    unreliable — prefer TempoMCP's retrieveWorklogs/getWorklogAnalytics if
+    configured, or filter by timestamp only.
+    """
+    hint = (
+        f"[Auto-Ingested {ingest_count} records into SQLite table 'mcp_records' in ~/.hermes/state.db. "
+        "Columns: (id, tool_name, reference_key, timestamp, user_id, duration_seconds, category, comment, raw_data). "
+        "ALWAYS query 'mcp_records' directly using the built-in 'sql' tool — DO NOT use terminal/bash commands! "
+        "CRITICAL: Scope queries to the active user (e.g. `WHERE user_id LIKE '%...'` or filter by user) when summarizing personal tickets/worklogs.]"
+    )
+    if _is_jira_get_worklog_tool(tool_name):
+        hint += (
+            "\n[Note on jira_get_worklog: this tool has no date/user filter and returned the "
+            "ENTIRE worklog history for the issue. Its `user_id` often reflects the Tempo sync "
+            "bot, not the real author, for Tempo-synced entries — do NOT filter by `user_id` on "
+            "this data. Prefer TempoMCP's `retrieveWorklogs`/`getWorklogAnalytics` if configured "
+            "(real user + date-range filtering); otherwise filter by `timestamp` only.]"
+        )
+    return hint
+
+
 def _build_persisted_message(
     preview: str,
     has_more: bool,
     original_size: int,
     file_path: str,
     ingest_count: int = 0,
+    tool_name: str = "",
 ) -> str:
     """Build the <persisted-output> replacement block."""
     size_kb = original_size / 1024
@@ -112,12 +146,7 @@ def _build_persisted_message(
     msg += f"This tool result was too large ({original_size:,} characters, {size_str}).\n"
     msg += f"Full output saved to: {file_path}\n"
     if ingest_count > 0:
-        msg += (
-            f"[Auto-Ingested {ingest_count} records into SQLite table 'mcp_records' in ~/.hermes/state.db. "
-            "Columns: (id, tool_name, reference_key, timestamp, user_id, duration_seconds, category, comment, raw_data). "
-            "ALWAYS query 'mcp_records' directly using the built-in 'sql' tool — DO NOT use terminal/bash commands! "
-            "CRITICAL: Scope queries to the active user (e.g. `WHERE user_id LIKE '%...'` or filter by user) when summarizing personal tickets/worklogs.]\n"
-        )
+        msg += _build_ingest_hint(tool_name, ingest_count) + "\n"
     msg += "Use the read_file tool with offset and limit to access specific sections of this output.\n\n"
     msg += f"Preview (first {len(preview)} chars):\n"
     msg += preview
@@ -164,12 +193,7 @@ def maybe_persist_tool_result(
 
     ingest_hint = ""
     if ingest_count > 0:
-        ingest_hint = (
-            f"\n\n[Auto-Ingested {ingest_count} records into SQLite table 'mcp_records' in ~/.hermes/state.db. "
-            "Columns: (id, tool_name, reference_key, timestamp, user_id, duration_seconds, category, comment, raw_data). "
-            "ALWAYS query 'mcp_records' directly using the built-in 'sql' tool — DO NOT use terminal/bash commands! "
-            "CRITICAL: Scope queries to the active user (e.g. `WHERE user_id LIKE '%...'` or filter by user) when summarizing personal tickets/worklogs.]"
-        )
+        ingest_hint = "\n\n" + _build_ingest_hint(tool_name, ingest_count)
 
     if effective_threshold == float("inf"):
         if ingest_count > 0 and isinstance(content, str):
@@ -192,7 +216,10 @@ def maybe_persist_tool_result(
                     "Persisted large tool result: %s (%s, %d chars -> %s)",
                     tool_name, tool_use_id, len(content), remote_path,
                 )
-                return _build_persisted_message(preview, has_more, len(content), remote_path, ingest_count=ingest_count)
+                return _build_persisted_message(
+                    preview, has_more, len(content), remote_path,
+                    ingest_count=ingest_count, tool_name=tool_name,
+                )
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
 

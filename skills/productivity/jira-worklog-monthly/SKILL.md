@@ -19,9 +19,9 @@ Use this skill when fetching or auditing worklogs, time bookings (Zeiterfassung)
 Worklog queries must ALWAYS be restricted by time range (e.g., month `YYYY-MM`, `from`/`to` dates, or `worklogDate >= -30d`) BEFORE fetching. Never run unbounded worklog queries on long-running issues.
 
 ### 2. Tempo Comments vs. Jira Worklog Marker
-- **Jira Standard API (`jira_get_worklog`)**: Jira stores Tempo-booked entries with a generic `"time-tracking"` comment string.
-- **TempoMCP (`get_worklogs`) / Tempo REST API (`GET https://api.tempo.io/4/worklogs?from=YYYY-MM-DD&to=YYYY-MM-DD`)**: Returns the **actual user descriptions and activity comments** (e.g. `"ECO-797: LZ Provisioner: Improve DevOps Deployment Step - Idempotenz & Self-Healing"`), because Tempo stores detailed attributes in Tempo Timesheets.
-- **Rule**: When the user asks for daily worklog comments or activity logs, use `TempoMCP` (`get_worklogs`) or Tempo API instead of Jira's standard `jira_get_worklog`.
+- **Jira Standard API (`jira_get_worklog`)**: Takes ONLY `issue_key` — it has NO `from`/`to`/date or user filter parameter at all, and internally auto-paginates through the issue's ENTIRE worklog history regardless of size. For shared/long-running issues (e.g. a company-wide vacation-tracking ticket) this always returns every employee's entries across every year in one call. Jira also stores Tempo-booked entries with a generic `"time-tracking"` comment string, and the `author` field is frequently the **Tempo sync/integration bot account** (e.g. `"Timesheets by Tempo - Jira Time Tracking"`), NOT the real person — so filtering the ingested result by `author`/`user_id` is unreliable for this tool. Only filter it by `started`/date after the full fetch.
+- **TempoMCP (`retrieveWorklogs`/`get_worklogs`) / Tempo REST API (`GET https://api.tempo.io/4/worklogs?from=YYYY-MM-DD&to=YYYY-MM-DD`)**: Accepts real `startDate`/`endDate` (required) and optional `users`/`program`/`team` filters (defaults to the token owner's own worklogs), returns the **actual user descriptions and activity comments** (e.g. `"ECO-797: LZ Provisioner: Improve DevOps Deployment Step - Idempotenz & Self-Healing"`) with correct per-user attribution, because Tempo stores detailed attributes and real author accountIds in Tempo Timesheets.
+- **Rule**: ALWAYS prefer `TempoMCP` (`retrieveWorklogs`/`get_worklogs`/`getWorklogAnalytics`) over Jira's `jira_get_worklog` for worklog/timesheet/vacation queries whenever TempoMCP is configured — it gives you real date-range and user filtering plus correct authorship. Only use `jira_get_worklog` as a fallback for issues you already know have few worklog entries, or when TempoMCP isn't configured.
 
 ### 3. Reading Locked/Closed Periods (Gesperrte Zeiträume)
 Tempo period locks (Timesheet Period Locks) only block new bookings or edits (`create_worklog`/`update_worklog`). **Read operations (`get_worklogs`) on locked, closed, or archived periods remain fully supported.** Never refuse to query worklogs for past or locked months.
@@ -30,8 +30,8 @@ Tempo period locks (Timesheet Period Locks) only block new bookings or edits (`c
 
 ### 1. Paginated Worklog Retrieval Pattern
 When retrieving worklogs for a heavy issue:
-1. Retrieve worklog entries using `jira_get_worklog(issue_key="<KEY>")` or Tempo MCP `get_worklogs(issue_key="<KEY>")`.
-2. If `jira_get_worklog` returns a truncated set or does not accept month parameters directly, query Jira issue worklogs with `include="worklogs"` or execute a REST helper loop.
+1. If TempoMCP is configured, ALWAYS prefer `retrieveWorklogs`/`get_worklogs(startDate=..., endDate=..., users=[...])` — it supports real date-range and user filtering server-side.
+2. Only if TempoMCP is unavailable, fall back to `jira_get_worklog(issue_key="<KEY>")`. Be aware this tool takes NO date/user parameter and always returns the issue's FULL worklog history — filter the result afterwards by `started` date only (its `author` field is often the Tempo sync bot, not the real person, so do not filter by author/user).
 
 ### 2. SQLite Ingestion & SQL Querying
 Instead of writing in-prompt Python string-parsing or array-filtering loops, always ingest the retrieved worklog dataset into local SQLite (`~/.hermes/state.db` table `mcp_records` or `external_worklogs`) as described in the `sql-tabular-processor` skill.
