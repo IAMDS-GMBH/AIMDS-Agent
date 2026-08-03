@@ -220,18 +220,6 @@ export function SystemStatusContent() {
 
   return (
     <div className="grid gap-5">
-      {/* DIAGNOSE & CONNECTIVITY TITLE */}
-      <div>
-        <div className="flex items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium">
-          <Globe className="size-4 text-muted-foreground" />
-          {g.title}
-          {state.envOverride ? <Pill tone="primary">{g.envOverride}</Pill> : null}
-        </div>
-        <p className="mt-2 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-          {g.localDesc}
-        </p>
-      </div>
-
       {namedProfiles.length > 0 ? (
         <div className="mb-5 grid gap-2">
           <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
