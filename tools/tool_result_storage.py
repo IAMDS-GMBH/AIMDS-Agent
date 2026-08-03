@@ -153,6 +153,13 @@ def maybe_persist_tool_result(
         return content
 
     if len(content) <= effective_threshold:
+        try:
+            from tools.mcp_json_ingestor import try_auto_ingest_json
+            ingest_count = try_auto_ingest_json(content, tool_name=tool_name, tool_use_id=tool_use_id)
+            if ingest_count > 0:
+                content += f"\n\n[Auto-Ingested {ingest_count} records into SQLite table 'mcp_records' in ~/.hermes/state.db. Query directly using 'sql' tool or sqlite3!]"
+        except Exception as exc:
+            logger.debug("Auto-ingest failed for %s: %s", tool_use_id, exc)
         return content
 
     storage_dir = _resolve_storage_dir(env)

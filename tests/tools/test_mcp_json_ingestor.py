@@ -44,3 +44,30 @@ def test_auto_ingest_untrusted_xml_wrapper(tmp_path: Path):
 </untrusted_tool_result>"""
     count = try_auto_ingest_json(raw_payload, tool_name="support_mcp", db_path=db_file)
     assert count == 1
+
+
+def test_auto_ingest_nested_jira_result_string(tmp_path: Path):
+    db_file = tmp_path / "test_state.db"
+    nested_worklogs = {
+        "worklogs": [
+            {"id": "57171", "comment": "time-tracking", "created": "2025-09-19", "timeSpentSeconds": 1800, "issue": {"key": "IAMDS-595"}},
+            {"id": "57172", "comment": "vacation", "created": "2025-09-20", "timeSpentSeconds": 3600, "issue": {"key": "IAMDS-595"}}
+        ]
+    }
+    mcp_wrapper = {
+        "result": json.dumps(nested_worklogs)
+    }
+    raw_payload = f"""<untrusted_tool_result source="mcp_AtlassianMCP_jira_get_worklog">
+{json.dumps(mcp_wrapper)}
+</untrusted_tool_result>"""
+
+    count = try_auto_ingest_json(raw_payload, tool_name="mcp_AtlassianMCP_jira_get_worklog", db_path=db_file)
+    assert count == 2
+
+    conn = sqlite3.connect(str(db_file))
+    cursor = conn.cursor()
+    rows = cursor.execute("SELECT id, reference_key, duration_seconds FROM mcp_records ORDER BY id").fetchall()
+    assert len(rows) == 2
+    assert rows[0] == ("57171", "IAMDS-595", 1800)
+    assert rows[1] == ("57172", "IAMDS-595", 3600)
+
