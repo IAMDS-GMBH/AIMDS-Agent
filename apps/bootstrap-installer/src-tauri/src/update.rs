@@ -26,7 +26,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -104,6 +104,35 @@ pub async fn start_update(app: AppHandle) -> Result<(), String> {
 }
 
 async fn run_update(app: AppHandle) -> Result<()> {
+    // ---- pre-step: self-update the STAGED installer binary itself --------
+    // `paths::copy_self_to_hermes_home()` only ever runs on a fresh full
+    // install and no-ops on every `--update` re-invocation (see its doc
+    // comment), so without this check the staged hermes-setup.exe is frozen
+    // at whatever version first installed it — bootstrap-installer fixes
+    // would never reach existing clients. Best-effort: any failure here
+    // (offline, GitHub API hiccup, no matching asset) must fall through to
+    // today's stale-binary update flow, not fail the whole update.
+    match crate::self_update::check_and_maybe_replace().await {
+        Ok(Some(new_binary)) => {
+            tracing::info!(?new_binary, "relaunching self-updated installer");
+            if let Err(err) = relaunch_self_updated(&app, &new_binary).await {
+                // Relaunch failing is also non-fatal — the OLD process just
+                // keeps going with the update it already knows how to do.
+                tracing::warn!(%err, "failed to relaunch self-updated installer; continuing with current binary");
+            } else {
+                // Successfully handed off to the new binary; this (stale)
+                // process must stop here rather than racing it.
+                return Ok(());
+            }
+        }
+        Ok(None) => {
+            tracing::debug!("installer self-update check: already up to date");
+        }
+        Err(err) => {
+            tracing::warn!(%err, "installer self-update check failed; continuing with current binary");
+        }
+    }
+
     let hermes_home = crate::paths::hermes_home();
     let install_root = hermes_home.join("hermes-agent");
     let update_branch = update_branch_from_args(std::env::args().skip(1))
@@ -405,6 +434,43 @@ async fn run_update(app: AppHandle) -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+/// Spawns the freshly self-updated installer binary at `new_binary` with the
+/// same args this process was invoked with (so `--update` and any forwarded
+/// flags like `--branch`/`--target-app` survive the hand-off), waits briefly
+/// for it to actually start, then exits this (stale) process. Mirrors the
+/// desktop's existing exec-then-exit pattern for launching the built app
+/// (see `bootstrap::launch_desktop`).
+///
+/// We deliberately do NOT try to overwrite/delete the old binary here — by
+/// the time this runs, `self_update::check_and_maybe_replace` has already
+/// atomically renamed the new binary over `paths::installer_dest()`, so
+/// `new_binary` and this stale process's `current_exe()` are, on disk, now
+/// the SAME path pointing at DIFFERENT (new) bytes; the OS keeps this
+/// process's already-loaded image alive in memory until it exits, same as
+/// replacing a running binary on Unix. On Windows this works because the
+/// rename swapped a temp file over the target, never rewriting the
+/// currently-mapped file's bytes in place.
+async fn relaunch_self_updated(app: &AppHandle, new_binary: &Path) -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    let mut cmd = tokio::process::Command::new(new_binary);
+    cmd.args(&args);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt as _;
+        // DETACHED_PROCESS = 0x00000008 — keep the new installer alive after
+        // this process exits, same flag used for the desktop hand-off.
+        cmd.creation_flags(0x0000_0008);
+    }
+
+    cmd.spawn()
+        .with_context(|| format!("spawning self-updated installer {}", new_binary.display()))?;
+
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    app.exit(0);
     Ok(())
 }
 

@@ -14,6 +14,7 @@ mod install_script;
 mod keycloak;
 mod powershell;
 mod paths;
+mod self_update;
 mod update;
 mod models;
 
