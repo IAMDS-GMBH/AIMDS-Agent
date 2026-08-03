@@ -28,6 +28,20 @@ export default function Failure({ bootstrap }: FailureProps) {
   const mode = useStore($mode)
   const isUpdate = mode === 'update'
 
+  const lang = typeof navigator !== 'undefined' ? (navigator.language || '').toLowerCase() : ''
+  const isDe = lang.startsWith('de')
+
+  const titleText = isDe
+    ? isUpdate ? 'Update nicht abgeschlossen' : 'Installation nicht abgeschlossen'
+    : isUpdate ? 'Update didn\u2019t finish' : 'Install didn\u2019t finish'
+
+  const retryText = isDe
+    ? isUpdate ? 'Update erneut versuchen' : 'Installation erneut versuchen'
+    : isUpdate ? 'Retry update' : 'Retry install'
+
+  const logText = isDe ? 'Log-Ordner öffnen' : 'Open log folder'
+  const reportText = isDe ? 'Problem melden' : 'Problem melden / Report issue'
+
   const handleReportIssue = () => {
     const url = 'https://github.com/NousResearch/Hermes-Agent/issues/new'
     void openUrl(url).catch(() => {
@@ -49,16 +63,16 @@ export default function Failure({ bootstrap }: FailureProps) {
           }
         >
           <span>
-            <span>{isUpdate ? 'Update didn\u2019t finish' : 'Install didn\u2019t finish'}</span>
+            <span>{titleText}</span>
           </span>
-          <span aria-hidden="true">{isUpdate ? 'Update didn\u2019t finish' : 'Install didn\u2019t finish'}</span>
+          <span aria-hidden="true">{titleText}</span>
         </p>
 
         <p className="m-0 mx-auto max-w-xl text-center text-sm leading-normal tracking-tight text-muted-foreground">
           {bootstrap.error ??
             (isUpdate
-              ? 'Something went wrong during the update.'
-              : 'Something went wrong during installation.')}
+              ? (isDe ? 'Beim Update ist ein Fehler aufgetreten.' : 'Something went wrong during the update.')
+              : (isDe ? 'Bei der Installation ist ein Fehler aufgetreten.' : 'Something went wrong during installation.'))}
         </p>
       </div>
 
@@ -69,7 +83,7 @@ export default function Failure({ bootstrap }: FailureProps) {
           className="inline-flex items-center gap-2 px-6"
         >
           <RefreshCw size={16} />
-          {isUpdate ? 'Retry update' : 'Retry install'}
+          {retryText}
         </Button>
         <Button
           variant="outline"
@@ -78,7 +92,7 @@ export default function Failure({ bootstrap }: FailureProps) {
           className="inline-flex items-center gap-2"
         >
           <FileText size={16} />
-          Open log folder
+          {logText}
         </Button>
         <Button
           variant="outline"
@@ -87,7 +101,7 @@ export default function Failure({ bootstrap }: FailureProps) {
           className="inline-flex items-center gap-2"
         >
           <LifeBuoy size={16} />
-          Report issue
+          {reportText}
         </Button>
       </div>
 
