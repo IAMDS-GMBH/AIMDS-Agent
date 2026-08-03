@@ -21,6 +21,37 @@ logger = logging.getLogger(__name__)
 
 MAX_SQL_ROWS = 200
 
+READ_ONLY_TABLES = {
+    "sessions",
+    "messages",
+    "schema_version",
+    "state_meta",
+    "compression_locks",
+    "telegram_dm_topic_mode",
+    "telegram_dm_topic_bindings",
+}
+
+MUTATION_OPS = {
+    getattr(sqlite3, "SQLITE_INSERT", 18),
+    getattr(sqlite3, "SQLITE_UPDATE", 23),
+    getattr(sqlite3, "SQLITE_DELETE", 9),
+    getattr(sqlite3, "SQLITE_DROP_TABLE", 11),
+    getattr(sqlite3, "SQLITE_ALTER_TABLE", 26),
+    getattr(sqlite3, "SQLITE_DROP_INDEX", 10),
+}
+
+
+def _sql_authorizer(
+    action: int,
+    arg1: Optional[str],
+    arg2: Optional[str],
+    db_name: Optional[str],
+    trigger_name: Optional[str],
+) -> int:
+    if action in MUTATION_OPS and arg1 and arg1.lower() in READ_ONLY_TABLES:
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+
 
 def execute_sql(
     query: str,
@@ -43,6 +74,7 @@ def execute_sql(
 
     try:
         conn = sqlite3.connect(str(path), timeout=10.0)
+        conn.set_authorizer(_sql_authorizer)
         init_mcp_tables(conn)
 
         query_clean = query.strip()
@@ -81,6 +113,8 @@ def execute_sql(
 
     except Exception as exc:
         logger.debug("SQL execution failed: %s", exc)
+        if "not authorized" in str(exc).lower():
+            return tool_error(f"Modification denied: System tables ({', '.join(sorted(READ_ONLY_TABLES))}) are read-only.")
         return tool_error(f"SQLite error: {exc}")
 
 
