@@ -115,7 +115,8 @@ def _build_persisted_message(
         msg += (
             f"[Auto-Ingested {ingest_count} records into SQLite table 'mcp_records' in ~/.hermes/state.db. "
             "Columns: (id, tool_name, reference_key, timestamp, user_id, duration_seconds, category, comment, raw_data). "
-            "ALWAYS query 'mcp_records' directly using the built-in 'sql' tool — DO NOT use terminal/bash commands!]\n"
+            "ALWAYS query 'mcp_records' directly using the built-in 'sql' tool — DO NOT use terminal/bash commands! "
+            "CRITICAL: Scope queries to the active user (e.g. `WHERE user_id LIKE '%...'` or filter by user) when summarizing personal tickets/worklogs.]\n"
         )
     msg += "Use the read_file tool with offset and limit to access specific sections of this output.\n\n"
     msg += f"Preview (first {len(preview)} chars):\n"
@@ -166,7 +167,8 @@ def maybe_persist_tool_result(
         ingest_hint = (
             f"\n\n[Auto-Ingested {ingest_count} records into SQLite table 'mcp_records' in ~/.hermes/state.db. "
             "Columns: (id, tool_name, reference_key, timestamp, user_id, duration_seconds, category, comment, raw_data). "
-            "ALWAYS query 'mcp_records' directly using the built-in 'sql' tool — DO NOT use terminal/bash commands!]"
+            "ALWAYS query 'mcp_records' directly using the built-in 'sql' tool — DO NOT use terminal/bash commands! "
+            "CRITICAL: Scope queries to the active user (e.g. `WHERE user_id LIKE '%...'` or filter by user) when summarizing personal tickets/worklogs.]"
         )
 
     if effective_threshold == float("inf"):

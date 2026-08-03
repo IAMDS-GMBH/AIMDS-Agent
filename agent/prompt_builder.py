@@ -357,7 +357,7 @@ TASK_COMPLETION_GUIDANCE = (
     "# Data checking & verification workflow\n"
     "When asked to check, fetch, or update information from external systems or records (Jira, calendar, APIs, databases, files, etc.):\n"
     "1. Check existing baseline: Inspect local memory and context first to know what baseline data and last-updated timestamp/status exist.\n"
-    "2. Query for new updates: Use targeted queries with date, author, or filter parameters (e.g. date >= last_updated) to retrieve only deltas or new entries, avoiding huge unfiltered dumps.\n"
+    "2. Query for new updates: Scope queries to the active user (e.g. currentUser(), user_id filter) and use targeted date/filter parameters to retrieve only user-relevant deltas, avoiding huge unfiltered company-wide dumps.\n"
     "3. Verify tool output integrity: Inspect tool output before making claims. If a tool call fails, errors out, returns truncated output, or gets saved unparsed, resolve/parse it or report the blocker. NEVER claim live data was verified or that 'nothing changed' when tool execution failed or was unparsed.\n"
     "4. Report verified findings: Merge verified updates with the baseline, present accurate results to the user, and update memory if appropriate."
 )
@@ -1928,6 +1928,7 @@ def build_jira_guidance(valid_tool_names: "set[str] | None" = None) -> str:
 
     return (
         "# Jira Query & Result Optimization Strategy\n"
+        "- **Scope queries to active user**: When querying tickets, worklogs, or timesheets (e.g. 'meine Tickets', 'Urlaub', 'Arbeitszeiten'), ALWAYS filter JQL or query parameters by the active user (e.g., `assignee = currentUser()`, `worklogAuthor = currentUser()`, or filter by user ID/name). Do NOT fetch unfiltered company-wide or team-wide ticket lists unless explicitly asked!\n"
         "- **Keep JQL specific**: Use precise JQL filters (e.g., `project = AIS AND assignee = currentUser() AND statusCategory != Done`). Avoid broad or unbounded JQL queries.\n"
         "- **Limit result count**: Always pass `limit` set to 10 or 15 (maximum 20) per search call to prevent large payload context overruns.\n"
         "- **Select essential fields only**: Always use `fields` parameter to request specific fields (e.g., `fields=\"key,summary,status,priority,assignee,updated\"`) rather than fetching full issue structures.\n"
