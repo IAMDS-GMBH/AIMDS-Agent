@@ -67,13 +67,25 @@ describe('buildCommitChangelog', () => {
     expect(groups[0].items).toEqual(['Real new feature'])
   })
 
+  it('includes style commits under improved group', () => {
+    const groups = buildCommitChangelog([
+      { summary: 'style(desktop): remove gateway connection header block' },
+      { summary: 'feat(agent): add data verification workflow' }
+    ])
+
+    expect(groups).toHaveLength(2)
+    expect(groups[0].id).toBe('new')
+    expect(groups[1].id).toBe('improved')
+    expect(groups[1].items[0]).toBe('Remove gateway connection header block')
+  })
+
   it('routes unparseable commits to the "Other improvements" bucket or infers type from keywords', () => {
-    const groups = buildCommitChangelog([{ summary: 'Update sidebar styling' }, { summary: 'Windows installer fix for powershell' }])
+    const groups = buildCommitChangelog([{ summary: 'Miscellaneous update' }, { summary: 'Windows installer fix for powershell' }])
 
     expect(groups[0].id).toBe('fixed')
     expect(groups[0].items).toEqual(['Windows installer fix for powershell'])
     expect(groups[1].id).toBe('other')
-    expect(groups[1].items).toEqual(['Update sidebar styling'])
+    expect(groups[1].items).toEqual(['Miscellaneous update'])
   })
 
   it('falls back to a neutral placeholder when every commit is filtered or empty', () => {

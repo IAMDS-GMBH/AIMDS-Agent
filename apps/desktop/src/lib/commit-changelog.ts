@@ -54,6 +54,7 @@ const TYPE_TO_GROUP: Record<string, CommitGroupId> = {
   perf: 'faster',
   performance: 'faster',
   refactor: 'improved',
+  style: 'improved',
   a11y: 'improved',
   ui: 'improved',
   ux: 'improved'
@@ -69,7 +70,6 @@ const HIDDEN_TYPES = new Set([
   'docs',
   'lint',
   'release',
-  'style',
   'test',
   'tests',
   'wip'
@@ -92,7 +92,7 @@ function inferCommitType(subject: string): string | null {
   if (/\b(fix|fixed|fixes|bug|bugfix|hotfix|korrektur|behoben|revert)\b/.test(s)) return 'fix'
   if (/\b(add|adds|added|feat|feature|new|neu|erstellt|unterstützung)\b/.test(s)) return 'feat'
   if (/\b(perf|performance|faster|speed|schneller|beschleunigt)\b/.test(s)) return 'perf'
-  if (/\b(improve|improved|optimization|optimize|refactor|ui|ux|redesign|verbessert|optimiert)\b/.test(s)) return 'refactor'
+  if (/\b(improve|improved|optimization|optimize|refactor|style|styling|ui|ux|redesign|layout|design|verbessert|optimiert)\b/.test(s)) return 'refactor'
   return null
 }
 
