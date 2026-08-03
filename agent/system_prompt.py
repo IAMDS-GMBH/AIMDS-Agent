@@ -36,6 +36,7 @@ from agent.prompt_builder import (
     MEMORY_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PLATFORM_HINTS,
+    PREFER_NATIVE_TOOLS_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
     STEER_CHANNEL_NOTE,
@@ -116,6 +117,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # users who want a leaner prompt can turn it off.
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
+        stable_parts.append(PREFER_NATIVE_TOOLS_GUIDANCE)
 
     # Universal confirmation_required/clarify enforcement — NOT gated by
     # model-name pattern matching (unlike TOOL_USE_ENFORCEMENT_GUIDANCE

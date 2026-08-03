@@ -341,6 +341,15 @@ TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm",
 # Short on purpose.  This block is shipped to every user, every session,
 # in the cached system prompt — token cost is paid once at install and
 # then amortised across all sessions via prefix caching.  Keep it tight.
+PREFER_NATIVE_TOOLS_GUIDANCE = (
+    "# Native Tool Preference Directive\n"
+    "CRITICAL: Avoid using the `terminal` tool or spawning Python scripts for tasks that can be accomplished with native core or MCP tools.\n"
+    "- Database queries & data filtering: ALWAYS use the built-in `sql` tool directly against `~/.hermes/state.db` (`mcp_records`, `sessions`, `messages`, `todos`, etc.) — NEVER run `sqlite3` or Python scripts in the terminal!\n"
+    "- Reading & editing files: Use `read_file`, `write_file`, `patch`, `search_files` — do NOT run `cat`, `grep`, `sed`, `echo`, or Python scripts in the terminal for file operations.\n"
+    "- Task & memory management: Use `todo` and `memory` tools — do NOT write custom JSON files via terminal commands.\n"
+    "- External APIs & MCP tools: Call the specific MCP or core tool directly (`jira_*`, `mcp_*`) rather than writing `curl` or Python scripts.\n"
+    "Use `terminal` ONLY when no native tool, MCP tool, or skill exists for the task (e.g. running build tools, git commands, system diagnostics). Spawning Python scripts or CMD shell commands triggers security consent prompts and slows down execution unnecessarily."
+)
 TASK_COMPLETION_GUIDANCE = (
     "# Finishing the job\n"
     "When the user asks you to build, run, or verify something, the deliverable is "
@@ -408,7 +417,7 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "\n"
     "<mandatory_tool_use>\n"
     "NEVER answer these from memory or mental computation — ALWAYS use a tool:\n"
-    "- Arithmetic, math, calculations → use terminal or execute_code\n"
+    "- Arithmetic, math, calculations → use execute_code if available, otherwise compute directly\n"
     "- Hashes, encodings, checksums → use terminal (e.g. sha256sum, base64)\n"
     "- Current time, date, timezone → use terminal (e.g. date)\n"
     "- System state: OS, CPU, memory, disk, ports, processes → use terminal\n"
