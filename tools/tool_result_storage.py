@@ -99,6 +99,7 @@ def _build_persisted_message(
     has_more: bool,
     original_size: int,
     file_path: str,
+    ingest_count: int = 0,
 ) -> str:
     """Build the <persisted-output> replacement block."""
     size_kb = original_size / 1024
@@ -110,6 +111,8 @@ def _build_persisted_message(
     msg = f"{PERSISTED_OUTPUT_TAG}\n"
     msg += f"This tool result was too large ({original_size:,} characters, {size_str}).\n"
     msg += f"Full output saved to: {file_path}\n"
+    if ingest_count > 0:
+        msg += f"[Auto-Ingested {ingest_count} records into SQLite table 'mcp_records' in ~/.hermes/state.db. Query directly using 'sql' tool or sqlite3!]\n"
     msg += "Use the read_file tool with offset and limit to access specific sections of this output.\n\n"
     msg += f"Preview (first {len(preview)} chars):\n"
     msg += preview
@@ -163,7 +166,14 @@ def maybe_persist_tool_result(
                     "Persisted large tool result: %s (%s, %d chars -> %s)",
                     tool_name, tool_use_id, len(content), remote_path,
                 )
-                return _build_persisted_message(preview, has_more, len(content), remote_path)
+                ingest_count = 0
+                try:
+                    from tools.mcp_json_ingestor import try_auto_ingest_json
+                    ingest_count = try_auto_ingest_json(content, tool_name=tool_name, tool_use_id=tool_use_id)
+                except Exception as exc:
+                    logger.debug("Auto-ingest failed for %s: %s", tool_use_id, exc)
+
+                return _build_persisted_message(preview, has_more, len(content), remote_path, ingest_count=ingest_count)
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
 
