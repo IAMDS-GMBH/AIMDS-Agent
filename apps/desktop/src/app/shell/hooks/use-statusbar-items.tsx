@@ -47,7 +47,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { $subagentsBySession, activeSubagentCount } from '@/store/subagents'
-import { $supportTickets, isTicketResolved } from '@/store/support-tickets'
+import { $supportTickets, checkSupportTicketsStatus, isTicketResolved } from '@/store/support-tickets'
 import {
   $backendUpdateApply,
   $backendUpdateStatus,
@@ -252,12 +252,13 @@ export function useStatusbarItems({
       id: 'support-tickets-status',
       label: openCount > 0 ? `Support: ${openCount} offen` : 'Support: Tickets',
       onSelect: () => {
+        void checkSupportTicketsStatus()
         openCommandCenterSection('support')
       },
       title: 'Support-Tickets & Ticketübersicht im Command Center öffnen',
       variant: 'action'
     }
-  }, [supportTickets])
+  }, [supportTickets, openCommandCenterSection])
 
   const clientVersionItem = useMemo<StatusbarItem>(() => {
     const appVersion = desktopVersion?.appVersion

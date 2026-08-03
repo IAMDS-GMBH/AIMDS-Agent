@@ -19,6 +19,7 @@ import { persistString, storedString } from '@/lib/storage'
 import { checkAndTriggerFeedbackPrompt, initFeedbackPrompts } from '@/store/feedback-prompts'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $connection } from '@/store/session'
+import { checkSupportTicketsStatus } from '@/store/support-tickets'
 import type { BackendUpdateCheckResponse } from '@/types/hermes'
 
 export interface UpdateApplyState {
@@ -240,6 +241,7 @@ export async function checkBackendUpdates(): Promise<DesktopUpdateStatus | null>
 }
 
 export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
+  void checkSupportTicketsStatus()
   const bridge = window.hermesDesktop?.updates
 
   if (!bridge || $updateChecking.get()) {

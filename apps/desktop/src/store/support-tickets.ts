@@ -154,3 +154,45 @@ export function clearResolvedSupportTickets(
 export function clearSupportTickets() {
   persistTickets([])
 }
+
+export async function checkSupportTicketsStatus(): Promise<Record<string, { case_status?: string; status?: string }>> {
+  const current = $supportTickets.get()
+  if (current.length === 0) {
+    return {}
+  }
+
+  const statusMap: Record<string, { case_status?: string; status?: string }> = {}
+
+  await Promise.all(
+    current.map(async ticket => {
+      const candidates = Array.from(new Set([ticket.jobId, ticket.caseId, ticket.referenceId].filter(Boolean) as string[]))
+      for (const targetId of candidates) {
+        try {
+          const url = `https://suite-support.iamds.com/api/v1/jobs/${encodeURIComponent(targetId)}`
+          const resp = await fetch(url, { method: 'GET', headers: { 'User-Agent': 'hermes-desktop-ticket-check/1.0' } })
+          if (resp.ok) {
+            const data = await resp.json()
+            if (data && (data.case_status || data.status)) {
+              const entry = {
+                case_status: data.case_status,
+                status: data.status
+              }
+              if (ticket.jobId) statusMap[ticket.jobId] = entry
+              if (ticket.caseId) statusMap[ticket.caseId] = entry
+              if (ticket.referenceId) statusMap[ticket.referenceId] = entry
+              break
+            }
+          }
+        } catch {
+          // best-effort
+        }
+      }
+    })
+  )
+
+  if (Object.keys(statusMap).length > 0) {
+    updateAndCleanupSupportTickets(statusMap)
+  }
+
+  return statusMap
+}

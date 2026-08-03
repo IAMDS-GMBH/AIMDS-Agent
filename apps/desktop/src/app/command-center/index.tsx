@@ -29,7 +29,7 @@ import { useI18n } from '@/i18n'
 import { Activity, AlertCircle, BarChart3, Copy, ExternalLink, HelpCircle, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
-import { $supportTickets, clearResolvedSupportTickets, isTicketResolved } from '@/store/support-tickets'
+import { $supportTickets, checkSupportTicketsStatus, clearResolvedSupportTickets, isTicketResolved } from '@/store/support-tickets'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -219,6 +219,12 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
     }
   }, [refreshUsage, section, usagePeriod])
 
+  useEffect(() => {
+    if (section === 'support') {
+      void checkSupportTicketsStatus()
+    }
+  }, [section])
+
   useRefreshHotkey(() => {
     if (section === 'system') {
       void refreshSystem()
@@ -226,6 +232,8 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
       void fetchLogsData()
     } else if (section === 'usage') {
       void refreshUsage(usagePeriod)
+    } else if (section === 'support') {
+      void checkSupportTicketsStatus()
     }
   })
 
@@ -363,10 +371,16 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
                 />
               )}
               {section === 'support' && (
-                <Button onClick={() => setReportIssueOpen(true)} size="xs" variant="default">
-                  <IconPlus className="mr-1 size-3.5" />
-                  Problem melden
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button onClick={() => void checkSupportTicketsStatus()} size="xs" variant="outline">
+                    <IconRefresh className="mr-1 size-3.5" />
+                    Aktualisieren
+                  </Button>
+                  <Button onClick={() => setReportIssueOpen(true)} size="xs" variant="default">
+                    <IconPlus className="mr-1 size-3.5" />
+                    Problem melden
+                  </Button>
+                </div>
               )}
             </div>
           </header>
