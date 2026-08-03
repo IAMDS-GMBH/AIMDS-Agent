@@ -834,11 +834,12 @@ export const de
     settingsFields: 'Einstellungsfelder',
     mcpServers: 'MCP-Server',
     archivedChats: 'Archivierte Chats',
-    sections: { sessions: 'Sitzungen', system: 'System', usage: 'Nutzung' },
+    sections: { system: 'Systemstatus', logs: 'Diagnose & Live-Logs', usage: 'Nutzung & Analytics', support: 'Ticketübersicht & Support' },
     sectionDescriptions: {
-      sessions: 'Sitzungen suchen und verwalten',
-      system: 'Status, Protokolle und Systemaktionen',
-      usage: 'Token-, Kosten- und Skill-Aktivität über die Zeit'
+      system: 'Gateway-Laufzeit, Inferenz-Readiness und Steuerung',
+      logs: 'Echtzeit-Protokolle von Gateway, Desktop, Agent und Fehlern',
+      usage: 'Token-Verbrauch, Kosten und Skill-Aktivität',
+      support: 'Support-Fälle, Live-Status, Lösungs-Hinweise und Problemmeldung'
     },
     nav: {
       newChat: { title: 'Neue Sitzung', detail: 'Neue Sitzung starten' },
@@ -849,9 +850,10 @@ export const de
       artifacts: { title: 'Artefakte', detail: 'Generierte Ausgaben durchsuchen' }
     },
     sectionEntries: {
-      sessions: { title: 'Sitzungs-Panel', detail: 'Sitzungen suchen, anheften und verwalten' },
-      system: { title: 'System-Panel', detail: 'Gateway-Status, Protokolle, Neustart/Update' },
-      usage: { title: 'Nutzungs-Panel', detail: 'Token-, Kosten- und Skill-Aktivität' }
+      system: { title: 'Systemstatus', detail: 'Gateway-Laufzeit, Inferenz-Readiness und Steuerung' },
+      logs: { title: 'Diagnose & Live-Logs', detail: 'Echtzeit-Protokolle von Gateway, Desktop, Agent und Fehlern' },
+      usage: { title: 'Nutzung & Analytics', detail: 'Token-Verbrauch, Kosten und Skill-Aktivität' },
+      support: { title: 'Ticketübersicht & Support', detail: 'Support-Fälle, Live-Status und Problemmeldung' }
     },
     providerNavigate: 'Navigieren',
     providerSessions: 'Sitzungen',

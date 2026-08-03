@@ -339,10 +339,10 @@ export function CommandPalette() {
         items: [
           {
             icon: Archive,
-            id: 'cc-sessions',
-            keywords: ['command center', 'sessions', 'pin'],
-            label: cc.sections.sessions,
-            run: go(`${COMMAND_CENTER_ROUTE}?section=sessions`)
+            id: 'cc-support',
+            keywords: ['command center', 'support', 'tickets', 'issues'],
+            label: cc.sections.support,
+            run: go(`${COMMAND_CENTER_ROUTE}?section=support`)
           },
           {
             icon: Activity,
@@ -416,7 +416,7 @@ export function CommandPalette() {
 
     if (sessions.length > 0) {
       result.push({
-        heading: t.commandCenter.sections.sessions,
+        heading: t.sidebar.sessions,
         items: sessions.map(session => ({
           icon: MessageCircle,
           id: `session-${session.id}`,

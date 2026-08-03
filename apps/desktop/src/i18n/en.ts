@@ -833,11 +833,12 @@ export const en: Translations = {
     settingsFields: 'Settings fields',
     mcpServers: 'MCP servers',
     archivedChats: 'Archived chats',
-    sections: { sessions: 'Sessions', system: 'System', usage: 'Usage' },
+    sections: { system: 'System Status', logs: 'Diagnostics & Live Logs', usage: 'Usage & Analytics', support: 'Tickets & Support' },
     sectionDescriptions: {
-      sessions: 'Search and manage sessions',
-      system: 'Status, logs, and system actions',
-      usage: 'Token, cost, and skill activity over time'
+      system: 'Gateway runtime, inference readiness, and controls',
+      logs: 'Real-time logs for gateway, desktop, agent, and errors',
+      usage: 'Token consumption, cost, and skill activity over time',
+      support: 'Support cases, live status, resolution notes, and issue reporting'
     },
     nav: {
       newChat: { title: 'New session', detail: 'Start a fresh session' },
@@ -848,9 +849,10 @@ export const en: Translations = {
       artifacts: { title: 'Artifacts', detail: 'Browse generated outputs' }
     },
     sectionEntries: {
-      sessions: { title: 'Sessions panel', detail: 'Search, pin, and manage sessions' },
-      system: { title: 'System panel', detail: 'Gateway status, logs, restart/update' },
-      usage: { title: 'Usage panel', detail: 'Token, cost, and skill activity' }
+      system: { title: 'System status', detail: 'Gateway runtime, inference readiness, and controls' },
+      logs: { title: 'Diagnostics & Live Logs', detail: 'Real-time logs for gateway, desktop, agent, and errors' },
+      usage: { title: 'Usage & Analytics', detail: 'Token consumption, cost, and skill activity' },
+      support: { title: 'Tickets & Support', detail: 'Support cases, live status, and issue reporting' }
     },
     providerNavigate: 'Navigate',
     providerSessions: 'Sessions',

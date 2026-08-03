@@ -726,10 +726,10 @@ export interface Translations {
     settingsFields: string
     mcpServers: string
     archivedChats: string
-    sections: Record<'sessions' | 'system' | 'usage', string>
-    sectionDescriptions: Record<'sessions' | 'system' | 'usage', string>
+    sections: Record<'system' | 'logs' | 'usage' | 'support', string>
+    sectionDescriptions: Record<'system' | 'logs' | 'usage' | 'support', string>
     nav: Record<'newChat' | 'settings' | 'skills' | 'discover' | 'messaging' | 'artifacts', { title: string; detail: string }>
-    sectionEntries: Record<'sessions' | 'system' | 'usage', { title: string; detail: string }>
+    sectionEntries: Record<'system' | 'logs' | 'usage' | 'support', { title: string; detail: string }>
     providerNavigate: string
     providerSessions: string
     refresh: string

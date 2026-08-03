@@ -1,8 +1,15 @@
 import { useStore } from '@nanostores/react'
-import { IconBookmark, IconBookmarkFilled, IconDownload, IconTrash } from '@tabler/icons-react'
-import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  IconDownload,
+  IconRefresh,
+  IconCopy,
+  IconPlus,
+  IconCheck
+} from '@tabler/icons-react'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
+import { ReportIssueDialog } from '@/components/report-issue-dialog'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -18,22 +25,19 @@ import {
 } from '@/hermes'
 import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { sessionTitle } from '@/lib/chat-runtime'
-import { Activity, AlertCircle, BarChart3, Copy, ExternalLink, Pin } from '@/lib/icons'
-import { exportSession } from '@/lib/session-export'
+import { Activity, AlertCircle, BarChart3, Copy, ExternalLink, HelpCircle, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
-import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
-import { $sessions, sessionPinId } from '@/store/session'
+import { $supportTickets, clearResolvedSupportTickets, isTicketResolved } from '@/store/support-tickets'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayMain, OverlayNavItem, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
-export type CommandCenterSection = 'sessions' | 'system' | 'usage'
+export type CommandCenterSection = 'system' | 'logs' | 'usage' | 'support'
 
-const SECTIONS = ['sessions', 'system', 'usage'] as const satisfies readonly CommandCenterSection[]
+const SECTIONS = ['system', 'logs', 'usage', 'support'] as const satisfies readonly CommandCenterSection[]
 
 const USAGE_PERIODS = [7, 30, 90] as const
 type UsagePeriod = (typeof USAGE_PERIODS)[number]
@@ -41,52 +45,9 @@ type UsagePeriod = (typeof USAGE_PERIODS)[number]
 interface CommandCenterViewProps {
   initialSection?: CommandCenterSection
   onClose: () => void
-  onDeleteSession: (sessionId: string) => Promise<void>
-  // Accepted for call-site parity; navigation lives in the global Cmd+K palette.
+  onDeleteSession?: (sessionId: string) => Promise<void>
   onNavigateRoute?: (path: string) => void
-  onOpenSession: (sessionId: string) => void
-}
-
-function formatTimestamp(value?: number | null): string {
-  if (!value) {
-    return ''
-  }
-
-  const date = new Date(value * 1000)
-
-  if (Number.isNaN(date.getTime())) {
-    return ''
-  }
-
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
-}
-
-function workspaceLabel(cwd: null | string | undefined): string {
-  const path = cwd?.trim()
-
-  if (!path) {
-    return ''
-  }
-
-  return (
-    path
-      .replace(/[/\\]+$/, '')
-      .split(/[/\\]/)
-      .filter(Boolean)
-      .pop() ?? path
-  )
-}
-
-function useDebouncedValue<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value)
-
-  useEffect(() => {
-    const id = window.setTimeout(() => setDebounced(value), delayMs)
-
-    return () => window.clearTimeout(id)
-  }, [delayMs, value])
-
-  return debounced
+  onOpenSession?: (sessionId: string) => void
 }
 
 interface OutlookDeviceCodePrompt {
@@ -120,7 +81,7 @@ function extractOutlookDeviceCodePrompt(lines: readonly string[]): OutlookDevice
     if (!userCode) {
       const enter = line.match(/Enter:\s*([A-Z0-9-]+)/i)
       if (enter) {
-        userCode = enter[1].trim()
+        userCode = enter[2]?.trim() || enter[1].trim()
       }
     }
   }
@@ -129,7 +90,6 @@ function extractOutlookDeviceCodePrompt(lines: readonly string[]): OutlookDevice
     return { verificationUri, userCode }
   }
 
-  // Loopback (browser sign-in) flow — no user code, just a sign-in link.
   const signInIndex = lines.findIndex(line => /sign-in required/i.test(line))
   if (signInIndex >= 0) {
     for (let i = signInIndex; i < lines.length; i += 1) {
@@ -141,32 +101,6 @@ function extractOutlookDeviceCodePrompt(lines: readonly string[]): OutlookDevice
   }
 
   return null
-}
-
-function RowIconButton({
-  children,
-  className,
-  onClick,
-  title
-}: {
-  children: ReactNode
-  className?: string
-  onClick: (event: MouseEvent<HTMLButtonElement>) => void
-  title: string
-}) {
-  return (
-    <Button
-      aria-label={title}
-      className={cn('text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground', className)}
-      onClick={onClick}
-      size="icon-xs"
-      title={title}
-      type="button"
-      variant="ghost"
-    >
-      {children}
-    </Button>
-  )
 }
 
 function EmptyPanel({ action, description, title }: { action?: ReactNode; description: string; title?: string }) {
@@ -185,71 +119,63 @@ function EmptyPanel({ action, description, title }: { action?: ReactNode; descri
   )
 }
 
-export function CommandCenterView({ initialSection, onClose, onDeleteSession, onOpenSession }: CommandCenterViewProps) {
+export function CommandCenterView({ initialSection, onClose }: CommandCenterViewProps) {
   const { t } = useI18n()
   const cc = t.commandCenter
-  const sessions = useStore($sessions)
-  const pinnedSessionIds = useStore($pinnedSessionIds)
 
-  const [section, setSection] = useRouteEnumParam('section', SECTIONS, initialSection ?? 'sessions')
+  const [section, setSection] = useRouteEnumParam('section', SECTIONS, initialSection ?? 'system')
 
-  const [query, setQuery] = useState('')
   const [status, setStatus] = useState<StatusResponse | null>(null)
-  const [logs, setLogs] = useState<string[]>([])
   const [systemLoading, setSystemLoading] = useState(false)
   const [systemError, setSystemError] = useState('')
   const [outlookPrompt, setOutlookPrompt] = useState<null | OutlookDeviceCodePrompt>(null)
   const [systemAction, setSystemAction] = useState<ActionStatusResponse | null>(null)
+
+  // Logs state
+  const [logFile, setLogFile] = useState<'agent' | 'gateway' | 'desktop' | 'error'>('agent')
+  const [logLinesCount, setLogLinesCount] = useState<number>(150)
+  const [logsFilter, setLogsFilter] = useState('')
+  const [logs, setLogs] = useState<string[]>([])
+  const [logsLoading, setLogsLoading] = useState(false)
+  const [logsCopied, setLogsCopied] = useState(false)
+
+  // Usage state
   const [usagePeriod, setUsagePeriod] = useState<UsagePeriod>(30)
   const [usage, setUsage] = useState<AnalyticsResponse | null>(null)
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState('')
   const usageRequestRef = useRef(0)
 
-  const debouncedQuery = useDebouncedValue(query.trim(), 180)
-
-  const filteredSessions = useMemo(() => {
-    const sorted = [...sessions].sort((a, b) => {
-      const left = a.last_active || a.started_at || 0
-      const right = b.last_active || b.started_at || 0
-
-      return right - left
-    })
-
-    const needle = debouncedQuery.toLowerCase()
-
-    if (!needle) {
-      return sorted
-    }
-
-    return sorted.filter(session => {
-      const haystack = `${sessionTitle(session)} ${session.id}`.toLowerCase()
-
-      return haystack.includes(needle)
-    })
-  }, [debouncedQuery, sessions])
+  // Support state
+  const [reportIssueOpen, setReportIssueOpen] = useState(false)
+  const [supportFilter, setSupportFilter] = useState<'ALL' | 'OPEN' | 'IN_PROGRESS' | 'RESOLVED'>('ALL')
+  const supportTickets = useStore($supportTickets)
 
   const refreshSystem = useCallback(async () => {
     setSystemLoading(true)
     setSystemError('')
 
     try {
-      const [nextStatus, nextLogs] = await Promise.all([
-        getStatus(),
-        getLogs({
-          file: 'agent',
-          lines: 120
-        })
-      ])
-
+      const nextStatus = await getStatus()
       setStatus(nextStatus)
-      setLogs(nextLogs.lines)
     } catch (error) {
       setSystemError(error instanceof Error ? error.message : String(error))
     } finally {
       setSystemLoading(false)
     }
   }, [])
+
+  const fetchLogsData = useCallback(async () => {
+    setLogsLoading(true)
+    try {
+      const res = await getLogs({ file: logFile, lines: logLinesCount })
+      setLogs(res.lines || [])
+    } catch (err) {
+      setLogs([`Protokollfehler: ${err instanceof Error ? err.message : String(err)}`])
+    } finally {
+      setLogsLoading(false)
+    }
+  }, [logFile, logLinesCount])
 
   const refreshUsage = useCallback(async (days: UsagePeriod) => {
     const requestId = usageRequestRef.current + 1
@@ -281,6 +207,12 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   }, [refreshSystem, section, status, systemLoading])
 
   useEffect(() => {
+    if (section === 'logs') {
+      void fetchLogsData()
+    }
+  }, [fetchLogsData, section])
+
+  useEffect(() => {
     if (section === 'usage') {
       void refreshUsage(usagePeriod)
     }
@@ -289,12 +221,12 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   useRefreshHotkey(() => {
     if (section === 'system') {
       void refreshSystem()
+    } else if (section === 'logs') {
+      void fetchLogsData()
     } else if (section === 'usage') {
       void refreshUsage(usagePeriod)
     }
   })
-
-  const sessionListHasResults = filteredSessions.length > 0
 
   const runSystemAction = useCallback(
     async (kind: 'restart' | 'update') => {
@@ -348,6 +280,54 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
     [cc, refreshSystem]
   )
 
+  const filteredLogs = useMemo(() => {
+    if (!logsFilter.trim()) return logs
+    const needle = logsFilter.toLowerCase()
+    return logs.filter(l => l.toLowerCase().includes(needle))
+  }, [logs, logsFilter])
+
+  const handleCopyLogs = () => {
+    void navigator.clipboard.writeText(logs.join('\n'))
+    setLogsCopied(true)
+    setTimeout(() => setLogsCopied(false), 1500)
+  }
+
+  const handleExportLogs = () => {
+    const content = logs.join('\n')
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `hermes-${logFile}-${new Date().toISOString().slice(0, 10)}.log`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+
+  const filteredSupportTickets = useMemo(() => {
+    if (supportFilter === 'ALL') return supportTickets
+    return supportTickets.filter(t => {
+      const status = (t.status || 'OPEN').toUpperCase()
+      if (supportFilter === 'RESOLVED') return isTicketResolved(status)
+      if (supportFilter === 'IN_PROGRESS') return status === 'IN_PROGRESS' || status === 'PROCESSING'
+      if (supportFilter === 'OPEN') return status === 'OPEN' || status === 'QUEUED'
+      return true
+    })
+  }, [supportTickets, supportFilter])
+
+  const getSectionIcon = (val: CommandCenterSection) => {
+    switch (val) {
+      case 'system':
+        return Activity
+      case 'logs':
+        return Terminal
+      case 'usage':
+        return BarChart3
+      case 'support':
+        return HelpCircle
+    }
+  }
+
   return (
     <OverlayView closeLabel={cc.close} onClose={onClose}>
       <OverlaySplitLayout>
@@ -355,7 +335,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           {SECTIONS.map(value => (
             <OverlayNavItem
               active={section === value}
-              icon={value === 'sessions' ? Pin : value === 'system' ? Activity : BarChart3}
+              icon={getSectionIcon(value)}
               key={value}
               label={cc.sections[value]}
               onClick={() => setSection(value)}
@@ -374,14 +354,6 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              {section === 'sessions' && (
-                <SearchField
-                  containerClassName="max-w-[40vw]"
-                  onChange={next => setQuery(next)}
-                  placeholder={cc.searchPlaceholder}
-                  value={query}
-                />
-              )}
               {section === 'usage' && (
                 <SegmentedControl
                   onChange={id => setUsagePeriod(Number(id) as UsagePeriod)}
@@ -389,90 +361,118 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                   value={String(usagePeriod)}
                 />
               )}
+              {section === 'support' && (
+                <Button onClick={() => setReportIssueOpen(true)} size="xs" variant="default">
+                  <IconPlus className="mr-1 size-3.5" />
+                  Problem melden
+                </Button>
+              )}
             </div>
           </header>
 
-          {section === 'sessions' ? (
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              {!sessionListHasResults ? (
-                <EmptyPanel description={debouncedQuery ? cc.noResults : cc.noSessions} />
-              ) : (
-                <ul className="grid gap-2 pr-1">
-                  {filteredSessions.map(session => {
-                    const pinId = sessionPinId(session)
-                    const pinned = pinnedSessionIds.includes(pinId)
-                    const workspace = workspaceLabel(session.cwd)
-
-                    return (
-                      <li
-                        className="group flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-card/60 p-3.5 transition-all hover:border-border hover:bg-accent/40 shadow-2xs"
-                        key={session.id}
-                      >
-                        <button
-                          className="min-w-0 flex-1 text-left"
-                          onClick={() => onOpenSession(session.id)}
-                          type="button"
-                        >
-                          <div className="flex items-center gap-2">
-                            <span className="truncate text-sm font-semibold text-foreground">
-                              {sessionTitle(session)}
-                            </span>
-                            {pinned && (
-                              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[0.65rem] font-medium text-primary border border-primary/20">
-                                <IconBookmarkFilled className="size-2.5" />
-                                <span>Angeheftet</span>
-                              </span>
+          {section === 'system' ? (
+            <div className="grid min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+              <div className="rounded-xl border border-border/60 bg-card/60 p-4 shadow-2xs">
+                {status ? (
+                  <div className="grid gap-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={cn(
+                              'size-2.5 rounded-full animate-pulse',
+                              status.gateway_running ? 'bg-emerald-500' : 'bg-amber-500'
                             )}
-                          </div>
-                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                            <span>{formatTimestamp(session.last_active || session.started_at)}</span>
-                            {session.message_count ? (
-                              <>
-                                <span>·</span>
-                                <span>{session.message_count} {session.message_count === 1 ? 'Nachricht' : 'Nachrichten'}</span>
-                              </>
-                            ) : null}
-                            {workspace && (
-                              <>
-                                <span>·</span>
-                                <span className="inline-flex items-center gap-1 rounded-md bg-muted/60 px-1.5 py-0.5 text-[0.65rem] font-mono text-muted-foreground">
-                                  📁 {workspace}
-                                </span>
-                              </>
-                            )}
-                          </div>
-                        </button>
-
-                        <div className="flex shrink-0 items-center gap-1 opacity-80 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                          <RowIconButton
-                            onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
-                            title={pinned ? cc.unpinSession : cc.pinSession}
-                          >
-                            {pinned ? (
-                              <IconBookmarkFilled className="size-3.5 text-primary" />
-                            ) : (
-                              <IconBookmark className="size-3.5" />
-                            )}
-                          </RowIconButton>
-                          <RowIconButton
-                            onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
-                            title={cc.exportSession}
-                          >
-                            <IconDownload className="size-3.5" />
-                          </RowIconButton>
-                          <RowIconButton
-                            className="hover:text-destructive"
-                            onClick={() => void onDeleteSession(session.id)}
-                            title={cc.deleteSession}
-                          >
-                            <IconTrash className="size-3.5" />
-                          </RowIconButton>
+                          />
+                          <span className="text-base font-semibold text-foreground">
+                            {status.gateway_running ? cc.gatewayRunning : cc.gatewayStopped}
+                          </span>
                         </div>
-                      </li>
-                    )
-                  })}
-                </ul>
+                        <div className="mt-1.5 text-xs text-muted-foreground">
+                          {cc.hermesActiveSessions(status.version, status.active_sessions)}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <Button onClick={() => void runSystemAction('restart')} size="xs" variant="outline">
+                          <IconRefresh className="mr-1 size-3.5" />
+                          {cc.restartMessaging}
+                        </Button>
+                        <Button onClick={() => void runSystemAction('update')} size="xs" variant="default">
+                          {cc.updateHermes}
+                        </Button>
+                      </div>
+                    </div>
+                    {systemAction && (
+                      <div className="text-xs text-muted-foreground border-t border-border/40 pt-2 mt-1">
+                        Aktion: <span className="font-mono font-medium">{systemAction.name}</span> ·{' '}
+                        {systemAction.running ? cc.actionRunning : systemAction.exit_code === 0 ? cc.actionDone : cc.actionFailed}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <PageLoader className="min-h-32" label={cc.loadingStatus} />
+                )}
+              </div>
+
+              {systemError && (
+                <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
+                  <AlertCircle className="size-4 shrink-0" />
+                  <span>{systemError}</span>
+                </div>
               )}
+            </div>
+          ) : section === 'logs' ? (
+            <div className="flex min-h-0 flex-1 flex-col gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-3">
+                <div className="flex items-center gap-2">
+                  <select
+                    className="h-8 rounded-md border border-input bg-background px-2.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                    onChange={e => setLogFile(e.target.value as any)}
+                    value={logFile}
+                  >
+                    <option value="agent">Agent-Protokoll</option>
+                    <option value="gateway">Gateway-Protokoll</option>
+                    <option value="desktop">Desktop-Protokoll</option>
+                    <option value="error">Fehler-Protokoll</option>
+                  </select>
+
+                  <select
+                    className="h-8 rounded-md border border-input bg-background px-2.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                    onChange={e => setLogLinesCount(Number(e.target.value))}
+                    value={logLinesCount}
+                  >
+                    <option value={100}>100 Zeilen</option>
+                    <option value={250}>250 Zeilen</option>
+                    <option value={500}>500 Zeilen</option>
+                  </select>
+
+                  <Button disabled={logsLoading} onClick={() => void fetchLogsData()} size="xs" variant="ghost">
+                    <IconRefresh className={cn('size-3.5 mr-1', logsLoading && 'animate-spin')} />
+                    Aktualisieren
+                  </Button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <SearchField
+                    containerClassName="w-48"
+                    onChange={next => setLogsFilter(next)}
+                    placeholder="Filter..."
+                    value={logsFilter}
+                  />
+                  <Button onClick={handleCopyLogs} size="xs" variant="ghost">
+                    {logsCopied ? <IconCheck className="size-3.5 mr-1 text-emerald-500" /> : <IconCopy className="size-3.5 mr-1" />}
+                    {logsCopied ? 'Kopiert' : 'Kopieren'}
+                  </Button>
+                  <Button onClick={handleExportLogs} size="xs" variant="outline">
+                    <IconDownload className="size-3.5 mr-1" />
+                    Log-Datei
+                  </Button>
+                </div>
+              </div>
+
+              <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap wrap-break-word rounded-xl border border-border/80 bg-black/80 p-4 font-mono text-[0.7rem] leading-relaxed text-zinc-300 select-text cursor-text shadow-inner">
+                {filteredLogs.length ? filteredLogs.join('\n') : cc.noLogs}
+              </pre>
             </div>
           ) : section === 'usage' ? (
             <UsagePanel
@@ -483,68 +483,86 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
               usage={usage}
             />
           ) : (
-            <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-4">
-              <div className="border-b border-(--ui-stroke-tertiary) pb-4">
-                {status ? (
-                  <div className="grid gap-2">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={cn(
-                              'size-2 rounded-full',
-                              status.gateway_running ? 'bg-emerald-500' : 'bg-amber-500'
-                            )}
-                          />
-                          <span className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-                            {status.gateway_running ? cc.gatewayRunning : cc.gatewayStopped}
-                          </span>
-                        </div>
-                        <div className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                          {cc.hermesActiveSessions(status.version, status.active_sessions)}
-                        </div>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
-                        <Button onClick={() => void runSystemAction('restart')} size="xs" variant="text">
-                          {cc.restartMessaging}
-                        </Button>
-                        <Button onClick={() => void runSystemAction('update')} size="xs" variant="textStrong">
-                          {cc.updateHermes}
-                        </Button>
-                      </div>
-                    </div>
-                    {systemAction && (
-                      <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                        {systemAction.name} ·{' '}
-                        {systemAction.running ? cc.actionRunning : systemAction.exit_code === 0 ? cc.actionDone : cc.actionFailed}
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <PageLoader className="min-h-32" label={cc.loadingStatus} />
-                )}
+            <div className="flex min-h-0 flex-1 flex-col gap-4">
+              <div className="flex items-center justify-between gap-2 border-b border-border/60 pb-3">
+                <SegmentedControl
+                  onChange={id => setSupportFilter(id as any)}
+                  options={[
+                    { id: 'ALL', label: 'Alle Cases' },
+                    { id: 'OPEN', label: 'Offen' },
+                    { id: 'IN_PROGRESS', label: 'In Bearbeitung' },
+                    { id: 'RESOLVED', label: 'Gelöst' }
+                  ]}
+                  value={supportFilter}
+                />
+
+                <Button onClick={() => clearResolvedSupportTickets()} size="xs" variant="ghost">
+                  Gelöste bereinigen
+                </Button>
               </div>
 
-              <div className="flex min-h-0 flex-col">
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
-                    {cc.recentLogs}
-                  </span>
-                  {systemError && (
-                    <span className="inline-flex items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-destructive">
-                      <AlertCircle className="size-3.5" />
-                      {systemError}
-                    </span>
-                  )}
-                </div>
-                <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.65rem] leading-relaxed text-(--ui-text-tertiary) select-text cursor-text">
-                  {logs.length ? logs.join('\n') : cc.noLogs}
-                </pre>
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                {filteredSupportTickets.length === 0 ? (
+                  <EmptyPanel
+                    action={
+                      <Button onClick={() => setReportIssueOpen(true)} size="xs" variant="default">
+                        <IconPlus className="mr-1 size-3.5" />
+                        Problem melden
+                      </Button>
+                    }
+                    description="Keine Support-Tickets in dieser Kategorie vorhanden."
+                    title="Keine Support-Fälle"
+                  />
+                ) : (
+                  <div className="grid gap-2.5 pr-1">
+                    {filteredSupportTickets.map(ticket => {
+                      const resolved = isTicketResolved(ticket.status)
+                      return (
+                        <div
+                          className="flex flex-col gap-2 rounded-xl border border-border/60 bg-card/60 p-4 transition-all hover:border-border shadow-2xs"
+                          key={ticket.jobId}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-xs font-semibold text-primary">
+                                  {ticket.caseId || ticket.referenceId || ticket.jobId}
+                                </span>
+                                <span
+                                  className={cn(
+                                    'inline-flex items-center rounded-full px-2 py-0.5 text-[0.65rem] font-medium border',
+                                    resolved
+                                      ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
+                                      : 'bg-amber-500/10 text-amber-500 border-amber-500/20'
+                                  )}
+                                >
+                                  {ticket.status || 'OPEN'}
+                                </span>
+                              </div>
+                              <h4 className="mt-1 text-sm font-medium text-foreground">
+                                {ticket.summary || 'Support-Ticket'}
+                              </h4>
+                            </div>
+                            <span className="shrink-0 text-[0.65rem] text-muted-foreground">
+                              {new Date(ticket.createdAt).toLocaleDateString(undefined, { dateStyle: 'medium' })}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between border-t border-border/40 pt-2 mt-1 text-xs text-muted-foreground">
+                            <span>Kategorie: {ticket.category || 'other'} · Schweregrad: {ticket.severity || 'medium'}</span>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
             </div>
           )}
         </OverlayMain>
       </OverlaySplitLayout>
+
+      <ReportIssueDialog onOpenChange={setReportIssueOpen} open={reportIssueOpen} />
       <OutlookDeviceCodeDialog prompt={outlookPrompt} onClose={() => setOutlookPrompt(null)} />
     </OverlayView>
   )

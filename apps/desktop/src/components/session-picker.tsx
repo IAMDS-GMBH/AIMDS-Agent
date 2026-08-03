@@ -55,7 +55,7 @@ export function SessionPickerDialog({
           aria-describedby={undefined}
           className="fixed left-1/2 top-[14vh] z-[210] w-[min(40rem,calc(100vw-2rem))] -translate-x-1/2 overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-lg duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-2 data-[state=open]:zoom-in-95"
         >
-          <DialogPrimitive.Title className="sr-only">{t.commandCenter.sections.sessions}</DialogPrimitive.Title>
+          <DialogPrimitive.Title className="sr-only">{t.sidebar.sessions}</DialogPrimitive.Title>
           <Command className="bg-transparent" loop>
             <CommandInput
               onValueChange={setSearch}
@@ -66,7 +66,7 @@ export function SessionPickerDialog({
               <CommandEmpty>{t.commandCenter.noResults}</CommandEmpty>
               <CommandGroup
                 className="**:[[cmdk-group-heading]]:uppercase **:[[cmdk-group-heading]]:tracking-wider **:[[cmdk-group-heading]]:text-[0.6875rem] **:[[cmdk-group-heading]]:text-muted-foreground/70"
-                heading={t.commandCenter.sections.sessions}
+                heading={t.sidebar.sessions}
               >
                 {sessions.map(session => {
                   const title = sessionTitle(session)

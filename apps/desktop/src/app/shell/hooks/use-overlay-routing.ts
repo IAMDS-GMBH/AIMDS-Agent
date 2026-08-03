@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { type CommandCenterSection } from '@/app/command-center'
 import { AGENTS_ROUTE, appViewForPath, COMMAND_CENTER_ROUTE, isOverlayView, NEW_CHAT_ROUTE } from '@/app/routes'
 
-const SECTIONS = ['sessions', 'system', 'usage'] as const
+const SECTIONS = ['system', 'logs', 'usage', 'support'] as const
 
 export function useOverlayRouting() {
   const location = useLocation()
