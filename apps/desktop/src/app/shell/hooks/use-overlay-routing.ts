@@ -39,6 +39,16 @@ export function useOverlayRouting() {
     [navigate]
   )
 
+  useEffect(() => {
+    const handleOpenCommandCenter = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      const section = (detail?.section || 'support') as CommandCenterSection
+      openCommandCenterSection(section)
+    }
+    window.addEventListener('hermes:open-command-center', handleOpenCommandCenter)
+    return () => window.removeEventListener('hermes:open-command-center', handleOpenCommandCenter)
+  }, [openCommandCenterSection])
+
   const closeOverlayToPreviousRoute = useCallback(
     () => navigate(returnPathRef.current || NEW_CHAT_ROUTE, { replace: true }),
     [navigate]

@@ -8,6 +8,7 @@ import {
 } from '@tabler/icons-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { SystemStatusContent } from '@/app/settings/gateway-settings'
 import { PageLoader } from '@/components/page-loader'
 import { ReportIssueDialog } from '@/components/report-issue-dialog'
 import { Button } from '@/components/ui/button'
@@ -371,55 +372,8 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
           </header>
 
           {section === 'system' ? (
-            <div className="grid min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
-              <div className="rounded-xl border border-border/60 bg-card/60 p-4 shadow-2xs">
-                {status ? (
-                  <div className="grid gap-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={cn(
-                              'size-2.5 rounded-full animate-pulse',
-                              status.gateway_running ? 'bg-emerald-500' : 'bg-amber-500'
-                            )}
-                          />
-                          <span className="text-base font-semibold text-foreground">
-                            {status.gateway_running ? cc.gatewayRunning : cc.gatewayStopped}
-                          </span>
-                        </div>
-                        <div className="mt-1.5 text-xs text-muted-foreground">
-                          {cc.hermesActiveSessions(status.version, status.active_sessions)}
-                        </div>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-2">
-                        <Button onClick={() => void runSystemAction('restart')} size="xs" variant="outline">
-                          <IconRefresh className="mr-1 size-3.5" />
-                          {cc.restartMessaging}
-                        </Button>
-                        <Button onClick={() => void runSystemAction('update')} size="xs" variant="default">
-                          {cc.updateHermes}
-                        </Button>
-                      </div>
-                    </div>
-                    {systemAction && (
-                      <div className="text-xs text-muted-foreground border-t border-border/40 pt-2 mt-1">
-                        Aktion: <span className="font-mono font-medium">{systemAction.name}</span> ·{' '}
-                        {systemAction.running ? cc.actionRunning : systemAction.exit_code === 0 ? cc.actionDone : cc.actionFailed}
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <PageLoader className="min-h-32" label={cc.loadingStatus} />
-                )}
-              </div>
-
-              {systemError && (
-                <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
-                  <AlertCircle className="size-4 shrink-0" />
-                  <span>{systemError}</span>
-                </div>
-              )}
+            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+              <SystemStatusContent />
             </div>
           ) : section === 'logs' ? (
             <div className="flex min-h-0 flex-1 flex-col gap-3">

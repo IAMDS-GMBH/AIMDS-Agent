@@ -252,11 +252,9 @@ export function useStatusbarItems({
       id: 'support-tickets-status',
       label: openCount > 0 ? `Support: ${openCount} offen` : 'Support: Tickets',
       onSelect: () => {
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('hermes:open-gateway-settings', { detail: { tab: 'support' } }))
-        }
+        openCommandCenterSection('support')
       },
-      title: 'Support-Tickets Status & Übersicht in Einstellungen öffnen',
+      title: 'Support-Tickets & Ticketübersicht im Command Center öffnen',
       variant: 'action'
     }
   }, [supportTickets])

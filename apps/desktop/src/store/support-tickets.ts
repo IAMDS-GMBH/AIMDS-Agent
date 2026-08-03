@@ -106,7 +106,9 @@ export function updateAndCleanupSupportTickets(
           label: 'Tickets anzeigen',
           onClick: () => {
             if (typeof window !== 'undefined') {
-              window.dispatchEvent(new CustomEvent('hermes:open-gateway-settings', { detail: { tab: 'support' } }))
+              window.dispatchEvent(
+                new CustomEvent('hermes:open-command-center', { detail: { section: 'support' } })
+              )
             }
           }
         }
