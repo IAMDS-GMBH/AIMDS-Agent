@@ -157,3 +157,45 @@ def test_send_logs_uploads_redacted_bundle(tmp_path, monkeypatch, capsys):
         assert "sk-abcdefghijklmnopqrstuv" not in dump_text
         assert "..." in desktop_log
         assert "***" in dump_text
+
+
+def test_normalize_telemetry_url():
+    from hermes_cli.support_logs import normalize_telemetry_url
+
+    assert normalize_telemetry_url("") == "https://suite-support.iamds.com/api/v1/telemetry"
+    assert normalize_telemetry_url("https://suite-support.iamds.com/api/v1/upload") == "https://suite-support.iamds.com/api/v1/telemetry"
+    assert normalize_telemetry_url("https://custom.example.com/upload") == "https://custom.example.com/telemetry"
+    assert normalize_telemetry_url("https://custom.example.com") == "https://custom.example.com/api/v1/telemetry"
+
+
+def test_send_client_telemetry(monkeypatch):
+    captured = {}
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"status":"ok"}'
+
+    def _fake_urlopen(req, timeout=0):
+        captured["url"] = req.full_url
+        captured["headers"] = dict(req.header_items())
+        captured["data"] = json.loads(req.data.decode("utf-8"))
+        return _Resp()
+
+    monkeypatch.setattr(support_logs.urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(support_logs, "_support_config", lambda: {"upload_url": "https://suite-support.iamds.com/api/v1/upload"})
+
+    res = support_logs.send_client_telemetry()
+    assert res["ok"] is True
+    assert captured["url"] == "https://suite-support.iamds.com/api/v1/telemetry"
+    assert "client_id" in captured["data"]
+    assert "version" in captured["data"]
+    assert "channel" in captured["data"]
+

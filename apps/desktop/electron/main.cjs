@@ -21,6 +21,7 @@ const fs = require('node:fs')
 const http = require('node:http')
 const https = require('node:https')
 const net = require('node:net')
+const os = require('node:os')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
@@ -1489,7 +1490,7 @@ async function checkUpdates() {
   const behind = Number.parseInt(countStr, 10) || 0
   const commits = behind > 0 ? await readCommitLog(updateRoot, branch) : []
 
-  return {
+  const updateResult = {
     supported: true,
     branch,
     currentBranch,
@@ -1501,6 +1502,10 @@ async function checkUpdates() {
     hermesRoot: updateRoot,
     fetchedAt: Date.now()
   }
+
+  void sendClientTelemetry(updateResult)
+
+  return updateResult
 }
 
 async function readCommitLog(cwd, branch) {
@@ -6186,6 +6191,84 @@ ipcMain.handle('hermes:logs:reveal', async () => {
 ipcMain.handle('hermes:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, lines: hermesLog.slice(-200) }))
 ipcMain.handle('hermes:support:sendLogs', async (_event, payload) => runSupportLogUpload(payload))
 ipcMain.handle('hermes:support:reportIssue', async (_event, payload) => runSupportLogUpload(payload))
+ipcMain.handle('hermes:support:sendTelemetry', async (_event, payload) => sendClientTelemetry(payload))
+
+function normalizeTelemetryUrl(url) {
+  const raw = (url || '').trim()
+  if (!raw) return 'https://suite-support.iamds.com/api/v1/telemetry'
+  if (raw.endsWith('/api/v1/upload')) return raw.slice(0, -14) + '/api/v1/telemetry'
+  if (raw.endsWith('/upload')) return raw.slice(0, -7) + '/telemetry'
+  if (!raw.endsWith('/api/v1/telemetry') && !raw.endsWith('/telemetry')) {
+    return raw.replace(/\/+$/, '') + '/api/v1/telemetry'
+  }
+  return raw
+}
+
+async function sendClientTelemetry(updateInfo = null) {
+  try {
+    const updateRoot = resolveUpdateRoot()
+    const { branch } = readDesktopUpdateConfig()
+    const version = resolveHermesVersion()
+    const hostname = os.hostname() || 'unknown-host'
+    const username = process.env.USER || process.env.USERNAME || 'user'
+    const clientId = `${hostname}-${username}`
+
+    let channel = branch || 'main'
+    let patchLevel = version
+    let commitsBehindMain = 0
+
+    if (updateInfo) {
+      if (updateInfo.currentBranch) channel = updateInfo.currentBranch
+      if (updateInfo.currentSha) patchLevel = updateInfo.currentSha.slice(0, 10)
+      if (typeof updateInfo.behind === 'number') commitsBehindMain = updateInfo.behind
+    } else {
+      try {
+        const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
+        const [currentSha, countStr, currentBranch] = await Promise.all([
+          git(['rev-parse', '--short', 'HEAD']),
+          git(['rev-list', 'HEAD..origin/main', '--count']),
+          git(['rev-parse', '--abbrev-ref', 'HEAD'])
+        ])
+        if (currentSha) patchLevel = currentSha
+        if (currentBranch) channel = currentBranch
+        if (countStr && !Number.isNaN(Number.parseInt(countStr, 10))) {
+          commitsBehindMain = Number.parseInt(countStr, 10)
+        }
+      } catch {
+        // Ignore git errors
+      }
+    }
+
+    const payload = {
+      client_id: clientId,
+      customer_id: process.env.IAMDS_CUSTOMER_ID || 'cust-iamds',
+      environment: process.env.HERMES_ENV || 'production',
+      version,
+      channel,
+      patch_level: patchLevel,
+      commits_behind_main: commitsBehindMain
+    }
+
+    const telemetryUrl = normalizeTelemetryUrl(process.env.SUPPORT_UPLOAD_URL)
+
+    fetch(telemetryUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'hermes-desktop-telemetry/1.0'
+      },
+      body: JSON.stringify(payload)
+    })
+      .then(res => {
+        rememberLog(`[telemetry] Client version telemetry sent: HTTP ${res.status}`)
+      })
+      .catch(err => {
+        rememberLog(`[telemetry] Client version telemetry send failed (non-fatal): ${err.message || String(err)}`)
+      })
+  } catch (err) {
+    rememberLog(`[telemetry] Telemetry error (non-fatal): ${err.message || String(err)}`)
+  }
+}
 
 function isExecutableFile(filePath) {
   if (!filePath || !path.isAbsolute(filePath)) {
@@ -6780,6 +6863,11 @@ app.whenReady().then(() => {
   configureSpellChecker()
   registerPowerResumeListeners()
   createWindow()
+
+  // Send client version telemetry quietly at startup
+  sendClientTelemetry().catch(err => {
+    rememberLog(`[telemetry] Startup telemetry failed (non-fatal): ${err.message || String(err)}`)
+  })
 
   app.on('activate', () => {
     // Recreate the primary window if it's gone. Guard on mainWindow directly

@@ -46,5 +46,13 @@ def build_support_parser(subparsers, *, cmd_support: Callable) -> None:
     send_logs.add_argument("--json", action="store_true", help="Emit JSON result")
     send_logs.set_defaults(include_dump=True)
 
+    send_telemetry = support_sub.add_parser(
+        "send-telemetry",
+        help="Send client version telemetry ping to the support server",
+    )
+    send_telemetry.add_argument("--url", default="", help="Override support upload URL")
+    send_telemetry.add_argument("--api-key", default="", help="Override support API key")
+    send_telemetry.add_argument("--json", action="store_true", help="Emit JSON result")
+
     support_parser.set_defaults(func=cmd_support)
 

@@ -42,6 +42,149 @@ def normalize_upload_url(url: str) -> str:
     return raw
 
 
+def normalize_telemetry_url(url: str) -> str:
+    raw = (url or "").strip()
+    if not raw:
+        return "https://suite-support.iamds.com/api/v1/telemetry"
+    if raw.endswith("/api/v1/upload"):
+        return raw[:-14] + "/api/v1/telemetry"
+    if raw.endswith("/upload"):
+        return raw[:-7] + "/telemetry"
+    if not raw.endswith("/api/v1/telemetry") and not raw.endswith("/telemetry"):
+        return raw.rstrip("/") + "/api/v1/telemetry"
+    return raw
+
+
+def send_client_telemetry(args: Any = None) -> dict[str, Any]:
+    """Send client version telemetry to the support server.
+
+    Quietly returns error dict on failure without raising.
+    """
+    try:
+        support_cfg = _support_config()
+        raw_url = str(
+            getattr(args, "url", "")
+            or support_cfg.get("upload_url", "")
+            or os.getenv("SUPPORT_UPLOAD_URL", "")
+        ).strip()
+        telemetry_url = normalize_telemetry_url(raw_url)
+        api_key = str(
+            getattr(args, "api_key", "")
+            or support_cfg.get("api_key", "")
+            or os.getenv("SUPPORT_API_KEY", "")
+        ).strip()
+
+        hostname = socket.gethostname()
+        user_id_val = os.getenv("USER") or os.getenv("USERNAME") or "user"
+        try:
+            import getpass
+
+            user_id_val = getpass.getuser() or user_id_val
+        except Exception:
+            pass
+        client_id = f"{hostname}-{user_id_val}"
+
+        version = os.getenv("HERMES_VERSION") or getattr(args, "version", "") or ""
+        if not version:
+            try:
+                p = Path(__file__).resolve().parent.parent / "pyproject.toml"
+                if p.exists():
+                    for line in p.read_text(encoding="utf-8").splitlines():
+                        if line.strip().startswith("version ="):
+                            version = line.split("=")[1].strip().strip('"')
+                            break
+            except Exception:
+                pass
+        if not version:
+            version = "0.7.1"
+
+        channel = "main"
+        patch_level = version
+        commits_behind_main = 0
+
+        try:
+            hermes_home = get_hermes_home()
+            root = hermes_home / "hermes-agent"
+            if not (root / ".git").exists():
+                root = Path(__file__).resolve().parent.parent
+            if (root / ".git").exists():
+                import subprocess
+
+                b_res = subprocess.run(
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if b_res.returncode == 0 and b_res.stdout.strip():
+                    channel = b_res.stdout.strip()
+                s_res = subprocess.run(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if s_res.returncode == 0 and s_res.stdout.strip():
+                    patch_level = s_res.stdout.strip()
+                c_res = subprocess.run(
+                    ["git", "rev-list", "HEAD..origin/main", "--count"],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if c_res.returncode == 0 and c_res.stdout.strip().isdigit():
+                    commits_behind_main = int(c_res.stdout.strip())
+        except Exception:
+            pass
+
+        payload = {
+            "client_id": client_id,
+            "customer_id": os.getenv("IAMDS_CUSTOMER_ID") or support_cfg.get("customer_id") or "cust-iamds",
+            "environment": os.getenv("HERMES_ENV") or "production",
+            "version": version,
+            "channel": channel,
+            "patch_level": patch_level,
+            "commits_behind_main": commits_behind_main,
+        }
+
+        data_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "hermes-client-telemetry/1.0",
+        }
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        req = urllib.request.Request(telemetry_url, data=data_bytes, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            return {
+                "ok": True,
+                "telemetry_url": telemetry_url,
+                "status_code": getattr(resp, "status", 200),
+                "payload": payload,
+                "response": body,
+            }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def run_send_telemetry(args: Any) -> int:
+    json_mode = bool(getattr(args, "json", False))
+    res = send_client_telemetry(args)
+    if json_mode:
+        print(json.dumps(res))
+    else:
+        if res.get("ok"):
+            print(f"Telemetry sent successfully to {res.get('telemetry_url')}.")
+        else:
+            print(f"Telemetry send failed: {res.get('error')}", file=sys.stderr)
+    return 0 if res.get("ok") else 1
+
+
 def _read_last_lines(path: Path, count: int) -> list[str]:
     if count <= 0:
         return []
@@ -425,6 +568,8 @@ def support_command(args) -> int:
     action = getattr(args, "support_action", None)
     if action in {"send-logs", "send_logs"}:
         return run_send_logs(args)
+    if action in {"send-telemetry", "send_telemetry"}:
+        return run_send_telemetry(args)
 
-    print("Usage: hermes support send-logs [--json]", file=sys.stderr)
+    print("Usage: hermes support [send-logs|send-telemetry] [--json]", file=sys.stderr)
     return 2
