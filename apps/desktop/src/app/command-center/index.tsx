@@ -29,6 +29,7 @@ import { useI18n } from '@/i18n'
 import { Activity, AlertCircle, BarChart3, Copy, ExternalLink, HelpCircle, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
+import { notify } from '@/store/notifications'
 import { $supportTickets, checkSupportTicketsStatus, clearResolvedSupportTickets, isTicketResolved } from '@/store/support-tickets'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
@@ -150,7 +151,44 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
   // Support state
   const [reportIssueOpen, setReportIssueOpen] = useState(false)
   const [supportFilter, setSupportFilter] = useState<'ALL' | 'OPEN' | 'IN_PROGRESS' | 'RESOLVED'>('ALL')
+  const [supportRefreshing, setSupportRefreshing] = useState(false)
   const supportTickets = useStore($supportTickets)
+
+  const handleRefreshSupport = useCallback(async () => {
+    setSupportRefreshing(true)
+    try {
+      const statusMap = await checkSupportTicketsStatus()
+      const updatedCount = Object.keys(statusMap).length
+      notify({
+        kind: 'info',
+        title: 'Support-Tickets',
+        message: updatedCount > 0
+          ? `Status für ${updatedCount} Ticket(s) erfolgreich aktualisiert.`
+          : 'Support-Tickets sind auf dem neuesten Stand.',
+        durationMs: 4000
+      })
+    } catch {
+      notify({ kind: 'warning', title: 'Support-Tickets', message: 'Status-Prüfung fehlgeschlagen.' })
+    } finally {
+      setSupportRefreshing(false)
+    }
+  }, [])
+
+  const handleClearResolvedSupport = useCallback(async () => {
+    setSupportRefreshing(true)
+    try {
+      const statusMap = await checkSupportTicketsStatus()
+      clearResolvedSupportTickets(statusMap)
+      notify({
+        kind: 'success',
+        title: 'Support-Tickets',
+        message: 'Erledigte und überprüfte Support-Tickets wurden bereinigt.',
+        durationMs: 4000
+      })
+    } finally {
+      setSupportRefreshing(false)
+    }
+  }, [])
 
   const refreshSystem = useCallback(async () => {
     setSystemLoading(true)
@@ -318,7 +356,7 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
     return supportTickets.filter(t => {
       const status = (t.status || 'OPEN').toUpperCase()
       if (supportFilter === 'RESOLVED') return isTicketResolved(status)
-      if (supportFilter === 'IN_PROGRESS') return status === 'IN_PROGRESS' || status === 'PROCESSING'
+      if (supportFilter === 'IN_PROGRESS') return status === 'IN_PROGRESS' || status === 'PROCESSING' || status === 'REVIEW'
       if (supportFilter === 'OPEN') return status === 'OPEN' || status === 'QUEUED'
       return true
     })
@@ -372,8 +410,8 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
               )}
               {section === 'support' && (
                 <div className="flex items-center gap-2">
-                  <Button onClick={() => void checkSupportTicketsStatus()} size="xs" variant="outline">
-                    <IconRefresh className="mr-1 size-3.5" />
+                  <Button disabled={supportRefreshing} onClick={() => void handleRefreshSupport()} size="xs" variant="outline">
+                    <IconRefresh className={cn('mr-1 size-3.5', supportRefreshing && 'animate-spin')} />
                     Aktualisieren
                   </Button>
                   <Button onClick={() => setReportIssueOpen(true)} size="xs" variant="default">
@@ -464,7 +502,7 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
                   value={supportFilter}
                 />
 
-                <Button onClick={() => clearResolvedSupportTickets()} size="xs" variant="ghost">
+                <Button disabled={supportRefreshing} onClick={() => void handleClearResolvedSupport()} size="xs" variant="ghost">
                   Gelöste bereinigen
                 </Button>
               </div>

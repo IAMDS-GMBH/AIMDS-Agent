@@ -17,10 +17,13 @@ export interface SavedSupportTicket {
 const STORAGE_KEY = 'hermes_support_tickets_history'
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000
 
-export function isTicketResolved(status?: string): boolean {
-  if (!status) return false
-  const s = status.toUpperCase()
-  return s === 'RESOLVED' || s === 'COMPLETED' || s === 'ARCHIVED'
+export function isTicketResolved(status?: string, caseStatus?: string): boolean {
+  const check = (s?: string) => {
+    if (!s) return false
+    const u = s.toUpperCase()
+    return u === 'RESOLVED' || u === 'COMPLETED' || u === 'ARCHIVED' || u === 'REVIEW'
+  }
+  return check(status) || check(caseStatus)
 }
 
 function loadSavedTickets(): SavedSupportTicket[] {
