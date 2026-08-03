@@ -1581,3 +1581,16 @@ class TestBuildJiraGuidance:
             assert "paginate" in text.lower()
 
 
+class TestTaskCompletionGuidance:
+    """TASK_COMPLETION_GUIDANCE contains task execution and data verification rules."""
+
+    def test_data_checking_and_verification_workflow(self):
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+        assert "# Data checking & verification workflow" in TASK_COMPLETION_GUIDANCE
+        assert "Check existing baseline" in TASK_COMPLETION_GUIDANCE
+        assert "Query for new updates" in TASK_COMPLETION_GUIDANCE
+        assert "Verify tool output integrity" in TASK_COMPLETION_GUIDANCE
+        assert "Report verified findings" in TASK_COMPLETION_GUIDANCE
+
+
+

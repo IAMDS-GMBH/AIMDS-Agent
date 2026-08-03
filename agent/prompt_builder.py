@@ -353,7 +353,13 @@ TASK_COMPLETION_GUIDANCE = (
     "approach, ask the user). NEVER substitute plausible-looking fabricated "
     "output (made-up data, invented file contents, synthesised API responses) "
     "for results you couldn't actually produce. Reporting a blocker honestly "
-    "is always better than inventing a result."
+    "is always better than inventing a result.\n"
+    "# Data checking & verification workflow\n"
+    "When asked to check, fetch, or update information from external systems or records (Jira, calendar, APIs, databases, files, etc.):\n"
+    "1. Check existing baseline: Inspect local memory and context first to know what baseline data and last-updated timestamp/status exist.\n"
+    "2. Query for new updates: Use targeted queries with date, author, or filter parameters (e.g. date >= last_updated) to retrieve only deltas or new entries, avoiding huge unfiltered dumps.\n"
+    "3. Verify tool output integrity: Inspect tool output before making claims. If a tool call fails, errors out, returns truncated output, or gets saved unparsed, resolve/parse it or report the blocker. NEVER claim live data was verified or that 'nothing changed' when tool execution failed or was unparsed.\n"
+    "4. Report verified findings: Merge verified updates with the baseline, present accurate results to the user, and update memory if appropriate."
 )
 
 # Universal (not model-family-gated) enforcement for the "confirmation_required"
