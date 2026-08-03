@@ -74,6 +74,7 @@ If multiple PRs target same integration category (providers/backends/notifiers),
 - **Chat Response & Preview Efficiency**:
   - Keep chat responses concise.
   - When generating or updating large files/documents (e.g. changelogs, reports), do NOT dump full file content into chat output. Provide a short 2-3 line summary and path reference so the desktop preview UI renders the file.
+- **Tabular & MCP Data Processing**: Always ingest multi-row MCP exports, worklogs, and structured data into local SQLite tables (~/.hermes/state.db) and query via SQL instead of writing in-prompt Python string-parsing scripts.
 - For gateway running-session controls, ensure approval/control commands bypass both message guards where required.
 - Avoid wiring dead/unused code into live paths without end-to-end validation.
 

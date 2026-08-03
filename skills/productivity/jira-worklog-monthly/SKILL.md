@@ -32,14 +32,20 @@ When retrieving worklogs for a heavy issue:
 1. Retrieve worklog entries using `jira_get_worklog(issue_key="<KEY>")` or Tempo MCP `get_worklogs(issue_key="<KEY>")`.
 2. If `jira_get_worklog` returns a truncated set or does not accept month parameters directly, query Jira issue worklogs with `include="worklogs"` or execute a REST helper loop.
 
-### 2. Client-Side Monthly Filtering (`YYYY-MM`)
-Filter the worklog array by matching the `started` timestamp:
-```python
-target_month = "2026-07"  # Example: July 2026
-monthly_logs = [
-    w for w in worklogs
-    if str(w.get("started", "")).startswith(target_month)
-]
+### 2. SQLite Ingestion & SQL Querying
+Instead of writing in-prompt Python string-parsing or array-filtering loops, always ingest the retrieved worklog dataset into local SQLite (`~/.hermes/state.db` table `mcp_records` or `external_worklogs`) as described in the `sql-tabular-processor` skill.
+
+Perform calculations (monthly totals, leave balance deductions, daily timelines) using standard SQL queries:
+```sql
+SELECT 
+    strftime('%Y-%m', started) AS month,
+    issue_key,
+    author,
+    ROUND(SUM(time_spent_seconds) / 3600.0, 2) AS total_hours,
+    COUNT(*) AS entry_count
+FROM external_worklogs
+WHERE started LIKE '2026-07%'
+GROUP BY month, issue_key, author;
 ```
 
 ### 3. Extracting Comments & Daily Activities
