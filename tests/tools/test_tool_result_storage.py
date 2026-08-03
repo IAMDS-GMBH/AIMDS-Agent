@@ -548,3 +548,28 @@ class TestPerToolThresholds:
             assert val == 100_000
         except ImportError:
             pytest.skip("file_tools not importable in test env")
+
+    def test_maybe_persist_tool_result_auto_ingest_when_env_none(self, tmp_path):
+        from tools.tool_result_storage import maybe_persist_tool_result
+        from hermes_state import DEFAULT_DB_PATH
+        import sqlite3, json
+
+        large_json_payload = json.dumps([
+            {"id": f"item_{i}", "key": "IAMDS-595", "timeSpentSeconds": 3600, "comment": f"Worklog {i}"}
+            for i in range(100)
+        ])
+        assert len(large_json_payload) > 2000
+
+        result = maybe_persist_tool_result(
+            content=large_json_payload,
+            tool_name="jira_get_worklog",
+            tool_use_id="call_no_env",
+            env=None,
+            threshold=1000,
+        )
+
+        assert "Auto-Ingested 100 records into SQLite table 'mcp_records'" in result
+
+        conn = sqlite3.connect(str(DEFAULT_DB_PATH))
+        count = conn.execute("SELECT COUNT(*) FROM mcp_records WHERE tool_use_id = 'call_no_env'").fetchone()[0]
+        assert count == 100

@@ -149,17 +149,22 @@ def maybe_persist_tool_result(
     """
     effective_threshold = threshold if threshold is not None else config.resolve_threshold(tool_name)
 
-    if effective_threshold == float("inf"):
-        return content
-
-    if len(content) <= effective_threshold:
+    ingest_count = 0
+    if isinstance(content, str):
         try:
             from tools.mcp_json_ingestor import try_auto_ingest_json
             ingest_count = try_auto_ingest_json(content, tool_name=tool_name, tool_use_id=tool_use_id)
-            if ingest_count > 0:
-                content += f"\n\n[Auto-Ingested {ingest_count} records into SQLite table 'mcp_records' in ~/.hermes/state.db. Query directly using 'sql' tool or sqlite3!]"
         except Exception as exc:
             logger.debug("Auto-ingest failed for %s: %s", tool_use_id, exc)
+
+    if effective_threshold == float("inf"):
+        if ingest_count > 0 and isinstance(content, str):
+            content += f"\n\n[Auto-Ingested {ingest_count} records into SQLite table 'mcp_records' in ~/.hermes/state.db. Query directly using 'sql' tool or sqlite3!]"
+        return content
+
+    if len(content) <= effective_threshold:
+        if ingest_count > 0 and isinstance(content, str):
+            content += f"\n\n[Auto-Ingested {ingest_count} records into SQLite table 'mcp_records' in ~/.hermes/state.db. Query directly using 'sql' tool or sqlite3!]"
         return content
 
     storage_dir = _resolve_storage_dir(env)
@@ -173,13 +178,6 @@ def maybe_persist_tool_result(
                     "Persisted large tool result: %s (%s, %d chars -> %s)",
                     tool_name, tool_use_id, len(content), remote_path,
                 )
-                ingest_count = 0
-                try:
-                    from tools.mcp_json_ingestor import try_auto_ingest_json
-                    ingest_count = try_auto_ingest_json(content, tool_name=tool_name, tool_use_id=tool_use_id)
-                except Exception as exc:
-                    logger.debug("Auto-ingest failed for %s: %s", tool_use_id, exc)
-
                 return _build_persisted_message(preview, has_more, len(content), remote_path, ingest_count=ingest_count)
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
@@ -188,8 +186,11 @@ def maybe_persist_tool_result(
         "Inline-truncating large tool result: %s (%d chars, no sandbox write)",
         tool_name, len(content),
     )
+    ingest_msg = ""
+    if ingest_count > 0:
+        ingest_msg = f"\n\n[Auto-Ingested {ingest_count} records into SQLite table 'mcp_records' in ~/.hermes/state.db. Query directly using 'sql' tool or sqlite3!]"
     return (
-        f"{preview}\n\n"
+        f"{preview}{ingest_msg}\n\n"
         f"[Truncated: tool response was {len(content):,} chars. "
         f"Full output could not be saved to sandbox.]"
     )
