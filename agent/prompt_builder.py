@@ -1165,7 +1165,12 @@ def _skill_should_show(
     def _has_tool(req: str) -> bool:
         if req in at:
             return True
-        return any(req in tool for tool in at)
+        req_clean = req.lower().replace("_", "")
+        for tool in at:
+            tool_clean = tool.lower().replace("_", "")
+            if req in tool or req_clean in tool_clean:
+                return True
+        return False
 
     # fallback_for: hide when the primary tool/toolset IS available
     for ts in conditions.get("fallback_for_toolsets", []):

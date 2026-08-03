@@ -1080,6 +1080,11 @@ class TestSkillShouldShow:
                       "fallback_for_tools": [], "requires_tools": ["terminal"]}
         assert _skill_should_show(conditions, {"terminal"}, set()) is True
 
+    def test_requires_tools_shown_with_mcp_prefix(self):
+        conditions = {"fallback_for_toolsets": [], "requires_toolsets": [],
+                      "fallback_for_tools": [], "requires_tools": ["jira_get_worklog"]}
+        assert _skill_should_show(conditions, {"mcp_AtlassianMCP_jira_get_worklog"}, set()) is True
+
 
 class TestBuildSkillsSystemPromptConditional:
     @pytest.fixture(autouse=True)

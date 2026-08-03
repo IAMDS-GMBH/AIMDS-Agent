@@ -5,7 +5,8 @@ category: productivity
 metadata:
   hermes:
     requires_tools:
-      - jira_get_worklog
+      - worklog
+      - sql
 ---
 
 # Jira & Tempo Monthly Worklog & Comment Pagination Strategy
