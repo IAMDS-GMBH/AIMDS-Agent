@@ -1483,8 +1483,15 @@ class MCPServerTask:
             # 1. Fetch current tool list from server
             if self.session is not None and hasattr(self.session, "list_tools"):
                 async with self._rpc_lock:
-                    tools_result = await self.session.list_tools()
-                new_mcp_tools = tools_result.tools if hasattr(tools_result, "tools") else []
+                    call_res = self.session.list_tools()
+                    if inspect.isawaitable(call_res):
+                        tools_result = await call_res
+                    else:
+                        tools_result = call_res
+                if hasattr(tools_result, "tools") and isinstance(tools_result.tools, list):
+                    new_mcp_tools = tools_result.tools
+                else:
+                    new_mcp_tools = list(self._tools)
             else:
                 new_mcp_tools = list(self._tools)
 
@@ -1570,10 +1577,12 @@ class MCPServerTask:
                 # to exercise the connection and detect stale sockets.
                 if self.session:
                     try:
-                        await asyncio.wait_for(
-                            self.session.list_tools(),
-                            timeout=30.0,
-                        )
+                        call_res = self.session.list_tools()
+                        if inspect.isawaitable(call_res):
+                            await asyncio.wait_for(
+                                call_res,
+                                timeout=30.0,
+                            )
                     except Exception as exc:
                         logger.warning(
                             "MCP server '%s' keepalive failed, "
@@ -2007,9 +2016,17 @@ class MCPServerTask:
         if self.session is None:
             return
         if hasattr(self.session, "list_tools"):
-            async with self._rpc_lock:
-                tools_result = await self.session.list_tools()
-            self._tools = tools_result.tools if hasattr(tools_result, "tools") else []
+            try:
+                async with self._rpc_lock:
+                    call_res = self.session.list_tools()
+                    if inspect.isawaitable(call_res):
+                        tools_result = await call_res
+                    else:
+                        tools_result = call_res
+                if hasattr(tools_result, "tools") and isinstance(tools_result.tools, list):
+                    self._tools = tools_result.tools
+            except Exception as e:
+                logger.debug("MCP server '%s': list_tools failed: %s", self.name, e)
             
             # Workaround for MCP servers with delayed tool registration (e.g., some
             # stdio servers where tools aren't available immediately after connection).
@@ -2032,12 +2049,15 @@ class MCPServerTask:
                 await asyncio.sleep(backoff_seconds)
                 try:
                     async with self._rpc_lock:
-                        tools_result = await asyncio.wait_for(
-                            self.session.list_tools(), timeout=10.0
-                        )
-                    self._tools = (
-                        tools_result.tools if hasattr(tools_result, "tools") else []
-                    )
+                        call_res = self.session.list_tools()
+                        if inspect.isawaitable(call_res):
+                            tools_result = await asyncio.wait_for(
+                                call_res, timeout=10.0
+                            )
+                        else:
+                            tools_result = call_res
+                    if hasattr(tools_result, "tools") and isinstance(tools_result.tools, list):
+                        self._tools = tools_result.tools
                 except Exception as e:
                     logger.debug(
                         "MCP server '%s': retry %d/%d failed: %s",
@@ -2455,6 +2475,21 @@ def _get_auth_error_types() -> tuple:
     return _AUTH_ERROR_TYPES
 
 
+def _unwrap_exception(exc: BaseException) -> BaseException:
+    """Recursively extract root cause exception from ExceptionGroup / BaseExceptionGroup."""
+    current = exc
+    while hasattr(current, "exceptions") and getattr(current, "exceptions"):
+        subs = getattr(current, "exceptions")
+        if not subs:
+            break
+        non_cancelled = [e for e in subs if not isinstance(e, asyncio.CancelledError)]
+        if non_cancelled:
+            current = non_cancelled[0]
+        else:
+            current = subs[0]
+    return current
+
+
 def _is_auth_error(exc: BaseException) -> bool:
     """Return True if ``exc`` indicates an MCP OAuth failure.
 
@@ -2462,14 +2497,15 @@ def _is_auth_error(exc: BaseException) -> bool:
     response status code is 401. Other HTTP errors fall through to the
     generic error path in the tool handlers.
     """
+    unwrapped = _unwrap_exception(exc)
     types = _get_auth_error_types()
-    if not types or not isinstance(exc, types):
+    if not types or not isinstance(unwrapped, types):
         return False
     try:
         import httpx
 
-        if isinstance(exc, httpx.HTTPStatusError):
-            return getattr(exc.response, "status_code", None) == 401
+        if isinstance(unwrapped, httpx.HTTPStatusError):
+            return getattr(unwrapped.response, "status_code", None) == 401
     except ImportError:
         pass
     return True
@@ -2634,13 +2670,14 @@ def _is_session_expired_error(exc: BaseException) -> bool:
     ``streamablehttp_client`` + ``ClientSession`` pair, which is
     exactly what ``MCPServerTask._reconnect_event`` triggers.
     """
-    if isinstance(exc, InterruptedError):
+    unwrapped = _unwrap_exception(exc)
+    if isinstance(unwrapped, InterruptedError):
         return False
     # Exception messages vary across SDK versions + server
     # implementations, so match on a small allow-list of stable
     # substrings rather than exception type.  Kept narrow to avoid
     # false positives on unrelated server errors.
-    msg = str(exc).lower()
+    msg = str(unwrapped).lower()
     if not msg:
         return False
     return any(marker in msg for marker in _SESSION_EXPIRED_MARKERS)
@@ -4969,11 +5006,10 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     with _lock:
         _servers[name] = server
 
+    server._config = config
     # Trigger initial discovery with retry logic (handles delayed tool registration)
     await server._discover_tools()
-    
-    registered_names = _register_server_tools(name, server, config)
-    server._registered_tool_names = list(registered_names)
+    registered_names = list(server._registered_tool_names)
 
     transport_type = "HTTP" if "url" in config else "stdio"
     logger.info(
