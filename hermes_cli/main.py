@@ -8468,6 +8468,46 @@ def _cmd_update_impl(args, gateway_mode: bool):
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
+    # Guard against silently discarding in-progress work in a development
+    # checkout. The Desktop app / gateway only ever run `hermes update`
+    # against the canonical managed install (<HERMES_HOME>/hermes-agent),
+    # where auto-stash-and-restore is safe. A manually `git clone`d dev
+    # checkout used for coding is very likely to have concurrent
+    # uncommitted work (human or agent session) — if the restore hits a
+    # conflict, `_restore_stashed_changes` hard-resets the tree back to
+    # the stash, discarding that work with no error surfaced. See the
+    # `hermes-update-autostash-*` accumulation this guards against.
+    from hermes_cli.config import detect_install_method, is_canonical_install_location
+
+    if (
+        detect_install_method(PROJECT_ROOT) == "git"
+        and not is_canonical_install_location(PROJECT_ROOT)
+    ):
+        dirty = subprocess.run(
+            git_cmd + ["status", "--porcelain"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if dirty:
+            if _non_interactive_update:
+                print("✗ Development checkout detected with uncommitted changes.")
+                print(f"  {PROJECT_ROOT} is not the managed install "
+                      f"({get_hermes_home() / 'hermes-agent'}).")
+                print("  Auto-stashing and restoring here is unsafe when run "
+                      "non-interactively (desktop/gateway/--yes), since a "
+                      "restore conflict silently discards the stashed work.")
+                print("  Commit or stash your changes manually, then re-run "
+                      "`hermes update` from a terminal.")
+                sys.exit(1)
+            print("⚠ Development checkout detected with uncommitted changes.")
+            print(f"  {PROJECT_ROOT} is not the managed install "
+                  f"({get_hermes_home() / 'hermes-agent'}).")
+            print("  Proceeding will stash these changes and try to restore "
+                  "them after pulling; a restore conflict will hard-reset "
+                  "the working tree, discarding the stash contents.")
+            print()
+
     # Discard npm lockfile churn before any stash/branch logic. npm rewrites
     # tracked package-lock.json files non-deterministically at install/build
     # time (platform-specific optional deps, ideallyInert annotations, etc.),

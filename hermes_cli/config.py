@@ -579,6 +579,28 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     return "pip"
 
 
+def is_canonical_install_location(project_root: Path) -> bool:
+    """Return True iff ``project_root`` is the canonical managed install.
+
+    The managed install always lives at ``<HERMES_HOME>/hermes-agent``
+    (the curl installer clones there, and the Desktop app/gateway always
+    run from that checkout). Any other ``.git`` checkout — e.g. a
+    developer's manual ``git clone`` used for coding — is a *development*
+    checkout: it is very likely to have concurrent uncommitted work (from
+    a human or an agent session) sitting in the working tree, which makes
+    ``hermes update``'s auto-stash-and-restore flow unsafe to run silently
+    there. See the ``hermes-update-autostash-*`` accumulation investigated
+    for the silent-work-loss bug this guards against.
+    """
+    try:
+        canonical = (get_hermes_home() / "hermes-agent").resolve()
+        return project_root.resolve() == canonical
+    except OSError:
+        # Path resolution failure (e.g. missing directory) — treat as
+        # "not canonical" so the safer, more cautious guard path applies.
+        return False
+
+
 def stamp_install_method(method: str) -> None:
     """Write the install method to ~/.hermes/.install_method."""
     stamp = get_hermes_home() / ".install_method"
