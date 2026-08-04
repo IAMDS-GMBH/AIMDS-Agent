@@ -4,7 +4,8 @@ title: ""
 projectStatus: active        # active | waiting | dormant | done | parked
 created: ""
 updated: ""
-due: ""                       # optional — a project has an end date; an area doesn't
+due: ""                       # may be empty, never omitted
+due-reason: ""                # required when due is empty ("ongoing", "waiting for customer")
 related_to: []
 tags: []
 ---

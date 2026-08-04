@@ -43,3 +43,14 @@ can write files but has no map of where things belong. This scaffold + AGENTS.md
 Point a test Hermes (`HERMES_HOME=~/hermes-test`, `terminal.cwd` = a copy of this
 folder) at it and dictate a few things — you'll see it file into `contacts/`,
 `tasks/`, `meetings/` instead of dropping loose files.
+
+## Changelog
+
+**v2 (2026-08-04)** — ported the proven vault design from the AIMDS reference vault
+(patrick-brain, optimized + verified 04.08.2026):
+- `_hub.md` in every folder (purpose / belongs-here / does-not-belong) — index-first routing
+- `HARNESS.md` — operating principles (goal-first, verify, decay, escalation, closed schema)
+- `_conventions.md` — status/type vocabulary is now a **closed enum** incl. `due-reason:`
+- AGENTS.md references both (kept lean for the ~200-line auto-load)
+
+**v1 (2026-07-14)** — initial scaffold (ticket 15).

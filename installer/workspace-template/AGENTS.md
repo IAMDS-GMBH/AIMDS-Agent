@@ -9,6 +9,16 @@
 > every customer). Only the **filing table** at the end is customer-specific.
 > Keep lean: only the first ~200 lines load.
 
+## Method — HARNESS.md
+
+For any non-trivial task I consult `HARNESS.md` (operating principles: goal-first,
+verify-against-source, closed metadata schema, decay rules, escalation). AGENTS.md
+is the map; HARNESS.md is the method.
+
+**Index-first:** every folder carries a `_hub.md` (purpose, belongs-here,
+does-not-belong). To file or find something I read the hub first — the filing table
+below is the summary, the hubs are the truth on the ground.
+
 ## Information topology — where does what go
 
 This is the most important rule. On every input I decide where it belongs:
