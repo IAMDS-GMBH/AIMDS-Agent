@@ -2005,6 +2005,98 @@ class TestReconnection:
 
         asyncio.run(_test())
 
+    def test_initial_oauth_failure_recovers_via_handle_401(self):
+        """A stale/expired token on initial connect (e.g. after /reload-mcp
+        tore down and rebuilt every session) is recovered via the same
+        MCPOAuthManager.handle_401 path the tool-call-time auth-error
+        handler already uses, instead of giving up on the first 401."""
+        from tools.mcp_tool import MCPServerTask
+
+        run_count = 0
+        target_server = None
+        oauth_error = RuntimeError("401 Unauthorized")
+
+        original_run_stdio = MCPServerTask._run_stdio
+
+        async def patched_run_stdio(self_srv, config):
+            nonlocal run_count, target_server
+            run_count += 1
+            if target_server is not self_srv:
+                return await original_run_stdio(self_srv, config)
+            if run_count == 1:
+                raise oauth_error
+            # Second attempt (post-recovery) succeeds.
+            self_srv.session = MagicMock()
+            self_srv._tools = []
+            self_srv._ready.set()
+            self_srv._shutdown_event.set()
+            await self_srv._shutdown_event.wait()
+
+        mock_manager = MagicMock()
+        mock_manager.handle_401 = AsyncMock(return_value=True)
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("oauth_srv_recover")
+            target_server = server
+
+            with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio), \
+                 patch("tools.mcp_tool._is_auth_error", return_value=True), \
+                 patch("tools.mcp_oauth_manager.get_manager", return_value=mock_manager), \
+                 patch("asyncio.sleep", new_callable=AsyncMock):
+                await server.run({"command": "test"})
+
+            assert run_count == 2
+            assert server._ready.is_set()
+            assert server._error is None
+            mock_manager.handle_401.assert_awaited_once_with("oauth_srv_recover", None)
+
+        asyncio.run(_test())
+
+    def test_initial_oauth_failure_gives_up_when_recovery_fails(self):
+        """When handle_401 reports no viable recovery (e.g. revoked/invalid
+        credential), the initial connect still gives up after exactly one
+        recovery attempt -- no infinite loop, no repeated browser prompts."""
+        from tools.mcp_tool import MCPServerTask
+
+        run_count = 0
+        target_server = None
+        oauth_error = RuntimeError("401 Unauthorized")
+
+        original_run_stdio = MCPServerTask._run_stdio
+
+        async def patched_run_stdio(self_srv, config):
+            nonlocal run_count, target_server
+            run_count += 1
+            if target_server is not self_srv:
+                return await original_run_stdio(self_srv, config)
+            raise oauth_error
+
+        mock_manager = MagicMock()
+        mock_manager.handle_401 = AsyncMock(return_value=False)
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("oauth_srv_no_recover")
+            target_server = server
+
+            with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio), \
+                 patch("tools.mcp_tool._is_auth_error", return_value=True), \
+                 patch("tools.mcp_oauth_manager.get_manager", return_value=mock_manager), \
+                 patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+                await server.run({"command": "test"})
+
+            # Exactly one connect attempt, one recovery attempt, then give up.
+            assert run_count == 1
+            assert server._error is oauth_error
+            assert server._ready.is_set()
+            mock_manager.handle_401.assert_awaited_once_with(
+                "oauth_srv_no_recover", None
+            )
+            assert mock_sleep.await_count == 0
+
+        asyncio.run(_test())
+
     def test_preflight_probe_runs_on_initial_http_connect(self):
         """The content-type preflight probe fires on the first HTTP connect."""
         from tools.mcp_tool import MCPServerTask

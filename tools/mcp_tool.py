@@ -2128,6 +2128,11 @@ class MCPServerTask:
         retries = 0
         initial_retries = 0
         backoff = 1.0
+        # Guards a single OAuth-recovery attempt per initial-connect cycle
+        # (see the auth-error branch below) so a permanently revoked/invalid
+        # credential can't loop forever bouncing between "recover" and
+        # "connect fails again".
+        initial_auth_recovery_attempted = False
 
         while True:
             try:
@@ -2175,6 +2180,50 @@ class MCPServerTask:
                 # (Ported from Kilo Code's MCP resilience fix.)
                 if not self._ready.is_set():
                     if _is_auth_error(exc):
+                        # `/reload-mcp` (and any other hard reconnect) tears
+                        # down and rebuilds every server session, so this is
+                        # functionally an "initial connect" even for a server
+                        # that was healthy for hours before the reload — its
+                        # cached access token may simply have expired in the
+                        # meantime. Before giving up outright, try the SAME
+                        # one-shot recovery the tool-call-time auth-error path
+                        # already uses successfully (see
+                        # _handle_auth_error_and_retry / MCPOAuthManager.
+                        # handle_401): pick up a token that changed on disk,
+                        # or let the SDK refresh in-place. Only one recovery
+                        # attempt per connect cycle -- a permanently revoked
+                        # credential must still fail fast, not loop forever.
+                        if not initial_auth_recovery_attempted:
+                            initial_auth_recovery_attempted = True
+                            try:
+                                from tools.mcp_oauth_manager import get_manager
+
+                                recovered = await get_manager().handle_401(
+                                    self.name, None
+                                )
+                            except Exception as rec_exc:
+                                logger.warning(
+                                    "MCP server '%s': OAuth recovery attempt "
+                                    "during initial connect failed: %s",
+                                    self.name,
+                                    rec_exc,
+                                )
+                                recovered = False
+
+                            if recovered:
+                                logger.info(
+                                    "MCP server '%s': recovered OAuth "
+                                    "credentials during initial connect, "
+                                    "retrying",
+                                    self.name,
+                                )
+                                self.session = None
+                                if self._shutdown_event.is_set():
+                                    self._error = exc
+                                    self._ready.set()
+                                    return
+                                continue
+
                         logger.warning(
                             "MCP server '%s' failed initial OAuth authentication, "
                             "not retrying automatically: %s",
