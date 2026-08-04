@@ -93,6 +93,15 @@ If multiple PRs target same integration category (providers/backends/notifiers),
 - Do not break prompt caching for convenience.
 - Do not replace missing real results with fabricated output.
 - Do not add telemetry/attribution without explicit user-facing opt-in gate.
+- Never run `hermes update` inside this source checkout. It auto-stashes
+  dirty changes and, on a restore conflict, silently `git reset --hard`s
+  the tree with no visible error — this discarded real WIP across 9
+  accumulated `hermes-update-autostash-*` stashes before the guard was
+  added (`hermes_cli/config.py::is_canonical_install_location`,
+  `hermes_cli/main.py::_cmd_update_impl`, commit `fe64764f0`). The guard
+  now refuses non-interactive runs against a non-canonical checkout, but
+  interactive runs still only warn — so just don't run it here at all.
+  Use `git pull`/`git fetch` directly to sync this checkout instead.
 
 ## Repository map
 
