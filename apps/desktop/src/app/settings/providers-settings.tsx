@@ -91,6 +91,19 @@ function buildIamdsLiteLlmKeyGroup(vars: Record<string, EnvVarInfo>): ProviderKe
     })
   }
 
+  const localDevInfo = vars.IAMDS_LITELLM_LOCALDEV_API_KEY
+  if (localDevInfo) {
+    groups.push({
+      advanced: [],
+      description: 'AIMDS-Suite (Local Dev) API key from ~/.hermes/.env',
+      docsUrl: '',
+      hasAnySet: localDevInfo.is_set,
+      name: 'AIMDS-Suite (Local Dev)',
+      primary: ['IAMDS_LITELLM_LOCALDEV_API_KEY', localDevInfo],
+      priority: 3
+    })
+  }
+
   return groups
 }
 
@@ -107,7 +120,6 @@ function normalizeProviderBaseUrl(raw: string): string {
   if (!parsed.hostname || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
     return ''
   }
-  parsed.protocol = 'https:'
   parsed.hash = ''
   const cleaned = `${parsed.origin}${parsed.pathname}${parsed.search}`.replace(/\/+$/, '')
   if (cleaned.endsWith('/litellm/v1')) return cleaned
@@ -135,6 +147,7 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
   const [prodBaseUrl, setProdBaseUrl] = useState('')
   const [stagingBaseUrl, setStagingBaseUrl] = useState('')
   const [devBaseUrl, setDevBaseUrl] = useState('')
+  const [localDevBaseUrl, setLocalDevBaseUrl] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [envVars, setEnvVars] = useState<Record<string, EnvVarInfo>>({})
 
@@ -202,6 +215,7 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
           setProdBaseUrl(mainUrl || envUrl || DEFAULT_BASE_URL)
           setStagingBaseUrl(readProviderBaseUrl(config, 'aimds-suite-staging') || readProviderBaseUrl(config, 'iamds-litellm-staging'))
           setDevBaseUrl(readProviderBaseUrl(config, 'aimds-suite-dev') || readProviderBaseUrl(config, 'iamds-litellm-dev'))
+          setLocalDevBaseUrl(readProviderBaseUrl(config, 'aimds-suite-localdev') || readProviderBaseUrl(config, 'iamds-litellm-localdev'))
         }
       } catch {
         // Best-effort prefill only.
@@ -216,6 +230,7 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
     const prodNormalized = normalizeProviderBaseUrl(prodBaseUrl)
     const stagingNormalized = normalizeProviderBaseUrl(stagingBaseUrl)
     const devNormalized = normalizeProviderBaseUrl(devBaseUrl)
+    const localDevNormalized = normalizeProviderBaseUrl(localDevBaseUrl)
 
     if (prodBaseUrl.trim() && !prodNormalized) {
       notify({ kind: 'error', message: 'Production URL is invalid', title: 'Could not save provider URLs' })
@@ -227,6 +242,10 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
     }
     if (devBaseUrl.trim() && !devNormalized) {
       notify({ kind: 'error', message: 'Dev URL is invalid', title: 'Could not save provider URLs' })
+      return
+    }
+    if (localDevBaseUrl.trim() && !localDevNormalized) {
+      notify({ kind: 'error', message: 'Local Dev URL is invalid', title: 'Could not save provider URLs' })
       return
     }
 
@@ -259,6 +278,7 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
       upsertOrDelete('aimds-suite-prod', 'AIMDS-Suite', 'IAMDS_LITELLM_API_KEY', prodNormalized)
       upsertOrDelete('aimds-suite-staging', 'AIMDS-Suite (Staging)', 'IAMDS_LITELLM_STAGING_API_KEY', stagingNormalized)
       upsertOrDelete('aimds-suite-dev', 'AIMDS-Suite (Development)', 'IAMDS_LITELLM_DEV_API_KEY', devNormalized)
+      upsertOrDelete('aimds-suite-localdev', 'AIMDS-Suite (Local Dev)', 'IAMDS_LITELLM_LOCALDEV_API_KEY', localDevNormalized)
 
       if (prodNormalized) {
         await setEnvVar('IAMDS_LITELLM_BASE_URL', prodNormalized)
@@ -370,6 +390,38 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
                     variant="outline"
                   >
                     Development SSO Key
+                  </Button>
+                )
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <label className="text-xs font-medium text-foreground min-w-44 shrink-0" htmlFor="iamds-localdev-url">
+            Local Dev Base URL
+          </label>
+          <div className="flex items-center gap-2 flex-1 max-w-xl sm:ml-auto">
+            <Input
+              id="iamds-localdev-url"
+              onChange={e => setLocalDevBaseUrl(e.target.value)}
+              placeholder="http://localhost:8000"
+              value={localDevBaseUrl}
+              className="text-xs flex-1"
+            />
+            <div className="shrink-0 min-w-36 text-right flex items-center justify-end">
+              {envVars.IAMDS_LITELLM_LOCALDEV_API_KEY?.is_set ? (
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-500 py-1 px-2.5">
+                  <Check className="size-3.5" /> Connected
+                </span>
+              ) : (
+                localDevBaseUrl.trim() && (
+                  <Button
+                    onClick={() => void handleKeycloakLogin(localDevBaseUrl.trim(), 'IAMDS_LITELLM_LOCALDEV_API_KEY', 'AIMDS-Suite Local Dev')}
+                    size="sm"
+                    variant="outline"
+                  >
+                    Local Dev SSO Key
                   </Button>
                 )
               )}
