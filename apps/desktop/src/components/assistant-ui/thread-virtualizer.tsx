@@ -77,13 +77,15 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
   const messageSignature = useAuiState(s =>
     s.thread.messages
       .map((message, index) => {
-        const partsCount = Array.isArray(message.parts) ? message.parts.length : 0
-        const statusType = message.status?.type ?? ''
+        const rawParts = (message as { parts?: unknown }).parts
+        const partsCount = Array.isArray(rawParts) ? rawParts.length : 0
+        const statusType = (message as { status?: { type?: string } }).status?.type ?? ''
+        const content = (message as { content?: unknown }).content
         const contentLength =
-          typeof message.content === 'string'
-            ? message.content.length
-            : Array.isArray(message.content)
-              ? message.content.length
+          typeof content === 'string'
+            ? content.length
+            : Array.isArray(content)
+              ? content.length
               : 0
         return `${index}:${message.id}:${message.role}:${statusType}:${partsCount}:${contentLength}`
       })
