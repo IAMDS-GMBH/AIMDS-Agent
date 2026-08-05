@@ -75,7 +75,19 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
   sessionKey
 }) => {
   const messageSignature = useAuiState(s =>
-    s.thread.messages.map((message, index) => `${index}:${message.id}:${message.role}`).join('\n')
+    s.thread.messages
+      .map((message, index) => {
+        const partsCount = Array.isArray(message.parts) ? message.parts.length : 0
+        const statusType = message.status?.type ?? ''
+        const contentLength =
+          typeof message.content === 'string'
+            ? message.content.length
+            : Array.isArray(message.content)
+              ? message.content.length
+              : 0
+        return `${index}:${message.id}:${message.role}:${statusType}:${partsCount}:${contentLength}`
+      })
+      .join('\n')
   )
 
   const isRunning = useAuiState(s => s.thread.isRunning)
@@ -92,7 +104,11 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
   const virtualizer = useVirtualizer({
     count: groups.length,
     estimateSize: () => ESTIMATED_ITEM_HEIGHT,
-    getItemKey: index => groups[index]?.id ?? index,
+    getItemKey: index => {
+      const group = groups[index]
+      if (!group) return index
+      return group.kind === 'turn' ? `${group.id}:${group.indices.join('-')}` : `${group.id}:${group.index}`
+    },
     getScrollElement: () => scrollerRef.current,
     // Seed the rect so the initial range mounts something before
     // `observeElementRect` reports the real layout (it overrides this).
