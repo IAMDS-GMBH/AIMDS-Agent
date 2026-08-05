@@ -3541,25 +3541,31 @@ class AIAgent:
             return primary_client
         with self._openai_client_lock():
             request_kwargs = dict(self._client_kwargs)
-        # Per-request OpenAI-wire clients (used by both the non-streaming
-        # chat-completions path and the streaming chat-completions path
-        # in `_interruptible_api_call`) should not run the SDK's built-in
-        # retry loop: the agent's outer loop owns retries with credential
-        # rotation, provider fallback, and backoff that the SDK can't
-        # see. Leaving SDK retries on (default 2) compounds with our outer
-        # retries and lets a single hung provider request stretch to ~3x
-        # the per-call timeout before our stale detector reports it.
-        # Shared/primary clients and Anthropic / Bedrock paths are
-        # unaffected (they don't go through here).
-        request_kwargs["max_retries"] = 0
-        if (
-            base_url_host_matches(str(request_kwargs.get("base_url", "")), "api.githubcopilot.com")
-            and self._api_kwargs_have_image_parts(api_kwargs or {})
-        ):
-            request_kwargs["default_headers"] = self._copilot_headers_for_request(is_vision=True)
-        return self._create_openai_client(request_kwargs, reason=reason, shared=False)
+            request_kwargs["max_retries"] = 0
+            is_copilot_vision = (
+                base_url_host_matches(str(request_kwargs.get("base_url", "")), "api.githubcopilot.com")
+                and self._api_kwargs_have_image_parts(api_kwargs or {})
+            )
+            if is_copilot_vision:
+                request_kwargs["default_headers"] = self._copilot_headers_for_request(is_vision=True)
+
+            req_client = getattr(self, "_cached_request_client", None)
+            if (
+                req_client is not None
+                and not self._is_openai_client_closed(req_client)
+                and getattr(self, "_cached_request_kwargs", None) == request_kwargs
+            ):
+                return req_client
+
+            client = self._create_openai_client(request_kwargs, reason=reason, shared=False)
+            if not is_copilot_vision:
+                self._cached_request_client = client
+                self._cached_request_kwargs = request_kwargs
+            return client
 
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
+        if client is getattr(self, "client", None) or client is getattr(self, "_cached_request_client", None):
+            return
         self._close_openai_client(client, reason=reason, shared=False)
 
     def _abort_request_openai_client(self, client: Any, *, reason: str) -> None:

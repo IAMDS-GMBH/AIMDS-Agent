@@ -211,6 +211,9 @@ describe('OPTION_LABEL_RE', () => {
     expect(OPTION_LABEL_RE.test('Option A: Tiefer in die Core Epics')).toBe(true)
     expect(OPTION_LABEL_RE.test('option 2: do the thing')).toBe(true)
     expect(OPTION_LABEL_RE.test('OPTION D: whatever')).toBe(true)
+    expect(OPTION_LABEL_RE.test('Möglichkeit 1: Ausführen')).toBe(true)
+    expect(OPTION_LABEL_RE.test('Auswahl A: Option wählen')).toBe(true)
+    expect(OPTION_LABEL_RE.test('Variante B: Testen')).toBe(true)
   })
 
   it('does not match unrelated list item text', () => {

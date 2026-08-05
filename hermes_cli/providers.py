@@ -71,6 +71,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="codex_responses",
         base_url_env_var="IAMDS_LITELLM_DEV_BASE_URL",
     ),
+    "aimds-suite-localdev": HermesOverlay(
+        transport="codex_responses",
+        base_url_env_var="IAMDS_LITELLM_LOCALDEV_BASE_URL",
+    ),
     "iamds-litellm": HermesOverlay(
         transport="codex_responses",
         base_url_env_var="IAMDS_LITELLM_BASE_URL",
@@ -385,6 +389,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "aimds-suite-prod": "AIMDS-Suite",
     "aimds-suite-staging": "AIMDS-Suite (Staging)",
     "aimds-suite-dev": "AIMDS-Suite (Development)",
+    "aimds-suite-localdev": "AIMDS-Suite (Local Dev)",
     "iamds-litellm": "AIMDS-Suite",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",

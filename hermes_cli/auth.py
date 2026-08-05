@@ -204,6 +204,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("IAMDS_LITELLM_DEV_API_KEY",),
         base_url_env_var="IAMDS_LITELLM_DEV_BASE_URL",
     ),
+    "aimds-suite-localdev": ProviderConfig(
+        id="aimds-suite-localdev",
+        name="AIMDS-Suite (Local Dev)",
+        auth_type="api_key",
+        inference_base_url="http://localhost:8000/litellm/v1",
+        api_key_env_vars=("IAMDS_LITELLM_LOCALDEV_API_KEY", "IAMDS_LITELLM_DEV_API_KEY"),
+        base_url_env_var="IAMDS_LITELLM_LOCALDEV_BASE_URL",
+    ),
     "iamds-litellm": ProviderConfig(
         id="iamds-litellm",
         name="AIMDS-Suite",
@@ -616,7 +624,7 @@ def _resolve_api_key_provider_secret(
         if has_usable_secret(val):
             return val, env_var
 
-    if provider_id in ("aimds-suite-staging", "aimds-suite-dev"):
+    if provider_id in ("aimds-suite-staging", "aimds-suite-dev", "aimds-suite-localdev"):
         for fallback_env in ("IAMDS_LITELLM_API_KEY", "OPENAI_API_KEY"):
             val = (get_env_value(fallback_env) or "").strip()
             if has_usable_secret(val):

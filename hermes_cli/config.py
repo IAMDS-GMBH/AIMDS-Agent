@@ -3059,6 +3059,14 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "IAMDS_LITELLM_LOCALDEV_BASE_URL": {
+        "description": "AIMDS-Suite (Local Dev) Base URL",
+        "prompt": "AIMDS-Suite (Local Dev) Base URL",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "IAMDS_LITELLM_API_KEY": {
         "description": "AIMDS-Suite API key",
         "prompt": "AIMDS-Suite API key",
@@ -3078,6 +3086,14 @@ OPTIONAL_ENV_VARS = {
     "IAMDS_LITELLM_DEV_API_KEY": {
         "description": "AIMDS-Suite (Development) API key",
         "prompt": "AIMDS-Suite (Development) API key",
+        "url": None,
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "IAMDS_LITELLM_LOCALDEV_API_KEY": {
+        "description": "AIMDS-Suite (Local Dev) API key",
+        "prompt": "AIMDS-Suite (Local Dev) API key",
         "url": None,
         "password": True,
         "category": "provider",
@@ -5530,7 +5546,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 iamds_hosts: set = set()
                 if iamds_host:
                     iamds_hosts.add(iamds_host)
-                for _env in ("IAMDS_LITELLM_STAGING_BASE_URL", "IAMDS_LITELLM_DEV_BASE_URL"):
+                for _env in ("IAMDS_LITELLM_STAGING_BASE_URL", "IAMDS_LITELLM_DEV_BASE_URL", "IAMDS_LITELLM_LOCALDEV_BASE_URL"):
                     try:
                         _v = (get_env_value(_env) or os.environ.get(_env, "")).strip()
                         if _v:

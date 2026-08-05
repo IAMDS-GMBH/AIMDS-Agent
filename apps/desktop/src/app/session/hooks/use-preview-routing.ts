@@ -45,8 +45,8 @@ function looksLikePreviewTarget(value: string): boolean {
     return true
   }
 
-  // Only auto-open visual/rendered output formats for tool results (HTML, images, documents)
-  return /\.(html?|svg|pdf|png|jpe?g|webp|gif|docx?|xlsx?|pptx?)$/i.test(value)
+  // Auto-open previews for documents, images, web pages, markdown, and text/code files created or modified in session
+  return /\.(html?|svg|pdf|png|jpe?g|webp|gif|docx?|xlsx?|pptx?|md|markdown|txt|json|py|js|ts|tsx|jsx|css|yaml|yml|csv|log|sh)$/i.test(value)
 }
 
 function stripAnsi(value: string): string {

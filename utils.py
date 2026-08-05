@@ -517,24 +517,24 @@ def base_url_host_matches(base_url: str, domain: str) -> bool:
 def is_dev_environment(base_url: str = "", provider_id: str = "") -> bool:
     """Return True if the current provider or base_url represents a development environment.
 
-    Checks if provider_id/slug matches dev patterns (e.g., 'aimds-suite-dev', 'iamds-litellm-dev',
-    or contains '-dev' / 'dev-') or if base_url hostname matches 'dev.*' or 'dev.suite.iamds.com'.
+    Checks if provider_id/slug matches dev patterns (e.g., 'aimds-suite-dev', 'aimds-suite-localdev', 'iamds-litellm-dev',
+    or contains '-dev' / 'dev-') or if base_url hostname matches 'dev.*', 'localhost', '127.0.0.1', or 'dev.suite.iamds.com'.
     """
     if env_bool("HERMES_DEV_MODE") or env_bool("HERMES_DEV_CREDITS"):
         return True
 
     prov = (provider_id or "").strip().lower()
-    if prov in ("aimds-suite-dev", "iamds-litellm-dev") or prov.endswith("-dev") or prov.startswith("dev-") or prov == "dev":
+    if prov in ("aimds-suite-dev", "aimds-suite-localdev", "iamds-litellm-dev") or prov.endswith("-dev") or prov.startswith("dev-") or "localdev" in prov or prov == "dev":
         return True
 
     if base_url:
         url_lower = base_url.lower()
-        if "dev.suite.iamds.com" in url_lower:
+        if "dev.suite.iamds.com" in url_lower or "local.suite.iamds.com" in url_lower or "localhost" in url_lower or "127.0.0.1" in url_lower or "localdev" in url_lower:
             return True
         if base_url_host_matches(base_url, "dev.suite.iamds.com"):
             return True
         hostname = base_url_hostname(base_url)
-        if hostname.startswith("dev.") or "dev.suite.iamds" in hostname:
+        if hostname.startswith("dev.") or "dev.suite.iamds" in hostname or hostname in ("localhost", "127.0.0.1"):
             return True
 
     return False

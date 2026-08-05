@@ -193,7 +193,7 @@ function childrenToText(children: unknown): string {
 // Detects "Nächste Möglichkeiten"-style option list items so they can be made
 // clickable (see `NextOptionListItem`). Matches a leading bold "Option <id>"
 // label regardless of language, e.g. "Option A: ..." or "**Option 2**: ...".
-export const OPTION_LABEL_RE = /^option\s+\S+/i
+export const OPTION_LABEL_RE = /^(?:option|möglichkeit|auswahl|variante|alternative|schritt)\b/i
 
 export function reactNodeToPlainText(node: ReactNode): string {
   if (node === null || node === undefined || typeof node === 'boolean') {
@@ -287,18 +287,14 @@ function NextOptionListItem({ className, label, lead, nested, ...props }: Compon
   )
 }
 
-// Renders `<li>`, promoting numbered "Option X: ..." items to clickable
+// Renders `<li>`, promoting "Option X: ..." items to clickable
 // `NextOptionListItem`s (see there) while leaving everything else unchanged.
 function ListItem({ className, children, ...props }: ComponentProps<'li'>) {
-  const listKind = useContext(ListKindContext)
+  const { lead, nested } = splitListItemChildren(children)
+  const label = reactNodeToPlainText(lead).trim()
 
-  if (listKind === 'ordered') {
-    const { lead, nested } = splitListItemChildren(children)
-    const label = reactNodeToPlainText(lead).trim()
-
-    if (OPTION_LABEL_RE.test(label)) {
-      return <NextOptionListItem className={className} label={label} lead={lead} nested={nested} {...props} />
-    }
+  if (OPTION_LABEL_RE.test(label)) {
+    return <NextOptionListItem className={className} label={label} lead={lead} nested={nested} {...props} />
   }
 
   return (

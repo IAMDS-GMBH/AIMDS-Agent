@@ -400,6 +400,21 @@ def test_m365_shared_calendar_tools():
         assert res["resolved_calendar_name"] == "Officezeiten"
         assert res["value"][0]["subject"] == "Officezeiten Team"
 
+    # Test m365_get_events auto-completes single date start_time_iso into full-day calendarView
+    captured_params = {}
+    def mock_single_date_graph(method, endpoint, params=None):
+        nonlocal captured_params
+        captured_params = params or {}
+        return {"value": [{"id": "evt-today"}]}
+
+    with patch.object(server, "_graph_request", side_effect=mock_single_date_graph):
+        res = server.m365_get_events(start_time_iso="2026-08-04")
+        assert "startDateTime" in captured_params
+        assert "endDateTime" in captured_params
+        assert captured_params["startDateTime"] == "2026-08-04T00:00:00"
+        assert captured_params["endDateTime"] == "2026-08-04T23:59:59"
+        assert res["value"][0]["id"] == "evt-today"
+
     # 3. Test m365_create_event in shared calendar with all-day flag
     def mock_create_graph(method, endpoint, json_data=None, params=None):
         if endpoint == "/me/calendars":
@@ -555,3 +570,27 @@ class TestTeamsAttachmentsAndVaultResolution:
             )
             assert res["success"] is True
             assert (tmp_path / "out.png").read_bytes() == b"pngdata"
+
+    def test_delegated_mailbox_endpoint_translation(self):
+        """Verify _graph_request translates /me/ endpoints to /users/{account}/ when account is a delegated mailbox email."""
+        captured_urls = []
+        def fake_request(method, url, **kwargs):
+            captured_urls.append(url)
+            m = MagicMock()
+            m.status_code = 200
+            m.is_error = False
+            m.json.return_value = {"value": []}
+            return m
+
+        with patch("httpx.Client.request", side_effect=fake_request), \
+             patch.object(server, "_get_access_token", return_value="token123"):
+            server.m365_list_emails(account="support@company.com")
+            assert len(captured_urls) == 1
+            assert "/users/support@company.com/messages" in captured_urls[0]
+
+    def test_normalize_attachment_list(self):
+        """Verify _normalize_attachment_list handles string paths, JSON strings, comma lists, and lists."""
+        assert server._normalize_attachment_list("/file.pdf") == ["/file.pdf"]
+        assert server._normalize_attachment_list('["/a.pdf", "/b.pdf"]') == ["/a.pdf", "/b.pdf"]
+        assert server._normalize_attachment_list("/a.pdf, /b.pdf") == ["/a.pdf", "/b.pdf"]
+        assert server._normalize_attachment_list(["/a.pdf", "/b.pdf"]) == ["/a.pdf", "/b.pdf"]

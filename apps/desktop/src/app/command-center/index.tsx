@@ -158,7 +158,10 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
     setSupportRefreshing(true)
     try {
       const statusMap = await checkSupportTicketsStatus()
-      const updatedCount = Object.keys(statusMap).length
+      const currentTickets = $supportTickets.get()
+      const updatedCount = currentTickets.filter(t =>
+        Boolean(statusMap[t.jobId] || (t.caseId && statusMap[t.caseId]) || (t.referenceId && statusMap[t.referenceId]))
+      ).length
       notify({
         kind: 'info',
         title: 'Support-Tickets',

@@ -299,11 +299,11 @@ export function setSessionPreviewTarget(
   source: PreviewRecordSource,
   rawTarget = target.source
 ): SessionPreviewRecord | null {
-  if (tryOpenFilePreview(target, source)) {
-    return null
-  }
-
   const record = registerSessionPreview(sessionId, target, source, rawTarget)
+
+  if (tryOpenFilePreview(target, source)) {
+    return record
+  }
 
   setPreviewTarget(record?.normalized ?? previewTargetForSource(target, source))
 

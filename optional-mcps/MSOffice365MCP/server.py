@@ -13,7 +13,8 @@ import os
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
+from urllib.parse import quote
 
 import httpx
 import msal
@@ -369,7 +370,16 @@ def _graph_request(
     }
     if extra_headers:
         headers.update(extra_headers)
-    url = f"{GRAPH_API_BASE}{endpoint}" if not endpoint.startswith("http") else endpoint
+
+    effective_endpoint = endpoint
+    if account and str(account).strip() and "@" in str(account):
+        clean_acc = str(account).strip()
+        if effective_endpoint.startswith("/me/"):
+            effective_endpoint = f"/users/{clean_acc}/" + effective_endpoint[4:]
+        elif effective_endpoint == "/me":
+            effective_endpoint = f"/users/{clean_acc}"
+
+    url = f"{GRAPH_API_BASE}{effective_endpoint}" if not effective_endpoint.startswith("http") else effective_endpoint
 
     with httpx.Client(timeout=30.0) as client:
         response = client.request(method, url, headers=headers, json=json_data, params=params)
@@ -438,6 +448,35 @@ _ONEDRIVE_ATTACHMENTS_FOLDER = "HermesAttachments"
 # for draft messages), so anything bigger than this needs OneDrive + a shared
 # link instead of a direct attachment.
 _MAIL_INLINE_ATTACHMENT_MAX_BYTES = 3 * 1024 * 1024
+
+
+def _normalize_attachment_list(attachments: Union[None, str, List[Any]]) -> List[str]:
+    """Normalize flexible attachment argument formats (str, list, JSON list str, comma-separated str) to a clean List[str]."""
+    if not attachments:
+        return []
+    if isinstance(attachments, str):
+        s = attachments.strip()
+        if not s:
+            return []
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, list):
+                    return [str(item).strip() for item in parsed if item]
+            except Exception:
+                pass
+        if "," in s:
+            return [p.strip() for p in s.split(",") if p.strip()]
+        return [s]
+    if isinstance(attachments, list):
+        res = []
+        for item in attachments:
+            if isinstance(item, str):
+                res.extend(_normalize_attachment_list(item))
+            elif item is not None:
+                res.append(str(item))
+        return res
+    return []
 
 
 def _resolve_attachment_path(file_path: str) -> Path:
@@ -540,8 +579,9 @@ def _upload_file_to_onedrive(file_path: str, folder: str = _ONEDRIVE_ATTACHMENTS
     path = _resolve_attachment_path(file_path)
     file_size = path.stat().st_size
     content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    safe_folder = folder.strip("/")
-    item_path = f"/me/drive/root:/{safe_folder}/{path.name}:"
+    safe_folder = quote(folder.strip("/"), safe="")
+    safe_filename = quote(path.name, safe="")
+    item_path = f"/me/drive/root:/{safe_folder}/{safe_filename}:"
 
     if file_size <= _ONEDRIVE_SIMPLE_UPLOAD_MAX_BYTES:
         return _graph_upload("PUT", f"{item_path}/content", path.read_bytes(), content_type)
@@ -847,8 +887,9 @@ def m365_send_email(
         },
         "toRecipients": recipients,
     }
-    if attachments:
-        message["attachments"] = [_build_mail_attachment(path) for path in attachments]
+    norm_attachments = _normalize_attachment_list(attachments)
+    if norm_attachments:
+        message["attachments"] = [_build_mail_attachment(path) for path in norm_attachments]
 
     payload = {
         "message": message,
@@ -1103,11 +1144,21 @@ def m365_get_events(
 
     params: Dict[str, Any] = {"$select": "id,subject,start,end,location,organizer,attendees,isAllDay,categories"}
 
-    if start_time_iso and end_time_iso:
+    if start_time_iso or end_time_iso:
+        if start_time_iso and not end_time_iso:
+            s_raw = str(start_time_iso).strip()
+            s_date = s_raw.split("T")[0].split(" ")[0]
+            end_time_iso = f"{s_date}T23:59:59"
+        elif end_time_iso and not start_time_iso:
+            e_raw = str(end_time_iso).strip()
+            e_date = e_raw.split("T")[0].split(" ")[0]
+            start_time_iso = f"{e_date}T00:00:00"
+
         start_clean, _ = _normalize_datetime_input(start_time_iso)
         end_clean, _ = _normalize_datetime_input(end_time_iso)
         params["startDateTime"] = start_clean
         params["endDateTime"] = end_clean
+        params["$top"] = min(top, 100)
         endpoint = f"{base_path}/calendarView"
     else:
         params["$top"] = min(top, 50)
@@ -1360,7 +1411,8 @@ def m365_send_chat_message(
     if resolved_content is None:
         raise ValueError("m365_send_chat_message requires the message text via 'content' (or its aliases: message/body/text).")
 
-    ct = "html" if attachments else content_type.lower()
+    norm_attachments = _normalize_attachment_list(attachments)
+    ct = "html" if norm_attachments else content_type.lower()
     final_content = resolved_content
     if ct == "html":
         import re
@@ -1379,8 +1431,8 @@ def m365_send_chat_message(
             "content": final_content,
         }
     }
-    if attachments:
-        attachment_payload, attachment_tags = _build_teams_attachments(attachments)
+    if norm_attachments:
+        attachment_payload, attachment_tags = _build_teams_attachments(norm_attachments)
         payload["attachments"] = attachment_payload
         payload["body"]["content"] = final_content + attachment_tags
     return _graph_request("POST", f"/me/chats/{chat_id}/messages", json_data=payload)

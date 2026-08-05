@@ -35,6 +35,8 @@ def _resolve_requests_verify() -> bool | str:
     Returns either a filesystem path to a CA bundle, or True to defer to
     the requests default (certifi).
     """
+    if os.getenv("HERMES_SSL_VERIFY", "").lower() in ("false", "0", "no", "off"):
+        return False
     for env_var in ("HERMES_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"):
         val = os.getenv(env_var)
         if val and os.path.isfile(val):
@@ -356,6 +358,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "suite.iamds.com": "aimds-suite-prod",
     "staging.suite.iamds.com": "aimds-suite-staging",
     "dev.suite.iamds.com": "aimds-suite-dev",
+    "local.suite.iamds.com": "aimds-suite-localdev",
     "api.moonshot.ai": "kimi-coding",
     "api.moonshot.cn": "kimi-coding-cn",
     "api.kimi.com": "kimi-coding",
@@ -700,7 +703,7 @@ def fetch_endpoint_model_metadata(
             try:
                 from hermes_cli.auth import resolve_api_key_provider_credentials
 
-                for p_id in ("aimds-suite-prod", "aimds-suite-dev", "aimds-suite-staging", "iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
+                for p_id in ("aimds-suite-prod", "aimds-suite-dev", "aimds-suite-staging", "aimds-suite-localdev", "iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
                     creds = resolve_api_key_provider_credentials(p_id)
                     if isinstance(creds, dict) and creds.get("api_key"):
                         api_key = str(creds["api_key"]).strip()
@@ -940,7 +943,7 @@ def _fetch_litellm_model_info_contexts(
             try:
                 from hermes_cli.auth import resolve_api_key_provider_credentials
 
-                for p_id in ("aimds-suite-prod", "aimds-suite-dev", "aimds-suite-staging", "iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
+                for p_id in ("aimds-suite-prod", "aimds-suite-dev", "aimds-suite-staging", "aimds-suite-localdev", "iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
                     creds = resolve_api_key_provider_credentials(p_id)
                     if isinstance(creds, dict) and creds.get("api_key"):
                         api_key = str(creds["api_key"]).strip()
@@ -980,7 +983,7 @@ def _fetch_litellm_model_info_contexts(
             try:
                 from hermes_cli.auth import resolve_api_key_provider_credentials
 
-                for provider_id in ("aimds-suite-prod", "aimds-suite-dev", "aimds-suite-staging", "iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
+                for provider_id in ("aimds-suite-prod", "aimds-suite-dev", "aimds-suite-staging", "aimds-suite-localdev", "iamds-litellm", "iamds-litellm-staging", "iamds-litellm-dev"):
                     creds = resolve_api_key_provider_credentials(provider_id)
                     if isinstance(creds, dict) and creds.get("api_key"):
                         api_key = str(creds["api_key"]).strip()
@@ -1898,7 +1901,7 @@ def get_model_context_length(
                 # Fall through; step 5b reconciles and overwrites if portal responds.
             elif (
                 str(provider or "").strip().lower().startswith(("aimds-suite", "iamds-litellm"))
-                or _inferred_provider_from_url in ("aimds-suite-prod", "aimds-suite-dev", "aimds-suite-staging", "iamds-litellm")
+                or _inferred_provider_from_url in ("aimds-suite-prod", "aimds-suite-dev", "aimds-suite-staging", "aimds-suite-localdev", "iamds-litellm")
             ):
                 logger.debug(
                     "Bypassing persistent cache for %s@%s (IAMDS LiteLLM /model/info authoritative)",
@@ -1944,7 +1947,7 @@ def get_model_context_length(
         _is_custom_endpoint(base_url)
         and not _is_known_provider_base_url(base_url)
         and not str(provider or "").strip().lower().startswith(("aimds-suite", "iamds-litellm"))
-        and _inferred_provider_from_url not in ("aimds-suite-prod", "aimds-suite-dev", "aimds-suite-staging", "iamds-litellm")
+        and _inferred_provider_from_url not in ("aimds-suite-prod", "aimds-suite-dev", "aimds-suite-staging", "aimds-suite-localdev", "iamds-litellm")
     ):
         context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if context_length is not None:
@@ -2027,7 +2030,7 @@ def get_model_context_length(
         except Exception:
             pass  # Fall through to models.dev
 
-    if (effective_provider.startswith(("aimds-suite", "iamds-litellm")) or _inferred_provider_from_url in ("aimds-suite-prod", "aimds-suite-dev", "aimds-suite-staging", "iamds-litellm")) and base_url:
+    if (effective_provider.startswith(("aimds-suite", "iamds-litellm")) or _inferred_provider_from_url in ("aimds-suite-prod", "aimds-suite-dev", "aimds-suite-staging", "aimds-suite-localdev", "iamds-litellm")) and base_url:
         litellm_ctx = _resolve_litellm_model_info_context_length(model, base_url, api_key=api_key)
         if litellm_ctx:
             save_context_length(model, base_url, litellm_ctx)

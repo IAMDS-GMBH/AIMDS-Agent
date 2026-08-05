@@ -663,6 +663,18 @@ def _cache_mcp_image_block(block) -> str:
     return f"MEDIA:{image_path}"
 
 
+def _resolve_mcp_ssl_verify(config: dict) -> bool:
+    env_ssl = os.getenv("HERMES_SSL_VERIFY", "").lower()
+    if env_ssl in ("false", "0", "no", "off"):
+        return False
+    val = config.get("ssl_verify", True)
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.lower() not in ("false", "0", "no", "off")
+    return bool(val)
+
+
 # ---------------------------------------------------------------------------
 # Remote MCP URL validation
 # ---------------------------------------------------------------------------
@@ -1822,7 +1834,7 @@ class MCPServerTask:
         if not any(key.lower() == "mcp-protocol-version" for key in headers):
             headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
-        ssl_verify = config.get("ssl_verify", True)
+        ssl_verify = _resolve_mcp_ssl_verify(config)
         client_cert = _resolve_client_cert(self.name, config)
 
         # OAuth 2.1 PKCE: route through the central MCPOAuthManager so the
@@ -2136,7 +2148,7 @@ class MCPServerTask:
                     await self._preflight_content_type(
                         config["url"],
                         headers=_probe_headers,
-                        ssl_verify=config.get("ssl_verify", True),
+                        ssl_verify=_resolve_mcp_ssl_verify(config),
                         client_cert=_resolve_client_cert(self.name, config),
                     )
                 except NonMcpEndpointError as exc:
