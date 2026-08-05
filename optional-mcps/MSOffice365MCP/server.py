@@ -480,10 +480,31 @@ def _normalize_attachment_list(attachments: Union[None, str, List[Any]]) -> List
 
 
 def _resolve_attachment_path(file_path: str) -> Path:
-    path = Path(file_path).expanduser()
-    if not path.is_file():
-        raise ValueError(f"Attachment file not found: {file_path}")
-    return path
+    clean_str = str(file_path).strip().strip("'\"")
+    path = Path(clean_str).expanduser()
+    if path.is_file():
+        return path.resolve()
+
+    # Try relative to user terminal/workspace CWD
+    cwd = Path(os.getenv("TERMINAL_CWD") or os.getcwd()).resolve()
+    cand_cwd = (cwd / clean_str).resolve()
+    if cand_cwd.is_file():
+        return cand_cwd
+
+    # Try relative to Vault directories
+    vault_env = os.getenv("HERMES_VAULT_PATH") or os.getenv("VAULT_PATH")
+    vault_candidates = []
+    if vault_env:
+        vault_candidates.append(Path(vault_env).expanduser().resolve())
+    vault_candidates.append(Path("~/Documents/AIMDS-Suite-Vault").expanduser().resolve())
+    vault_candidates.append(Path("~/.hermes/vault").expanduser().resolve())
+
+    for v in vault_candidates:
+        cand_v = (v / clean_str).resolve()
+        if cand_v.is_file():
+            return cand_v
+
+    raise ValueError(f"Attachment file not found: {file_path} (checked {path}, {cand_cwd})")
 
 
 def _resolve_save_path(

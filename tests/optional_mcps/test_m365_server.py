@@ -594,3 +594,11 @@ class TestTeamsAttachmentsAndVaultResolution:
         assert server._normalize_attachment_list('["/a.pdf", "/b.pdf"]') == ["/a.pdf", "/b.pdf"]
         assert server._normalize_attachment_list("/a.pdf, /b.pdf") == ["/a.pdf", "/b.pdf"]
         assert server._normalize_attachment_list(["/a.pdf", "/b.pdf"]) == ["/a.pdf", "/b.pdf"]
+
+    def test_resolve_attachment_path_relative_to_terminal_cwd(self, tmp_path, monkeypatch):
+        sample_file = tmp_path / "relative_doc.pdf"
+        sample_file.write_text("dummy content")
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+
+        resolved = server._resolve_attachment_path("relative_doc.pdf")
+        assert resolved == sample_file.resolve()
