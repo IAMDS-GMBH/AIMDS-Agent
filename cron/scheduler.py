@@ -165,7 +165,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, prepare_next_day_prefetch, get_prefetched_cron_context
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -2408,11 +2408,19 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                try:
+                    prepare_next_day_prefetch(job["id"])
+                except Exception as pe:
+                    logger.debug("Auto-prefetch failed for job %s: %s", job["id"], pe)
                 return True
 
             except Exception as e:
                 logger.error("Error processing job %s: %s", job['id'], e)
                 mark_job_run(job["id"], False, str(e))
+                try:
+                    prepare_next_day_prefetch(job["id"])
+                except Exception as pe:
+                    logger.debug("Auto-prefetch failed for job %s: %s", job["id"], pe)
                 return False
 
         # Partition due jobs: those with a per-job workdir mutate

@@ -37,6 +37,7 @@ except ImportError:
 HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
+CRON_CACHE_DIR = CRON_DIR / "cache"
 
 # In-process lock protecting load_jobs→modify→save_jobs cycles.
 # Required when tick() runs jobs in parallel threads — without this,
@@ -1276,3 +1277,111 @@ def rewrite_skill_refs(
             "jobs_updated": len(rewrites),
             "jobs_scanned": len(jobs),
         }
+
+
+# =============================================================================
+# Pre-fetching & Execution Caching (CRON-OPT-2026)
+# =============================================================================
+
+def prefetch_cron_job_context(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Pre-fetch and cache tools, skills, and execution context for a cron job.
+    
+    Optimizes cron execution by pre-loading local client tools, project files/rules,
+    and skill payloads into ~/.hermes/cron/cache/{job_id}.json prior to execution.
+    """
+    job_id = _coerce_job_text(job.get("id")).strip()
+    if not job_id:
+        return {}
+
+    CRON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_file = CRON_CACHE_DIR / f"{job_id}.json"
+
+    skills = _normalize_skill_list(job.get("skill"), job.get("skills"))
+    skill_contents = {}
+    try:
+        from tools.skills_tool import get_skill_content
+        for sk in skills:
+            content = get_skill_content(sk)
+            if content:
+                skill_contents[sk] = content
+    except Exception as exc:
+        logger.debug("Cron prefetch '%s': failed reading skill content: %s", job_id, exc)
+
+    next_run = job.get("next_run") or job.get("next_run_iso") or ""
+
+    prefetch_data = {
+        "job_id": job_id,
+        "prefetched_at": _hermes_now().isoformat(),
+        "next_run": next_run,
+        "skills": skills,
+        "skill_contents": skill_contents,
+        "workdir": _coerce_job_text(job.get("workdir")),
+        "prefer_client_tools": True,
+    }
+
+    try:
+        temp_file = cache_file.with_suffix(".tmp")
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(prefetch_data, f, indent=2, ensure_ascii=False)
+        atomic_replace(str(temp_file), str(cache_file))
+    except Exception as exc:
+        logger.warning("Cron prefetch '%s': failed writing cache file: %s", job_id, exc)
+
+    return prefetch_data
+
+
+def get_prefetched_cron_context(job_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve pre-fetched cache context for a job if available and fresh."""
+    if not job_id:
+        return None
+    cache_file = CRON_CACHE_DIR / f"{job_id}.json"
+    if not cache_file.exists():
+        return None
+    try:
+        with open(cache_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:
+        logger.debug("Cron prefetch read '%s' failed: %s", job_id, exc)
+        return None
+
+
+def prepare_next_day_prefetch(job_id: Optional[str] = None) -> Dict[str, Any]:
+    """Pre-fetch and pre-cache cron jobs scheduled within the next 24 hours / next day.
+    
+    If job_id is provided, pre-fetches that specific job. Otherwise, scans all active jobs
+    scheduled for the next 24h and prepares their local context and client tools.
+    """
+    with _jobs_file_lock:
+        jobs = load_jobs()
+
+    prefetched = []
+    now_dt = _hermes_now()
+    next_24h = now_dt + timedelta(hours=24)
+
+    for job in jobs:
+        jid = _coerce_job_text(job.get("id")).strip()
+        if not jid:
+            continue
+        if job_id and jid != job_id:
+            continue
+
+        next_run_str = job.get("next_run") or job.get("next_run_iso")
+        should_prefetch = bool(job_id)
+        if not should_prefetch and next_run_str:
+            try:
+                nr_dt = datetime.fromisoformat(str(next_run_str))
+                if now_dt <= nr_dt <= next_24h:
+                    should_prefetch = True
+            except Exception:
+                should_prefetch = True
+
+        if should_prefetch:
+            data = prefetch_cron_job_context(job)
+            if data:
+                prefetched.append(jid)
+
+    return {
+        "prefetched_jobs": prefetched,
+        "count": len(prefetched),
+        "timestamp": now_dt.isoformat(),
+    }
