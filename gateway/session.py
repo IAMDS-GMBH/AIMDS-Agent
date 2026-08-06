@@ -1281,6 +1281,25 @@ class SessionStore:
 
         return entries
 
+    def transition_cron_session_to_interactive(self, cron_session_id: str, new_user_id: Optional[str] = None) -> Optional[SessionEntry]:
+        """Transition a cron job session into an interactive user chat session upon user reply/interaction."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            for key, entry in list(self._entries.items()):
+                if entry.session_id == cron_session_id or entry.session_id.startswith(f"cron_{cron_session_id}"):
+                    entry.chat_type = "dm"
+                    entry.updated_at = _now()
+                    if new_user_id and entry.origin:
+                        entry.origin.user_id = new_user_id
+                    self._save()
+                    if self._db:
+                        try:
+                            self._db.set_session_title(cron_session_id, f"Chat from Cron: {entry.display_name or cron_session_id}")
+                        except Exception as e:
+                            logger.debug("Failed to update session title during cron transition: %s", e)
+                    return entry
+        return None
+
     def lookup_by_session_id(self, session_id: str) -> Optional[SessionEntry]:
         """Return the active session entry for a persisted session ID, if any."""
         if not session_id:

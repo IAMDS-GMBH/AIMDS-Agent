@@ -991,11 +991,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     if wrap_response:
         task_name = job.get("name", job["id"])
         job_id = job.get("id", "")
+        # Format logs in collapsible dropdown if details/logs are embedded in output
+        formatted_content = content
+        if "\n## Execution Logs" in content or "\n```" in content:
+            parts = content.split("\n## ", 1)
+            if len(parts) == 2:
+                primary_brief, log_details = parts
+                formatted_content = f"{primary_brief}\n\n<details><summary>Cron Job Execution Logs & Details</summary>\n\n## {log_details}\n</details>"
         delivery_content = (
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job_id})\n"
             f"-------------\n\n"
-            f"{content}\n\n"
+            f"{formatted_content}\n\n"
             f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
         )
     else:
