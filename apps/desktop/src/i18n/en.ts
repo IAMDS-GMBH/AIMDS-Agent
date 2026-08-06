@@ -1749,7 +1749,8 @@ export const en: Translations = {
     copyPath: 'Copy Path',
     copyRelativePath: 'Copy Relative Path',
     openPreview: 'Open Preview',
-    showInFolder: 'Reveal in File Manager'
+    showInFolder: 'Reveal in File Manager',
+    showFile: 'Show File'
   },
 
   preview: {

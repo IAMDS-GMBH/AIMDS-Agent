@@ -1751,7 +1751,8 @@ export const de
     copyPath: 'Pfad kopieren',
     copyRelativePath: 'Relativen Pfad kopieren',
     openPreview: 'Vorschau öffnen',
-    showInFolder: 'Im Dateimanager anzeigen'
+    showInFolder: 'Im Dateimanager anzeigen',
+    showFile: 'Zeige Datei'
   },
 
   preview: {

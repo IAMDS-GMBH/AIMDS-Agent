@@ -11,7 +11,14 @@ import ShikiHighlighter from 'react-shiki'
 import { Streamdown } from 'streamdown'
 
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
-import { PageLoader } from '@/components/page-loader'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger
+} from '@/components/ui/context-menu'
+import { Codicon } from '@/components/ui/codicon'
 import { translateNow, useI18n } from '@/i18n'
 import { previewName } from '@/lib/preview-targets'
 import { cn } from '@/lib/utils'
@@ -604,21 +611,62 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     const isMarkdown = (state.language || target.language) === 'markdown'
     const showRendered = isMarkdown && !renderMarkdownAsSource
 
-    return (
-      <div className="h-full overflow-auto bg-transparent">
-        {state.truncated && (
-          <div className="border-b border-border/60 bg-muted/35 px-3 py-1.5 text-[0.68rem] text-muted-foreground">
-            {t.preview.truncated}
-          </div>
+  const contentNode = (
+    <div className="h-full overflow-auto bg-transparent">
+      {state.truncated && (
+        <div className="border-b border-border/60 bg-muted/35 px-3 py-1.5 text-[0.68rem] text-muted-foreground">
+          {t.preview.truncated}
+        </div>
+      )}
+      {isMarkdown && <PreviewToggle asSource={!showRendered} onToggle={() => setRenderMarkdownAsSource(s => !s)} />}
+      {showRendered ? (
+        <MarkdownPreview text={state.text} />
+      ) : (
+        <SourceView filePath={filePath} language={state.language || 'text'} text={state.text} />
+      )}
+    </div>
+  )
+
+  const handleCopyPath = () => {
+    void navigator.clipboard.writeText(filePath)
+  }
+
+  const handleShowFile = () => {
+    if (window.hermesDesktop?.openPath) {
+      void window.hermesDesktop.openPath(filePath)
+    } else if (window.hermesDesktop?.openExternal) {
+      void window.hermesDesktop.openExternal(target.url)
+    }
+  }
+
+  const handleShowInFolder = () => {
+    void window.hermesDesktop?.showItemInFolder?.(filePath)
+  }
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{contentNode}</ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onClick={handleShowFile}>
+          <Codicon name="file" />
+          <span>{t.rightSidebar.showFile ?? 'Zeige Datei'}</span>
+        </ContextMenuItem>
+        <ContextMenuItem onClick={handleCopyPath}>
+          <Codicon name="copy" />
+          <span>{t.rightSidebar.copyPath ?? 'Pfad kopieren'}</span>
+        </ContextMenuItem>
+        {Boolean(window.hermesDesktop?.showItemInFolder) && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onClick={handleShowInFolder}>
+              <Codicon name="folder-opened" />
+              <span>{t.rightSidebar.showInFolder}</span>
+            </ContextMenuItem>
+          </>
         )}
-        {isMarkdown && <PreviewToggle asSource={!showRendered} onToggle={() => setRenderMarkdownAsSource(s => !s)} />}
-        {showRendered ? (
-          <MarkdownPreview text={state.text} />
-        ) : (
-          <SourceView filePath={filePath} language={state.language || 'text'} text={state.text} />
-        )}
-      </div>
-    )
+      </ContextMenuContent>
+    </ContextMenu>
+  )
   }
 
   return (

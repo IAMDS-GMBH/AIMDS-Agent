@@ -1403,6 +1403,7 @@ export interface Translations {
     copyRelativePath: string
     openPreview: string
     showInFolder: string
+    showFile?: string
   }
 
   preview: {

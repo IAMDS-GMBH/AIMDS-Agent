@@ -619,6 +619,21 @@ export function PreviewPane({
               </Tip>
             </div>
             <div className="flex items-center gap-1 shrink-0">
+              <Tip label={t.rightSidebar.showFile ?? 'Zeige Datei'}>
+                <button
+                  className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  onClick={() => {
+                    if (window.hermesDesktop?.openPath) {
+                      void window.hermesDesktop.openPath(currentUrl)
+                    } else if (window.hermesDesktop?.openExternal) {
+                      void window.hermesDesktop.openExternal(currentUrl)
+                    }
+                  }}
+                  type="button"
+                >
+                  <Codicon name="file" size="0.8125rem" />
+                </button>
+              </Tip>
               <Tip label={t.rightSidebar.copyPath}>
                 <button
                   className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
