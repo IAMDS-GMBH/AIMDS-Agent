@@ -3664,6 +3664,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, pr
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
+            try:
+                reconnect_mcp_server(server_name)
+                with _lock:
+                    server = _servers.get(server_name)
+            except Exception as rec_exc:
+                logger.debug("Auto-healing reconnect for '%s' failed: %s", server_name, rec_exc)
+
+        if not server or not server.session:
             _bump_server_error(server_name)
             return json.dumps(
                 {"error": f"MCP server '{server_name}' is not connected"},

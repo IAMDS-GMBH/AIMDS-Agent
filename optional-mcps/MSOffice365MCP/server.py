@@ -34,7 +34,10 @@ BASE_SCOPES = [
     "User.Read",
     "Mail.ReadWrite",
     "Mail.Send",
+    "Mail.ReadWrite.Shared",
+    "Mail.Send.Shared",
     "Calendars.ReadWrite",
+    "Calendars.ReadWrite.Shared",
     "Chat.ReadWrite",
     "Files.ReadWrite.All",
     "Contacts.ReadWrite",
@@ -908,6 +911,8 @@ def m365_send_email(
         },
         "toRecipients": recipients,
     }
+    if account and str(account).strip() and "@" in str(account):
+        message["from"] = {"emailAddress": {"address": str(account).strip()}}
     norm_attachments = _normalize_attachment_list(attachments)
     if norm_attachments:
         message["attachments"] = [_build_mail_attachment(path) for path in norm_attachments]
