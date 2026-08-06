@@ -44,7 +44,7 @@ Typ, Thema, Priorität und gewünschte Aktion bestimmen. Routing-Ziel **immer** 
 Routing-Tabelle in `AGENTS.md` des aktiven Workspace lesen — keine fest codierten
 Route-Mappings im Skilltext oder in Tool-Argumenten.
 
-### 3. Duplikat-Check gegen die Quell-URL (nicht gegen den Dateinamen)
+### 3. Bestehend prüfen — Duplikat-Check gegen die Quell-URL (nicht gegen den Dateinamen)
 Ein Dateinamen-Vergleich reicht nicht: derselbe Inhalt bekommt von zwei Läufen zwei
 verschiedene, jeweils plausible Slugs — und landet doppelt. Trägt das Item eine `url:`
 im Frontmatter:
@@ -84,6 +84,10 @@ Nach **erfolgreicher** Verarbeitung: `verarbeitet: YYYY-MM-DD` + Ziel-Pfad ins
 Frontmatter, dann nach `_inbox/_archive/` verschieben. Nie löschen (siehe
 `_conventions.md`). Der `verarbeitet:`-Marker ist zugleich das Signal, an dem das
 Morgen-Briefing die Inbox-Frische erkennt.
+
+### 8. Bestätigen
+Dem Nutzer knapp und eindeutig melden, **was wo** abgelegt/erweitert wurde und welche
+Links gesetzt wurden. Kein stiller Abschluss.
 
 ## Fehlerpfade — explizit behandeln
 - **Klassifikation unklar** → gezielte Rückfrage statt raten; alternativ mit
