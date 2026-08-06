@@ -54,6 +54,14 @@ map. Before creating a new folder, check whether one already exists — never ma
 second `invoices/` next to `Rechnungen/`. New top-level folders only when the map
 genuinely lacks a home.
 
+## Run-Logs — none in the workspace
+
+Skills that run on a schedule or write files end with a short **Run-Report** in their
+**output** (chat, or the cron response — Hermes captures scheduled runs through the
+runtime). There is **no `_logs/` folder** in this workspace: run telemetry does not
+belong in the vault the user browses. The vault holds the user's knowledge, not agent
+bookkeeping. Run-Report format lives in the loadout's `guardrails/output-format.md`.
+
 ## New connectors / tools — security gate
 
 Before connecting a new tool, connector, or installing an add-in: check the source

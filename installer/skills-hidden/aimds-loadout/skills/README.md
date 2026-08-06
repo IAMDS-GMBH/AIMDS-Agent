@@ -33,4 +33,7 @@ Updates kommen so an alle Arbeitsplätze, ohne pro Gerät anzufassen.
   `metadata.hermes.blueprint` wenn der Skill als Cron-Blueprint laufen soll.
 - Body: kurz, mit "Vorgehen", "Verifikation", "Was NICHT". Details in Unterdateien
   lazy nachladen.
+- **Ausgabe-Format:** Skills, die ein Briefing, einen Digest, einen Report oder eine
+  Triage-Zusammenfassung ausgeben, folgen `guardrails/output-format.md` (Ton,
+  Status-Marker, Top-/Item-Caps, Run-Report). Kein eigenes Format erfinden.
 - Self-Improving: erfolgreiche Vorgehensweisen / häufige Fehler im Skill festhalten.

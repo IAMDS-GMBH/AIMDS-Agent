@@ -10,7 +10,7 @@
 | `morning-brief` | digest (+ meeting-prep, email-triage) | werktags 08:00 | uhrzeit | Tagesbriefing |
 | `inbox-triage` | email-triage | alle 2h (wakeAgent-Gate) | — | Cluster + Entwürfe |
 | `meeting-prep` | meeting-prep | werktags 07:00 | vorlaufzeit | Briefing je Termin |
-| `weekly-digest` | digest | Fr 16:00 | wochentag, uhrzeit | Wochenrückblick |
+| `weekly-digest` | weekly-digest | Fr 16:00 | wochentag, uhrzeit | Wochenrückblick |
 
 ## Kosten-Disziplin
 - **`wakeAgent`-Gate** für häufige Polls: ein Vorab-Skript prüft, ob sich etwas

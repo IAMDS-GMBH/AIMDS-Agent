@@ -1,6 +1,12 @@
 ---
 name: meeting-prep
 description: Erstellt ein kompaktes Briefing zu einem anstehenden Termin aus Kalender, relevanten Dokumenten und aktueller Web-/Firmeninfo. Nutzen vor Meetings, Kundenterminen, Calls.
+metadata:
+  hermes:
+    blueprint:
+      name: meeting-prep
+      fields: [vorlaufzeit]
+      default_schedule: "0 7 * * 1-5"
 ---
 
 # Meeting Prep
@@ -15,18 +21,18 @@ description: Erstellt ein kompaktes Briefing zu einem anstehenden Termin aus Kal
    - mögliche Fragen/Einwände + Antworten
    - offene Punkte / was der Nutzer mitbringen muss
 
+## Ausgabe-Format
+Ton und Status-Marker folgen `guardrails/output-format.md`. Briefing scanbar
+halten, keine Wall-of-Text.
+
 ## Verifikation
 - Teilnehmer & Zeit stimmen mit dem Kalender überein.
 - Keine erfundenen Fakten über Personen/Firmen — nur Belegtes.
 
 ## Was NICHT
 - Keine privaten/sensiblen Daten über Teilnehmer aus unsicheren Quellen.
-```yaml
-# Beispiel: als Cron-Blueprint nutzbar
-metadata:
-  hermes:
-    blueprint:
-      name: meeting-prep
-      fields: [vorlaufzeit]
-      default_schedule: "0 7 * * 1-5"
-```
+
+## Als Cron-Blueprint
+Läuft über die `blueprint`-Metadaten im Frontmatter (Default werktags 07:00, Feld
+`vorlaufzeit`) — der Nutzer aktiviert ihn per `/blueprint meeting-prep`. Siehe
+`blueprints/README.md`.

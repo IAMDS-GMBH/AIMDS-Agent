@@ -15,8 +15,11 @@ Hermes-AIMDS-Loadout/
 ├── identity/
 │   └── SOUL.md                   ← globale Identität/Persona  → ~/.hermes/SOUL.md
 ├── workspace/                    ← Default-Arbeitsordner ("Company-Workspace")
-│   ├── AGENTS.md                 ← Herzstück: Routing, Goal/PLAN-Regel, Disziplin
 │   └── PLAN.template.md          ← Vorlage für die Recitation-/Plan-Datei
+│   # Herzstück Routing/Topologie = AGENTS.md — die liegt NICHT hier, sondern
+│   # im leeren Arbeitsordner-Gerüst installer/workspace-template/AGENTS.md, das
+│   # der Installer beim Setup in den Vault des Nutzers kopiert. Eine Quelle,
+│   # kein Duplikat.
 ├── memory/
 │   ├── MEMORY-ARCHITEKTUR.md     ← WIE Memory funktioniert (3 Schichten)
 │   ├── USER.seed.md              ← Seed für das User-Profil
@@ -34,7 +37,9 @@ Hermes-AIMDS-Loadout/
 ├── blueprints/
 │   └── README.md                 ← Cron-Blueprints (morning-brief etc.)
 ├── guardrails/
-│   └── tool-risk-registry.md     ← Risk-Rating + Freigabe-Regeln pro Tool
+│   ├── tool-risk-registry.md     ← Risk-Rating + Freigabe-Regeln pro Tool
+│   ├── output-format.md          ← gemeinsame Ausgabe-Konvention (Briefings/Reports)
+│   └── project-lifecycle.md      ← projectStatus vor Schreibzugriff, Pflichtfelder
 └── config/
     └── config.hermes.example.yaml← Beispiel ~/.hermes/config.yaml
 ```
@@ -44,9 +49,9 @@ Hermes-AIMDS-Loadout/
 | # | Schicht | Datei | Zentral via LiteLLM? |
 |---|---|---|---|
 | 1 | Identität | `identity/SOUL.md` | nein (Installer) |
-| 2 | Ziel-Scaffold | `workspace/AGENTS.md` (+ `/goal`) | nein |
+| 2 | Ziel-Scaffold | `workspace-template/AGENTS.md` (+ `/goal`) | nein |
 | 3 | Verifikations-Loop | Goal-Judge (built-in) | Judge-Modell via LiteLLM |
-| 4 | Context/Routing | `workspace/AGENTS.md` | nein |
+| 4 | Context/Routing | `workspace-template/AGENTS.md` | nein |
 | 5 | Skills | `skills/` | **ja — Git-Sync (repo-basiert)** |
 | 6 | Memory + Self-Improve | `memory/` | **ja — User-Memory-MCP** |
 | 7 | Guardrails | `guardrails/` | teils (Policies) |
@@ -65,8 +70,11 @@ Hermes-AIMDS-Loadout/
 3. **`config/config.hermes.example.yaml`** → angepasst nach `~/.hermes/config.yaml`
    (LiteLLM-Endpoint, Aux-Modelle on-prem, `tools.tool_search: on`,
    `write_approval`, MCP-Server + Office-Allowlist).
-4. **Company-Workspace** anlegen: `workspace/` als Default-Arbeitsordner des Users
-   ablegen (enthält `AGENTS.md`). Hermes lädt `AGENTS.md` automatisch beim Start.
+4. **Company-Workspace** anlegen: das Gerüst aus `installer/workspace-template/`
+   als Default-Arbeitsordner des Users ablegen und `terminal.cwd` daraufsetzen. Es
+   enthält die `AGENTS.md` (Routing/Topologie, die einzige Quelle) samt Ordner-
+   struktur. Hermes lädt `AGENTS.md` automatisch aus dem cwd beim Start. Die
+   `PLAN.template.md` aus dem Loadout kommt zusätzlich in den Workspace.
 5. **Skills** installieren — **repo-synced** über das zentrale `aimds-skills`-Git-Repo
    als einzige aktive Quelle; nicht via lokale Installer-Kopie und nicht via
    ad-hoc Skill-Hub/Marketplace-Downloads (siehe `skills/README.md`).
@@ -93,5 +101,3 @@ funktionierenden Office-Use-Cases.
 - ⚠ **Daemon**: läuft der Gateway-Daemon dauerhaft am Desktop, oder serverseitig?
 - ⚠ **Datenresidenz**: Nous-eigene Tools (Web/Image/Browser) meiden, alles über
   eigene MCP/LiteLLM-Backends.
-
-Konzept-Hintergrund: `patrick-brain/knowledge/ai-tech/hermes-aimds-customer-loadout.md`

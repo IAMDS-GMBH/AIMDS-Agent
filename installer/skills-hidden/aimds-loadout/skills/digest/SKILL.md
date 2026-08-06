@@ -32,6 +32,11 @@ metadata:
    - Risiken/Offene Fragen mit Entscheidungsbedarf (falls Entscheidung fehlt: `OPEN_QUESTION_NEEDED: ...`).
 8. **Ruhig bleiben:** Wenn nichts Relevantes → kurz "Nichts Dringendes" statt Lärm.
 
+## Ausgabe-Format
+Ton, Status-Marker und Struktur folgen `guardrails/output-format.md`
+(Tages-Briefing bzw. Wochen-Rückblick). Der Wochenlauf nutzt den ausführlichen
+`weekly-digest`-Skill, sofern vorhanden.
+
 ## Verifikation
 - Top-3 sind wirklich die wichtigsten, nicht die ersten besten.
 - Keine erledigten Punkte als offen gemeldet.

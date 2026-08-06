@@ -24,6 +24,10 @@ description: Searches and summarizes files across OneDrive and SharePoint sites,
 - Respect file permissions and tenant access boundaries.
 - Do NOT delete or overwrite files without explicit confirmation.
 
+## Output format
+Tone and status markers follow `guardrails/output-format.md`. Keep summaries
+scannable — one line per file, no full-document dumps.
+
 ## Verification
 - File locations and SharePoint site references are accurate.
 - Summaries capture critical content concisely.

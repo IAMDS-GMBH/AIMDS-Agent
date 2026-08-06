@@ -1,0 +1,15 @@
+{
+  "note": "AIMDS-Loadout — Standardprofil. disable schaltet eine Regel ganz ab; exempt_output_format nimmt einzelne Skills von der output-format-Verweis-Pflicht aus (Skills, die kein Briefing/Digest/Report/Triage ausgeben).",
+  "disable": [],
+  "exempt_output_format": [
+    "deep-research",
+    "doc-draft",
+    "doc-review",
+    "kb-lookup",
+    "customer-crm-lookup",
+    "vector-memory-search",
+    "obsidian-vault-manager",
+    "m365-calendar-planner",
+    "m365-mail-assistant"
+  ]
+}
