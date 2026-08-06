@@ -602,3 +602,18 @@ class TestTeamsAttachmentsAndVaultResolution:
 
         resolved = server._resolve_attachment_path("relative_doc.pdf")
         assert resolved == sample_file.resolve()
+
+
+def test_enrich_timestamps():
+    item = {
+        "createdDateTime": "2026-07-28T10:21:46Z",
+        "lastModifiedDateTime": "2026-07-28T11:21:46Z",
+        "dueDateTime": "2026-07-29T12:00:00Z",
+    }
+    with patch.dict(server.os.environ, {"HERMES_TIMEZONE": "Europe/Berlin"}):
+        enriched = server._enrich_timestamps(item)
+        assert "createdDateTime_local" in enriched
+        assert "lastModifiedDateTime_local" in enriched
+        assert "dueDateTime_local" in enriched
+        assert "2026-07-28 12:21:46" in enriched["createdDateTime_local"]
+

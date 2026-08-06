@@ -151,6 +151,25 @@ def _format_timestamp_local(dt_value: Any) -> str:
         return raw_dt_str
 
 
+def _enrich_timestamps(obj: Any) -> Any:
+    """Enrich Graph API dictionary objects with local timestamp fields (_local)."""
+    if isinstance(obj, dict):
+        time_fields = [
+            "createdDateTime",
+            "lastModifiedDateTime",
+            "lastUpdatedDateTime",
+            "receivedDateTime",
+            "sentDateTime",
+            "completedDateTime",
+        ]
+        for field in time_fields:
+            if field in obj and f"{field}_local" not in obj:
+                obj[f"{field}_local"] = _format_timestamp_local(obj.get(field))
+        if "dueDateTime" in obj and obj.get("dueDateTime") and "dueDateTime_local" not in obj:
+            obj["dueDateTime_local"] = _format_timestamp_local(obj.get("dueDateTime"))
+    return obj
+
+
 def _normalize_datetime_input(dt_str: Optional[str], default_tz: Optional[str] = None) -> Tuple[str, str]:
     """Normalize any user/LLM datetime input string into Graph API compatible format.
 
@@ -554,8 +573,7 @@ def _enrich_teams_message(
     if not isinstance(msg, dict):
         return msg
 
-    if "createdDateTime" in msg and "createdDateTime_local" not in msg:
-        msg["createdDateTime_local"] = _format_timestamp_local(msg.get("createdDateTime"))
+    _enrich_timestamps(msg)
 
     attachments_summary = []
 
@@ -949,8 +967,8 @@ def m365_list_emails(
     res = _graph_request("GET", endpoint, params=params, account=account)
     if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
         for msg in res["value"]:
-            if isinstance(msg, dict) and "receivedDateTime" in msg:
-                msg["receivedDateTime_local"] = _format_timestamp_local(msg.get("receivedDateTime"))
+            if isinstance(msg, dict):
+                _enrich_timestamps(msg)
     return res
 
 
@@ -959,8 +977,7 @@ def m365_get_email(message_id: str, account: Optional[str] = None) -> Dict[str, 
     """Get full details of a specific Outlook email message, including attachment summary if attachments are present."""
     msg = _graph_request("GET", f"/me/messages/{message_id}", account=account)
     if isinstance(msg, dict):
-        if "receivedDateTime" in msg:
-            msg["receivedDateTime_local"] = _format_timestamp_local(msg.get("receivedDateTime"))
+        _enrich_timestamps(msg)
         if msg.get("hasAttachments"):
             try:
                 atts_res = _graph_request("GET", f"/me/messages/{message_id}/attachments", params={"$select": "id,name,contentType,size,isInline"}, account=account)
@@ -1404,6 +1421,9 @@ def m365_list_chats(
         chats = filtered
 
     if isinstance(res, dict):
+        for c in chats:
+            if isinstance(c, dict):
+                _enrich_timestamps(c)
         res["value"] = chats
         res["count"] = len(chats)
     return res
@@ -1469,19 +1489,32 @@ def m365_list_drive_files(folder_id: Optional[str] = None, top: int = 20) -> Dic
     """List files and folders in OneDrive."""
     endpoint = f"/me/drive/items/{folder_id}/children" if folder_id else "/me/drive/root/children"
     params = {"$top": min(top, 50)}
-    return _graph_request("GET", endpoint, params=params)
+    res = _graph_request("GET", endpoint, params=params)
+    if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
+        for item in res["value"]:
+            if isinstance(item, dict):
+                _enrich_timestamps(item)
+    return res
 
 
 @mcp.tool()
 def m365_search_drive_files(query: str) -> Dict[str, Any]:
     """Search files in OneDrive by keyword."""
-    return _graph_request("GET", f"/me/drive/root/search(q='{query}')")
+    res = _graph_request("GET", f"/me/drive/root/search(q='{query}')")
+    if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
+        for item in res["value"]:
+            if isinstance(item, dict):
+                _enrich_timestamps(item)
+    return res
 
 
 @mcp.tool()
 def m365_get_drive_file(file_id: str) -> Dict[str, Any]:
     """Get file metadata and download URL from OneDrive."""
-    return _graph_request("GET", f"/me/drive/items/{file_id}")
+    res = _graph_request("GET", f"/me/drive/items/{file_id}")
+    if isinstance(res, dict):
+        _enrich_timestamps(res)
+    return res
 
 
 @mcp.tool()
@@ -1627,13 +1660,23 @@ def m365_list_sharepoint_files(
         endpoint = f"/sites/{site_id}/drives/{drive_id}/items/{folder_id}/children"
     else:
         endpoint = f"/sites/{site_id}/drives/{drive_id}/root/children"
-    return _graph_request("GET", endpoint, params={"$top": min(top, 50)})
+    res = _graph_request("GET", endpoint, params={"$top": min(top, 50)})
+    if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
+        for item in res["value"]:
+            if isinstance(item, dict):
+                _enrich_timestamps(item)
+    return res
 
 
 @mcp.tool()
 def m365_search_sharepoint_files(site_id: str, query: str) -> Dict[str, Any]:
     """Search for files within a SharePoint site."""
-    return _graph_request("GET", f"/sites/{site_id}/drive/root/search(q='{query}')")
+    res = _graph_request("GET", f"/sites/{site_id}/drive/root/search(q='{query}')")
+    if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
+        for item in res["value"]:
+            if isinstance(item, dict):
+                _enrich_timestamps(item)
+    return res
 
 
 # ─── Teams Channels & Activity Feed Tools ───────────────────────────────────
@@ -2189,10 +2232,7 @@ def m365_list_todo_tasks(
 
         for t in tasks:
             if isinstance(t, dict):
-                if "createdDateTime" in t:
-                    t["createdDateTime_local"] = _format_timestamp_local(t.get("createdDateTime"))
-                if "dueDateTime" in t and t.get("dueDateTime"):
-                    t["dueDateTime_local"] = _format_timestamp_local(t.get("dueDateTime"))
+                _enrich_timestamps(t)
 
     return {
         "lists": lists,
