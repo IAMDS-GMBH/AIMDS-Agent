@@ -341,6 +341,14 @@ TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm",
 # Short on purpose.  This block is shipped to every user, every session,
 # in the cached system prompt — token cost is paid once at install and
 # then amortised across all sessions via prefix caching.  Keep it tight.
+DELIBERATION_AND_REASONING_GUIDANCE = (
+    "# Thorough Deliberation & Reasoning Directive\n"
+    "Before acting, generating output, or executing tool calls on non-trivial tasks:\n"
+    "1. Deliberate First: Take time to thoroughly analyze the user's intent, constraints, and implicit requirements. Do not fire off immediate partial answers or premature tool calls without understanding the full scope.\n"
+    "2. Step-by-Step Planning: Formulate a structured approach. Break down complex or multi-step requests into logical stages and verify prerequisites before proceeding.\n"
+    "3. Validate & Reflect: Evaluate potential edge cases and verify assumptions against real tool output or local context. Ensure each action directly serves the ultimate goal."
+)
+
 PREFER_NATIVE_TOOLS_GUIDANCE = (
     "# Native Tool Preference & Data Processing Directive\n"
     "CRITICAL: Avoid using the `terminal` tool or spawning Python/shell scripts for data processing, file reading, or querying that can be accomplished with native core or MCP tools.\n"

@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 from agent.prompt_builder import (
     CRONJOB_SCHEDULING_GUIDANCE,
     DEFAULT_AGENT_IDENTITY,
+    DELIBERATION_AND_REASONING_GUIDANCE,
     CONFIRMATION_REQUIRED_ENFORCEMENT,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
@@ -116,6 +117,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # config.yaml ``agent.task_completion_guidance`` (default True) so
     # users who want a leaner prompt can turn it off.
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
+        stable_parts.append(DELIBERATION_AND_REASONING_GUIDANCE)
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
         stable_parts.append(PREFER_NATIVE_TOOLS_GUIDANCE)
 
