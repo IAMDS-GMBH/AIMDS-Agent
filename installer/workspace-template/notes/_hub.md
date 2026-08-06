@@ -20,3 +20,7 @@ does-not-belong:
 **Does NOT belong here:**
 - Developed reference material → knowledge/
 - Ideas worth keeping → ideas/
+
+**Frontmatter `type`:** notes here use `knowledge` (a capture/reference) or `journal`
+(a dated log entry) — there is no separate `note` type in the closed enum
+(`_conventions.md`). Pick the one that fits; when unsure, `knowledge`.

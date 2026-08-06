@@ -35,7 +35,7 @@ updated: ""
 
 Only these values. A new value must be added HERE first, then used.
 
-- `type`: `project` · `knowledge` · `idea` · `decision` · `contact` · `hub` ·
+- `type`: `project` · `knowledge` · `idea` · `decision` · `contact` · `meeting` · `hub` ·
   `journal` · `task-list` · `automation` · `archive`
 - `status` (notes): `raw` · `active` · `waiting` · `done` · `parked` · `reference`
 - `projectStatus` (projects only): `active` · `waiting` · `dormant` · `done` · `parked`
