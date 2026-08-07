@@ -146,7 +146,7 @@ function pickCopy(copies: IntroCopy[], seed = 0): IntroCopy {
   return copies[Math.abs(seed) % copies.length] || FALLBACK_COPY[0]
 }
 
-const WORDMARK = 'AIMDS SUITE'
+const WORDMARK = 'AIMDS SUITE AGENT'
 
 type Tip = {
   de: string

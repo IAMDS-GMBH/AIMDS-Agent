@@ -4098,6 +4098,12 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
 }
 
 
+_DISABLED_MESSAGING_PLATFORMS = {"outlook", "teams", "msteams"}
+
+
+_DISABLED_MESSAGING_PLATFORMS = {"outlook", "teams", "msteams"}
+
+
 def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
     """Build the messaging catalog from the gateway's Platform enum + plugin registry.
 
@@ -4114,7 +4120,7 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
     entries: list[dict[str, Any]] = []
 
     for member in Platform.__members__.values():
-        if member.value == "local":
+        if member.value == "local" or member.value in _DISABLED_MESSAGING_PLATFORMS:
             continue
         if member.value in seen:
             continue
@@ -4125,7 +4131,7 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
         from gateway.platform_registry import platform_registry
 
         for plugin_entry in platform_registry.plugin_entries():
-            if plugin_entry.name in seen:
+            if plugin_entry.name in seen or plugin_entry.name in _DISABLED_MESSAGING_PLATFORMS:
                 continue
             seen.add(plugin_entry.name)
             entries.append(_build_catalog_entry(plugin_entry.name, plugin_entry))
@@ -4133,6 +4139,8 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
         _log.debug("plugin platform registry unavailable", exc_info=True)
 
     for platform_id in _PLATFORM_OVERRIDES:
+        if platform_id in _DISABLED_MESSAGING_PLATFORMS:
+            continue
         if platform_id not in seen:
             seen.add(platform_id)
             entries.append(_build_catalog_entry(platform_id))

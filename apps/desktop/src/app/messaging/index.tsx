@@ -45,6 +45,7 @@ const PILL_TONE: Record<StatusTone, string> = {
 }
 
 const OUTLOOK_PLATFORM_ID = 'outlook'
+const DISABLED_PLATFORM_IDS = new Set(['outlook', 'teams', 'msteams'])
 
 const trimEdits = (edits: Record<string, string>): Record<string, string> =>
   Object.fromEntries(
@@ -146,7 +147,7 @@ function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
 }
 
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const m = t.messaging
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   const [edits, setEdits] = useState<EditMap>({})
@@ -230,13 +231,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       return []
     }
 
+    const available = platforms.filter(platform => !DISABLED_PLATFORM_IDS.has(platform.id))
     const q = query.trim().toLowerCase()
 
     if (!q) {
-      return platforms
+      return available
     }
 
-    return platforms.filter(platform =>
+    return available.filter(platform =>
       [platform.id, platform.name, platform.description, platform.state]
         .filter(Boolean)
         .some(value => String(value).toLowerCase().includes(q))
@@ -336,73 +338,83 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       {!platforms ? (
         <PageLoader label={m.loading} />
       ) : (
-        <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[14rem_minmax(0,1fr)]">
-          <aside className="min-h-0 overflow-y-auto p-2">
-            <ul className="space-y-1">
-              {visiblePlatforms.map(platform => (
-                <li key={platform.id}>
-                  <PlatformRow
-                    active={selected?.id === platform.id}
-                    onSelect={() => setSelectedId(platform.id)}
-                    platform={platform}
-                  />
-                </li>
-              ))}
-            </ul>
-          </aside>
+        <div className="flex h-full min-h-0 flex-col">
+          <div className="mx-3 mt-2 flex items-start gap-2.5 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500 dark:text-amber-400" />
+            <span>
+              {locale === 'de'
+                ? 'Hinweis: Einige Messaging-Kanäle (z. B. Teams, Outlook) wurden deaktiviert/entfernt. Eine Reaktivierung ist nur nach Rücksprache mit den AIMDS Suite Admins möglich.'
+                : 'Note: Certain messaging channels (e.g. Teams, Outlook) have been disabled/removed. Re-activation is only permitted after consultation with AIMDS Suite Admins.'}
+            </span>
+          </div>
+          <div className="grid h-full min-h-0 flex-1 grid-cols-1 lg:grid-cols-[14rem_minmax(0,1fr)]">
+            <aside className="min-h-0 overflow-y-auto p-2">
+              <ul className="space-y-1">
+                {visiblePlatforms.map(platform => (
+                  <li key={platform.id}>
+                    <PlatformRow
+                      active={selected?.id === platform.id}
+                      onSelect={() => setSelectedId(platform.id)}
+                      platform={platform}
+                    />
+                  </li>
+                ))}
+              </ul>
+            </aside>
 
-          <main className="min-h-0 overflow-hidden">
-            {selected && (
-              <>
-                <PlatformDetail
-                  edits={edits[selected.id] || {}}
-                  onClear={key => void handleClear(selected, key)}
-                  onEdit={(key, value) =>
-                    setEdits(current => ({
-                      ...current,
-                      [selected.id]: {
-                        ...(current[selected.id] || {}),
-                        [key]: value
-                      }
-                    }))
-                  }
-                  onSave={() => void handleSave(selected)}
-                  onToggleEnabled={enabled => void handleToggleEnabled(selected, enabled)}
-                  platform={selected}
-                  saving={saving}
-                  onOutlookOpenGuide={() => setOutlookGuideOpen(true)}
-                  onOutlookTest={() => setOutlookAuthOpen(true)}
-                  onOutlookTestConnection={() => void handleTestOutlookConnection(selected)}
-                  outlookConnected={selected.state === 'connected' ? true : outlookConnected}
-                />
-                {selected.id === 'outlook' && (
-                  <OutlookSetupGuideModal open={outlookGuideOpen} onClose={() => setOutlookGuideOpen(false)} />
-                )}
-                {selected.id === 'outlook' && (
-                  <OutlookAuthModal
-                    open={outlookAuthOpen}
-                    tenantId={outlookTenantEdit}
-                    clientId={outlookClientEdit}
-                    clientSecret={outlookSecretEdit}
-                    useSavedEnv={!outlookHasAnyTypedCred}
-                    onComplete={async _accessToken => {
-                      // Sign-in only — connection verification is a separate,
-                      // explicit "Test Connection" step, not run automatically here.
-                      setOutlookConnected(true)
-                      setOutlookAuthOpen(false)
-                      notify({
-                        kind: 'success',
-                        title: `Signed in to ${selected.name}`,
-                        message: 'Use "Test Connection" to verify it works.'
-                      })
-                      await refreshPlatforms()
-                    }}
-                    onCancel={() => setOutlookAuthOpen(false)}
+            <main className="min-h-0 overflow-hidden">
+              {selected && (
+                <>
+                  <PlatformDetail
+                    edits={edits[selected.id] || {}}
+                    onClear={key => void handleClear(selected, key)}
+                    onEdit={(key, value) =>
+                      setEdits(current => ({
+                        ...current,
+                        [selected.id]: {
+                          ...(current[selected.id] || {}),
+                          [key]: value
+                        }
+                      }))
+                    }
+                    onSave={() => void handleSave(selected)}
+                    onToggleEnabled={enabled => void handleToggleEnabled(selected, enabled)}
+                    platform={selected}
+                    saving={saving}
+                    onOutlookOpenGuide={() => setOutlookGuideOpen(true)}
+                    onOutlookTest={() => setOutlookAuthOpen(true)}
+                    onOutlookTestConnection={() => void handleTestOutlookConnection(selected)}
+                    outlookConnected={selected.state === 'connected' ? true : outlookConnected}
                   />
-                )}
-              </>
-            )}
-          </main>
+                  {selected.id === 'outlook' && (
+                    <OutlookSetupGuideModal open={outlookGuideOpen} onClose={() => setOutlookGuideOpen(false)} />
+                  )}
+                  {selected.id === 'outlook' && (
+                    <OutlookAuthModal
+                      open={outlookAuthOpen}
+                      tenantId={outlookTenantEdit}
+                      clientId={outlookClientEdit}
+                      clientSecret={outlookSecretEdit}
+                      useSavedEnv={!outlookHasAnyTypedCred}
+                      onComplete={async _accessToken => {
+                        // Sign-in only — connection verification is a separate,
+                        // explicit "Test Connection" step, not run automatically here.
+                        setOutlookConnected(true)
+                        setOutlookAuthOpen(false)
+                        notify({
+                          kind: 'success',
+                          title: `Signed in to ${selected.name}`,
+                          message: 'Use "Test Connection" to verify it works.'
+                        })
+                        await refreshPlatforms()
+                      }}
+                      onCancel={() => setOutlookAuthOpen(false)}
+                    />
+                  )}
+                </>
+              )}
+            </main>
+          </div>
         </div>
       )}
     </PageSearchShell>

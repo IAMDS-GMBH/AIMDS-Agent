@@ -136,7 +136,6 @@ export const SIDEBAR_NAV: SidebarNavItem[] = [
     route: HUB_ROUTE
   },
   { id: 'todos', label: 'Todos', icon: props => <Codicon name="checklist" {...props} />, route: TODOS_ROUTE },
-  { id: 'messaging', label: '', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
   { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
 ]
 
