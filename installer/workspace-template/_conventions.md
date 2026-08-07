@@ -22,10 +22,19 @@ kebab-case, no umlauts, descriptive. One idea/entity = one file. Never a catch-a
 Relate every new file to ≥1 existing one with `[[wikilinks]]`. This is the thinking
 substrate — links are how the agent (and the user) find related things later.
 
-## Status vocabulary
+## Status vocabulary — closed vocabulary, no exceptions
 
-- Notes/ideas: `raw` · `developing` · `parked` · `reference`
-- Projects: `active` · `waiting` · `dormant` · `done` · `parked`
+- Notes: `raw` · `active` · `waiting` · `done` · `parked` · `reference`
+- Projects (`projectStatus`): `active` · `waiting` · `dormant` · `done` · `parked`
+- `type`: `project` · `knowledge` · `idea` · `decision` · `contact` · `meeting` · `hub` ·
+  `journal` · `task-list` · `automation` · `archive`
+
+A value not in this list is a bug, not a variant. New value needed? Add it here
+first, then use it. (Reference vault had 51 type variants before enforcement —
+no agent could filter reliably.) Full schema + decay rules: `HARNESS.md` §1+§3.
+
+Projects: `due:` may be empty but never omitted; empty `due:` requires `due-reason:`
+so a missing date is distinguishable from a forgotten one.
 
 ## Tags — keep the vocabulary small
 
