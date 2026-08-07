@@ -174,7 +174,7 @@ describe('GatewayConnectingOverlay Messages Gating', () => {
     
     // Should detect IAMDS from staging URL
     await waitFor(() => {
-      expect(screen.getByText(/Martin|Tobias|Michael|Johannes/)).toBeTruthy()
+      expect(screen.getByText('Patrick aktiviert Arbeitskräfte...')).toBeTruthy()
     })
   })
 
@@ -190,7 +190,7 @@ describe('GatewayConnectingOverlay Messages Gating', () => {
     
     // Should detect IAMDS from dev URL even with port and path
     await waitFor(() => {
-      expect(screen.getByText(/Martin|Tobias|Michael|Johannes/)).toBeTruthy()
+      expect(screen.getByText('Patrick aktiviert Arbeitskräfte...')).toBeTruthy()
     })
   })
 })
