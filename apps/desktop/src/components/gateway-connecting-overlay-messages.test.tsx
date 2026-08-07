@@ -113,9 +113,9 @@ describe('GatewayConnectingOverlay Messages Gating', () => {
 
     render(<GatewayConnectingOverlay />)
 
-    // Should render a team/developer message like "Martin beendet gerade das EVN-Meeting."
+    // Should render a team/developer message like "Patrick aktiviert Arbeitskräfte..."
     await waitFor(() => {
-      expect(screen.getByText('Martin beendet gerade das EVN-Meeting.')).toBeTruthy()
+      expect(screen.getByText('Patrick aktiviert Arbeitskräfte...')).toBeTruthy()
     })
   })
 
@@ -132,9 +132,9 @@ describe('GatewayConnectingOverlay Messages Gating', () => {
 
     render(<GatewayConnectingOverlay />)
 
-    // Should render an English team/developer message like "Martin is wrapping up the EVN meeting."
+    // Should render an English team/developer message like "Patrick is activating manpower..."
     await waitFor(() => {
-      expect(screen.getByText('Martin is wrapping up the EVN meeting.')).toBeTruthy()
+      expect(screen.getByText('Patrick is activating manpower...')).toBeTruthy()
     })
   })
 
@@ -158,7 +158,7 @@ describe('GatewayConnectingOverlay Messages Gating', () => {
 
     // Since remoteUrl has iamds.com, it should render team messages
     await waitFor(() => {
-      expect(screen.getByText('Martin beendet gerade das EVN-Meeting.')).toBeTruthy()
+      expect(screen.getByText('Patrick aktiviert Arbeitskräfte...')).toBeTruthy()
     })
   })
 
