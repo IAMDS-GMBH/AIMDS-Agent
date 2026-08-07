@@ -29,7 +29,8 @@ LEGACY_MARKER_FILE = ".aimds-default-cron-seeded"
 # Version 5: weekly review contract adds OPEN_QUESTION_NEEDED marker requirement.
 # Version 6: M365 integration, language awareness, preview notes, and work week boundaries.
 # Version 7: Add M365 Mail Check (every 2 hours) and Teams Check (every 15 mins).
-CURRENT_DEFAULT_CRON_VERSION = 7
+# Version 8: Add Vault & Memory Curator (daily at 3:00 AM) for automated vault maintenance & re-indexing.
+CURRENT_DEFAULT_CRON_VERSION = 8
 JOBS_FILE_REL = Path("cron") / "jobs.json"
 _SOURCE = "aimds-default-cron"
 
@@ -92,6 +93,21 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
             "If new messages or mentions exist, summarize them compactly in the user's language and highlight required actions."
         ),
         "skill": "digest",
+        "deliver": "local",
+        "enabled": True,
+    },
+    {
+        "seed_key": "vault-curator",
+        "name": "Vault & Memory Curator",
+        "schedule": "0 3 * * *",
+        "prompt": (
+            "Perform periodic background maintenance on the Vault (AIMDS-Suite-Vault) and memories:\n"
+            "1) Clean up any stray HermesMemory symlinks/junctions in Vault or legacy Documents locations.\n"
+            "2) Migrate any loose project or user files from ~/.hermes/memories/ into AIMDS-Suite-Vault/projects/ or /users/.\n"
+            "3) Ensure Vault notes follow a clean 3–4 level deep hierarchy (projects/<bereich>/<projekt>/<thema>.md, users/<user>/<kategorie>/<thema>.md, notes/<bereich>/<jahr_monat>/<thema>.md).\n"
+            "4) Clean up stale backup directories (HermesMemory.backup.*) and broken links.\n"
+            "5) Trigger incremental vault re-indexing so hybrid search recall remains fast and up to date."
+        ),
         "deliver": "local",
         "enabled": True,
     },
