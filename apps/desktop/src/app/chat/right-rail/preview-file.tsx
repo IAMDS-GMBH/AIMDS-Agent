@@ -19,6 +19,7 @@ import {
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
 import { Codicon } from '@/components/ui/codicon'
+import { PageLoader } from '@/components/page-loader'
 import { translateNow, useI18n } from '@/i18n'
 import { previewName } from '@/lib/preview-targets'
 import { cn } from '@/lib/utils'
