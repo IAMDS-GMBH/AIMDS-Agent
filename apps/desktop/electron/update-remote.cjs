@@ -12,8 +12,9 @@
  * testable without booting Electron (main.cjs requires('electron') at load).
  */
 
-const OFFICIAL_REPO_HTTPS_URL = 'https://github.com/IAMDS-GMBH/hermes-agent.git'
-const OFFICIAL_REPO_CANONICAL = 'github.com/iamds-gmbh/hermes-agent'
+const OFFICIAL_REPO_HTTPS_URL = 'https://github.com/IAMDS-GMBH/AIMDS-Agent.git'
+const OFFICIAL_REPO_CANONICAL = 'github.com/iamds-gmbh/aimds-agent'
+const LEGACY_OFFICIAL_REPO_CANONICAL = 'github.com/iamds-gmbh/hermes-agent'
 
 // Normalize common GitHub remote URL forms to `host/owner/repo` (lowercased,
 // no trailing slash, no .git suffix) so SSH and HTTPS forms of the same repo
@@ -44,7 +45,8 @@ function isSshRemote(url) {
 }
 
 function isOfficialSshRemote(url) {
-  return isSshRemote(url) && canonicalGitHubRemote(url) === OFFICIAL_REPO_CANONICAL
+  const canonical = canonicalGitHubRemote(url)
+  return isSshRemote(url) && (canonical === OFFICIAL_REPO_CANONICAL || canonical === LEGACY_OFFICIAL_REPO_CANONICAL)
 }
 
 module.exports = {

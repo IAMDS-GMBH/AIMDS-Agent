@@ -27,14 +27,14 @@ const {
 } = require('./update-remote.cjs')
 
 test('canonicalGitHubRemote normalizes SSH and HTTPS forms to the same value', () => {
-  assert.equal(canonicalGitHubRemote('git@github.com:IAMDS-GMBH/hermes-agent.git'), OFFICIAL_REPO_CANONICAL)
-  assert.equal(canonicalGitHubRemote('git@github.com:IAMDS-GMBH/hermes-agent'), OFFICIAL_REPO_CANONICAL)
-  assert.equal(canonicalGitHubRemote('ssh://git@github.com/IAMDS-GMBH/hermes-agent.git'), OFFICIAL_REPO_CANONICAL)
-  assert.equal(canonicalGitHubRemote('https://github.com/IAMDS-GMBH/hermes-agent.git'), OFFICIAL_REPO_CANONICAL)
+  assert.equal(canonicalGitHubRemote('git@github.com:IAMDS-GMBH/AIMDS-Agent.git'), OFFICIAL_REPO_CANONICAL)
+  assert.equal(canonicalGitHubRemote('git@github.com:IAMDS-GMBH/AIMDS-Agent'), OFFICIAL_REPO_CANONICAL)
+  assert.equal(canonicalGitHubRemote('ssh://git@github.com/IAMDS-GMBH/AIMDS-Agent.git'), OFFICIAL_REPO_CANONICAL)
+  assert.equal(canonicalGitHubRemote('https://github.com/IAMDS-GMBH/AIMDS-Agent.git'), OFFICIAL_REPO_CANONICAL)
   // Case-insensitive: an uppercased owner still canonicalizes to the same repo.
-  assert.equal(canonicalGitHubRemote('git@github.com:iamds-gmbh/hermes-agent.git'), OFFICIAL_REPO_CANONICAL)
+  assert.equal(canonicalGitHubRemote('git@github.com:iamds-gmbh/aimds-agent.git'), OFFICIAL_REPO_CANONICAL)
   // Trailing slashes are stripped.
-  assert.equal(canonicalGitHubRemote('https://github.com/IAMDS-GMBH/hermes-agent/'), OFFICIAL_REPO_CANONICAL)
+  assert.equal(canonicalGitHubRemote('https://github.com/IAMDS-GMBH/AIMDS-Agent/'), OFFICIAL_REPO_CANONICAL)
 })
 
 test('canonicalGitHubRemote is empty for falsy input', () => {
@@ -52,11 +52,12 @@ test('isSshRemote detects scp-like and ssh:// forms only', () => {
 })
 
 test('isOfficialSshRemote is true only for the official repo over SSH', () => {
+  assert.equal(isOfficialSshRemote('git@github.com:IAMDS-GMBH/AIMDS-Agent.git'), true)
+  assert.equal(isOfficialSshRemote('git@github.com:IAMDS-GMBH/AIMDS-Agent'), true)
   assert.equal(isOfficialSshRemote('git@github.com:IAMDS-GMBH/hermes-agent.git'), true)
-  assert.equal(isOfficialSshRemote('git@github.com:IAMDS-GMBH/hermes-agent'), true)
-  assert.equal(isOfficialSshRemote('ssh://git@github.com/IAMDS-GMBH/hermes-agent.git'), true)
+  assert.equal(isOfficialSshRemote('ssh://git@github.com/IAMDS-GMBH/AIMDS-Agent.git'), true)
   // Case-insensitive owner/repo match.
-  assert.equal(isOfficialSshRemote('git@github.com:iamds-gmbh/hermes-agent.git'), true)
+  assert.equal(isOfficialSshRemote('git@github.com:iamds-gmbh/aimds-agent.git'), true)
 })
 
 test('isOfficialSshRemote does NOT match forks, other hosts, or HTTPS', () => {

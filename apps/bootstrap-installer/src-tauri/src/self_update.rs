@@ -29,7 +29,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::paths;
 
-const REPO: &str = "IAMDS-GMBH/hermes-agent";
+const REPO: &str = "IAMDS-GMBH/AIMDS-Agent";
 
 /// Our own version, baked in at compile time from Cargo.toml.
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
