@@ -977,7 +977,7 @@ def _is_windows_reparse_point(path: Path) -> bool:
     if not _IS_WINDOWS:
         return False
     try:
-        attrs = os.stat(path, follow_symlinks=False).st_file_attributes
+        attrs = getattr(os.stat(path, follow_symlinks=False), "st_file_attributes", 0)
     except OSError:
         return False
     return bool(attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT)
@@ -1115,7 +1115,7 @@ def _ensure_documents_memory_link(home: Path) -> None:
             return
         memory_link.unlink()
     elif _is_windows_reparse_point(memory_link):
-        # Junction from an earlier run's mklink /J fallback below.
+        # Junction from an earlier run's mklink /J creation.
         # Path.is_symlink() misses junctions on Python 3.11 (fixed by
         # is_junction() in 3.12), so without this branch the code would
         # fall through to the "plain directory" case and try to merge the
@@ -1134,56 +1134,45 @@ def _ensure_documents_memory_link(home: Path) -> None:
     elif memory_link.exists():
         if memory_link.is_dir():
             _merge_directory_contents(memory_link, memory_target)
-            # If it's already a regular directory containing memories, it's functional.
+            try:
+                shutil.rmtree(memory_link)
+            except OSError:
+                pass
+        else:
+            try:
+                memory_link.unlink()
+            except OSError:
+                pass
+
+    if _IS_WINDOWS:
+        try:
+            subprocess.run(
+                [
+                    "cmd",
+                    "/c",
+                    f'mklink /J "{memory_link}" "{memory_target}"',
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
             return
+        except (OSError, subprocess.CalledProcessError) as junc_err:
+            logger.warning(
+                "Could not create HermesMemory junction at %s: %s. Attempting symlink...",
+                memory_link,
+                junc_err,
+            )
 
     try:
         memory_link.symlink_to(memory_target, target_is_directory=True)
     except OSError as exc:
-        if _IS_WINDOWS:
-            try:
-                subprocess.run(
-                    [
-                        "cmd",
-                        "/c",
-                        f'mklink /J "{memory_link}" "{memory_target}"',
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-                return
-            except (OSError, subprocess.CalledProcessError) as junc_err:
-                if "WinError 1314" in str(junc_err) or "erforderliches Recht" in str(junc_err):
-                    logger.warning(
-                        "Could not create HermesMemory junction (requires admin): %s. "
-                        "Falling back to plain directory — memory folder will not be linked to Vault. "
-                        "To enable linking, run Hermes with elevated privileges (Admin).",
-                        memory_link,
-                    )
-                else:
-                    logger.warning(
-                        "Failed to create HermesMemory junction at %s: %s. "
-                        "Falling back to plain directory.",
-                        memory_link,
-                        junc_err,
-                    )
-        else:
-            logger.debug(
-                "Could not create HermesMemory symlink at %s: %s",
-                memory_link,
-                exc,
-            )
-        # Fallback: create plain directory if symlink & junction both failed (e.g. non-admin Windows)
-        try:
-            memory_link.mkdir(parents=True, exist_ok=True)
-        except OSError as fallback_err:
-            logger.warning(
-                "Could not create HermesMemory directory fallback at %s: %s. "
-                "Memory persistence may be affected.",
-                memory_link,
-                fallback_err,
-            )
+        logger.error(
+            "Could not create HermesMemory link at %s -> %s: %s",
+            memory_link,
+            memory_target,
+            exc,
+        )
 
 
 def ensure_hermes_home():

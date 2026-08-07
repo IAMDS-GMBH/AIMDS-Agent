@@ -108,7 +108,7 @@ class TestEnsureHermesHome:
         assert workspace_memory.is_symlink()
         assert workspace_memory.resolve() == expected.resolve()
 
-    def test_windows_junction_fallback_when_symlink_fails(self, tmp_path, monkeypatch):
+    def test_windows_junction_primary_on_windows(self, tmp_path, monkeypatch):
         from hermes_cli import config as cfg_mod
 
         fake_home = tmp_path / "home"
@@ -124,47 +124,43 @@ class TestEnsureHermesHome:
                 returncode = 0
             return _Completed()
 
-        def _fail_symlink(self, *args, **kwargs):
-            raise OSError("symlink denied")
-
         monkeypatch.setattr(cfg_mod.subprocess, "run", _fake_run)
-        monkeypatch.setattr(Path, "symlink_to", _fail_symlink)
 
         ensure_hermes_home()
 
         expected_link = fake_home / "Documents" / "AIMDS-Suite-Vault" / "HermesMemory"
         assert any(cmd[:3] == ["cmd", "/c", 'mklink /J "' + str(expected_link) + '" "' + str(tmp_path / "hermes" / "memories") + '"'] for cmd in calls)
 
-    def test_plain_directory_fallback_when_all_link_methods_fail(self, tmp_path, monkeypatch, caplog):
-        """Fallback to plain directory when symlink & junction both fail (WinError 1314 / no admin)."""
+    def test_existing_plain_directory_merged_and_replaced_with_junction_on_windows(self, tmp_path, monkeypatch):
+        """When HermesMemory exists as a plain directory, merge contents and replace it with a junction."""
         from hermes_cli import config as cfg_mod
-        import logging
-        import subprocess
 
         fake_home = tmp_path / "home"
+        vault_memory = fake_home / "Documents" / "AIMDS-Suite-Vault" / "HermesMemory"
+        vault_memory.mkdir(parents=True, exist_ok=True)
+        (vault_memory / "old_note.md").write_text("existing content", encoding="utf-8")
+
         monkeypatch.setenv("HOME", str(fake_home))
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
         monkeypatch.setattr(cfg_mod, "_IS_WINDOWS", True)
 
-        def _fail_symlink(self, *args, **kwargs):
-            raise OSError("symlink denied")
+        calls: list[list[str]] = []
 
-        def _fail_run(cmd, **kwargs):
-            raise subprocess.CalledProcessError(1, cmd, stderr="WinError 1314: Dem Client fehlt ein erforderliches Recht")
+        def _fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            class _Completed:
+                returncode = 0
+            return _Completed()
 
-        monkeypatch.setattr(Path, "symlink_to", _fail_symlink)
-        monkeypatch.setattr(cfg_mod.subprocess, "run", _fail_run)
+        monkeypatch.setattr(cfg_mod.subprocess, "run", _fake_run)
 
-        with caplog.at_level(logging.WARNING):
-            ensure_hermes_home()
+        ensure_hermes_home()
 
-        expected_link = fake_home / "Documents" / "AIMDS-Suite-Vault" / "HermesMemory"
-        assert expected_link.exists()
-        assert expected_link.is_dir()
-        assert not expected_link.is_symlink()
-        # Check that a warning was logged about falling back to plain directory
-        assert any("WinError 1314" in record.message or "erforderliches Recht" in record.message or "Falling back to plain directory" in record.message 
-                   for record in caplog.records if record.levelno >= logging.WARNING)
+        target = tmp_path / "hermes" / "memories"
+        # Content was merged into HERMES_HOME/memories
+        assert (target / "old_note.md").read_text(encoding="utf-8") == "existing content"
+        # Junction command was executed on the freed path
+        assert any(cmd[:3] == ["cmd", "/c", 'mklink /J "' + str(vault_memory) + '" "' + str(target) + '"'] for cmd in calls)
 
     def test_junction_not_detected_by_is_symlink_does_not_crash(self, tmp_path, monkeypatch):
         """Regression test for a SameFileError crash loop seen in the wild.
