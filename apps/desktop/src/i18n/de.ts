@@ -236,7 +236,7 @@ export const de
       'nav.discover': 'Entdecken öffnen',
       'nav.messaging': 'Messaging öffnen',
       'nav.artifacts': 'Artefakte öffnen',
-      'nav.cron': 'Geplante Jobs öffnen',
+      'nav.cron': 'Automatische Aufgaben öffnen',
       'nav.agents': 'Agenten öffnen',
       'session.new': 'Neue Sitzung',
       'session.next': 'Nächste Sitzung',
@@ -1107,9 +1107,9 @@ export const de
   },
 
   cron: {
-    close: 'Cron schließen',
-    search: 'Cron-Jobs suchen...',
-    loading: 'Lade Cron-Jobs...',
+    close: 'Aufgaben schließen',
+    search: 'Automatische Aufgaben suchen...',
+    loading: 'Lade automatische Aufgaben...',
     states: {
       enabled: 'aktiviert',
       scheduled: 'geplant',
@@ -1266,7 +1266,7 @@ export const de
     results: 'Ergebnisse',
     pinned: 'Angeheftet',
     sessions: 'Sitzungen',
-    cronJobs: 'Cron-Jobs',
+    cronJobs: 'Automatische Aufgaben',
     groupAriaGrouped: 'Sitzungen als einzelne Liste anzeigen',
     groupAriaUngrouped: 'Sitzungen nach Arbeitsbereich gruppieren',
     groupTitleGrouped: 'Gruppierung aufheben',
@@ -1722,6 +1722,7 @@ export const de
   },
 
   rightSidebar: {
+    actions: 'Aktionen',
     aria: 'Rechte Seitenleiste',
     panelsAria: 'Rechte Seitenleisten-Panels',
     files: 'Dateisystem',

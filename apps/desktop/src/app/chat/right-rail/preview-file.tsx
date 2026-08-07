@@ -18,6 +18,13 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { PageLoader } from '@/components/page-loader'
 import { translateNow, useI18n } from '@/i18n'
@@ -305,18 +312,80 @@ function MarkdownPreview({ text }: { text: string }) {
   )
 }
 
-function PreviewToggle({ asSource, onToggle }: { asSource: boolean; onToggle: () => void }) {
+function PreviewToggle({
+  asSource,
+  filePath,
+  onToggle
+}: {
+  asSource: boolean
+  filePath?: string
+  onToggle?: () => void
+}) {
   const { t } = useI18n()
 
+  const handleShowFile = () => {
+    if (!filePath) return
+    if (window.hermesDesktop?.openPath) {
+      void window.hermesDesktop.openPath(filePath)
+    } else if (window.hermesDesktop?.openExternal) {
+      void window.hermesDesktop.openExternal(filePath)
+    }
+  }
+
+  const handleCopyPath = () => {
+    if (filePath) {
+      void navigator.clipboard.writeText(filePath)
+    }
+  }
+
+  const handleShowInFolder = () => {
+    if (filePath) {
+      void window.hermesDesktop?.showItemInFolder?.(filePath)
+    }
+  }
+
   return (
-    <div className="sticky top-0 z-10 flex justify-end border-b border-border/40 bg-transparent px-3 py-1 backdrop-blur">
-      <button
-        className="text-[0.625rem] font-bold text-muted-foreground underline decoration-current/20 underline-offset-4 transition-colors hover:text-foreground"
-        onClick={onToggle}
-        type="button"
-      >
-        {asSource ? t.preview.renderedPreview : t.preview.source}
-      </button>
+    <div className="sticky top-0 z-10 flex items-center justify-end gap-3 border-b border-border/40 bg-transparent px-3 py-1 backdrop-blur">
+      {filePath && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              className="text-[0.625rem] font-bold text-muted-foreground underline decoration-current/20 underline-offset-4 transition-colors hover:text-foreground"
+              type="button"
+            >
+              {t.rightSidebar.actions ?? 'Aktionen'}
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={handleShowFile}>
+              <Codicon name="file" />
+              <span>{t.rightSidebar.showFile ?? 'Zeige Datei'}</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={handleCopyPath}>
+              <Codicon name="copy" />
+              <span>{t.rightSidebar.copyPath ?? 'Pfad kopieren'}</span>
+            </DropdownMenuItem>
+            {Boolean(window.hermesDesktop?.showItemInFolder) && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={handleShowInFolder}>
+                  <Codicon name="folder-opened" />
+                  <span>{t.rightSidebar.showInFolder}</span>
+                </DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+      {onToggle && (
+        <button
+          className="text-[0.625rem] font-bold text-muted-foreground underline decoration-current/20 underline-offset-4 transition-colors hover:text-foreground"
+          onClick={onToggle}
+          type="button"
+        >
+          {asSource ? t.preview.renderedPreview : t.preview.source}
+        </button>
+      )}
     </div>
   )
 }
@@ -619,7 +688,11 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
           {t.preview.truncated}
         </div>
       )}
-      {isMarkdown && <PreviewToggle asSource={!showRendered} onToggle={() => setRenderMarkdownAsSource(s => !s)} />}
+      <PreviewToggle
+        asSource={!showRendered}
+        filePath={filePath}
+        onToggle={isMarkdown ? () => setRenderMarkdownAsSource(s => !s) : undefined}
+      />
       {showRendered ? (
         <MarkdownPreview text={state.text} />
       ) : (

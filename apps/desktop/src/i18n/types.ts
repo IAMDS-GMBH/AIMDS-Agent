@@ -1373,6 +1373,7 @@ export interface Translations {
   }
 
   rightSidebar: {
+    actions?: string
     aria: string
     panelsAria: string
     files: string

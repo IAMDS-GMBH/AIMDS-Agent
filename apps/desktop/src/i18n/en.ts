@@ -235,7 +235,7 @@ export const en: Translations = {
       'nav.discover': 'Open Discover',
       'nav.messaging': 'Open messaging',
       'nav.artifacts': 'Open artifacts',
-      'nav.cron': 'Open scheduled jobs',
+      'nav.cron': 'Open automated tasks',
       'nav.agents': 'Open agents',
       'session.new': 'New session',
       'session.next': 'Next session',
@@ -1106,9 +1106,9 @@ export const en: Translations = {
   },
 
   cron: {
-    close: 'Close cron',
-    search: 'Search cron jobs...',
-    loading: 'Loading cron jobs...',
+    close: 'Close tasks',
+    search: 'Search automated tasks...',
+    loading: 'Loading automated tasks...',
     states: {
       enabled: 'enabled',
       scheduled: 'scheduled',
@@ -1265,7 +1265,7 @@ export const en: Translations = {
     results: 'Results',
     pinned: 'Pinned',
     sessions: 'Sessions',
-    cronJobs: 'Cron jobs',
+    cronJobs: 'Automated Tasks',
     groupAriaGrouped: 'Show sessions as a single list',
     groupAriaUngrouped: 'Group sessions by workspace',
     groupTitleGrouped: 'Ungroup sessions',
@@ -1720,6 +1720,7 @@ export const en: Translations = {
   },
 
   rightSidebar: {
+    actions: 'Actions',
     aria: 'Right sidebar',
     panelsAria: 'Right sidebar panels',
     files: 'File system',
