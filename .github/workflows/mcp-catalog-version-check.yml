@@ -67,7 +67,6 @@ jobs:
           # Keep this list in sync with optional-mcps/*/manifest.yaml pins.
           check_pypi "mcp-atlassian" "0.23.0"
           check_npm "@ivelin-web/tempo-mcp-server" "1.8.0"
-          check_npm "@modelcontextprotocol/server-github" "2025.4.8"
 
           if [ -n "$REPORT" ]; then
             echo "found=true" >> "$GITHUB_OUTPUT"

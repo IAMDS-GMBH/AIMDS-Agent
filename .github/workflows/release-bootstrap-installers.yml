@@ -665,7 +665,7 @@ jobs:
 
           set +e
           ai_response="$(curl -sS -X POST "https://api.github.com/copilot/v1/chat/completions" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Content-Type: application/json" \
             -H "Accept: application/json" \
             -d "$prompt_payload")"
