@@ -33,14 +33,14 @@ def test_seeds_defaults_once(tmp_path):
 
     result = seed_default_cron_jobs(home)
     assert result["status"] == "seeded"
-    assert result["added"] == "4"
+    assert result["added"] == "5"
     jobs = _read_jobs(home / "cron" / "jobs.json")
     seed_keys = {
         job.get("origin", {}).get("seed_key")
         for job in jobs
         if job.get("origin", {}).get("source") == "aimds-default-cron"
     }
-    assert seed_keys == {"morning-brief", "weekly-review", "m365-mail-check", "m365-teams-check"}
+    assert seed_keys == {"morning-brief", "weekly-review", "m365-mail-check", "m365-teams-check", "vault-curator"}
     state_file = home / SEED_STATE_FILE_REL
     assert state_file.is_file()
     state = json.loads(state_file.read_text(encoding="utf-8"))
@@ -69,7 +69,7 @@ def test_respects_existing_weekly_digest_alias(tmp_path):
 
     result = seed_default_cron_jobs(home)
     assert result["status"] == "seeded"
-    assert result["added"] == "3"
+    assert result["added"] == "4"
     assert result["skipped_existing"] == "1"
 
     jobs = _read_jobs(home / "cron" / "jobs.json")
@@ -91,11 +91,11 @@ def test_seeds_when_cron_runtime_import_is_unavailable(tmp_path, monkeypatch):
 
     result = seed_default_cron_jobs(home)
     assert result["status"] == "seeded"
-    assert result["added"] == "4"
+    assert result["added"] == "5"
     assert (home / SEED_STATE_FILE_REL).is_file()
 
     jobs = _read_jobs(home / "cron" / "jobs.json")
-    assert len(jobs) == 4
+    assert len(jobs) == 5
     for job in jobs:
         assert job["schedule"]["kind"] == "cron"
         assert "expr" in job["schedule"]
@@ -176,3 +176,16 @@ def test_seeded_weekly_review_prompt_includes_planning_contract(tmp_path):
     assert "Stale active projects (>=14 days inactivity)" in prompt
     assert "Risks/open questions needing decisions" in prompt
     assert "OPEN_QUESTION_NEEDED:" in prompt
+
+
+def test_vault_curator_schedule_weekly_midday(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+
+    result = seed_default_cron_jobs(home)
+    assert result["status"] == "seeded"
+
+    jobs = _read_jobs(home / "cron" / "jobs.json")
+    curator = next(j for j in jobs if j.get("origin", {}).get("seed_key") == "vault-curator")
+    assert curator["schedule"]["expr"] == "0 12 * * 5"
+

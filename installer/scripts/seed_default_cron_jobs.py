@@ -30,7 +30,8 @@ LEGACY_MARKER_FILE = ".aimds-default-cron-seeded"
 # Version 6: M365 integration, language awareness, preview notes, and work week boundaries.
 # Version 7: Add M365 Mail Check (every 2 hours) and Teams Check (every 15 mins).
 # Version 8: Add Vault & Memory Curator (daily at 3:00 AM) for automated vault maintenance & re-indexing.
-CURRENT_DEFAULT_CRON_VERSION = 8
+# Version 9: Change Vault & Memory Curator to weekly at midday (Fridays at 12:00 PM).
+CURRENT_DEFAULT_CRON_VERSION = 9
 JOBS_FILE_REL = Path("cron") / "jobs.json"
 _SOURCE = "aimds-default-cron"
 
@@ -99,7 +100,7 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
     {
         "seed_key": "vault-curator",
         "name": "Vault & Memory Curator",
-        "schedule": "0 3 * * *",
+        "schedule": "0 12 * * 5",
         "prompt": (
             "Perform periodic background maintenance on the Vault (AIMDS-Suite-Vault) and memories:\n"
             "1) Clean up any stray HermesMemory symlinks/junctions in Vault or legacy Documents locations.\n"
@@ -358,6 +359,27 @@ def _upgrade_jobs_for_version(
                     continue
                 if str(job.get("prompt") or "").strip() != target_prompt:
                     job["prompt"] = target_prompt
+                    updated += 1
+
+    # v9 migration: update Vault & Memory Curator schedule to weekly midday (Fridays 12:00 PM).
+    if from_version < 9 <= to_version:
+        curator_spec = next(
+            (spec for spec in _DEFAULT_SPECS if _canonical_seed_key(spec["seed_key"]) == "vault-curator"),
+            None,
+        )
+        if curator_spec is not None:
+            curator_aliases = _aliases("vault-curator")
+            target_schedule = str(curator_spec.get("schedule") or "").strip()
+            for job in jobs:
+                if not _job_is_aimds_default(job):
+                    continue
+                if not _job_matches_alias(job, curator_aliases):
+                    continue
+                sched = job.get("schedule")
+                if isinstance(sched, dict) and sched.get("expr") != target_schedule:
+                    sched["expr"] = target_schedule
+                    sched["display"] = target_schedule
+                    job["schedule_display"] = target_schedule
                     updated += 1
 
     return updated
