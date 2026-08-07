@@ -1154,16 +1154,36 @@ def _ensure_documents_memory_link(home: Path) -> None:
                 )
                 return
             except (OSError, subprocess.CalledProcessError) as junc_err:
-                logger.debug(
-                    "Could not create HermesMemory junction at %s: %s",
-                    memory_link,
-                    junc_err,
-                )
+                if "WinError 1314" in str(junc_err) or "erforderliches Recht" in str(junc_err):
+                    logger.warning(
+                        "Could not create HermesMemory junction (requires admin): %s. "
+                        "Falling back to plain directory — memory folder will not be linked to Vault. "
+                        "To enable linking, run Hermes with elevated privileges (Admin).",
+                        memory_link,
+                    )
+                else:
+                    logger.warning(
+                        "Failed to create HermesMemory junction at %s: %s. "
+                        "Falling back to plain directory.",
+                        memory_link,
+                        junc_err,
+                    )
+        else:
+            logger.debug(
+                "Could not create HermesMemory symlink at %s: %s",
+                memory_link,
+                exc,
+            )
         # Fallback: create plain directory if symlink & junction both failed (e.g. non-admin Windows)
         try:
             memory_link.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
+        except OSError as fallback_err:
+            logger.warning(
+                "Could not create HermesMemory directory fallback at %s: %s. "
+                "Memory persistence may be affected.",
+                memory_link,
+                fallback_err,
+            )
 
 
 def ensure_hermes_home():
