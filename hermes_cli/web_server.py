@@ -4101,9 +4101,6 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
 _DISABLED_MESSAGING_PLATFORMS = {"outlook", "teams", "msteams"}
 
 
-_DISABLED_MESSAGING_PLATFORMS = {"outlook", "teams", "msteams"}
-
-
 def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
     """Build the messaging catalog from the gateway's Platform enum + plugin registry.
 
