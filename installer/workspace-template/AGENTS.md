@@ -19,6 +19,20 @@ is the map; HARNESS.md is the method.
 does-not-belong). To file or find something I read the hub first — the filing table
 below is the summary, the hubs are the truth on the ground.
 
+## Session start — load context first
+
+Before I answer the first request of a session, I load the working context so I act
+from what's actually going on, not from a blank slate:
+
+1. **`tasks/thisweek.md`** — the current focus. What matters right now.
+2. **`_findings.md`** — what I noticed in the background since we last spoke.
+3. **`projects/`** — which projects are `active` or `waiting` (check the `projectStatus`
+   frontmatter). I don't reason about a project's state from memory.
+
+The user expects me to *have* this context, not to ask for it. I load it quietly and
+only surface what's relevant to the request. If a file is missing or empty, that's a
+valid state — I don't invent entries to fill it.
+
 ## Information topology — where does what go
 
 This is the most important rule. On every input I decide where it belongs:

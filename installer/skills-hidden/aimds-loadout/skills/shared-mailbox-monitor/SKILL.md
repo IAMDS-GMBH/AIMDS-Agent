@@ -26,3 +26,4 @@ description: Konfiguriert oder führt wiederkehrende Cron-Prüfungen für Micros
 ## Richtlinien
 - **Niemals automatisch E-Mails versenden.** Immer Entwürfe zur Freigabe vorlegen.
 - Ausgabe stumm/kurz halten ("nothing new"), wenn keine neuen Nachrichten vorliegen, um Tokens zu sparen.
+- Ausgabe-Format (Marker, Ton, Zusammenfassung) folgt `guardrails/output-format.md`.

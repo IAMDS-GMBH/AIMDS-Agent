@@ -10,4 +10,8 @@ Dieser Agent läuft zum Arbeitstag-Ende (z. B. 17:00 Uhr via Hermes Cron Executi
 
 1. **Aufgaben-Review:** Prüfe erledigte & offene To-Dos aus `~/Documents/AIMDS-Suite-Vault/tasks/`.
 2. **Mail- & Entwurfs-Status:** Erfasse erstellte E-Mail-Entwürfe zur Freigabe.
-3. **Tages-Zusammenfassung:** Erstelle den Feierabend-Digest unter `~/Documents/AIMDS-Suite-Vault/journal/YYYY-MM-DD-Feierabend-Digest.md`.
+3. **Tages-Zusammenfassung:** Erstelle den Feierabend-Digest unter `journal/YYYY-MM-DD-feierabend-digest.md` im aktiven Workspace.
+
+## Ausgabe-Format
+Ton, Status-Marker und Struktur folgen `guardrails/output-format.md`. Bei ruhigem
+Tag kurz "Nichts Offenes" statt einer erfundenen Liste.
