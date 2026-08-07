@@ -71,7 +71,7 @@ class TestEnsureHermesHome:
             assert soul_path.read_text(encoding="utf-8") == "custom soul"
 
     @pytest.mark.skipif(sys.platform == "win32", reason="symlink perms vary on CI")
-    def test_repairs_documents_memory_dir_to_symlink(self, tmp_path, monkeypatch):
+    def test_migrates_legacy_memory_dir_and_removes_links(self, tmp_path, monkeypatch):
         fake_home = tmp_path / "home"
         legacy_docs_memory = fake_home / "Documents" / "HermesMemory"
         legacy_docs_memory.mkdir(parents=True, exist_ok=True)
@@ -83,15 +83,12 @@ class TestEnsureHermesHome:
 
         target = tmp_path / "hermes" / "memories"
         workspace_memory = fake_home / "Documents" / "AIMDS-Suite-Vault" / "HermesMemory"
-        assert workspace_memory.is_symlink()
-        assert workspace_memory.resolve() == target.resolve()
+        assert not workspace_memory.exists()
         assert (target / "legacy.md").read_text(encoding="utf-8") == "legacy"
-        assert not legacy_docs_memory.exists() or not legacy_docs_memory.is_symlink()
-        backups = list((fake_home / "Documents").glob("HermesMemory.backup.*"))
-        assert backups
+        assert not legacy_docs_memory.exists()
 
     @pytest.mark.skipif(sys.platform == "win32", reason="symlink perms vary on CI")
-    def test_repairs_wrong_documents_memory_symlink(self, tmp_path, monkeypatch):
+    def test_removes_wrong_documents_memory_symlink(self, tmp_path, monkeypatch):
         fake_home = tmp_path / "home"
         workspace_dir = fake_home / "Documents" / "AIMDS-Suite-Vault"
         workspace_dir.mkdir(parents=True, exist_ok=True)
@@ -104,78 +101,46 @@ class TestEnsureHermesHome:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / "hermes")}):
             ensure_hermes_home()
 
-        expected = tmp_path / "hermes" / "memories"
-        assert workspace_memory.is_symlink()
-        assert workspace_memory.resolve() == expected.resolve()
+        assert not workspace_memory.exists()
 
-    def test_windows_junction_primary_on_windows(self, tmp_path, monkeypatch):
+    def test_cleans_up_junctions_on_windows(self, tmp_path, monkeypatch):
         from hermes_cli import config as cfg_mod
 
         fake_home = tmp_path / "home"
         monkeypatch.setenv("HOME", str(fake_home))
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
         monkeypatch.setattr(cfg_mod, "_IS_WINDOWS", True)
-
-        calls: list[list[str]] = []
-
-        def _fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            class _Completed:
-                returncode = 0
-            return _Completed()
-
-        monkeypatch.setattr(cfg_mod.subprocess, "run", _fake_run)
 
         ensure_hermes_home()
 
         expected_link = fake_home / "Documents" / "AIMDS-Suite-Vault" / "HermesMemory"
-        assert any(cmd[:3] == ["cmd", "/c", 'mklink /J "' + str(expected_link) + '" "' + str(tmp_path / "hermes" / "memories") + '"'] for cmd in calls)
+        assert not expected_link.exists()
 
-    def test_existing_plain_directory_merged_and_replaced_with_junction_on_windows(self, tmp_path, monkeypatch):
-        """When HermesMemory exists as a plain directory, merge contents and replace it with a junction."""
+    def test_migrates_legacy_project_user_memories_to_vault(self, tmp_path, monkeypatch):
+        """When legacy project/user folders exist in HERMES_HOME/memories, losslessly migrate them to Vault."""
         from hermes_cli import config as cfg_mod
 
         fake_home = tmp_path / "home"
-        vault_memory = fake_home / "Documents" / "AIMDS-Suite-Vault" / "HermesMemory"
-        vault_memory.mkdir(parents=True, exist_ok=True)
-        (vault_memory / "old_note.md").write_text("existing content", encoding="utf-8")
+        hermes_home = tmp_path / "hermes"
+        memories_dir = hermes_home / "memories"
+        (memories_dir / "project" / "sub").mkdir(parents=True, exist_ok=True)
+        (memories_dir / "project" / "sub" / "prj_note.md").write_text("prj content", encoding="utf-8")
+        (memories_dir / "user").mkdir(parents=True, exist_ok=True)
+        (memories_dir / "user" / "user_note.md").write_text("user content", encoding="utf-8")
 
         monkeypatch.setenv("HOME", str(fake_home))
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-        monkeypatch.setattr(cfg_mod, "_IS_WINDOWS", True)
-
-        calls: list[list[str]] = []
-
-        def _fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            class _Completed:
-                returncode = 0
-            return _Completed()
-
-        monkeypatch.setattr(cfg_mod.subprocess, "run", _fake_run)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         ensure_hermes_home()
 
-        target = tmp_path / "hermes" / "memories"
-        # Content was merged into HERMES_HOME/memories
-        assert (target / "old_note.md").read_text(encoding="utf-8") == "existing content"
-        # Junction command was executed on the freed path
-        assert any(cmd[:3] == ["cmd", "/c", 'mklink /J "' + str(vault_memory) + '" "' + str(target) + '"'] for cmd in calls)
+        vault_dir = fake_home / "Documents" / "AIMDS-Suite-Vault"
+        assert (vault_dir / "projects" / "sub" / "prj_note.md").read_text(encoding="utf-8") == "prj content"
+        assert (vault_dir / "users" / "user_note.md").read_text(encoding="utf-8") == "user content"
+        assert not (memories_dir / "project").exists()
+        assert not (memories_dir / "user").exists()
 
     def test_junction_not_detected_by_is_symlink_does_not_crash(self, tmp_path, monkeypatch):
-        """Regression test for a SameFileError crash loop seen in the wild.
-
-        On Windows, `mklink /J` junctions (the fallback used just above when
-        a real symlink can't be created without elevated privileges) are
-        NOT detected by `Path.is_symlink()` -- `is_junction()` only exists
-        from Python 3.12, and Hermes still supports 3.11. Without
-        `_is_windows_reparse_point()`, a second `ensure_hermes_home()` call
-        (i.e. every subsequent `load_config()`, since this runs on every
-        request) would treat the junction as a plain directory and try to
-        merge its own contents into `memory_target` -- the exact same
-        directory reached via a different path -- raising
-        `shutil.SameFileError` every time.
-        """
+        """Regression test ensuring legacy junctions are removed without crash."""
         from hermes_cli import config as cfg_mod
 
         fake_home = tmp_path / "home"
@@ -184,28 +149,17 @@ class TestEnsureHermesHome:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(cfg_mod, "_IS_WINDOWS", True)
 
-        # First run creates memories/ and a real symlink (this platform
-        # can't create actual NTFS junctions, but the fix path only cares
-        # about is_symlink()/_is_windows_reparse_point() detection, which
-        # we simulate below).
         ensure_hermes_home()
 
         legacy_memory = fake_home / "Documents" / "HermesMemory"
         workspace_memory = (
             fake_home / "Documents" / "AIMDS-Suite-Vault" / "HermesMemory"
         )
-        assert workspace_memory.is_symlink()
-        assert not legacy_memory.exists()
 
-        # Real-world crash needed a colliding filename in both "sides" of
-        # the junction (same file reached two ways) -- e.g. MEMORY.md.
         (hermes_home / "memories" / "MEMORY.md").write_text(
             "hello", encoding="utf-8"
         )
 
-        # Simulate a stray legacy junction alongside the real workspace
-        # symlink, and make Path.is_symlink() blind to both -- exactly the
-        # Windows 3.11 quirk that caused the real-world crash.
         legacy_memory.parent.mkdir(parents=True, exist_ok=True)
         legacy_memory.symlink_to(hermes_home / "memories", target_is_directory=True)
 
@@ -223,13 +177,6 @@ class TestEnsureHermesHome:
             lambda p: Path(p) in (workspace_memory, legacy_memory),
         )
 
-        # On real Windows, os.rmdir() on a junction removes only the
-        # reparse point, leaving its target directory untouched -- unlike
-        # POSIX, where rmdir() on a symlink-to-directory follows the link
-        # and fails (ENOTEMPTY) because the target isn't empty. Emulate the
-        # Windows behavior for our real (POSIX) test symlink so the
-        # legacy-cleanup branch's `legacy.rmdir()` call behaves the same
-        # way it would on the reporter's machine.
         real_rmdir = Path.rmdir
 
         def _fake_rmdir(self):
@@ -240,13 +187,11 @@ class TestEnsureHermesHome:
 
         monkeypatch.setattr(Path, "rmdir", _fake_rmdir)
 
-        # Must not raise shutil.SameFileError.
+        # Must not raise error
         ensure_hermes_home()
 
-        # The legacy junction is removed (its target directory untouched);
-        # the workspace link is recognized as already correct and left
-        # alone.
         assert not legacy_memory.exists()
+        assert not workspace_memory.exists()
         assert (hermes_home / "memories").is_dir()
 
 

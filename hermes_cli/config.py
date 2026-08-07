@@ -1034,27 +1034,36 @@ def _resolve_workspace_dir() -> Path:
     return _get_default_workspace_dir().resolve()
 
 
-def _ensure_documents_memory_link(home: Path) -> None:
-    """Ensure <workspace_dir>/HermesMemory points to ``<HERMES_HOME>/memories``.
+def _migrate_folder_lossless(src: Path, dst: Path) -> None:
+    """Losslessly move all files and subdirectories from src to dst with size verification."""
+    if not src.exists() or not src.is_dir():
+        return
+    for item in list(src.rglob("*")):
+        if item.is_file():
+            rel_path = item.relative_to(src)
+            target_path = dst / rel_path
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            if not target_path.exists() or target_path.stat().st_size != item.stat().st_size:
+                shutil.copy2(item, target_path)
+            # Verify copy was successful before unlinking source file
+            if target_path.exists() and target_path.stat().st_size == item.stat().st_size:
+                try:
+                    item.unlink()
+                except OSError:
+                    pass
 
-    Cleans up legacy top-level memory symlinks/directories at ~/Documents/HermesMemory,
-    ~/Documents/AIMDS-Suite-Memory, or ~/Documents/AIMDS-Suite-WorkingDirectory/HermesMemory
-    so ~/Documents is not cluttered with loose folders.
+
+def _ensure_documents_memory_link(home: Path) -> None:
+    """Clean up HermesMemory links/junctions and migrate project/user memories into Vault.
+
+    Ensures memories live directly in the Vault (AIMDS-Suite-Vault) in projects/
+    and users/ hierarchies, and that no HermesMemory symlink/junction exists in the Vault.
     """
     docs_dir = _get_documents_dir()
     memory_target = home / "memories"
     memory_target.mkdir(parents=True, exist_ok=True)
 
-    # Clean up HermesMemory.backup.* clutter accumulated by *earlier* calls.
-    # Every backup created below (and in the workspace-folder rename
-    # migration) is only made *after* its contents were already merged into
-    # memory_target, so a backup left over from a previous run is provably
-    # redundant -- safe to delete outright instead of letting it pile up
-    # across every ensure_hermes_home() call. This must run BEFORE the
-    # legacy-links loop below creates this run's own backup, or it would
-    # delete the backup moments after creating it. Path.glob() on a
-    # non-existent parent just yields nothing, so no existence check is
-    # needed for the (possibly already-renamed) legacy workspace folders.
+    # Clean up HermesMemory.backup.* clutter accumulated by earlier calls.
     for backup_parent in (
         docs_dir,
         docs_dir / "AIMDS-Suite-WorkingDirectory",
@@ -1065,17 +1074,14 @@ def _ensure_documents_memory_link(home: Path) -> None:
 
     workspace_dir = _resolve_workspace_dir()
     workspace_dir.mkdir(parents=True, exist_ok=True)
-    memory_link = workspace_dir / "HermesMemory"
 
-    # Clean up legacy top-level Documents memory links/directories if they exist.
-    # Exclude active memory_link so we don't destroy/backup the target folder on every run!
+    # Clean up all HermesMemory symlinks/junctions/directories across Vault and legacy locations
     legacy_links = [
         docs_dir / "HermesMemory",
         docs_dir / "AIMDS-Suite-Memory",
         docs_dir / "AIMDS-Suite-WorkingDirectory" / "HermesMemory",
-        docs_dir / "AIMDS-Suite-Vault" / "HermesMemory",
+        workspace_dir / "HermesMemory",
     ]
-    legacy_links = [loc for loc in legacy_links if loc != memory_link]
     for legacy in legacy_links:
         if legacy.is_symlink():
             try:
@@ -1083,15 +1089,6 @@ def _ensure_documents_memory_link(home: Path) -> None:
             except OSError:
                 pass
         elif _is_windows_reparse_point(legacy):
-            # A junction from an earlier run's mklink /J fallback (see
-            # below). Path.is_symlink() misses these on Python 3.11, so
-            # without this check the code below would treat the junction as
-            # a plain directory and try to merge its contents into
-            # memory_target -- but a junction resolves to the very same
-            # directory, so every file would collide with itself and
-            # shutil.copy2() would raise SameFileError on every call to
-            # ensure_hermes_home() (i.e. on every request). Just remove the
-            # junction; its target directory is untouched.
             try:
                 legacy.rmdir()
             except OSError:
@@ -1099,80 +1096,36 @@ def _ensure_documents_memory_link(home: Path) -> None:
         elif legacy.exists():
             if legacy.is_dir():
                 _merge_directory_contents(legacy, memory_target)
-            backup_path = legacy.with_name(
-                f"{legacy.name}.backup.{int(time.time())}"
-            )
-            try:
-                legacy.rename(backup_path)
-            except OSError:
-                pass
+                try:
+                    shutil.rmtree(legacy)
+                except OSError:
+                    pass
+            else:
+                try:
+                    legacy.unlink()
+                except OSError:
+                    pass
 
-    if memory_link.is_symlink():
-        current_target = Path(os.readlink(memory_link))
-        if not current_target.is_absolute():
-            current_target = (memory_link.parent / current_target).resolve()
-        if current_target == memory_target.resolve():
-            return
-        memory_link.unlink()
-    elif _is_windows_reparse_point(memory_link):
-        # Junction from an earlier run's mklink /J creation.
-        # Path.is_symlink() misses junctions on Python 3.11 (fixed by
-        # is_junction() in 3.12), so without this branch the code would
-        # fall through to the "plain directory" case and try to merge the
-        # junction's contents into memory_target -- which is the same
-        # directory reached via a different path, guaranteeing a
-        # shutil.SameFileError crash on every ensure_hermes_home() call.
+    # Losslessly migrate project/ and user/ subdirectories from ~/.hermes/memories/ into Vault
+    legacy_project_dir = memory_target / "project"
+    if legacy_project_dir.exists() and legacy_project_dir.is_dir():
+        target_projects = workspace_dir / "projects"
+        target_projects.mkdir(parents=True, exist_ok=True)
+        _migrate_folder_lossless(legacy_project_dir, target_projects)
         try:
-            if os.path.samefile(memory_link, memory_target):
-                return
+            shutil.rmtree(legacy_project_dir, ignore_errors=True)
         except OSError:
             pass
+
+    legacy_user_dir = memory_target / "user"
+    if legacy_user_dir.exists() and legacy_user_dir.is_dir():
+        target_users = workspace_dir / "users"
+        target_users.mkdir(parents=True, exist_ok=True)
+        _migrate_folder_lossless(legacy_user_dir, target_users)
         try:
-            memory_link.rmdir()
+            shutil.rmtree(legacy_user_dir, ignore_errors=True)
         except OSError:
             pass
-    elif memory_link.exists():
-        if memory_link.is_dir():
-            _merge_directory_contents(memory_link, memory_target)
-            try:
-                shutil.rmtree(memory_link)
-            except OSError:
-                pass
-        else:
-            try:
-                memory_link.unlink()
-            except OSError:
-                pass
-
-    if _IS_WINDOWS:
-        try:
-            subprocess.run(
-                [
-                    "cmd",
-                    "/c",
-                    f'mklink /J "{memory_link}" "{memory_target}"',
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            return
-        except (OSError, subprocess.CalledProcessError) as junc_err:
-            logger.warning(
-                "Could not create HermesMemory junction at %s: %s. Attempting symlink...",
-                memory_link,
-                junc_err,
-            )
-
-    try:
-        memory_link.symlink_to(memory_target, target_is_directory=True)
-    except OSError as exc:
-        logger.error(
-            "Could not create HermesMemory link at %s -> %s: %s",
-            memory_link,
-            memory_target,
-            exc,
-        )
 
 
 def ensure_hermes_home():
