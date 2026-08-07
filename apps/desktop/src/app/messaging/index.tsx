@@ -147,7 +147,7 @@ function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
 }
 
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
-  const { t, locale } = useI18n()
+  const { locale, t } = useI18n()
   const m = t.messaging
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   const [edits, setEdits] = useState<EditMap>({})
