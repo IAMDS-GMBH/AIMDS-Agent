@@ -115,41 +115,25 @@ const TEAM_MESSAGES_EN = [
 ] as const
 
 const BUSINESS_MESSAGES_DE = [
-  'Kompiliere Kaffee-Zufuhr...',
-  'Prüfe Feedback & Verbesserungsvorschläge...',
-  'Berechne optimales KPI-Reporting...',
-  'Richte künstliche Intelligenz auf Umsatzziele aus...',
-  'Schreibe passiv-aggressive E-Mails an das Management...',
-  'Synchronisiere Synergien...',
-  'Formatiere Excel-Tabellen...',
-  'Platziere Haftnotizen an virtuellen Whiteboards...',
-  'Verteile Schuldzuweisungen im Git-Commit-Log...',
-  'Konfiguriere den Obstkorb in der Küche...',
-  'Bereite Buzzwords für die nächste Präsentation vor...',
-  'Analysiere agile Blockaden...',
-  'Simuliere Produktivität im Home-Office...',
-  'Bringe Server zum Glühen...',
-  'Erhöhe Work-Life-Balance um 0.5%...',
-  'Sammle Überstunden für das Wochenende...'
+  'Analysiere Arbeitsschritte und optimiere Workflows...',
+  'Synchronisiere Projektstatus und Aufgaben...',
+  'Bereite strukturierte Datenanalysen vor...',
+  'Stelle Verbindungen zu internen Wissensdatenbanken her...',
+  'Kompiliere Zusammenfassungen und Berichte...',
+  'Prüfe Dokumentenstrukturen und Richtlinien...',
+  'Optimiere Kommunikations- und Entscheidungswege...',
+  'Lade spezialisierte KI-Werkzeuge für den Arbeitsbereich...'
 ] as const
 
 const BUSINESS_MESSAGES_EN = [
-  'Compiling coffee supply...',
-  'Checking feedback & improvement ideas...',
-  'Calculating optimal KPI reporting...',
-  'Aligning artificial intelligence with revenue goals...',
-  'Drafting passive-aggressive emails to management...',
-  'Synchronizing synergies...',
-  'Formatting Excel spreadsheets...',
-  'Placing sticky notes on virtual whiteboards...',
-  'Distributing blame in the git commit log...',
-  'Configuring the kitchen fruit basket...',
-  'Preparing buzzwords for the next presentation...',
-  'Analyzing agile blockers...',
-  'Simulating home-office productivity...',
-  'Making the servers glow...',
-  'Increasing work-life balance by 0.5%...',
-  'Accumulating overtime for the weekend...'
+  'Analyzing steps and optimizing workflows...',
+  'Synchronizing project status and tasks...',
+  'Preparing structured data analysis...',
+  'Connecting to internal knowledge bases...',
+  'Compiling summaries and reports...',
+  'Verifying document structures and guidelines...',
+  'Optimizing communication and decision channels...',
+  'Loading specialized AI tools for the workspace...'
 ] as const
 
 // Exit choreography (ms): text fades down + out, hold, then the overlay fades.

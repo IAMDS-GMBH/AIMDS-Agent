@@ -77,9 +77,9 @@ describe('GatewayConnectingOverlay Messages Gating', () => {
 
     render(<GatewayConnectingOverlay />)
 
-    // Should render a business loading message like "Kompiliere Kaffee-Zufuhr..."
+    // Should render a business loading message
     await waitFor(() => {
-      expect(screen.getByText('Kompiliere Kaffee-Zufuhr...')).toBeTruthy()
+      expect(screen.getByText('Analysiere Arbeitsschritte und optimiere Workflows...')).toBeTruthy()
     })
   })
 
@@ -95,9 +95,9 @@ describe('GatewayConnectingOverlay Messages Gating', () => {
 
     render(<GatewayConnectingOverlay />)
 
-    // Should render an English business loading message like "Compiling coffee supply..."
+    // Should render an English business loading message
     await waitFor(() => {
-      expect(screen.getByText('Compiling coffee supply...')).toBeTruthy()
+      expect(screen.getByText('Analyzing steps and optimizing workflows...')).toBeTruthy()
     })
   })
 
