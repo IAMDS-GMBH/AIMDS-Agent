@@ -35,7 +35,7 @@ on:
         default: true
         type: boolean
       skip_signing:
-        description: "Skip Apple code signing and notarization (useful when notarization API is unreachable)"
+        description: "Skip Apple and Windows code signing and notarization (useful when signing APIs are unreachable)"
         required: false
         default: false
         type: boolean
@@ -368,8 +368,7 @@ jobs:
 
       - name: Azure login (OIDC)
         id: azure_login
-        if: runner.os == 'Windows' && github.ref == 'refs/heads/main'
-        continue-on-error: true
+        if: runner.os == 'Windows' && github.ref == 'refs/heads/main' && inputs.skip_signing != true
         uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -377,8 +376,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Sign Windows installer with Azure Artifact Signing
-        if: runner.os == 'Windows' && github.ref == 'refs/heads/main' && steps.azure_login.outcome == 'success'
-        continue-on-error: true
+        if: runner.os == 'Windows' && github.ref == 'refs/heads/main' && inputs.skip_signing != true
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
         with:
           endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
@@ -392,14 +390,39 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
+      - name: Verify Windows executable signature
+        if: runner.os == 'Windows' && github.ref == 'refs/heads/main' && inputs.skip_signing != true
+        shell: powershell
+        run: |
+          $candidates = @(
+            "apps/bootstrap-installer/src-tauri/target/release/bundle/*/*.exe",
+            "apps/bootstrap-installer/src-tauri/target/release/*.exe"
+          )
+          $files = @()
+          foreach ($pattern in $candidates) {
+            $files += Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue
+          }
+          $files = $files | Sort-Object FullName -Unique
+          if (-not $files -or $files.Count -eq 0) {
+            throw "No Windows .exe artifacts found under target/release to verify"
+          }
+          foreach ($f in $files) {
+            $sig = Get-AuthenticodeSignature -FilePath $f.FullName
+            Write-Host "Verifying signature on $($f.FullName): $($sig.Status) ($($sig.SignerCertificate.Subject))"
+            if ($sig.Status -ne 'Valid') {
+              throw "Signature verification failed for $($f.FullName): status is '$($sig.Status)' (expected 'Valid')"
+            }
+          }
+          Write-Host "All Windows binaries successfully verified with valid digital signatures."
+
       - name: Warn if Windows installer is unsigned
-        if: runner.os == 'Windows' && (github.ref != 'refs/heads/main' || steps.azure_login.outcome != 'success')
+        if: runner.os == 'Windows' && (github.ref != 'refs/heads/main' || inputs.skip_signing == true)
         shell: bash
         run: |
           if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
             echo "::warning::Skipping Azure signing on non-main ref (${GITHUB_REF}). Windows installer will be released unsigned."
           else
-            echo "::warning::Azure login failed — Windows installer will be released unsigned."
+            echo "::warning::skip_signing=true — Windows installer will be released unsigned."
           fi
 
       - name: Collect macOS artifacts
