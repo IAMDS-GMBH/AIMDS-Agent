@@ -53,13 +53,16 @@ def _get_version_from_git() -> str | None:
 
 try:
     from importlib.metadata import metadata as _pkg_metadata, PackageNotFoundError as _PNF
-    _meta = _pkg_metadata("hermes-agent")
+    try:
+        _meta = _pkg_metadata("aimds-agent")
+    except Exception:
+        _meta = _pkg_metadata("hermes-agent")
     __version__ = _meta["Version"] or "0.0.0"
     __release_date__ = _meta.get("X-Release-Date") or "unknown"
 except Exception:
     # Fallback for editable installs or environments where metadata isn't available.
     # Try git tags first, then hardcoded version.
-    __version__ = _get_version_from_git() or "0.2.3"
+    __version__ = _get_version_from_git() or "0.7.3"
     __release_date__ = "2026.8.24"
 
 
