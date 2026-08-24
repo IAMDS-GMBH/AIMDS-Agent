@@ -3085,6 +3085,36 @@ run_setup_wizard() {
         return 0
     fi
 
+    # Check if existing credentials exist and offer to reuse them
+    local existing_base=""
+    local existing_key=""
+    local existing_model=""
+    if [ -f "$HERMES_HOME/.env" ]; then
+        existing_key=$(grep -E '^(IAMDS_LITELLM_API_KEY|OPENAI_API_KEY)=' "$HERMES_HOME/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'\'' ')
+        existing_base=$(grep -E '^(IAMDS_LITELLM_BASE_URL|OPENAI_BASE_URL)=' "$HERMES_HOME/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'\'' ')
+    fi
+    if [ -f "$HERMES_HOME/config.yaml" ]; then
+        if [ -z "$existing_base" ]; then
+            existing_base=$(grep -E '^[[:space:]]*base_url:' "$HERMES_HOME/config.yaml" 2>/dev/null | head -1 | sed 's/^[[:space:]]*base_url:[[:space:]]*//' | tr -d '"'\'' ')
+        fi
+        existing_model=$(grep -E '^[[:space:]]*(default|model):' "$HERMES_HOME/config.yaml" 2>/dev/null | head -1 | sed 's/^[[:space:]]*(default|model):[[:space:]]*//' | tr -d '"'\'' ')
+    fi
+
+    if [ -n "$existing_key" ] || [ -n "$existing_base" ]; then
+        echo ""
+        log_info "Vorhandene Konfiguration gefunden in $HERMES_HOME:"
+        [ -n "$existing_base" ] && log_info "  Base URL: $existing_base"
+        [ -n "$existing_key" ] && log_info "  API-Key:  ••••••••${existing_key: -4}"
+        [ -n "$existing_model" ] && log_info "  Modell:   $existing_model"
+        echo ""
+        if [ "$NON_INTERACTIVE" = false ] && (: </dev/tty) 2>/dev/null; then
+            if prompt_yes_no "Vorhandene Konfiguration übernehmen?" "yes"; then
+                log_success "Vorhandene Konfiguration wird beibehalten."
+                return 0
+            fi
+        fi
+    fi
+
     # The setup wizard reads from /dev/tty, so it works even when the
     # install script itself is piped (curl | bash). Only skip if no
     # terminal is available at all (e.g. Docker build, CI).

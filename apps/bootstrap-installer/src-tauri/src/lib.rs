@@ -201,6 +201,7 @@ pub fn run() {
             models::fetch_models,
             models::write_provider_models_cache,
             models::check_litellm_health,
+            models::get_existing_config,
             // Keycloak SSO
             keycloak::keycloak_login,
         ])

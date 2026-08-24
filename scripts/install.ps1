@@ -4103,6 +4103,56 @@ function Invoke-SetupWizard {
         return
     }
 
+    # Check if existing credentials exist and offer to reuse them
+    $envPath = "$HermesHome\.env"
+    $configPath = "$HermesHome\config.yaml"
+    $existingKey = $null
+    $existingBase = $null
+    $existingModel = $null
+
+    if (Test-Path $envPath) {
+        $lines = Get-Content $envPath -ErrorAction SilentlyContinue
+        foreach ($line in $lines) {
+            if ($line -match '^(IAMDS_LITELLM_API_KEY|OPENAI_API_KEY)=(.*)$' -and -not $existingKey) {
+                $existingKey = $matches[2].Trim().Trim('"').Trim("'")
+            }
+            if ($line -match '^(IAMDS_LITELLM_BASE_URL|OPENAI_BASE_URL)=(.*)$' -and -not $existingBase) {
+                $existingBase = $matches[2].Trim().Trim('"').Trim("'")
+            }
+        }
+    }
+    if (Test-Path $configPath) {
+        $lines = Get-Content $configPath -ErrorAction SilentlyContinue
+        foreach ($line in $lines) {
+            if ($line -match '^\s*base_url:\s*(.*)$' -and -not $existingBase) {
+                $existingBase = $matches[1].Trim().Trim('"').Trim("'")
+            }
+            if ($line -match '^\s*(default|model):\s*(.*)$' -and -not $existingModel) {
+                $val = $matches[2].Trim().Trim('"').Trim("'")
+                if ($val -ne "{}" -and $val -ne "") { $existingModel = $val }
+            }
+        }
+    }
+
+    if ($existingKey -or $existingBase) {
+        Write-Host ""
+        Write-Info "Vorhandene Konfiguration gefunden in $HermesHome:"
+        if ($existingBase) { Write-Info "  Base URL: $existingBase" }
+        if ($existingKey) {
+            $masked = if ($existingKey.Length -gt 4) { "••••••••" + $existingKey.Substring($existingKey.Length - 4) } else { "••••••••" }
+            Write-Info "  API-Key:  $masked"
+        }
+        if ($existingModel) { Write-Info "  Modell:   $existingModel" }
+        Write-Host ""
+        try {
+            $resp = Read-Host "Vorhandene Konfiguration übernehmen? [J/n]"
+            if (-not $resp -or $resp -match '^[jJyY]') {
+                Write-Success "Vorhandene Konfiguration wird beibehalten."
+                return
+            }
+        } catch {}
+    }
+
     Write-Host ""
     Write-Info "Starting setup wizard..."
     Write-Host ""

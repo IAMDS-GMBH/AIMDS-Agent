@@ -249,3 +249,75 @@ pub async fn write_provider_models_cache(
     );
     Ok(())
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExistingConfig {
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub model: Option<String>,
+}
+
+/// Check for existing configuration (Base URL, API Key, Model) from ~/.hermes/.env and config.yaml.
+#[tauri::command]
+pub async fn get_existing_config(hermes_home: Option<String>) -> Result<ExistingConfig, String> {
+    let hermes_home_path = if let Some(home) = hermes_home {
+        PathBuf::from(home)
+    } else {
+        crate::paths::hermes_home()
+    };
+
+    let mut result = ExistingConfig::default();
+
+    // 1. Check .env
+    let env_file = hermes_home_path.join(".env");
+    if env_file.exists() {
+        if let Ok(content) = std::fs::read_to_string(&env_file) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with('#') || !trimmed.contains('=') {
+                    continue;
+                }
+                let mut parts = trimmed.splitn(2, '=');
+                let key = parts.next().unwrap_or("").trim();
+                let mut val = parts.next().unwrap_or("").trim().to_string();
+                if (val.starts_with('"') && val.ends_with('"')) || (val.starts_with('\'') && val.ends_with('\'')) {
+                    if val.len() >= 2 {
+                        val = val[1..val.len() - 1].to_string();
+                    }
+                }
+                if (key == "IAMDS_LITELLM_API_KEY" || key == "OPENAI_API_KEY") && result.api_key.is_none() && !val.is_empty() {
+                    result.api_key = Some(val);
+                } else if (key == "IAMDS_LITELLM_BASE_URL" || key == "OPENAI_BASE_URL") && result.base_url.is_none() && !val.is_empty() {
+                    result.base_url = Some(val);
+                }
+            }
+        }
+    }
+
+    // 2. Check config.yaml
+    let config_file = hermes_home_path.join("config.yaml");
+    if config_file.exists() {
+        if let Ok(content) = std::fs::read_to_string(&config_file) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if (trimmed.starts_with("default:") || trimmed.starts_with("model:")) && result.model.is_none() {
+                    let mut parts = trimmed.splitn(2, ':');
+                    parts.next();
+                    let val = parts.next().unwrap_or("").trim().trim_matches('"').trim_matches('\'').to_string();
+                    if !val.is_empty() && val != "{}" && !val.contains('\n') {
+                        result.model = Some(val);
+                    }
+                } else if trimmed.starts_with("base_url:") && result.base_url.is_none() {
+                    let mut parts = trimmed.splitn(2, ':');
+                    parts.next();
+                    let val = parts.next().unwrap_or("").trim().trim_matches('"').trim_matches('\'').to_string();
+                    if !val.is_empty() {
+                        result.base_url = Some(val);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(result)
+}

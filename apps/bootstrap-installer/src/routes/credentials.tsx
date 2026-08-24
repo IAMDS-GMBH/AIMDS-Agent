@@ -16,6 +16,12 @@ interface KeycloakLoginResult {
   base_url: string
 }
 
+interface ExistingConfig {
+  base_url?: string | null
+  api_key?: string | null
+  model?: string | null
+}
+
 export interface CredentialsData {
   apiKey: string
   baseUrl: string
@@ -91,6 +97,10 @@ export default function Credentials() {
   const [keycloakError, setKeycloakError] = useState<string | null>(null)
   const [keycloakConnected, setKeycloakConnected] = useState(false)
 
+  // Existing config discovery & adoption state
+  const [existingConfig, setExistingConfig] = useState<ExistingConfig | null>(null)
+  const [dismissedExisting, setDismissedExisting] = useState(false)
+
   const selectedEndpoint: EndpointVariant = 'main'
   const selectedApiKey = formData.apiKey
   const selectedBaseUrl = normalizeInstallerBaseUrl(formData.baseUrl)
@@ -111,6 +121,21 @@ export default function Credentials() {
     } finally {
       setIsCheckingHealth(false)
     }
+  }, [])
+
+  // Check for existing configuration on mount
+  useEffect(() => {
+    async function loadExisting() {
+      try {
+        const found = await invoke<ExistingConfig>('get_existing_config', { hermesHome: null })
+        if (found && (found.api_key || found.base_url || found.model)) {
+          setExistingConfig(found)
+        }
+      } catch (err) {
+        console.warn('Could not read existing config:', err)
+      }
+    }
+    void loadExisting()
   }, [])
 
   // Auto-check on mount and whenever selectedBaseUrl changes (debounced for editable field)
@@ -303,15 +328,78 @@ export default function Credentials() {
     }
   }
 
+  const handleApplyExistingConfig = (config: ExistingConfig) => {
+    const newBaseUrl = config.base_url ? normalizeInstallerBaseUrl(config.base_url) : formData.baseUrl
+    const newApiKey = config.api_key ? config.api_key.trim() : formData.apiKey
+    const newModel = config.model ? config.model.trim() : formData.modelName
+
+    setFormData((prev) => ({
+      ...prev,
+      baseUrl: newBaseUrl,
+      apiKey: newApiKey,
+      modelName: newModel,
+    }))
+    setDismissedExisting(true)
+
+    if (newBaseUrl) {
+      void checkHealth(newBaseUrl)
+    }
+
+    if (newBaseUrl && newApiKey) {
+      void handleFetchModels(newBaseUrl, newApiKey)
+    }
+  }
+
   return (
     <div className="hermes-fade-in flex h-full flex-col overflow-auto bg-background px-8 py-10">
       <div className="mx-auto w-full max-w-xl">
         <h1 className="mb-2 text-2xl font-semibold text-foreground">
-          Configuration
+          Konfiguration
         </h1>
-        <p className="mb-8 text-sm text-muted-foreground">
-          Enter your KI provider credentials.
+        <p className="mb-6 text-sm text-muted-foreground">
+          Richten Sie Ihren KI-Zugang und das gewünschte Sprachmodell ein.
         </p>
+
+        {/* Existing Config Detection Banner */}
+        {existingConfig && (existingConfig.api_key || existingConfig.base_url) && !dismissedExisting && (
+          <div className="mb-6 rounded-lg border border-primary/30 bg-primary/5 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-foreground">
+                  Vorhandene Konfiguration gefunden
+                </p>
+                <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+                  {existingConfig.base_url && (
+                    <p>Base URL: <code className="font-mono text-foreground">{existingConfig.base_url}</code></p>
+                  )}
+                  {existingConfig.api_key && (
+                    <p>API-Key: <code className="font-mono text-foreground">••••••••{existingConfig.api_key.slice(-4)}</code></p>
+                  )}
+                  {existingConfig.model && (
+                    <p>Modell: <code className="font-mono text-foreground">{existingConfig.model}</code></p>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleApplyExistingConfig(existingConfig)}
+                  className="rounded bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+                >
+                  Übernehmen
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDismissedExisting(true)}
+                  className="rounded p-1 text-muted-foreground hover:text-foreground transition-colors"
+                  title="Verwerfen"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-6">
           {/* Base URL — hidden when baked in at packaging time */}
@@ -348,68 +436,73 @@ export default function Credentials() {
             </div>
           )}
 
-          {/* Keycloak SSO */}
+          {/* Anmeldedaten & Sign-On */}
           <fieldset className="rounded-lg border border-border bg-muted/20 p-4">
             <legend className="mb-3 block text-sm font-medium text-foreground">
-              Single Sign-On
-            </legend>
-
-            <div className="space-y-3">
-              <button
-                type="button"
-                onClick={() => void handleKeycloakLogin()}
-                disabled={isKeycloakLoading || !formData.baseUrl.trim()}
-                className="flex w-full items-center justify-center gap-2 rounded border border-primary bg-primary/10 px-4 py-2.5 text-sm font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
-              >
-                {isKeycloakLoading ? (
-                  <>
-                    <Loader className="h-4 w-4 animate-spin" />
-                    Waiting for browser login…
-                  </>
-                ) : keycloakConnected ? (
-                  <>
-                    <Check className="h-4 w-4 text-green-500" />
-                    Connected via Keycloak
-                  </>
-                ) : (
-                  <>
-                    <ShieldCheck className="h-4 w-4" />
-                    Connect with Keycloak
-                  </>
-                )}
-              </button>
-
-              {keycloakConnected && (
-                <p className="text-xs text-green-600 dark:text-green-400">
-                  API key obtained via SSO. Fetch models below and proceed to install.
-                </p>
-              )}
-              {keycloakError && (
-                <p className="flex items-center gap-1 text-xs text-red-500">
-                  <AlertCircle className="h-3 w-3" />
-                  {keycloakError}
-                </p>
-              )}
-            </div>
-          </fieldset>
-
-          <fieldset className="rounded-lg border border-border bg-muted/20 p-4">
-            <legend className="mb-4 block text-sm font-medium text-foreground">
-              KI Provider
+              Anmeldung & Zugangsdaten
             </legend>
 
             <div className="space-y-4">
+              {/* Sign-On Button */}
+              <div>
+                <button
+                  type="button"
+                  onClick={() => void handleKeycloakLogin()}
+                  disabled={isKeycloakLoading || !formData.baseUrl.trim()}
+                  className="flex w-full items-center justify-center gap-2 rounded border border-primary bg-primary/10 px-4 py-2.5 text-sm font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+                >
+                  {isKeycloakLoading ? (
+                    <>
+                      <Loader className="h-4 w-4 animate-spin" />
+                      Warte auf Browser-Anmeldung…
+                    </>
+                  ) : keycloakConnected ? (
+                    <>
+                      <Check className="h-4 w-4 text-green-500" />
+                      Angemeldet via IAMDS Sign-On
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="h-4 w-4" />
+                      Mit IAMDS-Konto anmelden (Sign-On)
+                    </>
+                  )}
+                </button>
+
+                {keycloakConnected && (
+                  <p className="mt-2 text-xs text-green-600 dark:text-green-400">
+                    Zugangstoken erfolgreich bezogen. Wählen Sie unten Ihr Modell aus.
+                  </p>
+                )}
+                {keycloakError && (
+                  <p className="mt-2 flex items-center gap-1 text-xs text-red-500">
+                    <AlertCircle className="h-3 w-3" />
+                    {keycloakError}
+                  </p>
+                )}
+              </div>
+
+              {/* Divider */}
+              <div className="relative flex items-center py-1">
+                <div className="grow border-t border-border"></div>
+                <span className="shrink mx-3 text-xs text-muted-foreground uppercase tracking-wider">
+                  oder manuell mit API-Key
+                </span>
+                <div className="grow border-t border-border"></div>
+              </div>
+
+              {/* API Key Input */}
               <div>
                 <label htmlFor="apiKey" className="block text-sm font-medium text-foreground">
-                  API Key <span className="text-red-500">*</span>
+                  API-Key <span className="text-red-500">*</span>
                 </label>
                 <input
                   id="apiKey"
                   type="password"
                   value={formData.apiKey}
                   onChange={(e) => handleChange('apiKey', e.target.value)}
-                  placeholder={keycloakConnected ? '(obtained via Keycloak SSO)' : 'sk-…'}
-                  className="mt-1 w-full rounded border border-input bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                  placeholder={keycloakConnected ? '(durch Sign-On hinterlegt)' : 'sk-…'}
+                  className="mt-1 w-full rounded border border-input bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary font-mono"
                 />
                 {errors.apiKey && (
                   <p className="mt-1 flex items-center gap-1 text-xs text-red-500">
@@ -418,10 +511,19 @@ export default function Credentials() {
                   </p>
                 )}
               </div>
+            </div>
+          </fieldset>
 
+          {/* Modell & Endpunkt */}
+          <fieldset className="rounded-lg border border-border bg-muted/20 p-4">
+            <legend className="mb-4 block text-sm font-medium text-foreground">
+              Modell-Auswahl
+            </legend>
+
+            <div className="space-y-4">
               <div>
                 <label htmlFor="modelName" className="block text-sm font-medium text-foreground">
-                  Model Name <span className="text-red-500">*</span>
+                  Modell <span className="text-red-500">*</span>
                 </label>
                 {modelsFetched ? (
                   <select
@@ -431,7 +533,7 @@ export default function Credentials() {
                     className="mt-1 w-full rounded border border-input bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
                   >
                     {availableModels.map((model) => (
-                      <option key={model} value={model}>
+                      <option key={model} value={model} className="bg-background text-foreground py-1">
                         {model}
                       </option>
                     ))}
@@ -441,7 +543,7 @@ export default function Credentials() {
                     id="modelName"
                     type="text"
                     value=""
-                    placeholder="Click 'Fetch Models' first"
+                    placeholder="Klicken Sie zuerst auf 'Modelle abrufen'"
                     disabled
                     className="mt-1 w-full rounded border border-input bg-muted px-3 py-2 text-sm text-muted-foreground disabled:opacity-50 disabled:cursor-not-allowed"
                   />
@@ -456,15 +558,15 @@ export default function Credentials() {
                     {isLoadingModels ? (
                       <>
                         <Loader className="h-3 w-3 animate-spin" />
-                        Fetching...
+                        Lade Modelle...
                       </>
                     ) : modelsFetched ? (
                       <>
                         <Check className="h-3 w-3 text-green-500" />
-                        Fetched ({availableModels.length} models)
+                        {availableModels.length} Modelle verfügbar
                       </>
                     ) : (
-                      'Fetch Models'
+                      'Modelle abrufen'
                     )}
                   </button>
                 </div>
@@ -482,7 +584,7 @@ export default function Credentials() {
                 )}
                 {!modelsFetched && availableModels.length === 0 && (
                   <p className="mt-1 text-xs text-muted-foreground">
-                    If Base URL or API key changes, fetch models again before install.
+                    Klicken Sie auf 'Modelle abrufen', um die Liste der verfügbaren Modelle zu laden.
                   </p>
                 )}
               </div>
@@ -496,7 +598,7 @@ export default function Credentials() {
               className="min-w-32"
               disabled={!modelsFetched}
             >
-              Install Hermes
+              Hermes installieren
             </Button>
           </div>
         </form>

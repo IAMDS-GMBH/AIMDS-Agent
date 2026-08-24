@@ -49,3 +49,17 @@
     transparent 60%
   );
 }
+
+/* Fix native dropdown background and text colors on Windows WebView2 / Chromium */
+select,
+option {
+  background-color: var(--dt-card, #ffffff);
+  color: var(--dt-foreground, #0f172a);
+}
+
+:root.dark select,
+:root.dark option {
+  background-color: var(--dt-card, #1e293b);
+  color: var(--dt-foreground, #f8fafc);
+}
+
