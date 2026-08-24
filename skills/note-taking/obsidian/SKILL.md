@@ -47,6 +47,8 @@ Use `search_files` for both filename and content searches. Prefer this over `gre
 
 ## Create a note
 
+Before creating a new note, ALWAYS search the vault first (`search_files` with `target: "files"` or `target: "content"`) to check if a relevant canonical note, topic hub, or existing tracking document already exists. If an existing note exists, prefer updating or appending to that file instead of creating duplicate or fragmented files with slightly different names.
+
 Use `write_file` with the resolved absolute path and the full markdown content. Prefer this over shell heredocs or `echo` because it avoids shell quoting issues and returns structured results.
 
 ## Append to a note

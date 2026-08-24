@@ -548,6 +548,19 @@ class TestBridgeDispatch:
             registry.deregister("mcp_ServerA_syncData")
             registry.deregister("mcp_ServerB_syncData")
 
+    def test_search_catalog_boosts_matching_mcp_server(self):
+        """Searching with server alias should prioritize that server's tools over utility tools."""
+        from tools.tool_search import build_catalog, search_catalog
+        defs = [
+            _td("mcp_AtlassianMCP_get_prompt", "Get a prompt by name from MCP server AtlassianMCP"),
+            _td("mcp_AtlassianMCP_list_resources", "List available resources from MCP server AtlassianMCP"),
+            _td("mcp_TempoMCP_retrieveWorklogs", "Retrieve worklogs for a given user or account within a date range"),
+        ]
+        cat = build_catalog(defs)
+        results = search_catalog(cat, "TempoMCP retrieve worklogs time tracking", limit=5)
+        assert len(results) > 0
+        assert results[0].name == "mcp_TempoMCP_retrieveWorklogs"
+
     def test_resolve_underlying_call_parses_object_args(self):
         from tools.tool_search import resolve_underlying_call
         name, args, err = resolve_underlying_call({

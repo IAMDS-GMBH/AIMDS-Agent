@@ -1692,10 +1692,15 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
     workspace_line = (
         f"The active user execution directory / CWD is `{workspace_path}`. "
         f"The canonical primary Obsidian Vault root for markdown notes, templates, knowledge, and documents is `{obsidian_vault_path}` "
-        "(contains `_inbox/`, `_templates/`, `contacts/`, `decisions/`, `documents/`, `ideas/`, `journal/`, `knowledge/`, `meetings/`, `notes/`, `projects/`, `tasks/`, `HermesMemory`). "
-        f"DEFAULT RULE FOR DOCUMENT/NOTE CREATION: By default, save all created or generated markdown files, notes, specs, summaries, and meeting records inside `{obsidian_vault_path}/<subfolder>/` "
-        "unless the user explicitly specifies a different custom path or target directory. Use `search_tool`/`read_file` on that path to look "
-        "things up; never invent or guess paths (e.g. `.brain`) that were not returned by a tool.\n"
+        "(contains `_inbox/`, `_templates/`, `contacts/`, `decisions/`, `documents/`, `ideas/`, `journal/`, `knowledge/`, `meetings/`, `notes/`, `projects/`, `tasks/`, `HermesMemory`).\n"
+        f"DEFAULT RULE FOR DOCUMENT/NOTE CREATION & VAULT HYGIENE:\n"
+        f"1. Save all created or generated markdown files, notes, specs, summaries, and meeting records inside `{obsidian_vault_path}/<subfolder>/` "
+        "unless the user explicitly specifies a different custom path or target directory.\n"
+        "2. CRITICAL DEDUPLICATION RULE: Before creating a new file in the vault, ALWAYS search existing notes (using search_files, read_file, or memory search) "
+        "to check if a canonical note, Hub document (e.g. `[[hub-...]]`), or existing tracking file for the topic already exists. "
+        "If an existing note exists, UPDATE or append to that canonical note instead of creating duplicate/fragmented files with slight name variations.\n"
+        "3. Structure long-running topics and hubs under `projects/` or `knowledge/`, and link related notes via Obsidian wikilinks `[[note-title]]`. "
+        "Use `tasks/` only for short-lived checklists.\n"
         if workspace_path
         else ""
     )

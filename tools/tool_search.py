@@ -578,6 +578,25 @@ SOURCE_ALIASES: Dict[str, str] = {
     "teams": "MSOffice365MCP",
     "sharepoint": "MSOffice365MCP",
     "onedrive": "MSOffice365MCP",
+    "tempo": "TempoMCP",
+    "tempomcp": "TempoMCP",
+    "timesheet": "TempoMCP",
+    "timesheets": "TempoMCP",
+    "worklogs": "TempoMCP",
+    "worklog": "TempoMCP",
+    "atlassian": "AtlassianMCP",
+    "atlassianmcp": "AtlassianMCP",
+    "jira": "AtlassianMCP",
+    "confluence": "AtlassianMCP",
+    "github": "GithubMCP",
+    "githubmcp": "GithubMCP",
+    "git": "GithubMCP",
+    "memorymcp": "EnwicklerMemoryMCP",
+    "entwicklermemory": "EnwicklerMemoryMCP",
+    "entwicklermemorymcp": "EnwicklerMemoryMCP",
+    "aimds": "AIMDSSuiteMCP",
+    "aimdssuite": "AIMDSSuiteMCP",
+    "aimdssuitemcp": "AIMDSSuiteMCP",
 }
 
 
@@ -755,7 +774,19 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
             boost += 10.0
 
         boost += len(matched_name_tokens) * 5.0
-        
+
+        # Source / Server match boost: if query mentions the MCP server or source alias (e.g. tempo, atlassian, github)
+        for qt in query_tokens:
+            norm_qt = _normalize_source_key(qt)
+            if norm_qt and (norm_qt == _normalize_source_key(entry.source_name) or norm_qt in entry.source_name.lower()):
+                boost += 30.0
+                break
+
+        # Utility tool de-prioritization: boilerplate MCP utility tools shouldn't drown domain tools
+        if any(entry.name.endswith(f"_{u}") for u in ("get_prompt", "list_prompts", "list_resources", "read_resource")):
+            if not any(k in query_lower for k in ("prompt", "prompts", "resource", "resources")):
+                boost -= 15.0
+
         # Vector similarity receives primary weighting
         vector_score = (vec_sim * 100.0) + (50.0 if vault_hit else 0.0)
         total_score = vector_score + bm25_score + boost
