@@ -126,9 +126,12 @@ def check_sql_requirements() -> bool:
 SQL_SCHEMA = {
     "name": "sql",
     "description": (
-        "Execute SQL queries directly against the local Hermes SQLite state database (~/.hermes/state.db).\n"
-        "Use this for fast, 100% accurate queries, aggregations, and reports on 'mcp_records' "
-        "(auto-ingested Jira/Tempo worklogs, project tickets, support cases) and local session history.\n\n"
+        "Execute deterministic SQL queries directly against the local Hermes SQLite state database (~/.hermes/state.db).\n"
+        "MANDATORY FOR ALL CALCULATIONS & AGGREGATIONS: Never perform mental arithmetic or manual summations on logs or lists. "
+        "Always use SQL queries (SUM, COUNT, AVG, ROUND, GROUP BY) on 'mcp_records' for 100% mathematical precision.\n\n"
+        "Example monthly worklog aggregation:\n"
+        "SELECT substr(timestamp, 1, 7) AS month, reference_key, ROUND(SUM(duration_seconds)/3600.0, 2) AS total_hours "
+        "FROM mcp_records WHERE timestamp LIKE '2026-%' GROUP BY month, reference_key;\n\n"
         "Available tables:\n"
         "- mcp_records: (id, tool_name, reference_key, timestamp, user_id, duration_seconds, category, comment, raw_data)\n"
         "- sessions: (id, source, user_id, model, started_at, title, message_count)\n"

@@ -46,6 +46,7 @@ from agent.prompt_builder import (
     TOOL_SEARCH_ANTI_HALLUCINATION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    SQL_AGGREGATION_GUIDANCE,
 )
 from agent.runtime_cwd import resolve_context_cwd
 
@@ -134,6 +135,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     tool_guidance = []
     if "memory" in agent.valid_tool_names:
         tool_guidance.append(MEMORY_GUIDANCE)
+    if "sql" in agent.valid_tool_names:
+        tool_guidance.append(SQL_AGGREGATION_GUIDANCE)
     if "session_search" in agent.valid_tool_names:
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)
     if "skill_manage" in agent.valid_tool_names:
