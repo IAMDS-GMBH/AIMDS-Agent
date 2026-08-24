@@ -32,13 +32,13 @@ auth:
   provider: github
   env_var: GITHUB_PERSONAL_ACCESS_TOKEN
   notes: >-
-    Requires GitHub sign-in either way: leave the PAT blank to open an
-    automatic OAuth device-code login in your browser right after install, or
-    paste a PAT below to skip that login step. The resulting token is sent
-    as an Authorization header to GitHub's hosted MCP server -- generic MCP
-    hosts (like Hermes) aren't pre-registered with GitHub for browser-based
-    OAuth against the remote server, so a token (PAT or device-code-issued)
-    is the reliable path, not an extra step.
+    ⚠️ WICHTIGER HINWEIS / IMPORTANT: Vor der Nutzung muss der OAuth Device Flow abgeschlossen oder ein PAT hinterlegt sein!
+    
+    Authentifizierung einrichten:
+    - Option 1 (Empfohlen): In der CLI einmalig `hermes auth login github` (oder `gh auth login`) ausführen, um den OAuth Device Flow abzuschließen.
+    - Option 2: Einen GitHub Personal Access Token (PAT mit Copilot/Repo-Berechtigungen) unten bei GITHUB_PERSONAL_ACCESS_TOKEN eintragen.
+    
+    Hinweis: GitHubs Remote-MCP-Server unterstützt keine dynamische Client-Registrierung; ohne vorherigen Login oder PAT schlägt die Verbindung mit einem 404-Fehler fehl.
   scopes:
     - repo
     - read:org

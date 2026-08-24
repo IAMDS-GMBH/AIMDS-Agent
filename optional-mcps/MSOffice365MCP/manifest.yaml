@@ -25,20 +25,14 @@ auth:
   provider: microsoft
   env_var: M365_ACCESS_TOKEN
   notes: >-
-    Both fields are OPTIONAL — most users should leave them blank to sign in
-    via the default multi-tenant Microsoft app (Client ID
-    41c29967-8ee6-4fac-b484-e87460272bda, tenant "organizations"). No app
-    registration or admin install is needed in your tenant for this — sign-in
-    only requests scopes any tenant member can consent to themselves (mail,
-    calendar, chat, files, contacts). Only set a Client/Tenant ID below if
-    your organization requires its own Entra App Registration; if you're a
-    tenant admin and want directory-wide user search / SharePoint tools too,
-    use m365_initiate_login(request_admin_scopes=True) after installing
-    instead of changing these fields. If run from an interactive terminal,
-    installing this MCP now automatically starts a Microsoft OAuth
-    device-code login (same as `m365_initiate_login`/`m365_complete_login`);
-    those in-chat tools remain available afterwards for already-installed
-    servers, non-interactive installs, or re-authenticating later.
+    ⚠️ WICHTIGER HINWEIS / IMPORTANT: Microsoft 365 erfordert den Abschluss des OAuth Device Flows vor der ersten Nutzung!
+    Beide Felder unten sind OPTIONAL — standardmäßig leer lassen für die Standard-Multi-Tenant App
+    (Client ID 41c29967-8ee6-4fac-b484-e87460272bda, Tenant "organizations").
+    
+    Authentifizierung abschließen:
+    1. Nach der Installation den angezeigten Device Code unter https://microsoft.com/devicelogin eingeben und bestätigen.
+    2. Alternativ im Chat jederzeit das Tool `m365_initiate_login` aufrufen (oder das Login-Fenster in der Desktop UI nutzen), um den Device Code Flow zu starten.
+    3. Erst nach erfolgreichem Login können die M365-Tools (Outlook Mail, Kalender, Teams, OneDrive) auf Daten zugreifen.
   # Mirrors server.py's BASE_SCOPES (non-admin default) so any device-code
   # login initiated outside of m365_initiate_login (e.g. the dashboard's
   # "Microsoft 365 (OAuth)" button, or `hermes mcp install MSOffice365MCP`)
