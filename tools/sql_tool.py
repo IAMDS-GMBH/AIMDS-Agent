@@ -150,11 +150,22 @@ SQL_SCHEMA = {
 }
 
 
+def _handle_sql(args: dict, **kw) -> str:
+    query = (
+        args.get("query")
+        or args.get("statement")
+        or args.get("sql")
+        or args.get("command")
+        or ""
+    )
+    return execute_sql(query)
+
+
 registry.register(
     name="sql",
     toolset="hermes_core",
     schema=SQL_SCHEMA,
-    handler=lambda args, **kw: execute_sql(args.get("query", "")),
+    handler=_handle_sql,
     check_fn=check_sql_requirements,
     emoji="📊",
 )

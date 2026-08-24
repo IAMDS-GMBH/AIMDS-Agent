@@ -46,3 +46,33 @@ def test_sql_tool_read_only_protection(tmp_path: Path):
     res_drop = execute_sql("DROP TABLE sessions", db_path=db_file)
     assert "Modification denied" in res_drop
 
+
+def test_sql_tool_handle_arg_variations(tmp_path: Path):
+    from tools.sql_tool import _handle_sql
+    db_file = tmp_path / "test_state.db"
+
+    res_stmt = _handle_sql({"statement": "SELECT 1 as val"})
+    assert "val" in res_stmt or "rows returned" in res_stmt
+
+    res_sql = _handle_sql({"sql": "SELECT 2 as val"})
+    assert "val" in res_sql or "rows returned" in res_sql
+
+
+def test_mcp_records_pruning(tmp_path: Path):
+    from tools.mcp_json_ingestor import prune_mcp_records, get_db_connection
+    db_file = tmp_path / "test_state.db"
+    conn = get_db_connection(db_file)
+    with conn:
+        conn.execute("INSERT INTO mcp_records (id, created_at) VALUES ('old1', datetime('now', '-30 days'))")
+        conn.execute("INSERT INTO mcp_records (id, created_at) VALUES ('new1', datetime('now'))")
+
+    pruned = prune_mcp_records(conn, older_than_days=14)
+    assert pruned == 1
+
+    cursor = conn.execute("SELECT id FROM mcp_records")
+    ids = [r[0] for r in cursor.fetchall()]
+    assert "old1" not in ids
+    assert "new1" in ids
+    conn.close()
+
+

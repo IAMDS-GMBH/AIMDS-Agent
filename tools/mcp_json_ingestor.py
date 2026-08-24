@@ -24,6 +24,41 @@ def get_db_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     return conn
 
 
+def prune_mcp_records(
+    conn: Optional[sqlite3.Connection] = None,
+    older_than_days: int = 14,
+    max_records: int = 5000,
+    db_path: Optional[Path] = None,
+) -> int:
+    """Prune old auto-ingested records to prevent unbounded growth of state.db."""
+    should_close = False
+    if conn is None:
+        conn = get_db_connection(db_path)
+        should_close = True
+    try:
+        with conn:
+            cursor = conn.execute(
+                "DELETE FROM mcp_records WHERE created_at < datetime('now', ?)",
+                (f"-{older_than_days} days",),
+            )
+            deleted = cursor.rowcount or 0
+            conn.execute(
+                """
+                DELETE FROM mcp_records WHERE id NOT IN (
+                    SELECT id FROM mcp_records ORDER BY created_at DESC LIMIT ?
+                )
+                """,
+                (max_records,),
+            )
+            return deleted
+    except Exception as exc:
+        logger.debug("Prune mcp_records error: %s", exc)
+        return 0
+    finally:
+        if should_close:
+            conn.close()
+
+
 def init_mcp_tables(conn: sqlite3.Connection) -> None:
     """Initialize the mcp_records schema in SQLite."""
     with conn:
@@ -45,6 +80,10 @@ def init_mcp_tables(conn: sqlite3.Connection) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mcp_records_ref ON mcp_records(reference_key)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mcp_records_tool ON mcp_records(tool_name)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mcp_records_ts ON mcp_records(timestamp)")
+    try:
+        prune_mcp_records(conn)
+    except Exception:
+        pass
 
 
 def _extract_items(data: Any) -> List[Dict[str, Any]]:
@@ -184,6 +223,7 @@ def try_auto_ingest_json(
                 duration_seconds, category, comment, raw_data
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, records)
+            prune_mcp_records(conn)
         logger.info("Auto-ingested %d MCP records into mcp_records (tool: %s)", len(records), tool_name)
         return len(records)
     except Exception as exc:
