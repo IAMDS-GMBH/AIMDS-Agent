@@ -7861,11 +7861,18 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     if is_tags_channel:
         print("→ Fetching tags from origin...")
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "--quiet", "--tags", "origin"],
+            git_cmd + ["fetch", "--force", "--tags", "origin"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
         )
+        if fetch_result.returncode != 0:
+            fetch_result = subprocess.run(
+                git_cmd + ["fetch", "--force", "origin", "+refs/tags/*:refs/tags/*"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
         upstream_exists = False
         tag_proc = subprocess.run(
             git_cmd + ["tag", "--list", "--sort=-v:refname"],
@@ -7874,7 +7881,12 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             text=True,
         )
         tags = [t.strip() for t in tag_proc.stdout.splitlines() if t.strip()]
-        compare_branch = f"refs/tags/{tags[0]}" if tags else "HEAD"
+        if tags:
+            compare_branch = f"refs/tags/{tags[0]}"
+            if fetch_result.returncode != 0:
+                fetch_result = subprocess.CompletedProcess(args=fetch_result.args, returncode=0)
+        else:
+            compare_branch = "HEAD"
     elif branch == "main":
         print("→ Fetching from upstream...")
         fetch_result = subprocess.run(
@@ -8549,17 +8561,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if is_tags_channel:
             print("→ Fetching tags from origin...")
             fetch_result = subprocess.run(
-                git_cmd + ["fetch", "--quiet", "--tags", "origin"],
+                git_cmd + ["fetch", "--force", "--tags", "origin"],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
             )
             if fetch_result.returncode != 0:
-                stderr = fetch_result.stderr.strip()
-                print("✗ Failed to fetch tags from origin.")
-                if stderr:
-                    print(f"  {stderr.splitlines()[0]}")
-                sys.exit(1)
+                fetch_result = subprocess.run(
+                    git_cmd + ["fetch", "--force", "origin", "+refs/tags/*:refs/tags/*"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
 
             tag_proc = subprocess.run(
                 git_cmd + ["tag", "--list", "--sort=-v:refname"],
@@ -8578,14 +8591,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     capture_output=True,
                     text=True,
                 )
-                if checkout_result.returncode != 0:
-                    print(f"✗ Failed to checkout tag '{latest_tag}'.")
-                    sys.exit(1)
-                print("✓ Code updated to latest release tag!")
-                _sync_canonical_soul_after_update()
-                return
-            else:
-                branch = "main"
+                if checkout_result.returncode == 0:
+                    print("✓ Code updated to latest release tag!")
+                    _sync_canonical_soul_after_update()
+                    return
+                print(f"⚠ Could not checkout tag '{latest_tag}', falling back to main branch...")
+
+            if fetch_result.returncode != 0 and not tags:
+                stderr = fetch_result.stderr.strip()
+                print("⚠ Failed to fetch tags from origin, falling back to main branch...")
+                if stderr:
+                    print(f"  {stderr.splitlines()[0]}")
+            branch = "main"
 
         print("→ Fetching updates...")
         fetch_result = subprocess.run(
