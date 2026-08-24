@@ -298,6 +298,12 @@ def get_tool_definitions(
     Returns:
         Filtered list of OpenAI-format tool definitions.
     """
+    try:
+        from hermes_cli.mcp_startup import wait_for_mcp_discovery
+        wait_for_mcp_discovery()
+    except Exception:
+        pass
+
     # Fast path: memoized result when the caller doesn't need stdout prints.
     # The cache key captures every argument-level input; the registry
     # generation captures registry mutations (MCP refresh, plugin load).

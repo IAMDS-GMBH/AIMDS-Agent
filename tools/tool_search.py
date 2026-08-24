@@ -170,10 +170,6 @@ def is_deferrable_tool_name(name: str) -> bool:
     """
     if name in BRIDGE_TOOL_NAMES:
         return False
-    # Keep lightweight skill discovery always visible, but allow heavier
-    # skill payload/admin calls to defer behind tool_search.
-    if name in {"skill_view", "skill_manage"}:
-        return True
     if name in _core_tool_names():
         return False
     # Keep critical memory-MCP primitives model-visible even when tool_search
@@ -371,6 +367,13 @@ def _get_dynamic_mcp_keywords_map() -> Dict[str, List[str]]:
         return {}
 
 
+_STOP_WORDS = frozenset({
+    "a", "an", "the", "and", "or", "in", "on", "at", "to", "for", "of", "with", "by",
+    "from", "is", "it", "this", "that", "use", "when", "as", "be", "are", "was", "were",
+    "into", "out", "about", "all", "any", "some", "such", "than", "then", "their", "them",
+})
+
+
 def _get_dynamic_skill_keywords_map() -> Dict[str, List[str]]:
     """Dynamically extract semantic query term expansions from installed and bundled skills.
 
@@ -389,7 +392,7 @@ def _get_dynamic_skill_keywords_map() -> Dict[str, List[str]]:
     def _add_link(term: str, target: str) -> None:
         t = term.lower().strip()
         tg = target.lower().strip()
-        if len(t) >= 2 and len(tg) >= 2 and t != tg:
+        if len(t) >= 3 and len(tg) >= 3 and t != tg and t not in _STOP_WORDS and tg not in _STOP_WORDS:
             mapping.setdefault(t, set()).add(tg)
 
     for s in skills:
@@ -402,20 +405,20 @@ def _get_dynamic_skill_keywords_map() -> Dict[str, List[str]]:
         category = str(s.get("category") or "").strip()
         desc = str(s.get("description") or "").strip()
         tags = s.get("tags") or []
-        tag_tokens = [str(t).strip().lower() for t in tags if str(t).strip()] if isinstance(tags, list) else [str(tags).strip().lower()]
+        tag_tokens = [str(t).strip().lower() for t in tags if str(t).strip() and str(t).strip().lower() not in _STOP_WORDS] if isinstance(tags, list) else [str(tags).strip().lower()]
 
-        name_parts = [p for p in re.split(r"[_\-/\s]+", name.lower()) if len(p) >= 2]
-        desc_tokens = _tokenize(desc)
-        cat_tokens = _tokenize(category)
+        name_parts = [p for p in re.split(r"[_\-/\s]+", name.lower()) if len(p) >= 3 and p not in _STOP_WORDS and p not in _GENERIC_SEARCH_TERMS]
+        desc_tokens = [t for t in _tokenize(desc) if t not in _STOP_WORDS and t not in _GENERIC_SEARCH_TERMS]
+        cat_tokens = [t for t in _tokenize(category) if t not in _STOP_WORDS and t not in _GENERIC_SEARCH_TERMS]
 
-        all_tokens = set(name_parts) | set(tag_tokens) | set(cat_tokens) | set(desc_tokens)
+        all_tokens = set(name_parts) | set(tag_tokens) | set(cat_tokens)
 
-        for tok in all_tokens:
-            for name_p in name_parts:
+        for name_p in name_parts:
+            for tok in all_tokens:
                 _add_link(tok, name_p)
                 _add_link(name_p, tok)
-            for tag_p in tag_tokens:
-                _add_link(tok, tag_p)
+            for desc_t in desc_tokens:
+                _add_link(desc_t, name_p)
 
     return {k: list(v) for k, v in mapping.items()}
 
@@ -792,8 +795,8 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
         total_score = vector_score + bm25_score + boost
 
         # Filtering: if user searched specific terms (e.g. 'jira'), but entry matched ONLY generic terms (e.g. 'search')
-        # in description and zero specific or name terms, drop this false positive unless vector similarity is strong (>0.2).
-        if non_generic_query_tokens and not matched_specific_tokens and not matched_name_tokens and vec_sim < 0.2 and not vault_hit:
+        # in description and zero specific, name, or source terms, drop this false positive.
+        if non_generic_query_tokens and not matched_specific_tokens and not matched_name_tokens and not any(t in entry._source_tokens for t in non_generic_query_tokens):
             continue
 
         scored.append((total_score, entry))
@@ -1042,6 +1045,15 @@ def dispatch_tool_search(args: Dict[str, Any],
         limit = max(1, min(config.max_search_limit, _safe_int(raw_limit, config.search_default_limit)))
 
     _, deferrable = classify_tools(current_tool_defs)
+    if not any(d.get("function", {}).get("name", "").startswith("mcp_") for d in deferrable):
+        try:
+            import model_tools
+            live_defs = model_tools.get_tool_definitions(skip_tool_search_assembly=True, quiet_mode=True)
+            _, live_deferrable = classify_tools(live_defs)
+            if len(live_deferrable) > len(deferrable):
+                deferrable = live_deferrable
+        except Exception:
+            pass
     catalog = build_catalog(deferrable)
     hits = search_catalog(catalog, query, limit=limit)
     return json.dumps({

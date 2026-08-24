@@ -105,10 +105,10 @@ class TestClassification:
         for name in BRIDGE_TOOL_NAMES:
             assert not is_deferrable_tool_name(name)
 
-    def test_heavy_skill_tools_defer_but_skills_list_stays_visible(self):
+    def test_core_skill_tools_never_defer(self):
         from tools.tool_search import is_deferrable_tool_name
-        assert is_deferrable_tool_name("skill_view")
-        assert is_deferrable_tool_name("skill_manage")
+        assert not is_deferrable_tool_name("skill_view")
+        assert not is_deferrable_tool_name("skill_manage")
         assert not is_deferrable_tool_name("skills_list")
 
     def test_memory_mcp_primitives_never_defer(self):
