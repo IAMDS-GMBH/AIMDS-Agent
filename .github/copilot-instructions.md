@@ -7,6 +7,7 @@ commands, and config policy.
 
 Quick pointers:
 
+- Architecture & folder structure guide: [`docs/REPOSITORY_STRUCTURE.md`](../docs/REPOSITORY_STRUCTURE.md).
 - Run tests with `scripts/run_tests.sh` (not raw `pytest`) for CI parity.
 - Prefer extending existing code, adding a CLI command/skill, or a plugin over
   adding new core tools — see the footprint ladder in `.agents/agents.md`.

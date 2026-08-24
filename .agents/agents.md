@@ -78,6 +78,18 @@ If multiple PRs target same integration category (providers/backends/notifiers),
 - For gateway running-session controls, ensure approval/control commands bypass both message guards where required.
 - Avoid wiring dead/unused code into live paths without end-to-end validation.
 
+## Support, diagnostics, and issue reporting
+
+- Support bundles are sent to AIMDS Suite Support (`https://suite-support.iamds.com/api/v1/upload`) via `hermes support send-logs` (CLI/Desktop) or native Rust client (Bootstrap Installer).
+- Diagnostic bundles contain redacting manifests, session logs, environment metadata, and optional binary screenshots in the `attachments/` subfolder.
+- The Desktop app (`apps/desktop`) and Installer (`apps/bootstrap-installer`) support screenshot attachments via file picker, drag-and-drop, and clipboard paste in their "Problem melden" dialogs.
+- When resolving customer support cases via `aimds-support-tool`, verify that fixes address root cause and edge cases across platforms before updating case status to `RESOLVED`.
+
+## UI & platform styling invariants
+
+- **Windows Dark Mode**: Windows Chromium/Webview requires `color-scheme: dark;` on `:root.dark`, `.dark`, and native `<select>` controls to ensure select dropdown popups render with a dark background.
+- Keep UI theme tokens aligned with Tailwind v4 and existing CSS variables in `apps/desktop/src/styles.css`.
+
 ## Plugins and memory providers
 
 - Plugins must not patch core files with plugin-specific logic. Expand generic hooks/surface instead.
@@ -112,13 +124,14 @@ If multiple PRs target same integration category (providers/backends/notifiers),
 - `plugins/` — optional plugin surface (e.g. memory backends); must not patch core.
 - `optional-mcps/`, `optional-skills/` — bundled but opt-in MCP servers / skills.
 - `skills/` — bundled skills, organized by category.
-- `hermes_cli/` — CLI entrypoints, config resolution, defaults.
-- `apps/desktop/` — Electron/Next.js desktop client.
+- `hermes_cli/` — CLI entrypoints, config resolution, defaults, support log packaging.
+- `apps/desktop/` — Electron + React 19 + Vite desktop client.
+- `apps/bootstrap-installer/` — Tauri v2 + Rust cross-platform bootstrap installer & updater with Keycloak SSO.
 - `gateway/`, `tui_gateway/`, `ui-tui/` — gateway and terminal UI surfaces.
 - `cron/`, `acp_adapter/`, `acp_registry/` — scheduling and agent-communication-protocol support.
 - `docker/`, `packaging/`, `installer/`, `scripts/` — build, packaging, and installer tooling.
 - `tests/` + `scripts/run_tests.sh` — test suite and CI-parity test runner.
-- `docs/` — longer-form documentation and rationale.
+- `docs/` — longer-form documentation, architecture guide (`docs/REPOSITORY_STRUCTURE.md`), and rationale.
 
 ## Useful references (full details)
 
