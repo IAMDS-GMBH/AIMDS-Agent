@@ -1,18 +1,12 @@
 name: MCP Catalog Version Check
 
-# Optional catalog MCP servers (optional-mcps/*/manifest.yaml) pin an exact
-# uvx/npx package version deliberately -- see CONTRIBUTING.md#mcp-catalog-version-pinning-policy
-# and the comments in each manifest. That trades "always latest" for
-# reproducibility, but pins that are never revisited quietly rot (missed
-# bugfixes, and worse, missed upstream deprecations like
-# @modelcontextprotocol/server-github's).
+# Optional catalog MCP servers (optional-mcps/*/manifest.yaml) pin exact
+# uvx/npx package versions deliberately -- see CONTRIBUTING.md#mcp-catalog-version-pinning-policy
+# and the comments in each manifest.
 #
-# This workflow is detection-only, mirroring osv-scanner.yml's philosophy:
-# it does NOT bump pins or open PRs automatically. It runs weekly, compares
-# each manifest's pinned version against the package registry's current
-# latest, and opens/updates a single tracking issue listing anything
-# behind. A human decides if/when/how to move each pin -- consistent with
-# why source dependencies are excluded from Dependabot (see dependabot.yml).
+# This workflow runs weekly (or on workflow_dispatch), checks upstream PyPI
+# and npm package registries for newer versions or deprecations, and opens
+# (or updates) an automated Pull Request with bumped pins for maintainer review.
 
 on:
   schedule:
@@ -21,78 +15,189 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  issues: write
-  contents: read
+  contents: write
+  pull-requests: write
 
 jobs:
   check-versions:
-    name: Check pinned MCP catalog versions
+    name: Check pinned MCP catalog versions and open PR
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
 
-      - name: Compare pinned versions against registries
-        id: check
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v5
+        with:
+          python-version: "3.12"
+
+      - name: Check and update pinned versions from registries
+        id: updater
         run: |
           set -euo pipefail
 
-          REPORT=""
+          python3 << 'EOF'
+          import os
+          import re
+          import json
+          import urllib.request
+          import urllib.parse
+          from pathlib import Path
 
-          check_pypi() {
-            local name="$1" pinned="$2"
-            local latest
-            latest=$(curl -fsSL "https://pypi.org/pypi/${name}/json" | python3 -c "import json,sys; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null || echo "unknown")
-            if [ "$latest" != "unknown" ] && [ "$latest" != "$pinned" ]; then
-              REPORT="${REPORT}
-          - **${name}** (PyPI, via uvx): pinned \`${pinned}\`, latest \`${latest}\`"
-            fi
-          }
+          repo_root = Path.cwd()
+          manifests = sorted(list(repo_root.glob("optional-mcps/*/manifest.yaml")))
 
-          check_npm() {
-            local name="$1" pinned="$2"
-            local info latest deprecated
-            info=$(curl -fsSL "https://registry.npmjs.org/${name}/latest" || echo '{}')
-            latest=$(echo "$info" | python3 -c "import json,sys; print(json.load(sys.stdin).get('version','unknown'))" 2>/dev/null || echo "unknown")
-            deprecated=$(echo "$info" | python3 -c "import json,sys; print(json.load(sys.stdin).get('deprecated',''))" 2>/dev/null || echo "")
-            if [ -n "$deprecated" ]; then
-              REPORT="${REPORT}
-          - **${name}** (npm, via npx): ⚠️ package deprecated upstream: ${deprecated}"
-            elif [ "$latest" != "unknown" ] && [ "$latest" != "$pinned" ]; then
-              REPORT="${REPORT}
-          - **${name}** (npm, via npx): pinned \`${pinned}\`, latest \`${latest}\`"
-            fi
-          }
+          report_rows = []
+          warnings = []
+          modified_files = []
 
-          # Keep this list in sync with optional-mcps/*/manifest.yaml pins.
-          check_pypi "mcp-atlassian" "0.23.0"
-          check_npm "@ivelin-web/tempo-mcp-server" "1.8.0"
+          for manifest_path in manifests:
+              content = manifest_path.read_text(encoding="utf-8")
+              original_content = content
+              rel_path = str(manifest_path.relative_to(repo_root))
 
-          if [ -n "$REPORT" ]; then
-            echo "found=true" >> "$GITHUB_OUTPUT"
-            printf '%s\n' "$REPORT" > /tmp/mcp-version-report.md
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          fi
+              # Check uvx pins (e.g. "package==1.2.3")
+              uvx_pattern = r'(\s*-\s*["\']?)([a-zA-Z0-9_.-]+)==([0-9a-zA-Z.-]+)(["\']?)'
+              for match in re.finditer(uvx_pattern, content):
+                  prefix, pkg_name, current_ver, suffix = match.groups()
+                  try:
+                      url = f"https://pypi.org/pypi/{pkg_name}/json"
+                      req = urllib.request.Request(url, headers={"User-Agent": "AIMDS-Agent-MCP-Checker"})
+                      with urllib.request.urlopen(req, timeout=10) as resp:
+                          data = json.load(resp)
+                          latest_ver = data.get("info", {}).get("version")
+                          if latest_ver and latest_ver != current_ver:
+                              old_str = f"{prefix}{pkg_name}=={current_ver}{suffix}"
+                              new_str = f"{prefix}{pkg_name}=={latest_ver}{suffix}"
+                              content = content.replace(old_str, new_str, 1)
+                              report_rows.append({
+                                  "pkg": f"`{pkg_name}`",
+                                  "type": "PyPI (uvx)",
+                                  "old": f"`{current_ver}`",
+                                  "new": f"`{latest_ver}`",
+                                  "manifest": f"`{rel_path}`"
+                              })
+                  except Exception as e:
+                      warnings.append(f"- Warning: could not check PyPI for `{pkg_name}` in `{rel_path}`: {e}")
 
-      - name: Open or update tracking issue
-        if: steps.check.outputs.found == 'true'
+              # Check npx pins (e.g. "@scope/package@1.2.3" or "package@1.2.3")
+              npx_pattern = r'(\s*-\s*["\']?)(@[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+|[a-zA-Z0-9_.-]+)@([0-9a-zA-Z.-]+)(["\']?)'
+              for match in re.finditer(npx_pattern, content):
+                  prefix, pkg_name, current_ver, suffix = match.groups()
+                  try:
+                      encoded_pkg = urllib.parse.quote(pkg_name, safe="")
+                      url = f"https://registry.npmjs.org/{encoded_pkg}"
+                      req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "AIMDS-Agent-MCP-Checker"})
+                      with urllib.request.urlopen(req, timeout=10) as resp:
+                          data = json.load(resp)
+                          latest_ver = data.get("dist-tags", {}).get("latest")
+                          deprecated = data.get("versions", {}).get(latest_ver, {}).get("deprecated") or data.get("deprecated")
+                          if deprecated:
+                              warnings.append(f"- ⚠️ **`{pkg_name}`** is deprecated upstream: {deprecated}")
+                          if latest_ver and latest_ver != current_ver:
+                              old_str = f"{prefix}{pkg_name}@{current_ver}{suffix}"
+                              new_str = f"{prefix}{pkg_name}@{latest_ver}{suffix}"
+                              content = content.replace(old_str, new_str, 1)
+                              report_rows.append({
+                                  "pkg": f"`{pkg_name}`",
+                                  "type": "npm (npx)",
+                                  "old": f"`{current_ver}`",
+                                  "new": f"`{latest_ver}`",
+                                  "manifest": f"`{rel_path}`"
+                              })
+                  except Exception as e:
+                      warnings.append(f"- Warning: could not check npm for `{pkg_name}` in `{rel_path}`: {e}")
+
+              if content != original_content:
+                  manifest_path.write_text(content, encoding="utf-8")
+                  modified_files.append(rel_path)
+
+          # Generate report markdown
+          summary_lines = [
+              "## Automated MCP Catalog Pinned Version Updates",
+              "",
+              "One or more `uvx` / `npx` optional MCP servers in `optional-mcps/` have newer upstream versions available.",
+              ""
+          ]
+
+          if report_rows:
+              summary_lines.extend([
+                  "### Updates",
+                  "",
+                  "| Package | Registry | Pinned Version | Latest Version | Manifest |",
+                  "| :--- | :--- | :--- | :--- | :--- |"
+              ])
+              for row in report_rows:
+                  summary_lines.append(f"| {row['pkg']} | {row['type']} | {row['old']} | {row['new']} | {row['manifest']} |")
+              summary_lines.append("")
+
+          if warnings:
+              summary_lines.extend([
+                  "### Warnings / Deprecations",
+                  ""
+              ])
+              summary_lines.extend(warnings)
+              summary_lines.append("")
+
+          summary_lines.extend([
+              "---",
+              "_This pull request was automatically created by the weekly [MCP Catalog Version Check](https://github.com/IAMDS-GMBH/AIMDS-Agent/actions/workflows/mcp-catalog-version-check.yml) workflow._"
+          ])
+
+          report_content = "\n".join(summary_lines) + "\n"
+          Path("/tmp/mcp-version-report.md").write_text(report_content, encoding="utf-8")
+
+          has_changes = "true" if modified_files else "false"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"has_changes={has_changes}\n")
+              f.write(f"modified_count={len(modified_files)}\n")
+
+          print(f"Update check finished: has_changes={has_changes}, modified={modified_files}")
+          EOF
+
+      - name: Create or update Pull Request
+        if: steps.updater.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH_NAME: "automation/mcp-catalog-version-update"
         run: |
           set -euo pipefail
-          BODY="## MCP catalog packages behind upstream
 
-          One or more \`uvx\`/\`npx\`-installed optional MCP servers under \`optional-mcps/\` have a newer upstream release (or a deprecation notice) than the version pinned in their \`manifest.yaml\`.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          $(cat /tmp/mcp-version-report.md)
+          # Create or switch to branch
+          git checkout -B "$BRANCH_NAME"
+          git add optional-mcps/
+          git commit -m "chore(mcp): update optional MCP catalog pinned versions"
 
-          Review each and bump the pin deliberately if appropriate -- see \`CONTRIBUTING.md#mcp-catalog-version-pinning-policy\`. This issue is filed automatically on a weekly schedule and is safe to close; it will reopen (or a new one will be filed) next week if pins are still behind.
-          "
+          # Push to remote branch
+          git push origin "$BRANCH_NAME" --force
 
-          EXISTING=$(gh issue list --state open --label "mcp-catalog-versions" --json number --jq '.[0].number' || echo "")
-          if [ -n "$EXISTING" ]; then
-            gh issue comment "$EXISTING" --body "$BODY"
+          BODY="$(cat /tmp/mcp-version-report.md)"
+
+          # Check if an open PR already exists for this branch
+          EXISTING_PR="$(gh pr list --head "$BRANCH_NAME" --state open --json number --jq '.[0].number' || true)"
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "Updating existing PR #$EXISTING_PR"
+            gh pr edit "$EXISTING_PR" \
+              --title "chore(mcp): update optional MCP catalog pinned versions" \
+              --body "$BODY"
           else
-            gh issue create --title "MCP catalog packages behind upstream" --body "$BODY" --label "mcp-catalog-versions"
+            echo "Creating new PR"
+            gh pr create \
+              --title "chore(mcp): update optional MCP catalog pinned versions" \
+              --body "$BODY" \
+              --base main \
+              --head "$BRANCH_NAME"
           fi
+
+      - name: Report no changes
+        if: steps.updater.outputs.has_changes != 'true'
+        run: |
+          echo "All optional MCP catalog versions are up to date with upstream registries."
+          cat /tmp/mcp-version-report.md >> "$GITHUB_STEP_SUMMARY" || true
