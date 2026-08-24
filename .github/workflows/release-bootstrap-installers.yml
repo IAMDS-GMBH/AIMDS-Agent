@@ -240,7 +240,7 @@ jobs:
           Write-Host ('install.ps1 syntax OK ({0} tokens)' -f $tokenCount)
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6 # v6
+        uses: actions/setup-node@v7.0.0 # v6
         with:
           node-version: 22
           cache: npm
