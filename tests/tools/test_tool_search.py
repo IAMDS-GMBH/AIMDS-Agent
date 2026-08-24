@@ -498,6 +498,56 @@ class TestBridgeDispatch:
         )
         assert "error" in json.loads(result)
 
+    def test_resolve_underlying_call_resolves_suffix_name(self):
+        """Unprefixed MCP tool name should resolve to full mcp_{server}_{tool} name."""
+        from tools.registry import registry
+        from tools.tool_search import resolve_underlying_call
+        # Register a mock MCP tool
+        registry.register(
+            name="mcp_TempoMCP_retrieveWorklogs",
+            toolset="mcp-TempoMCP",
+            schema={"name": "mcp_TempoMCP_retrieveWorklogs", "description": "retrieve worklogs"},
+            handler=lambda **kw: "ok",
+        )
+        try:
+            name, args, err = resolve_underlying_call({
+                "name": "retrieveWorklogs",
+                "arguments": {"from": "2026-01-01"},
+            })
+            assert err is None
+            assert name == "mcp_TempoMCP_retrieveWorklogs"
+            assert args == {"from": "2026-01-01"}
+        finally:
+            registry.deregister("mcp_TempoMCP_retrieveWorklogs")
+
+    def test_resolve_underlying_call_rejects_ambiguous_suffix(self):
+        """Ambiguous suffix matching across multiple MCP tools should return an error."""
+        from tools.registry import registry
+        from tools.tool_search import resolve_underlying_call
+        registry.register(
+            name="mcp_ServerA_syncData",
+            toolset="mcp-ServerA",
+            schema={"name": "mcp_ServerA_syncData", "description": "sync a"},
+            handler=lambda **kw: "ok",
+        )
+        registry.register(
+            name="mcp_ServerB_syncData",
+            toolset="mcp-ServerB",
+            schema={"name": "mcp_ServerB_syncData", "description": "sync b"},
+            handler=lambda **kw: "ok",
+        )
+        try:
+            name, args, err = resolve_underlying_call({
+                "name": "syncData",
+                "arguments": {},
+            })
+            assert name is None
+            assert err is not None
+            assert "ambiguous" in err.lower()
+        finally:
+            registry.deregister("mcp_ServerA_syncData")
+            registry.deregister("mcp_ServerB_syncData")
+
     def test_resolve_underlying_call_parses_object_args(self):
         from tools.tool_search import resolve_underlying_call
         name, args, err = resolve_underlying_call({

@@ -1010,40 +1010,83 @@ def dispatch_tool_search(args: Dict[str, Any],
     }, ensure_ascii=False)
 
 
+def _resolve_tool_entry(name: str):
+    """Find a ToolEntry by exact name, case-insensitive match, or unique suffix match (e.g. unprefixed MCP tool name)."""
+    from tools.registry import registry
+    entry = registry.get_entry(name)
+    if entry is not None:
+        return entry.name, entry, None
+
+    entries = registry._snapshot_entries()
+    exact_ci = [e for e in entries if e.name.lower() == name.lower()]
+    if len(exact_ci) == 1:
+        return exact_ci[0].name, exact_ci[0], None
+
+    suffix_matches = [
+        e for e in entries
+        if e.name.endswith(f"_{name}") or e.name.endswith(f":{name}")
+    ]
+    if len(suffix_matches) == 1:
+        return suffix_matches[0].name, suffix_matches[0], None
+    if len(suffix_matches) > 1:
+        match_names = ", ".join(e.name for e in suffix_matches)
+        return None, None, (
+            f"Tool '{name}' is ambiguous ({match_names}). "
+            "Use tool_search to find the exact registered tool name."
+        )
+
+    suffix_matches_ci = [
+        e for e in entries
+        if e.name.lower().endswith(f"_{name.lower()}") or e.name.lower().endswith(f":{name.lower()}")
+    ]
+    if len(suffix_matches_ci) == 1:
+        return suffix_matches_ci[0].name, suffix_matches_ci[0], None
+    if len(suffix_matches_ci) > 1:
+        match_names = ", ".join(e.name for e in suffix_matches_ci)
+        return None, None, (
+            f"Tool '{name}' is ambiguous ({match_names}). "
+            "Use tool_search to find the exact registered tool name."
+        )
+
+    return None, None, (
+        f"Tool '{name}' is not registered or found. "
+        "Use tool_search to find the exact registered tool name."
+    )
+
+
 def dispatch_tool_describe(args: Dict[str, Any],
                            *,
                            current_tool_defs: List[Dict[str, Any]]) -> str:
     """Execute the ``tool_describe`` bridge tool. Returns a JSON string."""
-    name = str(args.get("name") or "").strip()
-    if not name:
+    raw_name = str(args.get("name") or "").strip()
+    if not raw_name:
         return json.dumps({"error": "name is required"}, ensure_ascii=False)
 
-    from tools.registry import registry
-    entry = registry.get_entry(name)
-    if entry is None:
+    resolved_name, entry, err = _resolve_tool_entry(raw_name)
+    if err or entry is None or not resolved_name:
         return json.dumps({
-            "error": (
-                f"Tool '{name}' is not registered or found. "
+            "error": err or (
+                f"Tool '{raw_name}' is not registered or found. "
                 "Use tool_search to find the exact registered tool name."
             ),
         }, ensure_ascii=False)
 
-    if not is_deferrable_tool_name(name):
+    if not is_deferrable_tool_name(resolved_name):
         return json.dumps({
-            "error": f"Tool '{name}' is a core tool and is already fully visible in your tool list.",
+            "error": f"Tool '{resolved_name}' is a core tool and is already fully visible in your tool list.",
         }, ensure_ascii=False)
 
     for td in current_tool_defs:
         fn = td.get("function") or {}
-        if fn.get("name") == name:
+        if fn.get("name") == resolved_name:
             return json.dumps({
-                "name": name,
+                "name": resolved_name,
                 "description": fn.get("description", ""),
                 "parameters": fn.get("parameters", {}),
-                "usage_hint": f"Call tool_call(name='{name}', arguments={{...}}) to execute this tool.",
+                "usage_hint": f"Call tool_call(name='{resolved_name}', arguments={{...}}) to execute this tool.",
             }, ensure_ascii=False)
     return json.dumps({
-        "error": f"Tool '{name}' is not available in this session. Use tool_search to find tools you can call.",
+        "error": f"Tool '{resolved_name}' is not available in this session. Use tool_search to find tools you can call.",
     }, ensure_ascii=False)
 
 
@@ -1092,24 +1135,25 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
     if not isinstance(raw_args, dict):
         return None, {}, "tool_call 'arguments' must be an object"
 
-    name = str(args.get("name") or "").strip()
-    if not name and ("name" in raw_args or "tool_name" in raw_args):
-        name = str(raw_args.pop("name", None) or raw_args.pop("tool_name", None) or "").strip()
+    raw_name = str(args.get("name") or "").strip()
+    if not raw_name and ("name" in raw_args or "tool_name" in raw_args):
+        raw_name = str(raw_args.pop("name", None) or raw_args.pop("tool_name", None) or "").strip()
 
-    if not name:
+    if not raw_name:
         return None, {}, "tool_call requires a 'name' argument"
-    if name in BRIDGE_TOOL_NAMES:
-        return None, {}, f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
+    if raw_name in BRIDGE_TOOL_NAMES:
+        return None, {}, f"tool_call cannot invoke '{raw_name}' (it is itself a bridge tool)"
 
-    from tools.registry import registry
-    entry = registry.get_entry(name)
-    if entry is None:
+    resolved_name, entry, err = _resolve_tool_entry(raw_name)
+    if err or entry is None or not resolved_name:
         return None, {}, (
-            f"Tool '{name}' is not registered or found. "
-            "Use tool_search to find the exact registered tool name."
+            err or (
+                f"Tool '{raw_name}' is not registered or found. "
+                "Use tool_search to find the exact registered tool name."
+            )
         )
 
-    return name, raw_args, None
+    return resolved_name, raw_args, None
 
 
 __all__ = [
