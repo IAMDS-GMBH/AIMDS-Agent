@@ -47,6 +47,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     SQL_AGGREGATION_GUIDANCE,
+    EXECUTIVE_VERIFICATION_GUIDANCE,
 )
 from agent.runtime_cwd import resolve_context_cwd
 
@@ -150,7 +151,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
     if _kanban_guidance:
         tool_guidance.append(_kanban_guidance)
-    elif _kanban_guidance is None and "kanban_show" in agent.valid_tool_names:
+    elif _kanban_guidance is None and ("kanban_show" in agent.valid_tool_names or os.environ.get("HERMES_KANBAN_TASK")):
         # Fallback for code paths that bypass agent_init (rare).
         tool_guidance.append(KANBAN_GUIDANCE)
     if tool_guidance:

@@ -251,7 +251,7 @@ def test_get_platform_tools_expands_composite_when_mixed_with_configurable():
 
     # Native tools must reappear.
     for ts in ("terminal", "file", "web", "memory", "desktop_todos", "clarify",
-               "code_execution", "skills"):
+               "skills"):
         assert ts in enabled, f"{ts} should be enabled when hermes-cli is listed"
     assert "spotify" not in enabled
 

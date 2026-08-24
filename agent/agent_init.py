@@ -976,7 +976,7 @@ def init_agent(
     # (init + each context compression).
     from agent.prompt_builder import KANBAN_GUIDANCE
     agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
+        KANBAN_GUIDANCE if ("kanban_show" in agent.valid_tool_names or os.environ.get("HERMES_KANBAN_TASK")) else ""
     )
 
     # Check tool requirements

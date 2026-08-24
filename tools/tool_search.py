@@ -1000,6 +1000,15 @@ def is_bridge_tool(name: str) -> bool:
     return name in BRIDGE_TOOL_NAMES
 
 
+def _ensure_mcp_discovery_completed() -> None:
+    """Ensure background MCP discovery finishes before querying the registry/catalog."""
+    try:
+        from hermes_cli.mcp_startup import wait_for_mcp_discovery
+        wait_for_mcp_discovery()
+    except Exception:
+        pass
+
+
 def _format_search_hit(entry: CatalogEntry) -> Dict[str, Any]:
     raw_desc = (entry.description or "").strip()
     first_line = raw_desc.split("\n")[0].strip() if raw_desc else ""
@@ -1019,6 +1028,7 @@ def dispatch_tool_search(args: Dict[str, Any],
                          current_tool_defs: List[Dict[str, Any]],
                          config: Optional[ToolSearchConfig] = None) -> str:
     """Execute the ``tool_search`` bridge tool. Returns a JSON string."""
+    _ensure_mcp_discovery_completed()
     if config is None:
         config = load_config()
     query = str(args.get("query") or "").strip()
@@ -1043,6 +1053,7 @@ def dispatch_tool_search(args: Dict[str, Any],
 
 def _resolve_tool_entry(name: str):
     """Find a ToolEntry by exact name, case-insensitive match, or unique suffix match (e.g. unprefixed MCP tool name)."""
+    _ensure_mcp_discovery_completed()
     from tools.registry import registry
     entry = registry.get_entry(name)
     if entry is not None:

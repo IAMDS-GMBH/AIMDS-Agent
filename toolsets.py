@@ -48,8 +48,7 @@ _HERMES_CORE_TOOLS = [
     "clarify",
     # Code execution
     # (deferred to tool_search in Phase 2 — saved ~1,300 tokens/call when active)
-    # Office productivity
-    "office_word", "office_excel", "office_powerpoint",
+    # Office productivity (Word/Excel/PPT deferred to tool_search via "office" toolset)
 ]
 
 # Toolsets hard-disabled at runtime across all platforms/surfaces.

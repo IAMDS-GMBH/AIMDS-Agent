@@ -26,8 +26,8 @@ substrate — links are how the agent (and the user) find related things later.
 
 - Notes: `raw` · `active` · `waiting` · `done` · `parked` · `reference`
 - Projects (`projectStatus`): `active` · `waiting` · `dormant` · `done` · `parked`
-- `type`: `project` · `knowledge` · `idea` · `decision` · `contact` · `meeting` · `hub` ·
-  `journal` · `task-list` · `automation` · `archive`
+- `type`: `project` · `knowledge` · `idea` · `decision` · `contact` · `meeting` · `document` · `security` · `hub` ·
+  `journal` · `task-list` · `note` · `automation` · `archive`
 
 A value not in this list is a bug, not a variant. New value needed? Add it here
 first, then use it. (Reference vault had 51 type variants before enforcement —

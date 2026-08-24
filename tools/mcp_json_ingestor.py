@@ -24,6 +24,27 @@ def get_db_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     return conn
 
 
+def cleanup_scratch_tables(conn: sqlite3.Connection) -> int:
+    """Drop lingering temporary or scratch tables created in state.db."""
+    try:
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE 'temp_%' OR name LIKE 'tmp_%' OR name LIKE 'scratch_%')"
+        )
+        system_tables = {
+            "sessions", "messages", "schema_version", "state_meta", "mcp_records",
+            "compression_locks", "todos", "inbox_entries"
+        }
+        tables = [row[0] for row in cursor.fetchall() if row[0].lower() not in system_tables]
+        dropped = 0
+        for table in tables:
+            conn.execute(f"DROP TABLE IF EXISTS [{table}]")
+            dropped += 1
+        return dropped
+    except Exception as exc:
+        logger.debug("Cleanup scratch tables error: %s", exc)
+        return 0
+
+
 def prune_mcp_records(
     conn: Optional[sqlite3.Connection] = None,
     older_than_days: int = 14,
@@ -50,6 +71,7 @@ def prune_mcp_records(
                 """,
                 (max_records,),
             )
+            cleanup_scratch_tables(conn)
             return deleted
     except Exception as exc:
         logger.debug("Prune mcp_records error: %s", exc)

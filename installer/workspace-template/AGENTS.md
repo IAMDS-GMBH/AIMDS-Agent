@@ -102,19 +102,24 @@ On each incoming note I: **classify → check for a duplicate → file in the ri
 | Category | Goes to | Example |
 |---|---|---|
 | **Customer / contact** | `contacts/<name>.md` (extend if exists) | "called Müller, wants an offer" |
+| **Meeting** | `meetings/<date>-<topic>.md` | "Kickoff sync notes with customer" |
 | **Task** | `tasks/` (with due date if given) | "prepare the deck by Friday" |
 | **Note** | `notes/` | "quick thought on the process" |
 | **Idea** | `ideas/` | "idea for the Q3 campaign" |
 | **Decision** | `decisions/<date>-<topic>.md` | "we decided to go with vendor X" |
 | **Project** (has an end) | `projects/<name>.md` (status frontmatter) | "the website relaunch" |
+| **Document / Report** | `documents/<title>.md` | "PDF analysis, contract excerpt, research report" |
+| **Security / Audit** | `security/<date>-<topic>.md` | "vulnerability review, access governance" |
 | **Personal knowledge** (mine) | `knowledge/` | "how I structure a proposal" |
 | **Knowledge (company)** | hand off to the **KB curator** | "from now on we do offers like this" |
 
-Two homes that aren't inbox categories but the agent uses:
-- **`journal/`** — weekly reviews + insights (the weekly-review agent files here)
-- **`documents/`** — generated Word/Excel/PDF + attachments. Keep binaries **out of the
+Specialized homes used by agent workflows:
+- **`journal/`** — daily / weekly reviews + insights (the review agents file here)
+- **`documents/`** — generated Word/Excel/PDF + attachments & structured excerpts. Keep binaries **out of the
   note folders** so the wikilink graph stays clean. Project-related files may live in
   `projects/<name>/` instead.
+- **`_inbox/`** — raw incoming items awaiting classification and triage.
+- **`_templates/`** — schema templates for new entity generation.
 
 Follow `_conventions.md` for frontmatter, naming, and tags on everything created.
 
