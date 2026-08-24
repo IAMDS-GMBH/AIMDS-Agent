@@ -25,14 +25,16 @@ auth:
   provider: microsoft
   env_var: M365_ACCESS_TOKEN
   notes: >-
-    ⚠️ WICHTIGER HINWEIS / IMPORTANT: Microsoft 365 erfordert den Abschluss des OAuth Device Flows vor der ersten Nutzung!
+    ⚠️ WICHTIGER HINWEIS: Microsoft 365 erfordert den Abschluss des OAuth Device Flows vor der ersten Nutzung!
     Beide Felder unten sind OPTIONAL — standardmäßig leer lassen für die Standard-Multi-Tenant App
     (Client ID 41c29967-8ee6-4fac-b484-e87460272bda, Tenant "organizations").
     
-    Authentifizierung abschließen:
-    1. Nach der Installation den angezeigten Device Code unter https://microsoft.com/devicelogin eingeben und bestätigen.
-    2. Alternativ im Chat jederzeit das Tool `m365_initiate_login` aufrufen (oder das Login-Fenster in der Desktop UI nutzen), um den Device Code Flow zu starten.
-    3. Erst nach erfolgreichem Login können die M365-Tools (Outlook Mail, Kalender, Teams, OneDrive) auf Daten zugreifen.
+    Authentifizierung einrichten:
+    - Primär / Empfohlen (App & Dashboard): Unter **Einstellungen → Connected Accounts (OAuth)** den Eintrag **Microsoft 365 (OAuth)** verbinden und den angezeigten Code unter https://microsoft.com/devicelogin bestätigen.
+    - Chat & Agent: Alternativ im Chat das Tool `m365_initiate_login` aufrufen.
+    - CLI: Bei interaktiver Installation startet der Login automatisch, bzw. per `hermes auth add microsoft`.
+    
+    Erst nach erfolgreichem Login können die M365-Tools (Outlook Mail, Kalender, Teams, OneDrive) auf Daten zugreifen.
   # Mirrors server.py's BASE_SCOPES (non-admin default) so any device-code
   # login initiated outside of m365_initiate_login (e.g. the dashboard's
   # "Microsoft 365 (OAuth)" button, or `hermes mcp install MSOffice365MCP`)

@@ -32,13 +32,14 @@ auth:
   provider: github
   env_var: GITHUB_PERSONAL_ACCESS_TOKEN
   notes: >-
-    ⚠️ WICHTIGER HINWEIS / IMPORTANT: Vor der Nutzung muss der OAuth Device Flow abgeschlossen oder ein PAT hinterlegt sein!
+    ⚠️ WICHTIGER HINWEIS: Für GitHub MCP muss vor der ersten Nutzung der OAuth-Login abgeschlossen oder ein PAT hinterlegt sein!
     
     Authentifizierung einrichten:
-    - Option 1 (Empfohlen): In der CLI einmalig `hermes auth login github` (oder `gh auth login`) ausführen, um den OAuth Device Flow abzuschließen.
-    - Option 2: Einen GitHub Personal Access Token (PAT mit Copilot/Repo-Berechtigungen) unten bei GITHUB_PERSONAL_ACCESS_TOKEN eintragen.
+    - Primär / Empfohlen (App & Dashboard): Unter **Einstellungen → Connected Accounts (OAuth)** den Eintrag **GitHub (OAuth)** verbinden.
+    - CLI: Alternativ in der Konsole einmalig `hermes auth add github` ausführen.
+    - Optional (PAT): Falls kein OAuth genutzt werden soll, einen Personal Access Token bei `GITHUB_PERSONAL_ACCESS_TOKEN` eintragen.
     
-    Hinweis: GitHubs Remote-MCP-Server unterstützt keine dynamische Client-Registrierung; ohne vorherigen Login oder PAT schlägt die Verbindung mit einem 404-Fehler fehl.
+    Hinweis: GitHubs Remote-MCP-Server (api.githubcopilot.com/mcp) unterstützt keine dynamische Client-Registrierung (RFC 7591); ohne vorherigen Login oder PAT schlägt die Verbindung mit einem 404-Fehler fehl.
   scopes:
     - repo
     - read:org
