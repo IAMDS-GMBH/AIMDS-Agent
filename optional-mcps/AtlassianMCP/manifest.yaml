@@ -16,7 +16,7 @@ transport:
   # discovery for every user overnight with no corresponding hermes-agent
   # change to bisect. Bump deliberately; see .github/workflows/mcp-catalog-version-check.yml.
   args:
-    - "mcp-atlassian==0.23.0"
+    - "mcp-atlassian==0.23.1"
 
 auth:
   type: api_key
