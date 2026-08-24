@@ -1,7 +1,7 @@
-import { type CSSProperties } from 'react'
+import { useState, type CSSProperties } from 'react'
 import { useStore } from '@nanostores/react'
-import { openUrl } from '@tauri-apps/plugin-opener'
 import { Button } from '../components/button'
+import { ReportIssueDialog } from '../components/report-issue-dialog'
 import {
   $logPath,
   $mode,
@@ -27,6 +27,7 @@ export default function Failure({ bootstrap }: FailureProps) {
   const logPath = useStore($logPath)
   const mode = useStore($mode)
   const isUpdate = mode === 'update'
+  const [reportDialogOpen, setReportDialogOpen] = useState(false)
 
   const lang = typeof navigator !== 'undefined' ? (navigator.language || '').toLowerCase() : ''
   const isDe = lang.startsWith('de')
@@ -43,10 +44,7 @@ export default function Failure({ bootstrap }: FailureProps) {
   const reportText = isDe ? 'Problem melden' : 'Problem melden / Report issue'
 
   const handleReportIssue = () => {
-    const url = 'https://github.com/NousResearch/Hermes-Agent/issues/new'
-    void openUrl(url).catch(() => {
-      window.open(url, '_blank')
-    })
+    setReportDialogOpen(true)
   }
 
   return (
@@ -110,6 +108,23 @@ export default function Failure({ bootstrap }: FailureProps) {
           Log: <code className="font-mono">{logPath}</code>
         </p>
       )}
+
+      <ReportIssueDialog
+        open={reportDialogOpen}
+        onOpenChange={setReportDialogOpen}
+        errorMessage={bootstrap.error}
+        defaultSummary={
+          bootstrap.error
+            ? (isDe ? `Fehler: ${bootstrap.error.slice(0, 80)}` : `Error: ${bootstrap.error.slice(0, 80)}`)
+            : (isUpdate
+                ? (isDe ? 'Update fehlgeschlagen' : 'Update failed')
+                : (isDe ? 'Installation fehlgeschlagen' : 'Installation failed'))
+        }
+        defaultCategory="installation_update"
+        defaultSeverity="high"
+        installType={isUpdate ? 'update' : 'fresh_install'}
+        contextType={isUpdate ? 'update_error' : 'install_error'}
+      />
     </div>
   )
 }

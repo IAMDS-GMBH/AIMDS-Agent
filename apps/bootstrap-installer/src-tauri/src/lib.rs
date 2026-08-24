@@ -17,6 +17,7 @@ mod paths;
 mod self_update;
 mod update;
 mod models;
+mod support;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -204,6 +205,8 @@ pub fn run() {
             models::get_existing_config,
             // Keycloak SSO
             keycloak::keycloak_login,
+            // Support & Feedback
+            support::submit_support_ticket,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Hermes Setup");

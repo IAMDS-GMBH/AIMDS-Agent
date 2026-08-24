@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Button } from '../components/button'
+import { ReportIssueDialog } from '../components/report-issue-dialog'
 import { normalizeInstallerBaseUrl, startInstall } from '../store'
-import { AlertCircle, Loader, Check, ShieldCheck, X, RefreshCw } from 'lucide-react'
+import { AlertCircle, Loader, Check, ShieldCheck, X, RefreshCw, LifeBuoy } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 
 type EndpointVariant = 'dev' | 'main' | 'staging'
@@ -108,6 +109,7 @@ export default function Credentials() {
   // LiteLLM health state: null = unchecked, true = healthy, false = unreachable
   const [litellmHealth, setLitellmHealth] = useState<boolean | null>(null)
   const [isCheckingHealth, setIsCheckingHealth] = useState(false)
+  const [reportDialogOpen, setReportDialogOpen] = useState(false)
   const healthDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const checkHealth = useCallback(async (url: string) => {
@@ -591,7 +593,17 @@ export default function Credentials() {
             </div>
           </fieldset>
 
-          <div className="flex justify-end gap-3 pt-4">
+          <div className="flex items-center justify-between gap-3 pt-4 border-t border-border/50">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setReportDialogOpen(true)}
+              className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5"
+            >
+              <LifeBuoy className="h-3.5 w-3.5" />
+              Problem melden
+            </Button>
             <Button
               type="submit"
               size="lg"
@@ -602,6 +614,16 @@ export default function Credentials() {
             </Button>
           </div>
         </form>
+
+        <ReportIssueDialog
+          open={reportDialogOpen}
+          onOpenChange={setReportDialogOpen}
+          defaultSummary="Setup / Konfiguration Hilfe"
+          defaultCategory="installation_update"
+          defaultSeverity="medium"
+          installType="fresh_install"
+          contextType="manual"
+        />
       </div>
     </div>
   )
