@@ -1,8 +1,15 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Dialog } from 'radix-ui'
 import { invoke } from '@tauri-apps/api/core'
 import { Button } from './button'
-import { AlertCircle, CheckCircle2, HelpCircle, Loader2, X } from 'lucide-react'
+import { AlertCircle, CheckCircle2, HelpCircle, ImageIcon, Loader2, X } from 'lucide-react'
+
+interface AttachedFile {
+  id: string
+  name: string
+  dataUrl: string
+  size: number
+}
 
 export interface ReportIssueDialogProps {
   open: boolean
@@ -48,6 +55,11 @@ export function ReportIssueDialog({
     detailsPlaceholder: isDe
       ? 'Was ist passiert? Welche Fehlermeldung ist aufgetreten?'
       : 'What happened? What error message occurred?',
+    screenshotsLabel: isDe ? 'Screenshots / Bilder' : 'Screenshots / Images',
+    selectScreenshot: isDe ? 'Screenshot auswählen' : 'Select Screenshot',
+    pasteHint: isDe
+      ? 'Screenshot einfügen (Strg+V / Cmd+V) oder Datei auswählen'
+      : 'Paste screenshot (Ctrl+V / Cmd+V) or select file',
     attachLogs: isDe
       ? 'Installations- und Systemprotokolle anhängen (empfohlen)'
       : 'Attach installation and system logs (recommended)',
@@ -83,9 +95,11 @@ export function ReportIssueDialog({
   const [summary, setSummary] = useState(defaultSummary)
   const [description, setDescription] = useState('')
   const [includeLogs, setIncludeLogs] = useState(true)
+  const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [referenceId, setReferenceId] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     if (open) {
@@ -93,10 +107,59 @@ export function ReportIssueDialog({
       setCategory(defaultCategory)
       setSeverity(defaultSeverity)
       setIncludeLogs(true)
+      setAttachments([])
       setError(null)
       setReferenceId(null)
     }
   }, [open, defaultSummary, defaultCategory, defaultSeverity, errorMessage])
+
+  const addFile = (file: File) => {
+    if (!file.type.startsWith('image/')) return
+    if (file.size > 10 * 1024 * 1024) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = reader.result as string
+      setAttachments(prev => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          name: file.name || `screenshot_${prev.length + 1}.png`,
+          dataUrl,
+          size: file.size,
+        },
+      ])
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) {
+        const file = items[i].getAsFile()
+        if (file) {
+          addFile(file)
+          e.preventDefault()
+        }
+      }
+    }
+  }
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files) return
+    for (let i = 0; i < files.length; i++) {
+      addFile(files[i])
+    }
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
+  const removeAttachment = (id: string) => {
+    setAttachments(prev => prev.filter(a => a.id !== id))
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -116,6 +179,7 @@ export function ReportIssueDialog({
           install_type: installType,
           context_type: contextType,
           error_message: errorMessage || undefined,
+          attachments: attachments.map(a => a.dataUrl),
         },
       })
 
@@ -185,7 +249,7 @@ export function ReportIssueDialog({
               </div>
             </div>
           ) : (
-            <form className="mt-4 flex flex-col gap-3.5" onSubmit={handleSubmit}>
+            <form className="mt-4 flex flex-col gap-3.5" onPaste={handlePaste} onSubmit={handleSubmit}>
               {error && (
                 <div className="flex items-start gap-2.5 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
                   <AlertCircle className="size-4 shrink-0 mt-0.5" />
@@ -247,6 +311,68 @@ export function ReportIssueDialog({
                   placeholder={copy.detailsPlaceholder}
                   value={description}
                 />
+              </div>
+
+              {/* Screenshots / Attachments section */}
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-foreground">{copy.screenshotsLabel}</label>
+                  <input
+                    accept="image/*"
+                    className="hidden"
+                    multiple
+                    onChange={handleFileChange}
+                    ref={fileInputRef}
+                    type="file"
+                  />
+                  <Button
+                    className="h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                    onClick={() => fileInputRef.current?.click()}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    <ImageIcon className="mr-1 size-3" />
+                    {copy.selectScreenshot}
+                  </Button>
+                </div>
+
+                {attachments.length > 0 ? (
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {attachments.map(att => (
+                      <div
+                        className="group relative flex items-center gap-1.5 rounded border border-border bg-muted/40 p-1 pr-2 text-[11px]"
+                        key={att.id}
+                      >
+                        <img
+                          alt={att.name}
+                          className="size-8 rounded object-cover border border-border/50"
+                          src={att.dataUrl}
+                        />
+                        <div className="flex flex-col max-w-[120px]">
+                          <span className="truncate font-medium text-foreground">{att.name}</span>
+                          <span className="text-[9px] text-muted-foreground">
+                            {Math.round(att.size / 1024)} KB
+                          </span>
+                        </div>
+                        <button
+                          className="ml-1 rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                          onClick={() => removeAttachment(att.id)}
+                          type="button"
+                        >
+                          <X className="size-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div
+                    className="flex items-center justify-center rounded border border-dashed border-border/70 bg-muted/10 py-2 text-center text-[11px] text-muted-foreground cursor-pointer hover:bg-muted/20"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <span>{copy.pasteHint}</span>
+                  </div>
+                )}
               </div>
 
               <label className="flex items-center gap-2 cursor-pointer pt-1 text-xs text-muted-foreground">

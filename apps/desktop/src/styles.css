@@ -357,7 +357,10 @@
     --backdrop-invert-mul: 1;
   }
 
-  :root.dark {
+  :root.dark,
+  .dark {
+    color-scheme: dark;
+
     /* Per-mode mix knobs — overridden inline by `applyTheme()` per skin. */
     --theme-mix-chrome: 74%;
     --theme-mix-card: 38%;
@@ -380,6 +383,21 @@
     --ui-inline-code-border: color-mix(in srgb, #ffffff 10%, transparent);
     --ui-inline-code-foreground: color-mix(in srgb, #ffffff 88%, transparent);
     --ui-selection-background: color-mix(in srgb, #ffd24a 38%, transparent);
+  }
+
+  select {
+    color-scheme: inherit;
+  }
+
+  select option {
+    background-color: var(--ui-bg-editor, #ffffff);
+    color: var(--dt-foreground, #17171a);
+  }
+
+  :root.dark select option,
+  .dark select option {
+    background-color: var(--theme-neutral-card, #161618);
+    color: var(--dt-foreground, #f3f3f5);
   }
 
   * {

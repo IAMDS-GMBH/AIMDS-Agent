@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Cursor, Write};
+use base64::prelude::*;
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
@@ -22,6 +23,7 @@ pub struct SupportTicketPayload {
     pub install_type: Option<String>,
     pub context_type: Option<String>,
     pub error_message: Option<String>,
+    pub attachments: Option<Vec<String>>,
 }
 
 fn default_true() -> bool {
@@ -159,6 +161,29 @@ pub async fn submit_support_ticket(
         .or_else(|_| std::env::var("USER"))
         .unwrap_or_else(|_| "installer-user".to_string());
 
+    let mut binary_attachments: Vec<(String, Vec<u8>)> = Vec::new();
+    if let Some(ref atts) = payload.attachments {
+        for (idx, att) in atts.iter().enumerate() {
+            let att_str = att.trim();
+            if att_str.starts_with("data:") && att_str.contains(";base64,") {
+                if let Some((header, b64_data)) = att_str.split_once(";base64,") {
+                    let ext = if header.contains("jpeg") || header.contains("jpg") {
+                        ".jpg"
+                    } else if header.contains("webp") {
+                        ".webp"
+                    } else {
+                        ".png"
+                    };
+                    if let Ok(bytes) = BASE64_STANDARD.decode(b64_data) {
+                        binary_attachments.push((format!("attachments/screenshot_{}{}", idx + 1, ext), bytes));
+                    }
+                }
+            } else if let Ok(bytes) = BASE64_STANDARD.decode(att_str) {
+                binary_attachments.push((format!("attachments/screenshot_{}.png", idx + 1), bytes));
+            }
+        }
+    }
+
     let mut files_manifest = Vec::new();
     for (rel_path, content) in &files {
         files_manifest.push(serde_json::json!({
@@ -166,6 +191,21 @@ pub async fn submit_support_ticket(
             "mime_type": "text/plain",
             "size_bytes": content.len(),
             "content_category": "log"
+        }));
+    }
+    for (rel_path, bytes) in &binary_attachments {
+        let mime = if rel_path.ends_with(".jpg") {
+            "image/jpeg"
+        } else if rel_path.ends_with(".webp") {
+            "image/webp"
+        } else {
+            "image/png"
+        };
+        files_manifest.push(serde_json::json!({
+            "path": rel_path,
+            "mime_type": mime,
+            "size_bytes": bytes.len(),
+            "content_category": "screenshot"
         }));
     }
 
@@ -232,6 +272,13 @@ pub async fn submit_support_ticket(
             zip.start_file(rel_path, options)
                 .map_err(|e| format!("Zip error: {e}"))?;
             zip.write_all(content.as_bytes())
+                .map_err(|e| format!("Zip write error: {e}"))?;
+        }
+
+        for (rel_path, bytes) in &binary_attachments {
+            zip.start_file(rel_path, options)
+                .map_err(|e| format!("Zip error: {e}"))?;
+            zip.write_all(bytes)
                 .map_err(|e| format!("Zip write error: {e}"))?;
         }
 

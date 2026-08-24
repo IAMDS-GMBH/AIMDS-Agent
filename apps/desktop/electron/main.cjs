@@ -6095,16 +6095,63 @@ async function runSupportLogUpload(rawPayload = {}) {
     args.push('--context-type', payload.contextType.trim())
   }
 
+  const tempFilesToClean = []
+  if (Array.isArray(payload.attachments)) {
+    for (let i = 0; i < payload.attachments.length; i++) {
+      const att = payload.attachments[i]
+      if (typeof att === 'string' && att.trim()) {
+        const trimmed = att.trim()
+        if (trimmed.startsWith('data:') && trimmed.includes(';base64,')) {
+          try {
+            const parts = trimmed.split(';base64,')
+            const b64 = parts[1]
+            const mime = parts[0].replace('data:', '')
+            const ext = mime.includes('jpeg') || mime.includes('jpg') ? '.jpg' : mime.includes('webp') ? '.webp' : '.png'
+            const tmpPath = path.join(os.tmpdir(), `hermes-att-${Date.now()}-${i}${ext}`)
+            fs.writeFileSync(tmpPath, Buffer.from(b64, 'base64'))
+            tempFilesToClean.push(tmpPath)
+            args.push('--attachment', tmpPath)
+          } catch {
+            // ignore
+          }
+        } else if (fs.existsSync(trimmed)) {
+          args.push('--attachment', trimmed)
+        }
+      } else if (att && typeof att === 'object' && att.data) {
+        try {
+          const rawName = String(att.name || `screenshot_${i}.png`).replace(/[^a-zA-Z0-9_.-]/g, '_')
+          const tmpPath = path.join(os.tmpdir(), `hermes-att-${Date.now()}-${rawName}`)
+          fs.writeFileSync(tmpPath, Buffer.from(att.data, 'base64'))
+          tempFilesToClean.push(tmpPath)
+          args.push('--attachment', tmpPath)
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
   return new Promise(resolve => {
     let stdout = ''
     let stderr = ''
     let settled = false
     let timeoutId = null
 
+    const cleanupTemps = () => {
+      for (const f of tempFilesToClean) {
+        try {
+          fs.unlinkSync(f)
+        } catch {
+          // ignore
+        }
+      }
+    }
+
     const done = result => {
       if (settled) return
       settled = true
       if (timeoutId) clearTimeout(timeoutId)
+      cleanupTemps()
       resolve(result)
     }
 

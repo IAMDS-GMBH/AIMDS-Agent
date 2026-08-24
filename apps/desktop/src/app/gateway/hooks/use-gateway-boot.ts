@@ -371,42 +371,6 @@ export function useGatewayBoot({
         })
         await callbacksRef.current.refreshSessions()
 
-        // Align startup behavior with the desktop "Reload MCP" button:
-        // run one MCP reload on app launch so live sessions pick up tools
-        // without requiring a manual click.
-        void gateway
-          .request<{
-            ok?: boolean
-            message?: string
-            summary?: { failed_servers?: string[] }
-          }>('reload.mcp', {
-            confirm: true,
-            session_id: $activeSessionId.get() ?? undefined
-          })
-          .then(result => {
-            if (cancelled) {
-              return
-            }
-            if (result?.ok === false) {
-              notify({
-                kind: 'warning',
-                title: 'MCP reload on startup incomplete',
-                message: result.message ?? 'Some MCP servers are disconnected.'
-              })
-              return
-            }
-            notify({
-              kind: 'success',
-              title: 'MCP reloaded on startup',
-              message: result?.message ?? 'MCP servers reloaded'
-            })
-          })
-          .catch(err => {
-            if (cancelled) {
-              return
-            }
-            notifyError(err, 'Startup MCP reload failed')
-          })
         completeDesktopBoot()
         bootCompleted = true
       } catch (err) {

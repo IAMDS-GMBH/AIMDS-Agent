@@ -67,7 +67,11 @@ declare global {
       }
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
-      sendSupportLogs: (payload?: { reason?: string; maxLines?: number }) => Promise<DesktopSupportLogSendResult>
+      sendSupportLogs: (payload?: {
+        reason?: string
+        maxLines?: number
+        attachments?: Array<string | { name?: string; data?: string; mimeType?: string }>
+      }) => Promise<DesktopSupportLogSendResult>
       reportIssue?: (payload?: {
         category?: string
         severity?: string
@@ -80,6 +84,7 @@ declare global {
         installType?: string
         contextType?: string
         reason?: string
+        attachments?: Array<string | { name?: string; data?: string; mimeType?: string }>
       }) => Promise<DesktopSupportLogSendResult>
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>

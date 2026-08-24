@@ -41,6 +41,7 @@ def build_support_parser(subparsers, *, cmd_support: Callable) -> None:
     send_logs.add_argument("--timeout", type=int, default=45, help="HTTP timeout in seconds")
     send_logs.add_argument("--url", default="", help="Override support upload URL")
     send_logs.add_argument("--api-key", default="", help="Override support API key")
+    send_logs.add_argument("--attachment", action="append", default=[], help="File path or image to attach to the support bundle (can be specified multiple times)")
     send_logs.add_argument("--output", default=None, help="Keep bundle zip at this path instead of temp cleanup")
     send_logs.add_argument("--no-dump", dest="include_dump", action="store_false", help="Skip hermes dump text")
     send_logs.add_argument("--json", action="store_true", help="Emit JSON result")

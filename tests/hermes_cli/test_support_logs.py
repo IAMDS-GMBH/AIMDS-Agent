@@ -199,3 +199,52 @@ def test_send_client_telemetry(monkeypatch):
     assert "version" in captured["data"]
     assert "channel" in captured["data"]
 
+
+def test_send_logs_with_attachment(tmp_path, monkeypatch, capsys):
+    hermes_home = tmp_path / ".hermes"
+    logs_dir = hermes_home / "logs"
+    logs_dir.mkdir(parents=True)
+    (logs_dir / "desktop.log").write_text("log line\n", encoding="utf-8")
+
+    att_file = tmp_path / "screenshot.png"
+    att_file.write_bytes(b"\x89PNG\r\n\x1a\nfake-image-bytes")
+
+    monkeypatch.setattr(support_logs, "get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(support_logs, "display_hermes_home", lambda: "~/.hermes")
+    monkeypatch.setattr(support_logs, "_support_config", lambda: {})
+    monkeypatch.setattr(support_logs, "_capture_dump_text", lambda: "dump info\n")
+
+    captured = {}
+
+    class _Resp:
+        status = 202
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"job_id":"job-att","reference_id":"SUP-ATT"}'
+
+    def _fake_urlopen(req, timeout=0):
+        captured["data"] = req.data
+        return _Resp()
+
+    monkeypatch.setattr(support_logs.urllib.request, "urlopen", _fake_urlopen)
+
+    args = _parse(["--json", "--attachment", str(att_file)])
+    code = support_logs.run_send_logs(args)
+    assert code == 0
+
+    bundle_bytes = io.BytesIO(captured["data"])
+    with zipfile.ZipFile(bundle_bytes) as zf:
+        assert "attachments/screenshot.png" in zf.namelist()
+        assert zf.read("attachments/screenshot.png") == b"\x89PNG\r\n\x1a\nfake-image-bytes"
+        meta = json.loads(zf.read("metadata.json").decode("utf-8"))
+        att_manifest = next(f for f in meta["files"] if f["path"] == "attachments/screenshot.png")
+        assert att_manifest["content_category"] == "screenshot"
+        assert att_manifest["mime_type"] == "image/png"
+
+

@@ -245,10 +245,10 @@ def _support_config() -> dict[str, Any]:
 
 def _collect_payload(
     args: Any = None, *, include_dump: bool = True, max_lines_per_file: int = _DEFAULT_MAX_LINES_PER_FILE
-) -> tuple[dict[str, str], dict[str, Any]]:
+) -> tuple[dict[str, str | bytes], dict[str, Any]]:
     hermes_home = get_hermes_home()
     log_dir = hermes_home / "logs"
-    files: dict[str, str] = {}
+    files: dict[str, str | bytes] = {}
     included_files: list[dict[str, Any]] = []
 
     for filename in _LOG_FILES:
@@ -270,6 +270,55 @@ def _collect_payload(
 
     if include_dump:
         files["dump.txt"] = redact_sensitive_text(_capture_dump_text(), force=True)
+
+    # Collect optional attachments (e.g. screenshots, user uploaded logs)
+    attachments_input = getattr(args, "attachment", []) or []
+    if isinstance(attachments_input, str):
+        attachments_input = [attachments_input]
+    for att in attachments_input:
+        if not att:
+            continue
+        att_str = str(att).strip()
+        # Check if it is a data URL (e.g. data:image/png;base64,...)
+        if att_str.startswith("data:") and ";base64," in att_str:
+            try:
+                import base64
+                header, b64_data = att_str.split(";base64,", 1)
+                mime = header.replace("data:", "").strip()
+                ext = ".png"
+                if "jpeg" in mime or "jpg" in mime:
+                    ext = ".jpg"
+                elif "webp" in mime:
+                    ext = ".webp"
+                att_bytes = base64.b64decode(b64_data)
+                att_name = f"screenshot_{len(files)}{ext}"
+                files[f"attachments/{att_name}"] = att_bytes
+            except Exception:
+                pass
+            continue
+
+        # Check if it is a JSON object with base64 data
+        if att_str.startswith("{") and att_str.endswith("}"):
+            try:
+                import base64
+                parsed_att = json.loads(att_str)
+                att_name = str(parsed_att.get("name") or f"attachment_{len(files)}.png")
+                b64_data = str(parsed_att.get("data") or parsed_att.get("base64") or "")
+                if b64_data:
+                    files[f"attachments/{att_name}"] = base64.b64decode(b64_data)
+                    continue
+            except Exception:
+                pass
+
+        # Check if it is a file path
+        p = Path(att_str).expanduser()
+        if p.exists() and p.is_file():
+            try:
+                # Read as bytes
+                content_bytes = p.read_bytes()
+                files[f"attachments/{p.name}"] = content_bytes
+            except OSError:
+                pass
 
     session_data: dict[str, Any] | None = None
     session_json_input = getattr(args, "session_json", None) or ""
@@ -306,6 +355,8 @@ def _collect_payload(
 
     files_manifest: list[dict[str, Any]] = []
     for rel_path, content in files.items():
+        if rel_path in {"metadata.json", "manifest.json"}:
+            continue
         category = "log"
         mime = "text/plain"
         if rel_path.endswith(".json"):
@@ -313,12 +364,18 @@ def _collect_payload(
             category = "chat_history" if "session" in rel_path else "config"
         elif rel_path.endswith(".txt"):
             category = "system_info"
+        elif rel_path.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+            mime = "image/png" if rel_path.lower().endswith(".png") else "image/jpeg"
+            category = "screenshot"
+        elif rel_path.startswith("attachments/"):
+            category = "attachment"
 
+        size_bytes = len(content) if isinstance(content, (bytes, bytearray)) else len(content.encode("utf-8"))
         files_manifest.append(
             {
                 "path": rel_path,
                 "mime_type": mime,
-                "size_bytes": len(content.encode("utf-8")),
+                "size_bytes": size_bytes,
                 "content_category": category,
             }
         )
@@ -390,7 +447,7 @@ def _collect_payload(
     return files, metadata
 
 
-def _write_bundle(files: dict[str, str], *, keep_path: str | None = None) -> Path:
+def _write_bundle(files: dict[str, str | bytes], *, keep_path: str | None = None) -> Path:
     if keep_path:
         bundle_path = Path(keep_path).expanduser().resolve()
         bundle_path.parent.mkdir(parents=True, exist_ok=True)
