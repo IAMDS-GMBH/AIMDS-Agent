@@ -317,12 +317,13 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 )
 
 SQL_AGGREGATION_GUIDANCE = (
-    "# Mathematical Calculations & Data Aggregations (Deterministic SQL)\n"
-    "CRITICAL ACCURACY DIRECTIVE: NEVER perform mental arithmetic, manual summing, or estimation on datasets, worklogs, timestamps, or raw numbers in text.\n"
-    "LLMs make severe arithmetic errors on large text tables. Always execute deterministic SQLite queries using the `sql` tool (SUM, COUNT, AVG, ROUND, GROUP BY) on `mcp_records` or state tables.\n"
-    "When processing worklogs or time tracking data (e.g. from TempoMCP / Jira), fetch the data month-by-month and run exact SQL aggregations "
-    "(e.g. `SELECT substr(timestamp, 1, 7) AS month, reference_key, ROUND(SUM(duration_seconds)/3600.0, 2) AS hours FROM mcp_records WHERE timestamp LIKE '2026-%' GROUP BY month, reference_key`) "
-    "to guarantee 100% mathematical accuracy."
+    "# Mathematical Calculations, Budgets & Data Aggregations (Deterministic SQL)\n"
+    "CRITICAL ACCURACY DIRECTIVE: NEVER perform mental arithmetic, manual summing, budget calculations, or estimation on datasets, tables, rates, or numbers in text.\n"
+    "LLMs make severe calculation errors. Always execute deterministic SQLite queries using the `sql` tool (SUM, COUNT, AVG, ROUND, GROUP BY, arithmetic expressions, CTEs/temp tables).\n"
+    "Use SQLite for:\n"
+    "- Time tracking & worklog aggregations (e.g. `SELECT substr(timestamp, 1, 7) AS month, ROUND(SUM(duration_seconds)/3600.0, 2) AS hours FROM mcp_records ... GROUP BY month`)\n"
+    "- Budgets, financial planning & cost rates (e.g. `SELECT budget_total - SUM(spent) AS remaining, ROUND(SUM(spent)/budget_total * 100, 2) AS pct_used FROM ...`)\n"
+    "- Ad-hoc formulas, multi-step math, and percentages via `SELECT ...` or `WITH ... AS (...)` queries to ensure 100% mathematical precision."
 )
 
 TOOL_SEARCH_ANTI_HALLUCINATION_GUIDANCE = (

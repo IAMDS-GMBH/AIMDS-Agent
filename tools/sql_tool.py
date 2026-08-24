@@ -126,19 +126,20 @@ def check_sql_requirements() -> bool:
 SQL_SCHEMA = {
     "name": "sql",
     "description": (
-        "Execute deterministic SQL queries directly against the local Hermes SQLite state database (~/.hermes/state.db).\n"
-        "MANDATORY FOR ALL CALCULATIONS & AGGREGATIONS: Never perform mental arithmetic or manual summations on logs or lists. "
-        "Always use SQL queries (SUM, COUNT, AVG, ROUND, GROUP BY) on 'mcp_records' for 100% mathematical precision.\n\n"
-        "Example monthly worklog aggregation:\n"
-        "SELECT substr(timestamp, 1, 7) AS month, reference_key, ROUND(SUM(duration_seconds)/3600.0, 2) AS total_hours "
-        "FROM mcp_records WHERE timestamp LIKE '2026-%' GROUP BY month, reference_key;\n\n"
+        "Execute deterministic SQL queries and mathematical calculations directly against the local SQLite database (~/.hermes/state.db).\n"
+        "MANDATORY FOR ALL CALCULATIONS & AGGREGATIONS: Never perform mental arithmetic or manual calculations on budgets, logs, or numbers in text. "
+        "Always use SQL queries (SUM, COUNT, AVG, ROUND, GROUP BY, math expressions, CTEs/temp tables) for 100% mathematical precision.\n\n"
+        "Common Use Cases:\n"
+        "1. Worklog & Time Tracking: SELECT substr(timestamp, 1, 7) AS month, reference_key, ROUND(SUM(duration_seconds)/3600.0, 2) AS hours FROM mcp_records WHERE timestamp LIKE '2026-%' GROUP BY month, reference_key;\n"
+        "2. Budget & Financial Calculations: SELECT 50000 - SUM(amount) AS remaining_budget, ROUND(SUM(amount)/50000.0 * 100, 2) AS pct_used FROM ...;\n"
+        "3. Arbitrary Arithmetic & Formulas: SELECT ROUND((174.5 / 160.0 - 1.0) * 100, 2) AS deviation_pct;\n\n"
         "Available tables:\n"
         "- mcp_records: (id, tool_name, reference_key, timestamp, user_id, duration_seconds, category, comment, raw_data)\n"
         "- sessions: (id, source, user_id, model, started_at, title, message_count)\n"
         "- messages: (id, session_id, role, content, tool_name, created_at)\n"
         "- todos: (id, content, status, created_at)\n"
         "- inbox_entries: (id, source, title, content, created_at)\n\n"
-        "Supports all SQLite syntax: SELECT, INSERT, UPDATE, DELETE, WITH, CREATE TABLE, etc."
+        "Supports all SQLite syntax: SELECT, INSERT, UPDATE, DELETE, WITH, CREATE TABLE, TEMP tables, math functions, etc."
     ),
     "parameters": {
         "type": "object",
