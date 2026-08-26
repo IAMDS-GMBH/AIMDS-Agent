@@ -63,7 +63,7 @@ except Exception:
     # Fallback for editable installs or environments where metadata isn't available.
     # Try git tags first, then hardcoded version.
     __version__ = _get_version_from_git() or "0.7.3"
-    __release_date__ = "2026.8.24"
+    __release_date__ = "2026.8.26"
 
 
 def _ensure_utf8():
