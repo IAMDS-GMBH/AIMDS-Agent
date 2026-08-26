@@ -4136,7 +4136,7 @@ function Invoke-SetupWizard {
 
     if ($existingKey -or $existingBase) {
         Write-Host ""
-        Write-Info "Vorhandene Konfiguration gefunden in $HermesHome:"
+        Write-Info "Vorhandene Konfiguration gefunden in ${HermesHome}:"
         if ($existingBase) { Write-Info "  Base URL: $existingBase" }
         if ($existingKey) {
             $masked = if ($existingKey.Length -gt 4) { "••••••••" + $existingKey.Substring($existingKey.Length - 4) } else { "••••••••" }
