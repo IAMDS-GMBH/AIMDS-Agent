@@ -18,36 +18,30 @@ from typing import Any, Dict, List, Optional, Tuple
 from hermes_constants import get_hermes_home
 
 
+from hermes_text_vector import build_vector as _shared_build_vector
+from hermes_text_vector import cosine as _shared_cosine
+
+
 def _tokenize(text: str) -> List[str]:
     """Tokenize text into lowercase alphanumeric terms >=2 chars."""
     return [p for p in re.sub(r"[^\w\s]", " ", str(text or "").lower()).split() if len(p) >= 2]
 
 
 def _build_term_vector(text: str) -> Dict[str, float]:
-    """Build a normalized term-frequency vector for vector cosine similarity."""
-    tokens = _tokenize(text)
-    if not tokens:
-        return {}
-    counts: Dict[str, float] = {}
-    for t in tokens:
-        counts[t] = counts.get(t, 0.0) + 1.0
-    # L2 normalize
-    norm = math.sqrt(sum(v * v for v in counts.values()))
-    if norm > 0:
-        for k in counts:
-            counts[k] /= norm
-    return counts
+    """Lexical vector for `text`, from the shared vectorizer.
+
+    Previously an independent whole-word frequency count — the same approach
+    `tools/tool_search.py` carried in its own copy, with the same blind spot:
+    exact-token overlap only, so a query for "worklog" scored zero against
+    "worklogs". `hermes_text_vector` is now the single implementation behind
+    both, adding character trigrams so morphology and typos survive.
+    """
+    return _shared_build_vector(text)
 
 
 def _cosine_similarity(v1: Dict[str, float], v2: Dict[str, float]) -> float:
-    """Compute cosine similarity between two term-frequency vectors."""
-    if not v1 or not v2:
-        return 0.0
-    # Iterate over the smaller vector for speed
-    if len(v1) > len(v2):
-        v1, v2 = v2, v1
-    dot = sum(val * v2.get(term, 0.0) for term, val in v1.items())
-    return max(0.0, min(1.0, dot))
+    """Cosine similarity between two vectors from :func:`_build_term_vector`."""
+    return _shared_cosine(v1, v2)
 
 
 # Directory names skipped when walking the workspace/vault root in

@@ -13,7 +13,11 @@ def test_term_vector_and_cosine_similarity():
     sim_1_3 = _cosine_similarity(v1, v3)
 
     assert sim_1_2 > 0.3
-    assert sim_1_3 == 0.0
+    # Character trigrams give unrelated strings a little incidental overlap —
+    # that is the price of matching "worklog" against "worklogs". What must
+    # hold is the separation: a real match scores far above the noise floor.
+    assert sim_1_3 < 0.1
+    assert sim_1_2 > sim_1_3 * 3
 
 
 def test_vault_meta_index_sync_and_hybrid_search():
@@ -219,8 +223,15 @@ def test_sync_workspace_vault_scoped_to_vault_root_not_whole_documents_tree():
         count = index.sync_workspace_vault(workspace_dir=vault_dir)
         assert count == 1
 
+        # Assert on what was indexed, not on an empty result list: fuzzy
+        # matching means an unrelated query can still return a weak hit on the
+        # legitimate note, which would mask — or falsely fail — the property
+        # under test. What matters is that nothing from the sibling directory
+        # ever entered the index.
         results = index.hybrid_search("banking password codes xyzzy")
-        assert len(results) == 0
+        indexed_paths = [str(r.get("path") or r.get("id") or "") for r in results]
+
+        assert not any(str(other_dir) in path for path in indexed_paths), indexed_paths
 
 
 def test_sync_workspace_vault_incremental_skips_unchanged_files(monkeypatch):

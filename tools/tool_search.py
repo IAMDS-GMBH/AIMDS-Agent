@@ -301,7 +301,18 @@ class CatalogEntry:
     _tokens: List[str] = field(default_factory=list)
     _name_tokens: set[str] = field(default_factory=set)
     _source_tokens: set[str] = field(default_factory=set)
+    # Precomputed at catalog-build time. `search_catalog` used to rebuild every
+    # entry's vector on every single call; the catalog itself is already
+    # rebuilt per invocation, so this was quadratic work for nothing.
+    _vector: Dict[str, float] = field(default_factory=dict)
+    # One shared dict across the whole catalog, so the query can be weighted
+    # with the same corpus statistics as the entries.
+    _idf: Dict[str, float] = field(default_factory=dict)
 
+
+from hermes_text_vector import build_vector as _shared_build_vector
+from hermes_text_vector import compute_idf as _shared_compute_idf
+from hermes_text_vector import cosine as _shared_cosine
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
@@ -439,6 +450,9 @@ def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
     """
     catalog: List[CatalogEntry] = []
     mcp_meta = _get_mcp_server_metadata()
+    # Two passes: the IDF weights need the whole corpus before any single
+    # entry can be vectorized against it.
+    entry_texts: List[str] = []
 
     for td in tool_defs:
         fn = td.get("function") or {}
@@ -477,6 +491,17 @@ def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
             _source_tokens=set(_tokenize(f"{source_words} {extra_blob}")),
         )
         catalog.append(entry)
+        # Name twice, mirroring `_entry_search_text`: cosine on unit vectors
+        # favours short documents, so a tool that carries a real description
+        # would otherwise rank below its undocumented siblings. Doubling the
+        # most reliable signal offsets that.
+        entry_texts.append(f"{name_words} {name_words} {source_words} {desc}")
+
+    idf = _shared_compute_idf(entry_texts)
+    for entry, text in zip(catalog, entry_texts):
+        entry._idf = idf
+        entry._vector = _build_vector(text, idf)
+
     return catalog
 
 
@@ -645,28 +670,22 @@ def _match_full_source(catalog: List[CatalogEntry], query_lower: str) -> List[Ca
     return []
 
 
-def _build_vector(text: str) -> Dict[str, float]:
-    """Build a term-frequency vector with sub-word tokenization for vector similarity."""
-    tokens = _tokenize(_split_words(text))
-    if not tokens:
-        return {}
-    counts: Dict[str, float] = {}
-    for t in tokens:
-        counts[t] = counts.get(t, 0.0) + 1.0
-    norm = math.sqrt(sum(c * c for c in counts.values()))
-    if norm <= 0:
-        return {}
-    return {t: c / norm for t, c in counts.items()}
+def _build_vector(text: str, idf: "Dict[str, float] | None" = None) -> Dict[str, float]:
+    """Lexical vector for `text`, from the shared vectorizer.
+
+    Previously a whole-word frequency count, which scored exact-token overlap
+    and nothing else: a query for "worklog" could not reach a tool named
+    `retrieveWorklogs`. `hermes_text_vector` adds character trigrams alongside
+    the words, so morphology and typos survive while exact matches still rank
+    higher. The same module now backs `agent/memory_vault_index.py`, which
+    carried an independent copy of the old approach.
+    """
+    return _shared_build_vector(text, idf=idf)
 
 
 def _cosine_sim(v1: Dict[str, float], v2: Dict[str, float]) -> float:
-    """Compute cosine similarity between two term-frequency vectors."""
-    if not v1 or not v2:
-        return 0.0
-    # Iterate over smaller vector for performance
-    if len(v1) > len(v2):
-        v1, v2 = v2, v1
-    return sum(weight * v2[term] for term, weight in v1.items() if term in v2)
+    """Cosine similarity between two vectors from :func:`_build_vector`."""
+    return _shared_cosine(v1, v2)
 
 
 def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> List[CatalogEntry]:
@@ -692,7 +711,10 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
         return full_source_hits[:effective_limit]
 
     # Vector-first scoring setup
-    query_vec = _build_vector(query_raw)
+    # Same corpus statistics as the entries, or plain frequency for a
+    # hand-built catalog that never went through `build_catalog`.
+    catalog_idf = next((e._idf for e in catalog if e._idf), None)
+    query_vec = _build_vector(query_raw, catalog_idf)
 
     # Optional VaultIndex vector search lookup (if local index is present)
     vault_vector_hits: Set[str] = set()
@@ -738,9 +760,12 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
     b = 0.75
     scored: List[Tuple[float, CatalogEntry]] = []
     for entry in catalog:
-        # Build entry term vector combining sub-word split name, source, description, parameters
-        entry_text = f"{_split_words(entry.name)} {_split_words(entry.source_name)} {entry.description}"
-        entry_vec = _build_vector(entry_text)
+        # Precomputed in `build_catalog`; recomputed only for entries a
+        # caller constructed by hand (several tests do this).
+        entry_vec = entry._vector
+        if not entry_vec:
+            entry_text = f"{_split_words(entry.name)} {_split_words(entry.source_name)} {entry.description}"
+            entry_vec = _build_vector(entry_text, catalog_idf)
         vec_sim = _cosine_sim(query_vec, entry_vec)
 
         vault_hit = False
