@@ -293,3 +293,72 @@ def test_file_present_reports_truly_missing(tmp_path, monkeypatch):
     f = tmp_path / "nope.py"
     monkeypatch.setattr(rtp.Path, "exists", lambda self: False)
     assert rtp._file_present(f, attempts=3, delay=0.0) is False
+
+
+def _load_runner():
+    """Import scripts/run_tests_parallel.py by path (scripts/ is not a package)."""
+    import importlib.util
+    from pathlib import Path as _Path
+
+    path = _Path(__file__).resolve().parent.parent / "scripts" / "run_tests_parallel.py"
+    spec = importlib.util.spec_from_file_location("run_tests_parallel_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    return module
+
+
+class TestDefaultWorkerCount:
+    """The suite runs on the machine someone is working on.
+
+    The old default, min(cpu_count, 8), saturated every core — including the
+    efficiency cores an Apple Silicon desktop needs to stay responsive — so a
+    full run made the machine unusable until it finished.
+    """
+
+    def test_leaves_headroom_on_apple_silicon(self, monkeypatch):
+        rtp = _load_runner()
+
+        monkeypatch.setattr(rtp, "_performance_core_count", lambda: 4)
+
+        # 4 P-cores on an 8-thread M-series chip -> 3, not 8.
+        assert rtp.default_worker_count() == 3
+
+    def test_uses_half_the_cpu_elsewhere(self, monkeypatch):
+        import os
+
+        rtp = _load_runner()
+
+        monkeypatch.setattr(rtp, "_performance_core_count", lambda: None)
+        monkeypatch.setattr(os, "cpu_count", lambda: 16)
+
+        assert rtp.default_worker_count() == 8
+
+    def test_never_drops_below_two(self, monkeypatch):
+        import os
+
+        rtp = _load_runner()
+
+        monkeypatch.setattr(rtp, "_performance_core_count", lambda: 1)
+        monkeypatch.setattr(os, "cpu_count", lambda: 1)
+
+        assert rtp.default_worker_count() == 2
+
+    def test_stays_capped_on_very_large_machines(self, monkeypatch):
+        import os
+
+        rtp = _load_runner()
+
+        monkeypatch.setattr(rtp, "_performance_core_count", lambda: None)
+        monkeypatch.setattr(os, "cpu_count", lambda: 128)
+
+        assert rtp.default_worker_count() == 8
+
+    def test_non_darwin_reports_no_performance_cores(self, monkeypatch):
+        import sys
+
+        rtp = _load_runner()
+
+        monkeypatch.setattr(sys, "platform", "linux")
+
+        assert rtp._performance_core_count() is None

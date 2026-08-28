@@ -29,7 +29,7 @@ Usage:
     ``-k 'pattern'``, ``--lf``).
 
 Environment:
-    HERMES_TEST_WORKERS  Override worker count (default: min(cpu_count, 8))
+    HERMES_TEST_WORKERS  Override worker count (default: see default_worker_count)
     HERMES_TEST_PATHS    Override discovery roots (colon-sep, default: 'tests')
 
 Exit code: 0 if every file's pytest exited 0; 1 otherwise.
@@ -690,6 +690,52 @@ def _slice_files(
     return target
 
 
+def _performance_core_count() -> "int | None":
+    """Performance cores on Apple Silicon, or None elsewhere.
+
+    `os.cpu_count()` counts efficiency cores too. On an 8-core M-series chip
+    that is 4 P + 4 E, so saturating all 8 pins the cores the desktop needs to
+    stay responsive while the E-cores add little test throughput.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        out = subprocess.run(
+            ["sysctl", "-n", "hw.perflevel0.logicalcpu"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        count = int(out.stdout.strip())
+    except ValueError:
+        return None
+
+    return count if count > 0 else None
+
+
+def default_worker_count() -> int:
+    """Workers to use when neither -j nor HERMES_TEST_WORKERS is given.
+
+    Deliberately below the core count. The suite is run on the same machine
+    someone is working on, and the previous default (min(cpu_count, 8)) left no
+    headroom — a full run made the desktop unusable until it finished. Wall
+    clock matters less than staying able to use the machine; CI can raise it
+    via HERMES_TEST_WORKERS.
+    """
+    perf = _performance_core_count()
+    if perf:
+        return max(2, perf - 1)
+
+    cpu = os.cpu_count() or 4
+
+    return max(2, min(cpu // 2, 8))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -699,8 +745,8 @@ def main() -> int:
         "-j",
         "--jobs",
         type=int,
-        default=int(os.environ.get("HERMES_TEST_WORKERS") or min(os.cpu_count() or 4, 8)),
-        help="Parallel worker count (default: $HERMES_TEST_WORKERS or min(cpu_count, 8))",
+        default=int(os.environ.get("HERMES_TEST_WORKERS") or default_worker_count()),
+        help="Parallel worker count (default: $HERMES_TEST_WORKERS or a share of the CPU that leaves the machine usable)",
     )
     parser.add_argument(
         "--paths",
