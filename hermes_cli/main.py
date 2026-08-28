@@ -10984,7 +10984,14 @@ def _plugin_cli_discovery_needed() -> bool:
     return True
 
 
-_AGENT_COMMANDS = {None, "chat", "acp", "rl"}
+# `dashboard` is the desktop app's backend: it hosts the embedded API that
+# serves agent turns, so it needs the same startup preparation as any other
+# agent host. Leaving it out meant the process never ran MCP discovery, so
+# the tool registry held only local tools — `tool_search` had nothing to
+# offer and every MCP tool was "not available" for the whole session, while
+# the desktop UI kept reporting the servers as active because it counts
+# config entries rather than loaded tools.
+_AGENT_COMMANDS = {None, "chat", "acp", "rl", "dashboard"}
 _AGENT_SUBCOMMANDS = {
     "cron": ("cron_command", {"run", "tick"}),
     "gateway": ("gateway_command", {"run"}),
@@ -11009,7 +11016,11 @@ def _command_has_dedicated_mcp_startup(args) -> bool:
 def _should_background_mcp_startup(args) -> bool:
     if _is_tui_chat_launch(args):
         return False
-    return args.command in {None, "chat", "rl"}
+    # `dashboard` discovers in the background rather than inline: a cold
+    # `npx`/`uvx` server takes seconds to answer, and blocking there would
+    # stall the desktop's boot. The bounded join before the first tool
+    # snapshot covers the common warm case.
+    return args.command in {None, "chat", "rl", "dashboard"}
 
 
 def _prepare_agent_startup(args) -> None:
