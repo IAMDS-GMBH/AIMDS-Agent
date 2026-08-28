@@ -1623,3 +1623,110 @@ class TestInstallProvenanceAndUpdate:
         from hermes_cli.mcp_picker import update_by_name
 
         assert update_by_name("nope") == 1
+
+
+class TestRefreshStaleInstalls:
+    """`hermes update` must carry fixes into ~/.hermes/mcp-installs.
+
+    Without this the agent checkout gets the fix and the clone that actually
+    runs stays on whatever commit it was installed at — which is how a
+    fixed MSOffice365MCP kept failing for hours after the fix shipped.
+    """
+
+    @staticmethod
+    def _git_manifest():
+        return _basic_manifest(
+            install={
+                "type": "git",
+                "url": "https://example.com/demo.git",
+                "ref": "main",
+                "bootstrap": [],
+            },
+            transport={"type": "stdio", "command": "${INSTALL_DIR}/run.sh"},
+        )
+
+    def _install(self, catalog_dir, tmp_path, commit):
+        _write_manifest(catalog_dir, "demo", self._git_manifest())
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.mcp_catalog import install_entry
+
+        clone = tmp_path / "clone"
+        clone.mkdir(exist_ok=True)
+
+        with patch.object(mcp_catalog, "_do_git_install", return_value=clone), patch.object(
+            mcp_catalog, "installed_commit", return_value=commit
+        ):
+            install_entry(_entry("demo"), enable=True)
+
+        return clone
+
+    def test_reclones_when_upstream_moved_ahead(self, catalog_dir, tmp_path):
+        clone = self._install(catalog_dir, tmp_path, "a" * 40)
+
+        from hermes_cli import mcp_catalog, mcp_picker
+        from hermes_cli.config import load_config
+
+        with patch.object(mcp_picker, "_remote_head", return_value="b" * 40), patch.object(
+            mcp_catalog, "_do_git_install", return_value=clone
+        ) as clone_mock, patch.object(mcp_catalog, "installed_commit", return_value="b" * 40):
+            result = mcp_picker.refresh_stale_installs(quiet=True)
+
+        assert result["updated"] == ["demo"]
+        assert clone_mock.call_count == 1
+        assert load_config()["mcp_servers"]["demo"]["install_source"]["commit"] == "b" * 40
+
+    def test_leaves_an_up_to_date_install_alone(self, catalog_dir, tmp_path):
+        clone = self._install(catalog_dir, tmp_path, "a" * 40)
+
+        from hermes_cli import mcp_catalog, mcp_picker
+
+        with patch.object(mcp_picker, "_remote_head", return_value="a" * 40), patch.object(
+            mcp_catalog, "_do_git_install", return_value=clone
+        ) as clone_mock:
+            result = mcp_picker.refresh_stale_installs(quiet=True)
+
+        assert result["updated"] == []
+        assert result["checked"] == ["demo"]
+        assert clone_mock.call_count == 0
+
+    def test_unreachable_remote_does_not_reclone(self, catalog_dir, tmp_path):
+        """No network must never mean "wipe the working install and retry"."""
+        clone = self._install(catalog_dir, tmp_path, "a" * 40)
+
+        from hermes_cli import mcp_catalog, mcp_picker
+
+        with patch.object(mcp_picker, "_remote_head", return_value=None), patch.object(
+            mcp_catalog, "_do_git_install", return_value=clone
+        ) as clone_mock:
+            result = mcp_picker.refresh_stale_installs(quiet=True)
+
+        assert result["updated"] == []
+        assert clone_mock.call_count == 0
+
+    def test_missing_install_dir_is_skipped(self, catalog_dir, tmp_path):
+        self._install(catalog_dir, tmp_path, "a" * 40)
+
+        from hermes_cli import mcp_picker
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["mcp_servers"]["demo"]["install_source"]["dir"] = str(tmp_path / "gone")
+        save_config(cfg)
+
+        result = mcp_picker.refresh_stale_installs(quiet=True)
+
+        assert result["skipped"] == ["demo"]
+        assert result["checked"] == []
+
+    def test_non_git_entry_is_ignored(self, catalog_dir):
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli import mcp_picker
+
+        install_entry(_entry("demo"), enable=True)
+        result = mcp_picker.refresh_stale_installs(quiet=True)
+
+        assert result["checked"] == []
+        assert result["updated"] == []

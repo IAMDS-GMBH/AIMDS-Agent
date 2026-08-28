@@ -376,6 +376,80 @@ def update_by_name(identifier: str) -> int:
     return 0
 
 
+def _remote_head(install_dir: Path, ref: str) -> Optional[str]:
+    """Commit that ``ref`` currently points at upstream, or None.
+
+    Uses a shallow fetch so this stays cheap enough to run on every update.
+    """
+    import shutil as _shutil
+    import subprocess as _subprocess
+
+    git = _shutil.which("git")
+    if not git or not (install_dir / ".git").exists():
+        return None
+    fetch = _subprocess.run(
+        [git, "-C", str(install_dir), "fetch", "--depth", "1", "origin", ref],
+        capture_output=True,
+        text=True,
+    )
+    if fetch.returncode != 0:
+        return None
+    proc = _subprocess.run(
+        [git, "-C", str(install_dir), "rev-parse", "FETCH_HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return None
+
+    return proc.stdout.strip() or None
+
+
+def refresh_stale_installs(*, quiet: bool = False) -> dict:
+    """Re-clone catalog MCPs whose install has fallen behind its manifest ref.
+
+    Called at the end of `hermes update`. A catalog install is an independent
+    clone under ~/.hermes/mcp-installs/<name> that nothing else ever touches,
+    so without this a server fix reaches the agent but never the code that
+    actually runs. Only installs that are genuinely behind are re-cloned —
+    re-running bootstrap for every entry on every update would be slow and
+    would rebuild venvs for no reason.
+
+    Best-effort by design: a missing network, a deleted upstream ref or a
+    broken clone must never fail an otherwise-good update.
+    """
+    from hermes_cli.mcp_catalog import _install_root, get_entry, installed_commit
+
+    servers = load_config().get("mcp_servers") or {}
+    result = {"checked": [], "updated": [], "failed": [], "skipped": []}
+
+    for name in list(servers if isinstance(servers, dict) else {}):
+        entry = get_entry(name)
+        if entry is None or entry.install is None:
+            continue
+
+        source = (servers.get(name) or {}).get("install_source") or {}
+        install_dir = Path(source.get("dir") or (_install_root() / name))
+        if not install_dir.exists():
+            result["skipped"].append(name)
+            continue
+
+        result["checked"].append(name)
+        local = source.get("commit") or installed_commit(install_dir) or ""
+        remote = _remote_head(install_dir, entry.install.ref) or ""
+        if not remote or (local and local == remote):
+            continue
+
+        if not quiet:
+            print(color(f"  ↑ '{name}' is behind {entry.install.ref} — re-installing", Colors.CYAN))
+        if update_by_name(name) == 0:
+            result["updated"].append(name)
+        else:
+            result["failed"].append(name)
+
+    return result
+
+
 def update_all() -> int:
     """Update every installed git-based catalog MCP."""
     from hermes_cli.mcp_catalog import get_entry

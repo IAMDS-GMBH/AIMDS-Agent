@@ -9225,6 +9225,27 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # Never let the cron safety net break an otherwise-good update.
             logger.debug("Cron jobs auto-restore check failed: %s", exc)
 
+        # Catalog MCPs live in their own clones under ~/.hermes/mcp-installs
+        # and are never touched by the agent update, so a server fix would
+        # otherwise reach the checkout but not the process that runs. Only
+        # installs actually behind their manifest ref get re-cloned.
+        try:
+            from hermes_cli.mcp_picker import refresh_stale_installs
+
+            mcp_refresh = refresh_stale_installs()
+            if mcp_refresh["updated"]:
+                print(
+                    f"  ↑ {len(mcp_refresh['updated'])} MCP install(s) updated: "
+                    f"{', '.join(mcp_refresh['updated'])}"
+                )
+            if mcp_refresh["failed"]:
+                print(
+                    f"  ⚠️  {len(mcp_refresh['failed'])} MCP install(s) failed to update: "
+                    f"{', '.join(mcp_refresh['failed'])} — run `hermes mcp update <name>`"
+                )
+        except Exception as e:
+            logger.debug("MCP catalog install refresh during update failed: %s", e)
+
         print()
         print("✓ Update complete!")
 
