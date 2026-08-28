@@ -37,12 +37,21 @@ import re
 from typing import Dict, Iterable, List, Optional
 
 __all__ = [
+    "VECTOR_SCHEMA_VERSION",
     "build_vector",
     "compute_idf",
     "cosine",
     "split_words",
     "tokenize",
 ]
+
+# Bump whenever a change here makes previously stored vectors incomparable to
+# freshly built ones. Persisted vectors (``doc_meta.vector_json``) are derived
+# data, so a consumer that stores them must detect the mismatch and rebuild —
+# otherwise queries score near zero against every stale row, silently, with no
+# error anywhere. Version 1 was whole-word frequency; version 2 added
+# character trigrams and IDF.
+VECTOR_SCHEMA_VERSION = 2
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")

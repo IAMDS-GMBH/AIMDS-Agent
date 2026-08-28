@@ -1114,3 +1114,56 @@ class TestNamedSourceIsAlwaysRepresented:
         names = self._names("Tempo worklog", limit=3)
 
         assert len(names) <= 3
+
+
+class TestVaultIndexIsActuallyReachable:
+    """The vault lookup in `search_catalog` was dead code.
+
+    It did `from agent.memory_vault_index import VaultIndex` — a symbol that
+    has never existed; the class is `VaultMetaIndex`. Inside a bare
+    `except Exception: pass`, the ImportError fired on every single search, so
+    `vault_vector_hits` stayed empty and the +50 boost never applied. The index
+    it meant to consult already holds every MCP tool via `sync_mcp_tools`.
+    """
+
+    def test_the_index_class_can_be_imported(self):
+        from agent.memory_vault_index import VaultMetaIndex
+
+        assert VaultMetaIndex is not None
+
+    def test_the_symbol_it_used_to_import_still_does_not_exist(self):
+        import agent.memory_vault_index as mvi
+
+        assert not hasattr(mvi, "VaultIndex"), (
+            "if a VaultIndex alias is ever added, this guard and the comment "
+            "in tool_search should be revisited"
+        )
+
+    def test_the_accessor_returns_the_real_class_or_none(self):
+        from tools.tool_search import _get_vault_index
+
+        index = _get_vault_index()
+
+        assert index is None or type(index).__name__ == "VaultMetaIndex"
+
+    def test_the_accessor_is_cached(self):
+        """Constructing one opens SQLite; search_catalog runs per tool call."""
+        from tools.tool_search import _get_vault_index
+
+        assert _get_vault_index() is _get_vault_index()
+
+    def test_a_broken_index_does_not_break_search(self, monkeypatch):
+        import tools.tool_search as ts
+
+        monkeypatch.setattr(ts, "_VAULT_INDEX_TRIED", False)
+        monkeypatch.setattr(ts, "_VAULT_INDEX", None)
+        monkeypatch.setattr(
+            "agent.memory_vault_index.VaultMetaIndex",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("no db")),
+        )
+
+        catalog = ts.build_catalog(
+            [{"type": "function", "function": {"name": "mcp_X_do", "description": "do", "parameters": {}}}]
+        )
+
+        assert ts.search_catalog(catalog, "do") is not None

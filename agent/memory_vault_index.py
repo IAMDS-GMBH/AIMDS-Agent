@@ -8,6 +8,7 @@ SQLite database (~/.hermes/memories/vault_index.sqlite).
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import sqlite3
@@ -17,7 +18,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 
+logger = logging.getLogger(__name__)
 
+
+from hermes_text_vector import VECTOR_SCHEMA_VERSION
 from hermes_text_vector import build_vector as _shared_build_vector
 from hermes_text_vector import cosine as _shared_cosine
 
@@ -115,6 +119,28 @@ class VaultMetaIndex:
             except sqlite3.OperationalError:
                 # Fallback if FTS5 not available
                 pass
+
+            # Stored vectors are derived data built by hermes_text_vector. When
+            # that vectorizer changes shape, every persisted vector becomes
+            # incomparable to freshly built query vectors — cosine goes to zero
+            # against every row, silently, with no error anywhere. The
+            # incremental sync would keep the stale vectors indefinitely, since
+            # the source files themselves never changed. Rebuilding is cheap
+            # (~900 records) and correct.
+            try:
+                stored_version = conn.execute("PRAGMA user_version").fetchone()[0]
+                if stored_version != VECTOR_SCHEMA_VERSION:
+                    conn.execute("DELETE FROM doc_meta")
+                    conn.execute(f"PRAGMA user_version = {int(VECTOR_SCHEMA_VERSION)}")
+                    logger.info(
+                        "Vault index vectors rebuilt: schema %s -> %s",
+                        stored_version,
+                        VECTOR_SCHEMA_VERSION,
+                    )
+            except sqlite3.Error:
+                # A version check must never make the index unusable.
+                pass
+
             conn.commit()
 
     def sync_record(self, record: Dict[str, Any], *, rebuild_fts: bool = True) -> None:

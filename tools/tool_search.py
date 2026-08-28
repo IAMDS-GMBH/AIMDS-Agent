@@ -670,6 +670,31 @@ def _match_full_source(catalog: List[CatalogEntry], query_lower: str) -> List[Ca
     return []
 
 
+_VAULT_INDEX = None
+_VAULT_INDEX_TRIED = False
+
+
+def _get_vault_index():
+    """Shared `VaultMetaIndex`, or None when it cannot be constructed.
+
+    Cached because constructing one opens a SQLite connection and runs
+    `_init_db`, and this runs on every `tool_search` call. A failure is
+    remembered so a broken index does not cost an import attempt per search.
+    """
+    global _VAULT_INDEX, _VAULT_INDEX_TRIED
+    if _VAULT_INDEX_TRIED:
+        return _VAULT_INDEX
+    _VAULT_INDEX_TRIED = True
+    try:
+        from agent.memory_vault_index import VaultMetaIndex
+
+        _VAULT_INDEX = VaultMetaIndex()
+    except Exception:
+        _VAULT_INDEX = None
+
+    return _VAULT_INDEX
+
+
 def _build_vector(text: str, idf: "Dict[str, float] | None" = None) -> Dict[str, float]:
     """Lexical vector for `text`, from the shared vectorizer.
 
@@ -719,8 +744,14 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
     # Optional VaultIndex vector search lookup (if local index is present)
     vault_vector_hits: Set[str] = set()
     try:
-        from agent.memory_vault_index import VaultIndex
-        v_index = VaultIndex()
+        # Was `VaultIndex` — a symbol that has never existed in this repo; the
+        # class is `VaultMetaIndex`. Sitting inside a bare `except Exception`,
+        # the ImportError fired on every single search, so `vault_vector_hits`
+        # was always empty and the +50 boost below was dead code. The index it
+        # meant to consult already holds every MCP tool via `sync_mcp_tools`.
+        v_index = _get_vault_index()
+        if v_index is None:
+            raise RuntimeError("vault index unavailable")
         v_results = v_index.hybrid_search(query_raw, top_k=limit * 2, scope_filter="mcp")
         for vr in v_results:
             if isinstance(vr, dict):
