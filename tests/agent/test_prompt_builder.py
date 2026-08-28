@@ -1358,20 +1358,22 @@ class TestBuildRemoteMcpMemoryPrompt:
         text = build_remote_mcp_memory_prompt({"memory_context"})
         assert 'local `memory` with target="user"' in text
 
-    def test_frames_local_as_default_and_cloud_as_narrower_opt_in(self):
-        """The prompt must be directive about the default: local storage first,
-        cloud memory only for facts that specifically need cross-device
-        durability — otherwise models default to the cloud tool for
-        everything, including session-specific detail that should stay local.
+    def test_keeps_local_as_the_default_working_store(self):
+        """The storage split stays: working detail local, durable facts in the
+        vault. What changed is the *retrieval* framing — the block used to call
+        the vault "narrower/opt-in" and say "Do not default to it", which models
+        read as "skip memory entirely", so sessions started cold and re-derived
+        context the vault already held. Reading is now expected; writing
+        session-specific detail into it still is not.
         """
         text = build_remote_mcp_memory_prompt({"memory_context"})
         assert "DEFAULT" in text
-        assert "narrower/opt-in" in text
-        assert "Prefer local storage UNLESS" in text
-        # Legitimate cross-device use cases must remain intact, not be
-        # suppressed by the stronger "prefer local" framing.
-        assert "durable user profile facts" in text
-        assert "standing rules/preferences, contacts" in text
+        assert "Session-specific working detail stays local" in text
+        # Legitimate cross-device use cases must remain intact.
+        assert "durable facts, standing rules, preferences, contacts" in text
+        # The discouraging framing must not come back.
+        assert "narrower/opt-in" not in text
+        assert "Do not default to it" not in text
 
     def test_includes_resolved_workspace_path_and_search_tool_guidance(self, monkeypatch):
         """The prompt must state the *actual* resolved workspace/vault path
@@ -1620,3 +1622,41 @@ class TestTaskCompletionGuidance:
 
 
 
+
+
+class TestMemoryPromptDemandsSessionInit:
+    """The block used to describe the vault as "narrower/opt-in" and to say
+    "Do not default to it", so sessions started cold and re-derived context the
+    vault already held. It now asks for exactly one load at session start.
+    """
+
+    TOOLS = {"mcp_AIMDSSuiteMCP_memory_context", "mcp_AIMDSSuiteMCP_memory_save"}
+
+    def test_asks_for_one_session_start_load(self):
+        from agent.prompt_builder import build_remote_mcp_memory_prompt
+
+        prompt = build_remote_mcp_memory_prompt(self.TOOLS)
+
+        assert "SESSION START" in prompt
+        assert "ONCE" in prompt
+        assert "mcp_AIMDSSuiteMCP_memory_context" in prompt
+
+    def test_still_forbids_calling_it_every_turn(self):
+        from agent.prompt_builder import build_remote_mcp_memory_prompt
+
+        prompt = build_remote_mcp_memory_prompt(self.TOOLS)
+
+        assert "every turn" in prompt
+
+    def test_no_longer_discourages_the_vault(self):
+        from agent.prompt_builder import build_remote_mcp_memory_prompt
+
+        prompt = build_remote_mcp_memory_prompt(self.TOOLS)
+
+        assert "opt-in" not in prompt
+        assert "Do not default to it" not in prompt
+
+    def test_absent_memory_tool_still_yields_no_block(self):
+        from agent.prompt_builder import build_remote_mcp_memory_prompt
+
+        assert build_remote_mcp_memory_prompt({"terminal", "read_file"}) == ""

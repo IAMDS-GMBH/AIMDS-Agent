@@ -67,7 +67,7 @@ If multiple PRs target same integration category (providers/backends/notifiers),
 ## Tooling and architecture rules
 
 - Keep model-tool cross-references out of static schema descriptions when referenced tools may be absent; add dynamic hints in `get_tool_definitions()` logic.
-- For MCP-backed memory/tools, call on demand: when users ask about projects or personal information, call the configured AIMDS server toolset first (specially the memory read/write tools); do not run memory MCP calls on every generic turn.
+- For MCP-backed memory: load `memory_context` ONCE at session start, before the first substantive tool call, and apply what it returns — standing rules, profile and hubs are cheaper to carry than to re-derive, and they keep the conversation short. Search memory again when a task touches a topic the vault may already document. Do NOT call memory tools on every generic turn.
 - **Dual-Memory Partitioning**:
   - **Memory MCP**: Stores concise global rules, directives, preferences, and high-level architectural invariants (< 1-2 KB per entry).
   - **Local Vault Index / Brain / Obsidian (`.md` files)**: Stores detailed documentation, specifications, logs, and changelogs. Never store large documents in Memory MCP; write them to `.md` files indexed via local vector search.
