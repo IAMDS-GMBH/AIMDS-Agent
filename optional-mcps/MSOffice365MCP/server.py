@@ -299,8 +299,20 @@ except ImportError:
 
 
     def _save_cache(app: msal.PublicClientApplication) -> None:
-        """Persist the MSAL token cache atomically."""
-        _save_msal_cache(app, cache_path=_get_token_cache_path())
+        """Persist the MSAL token cache atomically.
+
+        Standalone mirror of ``hermes_cli.m365_auth.save_msal_cache``. This
+        branch runs precisely because that module could not be imported, so it
+        must not reach back into it.
+        """
+        cache = getattr(app, "token_cache", None)
+        if not cache or not getattr(cache, "has_state_changed", False):
+            return
+        cache_path = _get_token_cache_path()
+        tmp_path = cache_path.with_name(f"{cache_path.name}.tmp.{os.getpid()}")
+        tmp_path.write_text(cache.serialize(), encoding="utf-8")
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, cache_path)
 
 
 def _get_access_token(account: Optional[str] = None) -> str:
@@ -804,13 +816,19 @@ def m365_initiate_login(request_admin_scopes: bool = False) -> Dict[str, Any]:
     if "user_code" in flow:
         return {
             "status": "pending",
+            "user_code": flow["user_code"],
+            # Deprecated alias for `user_code`. It collided with the unrelated
+            # `flow_data["device_code"]` secret and got callers passing the
+            # wrong value to m365_complete_login. Drop after one release.
             "device_code": flow["user_code"],
             "verification_url": flow["verification_uri"],
             "requested_admin_scopes": request_admin_scopes,
             "message": (
                 f"Please open {flow['verification_uri']} in your browser and enter the code: "
                 f"**{flow['user_code']}**\n"
-                "Once completed, run `m365_complete_login` or call any M365 tool to verify login."
+                "Once completed, call `m365_complete_login` with the `flow_data` object from "
+                "this response passed back unchanged (not the code above), or call any M365 "
+                "tool to verify login."
             ),
             "flow_data": flow,
         }
@@ -819,7 +837,13 @@ def m365_initiate_login(request_admin_scopes: bool = False) -> Dict[str, Any]:
 
 @mcp.tool()
 def m365_complete_login(flow_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Complete the Microsoft 365 OAuth sign-in flow after the user entered the code in browser."""
+    """Complete the Microsoft 365 OAuth sign-in flow after the user entered the code in browser.
+
+    Args:
+        flow_data: The `flow_data` object returned by `m365_initiate_login`,
+            passed back unchanged. This is the whole MSAL device-flow dict, not
+            the short code shown to the user.
+    """
     app = _get_msal_app()
     result = app.acquire_token_by_device_flow(flow_data)
     if "access_token" in result:

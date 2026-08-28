@@ -617,3 +617,82 @@ def test_enrich_timestamps():
         assert "dueDateTime_local" in enriched
         assert "2026-07-28 12:21:46" in enriched["createdDateTime_local"]
 
+
+
+def _load_server_without_hermes_cli():
+    """Load server.py with hermes_cli.m365_auth unimportable.
+
+    Mapping a module to None in sys.modules makes `from ... import ...` raise
+    ImportError, which is exactly the standalone/uvx launch this branch exists
+    for.
+    """
+    import sys
+
+    blocked = {"hermes_cli": None, "hermes_cli.m365_auth": None}
+    with patch.dict(sys.modules, blocked):
+        fallback_spec = importlib.util.spec_from_file_location("m365_server_fallback", server_path)
+        module = importlib.util.module_from_spec(fallback_spec)
+        fallback_spec.loader.exec_module(module)
+
+    return module
+
+
+def _fake_app(serialized: str, *, changed: bool = True):
+    app = MagicMock()
+    app.token_cache.has_state_changed = changed
+    app.token_cache.serialize.return_value = serialized
+
+    return app
+
+
+def test_fallback_save_cache_writes_atomically_without_hermes_cli(tmp_path, monkeypatch):
+    """Regression: the ImportError branch used to call the symbol it lacked.
+
+    `_save_cache` raised `NameError: name '_save_msal_cache' is not defined`,
+    so every token persist failed and M365 tools looped on "authentication
+    required" until the device flow expired (AADSTS70008).
+    """
+    module = _load_server_without_hermes_cli()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    module._save_cache(_fake_app('{"Account": {}}'))
+
+    cache_path = tmp_path / "m365_token_cache.bin"
+    assert cache_path.read_text(encoding="utf-8") == '{"Account": {}}'
+    assert cache_path.stat().st_mode & 0o777 == 0o600
+    assert list(tmp_path.glob("*.tmp.*")) == []
+
+
+def test_fallback_save_cache_skips_write_when_cache_unchanged(tmp_path, monkeypatch):
+    module = _load_server_without_hermes_cli()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    module._save_cache(_fake_app("{}", changed=False))
+
+    assert not (tmp_path / "m365_token_cache.bin").exists()
+
+
+def test_initiate_login_returns_user_code_and_flow_data():
+    """The response must not invite passing the short code to complete_login.
+
+    A caller previously read the top-level `device_code` (the short user code)
+    and passed it as flow_data, which pydantic rejected with
+    "flow_data Field required".
+    """
+    flow = {
+        "user_code": "C3L6VVVF4",
+        "device_code": "CBgABIQEAAAA-long-secret",
+        "verification_uri": "https://login.microsoft.com/device",
+        "expires_in": 900,
+    }
+    app = MagicMock()
+    app.initiate_device_flow.return_value = flow
+
+    with patch.object(server, "_get_msal_app", return_value=app):
+        res = server.m365_initiate_login()
+
+    assert res["user_code"] == "C3L6VVVF4"
+    assert res["device_code"] == "C3L6VVVF4", "deprecated alias must keep the old value"
+    assert res["flow_data"] is flow
+    assert "flow_data" in res["message"]
+    assert "unchanged" in res["message"]
