@@ -10,6 +10,7 @@ import { Bug } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $previewServerRestart, failPreviewServerRestart, type PreviewTarget } from '@/store/preview'
+import { useTheme } from '@/themes/context'
 
 import {
   clampConsoleHeight,
@@ -25,11 +26,23 @@ import { LocalFilePreview, PreviewEmptyState } from './preview-file'
 type PreviewWebview = HTMLElement & {
   closeDevTools?: () => void
   getURL?: () => string
+  insertCSS?: (css: string) => Promise<string>
   isDevToolsOpened?: () => boolean
   openDevTools?: () => void
   reload?: () => void
   reloadIgnoringCache?: () => void
 }
+
+/**
+ * Tell the guest document which palette it is being rendered against.
+ *
+ * A previewed document that sets no colours of its own used to paint nothing
+ * and inherit the app surface, so on a dark skin its default black text landed
+ * on the dark background and became unreadable. Declaring `color-scheme` makes
+ * the engine pick matching UA defaults (light text on a dark canvas); documents
+ * that bring their own colours still win, because this only moves the default.
+ */
+const previewColorSchemeCSS = (mode: 'light' | 'dark') => `:root { color-scheme: ${mode}; }`
 
 interface PreviewPaneProps {
   embedded?: boolean
@@ -138,6 +151,9 @@ export function PreviewPane({
   const previewContentRef = useRef<HTMLDivElement | null>(null)
   const webviewRef = useRef<PreviewWebview | null>(null)
   const previewServerRestart = useStore($previewServerRestart)
+  // renderedMode, not resolvedMode: skins can keep a bright surface in "dark",
+  // and the guest has to match what is actually painted behind it.
+  const { renderedMode } = useTheme()
   const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
   const [currentUrl, setCurrentUrl] = useState(target.url)
@@ -513,7 +529,8 @@ export function PreviewPane({
     }
 
     const webview = document.createElement('webview') as PreviewWebview
-    webview.className = 'flex h-full w-full flex-1 bg-transparent'
+    // Opaque, so nothing of the app surface shows through a transparent guest.
+    webview.className = 'flex h-full w-full flex-1 bg-background'
     webview.setAttribute('partition', 'persist:hermes-preview')
     webview.setAttribute('src', target.url)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
@@ -581,12 +598,18 @@ export function PreviewPane({
     const onStart = () => setLoading(true)
     const onStop = () => setLoading(false)
 
+    // Re-applied per document: insertCSS only affects the one currently loaded.
+    const onDomReady = () => {
+      void webview.insertCSS?.(previewColorSchemeCSS(renderedMode))?.catch(() => undefined)
+    }
+
     webview.addEventListener('console-message', onConsole)
     webview.addEventListener('did-fail-load', onFail)
     webview.addEventListener('did-navigate', onNavigate)
     webview.addEventListener('did-navigate-in-page', onNavigate)
     webview.addEventListener('did-start-loading', onStart)
     webview.addEventListener('did-stop-loading', onStop)
+    webview.addEventListener('dom-ready', onDomReady)
     host.appendChild(webview)
     webviewRef.current = webview
 
@@ -597,9 +620,10 @@ export function PreviewPane({
       webview.removeEventListener('did-navigate-in-page', onNavigate)
       webview.removeEventListener('did-start-loading', onStart)
       webview.removeEventListener('did-stop-loading', onStop)
+      webview.removeEventListener('dom-ready', onDomReady)
       webview.remove()
     }
-  }, [appendConsoleEntry, consoleState, copy, isWebPreview, target.url])
+  }, [appendConsoleEntry, consoleState, copy, isWebPreview, renderedMode, target.url])
 
   return (
     <aside className="relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-transparent text-muted-foreground">
