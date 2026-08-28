@@ -170,14 +170,29 @@ export function BootFailureOverlay() {
   const sendSupportLogs = async () => {
     setBusy('support')
     try {
-      const result = await window.hermesDesktop?.sendSupportLogs?.({ reason: 'boot_failure' })
+      const desktop = window.hermesDesktop
+      // Same reason as the renderer error boundary: sendSupportLogs alone
+      // files a case that says a boot failed without saying how.
+      const fn = desktop?.reportIssue || desktop?.sendSupportLogs
+      const summary = `Boot-Fehler: ${boot.error || 'Unbekannt'}`
+
+      const result = await fn?.({
+        category: 'connection_error',
+        severity: 'high',
+        summary,
+        userDescription: boot.error || '',
+        clientType: 'hermes-desktop',
+        contextType: 'boot_error',
+        reason: 'boot_failure'
+      } as any)
       if (result?.ok) {
         const reference = result.reference_id || result.referenceId
         addSupportTicket({
           jobId: reference || `job-${Date.now()}`,
           referenceId: reference,
-          summary: 'Support-Logs gesendet (Boot-Fehler)',
+          summary,
           category: 'connection_error',
+          severity: 'high',
           createdAt: Date.now()
         })
         notify({
