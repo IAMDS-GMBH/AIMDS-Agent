@@ -14,7 +14,7 @@ transport:
 
 install:
   type: git
-  url: https://github.com/IAMDS-GMBH/hermes-agent.git
+  url: https://github.com/IAMDS-GMBH/AIMDS-Agent.git
   ref: main
   bootstrap:
     - "python3 -m venv .venv"

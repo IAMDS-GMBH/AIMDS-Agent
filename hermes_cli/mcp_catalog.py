@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -488,6 +489,29 @@ def _do_git_install(entry: CatalogEntry) -> Path:
         _run_bootstrap(dest, install.bootstrap)
 
     return dest
+
+
+def installed_commit(install_dir: Path) -> Optional[str]:
+    """Return the commit an install directory currently sits on.
+
+    Recorded at install time so a later run can tell whether the clone in
+    ``~/.hermes/mcp-installs/<name>`` still matches the manifest ref. Without
+    it a catalog install is opaque: nothing on disk says which version of the
+    server code is actually running, so a fix that shipped weeks ago can keep
+    failing on a client with no way to notice.
+    """
+    git = shutil.which("git")
+    if not git or not (install_dir / ".git").exists():
+        return None
+    proc = subprocess.run(
+        [git, "-C", str(install_dir), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return None
+
+    return proc.stdout.strip() or None
 
 
 def _expand_install_dir(value: str, install_dir: Optional[Path]) -> str:
@@ -1029,8 +1053,10 @@ def install_entry(
     print()
 
     install_dir: Optional[Path] = None
+    install_commit: Optional[str] = None
     if entry.install is not None:
         install_dir = _do_git_install(entry)
+        install_commit = installed_commit(install_dir)
 
     # Auth
     collected_env: Dict[str, str] = dict(literal_env or {})
@@ -1119,6 +1145,16 @@ def install_entry(
         literal_env=collected_env if is_secondary_instance else None,
     )
     server_cfg["enabled"] = enable
+    if entry.install is not None and install_dir is not None:
+        # Provenance for `hermes mcp update`. The clone is never touched again
+        # after install, so this is the only record of which code is running.
+        server_cfg["install_source"] = {
+            "url": entry.install.url,
+            "ref": entry.install.ref,
+            "commit": install_commit or "",
+            "dir": str(install_dir),
+            "installed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        }
 
     cfg = load_config()
     cfg.setdefault("mcp_servers", {})[server_name] = server_cfg

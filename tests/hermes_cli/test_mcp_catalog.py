@@ -1509,3 +1509,117 @@ class TestShippedCatalog:
             assert entry.name
             assert entry.description
             assert entry.transport.type in ("stdio", "http")
+
+
+class TestInstallProvenanceAndUpdate:
+    """`install_source` provenance and the `hermes mcp update` path.
+
+    A catalog install clones into ~/.hermes/mcp-installs/<name> and is never
+    touched again, so a fix in the manifest's repo never reaches an existing
+    install. Nothing recorded which commit an install came from, so staleness
+    could not even be detected.
+    """
+
+    @staticmethod
+    def _git_manifest():
+        return _basic_manifest(
+            install={
+                "type": "git",
+                "url": "https://example.com/demo.git",
+                "ref": "main",
+                "bootstrap": [],
+            },
+            transport={"type": "stdio", "command": "${INSTALL_DIR}/run.sh"},
+        )
+
+    def test_install_records_commit_url_and_ref(self, catalog_dir, tmp_path):
+        _write_manifest(catalog_dir, "demo", self._git_manifest())
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        clone = tmp_path / "clone"
+        clone.mkdir()
+
+        with patch.object(mcp_catalog, "_do_git_install", return_value=clone), patch.object(
+            mcp_catalog, "installed_commit", return_value="a" * 40
+        ):
+            install_entry(_entry("demo"), enable=True)
+
+        source = load_config()["mcp_servers"]["demo"]["install_source"]
+        assert source["commit"] == "a" * 40
+        assert source["url"] == "https://example.com/demo.git"
+        assert source["ref"] == "main"
+        assert source["dir"] == str(clone)
+        assert source["installed_at"].endswith("+00:00")
+
+    def test_non_git_entry_records_no_provenance(self, catalog_dir):
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        install_entry(_entry("demo"), enable=True)
+
+        assert "install_source" not in load_config()["mcp_servers"]["demo"]
+
+    def test_installed_commit_returns_none_outside_a_repo(self, tmp_path):
+        from hermes_cli.mcp_catalog import installed_commit
+
+        assert installed_commit(tmp_path) is None
+
+    def test_update_reinstalls_and_reports_the_new_commit(self, catalog_dir, tmp_path, capsys):
+        _write_manifest(catalog_dir, "demo", self._git_manifest())
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.mcp_picker import update_by_name
+        from hermes_cli.config import load_config
+
+        clone = tmp_path / "clone"
+        clone.mkdir()
+
+        with patch.object(mcp_catalog, "_do_git_install", return_value=clone), patch.object(
+            mcp_catalog, "installed_commit", return_value="a" * 40
+        ):
+            install_entry(_entry("demo"), enable=True)
+
+        # Upstream moved on; the update path must re-clone and record it.
+        with patch.object(mcp_catalog, "_do_git_install", return_value=clone) as clone_mock, patch.object(
+            mcp_catalog, "installed_commit", return_value="b" * 40
+        ):
+            rc = update_by_name("demo")
+
+        assert rc == 0
+        assert clone_mock.call_count == 1
+        assert load_config()["mcp_servers"]["demo"]["install_source"]["commit"] == "b" * 40
+        assert "aaaaaaaa → bbbbbbbb" in capsys.readouterr().out
+
+    def test_update_keeps_a_disabled_server_disabled(self, catalog_dir, tmp_path):
+        _write_manifest(catalog_dir, "demo", self._git_manifest())
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.mcp_picker import update_by_name
+        from hermes_cli.config import load_config
+
+        clone = tmp_path / "clone"
+        clone.mkdir()
+
+        with patch.object(mcp_catalog, "_do_git_install", return_value=clone), patch.object(
+            mcp_catalog, "installed_commit", return_value="a" * 40
+        ):
+            install_entry(_entry("demo"), enable=False)
+
+        with patch.object(mcp_catalog, "_do_git_install", return_value=clone), patch.object(
+            mcp_catalog, "installed_commit", return_value="b" * 40
+        ):
+            assert update_by_name("demo") == 0
+
+        assert load_config()["mcp_servers"]["demo"]["enabled"] is False
+
+    def test_update_refuses_an_uninstalled_server(self, catalog_dir):
+        from hermes_cli.mcp_picker import update_by_name
+
+        assert update_by_name("nope") == 1

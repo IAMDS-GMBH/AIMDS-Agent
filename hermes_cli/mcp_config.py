@@ -853,6 +853,21 @@ def mcp_command(args):
         if rc:
             _sys.exit(rc)
         return
+    if action == "update":
+        import sys as _sys
+        identifier = getattr(args, "identifier", "") or ""
+        if getattr(args, "mcp_update_all", False):
+            from hermes_cli.mcp_picker import update_all
+            rc = update_all()
+        elif identifier:
+            from hermes_cli.mcp_picker import update_by_name
+            rc = update_by_name(identifier)
+        else:
+            print(color("  Usage: hermes mcp update <name> | hermes mcp update --all", Colors.YELLOW))
+            rc = 1
+        if rc:
+            _sys.exit(rc)
+        return
 
     handlers = {
         "add": cmd_mcp_add,
@@ -878,6 +893,7 @@ def mcp_command(args):
         _info("hermes mcp                                    Open the catalog picker (default)")
         _info("hermes mcp catalog                            List Nous-approved MCPs")
         _info("hermes mcp install <name>                     Install a catalog MCP")
+        _info("hermes mcp update <name> | --all              Re-clone an installed catalog MCP")
         _info("hermes mcp serve                              Run as MCP server")
         _info("hermes mcp add <name> --url <endpoint>        Add a custom MCP server")
         _info("hermes mcp add <name> --command <cmd>         Add a stdio server")

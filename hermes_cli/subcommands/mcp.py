@@ -100,5 +100,22 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         help="Catalog entry name (or `official/<name>`)",
     )
 
+    mcp_update_p = mcp_sub.add_parser(
+        "update",
+        help="Re-clone an installed catalog MCP so it picks up upstream fixes",
+    )
+    mcp_update_p.add_argument(
+        "identifier",
+        nargs="?",
+        default="",
+        help="Installed server name; omit together with --all",
+    )
+    mcp_update_p.add_argument(
+        "--all",
+        action="store_true",
+        dest="mcp_update_all",
+        help="Update every git-installed catalog MCP",
+    )
+
     add_accept_hooks_flag(mcp_parser)
     mcp_parser.set_defaults(func=cmd_mcp)

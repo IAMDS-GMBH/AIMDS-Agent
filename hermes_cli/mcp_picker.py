@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional
 
 from hermes_cli.colors import Colors, color
@@ -296,6 +297,104 @@ def run_picker() -> None:
         if idx is None:
             return
         _handle_row(rows[idx])
+
+
+def _short(commit: str) -> str:
+    return commit[:8] if commit else "unknown"
+
+
+def update_by_name(identifier: str) -> int:
+    """`hermes mcp update <name>` — re-clone an installed catalog MCP.
+
+    A catalog install clones into ``~/.hermes/mcp-installs/<name>`` and is
+    never touched again, so a fix landing in the manifest's repo never reaches
+    an existing install. This re-runs the install path, which wipes and
+    re-clones, while keeping the credentials and tool selection already on
+    disk (``skip_auth_prompt`` plus the prior-selection read inside
+    ``install_entry``).
+
+    Returns 0 on success, non-zero on failure.
+    """
+    from hermes_cli.mcp_catalog import get_entry, installed_commit
+
+    servers = load_config().get("mcp_servers") or {}
+    server_cfg = servers.get(identifier) if isinstance(servers, dict) else None
+    if not server_cfg:
+        print(color(
+            f"  ✗ '{identifier}' is not installed. "
+            "Run `hermes mcp list` to see configured servers.",
+            Colors.RED,
+        ))
+        return 1
+
+    entry = get_entry(identifier)
+    if entry is None:
+        print(color(
+            f"  ✗ '{identifier}' is installed but no longer in the catalog, "
+            "so there is nothing to update it from.",
+            Colors.RED,
+        ))
+        return 1
+    if entry.install is None:
+        print(color(
+            f"  ℹ '{identifier}' is not a git-installed MCP — nothing to update.",
+            Colors.DIM,
+        ))
+        return 0
+
+    source = server_cfg.get("install_source") or {}
+    before = source.get("commit") or ""
+    if not before:
+        install_dir = Path(source.get("dir") or "") if source.get("dir") else None
+        if install_dir and install_dir.exists():
+            before = installed_commit(install_dir) or ""
+
+    print(color(f"  Updating '{identifier}' from {entry.install.url} ({entry.install.ref})", Colors.CYAN))
+    if before:
+        print(color(f"  Currently on {_short(before)}", Colors.DIM))
+    else:
+        # Installs predating provenance recording have nothing to compare to.
+        print(color("  Current commit unknown (installed before update tracking)", Colors.DIM))
+
+    enabled = server_cfg.get("enabled", True)
+    if isinstance(enabled, str):
+        enabled = enabled.lower() in {"true", "1", "yes"}
+
+    try:
+        install_entry(entry, enable=bool(enabled), skip_auth_prompt=True)
+    except CatalogError as exc:
+        print(color(f"  ✗ update failed: {exc}", Colors.RED))
+        return 1
+
+    after = ((load_config().get("mcp_servers") or {}).get(identifier) or {}).get("install_source", {}).get("commit") or ""
+    if before and after and before == after:
+        print(color(f"  ✓ '{identifier}' already up to date ({_short(after)})", Colors.GREEN))
+    else:
+        print(color(f"  ✓ '{identifier}' updated {_short(before)} → {_short(after)}", Colors.GREEN))
+    print(color("  Reload MCP servers (or restart the session) to run the new code.", Colors.DIM))
+
+    return 0
+
+
+def update_all() -> int:
+    """Update every installed git-based catalog MCP."""
+    from hermes_cli.mcp_catalog import get_entry
+
+    servers = load_config().get("mcp_servers") or {}
+    names = [
+        name for name in (servers if isinstance(servers, dict) else {})
+        if (get_entry(name) is not None and getattr(get_entry(name), "install", None) is not None)
+    ]
+    if not names:
+        print(color("  No git-installed catalog MCPs to update.", Colors.DIM))
+        return 0
+
+    failed = [name for name in names if update_by_name(name) != 0]
+    if failed:
+        print(color(f"  ✗ {len(failed)} of {len(names)} failed: {', '.join(failed)}", Colors.RED))
+        return 1
+
+    return 0
 
 
 def install_by_name(identifier: str) -> int:
