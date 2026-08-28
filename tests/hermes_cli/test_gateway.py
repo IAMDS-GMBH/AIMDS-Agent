@@ -311,7 +311,14 @@ def test_gateway_restart_on_windows_without_service_uses_detached_backend(monkey
 
 
 def test_gateway_restart_on_windows_preserves_failure_fallback(monkeypatch):
-    """If the Windows backend cannot launch, keep the existing fallback."""
+    """If the Windows backend cannot launch, fall back to a detached start.
+
+    This used to fall through to a foreground `run_gateway()`. That turned
+    `restart` into "occupy this terminal until Ctrl+C", and the Ctrl+C then
+    killed the gateway — leaving the user with none at all. The detached
+    spawn is now the fallback; foreground only remains if detaching fails
+    too (covered below).
+    """
     import hermes_cli.gateway_windows as gateway_windows
 
     calls = []
@@ -328,11 +335,40 @@ def test_gateway_restart_on_windows_preserves_failure_fallback(monkeypatch):
     monkeypatch.setattr(gateway, "stop_profile_gateway", lambda: calls.append("stop") or False)
     monkeypatch.setattr(gateway, "_wait_for_gateway_exit", lambda *args, **kwargs: calls.append("wait"))
     monkeypatch.setattr(gateway, "run_gateway", lambda *args, **kwargs: calls.append("run"))
+    monkeypatch.setattr(
+        gateway, "_spawn_detached_gateway", lambda: calls.append("detached") or True
+    )
 
     args = SimpleNamespace(gateway_command="restart", system=False, all=False)
     gateway.gateway_command(args)
 
-    assert calls == ["restart", "stop", "wait", "run"]
+    assert calls == ["restart", "stop", "wait", "detached"]
+
+
+def test_gateway_restart_falls_back_to_foreground_when_detach_fails(monkeypatch):
+    """Detaching is preferred, but the gateway must still come up if it fails."""
+    import hermes_cli.gateway_windows as gateway_windows
+
+    calls = []
+
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: False)
+    monkeypatch.setattr(
+        gateway_windows,
+        "restart",
+        lambda: (_ for _ in ()).throw(OSError("simulated detached backend failure")),
+    )
+    monkeypatch.setattr(gateway, "stop_profile_gateway", lambda: calls.append("stop") or False)
+    monkeypatch.setattr(gateway, "_wait_for_gateway_exit", lambda *a, **kw: calls.append("wait"))
+    monkeypatch.setattr(gateway, "_spawn_detached_gateway", lambda: False)
+    monkeypatch.setattr(gateway, "run_gateway", lambda *a, **kw: calls.append("run"))
+
+    args = SimpleNamespace(gateway_command="restart", system=False, all=False)
+    gateway.gateway_command(args)
+
+    assert calls == ["stop", "wait", "run"]
 
 
 def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys):

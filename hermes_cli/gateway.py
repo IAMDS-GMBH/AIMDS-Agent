@@ -6752,7 +6752,17 @@ def _gateway_command_inner(args):
                 # run_gateway() is tied to the very gateway process we just
                 # stopped and can die before the replacement is stable.
                 gateway_windows.start()
+            elif _spawn_detached_gateway():
+                # No service manager configured (the common case when the
+                # desktop app owns the gateway). Foreground `run_gateway` here
+                # turns "restart" into "occupy this terminal until Ctrl+C" —
+                # and the Ctrl+C then leaves the user with no gateway at all,
+                # which is the opposite of what they asked for. Windows already
+                # avoids the foreground path for the same reason.
+                print("  ✓ Gateway started in the background")
             else:
+                print("  ⚠️  Could not start detached; running in the foreground.")
+                print("     Leave this terminal open — Ctrl+C stops the gateway.")
                 run_gateway(verbose=0)
             return
 
@@ -6827,9 +6837,19 @@ def _gateway_command_inner(args):
 
             _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
 
-            # Start fresh
+            # Start fresh — detached. This is the path taken when no service
+            # manager owns the gateway (e.g. the desktop app manages it), and
+            # it is the one users actually hit. Running in the foreground made
+            # `restart` occupy the terminal until Ctrl+C, and that Ctrl+C then
+            # killed the gateway outright: the command left the machine with
+            # no gateway at all.
             print("Starting gateway...")
-            run_gateway(verbose=0)
+            if _spawn_detached_gateway():
+                print("  ✓ Gateway started in the background")
+            else:
+                print("  ⚠️  Could not start detached; running in the foreground.")
+                print("     Leave this terminal open — Ctrl+C stops the gateway.")
+                run_gateway(verbose=0)
 
     elif subcmd == "status":
         deep = getattr(args, "deep", False)
