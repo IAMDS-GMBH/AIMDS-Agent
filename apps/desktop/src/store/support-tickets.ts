@@ -19,28 +19,35 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000
 
 export function isTicketResolved(status?: string, caseStatus?: string): boolean {
   const check = (s?: string) => {
-    if (!s) return false
+    if (!s) {return false}
     const u = s.toUpperCase()
+
     return u === 'RESOLVED' || u === 'COMPLETED' || u === 'ARCHIVED' || u === 'REVIEW'
   }
+
   return check(status) || check(caseStatus)
 }
 
 function loadSavedTickets(): SavedSupportTicket[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return []
+
+    if (!raw) {return []}
     const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
+
+    if (!Array.isArray(parsed)) {return []}
 
     const now = Date.now()
+
     return parsed.filter((ticket: SavedSupportTicket) => {
       if (isTicketResolved(ticket.status)) {
         const resolvedTime = ticket.resolvedAt || ticket.createdAt
+
         if (now - resolvedTime > SEVEN_DAYS_MS) {
           return false
         }
       }
+
       return true
     })
   } catch {
@@ -52,6 +59,7 @@ export const $supportTickets = atom<SavedSupportTicket[]>(loadSavedTickets())
 
 function persistTickets(tickets: SavedSupportTicket[]) {
   $supportTickets.set(tickets)
+
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(tickets))
   } catch {
@@ -60,7 +68,7 @@ function persistTickets(tickets: SavedSupportTicket[]) {
 }
 
 export function addSupportTicket(ticket: Omit<SavedSupportTicket, 'createdAt'> & { createdAt?: number }) {
-  if (!ticket.jobId && !ticket.referenceId && !ticket.caseId) return
+  if (!ticket.jobId && !ticket.referenceId && !ticket.caseId) {return}
 
   const item: SavedSupportTicket = {
     jobId: ticket.jobId || ticket.referenceId || ticket.caseId || `ticket-${Date.now()}`,
@@ -121,12 +129,14 @@ export function updateAndCleanupSupportTickets(
     const resolved = isTicketResolved(liveStatus)
 
     let resolvedAt = ticket.resolvedAt
+
     if (resolved && !resolvedAt) {
       resolvedAt = now
     }
 
     if (resolved) {
       const resolvedTime = resolvedAt || ticket.createdAt
+
       if (now - resolvedTime > SEVEN_DAYS_MS) {
         continue
       }
@@ -146,11 +156,14 @@ export function clearResolvedSupportTickets(
   statusMap?: Record<string, { case_status?: string; status?: string }>
 ) {
   const current = $supportTickets.get()
+
   const filtered = current.filter(ticket => {
     const live = statusMap ? (statusMap[ticket.jobId] || statusMap[ticket.referenceId || ''] || statusMap[ticket.caseId || '']) : undefined
     const status = live?.case_status || live?.status || ticket.status
+
     return !isTicketResolved(status)
   })
+
   persistTickets(filtered)
 }
 
@@ -160,6 +173,7 @@ export function clearSupportTickets() {
 
 export async function checkSupportTicketsStatus(): Promise<Record<string, { case_status?: string; status?: string }>> {
   const current = $supportTickets.get()
+
   if (current.length === 0) {
     return {}
   }
@@ -169,20 +183,27 @@ export async function checkSupportTicketsStatus(): Promise<Record<string, { case
   await Promise.all(
     current.map(async ticket => {
       const candidates = Array.from(new Set([ticket.jobId, ticket.caseId, ticket.referenceId].filter(Boolean) as string[]))
+
       for (const targetId of candidates) {
         try {
           const url = `https://suite-support.iamds.com/api/v1/jobs/${encodeURIComponent(targetId)}`
           const resp = await fetch(url, { method: 'GET', headers: { 'User-Agent': 'hermes-desktop-ticket-check/1.0' } })
+
           if (resp.ok) {
             const data = await resp.json()
+
             if (data && (data.case_status || data.status)) {
               const entry = {
                 case_status: data.case_status,
                 status: data.status
               }
-              if (ticket.jobId) statusMap[ticket.jobId] = entry
-              if (ticket.caseId) statusMap[ticket.caseId] = entry
-              if (ticket.referenceId) statusMap[ticket.referenceId] = entry
+
+              if (ticket.jobId) {statusMap[ticket.jobId] = entry}
+
+              if (ticket.caseId) {statusMap[ticket.caseId] = entry}
+
+              if (ticket.referenceId) {statusMap[ticket.referenceId] = entry}
+
               break
             }
           }

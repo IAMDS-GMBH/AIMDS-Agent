@@ -84,11 +84,14 @@ export function AgentsView({ onClose }: AgentsViewProps) {
 
   useEffect(() => {
     let cancelled = false
+
     const syncActiveSubagents = async () => {
       try {
         const res = await getActiveSubagents()
+
         if (res?.ok && Array.isArray(res.subagents) && !cancelled) {
           const sid = activeSessionId || 'default'
+
           for (const sub of res.subagents) {
             upsertSubagent(
               sid,
@@ -114,6 +117,7 @@ export function AgentsView({ onClose }: AgentsViewProps) {
 
     void syncActiveSubagents()
     const timer = setInterval(() => void syncActiveSubagents(), 2000)
+
     return () => {
       cancelled = true
       clearInterval(timer)
@@ -124,6 +128,7 @@ export function AgentsView({ onClose }: AgentsViewProps) {
     if (activeSessionId && subagentsBySession[activeSessionId]?.length) {
       return subagentsBySession[activeSessionId]
     }
+
     return Object.values(subagentsBySession).flat()
   }, [activeSessionId, subagentsBySession])
 

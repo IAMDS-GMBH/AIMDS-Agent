@@ -21,7 +21,7 @@ import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
 import { McpSettings } from './mcp-settings'
-import { PROVIDER_VIEWS, ProvidersSettings, McpCatalogSettings, type ProviderView } from './providers-settings'
+import { McpCatalogSettings, PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 
@@ -59,6 +59,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
     if (sectionId === 'advanced' && !advancedUnlocked && activeView !== view) {
       triggerHaptic('warning')
       setShowAdvancedWarning(true)
+
       return
     }
 

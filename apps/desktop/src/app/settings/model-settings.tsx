@@ -15,8 +15,8 @@ import type { AuxiliaryModelsResponse, ModelOptionProvider, StaleAuxAssignment }
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { startManualProviderOAuth } from '@/store/onboarding'
 import { notify } from '@/store/notifications'
+import { startManualProviderOAuth } from '@/store/onboarding'
 
 import { CONTROL_TEXT } from './constants'
 import { ListRow, LoadingState, Pill, SectionHeading } from './primitives'
@@ -138,27 +138,33 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   }, [refresh])
 
   const providerOptions = useMemo(() => {
-    if (!providers.length) return NO_PROVIDERS
+    if (!providers.length) {return NO_PROVIDERS}
     const matched = providers.filter(p => /^(?:aimds-suite|iamds-litellm)(?:-|$)/.test(String(p.slug || '').toLowerCase()))
+
     const canonicalMap: Record<string, string> = {
       'aimds-suite': 'aimds-suite-prod',
       'iamds-litellm': 'aimds-suite-prod',
       'iamds-litellm-staging': 'aimds-suite-staging',
       'iamds-litellm-dev': 'aimds-suite-dev'
     }
+
     const seenSlugs = new Set<string>()
     const seenNames = new Set<string>()
     const result: ModelOptionProvider[] = []
+
     for (const p of matched) {
       const slug = String(p.slug || '').toLowerCase()
       const canonical = canonicalMap[slug] || slug
       const name = String(p.name || '').trim().toLowerCase()
+
       if (!seenSlugs.has(canonical) && (!name || !seenNames.has(name))) {
         seenSlugs.add(canonical)
-        if (name) seenNames.add(name)
+
+        if (name) {seenNames.add(name)}
         result.push(p)
       }
     }
+
     return result
   }, [providers])
 
@@ -272,6 +278,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       setSwitchStaleAux(result.stale_aux ?? [])
       onMainModelChanged?.(provider, model)
       await refresh()
+
       if (result.mcp_reloaded) {
         notify({
           kind: 'success',

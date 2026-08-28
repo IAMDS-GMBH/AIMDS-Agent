@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import type { DesktopUninstallSummary } from '@/global'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Loader2 } from '@/lib/icons'
-import type { DesktopUninstallSummary } from '@/global'
 
 import { SectionHeading } from './primitives'
 
 export function UninstallSection() {
   const { t } = useI18n()
   const i18n = t.settings.about.uninstall
+
   const copy = i18n ?? {
     dangerZone: 'Danger zone',
     checkingInstalled: "Checking what's installed…",
@@ -35,10 +36,13 @@ export function UninstallSection() {
   useEffect(() => {
     let alive = true
     const bridge = window.hermesDesktop?.uninstall
+
     if (!bridge) {
       setLoading(false)
+
       return
     }
+
     void bridge
       .summary()
       .then(result => {
@@ -54,12 +58,14 @@ export function UninstallSection() {
           setLoading(false)
         }
       })
+
     return () => {
       alive = false
     }
   }, [])
 
   const bridge = window.hermesDesktop?.uninstall
+
   if (!bridge) {
     return null
   }
@@ -68,10 +74,13 @@ export function UninstallSection() {
     if (!pending) {
       return
     }
+
     setRunning(true)
     setError(null)
+
     try {
       const result = await bridge.run('full')
+
       if (!result.ok) {
         setError(result.message || result.error || copy.startFailed)
         setRunning(false)

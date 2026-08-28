@@ -1,10 +1,12 @@
 import { useStore } from '@nanostores/react'
+import { useQuery } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
+import { getMcpServers } from '@/hermes'
 import { useI18n } from '@/i18n'
 import {
   Activity,
@@ -20,8 +22,6 @@ import {
   Zap,
   ZapFilled
 } from '@/lib/icons'
-import { useQuery } from '@tanstack/react-query'
-import { getMcpServers } from '@/hermes'
 import { getMcpServerToolCount } from '@/lib/mcp-helpers'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { appViewForPath, APP_ROUTES, TODOS_ROUTE } from './routes'
+import { APP_ROUTES, appViewForPath, TODOS_ROUTE } from './routes'
 
 describe('app routes', () => {
   it('registers todos route metadata', () => {

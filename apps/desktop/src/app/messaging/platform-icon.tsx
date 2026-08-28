@@ -12,7 +12,7 @@ import {
   SiWechat,
   SiWhatsapp
 } from '@icons-pack/react-simple-icons'
-import { useState, type ComponentType, type SVGProps } from 'react'
+import { type ComponentType, type SVGProps, useState } from 'react'
 
 import { Globe, Link as LinkIcon, MessageSquareText } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -59,6 +59,7 @@ interface PlatformAvatarProps {
 
 function resolvePublicAssetPath(path: string): string {
   const rel = path.replace(/^\/+/, '')
+
   return `${import.meta.env.BASE_URL}${rel}`
 }
 
@@ -96,7 +97,7 @@ export function PlatformAvatar({ className, platformId, platformName }: Platform
       {Icon ? (
         <Icon className="size-3.5" />
       ) : svgSrc && !svgFailed ? (
-        <img alt="" className="size-3.5 object-contain" src={svgSrc} onError={() => setSvgFailed(true)} />
+        <img alt="" className="size-3.5 object-contain" onError={() => setSvgFailed(true)} src={svgSrc} />
       ) : (
         spec.monogram || platformName.charAt(0).toUpperCase()
       )}

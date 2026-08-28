@@ -19,11 +19,14 @@ let configuredDefaultProjectDir = ''
 
 export const getRememberedWorkspaceCwd = (): string => {
   let val = storedString(WORKSPACE_CWD_KEY)?.trim() || ''
-  if (!val) return ''
+
+  if (!val) {return ''}
 
   const legacyFolderNames = ['HermesWorkingDirectory', 'AIMDS-Workspace', 'AIMDS-Suite-WorkingDirectory', 'AIMDS-Suite-Vault']
+
   if (legacyFolderNames.some(name => val.includes(name))) {
     persistString(WORKSPACE_CWD_KEY, '')
+
     return ''
   }
 
@@ -58,20 +61,27 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
   }
 
   const rootSetting = storedString(FILE_PICKER_ROOT_STORAGE_KEY)
+
   if (rootSetting === 'userDir') {
     const { cwd: homeCwd } = await sanitize('~')
+
     if (homeCwd) {
       setCurrentCwd(homeCwd)
+
       return
     }
   } else if (rootSetting === 'vault') {
     const { cwd: homeCwd } = await sanitize('~')
+
     const vaultPath = homeCwd
       ? `${homeCwd.replace(/[/\\]+$/, '')}/Documents/AIMDS-Suite-Vault`
       : '~/Documents/AIMDS-Suite-Vault'
+
     const { cwd: sanitizedVault } = await sanitize(vaultPath)
+
     if (sanitizedVault) {
       setCurrentCwd(sanitizedVault)
+
       return
     }
   }
@@ -81,14 +91,17 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
 
   if (configured) {
     const { cwd } = await sanitize(configured)
+
     if (cwd) {
       setCurrentCwd(cwd)
+
       return
     }
   }
 
   const remembered = getRememberedWorkspaceCwd()
   const { cwd } = await sanitize(remembered)
+
   if (cwd) {
     setCurrentCwd(cwd)
   }
@@ -154,6 +167,7 @@ export function mergeSessionPage(
   }
 
   const incomingIds = new Set(incoming.map(session => session.id))
+
   // Deduplicate by compression lineage: when auto-compression rotates the tip
   // id (old #4 → new #5), the incoming page carries the new tip but the
   // previous list still holds the old one.  Without lineage-level dedup both

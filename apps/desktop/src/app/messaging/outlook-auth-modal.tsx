@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import {
   Dialog,
   DialogContent,
@@ -9,9 +9,10 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { Copy, ExternalLink, Loader2 } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
-import { cn } from '@/lib/utils'
+
 import { useGatewayRequest } from '../gateway/hooks/use-gateway-request'
 
 interface OutlookAuthStartResult {
@@ -66,6 +67,7 @@ export function OutlookAuthModal({
         clearInterval(pollIntervalRef.current)
         pollIntervalRef.current = null
       }
+
       return
     }
 
@@ -85,8 +87,10 @@ export function OutlookAuthModal({
         // Validate required fields (skip if using saved env)
         if (!useSavedEnv && (!tenantId.trim() || !clientId.trim())) {
           const missing = []
-          if (!tenantId.trim()) missing.push('Tenant ID')
-          if (!clientId.trim()) missing.push('Client ID')
+
+          if (!tenantId.trim()) {missing.push('Tenant ID')}
+
+          if (!clientId.trim()) {missing.push('Client ID')}
           throw new Error(`Missing required fields: ${missing.join(', ')}`)
         }
 
@@ -104,6 +108,7 @@ export function OutlookAuthModal({
               client_id: clientId,
               ...(clientSecret.trim() ? { client_secret: clientSecret } : {})
             }
+
         const requestDebugPayload = useSavedEnv
           ? { use_saved_env: true }
           : {
@@ -111,6 +116,7 @@ export function OutlookAuthModal({
               client_id: clientId,
               ...(clientSecret.trim() ? { client_secret: clientSecret } : {})
             }
+
         setRequestDebug(JSON.stringify(requestDebugPayload, null, 2))
 
         const data = await requestGateway<OutlookAuthStartResult>('outlook.auth.start', requestData)
@@ -144,6 +150,7 @@ export function OutlookAuthModal({
             console.warn('[Outlook Auth] Polling timeout (device code expired)')
             setStage('error')
             setError('Device code expired. Please try again.')
+
             return
           }
 
@@ -151,6 +158,7 @@ export function OutlookAuthModal({
             const status = await requestGateway<OutlookAuthStatusResult>('outlook.auth.status', {
               request_id: currentRequestId
             })
+
             console.log('[Outlook Auth] Poll response:', status)
 
             if (status.status === 'success') {
@@ -214,7 +222,7 @@ export function OutlookAuthModal({
   }
 
   return (
-    <Dialog open={open && stage !== 'success'} onOpenChange={open => !open && onCancel()}>
+    <Dialog onOpenChange={open => !open && onCancel()} open={open && stage !== 'success'}>
       <DialogContent showCloseButton={stage !== 'waiting'}>
         <DialogHeader>
           <DialogTitle>
@@ -236,7 +244,7 @@ export function OutlookAuthModal({
             {stage === 'waiting' && flow === 'loopback' && (
               <>
                 <p>Click the button below to sign in with Microsoft in your browser.</p>
-                <Button onClick={handleOpenBrowser} className="w-full" variant="default">
+                <Button className="w-full" onClick={handleOpenBrowser} variant="default">
                   <ExternalLink className="size-4" />
                   Open Microsoft Login
                 </Button>
@@ -251,7 +259,7 @@ export function OutlookAuthModal({
             {stage === 'waiting' && flow === 'device_code' && (
               <>
                 <p>1. Click the button below to open Microsoft login in your browser</p>
-                <Button onClick={handleOpenBrowser} className="w-full" variant="default">
+                <Button className="w-full" onClick={handleOpenBrowser} variant="default">
                   <ExternalLink className="size-4" />
                   Open Microsoft Login
                 </Button>
@@ -260,15 +268,15 @@ export function OutlookAuthModal({
                   <p className="mb-2 text-sm font-medium">2. Enter this code when prompted:</p>
                   <div className="flex gap-2">
                     <Input
+                      className="font-mono text-lg font-bold tracking-widest"
                       readOnly
                       value={userCode}
-                      className="font-mono text-lg font-bold tracking-widest"
                     />
                     <Button
-                      onClick={handleCopyCode}
-                      variant="outline"
-                      size="sm"
                       className="shrink-0"
+                      onClick={handleCopyCode}
+                      size="sm"
+                      variant="outline"
                     >
                       <Copy className="size-4" />
                     </Button>
@@ -300,12 +308,12 @@ export function OutlookAuthModal({
 
         <DialogFooter>
           {stage === 'error' && (
-            <Button variant="outline" onClick={onCancel}>
+            <Button onClick={onCancel} variant="outline">
               Close
             </Button>
           )}
           {stage !== 'error' && stage !== 'success' && (
-            <Button variant="outline" onClick={onCancel} disabled={stage === 'waiting'}>
+            <Button disabled={stage === 'waiting'} onClick={onCancel} variant="outline">
               Cancel
             </Button>
           )}

@@ -7,8 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Command, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -21,12 +21,12 @@ import {
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, ChevronDown } from '@/lib/icons'
+import { persistString, storedString } from '@/lib/storage'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
+import { ensureDefaultWorkspaceCwd, FILE_PICKER_ROOT_STORAGE_KEY, setCurrentCwd } from '@/store/session'
 import { $tipMode, setTipMode } from '@/store/tip-mode'
-import { persistString, storedString } from '@/lib/storage'
-import { FILE_PICKER_ROOT_STORAGE_KEY, ensureDefaultWorkspaceCwd, setCurrentCwd } from '@/store/session'
+import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
@@ -75,12 +75,14 @@ const PREFERRED_TIMEZONES = [
 function detectSystemTimezone(): string {
   try {
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone?.trim()
+
     if (timezone) {
       return timezone
     }
   } catch {
     // Fall back to UTC.
   }
+
   return 'UTC'
 }
 
@@ -90,6 +92,7 @@ function getSupportedTimezones(): string[] {
   }
 
   const raw = intl.supportedValuesOf?.('timeZone')
+
   if (!raw || raw.length === 0) {
     return [...FALLBACK_TIMEZONES]
   }
@@ -182,6 +185,7 @@ function TimezoneField({
 
             {filteredPreferred.map(timezone => {
               const isSelected = selected === timezone
+
               return (
                 <CommandItem
                   key={`preferred-${timezone}`}
@@ -201,6 +205,7 @@ function TimezoneField({
 
             {filteredAll.map(timezone => {
               const isSelected = selected === timezone
+
               return (
                 <CommandItem
                   key={timezone}
@@ -409,10 +414,13 @@ export function ConfigSettings({
   const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
   const [updateChannel, setUpdateChannel] = useState<'stable' | 'main'>('main')
+
   const [filePickerRoot, setFilePickerRoot] = useState<'userDir' | 'vault'>(() => {
     const saved = storedString(FILE_PICKER_ROOT_STORAGE_KEY)
+
     return saved === 'vault' ? 'vault' : 'userDir'
   })
+
   const saveVersionRef = useRef(0)
   const [saveVersion, setSaveVersion] = useState(0)
 
@@ -635,6 +643,7 @@ export function ConfigSettings({
                         persistString(FILE_PICKER_ROOT_STORAGE_KEY, rootType)
                         const setProjectDir = window.hermesDesktop?.settings?.setDefaultProjectDir
                         const targetDir = rootType === 'userDir' ? '~' : '~/Documents/AIMDS-Suite-Vault'
+
                         if (setProjectDir) {
                           void window.hermesDesktop?.sanitizeWorkspaceCwd?.(targetDir).then(res => {
                             if (res?.cwd) {
@@ -645,6 +654,7 @@ export function ConfigSettings({
                         } else {
                           void ensureDefaultWorkspaceCwd()
                         }
+
                         notify({ kind: 'info', title: c.restartNoticeTitle, message: c.restartNoticeDesc })
                       }}
                       options={filePickerRootOptions}

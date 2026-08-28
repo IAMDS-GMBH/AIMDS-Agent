@@ -86,6 +86,7 @@ function RootErrorFallback({ componentStack, error, reset }: ErrorBoundaryFallba
 
   const sendSupportLogs = async () => {
     setSending(true)
+
     try {
       const desktop = window.hermesDesktop
       // reportIssue carries the crash details; sendSupportLogs is the older
@@ -102,6 +103,7 @@ function RootErrorFallback({ componentStack, error, reset }: ErrorBoundaryFallba
         contextType: 'crash',
         reason: 'renderer_error_boundary'
       } as any)
+
       if (result?.ok) {
         const reference = result.reference_id || result.referenceId
         addSupportTicket({

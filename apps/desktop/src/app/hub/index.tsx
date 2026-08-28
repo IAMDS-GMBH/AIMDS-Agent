@@ -1,22 +1,22 @@
-import type * as React from 'react'
 import { useStore } from '@nanostores/react'
+import type * as React from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
-import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
+import { TextTab } from '@/components/ui/text-tab'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
-import { useGatewayRequest } from '../gateway/hooks/use-gateway-request'
 
+import { useGatewayRequest } from '../gateway/hooks/use-gateway-request'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PAGE_INSET_X } from '../layout-constants'
 import { PageSearchShell } from '../page-search-shell'
-import { includesQuery, prettyName } from '../settings/helpers'
+import { includesQuery } from '../settings/helpers'
 
 const HUB_MODES = ['agents', 'skills'] as const
 type HubMode = (typeof HUB_MODES)[number]
@@ -51,6 +51,7 @@ function resolveSkillSource(source: unknown): string | undefined {
 
   if (typeof source === 'string') {
     const trimmed = source.trim()
+
     return trimmed || undefined
   }
 
@@ -59,10 +60,12 @@ function resolveSkillSource(source: unknown): string | undefined {
   }
 
   const srcObj = source as Record<string, unknown>
+
   const repo =
     (typeof srcObj.repo === 'string' && srcObj.repo.trim()) ||
     (typeof srcObj.repository === 'string' && srcObj.repository.trim()) ||
     undefined
+
   if (repo) {
     return `github:${repo}`
   }
@@ -71,14 +74,17 @@ function resolveSkillSource(source: unknown): string | undefined {
     (typeof srcObj.owner === 'string' && srcObj.owner.trim()) ||
     (typeof srcObj.org === 'string' && srcObj.org.trim()) ||
     undefined
+
   const repoName =
     (typeof srcObj.name === 'string' && srcObj.name.trim()) ||
     (typeof srcObj.repo_name === 'string' && srcObj.repo_name.trim()) ||
     undefined
+
   const provider =
     (typeof srcObj.source === 'string' && srcObj.source.trim().toLowerCase()) ||
     (typeof srcObj.provider === 'string' && srcObj.provider.trim().toLowerCase()) ||
     undefined
+
   if ((provider === 'github' || provider === 'git') && owner && repoName) {
     return `github:${owner}/${repoName}`
   }
@@ -89,6 +95,7 @@ function resolveSkillSource(source: unknown): string | undefined {
     (typeof srcObj.raw_url === 'string' && srcObj.raw_url.trim()) ||
     (typeof srcObj.source_url === 'string' && srcObj.source_url.trim()) ||
     undefined
+
   return url || undefined
 }
 
@@ -142,11 +149,13 @@ export function HubView({ ...props }: HubViewProps) {
   const [rawResponse, setRawResponse] = useState<unknown>(null)
   const [showRaw, setShowRaw] = useState(false)
   const [installing, setInstalling] = useState<{ id: string; skill: LiteLLMSkill } | null>(null)
+
   const [installProgress, setInstallProgress] = useState<InstallProgressState>({
     message: '',
     percent: null,
     level: 'info',
   })
+
   const installRunIdRef = useRef<string | null>(null)
   const installProgressRef = useRef<InstallProgressState>(installProgress)
   const [installedSkillIds, setInstalledSkillIds] = useState<Set<string>>(new Set())
@@ -160,12 +169,15 @@ export function HubView({ ...props }: HubViewProps) {
     if (!gateway) {
       return
     }
+
     return gateway.onEvent(event => {
       if (event.type !== 'litellm_hub.skill_install.progress') {
         return
       }
+
       const payload = (event.payload as Record<string, unknown>) || {}
       const runId = typeof payload.install_run_id === 'string' ? payload.install_run_id : ''
+
       if (!runId || installRunIdRef.current !== runId) {
         return
       }
@@ -175,12 +187,14 @@ export function HubView({ ...props }: HubViewProps) {
       const failed = Number(payload.failed) || 0
       const conflicts = Number(payload.conflicts) || 0
       const hasFailures = failed > 0 || conflicts > 0
+
       const message =
         typeof payload.message === 'string' && payload.message.trim()
           ? payload.message
           : `Installing skills... (${Math.max(0, completed)}/${Math.max(0, total)})`
 
       let percent = total > 0 ? Math.max(0, Math.min(100, Math.round((completed / total) * 100))) : 0
+
       if (hasFailures) {
         percent = Math.min(95, percent)
       }
@@ -207,8 +221,10 @@ export function HubView({ ...props }: HubViewProps) {
         console.log('[Hub] agents resolved_url:', data?.resolved_url)
         setResolvedUrl(data?.resolved_url || null)
         setRawResponse(data)
+
         const agentsList = (data?.agents || []).map((agent: unknown) => {
           const a = agent as Record<string, unknown>
+
           return {
             id: String(a.id || a.name || ''),
             name: String(a.name || ''),
@@ -216,15 +232,18 @@ export function HubView({ ...props }: HubViewProps) {
             active: Boolean(a.active),
           }
         })
+
         setAgents(agentsList)
       } else {
         const data = await requestGateway<{ skills: unknown[]; resolved_url?: string }>('litellm_hub.skills', { limit: 100 })
         console.log('[Hub] skills resolved_url:', data?.resolved_url)
         setResolvedUrl(data?.resolved_url || null)
         setRawResponse(data)
+
         const skillsList = (data?.skills || []).map((skill: unknown) => {
           const s = skill as Record<string, unknown>
           const sourceStr = resolveSkillSource(s.source)
+
           return {
             id: String(s.id || s.name || ''),
             name: String(s.name || ''),
@@ -235,6 +254,7 @@ export function HubView({ ...props }: HubViewProps) {
             installedName: s.installed_name ? String(s.installed_name) : undefined,
           }
         })
+
         setSkills(skillsList)
         setInstalledSkillIds(new Set(skillsList.filter(s => s.installed).map(s => s.id)))
       }
@@ -249,6 +269,7 @@ export function HubView({ ...props }: HubViewProps) {
 
   const handleToggleAgent = async (agent: LiteLLMAgent) => {
     setTogglingAgent(agent.name)
+
     try {
       const method = agent.active ? 'litellm_hub.agent_deactivate' : 'litellm_hub.agent_activate'
       await requestGateway<{ active_agents: string[] }>(method, { agent_name: agent.name })
@@ -267,6 +288,7 @@ export function HubView({ ...props }: HubViewProps) {
   const handleInstallSkill = async (skill: LiteLLMSkill) => {
     const installRunId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
     installRunIdRef.current = installRunId
+
     const isSetInstall =
       typeof skill.sourceRaw === 'object' &&
       skill.sourceRaw !== null &&
@@ -283,7 +305,9 @@ export function HubView({ ...props }: HubViewProps) {
       if (!isSetInstall) {
         setInstallProgress({ message: 'Downloading skill from GitHub...', percent: 35, level: 'info' })
       }
+
       const sourceParam = skill.sourceRaw ?? skill.source
+
       const result = await requestGateway<{
         success: boolean
         message: string
@@ -306,6 +330,7 @@ export function HubView({ ...props }: HubViewProps) {
         const failed = Array.isArray(result.failed_skills) ? result.failed_skills.length : 0
         const hasFailures = conflicts > 0 || failed > 0
         const finalPercent = hasFailures ? Math.min(95, installProgressRef.current.percent ?? 95) : 100
+
         if (Array.isArray(result.installed_skills) && result.installed_skills.length > 0) {
           const skipped = Array.isArray(result.skipped_skills) ? result.skipped_skills.length : 0
           const suffix = skipped > 0 ? ` (${skipped} already installed)` : ''
@@ -323,6 +348,7 @@ export function HubView({ ...props }: HubViewProps) {
             level: warning ? 'warning' : 'success',
           })
         }
+
         setInstalledSkillIds(prev => new Set(prev).add(skill.id))
         installRunIdRef.current = null
         setTimeout(() => setInstalling(null), 2000)
@@ -337,9 +363,11 @@ export function HubView({ ...props }: HubViewProps) {
 
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
+
       const friendlyMessage = /(?:^|\\b)(429|rate limit|too many requests|server busy)(?:\\b|$)/i.test(message)
         ? 'Server busy, try again later.'
         : message
+
       setInstallProgress({
         message: `✗ Error: ${friendlyMessage}`,
         percent: Math.min(95, installProgressRef.current.percent ?? 95),
@@ -352,6 +380,7 @@ export function HubView({ ...props }: HubViewProps) {
 
   const handleUninstallSkill = async (skill: LiteLLMSkill) => {
     const uninstallName = (skill.installedName || skill.name || skill.id).trim()
+
     try {
       await requestGateway<{ success: boolean; message: string }>('litellm_hub.skill_uninstall', {
         skill_name: uninstallName,
@@ -360,6 +389,7 @@ export function HubView({ ...props }: HubViewProps) {
       setInstalledSkillIds(prev => {
         const next = new Set(prev)
         next.delete(skill.id)
+
         return next
       })
       setSkills(prev =>
@@ -396,21 +426,21 @@ export function HubView({ ...props }: HubViewProps) {
   return (
     <section {...props} className={cn('flex flex-col overflow-hidden', props.className)}>
       <PageSearchShell
-        searchValue={query}
         onSearchChange={setQuery}
         searchPlaceholder={
           mode === 'agents' ? 'Search agents...' : 'Search skills...'
         }
+        searchValue={query}
         tabs={
           <>
             <TextTab
               active={mode === 'agents'}
-              onClick={() => setMode('agents')}
               className="data-[active]:bg-accent/5"
+              onClick={() => setMode('agents')}
             >
               <span>Agents</span>
               {filteredAgentsList && (
-                <Badge variant="outline" className="ml-2 pointer-events-none">
+                <Badge className="ml-2 pointer-events-none" variant="outline">
                   {filteredAgentsList.length}
                 </Badge>
               )}
@@ -418,12 +448,12 @@ export function HubView({ ...props }: HubViewProps) {
 
             <TextTab
               active={mode === 'skills'}
-              onClick={() => setMode('skills')}
               className="data-[active]:bg-accent/5"
+              onClick={() => setMode('skills')}
             >
               <span>Skills</span>
               {filteredSkillsList && (
-                <Badge variant="outline" className="ml-2 pointer-events-none">
+                <Badge className="ml-2 pointer-events-none" variant="outline">
                   {filteredSkillsList.length}
                 </Badge>
               )}
@@ -450,17 +480,17 @@ export function HubView({ ...props }: HubViewProps) {
         ) : mode === 'agents' ? (
           <AgentsList
             agents={filteredAgentsList || []}
+            onToggle={handleToggleAgent}
             query={query}
             togglingAgent={togglingAgent}
-            onToggle={handleToggleAgent}
           />
         ) : (
         <SkillsList
-          skills={filteredSkillsList || []}
-          query={query}
+          installedIds={installedSkillIds}
           onInstall={handleInstallSkill}
           onUninstall={handleUninstallSkill}
-          installedIds={installedSkillIds}
+          query={query}
+          skills={filteredSkillsList || []}
         />
         )}
 
@@ -485,12 +515,12 @@ export function HubView({ ...props }: HubViewProps) {
         
         {installing && (
           <SkillInstallModal
-            skill={installing.skill}
-            progress={installProgress}
             onClose={() => {
               installRunIdRef.current = null
               setInstalling(null)
             }}
+            progress={installProgress}
+            skill={installing.skill}
           />
         )}
       </PageSearchShell>
@@ -516,13 +546,13 @@ function AgentsList({ agents, query, togglingAgent, onToggle }: AgentsListProps)
         <div className={cn('space-y-1 p-4', PAGE_INSET_X)}>
           {agents.map(agent => (
             <div
-              key={agent.id}
               className={cn(
                 'p-3 rounded border transition-colors',
                 agent.active
                   ? 'border-blue-500/40 bg-blue-500/5 dark:bg-blue-500/10'
                   : 'border-border bg-card hover:bg-accent/5'
               )}
+              key={agent.id}
             >
               <div className="flex items-start gap-2">
                 <Codicon className="mt-1 flex-shrink-0" name="robot" />
@@ -530,7 +560,7 @@ function AgentsList({ agents, query, togglingAgent, onToggle }: AgentsListProps)
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-foreground">{agent.name}</span>
                     {agent.active && (
-                      <Badge variant="outline" className="text-xs text-blue-600 dark:text-blue-400 border-blue-500/40">
+                      <Badge className="text-xs text-blue-600 dark:text-blue-400 border-blue-500/40" variant="outline">
                         active
                       </Badge>
                     )}
@@ -542,8 +572,6 @@ function AgentsList({ agents, query, togglingAgent, onToggle }: AgentsListProps)
                   )}
                 </div>
                 <button
-                  onClick={() => onToggle(agent)}
-                  disabled={togglingAgent === agent.name}
                   className={cn(
                     'ml-2 px-2.5 py-1 text-xs font-medium rounded transition-colors flex-shrink-0',
                     agent.active
@@ -551,6 +579,8 @@ function AgentsList({ agents, query, togglingAgent, onToggle }: AgentsListProps)
                       : 'text-white bg-blue-600 hover:bg-blue-700',
                     togglingAgent === agent.name && 'opacity-50 cursor-not-allowed'
                   )}
+                  disabled={togglingAgent === agent.name}
+                  onClick={() => onToggle(agent)}
                 >
                   {togglingAgent === agent.name
                     ? '...'
@@ -586,8 +616,8 @@ function SkillsList({ skills, query, onInstall, onUninstall, installedIds }: Ski
         <div className={cn('space-y-1 p-4', PAGE_INSET_X)}>
           {skills.map(skill => (
             <div
-              key={skill.id}
               className="p-3 rounded border border-border bg-card hover:bg-accent/5 transition-colors"
+              key={skill.id}
             >
               <div className="flex items-start gap-2">
                 <Codicon className="mt-1" name="lightbulb" />
@@ -608,13 +638,13 @@ function SkillsList({ skills, query, onInstall, onUninstall, installedIds }: Ski
                   <div className="ml-2 flex-shrink-0 flex flex-col items-end gap-1">
                     {installedIds?.has(skill.id) ? (
                       <>
-                        <Badge variant="outline" className="text-xs text-green-600 dark:text-green-400 border-green-500/40">
+                        <Badge className="text-xs text-green-600 dark:text-green-400 border-green-500/40" variant="outline">
                           ✓ Installed
                         </Badge>
                         {onUninstall && (
                           <button
-                            onClick={() => onUninstall(skill)}
                             className="px-2.5 py-1 text-xs font-medium rounded transition-colors border border-red-400/50 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30"
+                            onClick={() => onUninstall(skill)}
                           >
                             Uninstall
                           </button>
@@ -622,8 +652,8 @@ function SkillsList({ skills, query, onInstall, onUninstall, installedIds }: Ski
                       </>
                     ) : (
                       <button
-                        onClick={() => onInstall(skill)}
                         className="px-2.5 py-1 text-xs font-medium rounded transition-colors text-white bg-blue-600 hover:bg-blue-700"
+                        onClick={() => onInstall(skill)}
                       >
                         Install
                       </button>
@@ -647,10 +677,12 @@ interface SkillInstallModalProps {
 
 function SkillInstallModal({ skill, progress, onClose }: SkillInstallModalProps) {
   const isDone = ['success', 'warning', 'error'].includes(progress.level || '')
+
   const isSetInstall =
     typeof skill.sourceRaw === 'object' &&
     skill.sourceRaw !== null &&
     typeof (skill.sourceRaw as Record<string, unknown>).path === 'string'
+
   const percent = progress.percent
   const level = progress.level || 'info'
 
@@ -701,8 +733,8 @@ function SkillInstallModal({ skill, progress, onClose }: SkillInstallModalProps)
           {isDone && (
             <div className="pt-2">
               <button
-                onClick={onClose}
                 className="px-3 py-1.5 text-xs font-medium rounded border border-border hover:bg-accent/40 transition-colors"
+                onClick={onClose}
               >
                 Close
               </button>

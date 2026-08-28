@@ -1,10 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { ReactNode } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ToolsetConfig } from '@/types/hermes'
-import type { ReactNode } from 'react'
-
 import { I18nProvider } from '@/i18n'
+import type { ToolsetConfig } from '@/types/hermes'
 
 // Pin the locale: DEFAULT_LOCALE is 'de', but these queries assert the English
 // copy. Same idiom as copy-button.test.tsx / trigger-popover.test.tsx.

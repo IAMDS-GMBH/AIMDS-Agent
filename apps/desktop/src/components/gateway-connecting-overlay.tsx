@@ -1,11 +1,11 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { getEnvVars, getHermesConfig } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewayState } from '@/store/session'
-import { useI18n } from '@/i18n'
-import { getEnvVars, getHermesConfig } from '@/hermes'
 import { $tipMode, resolveIsNerdyMode } from '@/store/tip-mode'
 
 /**
@@ -14,11 +14,12 @@ import { $tipMode, resolveIsNerdyMode } from '@/store/tip-mode'
  * Handles URLs with port, path, query params: "https://litellm.iamds.com:5000/v1?key=val"
  */
 function isIamdsUrl(url: string): boolean {
-  if (!url) return false
+  if (!url) {return false}
   const lower = url.toLowerCase()
   
   // Extract hostname from URL (handles protocol + port + path + query)
   let hostname = lower
+
   try {
     // Try parsing as URL first (robust)
     const urlObj = new URL(lower.startsWith('http') ? lower : `https://${lower}`)
@@ -46,6 +47,7 @@ const SCRAMBLE_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ#$@%&*!?'
 const TICK_MS = 45
 const MESSAGE_STEP_MS = 2800
 const STARTUP_MIN_MS = MESSAGE_STEP_MS * 3
+
 const TEAM_MESSAGES_DE = [
   'Patrick aktiviert Arbeitskräfte...',
   'Michael hat alle Projekte fest im Griff (Better call Fischi!)...',
@@ -175,12 +177,16 @@ export function GatewayConnectingOverlay() {
   const [tail, setTail] = useState(TAIL)
   const [phase, setPhase] = useState<Phase>('live')
   const shownAtRef = useRef<number | null>(null)
+
   const [defaultIsIamds, setIsIamds] = useState(() => {
     try {
       if (typeof window !== 'undefined') {
         const cached = localStorage.getItem('is_iamds_endpoint')
-        if (cached === 'true') return true
-        if (cached === 'false') return false
+
+        if (cached === 'true') {return true}
+
+        if (cached === 'false') {return false}
+
         if (typeof window.location?.href === 'string' && isIamdsUrl(window.location.href)) {
           return true
         }
@@ -188,8 +194,10 @@ export function GatewayConnectingOverlay() {
     } catch {
       // Ignore
     }
+
     return false
   })
+
   // Message rotation restarts from index 0 whenever isIamds flips (detection
   // resolves asynchronously), so TEAM messages never pick up mid-array where
   // BUSINESS messages left off — avoids a jumbled/"mixed" look on switch.
@@ -206,8 +214,10 @@ export function GatewayConnectingOverlay() {
     async function checkEndpoint() {
       try {
         const desktop = window.hermesDesktop
+
         if (!desktop) {
           console.debug('[GatewayOverlay] No hermesDesktop available')
+
           return
         }
 
@@ -215,13 +225,18 @@ export function GatewayConnectingOverlay() {
         if (desktop.getConnectionConfig) {
           const config = await desktop.getConnectionConfig()
           console.debug('[GatewayOverlay] Electron config:', config)
+
           if (config && config.mode === 'remote' && config.remoteUrl) {
             console.debug('[GatewayOverlay] Remote URL:', config.remoteUrl)
+
             if (isIamdsUrl(config.remoteUrl)) {
               console.debug('[GatewayOverlay] ✓ IAMDS URL detected in Electron config')
+
               if (active) {
                 setIsIamds(true)
+
                 try { localStorage.setItem('is_iamds_endpoint', 'true') } catch {}
+
                 return
               }
             } else {
@@ -232,6 +247,7 @@ export function GatewayConnectingOverlay() {
 
         // 2. Best-effort local backend config check (prod + staging + dev)
         const config = await getHermesConfig().catch(() => null)
+
         if (config && active) {
           const rawConfig = config as Record<string, any>
           // Prod URLs
@@ -247,11 +263,15 @@ export function GatewayConnectingOverlay() {
           console.debug('[GatewayOverlay] Hermes config URLs (prod/staging/dev):', allUrls)
           
           const urlsToCheck = [modelBaseUrl, litellmBaseUrl, prodUrl, stagingUrl, devUrl].filter(Boolean)
+
           if (urlsToCheck.some(url => isIamdsUrl(url))) {
             console.debug('[GatewayOverlay] ✓ IAMDS URL detected in Hermes config (prod/staging/dev)')
+
             if (active) {
               setIsIamds(true)
+
               try { localStorage.setItem('is_iamds_endpoint', 'true') } catch {}
+
               return
             }
           } else {
@@ -261,15 +281,19 @@ export function GatewayConnectingOverlay() {
 
         // 3. Best-effort environment variables check
         const envVars = await getEnvVars().catch(() => null)
+
         if (envVars && active) {
           for (const key of Object.keys(envVars)) {
             const val = envVars[key]
+
             if (key.toLowerCase().includes('iamds') && val?.is_set) {
               console.debug('[GatewayOverlay] ✓ IAMDS env var found:', key)
               setIsIamds(true)
+
               return
             }
           }
+
           console.debug('[GatewayOverlay] ✗ No IAMDS env vars found')
         }
 
@@ -278,18 +302,19 @@ export function GatewayConnectingOverlay() {
           attempt++
           console.debug(`[GatewayOverlay] Retry attempt ${attempt}/${maxAttempts}`)
           setTimeout(() => {
-            if (active) checkEndpoint()
+            if (active) {checkEndpoint()}
           }, 500)
         } else {
           console.debug('[GatewayOverlay] Max retries reached, IAMDS not detected')
         }
       } catch (err) {
         console.error('[GatewayOverlay] Error checking endpoint:', err)
+
         if (attempt < maxAttempts) {
           attempt++
           console.debug(`[GatewayOverlay] Retry after error, attempt ${attempt}/${maxAttempts}`)
           setTimeout(() => {
-            if (active) checkEndpoint()
+            if (active) {checkEndpoint()}
           }, 500)
         }
       }
@@ -311,6 +336,7 @@ export function GatewayConnectingOverlay() {
 
   if (previewing || connecting) {
     shownRef.current = true
+
     if (!shownAtRef.current) {
       shownAtRef.current = Date.now()
     }
@@ -365,6 +391,7 @@ export function GatewayConnectingOverlay() {
       const shownAt = shownAtRef.current || Date.now()
       const elapsed = Date.now() - shownAt
       const waitMs = startupConnect ? Math.max(0, STARTUP_MIN_MS - elapsed) : 0
+
       const id = window.setTimeout(() => {
         setTail(TAIL)
         setPhase('text-out')
@@ -435,9 +462,11 @@ export function GatewayConnectingOverlay() {
     messageStartRef.current = Date.now()
     startIndexRef.current = Math.floor(Math.random() * messages.length)
   }
+
   if (!messageStartRef.current) {
     messageStartRef.current = Date.now()
   }
+
   const messageElapsed = Math.max(0, Date.now() - messageStartRef.current)
 
   // Modulo-based cycling starting from a random index so messages vary each connection

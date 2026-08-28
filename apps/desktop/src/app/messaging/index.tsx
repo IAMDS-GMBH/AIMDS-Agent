@@ -27,9 +27,9 @@ import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
 import { ListRow } from '../settings/primitives'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
-import { PlatformAvatar } from './platform-icon'
 import { OutlookAuthModal } from './outlook-auth-modal'
 import { OutlookSetupGuideModal } from './outlook-setup-guide-modal'
+import { PlatformAvatar } from './platform-icon'
 
 interface MessagingViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
@@ -69,6 +69,7 @@ const FIELD_COPY: Record<string, { advanced?: boolean }> = {
   WHATSAPP_ENABLED: { advanced: true },
   WHATSAPP_MODE: { advanced: true }
 }
+
 const OUTLOOK_VISIBLE_KEYS = new Set(['OUTLOOK_TENANT_ID', 'OUTLOOK_CLIENT_ID'])
 
 function supportsMessagingToolset(platform: MessagingPlatformInfo): boolean {
@@ -218,6 +219,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const outlookClientEdit = (selected ? edits[selected.id]?.OUTLOOK_CLIENT_ID : '') || ''
   const outlookSecretEdit = (selected ? edits[selected.id]?.OUTLOOK_CLIENT_SECRET : '') || ''
   const outlookHasAnyTypedCred = Boolean(outlookTenantEdit.trim() || outlookClientEdit.trim())
+
   const outlookHasAllTypedCreds = Boolean(
     outlookTenantEdit.trim() && outlookClientEdit.trim()
   )
@@ -377,25 +379,23 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                         }
                       }))
                     }
-                    onSave={() => void handleSave(selected)}
-                    onToggleEnabled={enabled => void handleToggleEnabled(selected, enabled)}
-                    platform={selected}
-                    saving={saving}
                     onOutlookOpenGuide={() => setOutlookGuideOpen(true)}
                     onOutlookTest={() => setOutlookAuthOpen(true)}
                     onOutlookTestConnection={() => void handleTestOutlookConnection(selected)}
+                    onSave={() => void handleSave(selected)}
+                    onToggleEnabled={enabled => void handleToggleEnabled(selected, enabled)}
                     outlookConnected={selected.state === 'connected' ? true : outlookConnected}
+                    platform={selected}
+                    saving={saving}
                   />
                   {selected.id === 'outlook' && (
-                    <OutlookSetupGuideModal open={outlookGuideOpen} onClose={() => setOutlookGuideOpen(false)} />
+                    <OutlookSetupGuideModal onClose={() => setOutlookGuideOpen(false)} open={outlookGuideOpen} />
                   )}
                   {selected.id === 'outlook' && (
                     <OutlookAuthModal
-                      open={outlookAuthOpen}
-                      tenantId={outlookTenantEdit}
                       clientId={outlookClientEdit}
                       clientSecret={outlookSecretEdit}
-                      useSavedEnv={!outlookHasAnyTypedCred}
+                      onCancel={() => setOutlookAuthOpen(false)}
                       onComplete={async _accessToken => {
                         // Sign-in only — connection verification is a separate,
                         // explicit "Test Connection" step, not run automatically here.
@@ -408,7 +408,9 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                         })
                         await refreshPlatforms()
                       }}
-                      onCancel={() => setOutlookAuthOpen(false)}
+                      open={outlookAuthOpen}
+                      tenantId={outlookTenantEdit}
+                      useSavedEnv={!outlookHasAnyTypedCred}
                     />
                   )}
                 </>
@@ -484,26 +486,33 @@ function PlatformDetail({
   const outlookOnlyIds = platform.id === 'outlook'
 
   const hasEdits = Object.keys(trimEdits(edits)).length > 0
+
   const requiredFields = outlookOnlyIds
     ? platform.env_vars.filter(field => OUTLOOK_VISIBLE_KEYS.has(field.key))
     : platform.env_vars.filter(field => field.required)
+
   const optionalFields = outlookOnlyIds
     ? []
     : platform.env_vars.filter(field => !field.required && !fieldCopy(field, m).advanced)
+
   const advancedFields = outlookOnlyIds
     ? platform.env_vars.filter(field => field.key === 'OUTLOOK_INTERACTIVE_AUTH_FLOW')
     : platform.env_vars.filter(field => !field.required && fieldCopy(field, m).advanced)
+
   const hiddenCount = advancedFields.length
   const isSavingEnv = saving === `env:${platform.id}`
   const isTesting = saving === `test:${platform.id}`
   const isTestingConnection = saving === `connection:${platform.id}`
+
   const hasOutlookSavedCreds =
     platform.id === 'outlook' &&
     platform.env_vars.some(e => e.key === 'OUTLOOK_TENANT_ID' && e.is_set) &&
     platform.env_vars.some(e => e.key === 'OUTLOOK_CLIENT_ID' && e.is_set)
+
   const hasOutlookTypedCreds =
     platform.id === 'outlook' &&
     Boolean((edits.OUTLOOK_TENANT_ID || '').trim() && (edits.OUTLOOK_CLIENT_ID || '').trim())
+
   const badge = messagingBadge(platform, m, { edits, outlookConnected })
 
   return (
@@ -643,10 +652,10 @@ function PlatformDetail({
             )}
             {platform.id === 'outlook' && onOutlookTest && (
               <Button
+                disabled={isTesting || (!hasOutlookTypedCreds && !hasOutlookSavedCreds)}
                 onClick={onOutlookTest}
                 size="sm"
                 variant="outline"
-                disabled={isTesting || (!hasOutlookTypedCreds && !hasOutlookSavedCreds)}
               >
                 <ExternalLink className="size-3.5" />
                 {isTesting ? 'Signing in...' : 'Start Auth'}
@@ -654,10 +663,10 @@ function PlatformDetail({
             )}
             {platform.id === 'outlook' && onOutlookTestConnection && (
               <Button
+                disabled={isTestingConnection || (!hasOutlookTypedCreds && !hasOutlookSavedCreds)}
                 onClick={onOutlookTestConnection}
                 size="sm"
                 variant="outline"
-                disabled={isTestingConnection || (!hasOutlookTypedCreds && !hasOutlookSavedCreds)}
               >
                 {isTestingConnection ? 'Testing...' : 'Test Connection'}
               </Button>
@@ -740,6 +749,7 @@ function MessagingField({
 
   if (field.options) {
     const currentValue = edits[field.key] ?? field.value ?? field.options[0]?.value ?? ''
+
     return (
       <ListRow
         action={

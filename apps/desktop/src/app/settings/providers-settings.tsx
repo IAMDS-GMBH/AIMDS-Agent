@@ -15,12 +15,12 @@ import {
   disconnectOAuthProvider,
   getEnvVars,
   getHermesConfigRecord,
-  revealEnvVar,
   getMcpCatalog,
   installMcpCatalogEntry,
   keycloakLogin,
   listOAuthProviders,
   removeMcpServer,
+  revealEnvVar,
   saveHermesConfig,
   setEnvVar
 } from '@/hermes'
@@ -66,6 +66,7 @@ function buildIamdsLiteLlmKeyGroup(vars: Record<string, EnvVarInfo>): ProviderKe
   ]
 
   const stagingInfo = vars.IAMDS_LITELLM_STAGING_API_KEY
+
   if (stagingInfo) {
     groups.push({
       advanced: [],
@@ -79,6 +80,7 @@ function buildIamdsLiteLlmKeyGroup(vars: Record<string, EnvVarInfo>): ProviderKe
   }
 
   const devInfo = vars.IAMDS_LITELLM_DEV_API_KEY
+
   if (devInfo) {
     groups.push({
       advanced: [],
@@ -92,6 +94,7 @@ function buildIamdsLiteLlmKeyGroup(vars: Record<string, EnvVarInfo>): ProviderKe
   }
 
   const localDevInfo = vars.IAMDS_LITELLM_LOCALDEV_API_KEY
+
   if (localDevInfo) {
     groups.push({
       advanced: [],
@@ -109,37 +112,50 @@ function buildIamdsLiteLlmKeyGroup(vars: Record<string, EnvVarInfo>): ProviderKe
 
 function normalizeProviderBaseUrl(raw: string): string {
   const trimmed = raw.trim()
-  if (!trimmed) return ''
+
+  if (!trimmed) {return ''}
   const candidate = /^[a-z][a-z\d+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
   let parsed: URL
+
   try {
     parsed = new URL(candidate)
   } catch {
     return ''
   }
+
   if (!parsed.hostname || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
     return ''
   }
+
   parsed.hash = ''
   const cleaned = `${parsed.origin}${parsed.pathname}${parsed.search}`.replace(/\/+$/, '')
-  if (cleaned.endsWith('/litellm/v1')) return cleaned
-  if (cleaned.endsWith('/litellm/mcp')) return `${cleaned.slice(0, -'/litellm/mcp'.length)}/litellm/v1`
+
+  if (cleaned.endsWith('/litellm/v1')) {return cleaned}
+
+  if (cleaned.endsWith('/litellm/mcp')) {return `${cleaned.slice(0, -'/litellm/mcp'.length)}/litellm/v1`}
+
   return `${cleaned}/litellm/v1`
 }
 
 function toEditableBaseUrl(configuredUrl: string): string {
   const trimmed = configuredUrl.trim().replace(/\/+$/, '')
-  if (trimmed.endsWith('/litellm/v1')) return trimmed.slice(0, -'/litellm/v1'.length)
-  if (trimmed.endsWith('/litellm/mcp')) return trimmed.slice(0, -'/litellm/mcp'.length)
+
+  if (trimmed.endsWith('/litellm/v1')) {return trimmed.slice(0, -'/litellm/v1'.length)}
+
+  if (trimmed.endsWith('/litellm/mcp')) {return trimmed.slice(0, -'/litellm/mcp'.length)}
+
   return trimmed
 }
 
 function readProviderBaseUrl(config: Record<string, unknown>, slug: string): string {
   const providers = config.providers
-  if (!providers || typeof providers !== 'object' || Array.isArray(providers)) return ''
+
+  if (!providers || typeof providers !== 'object' || Array.isArray(providers)) {return ''}
   const entry = (providers as Record<string, unknown>)[slug]
-  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return ''
+
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {return ''}
   const baseUrl = (entry as Record<string, unknown>).base_url
+
   return typeof baseUrl === 'string' ? toEditableBaseUrl(baseUrl) : ''
 }
 
@@ -163,18 +179,23 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
   const handleKeycloakLogin = async (baseUrl: string, targetKeyEnv: string, envLabel: string) => {
     try {
       let rootDomain = baseUrl.trim().replace(/\/+$/, '')
+
       for (const suffix of ['/litellm/v1', '/litellm', '/auth']) {
         if (rootDomain.endsWith(suffix)) {
           rootDomain = rootDomain.slice(0, -suffix.length).replace(/\/+$/, '')
         }
       }
+
       const redirectUri = DEFAULT_REDIRECT_URI || 'hermes://callback'
+
       const result = await keycloakLogin({
         baseUrl: rootDomain,
         realm: DEFAULT_REALM,
         redirectUri,
       })
+
       await setEnvVar(targetKeyEnv, result.apiKey)
+
       try {
         const config = await getHermesConfigRecord()
         await saveHermesConfig({
@@ -184,6 +205,7 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
       } catch {
         // Best-effort model selection
       }
+
       await loadEnvVars()
       onRefreshCreds?.()
       notify({ kind: 'success', message: `API key obtained via Keycloak SSO (${envLabel})`, title: 'Connected' })
@@ -194,16 +216,19 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
 
   useEffect(() => {
     let cancelled = false
+
     void (async () => {
       try {
         const [config, vars] = await Promise.all([
           getHermesConfigRecord().catch(() => ({} as HermesConfigRecord)),
           getEnvVars().catch(() => ({} as Record<string, EnvVarInfo>)),
         ])
+
         if (!cancelled) {
           setEnvVars(vars)
           const mainUrl = readProviderBaseUrl(config, 'aimds-suite-prod') || readProviderBaseUrl(config, 'iamds-litellm')
           let envUrl = ''
+
           if (vars.IAMDS_LITELLM_BASE_URL?.is_set) {
             try {
               const revealed = await revealEnvVar('IAMDS_LITELLM_BASE_URL')
@@ -212,6 +237,7 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
               // Ignore
             }
           }
+
           setProdBaseUrl(mainUrl || envUrl || DEFAULT_BASE_URL)
           setStagingBaseUrl(readProviderBaseUrl(config, 'aimds-suite-staging') || readProviderBaseUrl(config, 'iamds-litellm-staging'))
           setDevBaseUrl(readProviderBaseUrl(config, 'aimds-suite-dev') || readProviderBaseUrl(config, 'iamds-litellm-dev'))
@@ -221,6 +247,7 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
         // Best-effort prefill only.
       }
     })()
+
     return () => {
       cancelled = true
     }
@@ -234,25 +261,34 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
 
     if (prodBaseUrl.trim() && !prodNormalized) {
       notify({ kind: 'error', message: 'Production URL is invalid', title: 'Could not save provider URLs' })
+
       return
     }
+
     if (stagingBaseUrl.trim() && !stagingNormalized) {
       notify({ kind: 'error', message: 'Staging URL is invalid', title: 'Could not save provider URLs' })
+
       return
     }
+
     if (devBaseUrl.trim() && !devNormalized) {
       notify({ kind: 'error', message: 'Dev URL is invalid', title: 'Could not save provider URLs' })
+
       return
     }
+
     if (localDevBaseUrl.trim() && !localDevNormalized) {
       notify({ kind: 'error', message: 'Local Dev URL is invalid', title: 'Could not save provider URLs' })
+
       return
     }
 
     setIsSaving(true)
+
     try {
       const config = await getHermesConfigRecord()
       const nextProvidersRaw = config.providers
+
       const nextProviders =
         nextProvidersRaw && typeof nextProvidersRaw === 'object' && !Array.isArray(nextProvidersRaw)
           ? { ...(nextProvidersRaw as Record<string, unknown>) }
@@ -261,13 +297,17 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
       const upsertOrDelete = (slug: string, name: string, keyEnv: string, baseUrl: string) => {
         if (!baseUrl) {
           delete nextProviders[slug]
+
           return
         }
+
         const existingRaw = nextProviders[slug]
+
         const existing =
           existingRaw && typeof existingRaw === 'object' && !Array.isArray(existingRaw)
             ? { ...(existingRaw as Record<string, unknown>) }
             : {}
+
         existing.name = name
         existing.base_url = baseUrl
         existing.key_env = keyEnv
@@ -307,11 +347,11 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
           </label>
           <div className="flex items-center gap-2 flex-1 max-w-xl sm:ml-auto">
             <Input
+              className="text-xs flex-1"
               id="iamds-prod-url"
               onChange={e => setProdBaseUrl(e.target.value)}
               placeholder="https://suite.iamds.com"
               value={prodBaseUrl}
-              className="text-xs flex-1"
             />
             <div className="shrink-0 min-w-36 text-right flex items-center justify-end">
               {envVars.IAMDS_LITELLM_API_KEY?.is_set ? (
@@ -339,11 +379,11 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
           </label>
           <div className="flex items-center gap-2 flex-1 max-w-xl sm:ml-auto">
             <Input
+              className="text-xs flex-1"
               id="iamds-staging-url"
               onChange={e => setStagingBaseUrl(e.target.value)}
               placeholder="https://staging.suite.iamds.com"
               value={stagingBaseUrl}
-              className="text-xs flex-1"
             />
             <div className="shrink-0 min-w-36 text-right flex items-center justify-end">
               {envVars.IAMDS_LITELLM_STAGING_API_KEY?.is_set ? (
@@ -371,11 +411,11 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
           </label>
           <div className="flex items-center gap-2 flex-1 max-w-xl sm:ml-auto">
             <Input
+              className="text-xs flex-1"
               id="iamds-dev-url"
               onChange={e => setDevBaseUrl(e.target.value)}
               placeholder="https://dev.suite.iamds.com"
               value={devBaseUrl}
-              className="text-xs flex-1"
             />
             <div className="shrink-0 min-w-36 text-right flex items-center justify-end">
               {envVars.IAMDS_LITELLM_DEV_API_KEY?.is_set ? (
@@ -403,11 +443,11 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
           </label>
           <div className="flex items-center gap-2 flex-1 max-w-xl sm:ml-auto">
             <Input
+              className="text-xs flex-1"
               id="iamds-localdev-url"
               onChange={e => setLocalDevBaseUrl(e.target.value)}
               placeholder="http://localhost:8000"
               value={localDevBaseUrl}
-              className="text-xs flex-1"
             />
             <div className="shrink-0 min-w-36 text-right flex items-center justify-end">
               {envVars.IAMDS_LITELLM_LOCALDEV_API_KEY?.is_set ? (
@@ -452,20 +492,25 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
 
     const baseUrl = (overrideBaseUrl || DEFAULT_BASE_URL).trim()
     const targetKey = targetKeyEnv || 'IAMDS_LITELLM_API_KEY'
+
     if (!baseUrl) {
       setKeycloakError('Set a base URL to enable Keycloak SSO')
       setIsKeycloakLoading(false)
+
       return
     }
 
     try {
       let rootDomain = baseUrl.trim().replace(/\/+$/, '')
+
       for (const suffix of ['/litellm/v1', '/litellm', '/auth']) {
         if (rootDomain.endsWith(suffix)) {
           rootDomain = rootDomain.slice(0, -suffix.length).replace(/\/+$/, '')
         }
       }
+
       const redirectUri = DEFAULT_REDIRECT_URI || 'hermes://callback'
+
       const result = await keycloakLogin({
         baseUrl: rootDomain,
         realm: DEFAULT_REALM,
@@ -473,6 +518,7 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
       })
 
       await setEnvVar(targetKey, result.apiKey)
+
       try {
         const config = await getHermesConfigRecord()
         await saveHermesConfig({
@@ -482,6 +528,7 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
       } catch {
         // Best-effort model selection
       }
+
       setKeycloakConnected(true)
       const label = targetKey === 'IAMDS_LITELLM_STAGING_API_KEY' ? 'AIMDS-Suite Staging' : targetKey === 'IAMDS_LITELLM_DEV_API_KEY' ? 'AIMDS-Suite Development' : 'AIMDS-Suite'
       notify({ kind: 'success', message: `API key obtained via Keycloak SSO (${label})`, title: 'Connected' })
@@ -511,10 +558,10 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
             Sign in with your organisation account to automatically obtain an API key.
           </p>
           <button
-            type="button"
-            onClick={() => void handleKeycloakLogin()}
-            disabled={isKeycloakLoading}
             className="flex w-full items-center justify-center gap-2 rounded border border-primary bg-primary/10 px-4 py-2 text-sm font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+            disabled={isKeycloakLoading}
+            onClick={() => void handleKeycloakLogin()}
+            type="button"
           >
             {isKeycloakLoading ? (
               <>
@@ -599,6 +646,7 @@ export function OAuthAccountsPanel() {
     const handleFocus = () => {
       void loadProviders()
     }
+
     window.addEventListener('focus', handleFocus)
 
     const unsubscribe = $desktopOnboarding.subscribe(() => {
@@ -613,6 +661,7 @@ export function OAuthAccountsPanel() {
 
   const handleDisconnect = async (id: string) => {
     setDisconnecting(id)
+
     try {
       await disconnectOAuthProvider(id)
       await loadProviders()
@@ -634,10 +683,11 @@ export function OAuthAccountsPanel() {
       <div className="grid gap-2">
         {providers.map(p => {
           const loggedIn = p.status?.logged_in
+
           return (
             <div
-              key={p.id}
               className="flex items-center justify-between gap-4 rounded-[8px] border border-border bg-muted/20 p-3"
+              key={p.id}
             >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
@@ -712,15 +762,19 @@ function McpCatalogSection({
 
   const loadCatalogAndConfig = async () => {
     setLoading(true)
+
     try {
       const [catRes, cfg] = await Promise.all([
         getMcpCatalog().catch(() => ({ entries: [] })),
         getHermesConfigRecord().catch(() => ({} as HermesConfigRecord))
       ])
+
       if (catRes.entries) {
         setCatalogEntries(catRes.entries)
       }
+
       const rawServers = cfg?.mcp_servers
+
       if (rawServers && typeof rawServers === 'object' && !Array.isArray(rawServers)) {
         setInstalledServers(rawServers as Record<string, unknown>)
       } else {
@@ -741,8 +795,10 @@ function McpCatalogSection({
     const envVars = entry.required_env ?? entry.auth?.env ?? []
     const serverCfg = installedServers[instanceName] as { env?: Record<string, string> } | undefined
     const values: Record<string, string> = {}
+
     for (const item of envVars) {
       const raw = serverCfg?.env?.[item.name]
+
       // A secondary instance's credentials are stored as literal strings
       // (see hermes_cli/mcp_catalog.py's literal_env); a ${VAR} template
       // means "resolved from the shared .env", so fall back to the same
@@ -753,11 +809,12 @@ function McpCatalogSection({
         values[item.name] = item.current_value || item.default || ''
       }
     }
+
     return values
   }
 
   const openInstallModal = (entry: McpCatalogEntry) => {
-    if (entry.disabled) return
+    if (entry.disabled) {return}
     const hasExistingInstances = (entry.instances?.length ?? 0) > 0
     setInstancePickerValue(NEW_INSTANCE_VALUE)
     // First-ever install of a multi-instance entry still defaults to the
@@ -769,8 +826,9 @@ function McpCatalogSection({
   }
 
   const handleInstancePickerChange = (value: string) => {
-    if (!installModalEntry) return
+    if (!installModalEntry) {return}
     setInstancePickerValue(value)
+
     if (value === NEW_INSTANCE_VALUE) {
       setNewInstanceName('')
       setSecretInputs({})
@@ -786,9 +844,10 @@ function McpCatalogSection({
     : installModalEntry?.name
 
   const handleInstallCatalog = async () => {
-    if (!installModalEntry) return
+    if (!installModalEntry) {return}
 
     setInstalling(true)
+
     try {
       const result = await installMcpCatalogEntry({
         enable: true,
@@ -887,11 +946,11 @@ function McpCatalogSection({
                     <Pill>In Entwicklung</Pill>
                   ) : isSourceUrl ? (
                     <a
-                      href={sourceStr}
-                      target="_blank"
-                      rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted/80 hover:text-foreground transition-colors shrink-0"
+                      href={sourceStr}
                       onClick={e => e.stopPropagation()}
+                      rel="noopener noreferrer"
+                      target="_blank"
                       title={sourceStr}
                     >
                       Source
@@ -909,10 +968,10 @@ function McpCatalogSection({
                 <div className="flex items-center gap-1.5">
                   {isInstalled && (
                     <Button
+                      className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                       onClick={() => void handleUninstall(entry.name)}
                       size="xs"
                       variant="ghost"
-                      className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                     >
                       Entfernen
                     </Button>
@@ -982,7 +1041,9 @@ function McpCatalogSection({
                 // field is already filled in when it isn't.
                 const isSecondaryInstance =
                   installModalEntry.multi_instance && instancePickerValue !== NEW_INSTANCE_VALUE
+
                 const isSet = !isSecondaryInstance && vars[item.name]?.is_set
+
                 return (
                   <label className="grid gap-1" key={item.name}>
                     <div className="flex items-center justify-between">
@@ -1015,10 +1076,10 @@ function McpCatalogSection({
               <div>
                 {Boolean(resolvedInstanceName && installedServers[resolvedInstanceName]) && (
                   <Button
+                    className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                     onClick={() => void handleUninstall(resolvedInstanceName as string)}
                     size="xs"
                     variant="ghost"
-                    className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                   >
                     Entfernen
                   </Button>
@@ -1079,7 +1140,7 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
 
   return (
     <SettingsContent>
-      <IamdsAccountPanel onWantApiKey={() => onViewChange('keys')} onRefreshCreds={() => void refetch()} />
+      <IamdsAccountPanel onRefreshCreds={() => void refetch()} onWantApiKey={() => onViewChange('keys')} />
       <OAuthAccountsPanel />
     </SettingsContent>
   )
@@ -1095,7 +1156,7 @@ export function McpCatalogSettings({ onRefreshCreds }: { onRefreshCreds?: () => 
 
   return (
     <SettingsContent>
-      <McpCatalogSection vars={vars} onRefreshCreds={() => { void refetch(); onRefreshCreds?.() }} />
+      <McpCatalogSection onRefreshCreds={() => { void refetch(); onRefreshCreds?.() }} vars={vars} />
     </SettingsContent>
   )
 }

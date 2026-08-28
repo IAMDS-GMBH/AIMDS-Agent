@@ -1,5 +1,5 @@
-import { act, cleanup, render } from '@testing-library/react'
 import type { QueryClient } from '@tanstack/react-query'
+import { act, cleanup, render } from '@testing-library/react'
 import { useEffect, useRef } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -7,6 +7,7 @@ import type { ChatMessagePart } from '@/lib/chat-messages'
 import type { RpcEvent } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../types'
+
 import { useMessageStream } from './use-message-stream'
 
 const SESSION_ID = 'runtime-session-1'
@@ -45,6 +46,7 @@ interface HarnessProps {
 
 function Harness({ onReady, updateSessionState }: HarnessProps) {
   const activeSessionIdRef = useRef<string | null>(SESSION_ID)
+
   const api = useMessageStream({
     activeSessionIdRef,
     hydrateFromStoredSession: async () => undefined,
@@ -76,6 +78,7 @@ describe('useMessageStream', () => {
 
   it('preserves streamed assistant context when message.complete has empty text and clarify is pending', () => {
     const states = new Map<string, ClientSessionState>()
+
     const updateSessionState = (sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) => {
       const current = states.get(sessionId) ?? baseState()
       const next = updater(current)
@@ -124,6 +127,7 @@ describe('useMessageStream', () => {
 
   it('keeps already-streamed assistant text when a late-turn error banner arrives', () => {
     const states = new Map<string, ClientSessionState>()
+
     const updateSessionState = (sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) => {
       const current = states.get(sessionId) ?? baseState()
       const next = updater(current)

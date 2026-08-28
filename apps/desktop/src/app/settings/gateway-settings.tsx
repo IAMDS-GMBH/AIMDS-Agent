@@ -1,29 +1,19 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useState } from 'react'
 
-import { ReportIssueDialog } from '@/components/report-issue-dialog'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Tip } from '@/components/ui/tooltip'
-import { getHermesConfigRecord, getMcpServers, getRemoteHealthStatus, getStatus, reloadMcpServers, restartGateway, saveHermesConfig } from '@/hermes'
+import { getHermesConfigRecord, getMcpServers, getRemoteHealthStatus, getStatus, reloadMcpServers, restartGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { AlertCircle, Globe, HelpCircle, Loader2, RefreshCw, Trash2 } from '@/lib/icons'
+import { AlertCircle, Globe, Loader2, RefreshCw } from '@/lib/icons'
 import { getMcpServerToolCount } from '@/lib/mcp-helpers'
 import { formatAimdsProviderLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $profiles, refreshActiveProfile } from '@/store/profile'
-import {
-  $supportTickets,
-  addSupportTicket,
-  clearResolvedSupportTickets,
-  clearSupportTickets,
-  removeSupportTicket,
-  updateAndCleanupSupportTickets
-} from '@/store/support-tickets'
 import type { McpServerSummary, RemoteHealthResponse, StatusResponse } from '@/types/hermes'
 
-import { EmptyState, LoadingState, Pill, SectionHeading, SettingsContent } from './primitives'
+import { EmptyState, LoadingState, SectionHeading, SettingsContent } from './primitives'
 
 interface GatewaySettingsState {
   envOverride: boolean
@@ -79,6 +69,7 @@ export function SystemStatusContent() {
 
   const handleReloadMcp = async () => {
     setReloadingMcp(true)
+
     try {
       const res = await reloadMcpServers()
       notify({
@@ -96,6 +87,7 @@ export function SystemStatusContent() {
 
   const handleRestartGateway = async () => {
     setRestartingGateway(true)
+
     try {
       await restartGateway()
       notify({
@@ -115,6 +107,7 @@ export function SystemStatusContent() {
 
   const refreshRemoteHealth = async () => {
     setRemoteHealthLoading(true)
+
     try {
       const payload = await getRemoteHealthStatus()
       setRemoteHealth(payload)
@@ -126,6 +119,7 @@ export function SystemStatusContent() {
   const refreshLocalConnectivity = async () => {
     setLocalConnectivityLoading(true)
     setLocalConnectivityError('')
+
     try {
       const [statusPayload, mcpPayload] = await Promise.all([getStatus(), getMcpServers()])
       setLocalStatus(statusPayload)
@@ -149,6 +143,7 @@ export function SystemStatusContent() {
 
     if (!desktop?.getConnectionConfig) {
       setLoading(false)
+
       return () => void (cancelled = true)
     }
 
@@ -183,12 +178,14 @@ export function SystemStatusContent() {
         if (cancelled) {
           return
         }
+
         const rawProvider =
           typeof config?.provider === 'string'
             ? config.provider
             : typeof (config?.model as Record<string, unknown>)?.provider === 'string'
               ? ((config.model as Record<string, unknown>).provider as string)
               : ''
+
         setAimdsEnv(formatAimdsProviderLabel(rawProvider))
       })
       .catch(() => {})
@@ -201,26 +198,31 @@ export function SystemStatusContent() {
   const namedProfiles = useMemo(() => profiles.filter(profile => profile.name !== 'default'), [profiles])
   const enabledMcpServers = mcpServers.filter(server => server.enabled)
   const remoteSeverity = remoteHealth?.severity ?? (remoteHealth?.ok ? 'healthy' : 'critical')
+
   const remoteToneClass =
     remoteSeverity === 'critical'
       ? 'border-destructive/35 bg-destructive/5 text-destructive'
       : remoteSeverity === 'warning'
         ? 'border-amber-500/35 bg-amber-500/10 text-foreground'
         : 'border-border/70 bg-muted/20 text-foreground'
+
   const remoteChecked = remoteHealth?.checked_at
     ? new Date(remoteHealth.checked_at).toLocaleString()
     : 'n/a'
+
   const localSeverity = localConnectivityError
     ? 'critical'
     : localStatus
       ? 'healthy'
       : 'warning'
+
   const localToneClass =
     localSeverity === 'critical'
       ? 'border-destructive/35 bg-destructive/5 text-destructive'
       : localSeverity === 'warning'
         ? 'border-amber-500/35 bg-amber-500/10 text-foreground'
         : 'border-border/70 bg-muted/20 text-foreground'
+
   const localChecked = localCheckedAt ? new Date(localCheckedAt).toLocaleString() : 'n/a'
 
   if (loading) {
@@ -369,6 +371,7 @@ export function SystemStatusContent() {
                     {mcpServers.map(server => {
                       const count = getMcpServerToolCount(server)
                       const countLabel = count !== null ? `${count} Tool${count === 1 ? '' : 's'}` : null
+
                       const toolsList = server.discovered_tools && server.discovered_tools.length > 0
                         ? server.discovered_tools.join(', ')
                         : null
@@ -389,7 +392,7 @@ export function SystemStatusContent() {
                       )
 
                       return (
-                        <div key={server.name} className="flex items-center justify-between pl-2 text-[11px]">
+                        <div className="flex items-center justify-between pl-2 text-[11px]" key={server.name}>
                           <span className="truncate font-mono text-foreground/80">{server.name}</span>
                           {toolsList ? (
                             <Tip label={`Tools (${server.discovered_tools?.length}): ${toolsList}`}>

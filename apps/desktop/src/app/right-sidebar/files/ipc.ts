@@ -141,6 +141,7 @@ async function filterIgnored(entries: HermesReadDirEntry[], rootPath: string, di
  *  (`__MACOSX`, `desktop.ini`, `thumbs.db`) from the workspace file browser. */
 function filterHidden(entries: HermesReadDirEntry[]) {
   const junkNames = new Set(['__MACOSX', 'desktop.ini', 'thumbs.db', '$RECYCLE.BIN'])
+
   return entries.filter(
     entry => !entry.name.startsWith('.') && !junkNames.has(entry.name) && !junkNames.has(entry.name.toUpperCase())
   )

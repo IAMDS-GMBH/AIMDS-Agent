@@ -59,8 +59,10 @@ export function DisableFeedbackPromptsDialog({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     const trimmed = reason.trim()
+
     if (!trimmed) {
       setError(copy.reasonRequired)
+
       return
     }
 
@@ -100,7 +102,8 @@ export function DisableFeedbackPromptsDialog({
               className="min-h-[90px] text-xs resize-y"
               onChange={e => {
                 setReason(e.target.value)
-                if (error) setError(null)
+
+                if (error) {setError(null)}
               }}
               placeholder={copy.reasonPlaceholder}
               required

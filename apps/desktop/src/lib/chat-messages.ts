@@ -439,6 +439,7 @@ export function upsertToolPart(
   const prevResult = prev && 'result' in prev ? prev.result : undefined
   const hidePayload = isHiddenInternalToolPayload(name)
   const args = hidePayload ? {} : toolArgs(payload, prevArgs)
+
   const result = hidePayload
     ? { ...(payload?.error ? { error: payload.error } : {}) }
     : toolResult(payload, prevResult, prevArgs)
@@ -903,6 +904,7 @@ export function preserveLocalAssistantErrors(
     for (let i = userIndex + 1; i < mergedNextMessages.length; i += 1) {
       if (mergedNextMessages[i].role === 'user' && !mergedNextMessages[i].hidden) {
         turnEnd = i
+
         break
       }
     }

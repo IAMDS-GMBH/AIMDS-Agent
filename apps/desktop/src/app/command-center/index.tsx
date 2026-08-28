@@ -1,10 +1,10 @@
 import { useStore } from '@nanostores/react'
 import {
-  IconDownload,
-  IconRefresh,
+  IconCheck,
   IconCopy,
+  IconDownload,
   IconPlus,
-  IconCheck
+  IconRefresh
 } from '@tabler/icons-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -64,6 +64,7 @@ function extractOutlookDeviceCodePrompt(lines: readonly string[]): OutlookDevice
 
   const joined = lines.join('\n')
   const inline = joined.match(/open\s+(https?:\/\/\S+)\s+and\s+enter\s+([A-Z0-9-]+)/i)
+
   if (inline) {
     return {
       verificationUri: inline[1].replace(/[|)\].,;]+$/g, ''),
@@ -73,15 +74,19 @@ function extractOutlookDeviceCodePrompt(lines: readonly string[]): OutlookDevice
 
   let verificationUri = ''
   let userCode = ''
+
   for (const line of lines) {
     if (!verificationUri) {
       const open = line.match(/Open:\s*(https?:\/\/\S+)/i)
+
       if (open) {
         verificationUri = open[1].replace(/[|)\].,;]+$/g, '')
       }
     }
+
     if (!userCode) {
       const enter = line.match(/Enter:\s*([A-Z0-9-]+)/i)
+
       if (enter) {
         userCode = enter[2]?.trim() || enter[1].trim()
       }
@@ -93,9 +98,11 @@ function extractOutlookDeviceCodePrompt(lines: readonly string[]): OutlookDevice
   }
 
   const signInIndex = lines.findIndex(line => /sign-in required/i.test(line))
+
   if (signInIndex >= 0) {
     for (let i = signInIndex; i < lines.length; i += 1) {
       const urlMatch = lines[i].match(/(https?:\/\/\S+)/)
+
       if (urlMatch) {
         return { verificationUri: urlMatch[1].replace(/[|)\].,;]+$/g, '') }
       }
@@ -156,12 +163,15 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
 
   const handleRefreshSupport = useCallback(async () => {
     setSupportRefreshing(true)
+
     try {
       const statusMap = await checkSupportTicketsStatus()
       const currentTickets = $supportTickets.get()
+
       const updatedCount = currentTickets.filter(t =>
         Boolean(statusMap[t.jobId] || (t.caseId && statusMap[t.caseId]) || (t.referenceId && statusMap[t.referenceId]))
       ).length
+
       notify({
         kind: 'info',
         title: 'Support-Tickets',
@@ -179,6 +189,7 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
 
   const handleClearResolvedSupport = useCallback(async () => {
     setSupportRefreshing(true)
+
     try {
       const statusMap = await checkSupportTicketsStatus()
       clearResolvedSupportTickets(statusMap)
@@ -209,6 +220,7 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
 
   const fetchLogsData = useCallback(async () => {
     setLogsLoading(true)
+
     try {
       const res = await getLogs({ file: logFile, lines: logLinesCount })
       setLogs(res.lines || [])
@@ -286,6 +298,7 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
         const started = kind === 'restart' ? await restartGateway() : await updateHermes()
         let nextStatus: ActionStatusResponse | null = null
         let promptCaptured = false
+
         if (kind === 'restart') {
           setOutlookPrompt(null)
         }
@@ -295,13 +308,16 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
           const polled = await getActionStatus(started.name, 180)
           nextStatus = polled
           setSystemAction(polled)
+
           if (kind === 'restart' && !promptCaptured) {
             const prompt = extractOutlookDeviceCodePrompt(polled.lines)
+
             if (prompt) {
               promptCaptured = true
               setOutlookPrompt(prompt)
             }
           }
+
           upsertDesktopActionTask(polled)
 
           if (!polled.running) {
@@ -331,8 +347,9 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
   )
 
   const filteredLogs = useMemo(() => {
-    if (!logsFilter.trim()) return logs
+    if (!logsFilter.trim()) {return logs}
     const needle = logsFilter.toLowerCase()
+
     return logs.filter(l => l.toLowerCase().includes(needle))
   }, [logs, logsFilter])
 
@@ -355,12 +372,17 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
   }
 
   const filteredSupportTickets = useMemo(() => {
-    if (supportFilter === 'ALL') return supportTickets
+    if (supportFilter === 'ALL') {return supportTickets}
+
     return supportTickets.filter(t => {
       const status = (t.status || 'OPEN').toUpperCase()
-      if (supportFilter === 'RESOLVED') return isTicketResolved(status)
-      if (supportFilter === 'IN_PROGRESS') return status === 'IN_PROGRESS' || status === 'PROCESSING' || status === 'REVIEW'
-      if (supportFilter === 'OPEN') return status === 'OPEN' || status === 'QUEUED'
+
+      if (supportFilter === 'RESOLVED') {return isTicketResolved(status)}
+
+      if (supportFilter === 'IN_PROGRESS') {return status === 'IN_PROGRESS' || status === 'PROCESSING' || status === 'REVIEW'}
+
+      if (supportFilter === 'OPEN') {return status === 'OPEN' || status === 'QUEUED'}
+
       return true
     })
   }, [supportTickets, supportFilter])
@@ -369,10 +391,13 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
     switch (val) {
       case 'system':
         return Activity
+
       case 'logs':
         return Terminal
+
       case 'usage':
         return BarChart3
+
       case 'support':
         return HelpCircle
     }
@@ -526,6 +551,7 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
                   <div className="grid gap-2.5 pr-1">
                     {filteredSupportTickets.map(ticket => {
                       const resolved = isTicketResolved(ticket.status)
+
                       return (
                         <div
                           className="flex flex-col gap-2 rounded-xl border border-border/60 bg-card/60 p-4 transition-all hover:border-border shadow-2xs"
@@ -572,7 +598,7 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
       </OverlaySplitLayout>
 
       <ReportIssueDialog onOpenChange={setReportIssueOpen} open={reportIssueOpen} />
-      <OutlookDeviceCodeDialog prompt={outlookPrompt} onClose={() => setOutlookPrompt(null)} />
+      <OutlookDeviceCodeDialog onClose={() => setOutlookPrompt(null)} prompt={outlookPrompt} />
     </OverlayView>
   )
 }
@@ -587,7 +613,7 @@ function OutlookDeviceCodeDialog({
   const [copied, setCopied] = useState(false)
 
   return (
-    <Dialog open={Boolean(prompt)} onOpenChange={open => !open && onClose()}>
+    <Dialog onOpenChange={open => !open && onClose()} open={Boolean(prompt)}>
       <DialogContent showCloseButton>
         <DialogHeader>
           <DialogTitle>Outlook authentication required</DialogTitle>
@@ -608,16 +634,16 @@ function OutlookDeviceCodeDialog({
             </Button>
             {prompt.userCode && (
               <div className="flex items-center gap-2">
-                <Input readOnly value={prompt.userCode} className="font-mono text-lg font-bold tracking-widest" />
+                <Input className="font-mono text-lg font-bold tracking-widest" readOnly value={prompt.userCode} />
                 <Button
-                  variant="outline"
-                  size="sm"
                   className="shrink-0"
                   onClick={() => {
                     void navigator.clipboard.writeText(prompt.userCode ?? '')
                     setCopied(true)
                     window.setTimeout(() => setCopied(false), 1500)
                   }}
+                  size="sm"
+                  variant="outline"
                 >
                   <Copy className="size-4" />
                   {copied ? 'Copied' : 'Copy'}
@@ -628,7 +654,7 @@ function OutlookDeviceCodeDialog({
         )}
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
+          <Button onClick={onClose} variant="outline">
             Close
           </Button>
         </DialogFooter>
@@ -686,14 +712,16 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
   const topSkills = usage?.skills?.top_skills ?? []
 
   const handleExportCsv = () => {
-    if (!usage) return
+    if (!usage) {return}
     const headers = ['Datum', 'Eingabe-Tokens', 'Ausgabe-Tokens', 'Gesamt-Tokens']
+
     const rows = (usage.daily ?? []).map(d => [
       d.day,
       d.input_tokens || 0,
       d.output_tokens || 0,
       (d.input_tokens || 0) + (d.output_tokens || 0)
     ])
+
     const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n')
     const encodedUri = encodeURI(csvContent)
     const link = document.createElement('a')

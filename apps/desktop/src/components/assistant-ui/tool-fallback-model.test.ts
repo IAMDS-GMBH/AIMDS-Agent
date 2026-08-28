@@ -75,6 +75,7 @@ describe('buildToolView MCP memory-save title', () => {
       }),
       ''
     )
+
     expect(view.title).toBe('mcp_IAMDS_mcp_memory_memory_save + Local')
   })
 })

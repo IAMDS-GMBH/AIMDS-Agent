@@ -69,6 +69,7 @@ function htmlPathFromInlineDiff(value: string): string {
 
 function structuredPreviewCandidate(payload: unknown): string {
   const record = asRecord(payload)
+
   const fields = [
     'url',
     'target',

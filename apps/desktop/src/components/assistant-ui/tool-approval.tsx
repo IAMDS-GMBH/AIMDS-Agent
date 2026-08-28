@@ -101,9 +101,11 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
       } catch (error) {
         clearApprovalRequest(request.sessionId)
         const msg = error instanceof Error ? error.message : String(error)
+
         if (!msg.toLowerCase().includes('no pending')) {
           notifyError(error, copy.sendFailed)
         }
+
         setSubmitting(null)
       }
     },

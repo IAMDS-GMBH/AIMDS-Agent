@@ -30,19 +30,23 @@ export function useCronCompletionListener(
 
     async function resolveEventsWsUrl(): Promise<string> {
       const desktop = window.hermesDesktop
+
       if (desktop?.getConnection) {
         const conn = await desktop.getConnection(profile ?? null)
         const base = new URL(conn.baseUrl.endsWith('/') ? conn.baseUrl : `${conn.baseUrl}/`)
         const wsUrl = new URL('api/events', base)
         wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:'
         wsUrl.searchParams.set('channel', 'cron_events')
+
         if (conn.token) {
           wsUrl.searchParams.set('token', conn.token)
         }
+
         return wsUrl.toString()
       }
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+
       return `${protocol}//${window.location.host}/api/events?channel=cron_events`
     }
 
@@ -102,6 +106,7 @@ export function useCronCompletionListener(
         wsRef.current.close()
         wsRef.current = null
       }
+
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
         reconnectTimeoutRef.current = null

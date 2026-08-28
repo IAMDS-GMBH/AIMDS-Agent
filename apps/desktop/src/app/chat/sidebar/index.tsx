@@ -69,6 +69,7 @@ import {
   toggleSidebarMessagingOpen,
   unpinSession
 } from '@/store/layout'
+import { notify, notifyError } from '@/store/notifications'
 import {
   $newChatProfile,
   $profiles,
@@ -90,9 +91,8 @@ import {
   $workingSessionIds,
   sessionPinId
 } from '@/store/session'
-import { notify, notifyError } from '@/store/notifications'
 
-import { type AppView, ARTIFACTS_ROUTE, HUB_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE, TODOS_ROUTE } from '../../routes'
+import { type AppView, ARTIFACTS_ROUTE, HUB_ROUTE, SKILLS_ROUTE, TODOS_ROUTE } from '../../routes'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
@@ -423,6 +423,7 @@ export function ChatSidebar({
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   )
+
   const sessionMaintenance = sessionMaintenanceCopy(s)
 
   const runSessionMaintenance = useCallback(
@@ -1016,8 +1017,8 @@ export function ChatSidebar({
                     </div>
                     <SessionMaintenanceMenu
                       busy={sessionMaintenanceBusy}
-                      label={s.sessions}
                       copy={sessionMaintenance}
+                      label={s.sessions}
                       onDeleteAll={() => void runSessionMaintenance('delete_all')}
                       onDeleteOld90={() => void runSessionMaintenance('delete_old_90')}
                       onKeepLast50={() => void runSessionMaintenance('delete_keep_50')}

@@ -25,7 +25,6 @@ import {
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
 import {
-  $activeSessionId,
   $attentionSessionIds,
   $connection,
   $sessions,

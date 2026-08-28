@@ -247,10 +247,12 @@ describe('OAuth onboarding', () => {
     const state = $desktopOnboarding.get()
     expect(state.reason).toBeNull()
     expect(state.flow.status).toBe('confirming_model')
+
     if (state.flow.status === 'confirming_model') {
       expect(state.flow.label).toBe('Nous Portal')
       expect(state.flow.currentModel).toBe(model)
     }
+
     expect(calls.some(c => c.path === '/api/model/set')).toBe(true)
   })
 })

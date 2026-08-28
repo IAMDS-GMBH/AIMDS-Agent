@@ -81,12 +81,14 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
         const partsCount = Array.isArray(rawParts) ? rawParts.length : 0
         const statusType = (message as { status?: { type?: string } }).status?.type ?? ''
         const content = (message as { content?: unknown }).content
+
         const contentLength =
           typeof content === 'string'
             ? content.length
             : Array.isArray(content)
               ? content.length
               : 0
+
         return `${index}:${message.id}:${message.role}:${statusType}:${partsCount}:${contentLength}`
       })
       .join('\n')
@@ -108,7 +110,9 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
     estimateSize: () => ESTIMATED_ITEM_HEIGHT,
     getItemKey: index => {
       const group = groups[index]
-      if (!group) return index
+
+      if (!group) {return index}
+
       return group.kind === 'turn' ? `${group.id}:${group.indices.join('-')}` : `${group.id}:${group.index}`
     },
     getScrollElement: () => scrollerRef.current,

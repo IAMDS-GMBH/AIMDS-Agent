@@ -201,6 +201,7 @@ export function openExternalLink(href: string): void {
 
   if (href.startsWith('file:') || href.startsWith('/') || /^[a-zA-Z]:[/\\]/.test(href)) {
     let cleanPath = href
+
     try {
       if (href.startsWith('file:')) {
         cleanPath = decodeURIComponent(new URL(href).pathname)
@@ -211,6 +212,7 @@ export function openExternalLink(href: string): void {
 
     if (window.hermesDesktop?.openPath) {
       void window.hermesDesktop.openPath(cleanPath)
+
       return
     }
   }

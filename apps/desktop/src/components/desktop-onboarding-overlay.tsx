@@ -839,15 +839,15 @@ function FlowPanel({
           <div className="flex items-center justify-between">
             <span className="font-medium text-foreground">Authorization URL:</span>
             <Button
+              className="h-5 px-1.5 text-[11px]"
               onClick={() => void navigator.clipboard.writeText(flow.start.auth_url)}
               size="xs"
               variant="ghost"
-              className="h-5 px-1.5 text-[11px]"
             >
               Copy URL
             </Button>
           </div>
-          <a href={flow.start.auth_url} target="_blank" rel="noreferrer" className="font-mono text-primary hover:underline break-all">
+          <a className="font-mono text-primary hover:underline break-all" href={flow.start.auth_url} rel="noreferrer" target="_blank">
             {flow.start.auth_url}
           </a>
         </div>
@@ -876,15 +876,15 @@ function FlowPanel({
           <div className="flex items-center justify-between">
             <span className="font-medium text-foreground">Authorization URL:</span>
             <Button
+              className="h-5 px-1.5 text-[11px]"
               onClick={() => void navigator.clipboard.writeText(flow.start.auth_url)}
               size="xs"
               variant="ghost"
-              className="h-5 px-1.5 text-[11px]"
             >
               Copy URL
             </Button>
           </div>
-          <a href={flow.start.auth_url} target="_blank" rel="noreferrer" className="font-mono text-primary hover:underline break-all">
+          <a className="font-mono text-primary hover:underline break-all" href={flow.start.auth_url} rel="noreferrer" target="_blank">
             {flow.start.auth_url}
           </a>
         </div>
@@ -930,15 +930,15 @@ function FlowPanel({
         <div className="flex items-center justify-between">
           <span className="font-medium text-foreground">Verification URL:</span>
           <Button
+            className="h-5 px-1.5 text-[11px]"
             onClick={() => void navigator.clipboard.writeText(flow.start.verification_url)}
             size="xs"
             variant="ghost"
-            className="h-5 px-1.5 text-[11px]"
           >
             Copy URL
           </Button>
         </div>
-        <a href={flow.start.verification_url} target="_blank" rel="noreferrer" className="font-mono text-primary hover:underline break-all">
+        <a className="font-mono text-primary hover:underline break-all" href={flow.start.verification_url} rel="noreferrer" target="_blank">
           {flow.start.verification_url}
         </a>
       </div>

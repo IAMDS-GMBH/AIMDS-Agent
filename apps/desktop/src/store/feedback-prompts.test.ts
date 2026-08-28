@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $notifications, clearNotifications } from '@/store/notifications'
 import { $supportTickets } from '@/store/support-tickets'
+
 import {
   $feedbackPromptsEnabled,
   checkAndTriggerFeedbackPrompt,

@@ -38,7 +38,7 @@ const OUTLOOK_SETUP_HTML = `<!doctype html>
 
 export function OutlookSetupGuideModal({ open, onClose }: OutlookSetupGuideModalProps) {
   return (
-    <Dialog open={open} onOpenChange={nextOpen => !nextOpen && onClose()}>
+    <Dialog onOpenChange={nextOpen => !nextOpen && onClose()} open={open}>
       <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle>Outlook setup</DialogTitle>

@@ -2,7 +2,8 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
-import { $gatewayState, setGatewayState } from '@/store/session'
+import { setGatewayState } from '@/store/session'
+
 import { GatewayConnectingOverlay } from './gateway-connecting-overlay'
 
 let mockLocale = 'de'
@@ -11,6 +12,7 @@ let mockEnvVars: any = {}
 
 vi.mock('@/i18n', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/i18n')>()
+
   return {
     ...actual,
     useI18n: () => ({
@@ -22,6 +24,7 @@ vi.mock('@/i18n', async (importOriginal) => {
 
 vi.mock('@/hermes', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/hermes')>()
+
   return {
     ...actual,
     getHermesConfig: async () => mockConfig,
@@ -34,6 +37,7 @@ function resetStores() {
   mockLocale = 'de'
   mockConfig = { model: { base_url: '' } }
   mockEnvVars = {}
+
   try { localStorage.clear() } catch {}
   $desktopBoot.set({
     error: null,

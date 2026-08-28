@@ -1,6 +1,6 @@
+import { createDragDropManager, type DragDropManager } from 'dnd-core'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { type NodeApi, type NodeRendererProps, Tree, type TreeApi } from 'react-arborist'
-import { createDragDropManager, type DragDropManager } from 'dnd-core'
 import { HTML5Backend } from 'react-dnd-html5-backend'
 
 let sharedDndManager: DragDropManager | null = null
@@ -9,6 +9,7 @@ function getSharedDndManager(): DragDropManager {
   if (!sharedDndManager) {
     sharedDndManager = createDragDropManager(HTML5Backend)
   }
+
   return sharedDndManager
 }
 
@@ -180,9 +181,11 @@ function ProjectTreeRow({
 
   const handleCopyRelativePath = () => {
     let relPath = node.data.id
+
     if (cwd && node.data.id.startsWith(cwd)) {
       relPath = node.data.id.slice(cwd.length).replace(/^[/\\]+/, '')
     }
+
     void navigator.clipboard.writeText(relPath || node.data.name)
   }
 

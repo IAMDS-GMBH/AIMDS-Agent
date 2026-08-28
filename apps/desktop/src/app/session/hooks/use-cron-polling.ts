@@ -41,6 +41,7 @@ export function useCronPolling({
         clearInterval(pollIntervalRef.current)
         pollIntervalRef.current = null
       }
+
       return
     }
 
@@ -48,10 +49,12 @@ export function useCronPolling({
     const poll = async () => {
       try {
         const now = Date.now()
+
         // Rate-limit to avoid hammering the backend
         if (now - lastPollRef.current < CRON_POLL_INTERVAL_MS) {
           return
         }
+
         lastPollRef.current = now
 
         // Only continue polling if document is visible
@@ -60,6 +63,7 @@ export function useCronPolling({
         }
 
         const response = await getSessionMessages(activeSessionId, profile)
+
         if (response?.messages) {
           setMessages(toChatMessages(response.messages))
         }

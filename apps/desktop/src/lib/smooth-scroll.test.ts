@@ -34,6 +34,7 @@ describe('createSmoothScroller', () => {
   it('animates scrollTop from the current position to the target over the given duration', () => {
     const scheduler = createFakeScheduler()
     const el = { scrollTop: 0 }
+
     const scroller = createSmoothScroller(el, {
       durationMs: 100,
       requestFrame: scheduler.requestFrame,
@@ -58,6 +59,7 @@ describe('createSmoothScroller', () => {
   it('retargets an in-flight animation instead of restarting from the original start position', () => {
     const scheduler = createFakeScheduler()
     const el = { scrollTop: 0 }
+
     const scroller = createSmoothScroller(el, {
       durationMs: 100,
       requestFrame: scheduler.requestFrame,
@@ -85,6 +87,7 @@ describe('createSmoothScroller', () => {
   it('cancel() stops the animation without further writes', () => {
     const scheduler = createFakeScheduler()
     const el = { scrollTop: 0 }
+
     const scroller = createSmoothScroller(el, {
       durationMs: 100,
       requestFrame: scheduler.requestFrame,
@@ -107,6 +110,7 @@ describe('createSmoothScroller', () => {
   it('jumps immediately when durationMs is 0', () => {
     const scheduler = createFakeScheduler()
     const el = { scrollTop: 0 }
+
     const scroller = createSmoothScroller(el, {
       durationMs: 0,
       requestFrame: scheduler.requestFrame,

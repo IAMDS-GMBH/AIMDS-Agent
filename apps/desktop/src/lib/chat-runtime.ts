@@ -341,6 +341,7 @@ export function quickModelOptions(
 export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   const declaredRole =
     message.role === 'user' || message.role === 'assistant' || message.role === 'system' ? message.role : 'assistant'
+
   // Synthetic todo-snapshot/context-summary notes are stored with role
   // user/assistant so the backend/model treat them as normal turns, but they
   // must never render as a real chat bubble in the Desktop UI.

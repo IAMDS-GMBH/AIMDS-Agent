@@ -15,7 +15,7 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
-import { AlertCircle, CheckCircle2, Globe, HelpCircle, ImageIcon, Paperclip, X } from '@/lib/icons'
+import { AlertCircle, CheckCircle2, Globe, HelpCircle, ImageIcon, X } from '@/lib/icons'
 import { $feedbackPromptsEnabled, enableFeedbackPrompts } from '@/store/feedback-prompts'
 import { notify } from '@/store/notifications'
 import { addSupportTicket } from '@/store/support-tickets'
@@ -49,6 +49,7 @@ export function ReportIssueDialog({
   sessionId
 }: ReportIssueDialogProps) {
   const { t } = useI18n()
+
   const copy = t.reportIssue || {
     title: 'Problem melden',
     description: 'Senden Sie ein Fehlerprotokoll und Details direkt an das Support-Team.',
@@ -122,13 +123,18 @@ export function ReportIssueDialog({
   const addFile = (file: File) => {
     if (!file.type.startsWith('image/')) {
       notify({ kind: 'warning', message: 'Nur Bilddateien (PNG, JPG, WebP) werden als Screenshot unterstützt.' })
+
       return
     }
+
     if (file.size > 10 * 1024 * 1024) {
       notify({ kind: 'warning', message: 'Screenshot darf maximal 10 MB groß sein.' })
+
       return
     }
+
     const reader = new FileReader()
+
     reader.onload = () => {
       const dataUrl = reader.result as string
       setAttachments(prev => [
@@ -141,15 +147,19 @@ export function ReportIssueDialog({
         }
       ])
     }
+
     reader.readAsDataURL(file)
   }
 
   const handlePaste = (e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items
-    if (!items) return
+
+    if (!items) {return}
+
     for (let i = 0; i < items.length; i++) {
       if (items[i].type.startsWith('image/')) {
         const file = items[i].getAsFile()
+
         if (file) {
           addFile(file)
           e.preventDefault()
@@ -160,10 +170,13 @@ export function ReportIssueDialog({
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
-    if (!files) return
+
+    if (!files) {return}
+
     for (let i = 0; i < files.length; i++) {
       addFile(files[i])
     }
+
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
@@ -176,24 +189,30 @@ export function ReportIssueDialog({
   useEffect(() => {
     const handleOpenEvent = (e: Event) => {
       const customEvent = e as CustomEvent<{ category?: string; summary?: string }>
+
       if (customEvent.detail) {
-        if (customEvent.detail.category) setCategory(customEvent.detail.category)
-        if (customEvent.detail.summary) setSummary(customEvent.detail.summary)
+        if (customEvent.detail.category) {setCategory(customEvent.detail.category)}
+
+        if (customEvent.detail.summary) {setSummary(customEvent.detail.summary)}
       }
+
       onOpenChange(true)
     }
 
     window.addEventListener('hermes:open-report-issue', handleOpenEvent)
+
     return () => {
       window.removeEventListener('hermes:open-report-issue', handleOpenEvent)
     }
   }, [onOpenChange])
 
   const handleTranslate = async () => {
-    if (!summary.trim() && !description.trim()) return
+    if (!summary.trim() && !description.trim()) {return}
     setTranslating(true)
+
     try {
       const desktop = window.hermesDesktop
+
       if (desktop?.api) {
         const res = await desktop.api<{ summary?: string; description?: string }>({
           path: '/api/translate',
@@ -202,9 +221,11 @@ export function ReportIssueDialog({
         }).catch(() => null)
 
         if (res?.summary || res?.description) {
-          if (res.summary) setSummary(res.summary)
-          if (res.description) setDescription(res.description)
+          if (res.summary) {setSummary(res.summary)}
+
+          if (res.description) {setDescription(res.description)}
           notify({ kind: 'success', message: copy.translateSuccess || 'Erfolgreich ins Englische übersetzt.' })
+
           return
         }
       }
@@ -219,7 +240,8 @@ export function ReportIssueDialog({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!summary.trim()) return
+
+    if (!summary.trim()) {return}
 
     setLoading(true)
     setError(null)
@@ -268,7 +290,7 @@ export function ReportIssueDialog({
   }
 
   const handleClose = () => {
-    if (loading) return
+    if (loading) {return}
     onOpenChange(false)
     // Reset state after dialog closes
     setTimeout(() => {
@@ -451,10 +473,10 @@ export function ReportIssueDialog({
               {sessionId && (
                 <label className="flex items-center gap-2 cursor-pointer pt-1 text-xs text-muted-foreground">
                   <input
-                    type="checkbox"
-                    className="rounded border-input text-primary focus:ring-primary"
                     checked={includeSession}
+                    className="rounded border-input text-primary focus:ring-primary"
                     onChange={e => setIncludeSession(e.target.checked)}
+                    type="checkbox"
                   />
                   {copy.attachSession}
                 </label>
@@ -490,7 +512,7 @@ export function ReportIssueDialog({
           )}
         </DialogContent>
       </Dialog>
-      <DisableFeedbackPromptsDialog open={disableDialogOpen} onOpenChange={setDisableDialogOpen} />
+      <DisableFeedbackPromptsDialog onOpenChange={setDisableDialogOpen} open={disableDialogOpen} />
     </>
   )
 }

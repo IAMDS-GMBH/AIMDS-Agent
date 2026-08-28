@@ -85,6 +85,7 @@ export function routeSessionId(pathname: string): string | null {
 
 export function sessionRoute(sessionId: string, profile?: string): string {
   const route = `${SESSION_ROUTE_PREFIX}${encodeURIComponent(sessionId)}`
+
   return profile ? `${route}?profile=${encodeURIComponent(profile)}` : route
 }
 

@@ -71,9 +71,11 @@ function SudoDialog() {
       } catch (error) {
         clearSudoRequest(request.sessionId, request.requestId)
         const msg = error instanceof Error ? error.message : String(error)
+
         if (!msg.toLowerCase().includes('no pending')) {
           notifyError(error, copy.sudoSendFailed)
         }
+
         setSubmitting(false)
       }
     },
@@ -171,9 +173,11 @@ function SecretDialog() {
       } catch (error) {
         clearSecretRequest(request.sessionId, request.requestId)
         const msg = error instanceof Error ? error.message : String(error)
+
         if (!msg.toLowerCase().includes('no pending')) {
           notifyError(error, copy.secretSendFailed)
         }
+
         setSubmitting(false)
       }
     },

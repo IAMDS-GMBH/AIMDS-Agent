@@ -23,6 +23,7 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 const SKILLS_MODES = ['skills', 'toolsets'] as const
 type SkillsMode = (typeof SKILLS_MODES)[number]
+
 const CATEGORY_LABELS: Record<string, string> = {
   aimds_custom: 'AIMDS Custom'
 }

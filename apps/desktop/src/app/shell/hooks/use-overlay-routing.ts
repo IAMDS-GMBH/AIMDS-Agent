@@ -45,7 +45,9 @@ export function useOverlayRouting() {
       const section = (detail?.section || 'support') as CommandCenterSection
       openCommandCenterSection(section)
     }
+
     window.addEventListener('hermes:open-command-center', handleOpenCommandCenter)
+
     return () => window.removeEventListener('hermes:open-command-center', handleOpenCommandCenter)
   }, [openCommandCenterSection])
 

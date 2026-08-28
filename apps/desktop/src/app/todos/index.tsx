@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
+import { useRefreshHotkey } from '@/app/hooks/use-refresh-hotkey'
 import { PageLoader } from '@/components/page-loader'
 import { Checkbox } from '@/components/ui/checkbox'
-import { getTodos, toggleTodo, type TodoItem } from '@/hermes'
-import { useRefreshHotkey } from '@/app/hooks/use-refresh-hotkey'
+import { getTodos, type TodoItem, toggleTodo } from '@/hermes'
 import { cn } from '@/lib/utils'
 
 type GroupMode = 'day' | 'week'
@@ -13,6 +13,7 @@ function dayKey(ts: number): string {
   const y = d.getFullYear()
   const m = String(d.getMonth() + 1).padStart(2, '0')
   const day = String(d.getDate()).padStart(2, '0')
+
   return `${y}-${m}-${day}`
 }
 
@@ -22,16 +23,20 @@ function weekKey(ts: number): string {
   const day = local.getDay()
   const diff = day === 0 ? -6 : 1 - day
   local.setDate(local.getDate() + diff)
+
   return dayKey(local.getTime() / 1000)
 }
 
 function sectionLabel(mode: GroupMode, key: string): string {
   const start = new Date(`${key}T00:00:00`)
+
   if (mode === 'day') {
     return start.toLocaleDateString(undefined, { day: 'numeric', month: 'short', weekday: 'short', year: 'numeric' })
   }
+
   const end = new Date(start)
   end.setDate(end.getDate() + 6)
+
   return `${start.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} – ${end.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}`
 }
 
@@ -56,17 +61,20 @@ export function TodosView() {
     const list = items ?? []
     const keyOf = groupMode === 'day' ? dayKey : weekKey
     const map = new Map<string, TodoItem[]>()
+
     for (const item of list) {
       const key = keyOf(item.created_at)
       const section = map.get(key) ?? []
       section.push(item)
       map.set(key, section)
     }
+
     return [...map.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
   }, [groupMode, items])
 
   const onToggle = useCallback(async (todo: TodoItem, checked: boolean) => {
     setBusyIds(current => ({ ...current, [todo.id]: true }))
+
     try {
       await toggleTodo(todo.id, checked)
       await refresh()
@@ -74,6 +82,7 @@ export function TodosView() {
       setBusyIds(current => {
         const next = { ...current }
         delete next[todo.id]
+
         return next
       })
     }
@@ -130,6 +139,7 @@ export function TodosView() {
                   {sectionItems.map(todo => {
                     const checked = todo.status === 'completed'
                     const busy = Boolean(busyIds[todo.id])
+
                     return (
                       <li
                         className={cn(

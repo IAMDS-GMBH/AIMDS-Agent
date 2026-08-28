@@ -223,8 +223,11 @@ function detectIsIamds(): boolean {
   try {
     if (typeof window !== 'undefined') {
       const cached = localStorage.getItem('is_iamds_endpoint')
-      if (cached === 'true') return true
-      if (cached === 'false') return false
+
+      if (cached === 'true') {return true}
+
+      if (cached === 'false') {return false}
+
       if (typeof window.location?.href === 'string' && window.location.href.toLowerCase().includes('iamds.com')) {
         return true
       }
@@ -232,6 +235,7 @@ function detectIsIamds(): boolean {
   } catch {
     // Ignore
   }
+
   return false
 }
 
@@ -287,10 +291,10 @@ export function Intro({ personality, seed }: IntroProps) {
           </div>
 
           <a
-            href="https://iamds.com"
-            target="_blank"
-            rel="noopener noreferrer"
             className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground/80 hover:text-primary transition-colors underline decoration-dotted underline-offset-4"
+            href="https://iamds.com"
+            rel="noopener noreferrer"
+            target="_blank"
           >
             <span>IAMDS GmbH</span>
             <span className="text-[10px]">&rarr;</span>

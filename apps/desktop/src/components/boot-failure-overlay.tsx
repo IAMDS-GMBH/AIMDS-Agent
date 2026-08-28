@@ -167,8 +167,10 @@ export function BootFailureOverlay() {
 
   const openLogs = () => void window.hermesDesktop?.revealLogs().catch(() => undefined)
   const [reportOpen, setReportOpen] = useState(false)
+
   const sendSupportLogs = async () => {
     setBusy('support')
+
     try {
       const desktop = window.hermesDesktop
       // Same reason as the renderer error boundary: sendSupportLogs alone
@@ -185,6 +187,7 @@ export function BootFailureOverlay() {
         contextType: 'boot_error',
         reason: 'boot_failure'
       } as any)
+
       if (result?.ok) {
         const reference = result.reference_id || result.referenceId
         addSupportTicket({
@@ -213,6 +216,7 @@ export function BootFailureOverlay() {
       setBusy(null)
     }
   }
+
   const copy = t.boot.failure
 
   const label = signInLabel(remoteReauth, {

@@ -136,9 +136,11 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
       } catch (error) {
         clearClarifyRequest(matchingRequest.requestId, matchingRequest.sessionId)
         const msg = error instanceof Error ? error.message : String(error)
+
         if (!msg.toLowerCase().includes('no pending')) {
           notifyError(error, copy.sendFailed)
         }
+
         setSubmitting(false)
         isSubmittingRef.current = false
       }

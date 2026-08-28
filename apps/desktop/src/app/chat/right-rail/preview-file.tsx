@@ -11,6 +11,8 @@ import ShikiHighlighter from 'react-shiki'
 import { Streamdown } from 'streamdown'
 
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
+import { PageLoader } from '@/components/page-loader'
+import { Codicon } from '@/components/ui/codicon'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -25,8 +27,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
-import { Codicon } from '@/components/ui/codicon'
-import { PageLoader } from '@/components/page-loader'
 import { translateNow, useI18n } from '@/i18n'
 import { previewName } from '@/lib/preview-targets'
 import { cn } from '@/lib/utils'
@@ -324,7 +324,8 @@ function PreviewToggle({
   const { t } = useI18n()
 
   const handleShowFile = () => {
-    if (!filePath) return
+    if (!filePath) {return}
+
     if (window.hermesDesktop?.openPath) {
       void window.hermesDesktop.openPath(filePath)
     } else if (window.hermesDesktop?.openExternal) {

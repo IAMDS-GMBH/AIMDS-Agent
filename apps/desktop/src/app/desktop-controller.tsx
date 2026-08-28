@@ -9,10 +9,10 @@ import { DesktopOnboardingOverlay } from '@/components/desktop-onboarding-overla
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { Pane, PaneMain } from '@/components/pane-shell'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { translateNow } from '@/i18n'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
-import { translateNow } from '@/i18n'
 import {
   bulkDeleteSessions,
   getCronJobs,
@@ -46,6 +46,7 @@ import {
   SIDEBAR_SESSIONS_PAGE_SIZE,
   unpinSession
 } from '../store/layout'
+import { notify } from '../store/notifications'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
 import {
   $activeGatewayProfile,
@@ -57,10 +58,10 @@ import {
 } from '../store/profile'
 import {
   $activeSessionId,
+  $cronSessions,
   $currentCwd,
   $freshDraftReady,
   $gatewayState,
-  $cronSessions,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
@@ -86,7 +87,6 @@ import {
    setSessionsLoading,
   setSessionsTotal
 } from '../store/session'
-import { notify } from '../store/notifications'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 import { isSecondaryWindow } from '../store/windows'
 
@@ -664,6 +664,7 @@ export function DesktopController() {
     (jobId: string, success: boolean, error?: string) => {
       const match = $cronJobs.get().find(job => job.id === jobId)
       const titleText = match ? jobTitle(match) : jobId
+
       const clippedTitle =
         titleText.length > CRON_TOAST_TITLE_MAX ? `${titleText.slice(0, CRON_TOAST_TITLE_MAX)}…` : titleText
 
@@ -674,18 +675,24 @@ export function DesktopController() {
               void (async () => {
                 try {
                   const conn = await window.hermesDesktop?.getConnection(activeGatewayProfile)
+
                   if (conn) {
                     const res = await fetch(`${conn.baseUrl}/api/cron/jobs/${jobId}/runs?limit=1`)
+
                     if (res.ok) {
                       const runs = await res.json()
+
                       if (Array.isArray(runs) && runs.length > 0 && runs[0]?.id) {
                         navigate(sessionRoute(runs[0].id))
+
                         return
                       }
                     }
                   }
                 } catch (_) {}
+
                 const matchRun = $cronSessions.get().find((s: { id: string }) => s.id.startsWith(`cron_${jobId}_`))
+
                 if (matchRun) {
                   navigate(sessionRoute(matchRun.id))
                 } else {
@@ -947,8 +954,8 @@ export function DesktopController() {
       }}
       onNavigate={selectSidebarItem}
       onNewSessionInWorkspace={startSessionInWorkspace}
-      onSessionMaintenance={handleSessionMaintenance}
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
+      onSessionMaintenance={handleSessionMaintenance}
       onTriggerCronJob={jobId => {
         void triggerCronJob(jobId)
           .then(() => {

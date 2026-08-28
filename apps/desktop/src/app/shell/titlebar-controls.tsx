@@ -4,7 +4,6 @@ import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
 import { ReportIssueDialog } from '@/components/report-issue-dialog'
-
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
@@ -152,9 +151,11 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   const query = new URLSearchParams(location.search)
   const hubTab = query.get('tab')
+
   const discoveryOnLegacyOverlayPath =
     location.pathname === AGENTS_ROUTE &&
     (hubTab === 'agents' || hubTab === 'skills')
+
   const discoveryRouteOpen = location.pathname === HUB_ROUTE || discoveryOnLegacyOverlayPath
 
   // While a full-screen overlay (settings, command center, …) is open it should

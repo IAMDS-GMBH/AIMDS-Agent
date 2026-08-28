@@ -28,6 +28,7 @@ function todo(overrides: Partial<TodoItem> = {}): TodoItem {
 
 async function renderTodosView() {
   const { TodosView } = await import('./index')
+
   return render(<TodosView />)
 }
 

@@ -92,6 +92,7 @@ const AIMDS_PROVIDER_NAMES: Record<string, string> = {
 
 export function formatAimdsProviderLabel(provider: string): string | null {
   const norm = provider.trim().toLowerCase()
+
   return AIMDS_PROVIDER_NAMES[norm] ?? null
 }
 
@@ -122,6 +123,7 @@ export function formatModelStatusLabel(
   parts.push(name)
 
   const stateFlags: string[] = []
+
   if (options?.fastMode || /-fast$/i.test(modelBaseId(model))) {
     stateFlags.push('Fast')
   }

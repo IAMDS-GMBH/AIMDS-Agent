@@ -29,11 +29,14 @@ function makeNode(path: string, name: string, isDirectory: boolean): TreeNode {
 
 export function deduplicateNodes(nodes: TreeNode[], seenIds: Set<string> = new Set()): TreeNode[] {
   const result: TreeNode[] = []
+
   for (const node of nodes) {
     if (!node || !node.id || seenIds.has(node.id)) {
       continue
     }
+
     seenIds.add(node.id)
+
     if (node.children && node.children.length > 0) {
       result.push({
         ...node,
@@ -43,6 +46,7 @@ export function deduplicateNodes(nodes: TreeNode[], seenIds: Set<string> = new S
       result.push(node)
     }
   }
+
   return result
 }
 

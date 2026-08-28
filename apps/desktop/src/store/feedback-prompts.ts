@@ -30,7 +30,7 @@ export function closeDisableFeedbackPromptsDialog() {
  * and display an informative notice to the user.
  */
 export function initFeedbackPrompts(currentVersion?: string | null) {
-  if (!currentVersion || typeof localStorage === 'undefined') return
+  if (!currentVersion || typeof localStorage === 'undefined') {return}
 
   const lastVersion = localStorage.getItem(LAST_VERSION_KEY)
   const isEnabled = localStorage.getItem(ENABLED_KEY) !== 'false'
@@ -57,9 +57,10 @@ export function initFeedbackPrompts(currentVersion?: string | null) {
  * Checks if it's time to trigger a periodic feedback toast message.
  */
 export function checkAndTriggerFeedbackPrompt() {
-  if (typeof localStorage === 'undefined') return
+  if (typeof localStorage === 'undefined') {return}
   const isEnabled = $feedbackPromptsEnabled.get()
-  if (!isEnabled) return
+
+  if (!isEnabled) {return}
 
   const lastShownStr = localStorage.getItem(LAST_SHOWN_KEY)
   const lastShown = lastShownStr ? Number(lastShownStr) : 0
@@ -68,6 +69,7 @@ export function checkAndTriggerFeedbackPrompt() {
   // Delay first prompt slightly on fresh installs (e.g. set lastShown to now if never set)
   if (lastShown === 0) {
     localStorage.setItem(LAST_SHOWN_KEY, String(now))
+
     return
   }
 
@@ -101,6 +103,7 @@ export function checkAndTriggerFeedbackPrompt() {
  */
 export async function disableFeedbackPromptsWithReason(reason: string): Promise<{ ok: boolean; error?: string }> {
   const trimmedReason = reason.trim()
+
   if (!trimmedReason) {
     return { ok: false, error: 'Bitte geben Sie eine Begründung für die Deaktivierung an.' }
   }

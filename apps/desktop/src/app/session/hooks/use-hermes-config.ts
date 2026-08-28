@@ -2,6 +2,7 @@ import { type MutableRefObject, useCallback, useState } from 'react'
 
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
+import { $notifications, dismissNotification, notify } from '@/store/notifications'
 import {
   $currentCwd,
   setAvailablePersonalities,
@@ -12,7 +13,6 @@ import {
   setCurrentServiceTier,
   setIntroPersonality
 } from '@/store/session'
-import { $notifications, dismissNotification, notify } from '@/store/notifications'
 
 const DEFAULT_VOICE_SECONDS = 120
 const FAST_TIERS = new Set(['fast', 'priority', 'on'])

@@ -496,6 +496,7 @@ export function useSessionActions({
 
       if (!forceFullResume && cachedRuntimeId && cachedState) {
         const stored = $sessions.get().find(session => session.id === storedSessionId)
+
         const cachedViewState =
           !cachedState.model && stored?.model != null
             ? {
@@ -514,9 +515,11 @@ export function useSessionActions({
         selectedStoredSessionIdRef.current = storedSessionId
         setActiveSessionId(cachedRuntimeId)
         activeSessionIdRef.current = cachedRuntimeId
+
         if (isSessionSwitch) {
           setMessages([])
         }
+
         syncSessionStateToView(cachedRuntimeId, cachedViewState)
         setCurrentCwd(cachedViewState.cwd)
         setCurrentBranch(cachedViewState.branch)
@@ -558,9 +561,11 @@ export function useSessionActions({
       clearNotifications()
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
+
       if (isSessionSwitch) {
         setMessages([])
       }
+
       setSessionStartedAt(Date.now())
       const stored = $sessions.get().find(session => session.id === storedSessionId)
       applyStoredSessionPreviewRuntimeInfo(stored)
@@ -605,6 +610,7 @@ export function useSessionActions({
         // resume-able runtime id. Keep their stored snapshot visible and let the
         // dedicated cron polling hook refresh the transcript every second.
         const isCronSession = storedSessionId.startsWith('cron_')
+
         if (isCronSession) {
           if (!isCurrentResume()) {
             return
@@ -612,6 +618,7 @@ export function useSessionActions({
 
           const currentMessages = $messages.get()
           const previousMessages = isSessionSwitch ? [] : currentMessages
+
           const messagesForView = preserveLocalAssistantErrors(
             localSnapshot.length > 0 ? localSnapshot : previousMessages,
             previousMessages
@@ -629,6 +636,7 @@ export function useSessionActions({
             }),
             storedSessionId
           )
+
           return
         }
 
@@ -695,6 +703,7 @@ export function useSessionActions({
         }
 
         let fallbackMessages: ChatMessage[] = []
+
         try {
           const fallback = await getSessionMessages(storedSessionId, sessionProfile)
           fallbackMessages = preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get())

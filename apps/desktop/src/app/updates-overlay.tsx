@@ -1,8 +1,8 @@
-import { ReportIssueDialog } from '@/components/report-issue-dialog'
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { BrandMark } from '@/components/brand-mark'
+import { ReportIssueDialog } from '@/components/report-issue-dialog'
 import { Button } from '@/components/ui/button'
 import { writeClipboardText } from '@/components/ui/copy-button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
@@ -12,8 +12,8 @@ import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } fro
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, CheckCircle2, Copy, Terminal } from '@/lib/icons'
-import { cn } from '@/lib/utils'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
+import { cn } from '@/lib/utils'
 import {
   $backendUpdateApply,
   $backendUpdateChecking,
@@ -90,7 +90,7 @@ export function UpdatesOverlay() {
   }
 
   const handleReportIssue = (summary?: string) => {
-    if (summary) setReportSummary(summary)
+    if (summary) {setReportSummary(summary)}
     setReportOpen(true)
   }
 
