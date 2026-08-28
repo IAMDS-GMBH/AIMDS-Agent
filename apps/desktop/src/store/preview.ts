@@ -299,11 +299,16 @@ export function setSessionPreviewTarget(
   source: PreviewRecordSource,
   rawTarget = target.source
 ): SessionPreviewRecord | null {
-  const record = registerSessionPreview(sessionId, target, source, rawTarget)
-
+  // Route first, register second. The session registry tracks what the session
+  // is *live-previewing*; a target that belongs in the file lane (peeked at, or
+  // not renderable) must not be written there. Registering before the routing
+  // decision let a file inspection overwrite the session's live preview record,
+  // so reopening the session restored the inspected file instead.
   if (tryOpenFilePreview(target, source)) {
-    return record
+    return null
   }
+
+  const record = registerSessionPreview(sessionId, target, source, rawTarget)
 
   setPreviewTarget(record?.normalized ?? previewTargetForSource(target, source))
 
