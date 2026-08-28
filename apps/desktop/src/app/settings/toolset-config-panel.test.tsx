@@ -1,7 +1,19 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ToolsetConfig } from '@/types/hermes'
+import type { ReactNode } from 'react'
+
+import { I18nProvider } from '@/i18n'
+
+// Pin the locale: DEFAULT_LOCALE is 'de', but these queries assert the English
+// copy. Same idiom as copy-button.test.tsx / trigger-popover.test.tsx.
+const wrapper = ({ children }: { children: ReactNode }) => (
+  <I18nProvider configClient={null} initialLocale="en">
+    {children}
+  </I18nProvider>
+)
+
 
 const getToolsetConfig = vi.fn()
 const selectToolsetProvider = vi.fn()
@@ -73,10 +85,17 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
+// Radix's dropdown menu calls these on open; jsdom implements none of them.
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn()
+  Element.prototype.hasPointerCapture = vi.fn(() => false)
+  Element.prototype.releasePointerCapture = vi.fn()
+})
+
 describe('ToolsetConfigPanel', () => {
   it('lists providers from the config endpoint', async () => {
     const { ToolsetConfigPanel } = await import('./toolset-config-panel')
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />, { wrapper })
 
     expect(await screen.findByText('Microsoft Edge TTS')).toBeTruthy()
     expect(screen.getByText('ElevenLabs')).toBeTruthy()
@@ -85,7 +104,7 @@ describe('ToolsetConfigPanel', () => {
 
   it('selects a provider when clicked', async () => {
     const { ToolsetConfigPanel } = await import('./toolset-config-panel')
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />, { wrapper })
 
     const elevenlabs = await screen.findByRole('button', { name: /ElevenLabs/ })
     fireEvent.click(elevenlabs)
@@ -95,14 +114,17 @@ describe('ToolsetConfigPanel', () => {
 
   it('saves an API key for a provider env var', async () => {
     const { ToolsetConfigPanel } = await import('./toolset-config-panel')
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />, { wrapper })
 
     // Select the keyed provider so its env vars render.
     const elevenlabs = await screen.findByRole('button', { name: /ElevenLabs/ })
     fireEvent.click(elevenlabs)
 
-    // Click "Set" to reveal the input for the unset key.
-    fireEvent.click(await screen.findByRole('button', { name: 'Set' }))
+    // Setting a key now goes through the credential actions menu: "Set" moved
+    // from a standalone button to a menu item behind the per-key trigger.
+    const actions = await screen.findByRole('button', { name: 'Actions for ELEVENLABS_API_KEY' })
+    fireEvent.pointerDown(actions, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Set' }))
 
     const input = await screen.findByPlaceholderText('ElevenLabs API key')
     fireEvent.change(input, { target: { value: 'sk-test-123' } })
@@ -152,7 +174,7 @@ describe('ToolsetConfigPanel', () => {
     )
 
     const { ToolsetConfigPanel } = await import('./toolset-config-panel')
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />, { wrapper })
 
     // The active provider's env-var field only renders when it's the expanded
     // one — so finding it proves ElevenLabs (not Edge TTS) was auto-expanded.
@@ -199,7 +221,7 @@ describe('ToolsetConfigPanel', () => {
       })
 
     const { ToolsetConfigPanel } = await import('./toolset-config-panel')
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />, { wrapper })
 
     fireEvent.click(await screen.findByRole('button', { name: /Run setup/ }))
 
@@ -233,7 +255,7 @@ describe('ToolsetConfigPanel', () => {
     runToolsetPostSetup.mockResolvedValue({ ok: false, pid: 0, name: 'tools-post-setup' })
 
     const { ToolsetConfigPanel } = await import('./toolset-config-panel')
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />, { wrapper })
 
     fireEvent.click(await screen.findByRole('button', { name: /Run setup/ }))
 
@@ -272,7 +294,7 @@ describe('ToolsetConfigPanel', () => {
     })
 
     const { ToolsetConfigPanel } = await import('./toolset-config-panel')
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />, { wrapper })
 
     fireEvent.click(await screen.findByRole('button', { name: /Run setup/ }))
 

@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
+
 const getSkills = vi.fn()
 const getToolsets = vi.fn()
 const toggleSkill = vi.fn()
@@ -43,9 +45,13 @@ function toolset(overrides: Record<string, unknown> = {}) {
 function renderSkills() {
   return import('./index').then(({ SkillsView }) =>
     render(
-      <MemoryRouter initialEntries={['/skills?tab=toolsets']}>
-        <SkillsView />
-      </MemoryRouter>
+      // Pin the locale: DEFAULT_LOCALE is 'de', and these queries assert the
+      // English copy. Same wrapper as copy-button.test.tsx / trigger-popover.
+      <I18nProvider configClient={null} initialLocale="en">
+        <MemoryRouter initialEntries={['/skills?tab=toolsets']}>
+          <SkillsView />
+        </MemoryRouter>
+      </I18nProvider>
     )
   )
 }

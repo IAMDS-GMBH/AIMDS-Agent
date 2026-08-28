@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -60,5 +61,15 @@ export default defineConfig({
   preview: {
     host: '127.0.0.1',
     port: 4174
+  },
+  test: {
+    // Vitest owns the renderer tests only. Without an explicit include it falls
+    // back to its default glob and drags in two kinds of file it cannot run:
+    // the `electron/` and `scripts/` suites written against `node --test`
+    // (wired up in the `test:desktop:platforms` script), and the vendored
+    // node-pty tests staged under `build/native-deps/`. Both showed up as
+    // "failed suites" and made a green run indistinguishable from a red one.
+    include: ['src/**/*.test.{ts,tsx}'],
+    environment: 'jsdom'
   }
 })

@@ -3,7 +3,20 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ReactNode } from 'react'
+
+import { I18nProvider } from '@/i18n'
+
 import { Thread } from './thread'
+
+// Pin the locale: DEFAULT_LOCALE is 'de', but these queries assert the English
+// copy. Same idiom as copy-button.test.tsx / trigger-popover.test.tsx.
+const wrapper = ({ children }: { children: ReactNode }) => (
+  <I18nProvider configClient={null} initialLocale="en">
+    {children}
+  </I18nProvider>
+)
+
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
 
@@ -402,7 +415,7 @@ describe('assistant-ui streaming renderer', () => {
   })
 
   it('renders assistant text incrementally before completion', async () => {
-    const { container } = render(<StreamingHarness />)
+    const { container } = render(<StreamingHarness />, { wrapper })
 
     expect(screen.getByRole('status', { name: 'Hermes is loading a response' })).toBeTruthy()
 
@@ -428,19 +441,19 @@ describe('assistant-ui streaming renderer', () => {
   })
 
   it('does not render composer clearance for intro-only threads', () => {
-    const { container } = render(<IntroHarness />)
+    const { container } = render(<IntroHarness />, { wrapper })
 
     expect(container.querySelector('[data-slot="aui_composer-clearance"]')).toBeNull()
   })
 
   it('renders assistant provider errors inline', () => {
-    render(<MessageHarness message={assistantErrorMessage('OpenRouter rejected the request (403).')} />)
+    render(<MessageHarness message={assistantErrorMessage('OpenRouter rejected the request (403).')} />, { wrapper })
 
     expect(screen.getByRole('alert').textContent).toContain('OpenRouter rejected the request (403).')
   })
 
   it('does not pull the viewport back down after the user scrolls up during streaming', async () => {
-    const { container } = render(<StreamingHarness />)
+    const { container } = render(<StreamingHarness />, { wrapper })
 
     const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
     const viewport = content.parentElement as HTMLDivElement
@@ -479,7 +492,7 @@ describe('assistant-ui streaming renderer', () => {
   })
 
   it('does not auto-follow idle layout shifts', async () => {
-    const { container } = render(<StaticThreadHarness />)
+    const { container } = render(<StaticThreadHarness />, { wrapper })
 
     const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
     const viewport = content.parentElement as HTMLDivElement
@@ -511,7 +524,7 @@ describe('assistant-ui streaming renderer', () => {
   })
 
   it('follows streaming content growth while parked at the bottom', async () => {
-    const { container } = render(<StreamingHarness />)
+    const { container } = render(<StreamingHarness />, { wrapper })
 
     const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
     const viewport = content.parentElement as HTMLDivElement
@@ -564,7 +577,7 @@ describe('assistant-ui streaming renderer', () => {
   })
 
   it('honors the first upward wheel scroll even when a programmatic bottom-pin scroll event is still pending', async () => {
-    const { container } = render(<StreamingHarness />)
+    const { container } = render(<StreamingHarness />, { wrapper })
 
     const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
     const viewport = content.parentElement as HTMLDivElement
@@ -598,7 +611,7 @@ describe('assistant-ui streaming renderer', () => {
   })
 
   it('does not snap to the bottom on final code-highlight growth after a run completes', async () => {
-    const { container } = render(<StreamingHarness />)
+    const { container } = render(<StreamingHarness />, { wrapper })
 
     const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
     const viewport = content.parentElement as HTMLDivElement
@@ -629,7 +642,7 @@ describe('assistant-ui streaming renderer', () => {
   })
 
   it('does not restart bottom-follow after completion when the user scrolled up', async () => {
-    const { container } = render(<StreamingHarness />)
+    const { container } = render(<StreamingHarness />, { wrapper })
 
     const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
     const viewport = content.parentElement as HTMLDivElement
@@ -663,7 +676,7 @@ describe('assistant-ui streaming renderer', () => {
   })
 
   it('renders an incomplete streaming fenced code block as a code card', async () => {
-    const { container } = render(<RunningMessageHarness message={assistantMessage('```ts\nconst answer = 42\n')} />)
+    const { container } = render(<RunningMessageHarness message={assistantMessage('```ts\nconst answer = 42\n')} />, { wrapper })
 
     await waitFor(() => {
       expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy()
@@ -674,21 +687,26 @@ describe('assistant-ui streaming renderer', () => {
   })
 
   it('renders an incomplete streaming reasoning fenced code block as a code card', async () => {
-    const { container } = render(<RunningReasoningHarness />)
-    const ui = within(container)
+    const { container } = render(<RunningReasoningHarness />, { wrapper })
 
-    fireEvent.click(ui.getByRole('button', { name: /thinking/i }))
-
+    // No click here: a reasoning part auto-expands while the message is still
+    // running, so clicking the "thinking" toggle would collapse it again.
     await waitFor(() => {
       expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy()
     })
 
-    expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
+    // The card body is highlighted asynchronously, so give it a tick to fill in.
+    await waitFor(() => {
+      expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain(
+        'const answer = 42'
+      )
+    })
+
     expect(container.textContent).not.toContain('```ts')
   })
 
   it('renders reasoning text without a leading token space', () => {
-    const { container } = render(<ReasoningHarness />)
+    const { container } = render(<ReasoningHarness />, { wrapper })
     const ui = within(container)
 
     fireEvent.click(ui.getByRole('button', { name: /thinking/i }))
@@ -699,7 +717,7 @@ describe('assistant-ui streaming renderer', () => {
   })
 
   it('groups consecutive reasoning parts under one thinking disclosure', () => {
-    const { container } = render(<GroupedReasoningHarness />)
+    const { container } = render(<GroupedReasoningHarness />, { wrapper })
 
     const disclosures = container.querySelectorAll('[data-slot="aui_thinking-disclosure"]')
     expect(disclosures.length).toBe(1)
@@ -713,7 +731,7 @@ describe('assistant-ui streaming renderer', () => {
   })
 
   it('does not reopen an earlier completed thinking group when a later group is running', () => {
-    const { container } = render(<RunningMessageHarness message={assistantSeparatedReasoningMessage()} />)
+    const { container } = render(<RunningMessageHarness message={assistantSeparatedReasoningMessage()} />, { wrapper })
 
     const disclosures = container.querySelectorAll('[data-slot="aui_thinking-disclosure"]')
     expect(disclosures.length).toBe(2)

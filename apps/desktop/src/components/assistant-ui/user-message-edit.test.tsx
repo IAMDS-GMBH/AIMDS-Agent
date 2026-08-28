@@ -11,6 +11,7 @@ import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime }
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 
 import { Thread } from './thread'
@@ -116,7 +117,11 @@ function StockHarness({ onEdit }: { onEdit: () => Promise<void> }) {
 
 describe('click-to-edit user message', () => {
   it('opens the edit composer with the incremental runtime', async () => {
-    const { container } = render(<IncrementalHarness onEdit={async () => {}} />)
+    const { container } = render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <IncrementalHarness onEdit={async () => {}} />
+      </I18nProvider>
+    )
 
     const bubble = await screen.findByRole('button', { name: 'Edit message' })
 
@@ -128,7 +133,11 @@ describe('click-to-edit user message', () => {
   })
 
   it('opens the edit composer with the stock runtime', async () => {
-    const { container } = render(<StockHarness onEdit={async () => {}} />)
+    const { container } = render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <StockHarness onEdit={async () => {}} />
+      </I18nProvider>
+    )
 
     const bubble = await screen.findByRole('button', { name: 'Edit message' })
 
