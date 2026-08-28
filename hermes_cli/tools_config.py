@@ -103,7 +103,25 @@ def gui_toolset_label(label: str) -> str:
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "outlook"}
+# `messaging` exposes a generic `send_message` that dispatches to whichever
+# platform happens to be configured. The model sees one plausible-looking tool
+# and cannot tell where it will land — which is how messaging tools ended up
+# acting on Outlook. `yuanbao` ships chat tools for a platform most
+# deployments do not run, and every unused schema is sent on every call.
+#
+# Deliberately NOT listed here: feishu_doc / feishu_drive. Those are pulled in
+# explicitly by the Feishu *platform* toolset, so defaulting them off would
+# silently strip a running Feishu deployment of its own document tools — the
+# same trap the homeassistant note below describes. A platform that owns its
+# tools keeps them; only the cross-platform dispatcher goes quiet.
+#
+# `hermes tools` still enables any of these explicitly.
+_MESSAGING_OFF_TOOLSETS = {"messaging", "yuanbao"}
+
+_DEFAULT_OFF_TOOLSETS = {
+    "moa", "homeassistant", "spotify", "discord", "discord_admin",
+    "video", "video_gen", "x_search", "outlook",
+} | _MESSAGING_OFF_TOOLSETS
 
 
 def _xai_credentials_present() -> bool:

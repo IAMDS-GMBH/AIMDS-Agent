@@ -1034,6 +1034,29 @@ def _resolve_workspace_dir() -> Path:
     return _get_default_workspace_dir().resolve()
 
 
+# Chat-platform surfaces AIMDS-Agent does not use or offer. Kept as data so the
+# v40 migration, the docs and any future cleanup agree on one list.
+_RETIRED_MESSAGING_TOOLSETS = ("messaging", "yuanbao")
+
+_RETIRED_MESSAGING_PLATFORMS = (
+    "slack",
+    "discord",
+    "telegram",
+    "matrix",
+    "mattermost",
+    "signal",
+    "whatsapp",
+    "sms",
+    "bluebubbles",
+    "feishu",
+    "dingtalk",
+    "wecom",
+    "weixin",
+    "qqbot",
+    "yuanbao",
+)
+
+
 def _migrate_folder_lossless(src: Path, dst: Path) -> None:
     """Losslessly move all files and subdirectories from src to dst with size verification."""
     if not src.exists() or not src.is_dir():
@@ -5972,6 +5995,57 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     except Exception as _aimds_mig_exc:
         results["warnings"].append(
             f"mcp_servers.AIMDS migration (v39) failed: {_aimds_mig_exc}"
+        )
+
+    # ── Version 39 → 40 (+ idempotent): retire messaging for AIMDS-Agent ──
+    # AIMDS-Agent neither uses nor offers chat-platform messaging. The generic
+    # `send_message` dispatches to whichever platform is configured, which is
+    # how messaging tools ended up acting on Outlook — the model sees one
+    # plausible tool and cannot tell where it will land. New installs get this
+    # from _DEFAULT_OFF_TOOLSETS; existing ones need it written in, and any
+    # messaging platform left enabled has to stop listening.
+    #
+    # Non-destructive: platform sections keep their credentials and are only
+    # flipped to enabled=false, and every change is reported so it can be
+    # undone deliberately.
+    try:
+        config = read_raw_config()
+        changed = []
+
+        agent_cfg = config.get("agent")
+        if not isinstance(agent_cfg, dict):
+            agent_cfg = {}
+        disabled = agent_cfg.get("disabled_toolsets")
+        if not isinstance(disabled, list):
+            disabled = []
+        for toolset in _RETIRED_MESSAGING_TOOLSETS:
+            if toolset not in disabled:
+                disabled.append(toolset)
+                changed.append(f"agent.disabled_toolsets += {toolset}")
+        if changed:
+            agent_cfg["disabled_toolsets"] = disabled
+            config["agent"] = agent_cfg
+
+        platforms = config.get("platforms")
+        if isinstance(platforms, dict):
+            for name in _RETIRED_MESSAGING_PLATFORMS:
+                section = platforms.get(name)
+                if isinstance(section, dict) and section.get("enabled") is not False:
+                    section["enabled"] = False
+                    changed.append(f"platforms.{name}.enabled = false")
+            if changed:
+                config["platforms"] = platforms
+
+        if changed:
+            config["_config_version"] = 40
+            save_config(config)
+            results["config_added"].extend(changed)
+            if not quiet:
+                for line in changed:
+                    print(f"  ✓ Messaging retired: {line}")
+    except Exception as _messaging_mig_exc:
+        results["warnings"].append(
+            f"messaging retirement migration (v40) failed: {_messaging_mig_exc}"
         )
 
     # Check for missing config fields

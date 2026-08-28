@@ -1586,3 +1586,56 @@ def test_real_configurable_changes_still_reported_in_diff():
     # User adds 'outlook' (configurable) — must still report as added.
     new_enabled2 = (current - {"kanban"}) | {"outlook"}
     assert ((new_enabled2 - current) & universe) == {"outlook"}
+
+
+class TestMessagingToolsetsAreOffByDefault:
+    """Messaging tools must not appear unless someone asks for them.
+
+    `messaging` exposes a generic `send_message` that dispatches to whichever
+    platform is configured. The model sees one plausible tool and cannot tell
+    where it will land — which is how messaging tools ended up acting on
+    Outlook. The platform-specific sets are dead weight for deployments that do
+    not run those platforms, and every unused schema is sent on every call.
+    """
+
+    def test_generic_send_message_is_off(self):
+        from hermes_cli.tools_config import _DEFAULT_OFF_TOOLSETS
+
+        assert "messaging" in _DEFAULT_OFF_TOOLSETS
+
+    def test_unused_platform_chat_tools_are_off(self):
+        from hermes_cli.tools_config import _DEFAULT_OFF_TOOLSETS
+
+        assert "yuanbao" in _DEFAULT_OFF_TOOLSETS
+
+    def test_feishu_keeps_the_tools_its_platform_owns(self):
+        """A platform that pulls in its own tools must not lose them.
+
+        feishu_doc / feishu_drive are included by the Feishu platform toolset;
+        defaulting them off would strip a running Feishu deployment of its
+        document tools, the same trap the homeassistant handling avoids.
+        """
+        from hermes_cli.tools_config import _DEFAULT_OFF_TOOLSETS
+
+        assert not ({"feishu_doc", "feishu_drive"} & _DEFAULT_OFF_TOOLSETS)
+
+    def test_previously_off_toolsets_stay_off(self):
+        """Regression guard: the rewrite must not drop an existing entry."""
+        from hermes_cli.tools_config import _DEFAULT_OFF_TOOLSETS
+
+        assert {
+            "moa",
+            "homeassistant",
+            "spotify",
+            "discord",
+            "discord_admin",
+            "video",
+            "video_gen",
+            "x_search",
+            "outlook",
+        } <= _DEFAULT_OFF_TOOLSETS
+
+    def test_core_working_toolsets_remain_on(self):
+        from hermes_cli.tools_config import _DEFAULT_OFF_TOOLSETS
+
+        assert not ({"hermes-cli", "coding", "delegation"} & _DEFAULT_OFF_TOOLSETS)
