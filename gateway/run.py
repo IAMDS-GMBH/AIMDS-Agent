@@ -5382,8 +5382,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except (subprocess.CalledProcessError, OSError, subprocess.TimeoutExpired):
             return None
 
-    async def _code_drift_watcher(self, interval: float = 900.0) -> None:
-        """Warn when the on-disk checkout has moved past the code this process loaded.
+    def _auto_restart_on_code_change(self) -> bool:
+        """Whether drift should restart the gateway instead of only warning."""
+        try:
+            from hermes_cli.config import load_config
+
+            gateway_cfg = (load_config() or {}).get("gateway")
+            if isinstance(gateway_cfg, dict):
+                value = gateway_cfg.get("auto_restart_on_code_change")
+                if isinstance(value, str):
+                    return value.strip().lower() in {"true", "1", "yes"}
+                if value is not None:
+                    return bool(value)
+        except Exception:
+            pass
+
+        return True
+
+    async def _code_drift_watcher(self, interval: float = 120.0) -> None:
+        """Restart when the on-disk checkout has moved past the loaded code.
 
         `hermes update` (and its `/update` chat command) always restarts the
         gateway after pulling new commits, so the running process picks up
@@ -5393,9 +5410,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         modules, so the process silently keeps executing the old code with no
         visible symptom other than "the fix doesn't seem to take effect".
 
-        This watcher makes that drift observable instead of silent: it records
-        the git HEAD loaded at startup, periodically re-checks the on-disk
-        HEAD, and logs a clear, actionable warning the first time they diverge.
+        Warning alone was not enough. The desktop updater (`hermes-setup
+        --update`) is a separate binary that does not restart the gateway, so
+        after a desktop auto-update the process kept serving the old code while
+        the only signal was a log line nobody reads. Restarting the desktop app
+        does not help either — it respawns the backend, not the gateway. The
+        observed symptom was MCP tools silently missing from every session.
+
+        So this watcher now acts: it records the git HEAD loaded at startup,
+        re-checks the on-disk HEAD, and on divergence requests a detached
+        restart. `stop(restart=True)` drains in-flight agent runs first, and
+        the detached relaunch does not depend on a service manager. Set
+        `gateway.auto_restart_on_code_change: false` to keep the old
+        warn-only behaviour.
         """
         repo_root = Path(__file__).resolve().parent.parent
         if not (repo_root / ".git").exists():
@@ -5414,14 +5441,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             current_sha = await loop.run_in_executor(None, self._git_head_sha, repo_root)
             if current_sha and current_sha != startup_sha:
                 warned = True
-                logger.warning(
-                    "Gateway checkout at %s has moved from commit %s to %s, but this "
-                    "process is still running the old code. This usually means a plain "
-                    "'git pull' was run instead of 'hermes update' (which restarts the "
-                    "gateway automatically). Run 'hermes gateway restart' to load the "
-                    "new code.",
-                    repo_root, startup_sha[:12], current_sha[:12],
-                )
+                if self._auto_restart_on_code_change():
+                    logger.warning(
+                        "Gateway checkout at %s has moved from commit %s to %s. "
+                        "Restarting to load the new code (in-flight runs are drained "
+                        "first). Set gateway.auto_restart_on_code_change: false to "
+                        "only warn instead.",
+                        repo_root, startup_sha[:12], current_sha[:12],
+                    )
+                    self.request_restart(detached=True)
+                else:
+                    logger.warning(
+                        "Gateway checkout at %s has moved from commit %s to %s, but this "
+                        "process is still running the old code and "
+                        "gateway.auto_restart_on_code_change is disabled. Run "
+                        "'hermes gateway restart' to load the new code.",
+                        repo_root, startup_sha[:12], current_sha[:12],
+                    )
 
     async def _session_expiry_watcher(self, interval: int = 300):
         """Background task that finalizes expired sessions.
