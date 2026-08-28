@@ -413,8 +413,16 @@ TOOLSETS = {
     },
     
     "hermes-cli": {
-        "description": "Full interactive CLI toolset - all default tools plus cronjob management",
-        "tools": _HERMES_CORE_TOOLS + ["cronjob"],
+        "description": "Full interactive CLI toolset - all default tools plus cronjob management and delegation",
+        # `delegate_task` sits here rather than in _HERMES_CORE_TOOLS on
+        # purpose: the core list is shared with every messaging platform, and
+        # spawning child agents from an inbound Slack/Teams message is a
+        # different cost and trust profile than doing it in an interactive
+        # desktop/CLI session. Without it in this toolset the desktop app never
+        # sees the tool at all, so fan-out work (e.g. pulling worklogs month by
+        # month in parallel on a small model) is not merely rare — it is
+        # impossible.
+        "tools": _HERMES_CORE_TOOLS + ["cronjob", "delegate_task"],
         "includes": []
     },
 

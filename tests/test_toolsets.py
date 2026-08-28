@@ -255,3 +255,43 @@ class TestDefaultPlatformWebSearchCoverage:
 
     def test_hermes_api_server_toolset_includes_web_search(self):
         assert "web_search" in resolve_toolset("hermes-api-server")
+
+
+class TestDelegationAvailability:
+    """Subagents were unreachable from the desktop app and the CLI.
+
+    `delegate_task` lived only in `delegation`, `coding`, `hermes-acp` and
+    `hermes-api-server`. Desktop and CLI both run `hermes-cli`, so the model
+    was never offered the tool — delegation was not rare there, it was
+    impossible, and fan-out work (e.g. fetching worklogs month by month in
+    parallel on a small model) could never happen.
+    """
+
+    def test_cli_toolset_exposes_delegate_task(self):
+        from toolsets import TOOLSETS
+
+        assert "delegate_task" in TOOLSETS["hermes-cli"]["tools"]
+
+    def test_core_tools_stay_free_of_delegation(self):
+        """Messaging platforms share _HERMES_CORE_TOOLS.
+
+        Spawning child agents straight off an inbound chat message is a
+        different cost and trust profile, so delegation must not ride along
+        via the shared core list.
+        """
+        from toolsets import _HERMES_CORE_TOOLS
+
+        assert "delegate_task" not in _HERMES_CORE_TOOLS
+
+    def test_messaging_platforms_do_not_gain_delegation(self):
+        from toolsets import TOOLSETS
+
+        leaked = [
+            name
+            for name, spec in TOOLSETS.items()
+            if name.startswith("hermes-")
+            and name not in {"hermes-cli", "hermes-acp", "hermes-api-server"}
+            and "delegate_task" in (spec.get("tools") or [])
+        ]
+
+        assert leaked == [], f"delegation leaked into: {leaked}"
