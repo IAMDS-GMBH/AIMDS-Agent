@@ -6,7 +6,11 @@ import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigRecord, getMcpServers, getRemoteHealthStatus, getStatus, reloadMcpServers, restartGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertCircle, Globe, Loader2, RefreshCw } from '@/lib/icons'
-import { getMcpServerToolCount } from '@/lib/mcp-helpers'
+import {
+  getMcpServerConfiguredToolCount,
+  getMcpServerToolCount,
+  isMcpServerConfiguredButUnloaded
+} from '@/lib/mcp-helpers'
 import { formatAimdsProviderLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -370,7 +374,15 @@ export function SystemStatusContent() {
                   <div className="mt-2 grid gap-1 border-t border-border/40 pt-1.5">
                     {mcpServers.map(server => {
                       const count = getMcpServerToolCount(server)
-                      const countLabel = count !== null ? `${count} Tool${count === 1 ? '' : 's'}` : null
+                      // A server that registered nothing must not read as
+                      // healthy just because config lists tools for it.
+                      const unloaded = isMcpServerConfiguredButUnloaded(server)
+                      const configured = getMcpServerConfiguredToolCount(server)
+                      const countLabel = unloaded
+                        ? `0/${configured} Tools`
+                        : count !== null
+                          ? `${count} Tool${count === 1 ? '' : 's'}`
+                          : null
 
                       const toolsList = server.discovered_tools && server.discovered_tools.length > 0
                         ? server.discovered_tools.join(', ')
@@ -380,7 +392,11 @@ export function SystemStatusContent() {
                         <span
                           className={cn(
                             'font-mono cursor-help',
-                            server.enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'
+                            server.enabled && !unloaded
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : server.enabled && unloaded
+                                ? 'text-amber-600 dark:text-amber-400'
+                                : 'text-muted-foreground'
                           )}
                         >
                           {server.enabled
