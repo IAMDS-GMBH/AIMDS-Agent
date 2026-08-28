@@ -1057,3 +1057,60 @@ class TestCamelCaseMcpToolsAreFindable:
         entry = next(e for e in build_catalog(self._defs()) if "Tempo" in e.name)
 
         assert {"tempo", "retrieve", "worklogs"} <= entry._name_tokens
+
+
+class TestNamedSourceIsAlwaysRepresented:
+    """A server the query names outright must appear in the results.
+
+    Observed: "Tempo worklog time tracking currentUser" returned eight
+    AtlassianMCP tools and no TempoMCP. "worklog" matched fourteen Jira tools
+    while "tempo" matched seven Tempo ones, so the larger source filled every
+    slot. The model then fetched worklogs issue by issue — sixteen calls to do
+    one tool's job — because the right tool looked absent.
+    """
+
+    @staticmethod
+    def _defs():
+        def td(name, desc):
+            return {
+                "type": "function",
+                "function": {"name": name, "description": desc, "parameters": {}},
+            }
+
+        defs = [
+            td(
+                "mcp_TempoMCP_retrieveWorklogs",
+                "Retrieve Tempo worklogs in a date range. Defaults to the authenticated user's own worklogs.",
+            )
+        ]
+        # The real ratio: Tempo exposes 7 tools, Atlassian 14.
+        defs += [td(f"mcp_TempoMCP_op{i}", "Tempo timesheet operation.") for i in range(6)]
+        defs += [td("mcp_AtlassianMCP_jira_get_worklog", "Get worklog entries for a Jira issue.")]
+        defs += [td(f"mcp_AtlassianMCP_jira_op{i}", "Jira issue worklog operation.") for i in range(13)]
+
+        return defs
+
+    def _names(self, query, limit=8):
+        from tools.tool_search import build_catalog, search_catalog
+
+        return [e.name for e in search_catalog(build_catalog(self._defs()), query, limit)]
+
+    def test_the_named_server_survives_a_crowded_result(self):
+        names = self._names("Tempo worklog time tracking currentUser")
+
+        assert any("TempoMCP" in n for n in names), names
+
+    def test_the_other_matching_server_is_not_evicted(self):
+        names = self._names("Tempo worklog time tracking currentUser")
+
+        assert any("AtlassianMCP" in n for n in names), names
+
+    def test_a_query_naming_no_server_is_unaffected(self):
+        names = self._names("issue transition")
+
+        assert len(names) <= 8
+
+    def test_limit_is_still_respected(self):
+        names = self._names("Tempo worklog", limit=3)
+
+        assert len(names) <= 3

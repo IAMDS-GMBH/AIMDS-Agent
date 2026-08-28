@@ -818,6 +818,28 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
     scored.sort(key=lambda x: x[0], reverse=True)
     results = [e for _, e in scored[:limit]]
 
+    # Guarantee a slot for a server the query named outright. A source with
+    # many tools otherwise fills every slot with moderate matches and buries
+    # the one the user actually asked for: "Tempo worklog time tracking"
+    # returned eight AtlassianMCP tools and no TempoMCP, because "worklog"
+    # matched fourteen Jira tools while "tempo" matched seven Tempo ones. The
+    # model then worked around the absence by fetching worklogs issue by
+    # issue — sixteen calls to do one tool's job.
+    named_sources = {
+        entry.source_name
+        for entry in catalog
+        if entry.source_name and any(t in entry._source_tokens for t in query_tokens)
+    }
+    if named_sources and scored:
+        represented = {e.source_name for e in results}
+        for source in named_sources - represented:
+            best = next((e for _, e in scored if e.source_name == source), None)
+            if best is None:
+                continue
+            if len(results) >= limit:
+                results.pop()
+            results.append(best)
+
     # MCP Server Grouping: if top matches belong to an MCP server/toolset,
     # include sibling tools from the same source so the model gets related actions in 1 turn.
     if results and len(results) < limit:
