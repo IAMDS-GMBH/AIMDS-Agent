@@ -1097,6 +1097,41 @@ def _ensure_mcp_discovery_completed() -> None:
         pass
 
 
+_CATALOG_CACHE: "tuple | None" = None
+
+
+def _cached_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
+    """`build_catalog` bound to the registry generation and the def set.
+
+    Building a catalog resolves every tool through `registry.get_entry`, pulls
+    MCP server metadata, and vectorizes each entry against corpus IDF. That ran
+    from scratch on every single `tool_search` call, even when nothing had
+    changed between them — and a model typically searches several times per
+    turn.
+
+    The key mirrors `model_tools.get_tool_definitions`: `registry._generation`
+    captures registry mutations (MCP refresh, plugin load), and the tool-name
+    set captures a caller passing a different slice of defs.
+    """
+    global _CATALOG_CACHE
+
+    try:
+        from tools.registry import registry as _registry
+
+        generation = _registry._generation
+    except Exception:
+        generation = None
+
+    key = (generation, tuple(td.get("function", {}).get("name", "") for td in tool_defs))
+    if _CATALOG_CACHE is not None and _CATALOG_CACHE[0] == key:
+        return _CATALOG_CACHE[1]
+
+    catalog = build_catalog(tool_defs)
+    _CATALOG_CACHE = (key, catalog)
+
+    return catalog
+
+
 def _format_search_hit(entry: CatalogEntry) -> Dict[str, Any]:
     raw_desc = (entry.description or "").strip()
     first_line = raw_desc.split("\n")[0].strip() if raw_desc else ""
@@ -1139,7 +1174,7 @@ def dispatch_tool_search(args: Dict[str, Any],
                 deferrable = live_deferrable
         except Exception:
             pass
-    catalog = build_catalog(deferrable)
+    catalog = _cached_catalog(deferrable)
     hits = search_catalog(catalog, query, limit=limit)
     return json.dumps({
         "query": query,

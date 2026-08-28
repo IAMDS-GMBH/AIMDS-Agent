@@ -382,7 +382,12 @@ class VaultMetaIndex:
         """
         try:
             from tools.skills_tool import _find_all_skills
-            skills = _find_all_skills(skip_disabled=True)
+
+            # include_source gives us `path` and `updated_at`. Without them the
+            # incremental check below compared against time.time(), never
+            # matched, and re-embedded plus re-committed every skill on every
+            # turn — and `path` was always stored empty.
+            skills = _find_all_skills(skip_disabled=True, include_source=True)
         except Exception:
             return 0
 
@@ -408,12 +413,21 @@ class VaultMetaIndex:
             cat = str(s.get("category") or "general").strip()
             tags = s.get("tags") or []
             tags_list = tags if isinstance(tags, list) else [str(tags)]
-            body = str(s.get("body") or s.get("content") or "").strip()
-
             slug = f"skill:{name}"
             updated_at = int(s.get("updated_at") or time.time())
             if existing.get(slug) == updated_at:
                 continue  # unchanged since the last sync -- skip re-embedding
+
+            # Read the skill body only for entries that actually changed. The
+            # description alone is a thin index — the body is where a skill
+            # says what it is for, which is what a search needs to match.
+            body = str(s.get("body") or s.get("content") or "").strip()
+            skill_path = str(s.get("path") or "")
+            if not body and skill_path:
+                try:
+                    body = Path(skill_path).read_text(encoding="utf-8", errors="replace").strip()
+                except OSError:
+                    body = ""
 
             doc_id = f"skill:{cat}/{name}"
             title = f"Skill: {name}"

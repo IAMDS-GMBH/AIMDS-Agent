@@ -1167,3 +1167,59 @@ class TestVaultIndexIsActuallyReachable:
         )
 
         assert ts.search_catalog(catalog, "do") is not None
+
+
+class TestCatalogIsCached:
+    """`build_catalog` ran from scratch on every tool_search call.
+
+    Each build resolves every tool through the registry, pulls MCP server
+    metadata, and vectorizes each entry against corpus IDF — repeated for every
+    search in a turn, even when nothing changed in between.
+    """
+
+    @staticmethod
+    def _defs(n=3):
+        return [
+            {"type": "function", "function": {"name": f"mcp_S_t{i}", "description": f"tool {i}", "parameters": {}}}
+            for i in range(n)
+        ]
+
+    def _reset(self, monkeypatch):
+        import tools.tool_search as ts
+
+        monkeypatch.setattr(ts, "_CATALOG_CACHE", None)
+
+        return ts
+
+    def test_the_same_defs_reuse_the_same_catalog(self, monkeypatch):
+        ts = self._reset(monkeypatch)
+        defs = self._defs()
+
+        assert ts._cached_catalog(defs) is ts._cached_catalog(defs)
+
+    def test_a_different_def_set_rebuilds(self, monkeypatch):
+        ts = self._reset(monkeypatch)
+
+        first = ts._cached_catalog(self._defs(3))
+        second = ts._cached_catalog(self._defs(4))
+
+        assert first is not second
+        assert len(second) == 4
+
+    def test_a_registry_change_rebuilds(self, monkeypatch):
+        """MCP refresh or plugin load must not serve a stale catalog."""
+        ts = self._reset(monkeypatch)
+        from tools.registry import registry
+
+        defs = self._defs()
+        first = ts._cached_catalog(defs)
+        monkeypatch.setattr(registry, "_generation", registry._generation + 1)
+        second = ts._cached_catalog(defs)
+
+        assert first is not second
+
+    def test_the_cached_catalog_still_searches(self, monkeypatch):
+        ts = self._reset(monkeypatch)
+        catalog = ts._cached_catalog(self._defs())
+
+        assert ts.search_catalog(catalog, "tool") is not None

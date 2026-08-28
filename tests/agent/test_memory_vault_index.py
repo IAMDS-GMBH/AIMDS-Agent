@@ -113,6 +113,91 @@ def test_sync_skills_vault(monkeypatch):
         assert results[0]["slug"] == "skill:m365-calendar"
 
 
+def test_sync_skills_vault_is_incremental_with_the_real_skill_shape(monkeypatch):
+    """The incremental skip only works if the discovery side reports mtimes.
+
+    `_find_all_skills` returns name/description/category by default. The
+    indexer fell back to `time.time()` for a missing `updated_at`, so its
+    "unchanged since last sync" comparison could never match and every skill
+    was re-embedded and re-committed on every single turn. The previous test
+    hid this by handing in dicts richer than the real function returns.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text("# demo\nDoes a demo thing.", encoding="utf-8")
+
+        # Exactly what _find_all_skills(include_source=True) yields.
+        real_shape = [
+            {
+                "name": "demo",
+                "description": "Does a demo thing",
+                "category": "general",
+                "path": str(skill_file),
+                "updated_at": int(skill_file.stat().st_mtime),
+            }
+        ]
+        monkeypatch.setattr("tools.skills_tool._find_all_skills", lambda *a, **kw: real_shape)
+
+        index = VaultMetaIndex(db_path=tmp_path / "vault_index.sqlite")
+
+        assert index.sync_skills_vault() == 1
+        assert index.sync_skills_vault() == 0, "unchanged skills must not be re-embedded"
+
+
+def test_sync_skills_vault_reindexes_a_changed_skill(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text("# demo\nOriginal.", encoding="utf-8")
+
+        entry = {
+            "name": "demo",
+            "description": "Does a demo thing",
+            "category": "general",
+            "path": str(skill_file),
+            "updated_at": int(skill_file.stat().st_mtime),
+        }
+        monkeypatch.setattr("tools.skills_tool._find_all_skills", lambda *a, **kw: [entry])
+
+        index = VaultMetaIndex(db_path=tmp_path / "vault_index.sqlite")
+        assert index.sync_skills_vault() == 1
+
+        entry["updated_at"] += 60  # the file moved on
+
+        assert index.sync_skills_vault() == 1
+
+
+def test_sync_skills_vault_indexes_the_skill_body(monkeypatch):
+    """Description alone is too thin to find a skill by what it does."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text(
+            "# release-changelog\nGenerates HTML release notes with Jira links.",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "tools.skills_tool._find_all_skills",
+            lambda *a, **kw: [
+                {
+                    "name": "release-changelog",
+                    "description": "",
+                    "category": "general",
+                    "path": str(skill_file),
+                    "updated_at": int(skill_file.stat().st_mtime),
+                }
+            ],
+        )
+
+        index = VaultMetaIndex(db_path=tmp_path / "vault_index.sqlite")
+        index.sync_skills_vault()
+
+        hits = index.hybrid_search("release notes Jira", scope_filter="skill")
+
+        assert hits and "release-changelog" in hits[0]["title"]
+
+
 def test_sync_mcp_tools(monkeypatch):
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)

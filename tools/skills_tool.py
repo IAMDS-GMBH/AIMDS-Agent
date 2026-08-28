@@ -631,16 +631,26 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         return False
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+def _find_all_skills(
+    *, skip_disabled: bool = False, include_source: bool = False
+) -> List[Dict[str, Any]]:
     """Recursively find all skills in ~/.hermes/skills/ and external dirs.
 
     Args:
         skip_disabled: If True, return ALL skills regardless of disabled
             state (used by ``hermes skills`` config UI). Default False
             filters out disabled skills.
+        include_source: Also return each skill's ``path`` and ``updated_at``
+            (file mtime). Off by default because ``skills_list`` hands this
+            list straight to the model — adding a path per skill would grow
+            that payload for no benefit there. The vault indexer needs both:
+            without ``updated_at`` its incremental check compares against
+            ``time.time()``, never matches, and re-embeds every skill on every
+            turn.
 
     Returns:
-        List of skill metadata dicts (name, description, category).
+        List of skill metadata dicts (name, description, category; plus
+        path and updated_at when ``include_source``).
     """
     from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
 
@@ -697,11 +707,18 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 category = _get_category_from_path(skill_md)
 
                 seen_names.add(name)
-                skills.append({
+                entry: Dict[str, Any] = {
                     "name": name,
                     "description": description,
                     "category": category,
-                })
+                }
+                if include_source:
+                    entry["path"] = str(skill_md)
+                    try:
+                        entry["updated_at"] = int(skill_md.stat().st_mtime)
+                    except OSError:
+                        entry["updated_at"] = 0
+                skills.append(entry)
 
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
