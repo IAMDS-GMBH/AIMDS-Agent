@@ -1003,3 +1003,57 @@ class TestDynamicMCPKeywordIndexing:
         assert results[0].name == "blogwatcher"
 
 
+
+
+class TestCamelCaseMcpToolsAreFindable:
+    """A camelCase MCP tool must be reachable by its plain words.
+
+    `_build_catalog` used a hand-rolled replace chain for the name/source token
+    sets, so `mcp_TempoMCP_retrieveWorklogs` tokenized to
+    {mcp, tempomcp, retrieveworklogs}. A query for "tempo" or "worklog" then
+    matched neither, the +5 name boost never fired, and the false-positive
+    filter dropped the entry — the server looked absent while it was connected
+    and registered, and the agent told the user it was "not configured".
+    Snake_case neighbours like mcp_AtlassianMCP_jira_get_worklog were returned
+    instead, which is exactly how the confusion presented.
+    """
+
+    @staticmethod
+    def _defs():
+        def td(name, desc):
+            return {"type": "function", "function": {"name": name, "description": desc, "parameters": {}}}
+
+        return [
+            td("mcp_TempoMCP_retrieveWorklogs", "Retrieve Tempo worklogs for a user and date range."),
+            td("mcp_AtlassianMCP_jira_get_worklog", "Get worklog entries for a Jira issue."),
+        ]
+
+    def _names_for(self, query):
+        from tools.tool_search import build_catalog, search_catalog
+
+        catalog = build_catalog(self._defs())
+        try:
+            results = search_catalog(catalog, query)
+        except TypeError:
+            results = search_catalog(catalog, query, 10)
+
+        out = []
+        for r in results:
+            out.append(getattr(r, "name", None) or (r[0] if isinstance(r, tuple) else str(r)))
+
+        return out
+
+    def test_server_name_query_finds_the_tool(self):
+        assert any("TempoMCP" in n for n in self._names_for("tempo"))
+
+    def test_worklog_query_returns_the_tempo_tool_too(self):
+        names = self._names_for("tempo worklog retrieve hours")
+
+        assert any("TempoMCP" in n for n in names), names
+
+    def test_name_tokens_contain_the_split_words(self):
+        from tools.tool_search import build_catalog
+
+        entry = next(e for e in build_catalog(self._defs()) if "Tempo" in e.name)
+
+        assert {"tempo", "retrieve", "worklogs"} <= entry._name_tokens

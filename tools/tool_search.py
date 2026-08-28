@@ -447,8 +447,15 @@ def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
             continue
         desc = fn.get("description", "") or ""
         source, source_name = _classify_source(name)
-        name_words = name.replace("_", " ").replace(".", " ").replace("-", " ").replace(":", " ")
-        source_words = source_name.replace("_", " ").replace(".", " ").replace("-", " ").replace(":", " ")
+        # `_split_words`, not a hand-rolled replace chain: it also breaks
+        # camelCase. Without that, `mcp_TempoMCP_retrieveWorklogs` tokenizes to
+        # {mcp, tempomcp, retrieveworklogs} — so a query for "tempo" or
+        # "worklog" matches neither the name nor the source, the +5 name boost
+        # never fires, and the false-positive filter below drops the entry
+        # entirely. The server then looks absent even though it is connected
+        # and registered.
+        name_words = _split_words(name)
+        source_words = _split_words(source_name)
 
         extra_mcp_tokens: List[str] = []
         if source == "mcp":
