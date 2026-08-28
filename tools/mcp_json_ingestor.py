@@ -108,6 +108,49 @@ def init_mcp_tables(conn: sqlite3.Connection) -> None:
         pass
 
 
+_DELIMITED_MIN_PAIRS = 2
+_DELIMITED_MIN_HIT_RATIO = 0.6
+
+
+def _parse_delimited_lines(text: str) -> List[Dict[str, Any]]:
+    """Turn a `key: value | key: value` line dump into one dict per line.
+
+    Several MCP servers answer with human-readable text rather than JSON —
+    TempoMCP returns worklogs as
+    ``TempoWorklogId: 43011 | IssueKey: IAMDS-595 | Date: 2026-01-02 | Hours: 1.00``,
+    one per line. `json.loads` fails on that, so the whole payload used to land
+    in a single `mcp_records` row as one opaque blob: 96k characters that SQL
+    cannot aggregate. Agents then reached for throwaway Python to parse it,
+    which is exactly what `mcp_records` exists to avoid.
+
+    Only accepted when most non-empty lines actually look like this, so prose
+    and stack traces are not shredded into nonsense rows.
+    """
+    lines = [line.strip() for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    if not lines:
+        return []
+
+    parsed: List[Dict[str, Any]] = []
+    for line in lines:
+        segments = [seg.strip() for seg in line.split("|")]
+        pairs: Dict[str, Any] = {}
+        for segment in segments:
+            key, sep, value = segment.partition(":")
+            key = key.strip()
+            if not sep or not key or " " in key:
+                pairs = {}
+                break
+            pairs[key] = value.strip()
+        if len(pairs) >= _DELIMITED_MIN_PAIRS:
+            parsed.append(pairs)
+
+    if len(parsed) / len(lines) < _DELIMITED_MIN_HIT_RATIO:
+        return []
+
+    return parsed
+
+
 def _extract_items(data: Any) -> List[Dict[str, Any]]:
     """Extract a list of item dictionaries from arbitrary JSON input."""
     if isinstance(data, list):
@@ -127,7 +170,10 @@ def _extract_items(data: Any) -> List[Dict[str, Any]]:
                 parsed_res = json.loads(res)
                 return _extract_items(parsed_res)
             except Exception:
-                pass
+                # Not JSON — many servers answer in delimited plain text.
+                delimited = _parse_delimited_lines(res)
+                if delimited:
+                    return delimited
         elif isinstance(res, (list, dict)):
             return _extract_items(res)
 
