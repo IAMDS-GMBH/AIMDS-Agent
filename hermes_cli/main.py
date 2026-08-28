@@ -11012,20 +11012,6 @@ def _should_background_mcp_startup(args) -> bool:
     return args.command in {None, "chat", "rl"}
 
 
-# Process-control commands that never need the tool registry in their own
-# process. Inline discovery defaults to on, so without this list a command like
-# `hermes gateway restart` connects every configured MCP server, blocks on it,
-# and keeps that whole fleet alive for as long as the command's process lives —
-# producing a second set of stdio servers alongside the ones the long-running
-# backend already owns. `gateway run` is not listed because it has its own
-# startup path via _command_has_dedicated_mcp_startup.
-_MCP_FREE_COMMANDS = frozenset({"gateway", "update", "uninstall"})
-
-
-def _command_needs_no_mcp(args) -> bool:
-    return args.command in _MCP_FREE_COMMANDS
-
-
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
@@ -11054,10 +11040,6 @@ def _prepare_agent_startup(args) -> None:
     elif _command_has_dedicated_mcp_startup(args):
         # These entrypoints already do their own MCP startup later on the real
         # runtime path (gateway executor, ACP launcher, cron job runner).
-        _run_inline_mcp_discovery = False
-    elif _command_needs_no_mcp(args):
-        # Process-control commands: connecting the MCP fleet here only
-        # duplicates the servers the running backend already holds.
         _run_inline_mcp_discovery = False
     elif _should_background_mcp_startup(args):
         try:
