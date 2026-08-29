@@ -338,6 +338,7 @@ def build_data_handling_guidance(valid_tool_names: "set[str] | None" = None) -> 
     has_kb = any(n == "kb_search" or n.endswith("_kb_search") for n in names)
     has_search = "tool_search" in names
     has_sql = "sql" in names
+    has_workdays = "workdays" in names
     has_terminal = "terminal" in names
 
     rungs = []
@@ -353,6 +354,16 @@ def build_data_handling_guidance(valid_tool_names: "set[str] | None" = None) -> 
            if has_search else "check your tools list ")
         + "(one worklog retrieval with a date range, not one call per issue)."
     )
+    if has_workdays:
+        rungs.append(
+            "Calendar facts — working days, public holidays (DE/AT/CH per Bundesland/canton), target hours "
+            "(Sollzeit), half days, 5/6-day weeks — come from the `workdays` tool; never type calendars, weekday "
+            "counts or holiday dates into SQL or prose, never compute Easter yourself. For Ist/Soll comparisons "
+            "run `workdays(action='materialize')` and JOIN `workday_calendar` against `mcp_records` with `sql`. "
+            "If it answers 'worktime profile unknown', the user's country/state or week model is not known: ask "
+            "once with `clarify` using the returned choices, then `workdays(action='configure', …)` saves the "
+            "profile to memory — never assume a state (not BW, not DE) or a week model."
+        )
     if has_sql:
         rungs.append(
             "Large or structured tool results are auto-ingested into SQLite `mcp_records` "
