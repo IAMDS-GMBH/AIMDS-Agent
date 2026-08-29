@@ -9,6 +9,7 @@ import pytest
 
 from cron.scheduler import (
     _append_workspace_finding,
+    _extract_findings_summary_action,
     _build_job_prompt,
     _deliver_result,
     _job_targets_findings_persistence,
@@ -2096,16 +2097,72 @@ class TestFindingsPersistence:
         with patch("cron.scheduler.capture_durable_topic") as capture_mock:
             path = _append_workspace_finding(
                 job,
-                "## Summary\nInbox is stable.\nNext step: review 2 flagged threads.",
+                "## Summary\nInbox is stable.\n\n"
+                "**FINDING:** Two customer threads waited >48h without reply.\n"
+                "- NEXT: review the 2 flagged threads before 10:00.\n",
             )
 
         assert path == tmp_path / "_findings.md"
         content = path.read_text(encoding="utf-8")
         assert "type: findings" in content
         assert "source=Morning Brief (aimds-morning-brief)" in content
-        assert "summary=Summary" in content
-        assert "next=Next step: review 2 flagged threads." in content
+        assert "summary=Two customer threads waited >48h without reply." in content
+        assert "next=review the 2 flagged threads before 10:00." in content
         capture_mock.assert_called_once()
+        kwargs = capture_mock.call_args.kwargs
+        assert kwargs["confidence"] == 0.7
+        assert kwargs["memory_type"] == "notes"
+        assert "Summary: Two customer threads" in kwargs["content"]
+
+    def test_marker_block_parsing_tolerates_markdown_decoration(self):
+        summary, action, open_questions, has_marker = _extract_findings_summary_action(
+            "Excellent! I have rich context. Let me compile the brief:\n"
+            "## Brief\n"
+            "* **Finding**: Budget approval for Q4 is still pending.\n"
+            "- __NEXT__: ping finance on Monday.\n"
+            "OPEN_QUESTION: Should we top up the GitHub AI credits now or next cycle?\n"
+            "open_question: Which owner approves the release?\n"
+        )
+        assert has_marker
+        assert summary == "Budget approval for Q4 is still pending."
+        assert action == "ping finance on Monday."
+        assert open_questions == [
+            "Should we top up the GitHub AI credits now or next cycle?",
+            "Which owner approves the release?",
+        ]
+
+    def test_first_response_line_is_never_used_as_finding(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        job = {"id": "aimds-morning-brief", "name": "Morning Brief"}
+
+        with patch("cron.scheduler.capture_durable_topic") as capture_mock:
+            path = _append_workspace_finding(
+                job,
+                "Excellent! I have rich context. Let me compile the morning brief:\n"
+                "---\nNext: nothing.\n",
+            )
+
+        content = path.read_text(encoding="utf-8")
+        assert "Excellent!" not in content
+        assert "summary=Automation run completed (no finding block)" in content
+        capture_mock.assert_not_called()
+
+    def test_marker_open_questions_land_in_open_questions_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        job = {"id": "aimds-weekly-review", "name": "Weekly Review"}
+
+        with patch("cron.scheduler.capture_durable_topic"):
+            _append_workspace_finding(
+                job,
+                "FINDING: Two projects idle for 3 weeks.\n"
+                "NEXT: decide whether to park them.\n"
+                "OPEN_QUESTION: Park LBBW onboarding or keep it active?\n",
+            )
+
+        content = (tmp_path / "_open-questions.md").read_text(encoding="utf-8")
+        assert "context=Weekly Review" in content
+        assert "needed=Park LBBW onboarding or keep it active?" in content
+        assert "source=Weekly Review (aimds-weekly-review)" in content
 
     def test_tick_persists_findings_for_relevant_jobs_without_replacing_delivery(self):
         job = {

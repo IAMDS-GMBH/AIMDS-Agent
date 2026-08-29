@@ -56,6 +56,17 @@ logger = logging.getLogger(__name__)
 _MAX_TOOL_WORKERS = 8
 
 
+# Clarify outcomes that describe the transport, not a pending decision.
+_CLARIFY_NOISE_REASON_CODES = frozenset({
+    "clarify_timeout",
+    "clarify_empty",
+    "clarify_empty_response",
+    "clarify_delivery_failed",
+    "clarify_prompt_delivery_failed",
+    "clarify_unavailable",
+})
+
+
 def _maybe_persist_blocking_clarify_open_question(
     agent: Any,
     *,
@@ -78,6 +89,18 @@ def _maybe_persist_blocking_clarify_open_question(
     if not extracted:
         return
     context, needed, reason_code = extracted
+    if reason_code in _CLARIFY_NOISE_REASON_CODES:
+        # A timeout, an undelivered prompt or an empty answer is a transport
+        # outcome, not a question the user still owes an answer to. Logging
+        # it as an open question filled `_open-questions.md` with
+        # "No user input was captured" lines that the morning brief then
+        # surfaced as decisions to make.
+        logger.debug(
+            "clarify unresolved (%s) — not recorded as open question: %s",
+            reason_code,
+            context,
+        )
+        return
     turn_id = str(getattr(agent, "_current_turn_id", "") or "").strip()
     dedupe_key = "|".join(
         part for part in (

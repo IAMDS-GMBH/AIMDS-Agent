@@ -766,31 +766,49 @@ def _to_compact_line(text: str, *, limit: int) -> str:
     return line[:limit]
 
 
-def _extract_findings_summary_action(final_response: str) -> tuple[str, str]:
-    lines: list[str] = []
+_FINDING_MARKER_RE = re.compile(
+    r"^\s*(?:[-*]\s+)?(?:\*\*|__)?\s*(FINDING|NEXT|OPEN_QUESTION)\s*(?:\*\*|__)?\s*:\s*(?:\*\*|__)?\s*(.*?)\s*(?:\*\*|__)?\s*$",
+    re.IGNORECASE,
+)
+_NO_FINDING_SUMMARY = "Automation run completed (no finding block)"
+_NO_FINDING_ACTION = "Review full cron output if follow-up is needed."
+
+
+def _extract_findings_summary_action(final_response: str) -> tuple[str, str, list[str], bool]:
+    """Parse the explicit ``FINDING:`` / ``NEXT:`` / ``OPEN_QUESTION:`` marker block.
+
+    Returns ``(summary, action, open_questions, has_marker)``. The first
+    response line is deliberately *not* used as a fallback finding: it was
+    "Excellent! I have rich context. Let me compile the morning brief:" in
+    practice, and that line then reached the memory vault with 0.92
+    confidence. Without a marker block the caller records that no finding
+    was reported and saves nothing durable.
+    """
+    summary = ""
     action = ""
+    open_questions: list[str] = []
     for raw in str(final_response or "").splitlines():
-        line = raw.strip()
-        if not line:
+        match = _FINDING_MARKER_RE.match(raw)
+        if not match:
             continue
-        if line.startswith("```"):
+        key = match.group(1).upper()
+        value = _to_compact_line(match.group(2), limit=240)
+        if not value:
             continue
-        line = re.sub(r"^#{1,6}\s*", "", line)
-        line = re.sub(r"^[-*]\s+\[[ xX]\]\s*", "", line)
-        line = re.sub(r"^[-*]\s+", "", line)
-        line = re.sub(r"^\d+\.\s+", "", line)
-        compact = _to_compact_line(line, limit=240)
-        if not compact:
-            continue
-        if not action:
-            lowered = compact.lower()
-            if lowered.startswith(("next", "action", "follow-up", "todo", "next step")):
-                action = compact
-        lines.append(compact)
-    summary = lines[0] if lines else "Automation run completed."
+        if key == "FINDING" and not summary:
+            summary = value
+        elif key == "NEXT" and not action:
+            action = value
+        elif key == "OPEN_QUESTION":
+            open_questions.append(value)
+    # A finding block is defined by its FINDING line; a stray "Next:" sentence
+    # in prose is not a report.
+    has_marker = bool(summary)
+    if not summary:
+        summary = _NO_FINDING_SUMMARY
     if not action:
-        action = lines[1] if len(lines) > 1 else "Review full cron output if follow-up is needed."
-    return summary, action
+        action = _NO_FINDING_ACTION
+    return summary, action, open_questions, has_marker
 
 
 def _append_workspace_finding(job: dict, final_response: str) -> Optional[Path]:
@@ -798,7 +816,7 @@ def _append_workspace_finding(job: dict, final_response: str) -> Optional[Path]:
     findings_path = root / "_findings.md"
 
     job_label = str(job.get("name") or job.get("id") or "cron-job").strip()
-    summary, action = _extract_findings_summary_action(final_response)
+    summary, action, open_questions, has_marker = _extract_findings_summary_action(final_response)
     timestamp = _hermes_now().astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     source = _to_compact_line(f"{job_label} ({job.get('id', '')})", limit=120)
     entry = (
@@ -812,12 +830,33 @@ def _append_workspace_finding(job: dict, final_response: str) -> Optional[Path]:
         with findings_path.open("a", encoding="utf-8") as fh:
             fh.write(entry)
 
+    for needed in open_questions:
+        dedupe_key = "|".join(
+            part for part in ("cron-finding", str(job.get("id") or ""), needed.lower()) if part
+        )
+        try:
+            append_open_question_entry(
+                context=job_label,
+                needed=needed,
+                source=source,
+                dedupe_key=dedupe_key,
+            )
+        except Exception:
+            logger.debug("Job '%s': failed to persist marker open question", job.get("id", "?"), exc_info=True)
+
+    if not has_marker:
+        logger.info(
+            "Job '%s': final response carried no FINDING/NEXT block — nothing saved to memory",
+            job.get("id", "?"),
+        )
+        return findings_path
+
     try:
         capture_durable_topic(
             source="cron-finding",
             title=f"{job_label} finding",
             content=f"Summary: {summary}\nNext: {action}",
-            confidence=0.92,
+            confidence=0.7,
             memory_type="notes",
             scope="project",
             tags=["cron", "finding"],

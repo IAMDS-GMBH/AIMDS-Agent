@@ -7,7 +7,7 @@ from agent.open_questions import derive_blocking_open_question_from_review_text
 from agent.tool_executor import _maybe_persist_blocking_clarify_open_question
 
 
-def test_persists_clarify_timeout_into_workspace_open_questions(tmp_path, monkeypatch):
+def test_clarify_timeout_is_not_recorded_as_open_question(tmp_path, monkeypatch):
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
     agent = SimpleNamespace(_current_turn_id="turn-openq-1", platform="gateway")
 
@@ -24,10 +24,8 @@ def test_persists_clarify_timeout_into_workspace_open_questions(tmp_path, monkey
         ),
     )
 
-    content = (tmp_path / "_open-questions.md").read_text(encoding="utf-8")
-    assert "type: open-questions" in content
-    assert "context=Clarify required for: Which owner should approve release?" in content
-    assert "needed=User did not answer in time ([user did not respond within 10m])." in content
+    # A timeout is a transport outcome, not a decision the user still owes.
+    assert not (tmp_path / "_open-questions.md").exists()
 
 
 def test_clarify_open_question_dedupes_within_same_turn(tmp_path, monkeypatch):
@@ -36,7 +34,7 @@ def test_clarify_open_question_dedupes_within_same_turn(tmp_path, monkeypatch):
     result = json.dumps(
         {
             "question": "Pick deployment window",
-            "user_response": "[clarify prompt could not be delivered]",
+            "user_response": "you decide",
         },
         ensure_ascii=False,
     )
@@ -101,7 +99,7 @@ def test_persists_ambiguous_clarify_response_to_open_questions(tmp_path, monkeyp
     assert "needed=User response stayed ambiguous (use the usual one)." in content
 
 
-def test_persists_structured_unresolved_clarify_result(tmp_path, monkeypatch):
+def test_structured_clarify_timeout_is_not_recorded(tmp_path, monkeypatch):
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
     agent = SimpleNamespace(_current_turn_id="turn-openq-4", platform="gateway")
 
@@ -121,6 +119,28 @@ def test_persists_structured_unresolved_clarify_result(tmp_path, monkeypatch):
         ),
     )
 
+    assert not (tmp_path / "_open-questions.md").exists()
+
+
+def test_persists_structured_ambiguous_clarify_result(tmp_path, monkeypatch):
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    agent = SimpleNamespace(_current_turn_id="turn-openq-5", platform="gateway")
+
+    _maybe_persist_blocking_clarify_open_question(
+        agent,
+        function_name="clarify",
+        function_args={"question": "Who approves this deployment?"},
+        function_result=json.dumps(
+            {
+                "question": "Who approves this deployment?",
+                "user_response": "not sure, either is fine",
+                "response_state": "answered",
+                "resolved": False,
+                "reason_code": "clarify_ambiguous_response",
+            },
+            ensure_ascii=False,
+        ),
+    )
+
     content = (tmp_path / "_open-questions.md").read_text(encoding="utf-8")
     assert "context=Clarify required for: Who approves this deployment?" in content
-    assert "needed=User did not answer in time." in content

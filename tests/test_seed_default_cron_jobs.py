@@ -155,7 +155,9 @@ def test_upgrade_updates_existing_weekly_default_without_recreating_missing(tmp_
     assert "Next week top 3 priorities" in prompt
     assert "Stale active projects (>=14 days inactivity)" in prompt
     assert "Risks/open questions needing decisions" in prompt
-    assert "OPEN_QUESTION_NEEDED:" in prompt
+    assert "FINDING: <one line" in prompt
+    assert "OPEN_QUESTION: <one line>" in prompt
+    assert "OPEN_QUESTION_NEEDED" not in prompt
 
     state = json.loads(state_file.read_text(encoding="utf-8"))
     assert state.get("seed_version") == CURRENT_DEFAULT_CRON_VERSION
@@ -175,7 +177,9 @@ def test_seeded_weekly_review_prompt_includes_planning_contract(tmp_path):
     assert "Next week top 3 priorities" in prompt
     assert "Stale active projects (>=14 days inactivity)" in prompt
     assert "Risks/open questions needing decisions" in prompt
-    assert "OPEN_QUESTION_NEEDED:" in prompt
+    assert "FINDING: <one line" in prompt
+    assert "OPEN_QUESTION: <one line>" in prompt
+    assert "OPEN_QUESTION_NEEDED" not in prompt
 
 
 def test_vault_curator_schedule_weekly_midday(tmp_path):
@@ -189,3 +193,49 @@ def test_vault_curator_schedule_weekly_midday(tmp_path):
     curator = next(j for j in jobs if j.get("origin", {}).get("seed_key") == "vault-curator")
     assert curator["schedule"]["expr"] == "0 12 * * 5"
 
+
+
+def test_v10_upgrade_rewrites_brief_prompts_with_marker_block(tmp_path):
+    home = tmp_path / ".hermes"
+    (home / "cron").mkdir(parents=True)
+    jobs_path = home / "cron" / "jobs.json"
+    jobs_payload = {
+        "jobs": [
+            {
+                "id": "aimds-morning-brief",
+                "name": "Morning Brief",
+                "prompt": "Old morning prompt",
+                "origin": {"source": "aimds-default-cron", "seed_key": "morning-brief"},
+                "schedule": {"kind": "cron", "expr": "0 8 * * 1-5", "display": "0 8 * * 1-5"},
+                "enabled": True,
+            },
+            {
+                "id": "aimds-vault-curator",
+                "name": "Vault & Memory Curator",
+                "prompt": "Old curator prompt",
+                "origin": {"source": "aimds-default-cron", "seed_key": "vault-curator"},
+                "schedule": {"kind": "cron", "expr": "0 12 * * 5", "display": "0 12 * * 5"},
+                "enabled": True,
+            },
+        ]
+    }
+    jobs_path.write_text(json.dumps(jobs_payload), encoding="utf-8")
+    state_file = home / SEED_STATE_FILE_REL
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(
+        json.dumps({"seed_version": 9, "source": "aimds-default-cron"}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    assert CURRENT_DEFAULT_CRON_VERSION >= 10
+    result = seed_default_cron_jobs(home)
+    assert result["status"] == "upgraded"
+
+    jobs = {job["id"]: job for job in _read_jobs(jobs_path)}
+    brief = jobs["aimds-morning-brief"]["prompt"]
+    assert "journal/YYYY-MM-DD-morning-brief.md" in brief
+    assert "FINDING: <one line" in brief
+    assert "NEXT: <one line" in brief
+    assert "Do not create files under _inbox/" in brief
+    curator = jobs["aimds-vault-curator"]["prompt"]
+    assert "_inbox/_archive/" in curator

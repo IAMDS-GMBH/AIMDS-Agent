@@ -31,7 +31,9 @@ LEGACY_MARKER_FILE = ".aimds-default-cron-seeded"
 # Version 7: Add M365 Mail Check (every 2 hours) and Teams Check (every 15 mins).
 # Version 8: Add Vault & Memory Curator (daily at 3:00 AM) for automated vault maintenance & re-indexing.
 # Version 9: Change Vault & Memory Curator to weekly at midday (Fridays at 12:00 PM).
-CURRENT_DEFAULT_CRON_VERSION = 9
+# Version 10: briefs end with a FINDING/NEXT/OPEN_QUESTION marker block and land in
+#             journal/ instead of _inbox/; curator archives stale _inbox entries.
+CURRENT_DEFAULT_CRON_VERSION = 10
 JOBS_FILE_REL = Path("cron") / "jobs.json"
 _SOURCE = "aimds-default-cron"
 
@@ -45,7 +47,9 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
             "Create the morning brief using digest and available context in the user's language (German or English). "
             "If MSOffice365MCP is active/connected, query Outlook calendar appointments, unread/actionable emails, and Teams updates. "
             "Restrict the schedule/task focus strictly to the current work week (Mon-Fri) or over weekends to the next working day (Monday). "
-            "Prepare preview notes for tomorrow/next working day in workspace/memory so queries like 'what is scheduled for tomorrow?' can be answered immediately."
+            "Write the full brief, including the preview for tomorrow/next working day, to the workspace file journal/YYYY-MM-DD-morning-brief.md "
+            "(today's date; overwrite if it exists) so queries like 'what is scheduled for tomorrow?' can be answered from it. Do not create files under _inbox/. "
+            "Finish your response with exactly this block on separate lines: 'FINDING: <one line - the single most important thing noticed>', 'NEXT: <one line - the recommended next action>', and, only if a decision or input from the user is missing, 'OPEN_QUESTION: <one line>'. Never leave the FINDING line out."
         ),
         "skill": "digest",
         "deliver": "local",
@@ -64,8 +68,8 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
             "5) Risks/open questions needing decisions. "
             "If MSOffice365MCP is active/connected, include relevant emails, meetings, and team updates from the current work week. "
             "Restrict focus strictly to the current work week (and next working day over weekends). "
-            "If any decision/input is missing, include exactly one line: "
-            "OPEN_QUESTION_NEEDED: <what decision or input is required>."
+            "Write the full review to the workspace file journal/YYYY-MM-DD-weekly-review.md (today's date; overwrite if it exists). Do not create files under _inbox/. "
+            "Finish your response with exactly this block on separate lines: 'FINDING: <one line - the single most important thing noticed>', 'NEXT: <one line - the recommended next action>', and, only if a decision or input from the user is missing, 'OPEN_QUESTION: <one line>'. Never leave the FINDING line out."
         ),
         "skill": "digest",
         "deliver": "local",
@@ -107,7 +111,8 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
             "2) Migrate any loose project or user files from ~/.hermes/memories/ into AIMDS-Suite-Vault/projects/ or /users/.\n"
             "3) Ensure Vault notes follow a clean 3–4 level deep hierarchy (projects/<bereich>/<projekt>/<thema>.md, users/<user>/<kategorie>/<thema>.md, notes/<bereich>/<jahr_monat>/<thema>.md).\n"
             "4) Clean up stale backup directories (HermesMemory.backup.*) and broken links.\n"
-            "5) Trigger incremental vault re-indexing so hybrid search recall remains fast and up to date."
+            "5) Trigger incremental vault re-indexing so hybrid search recall remains fast and up to date.\n"
+            "6) Move _inbox/ entries older than 7 days into _inbox/_archive/ (never delete)."
         ),
         "deliver": "local",
         "enabled": True,
@@ -380,6 +385,25 @@ def _upgrade_jobs_for_version(
                     sched["expr"] = target_schedule
                     sched["display"] = target_schedule
                     job["schedule_display"] = target_schedule
+                    updated += 1
+
+    # v10 migration: marker block + journal/ target for briefs, _inbox archiving for the curator.
+    if from_version < 10 <= to_version:
+        for key in ("morning-brief", "weekly-review", "vault-curator"):
+            spec = next(
+                (sp for sp in _DEFAULT_SPECS if _canonical_seed_key(sp["seed_key"]) == key),
+                None,
+            )
+            if spec is None:
+                continue
+            target_prompt = str(spec.get("prompt") or "").strip()
+            for job in jobs:
+                if not _job_is_aimds_default(job):
+                    continue
+                if not _job_matches_alias(job, _aliases(key)):
+                    continue
+                if str(job.get("prompt") or "").strip() != target_prompt:
+                    job["prompt"] = target_prompt
                     updated += 1
 
     return updated
