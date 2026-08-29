@@ -62,6 +62,7 @@ CONFIGURABLE_TOOLSETS = [
     ("skills",          "📚 Skills",                    "list, view, manage"),
     ("desktop_todos",   "📋 Desktop Todos",             "todo"),
     ("memory",          "💾 Memory",                    "persistent memory across sessions"),
+    ("sql",             "📊 SQL / Deterministic Data",  "query ingested MCP records & state.db"),
     ("context_engine",  "🧩 Context Engine",            "runtime tools from the active context engine"),
     ("session_search",  "🔎 Session Search",            "search past conversations"),
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
@@ -1347,6 +1348,17 @@ def _get_platform_tools(
         legacy_default_core = {"web", "terminal", "file", "skills", "memory"}
         if legacy_default_core.issubset(set(toolset_names)):
             toolset_names = [*toolset_names, "desktop_todos"]
+
+    # Migration: ``sql`` is part of _HERMES_CORE_TOOLS but only became a
+    # configurable toolset after users had already saved explicit lists via
+    # ``hermes tools``. Such a list (pure configurable keys, no composite)
+    # would silently drop sql forever, and every prompt that mandates SQL
+    # for data work would point at a tool the session does not have.
+    # Recover it wherever the saved list still carries the default core set.
+    if "sql" not in toolset_names:
+        legacy_default_core = {"web", "terminal", "file", "skills", "memory"}
+        if legacy_default_core.issubset(set(toolset_names)):
+            toolset_names = [*toolset_names, "sql"]
 
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
     plugin_ts_keys = _get_plugin_toolset_keys()

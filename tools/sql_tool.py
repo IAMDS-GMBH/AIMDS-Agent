@@ -167,7 +167,7 @@ def _handle_sql(args: dict, **kw) -> str:
 
 registry.register(
     name="sql",
-    toolset="hermes_core",
+    toolset="sql",
     schema=SQL_SCHEMA,
     handler=_handle_sql,
     check_fn=check_sql_requirements,

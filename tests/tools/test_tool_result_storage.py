@@ -568,7 +568,7 @@ class TestPerToolThresholds:
             threshold=1000,
         )
 
-        assert "Auto-Ingested 100 records into SQLite table 'mcp_records'" in result
+        assert "Auto-ingested 100 records into SQLite table 'mcp_records'" in result
         assert "Note on jira_get_worklog" in result
         assert "Tempo sync bot" in result
         assert "TempoMCP" in result
@@ -581,8 +581,43 @@ class TestPerToolThresholds:
         from tools.tool_result_storage import _build_ingest_hint
 
         hint = _build_ingest_hint("jira_search", 10)
-        assert "Auto-Ingested 10 records" in hint
+        assert "Auto-ingested 10 records" in hint
         assert "Note on jira_get_worklog" not in hint
+
+    def test_ingest_hint_names_sql_without_prohibitions(self):
+        from tools.tool_result_storage import _build_ingest_hint
+
+        hint = _build_ingest_hint("jira_search", 10)
+        assert "`sql` tool" in hint
+        assert "SELECT" in hint
+        assert "DO NOT" not in hint
+        assert "ALWAYS" not in hint
+        assert "CRITICAL" not in hint
+
+    def test_ingest_hint_is_honest_when_sql_tool_is_absent(self):
+        from tools.tool_result_storage import _build_ingest_hint
+
+        hint = _build_ingest_hint("jira_search", 10, sql_available=False)
+        assert "Auto-ingested 10 records" in hint
+        assert "not in this session" in hint
+        assert "SELECT" not in hint
+
+    def test_maybe_persist_threads_sql_available_into_hint(self):
+        import json
+
+        payload = json.dumps([
+            {"id": f"item_{i}", "key": "IAMDS-1", "timeSpentSeconds": 60, "comment": f"w {i}"}
+            for i in range(5)
+        ])
+        result = maybe_persist_tool_result(
+            content=payload,
+            tool_name="jira_search",
+            tool_use_id="call_sql_absent",
+            env=None,
+            sql_available=False,
+        )
+        assert "not in this session" in result
+        assert "SELECT" not in result
 
     def test_ingest_hint_worklog_warning_for_jira_get_worklog_variants(self):
         from tools.tool_result_storage import _build_ingest_hint

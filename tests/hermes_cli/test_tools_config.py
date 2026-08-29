@@ -1639,3 +1639,67 @@ class TestMessagingToolsetsAreOffByDefault:
         from hermes_cli.tools_config import _DEFAULT_OFF_TOOLSETS
 
         assert not ({"hermes-cli", "coding", "delegation"} & _DEFAULT_OFF_TOOLSETS)
+
+
+def test_configurable_toolsets_include_sql():
+    assert any(ts_key == "sql" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+
+
+def test_get_platform_tools_keeps_sql_for_composite_cli_config():
+    """Regression: ``platform_toolsets.cli: [hermes-cli, web, outlook]`` is what
+    the AIMDS installer writes. The explicit-config branch expands ``hermes-cli``
+    into configurable keys via subset inference; before ``sql`` had a
+    configurable toolset it was silently dropped from every TUI and cron
+    session while three prompt blocks demanded it.
+    """
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "web", "outlook"]}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "sql" in enabled
+    assert "terminal" in enabled
+    assert "file" in enabled
+
+
+def test_get_platform_tools_default_cli_includes_sql():
+    assert "sql" in _get_platform_tools({}, "cli")
+
+
+def test_get_platform_tools_recovers_sql_for_saved_explicit_lists():
+    """Lists saved by ``hermes tools`` before sql was configurable contain only
+    configurable keys and no composite — nothing to expand, so sql would be
+    lost for good. The recovery mirrors the desktop_todos migration.
+    """
+    config = {"platform_toolsets": {"cli": ["web", "terminal", "file", "skills", "memory", "desktop_todos"]}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "sql" in enabled
+
+
+def test_get_platform_tools_respects_deliberate_minimal_list_without_core():
+    """A list that never carried the core set is a deliberate restriction and
+    must not gain sql through the recovery.
+    """
+    config = {"platform_toolsets": {"cli": ["web", "terminal"]}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "sql" not in enabled
+
+
+def test_sql_tool_definition_survives_platform_resolution():
+    """End-to-end: the resolved toolset list feeds get_tool_definitions and the
+    ``sql`` schema comes out the other side (what TUI and cron actually do).
+    """
+    import model_tools
+
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "web", "outlook"]}}
+    enabled = sorted(_get_platform_tools(config, "cli", include_default_mcp_servers=False))
+
+    defs = model_tools.get_tool_definitions(
+        enabled_toolsets=enabled, quiet_mode=True, skip_tool_search_assembly=True,
+    )
+    names = {d["function"]["name"] for d in defs}
+
+    assert "sql" in names

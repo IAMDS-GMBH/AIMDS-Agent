@@ -219,6 +219,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "sql": {
+        "description": "Deterministic SQL over ingested MCP records and state.db",
+        "tools": ["sql"],
+        "includes": []
+    },
+
     "context_engine": {
         "description": "Runtime tools exposed by the active context engine",
         "tools": [],
