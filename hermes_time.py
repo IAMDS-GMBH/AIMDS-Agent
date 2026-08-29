@@ -42,13 +42,17 @@ _cache_resolved: bool = False
 # Graph) that require a real zone name rather than a numeric offset.
 _cached_default_tz_name: Optional[str] = None
 _cached_state_code: Optional[str] = None
+# True when the BW fallback is in use — the prompt says so, so the model
+# treats the state as an assumption to clarify, not as a fact.
+_state_assumed: bool = False
 
 
 def _resolve_state_code() -> str:
     """Read configured German state / Bundesland code (e.g. 'BW', 'BY', 'BE')."""
-    global _cached_state_code
+    global _cached_state_code, _state_assumed
     if _cached_state_code is not None:
         return _cached_state_code
+    _state_assumed = False
 
     state_env = os.getenv("HERMES_STATE", "").strip().upper()
     if state_env:
@@ -69,69 +73,38 @@ def _resolve_state_code() -> str:
         pass
 
     _cached_state_code = "BW"
+    _state_assumed = True
     return "BW"
 
 
 def get_easter_sunday(year: int) -> date:
     """Compute Easter Sunday date for a given year (Meeus/Jones/Butcher algorithm)."""
-    a = year % 19
-    b = year // 100
-    c = year % 100
-    d = b // 4
-    e = b % 4
-    f = (b + 8) // 25
-    g = (b - f + 1) // 3
-    h = (19 * a + b - d - g + 15) % 30
-    i = c // 4
-    k = c % 4
-    l = (32 + 2 * e + 2 * i - h - k) % 7
-    m = (a + 11 * h + 22 * l) // 451
-    month = (h + l - 7 * m + 114) // 31
-    day = ((h + l - 7 * m + 114) % 31) + 1
-    return date(year, month, day)
+    from tools.workday_calendar import easter_sunday
+
+    return easter_sunday(year)
 
 
 def get_public_holidays(year: int, state: str = "BW") -> Dict[date, str]:
-    """Compute German public holidays (Feiertage) for year and state code."""
-    st = (state or "BW").upper()
-    easter = get_easter_sunday(year)
+    """German public holidays (Feiertage) for a year and state code.
 
-    # Fixed holidays nationwide
-    holidays: Dict[date, str] = {
-        date(year, 1, 1): "Neujahr",
-        date(year, 5, 1): "Tag der Arbeit",
-        date(year, 10, 3): "Tag der Deutschen Einheit",
-        date(year, 12, 25): "1. Weihnachtstag",
-        date(year, 12, 26): "2. Weihnachtstag",
-        # Movable nationwide
-        easter - timedelta(days=2): "Karfreitag",
-        easter + timedelta(days=1): "Ostermontag",
-        easter + timedelta(days=39): "Christi Himmelfahrt",
-        easter + timedelta(days=50): "Pfingstmonat",
-    }
+    Delegates to ``tools.workday_calendar`` — the same tables the ``workdays``
+    tool uses, so the prompt line and the tool never disagree. Holidays that
+    apply only in parts of a state (``partial``) are left out here.
+    """
+    from tools.workday_calendar import KIND_PARTIAL, holidays_for, normalize_region
 
-    # State specific fixed holidays
-    if st in ("BW", "BY", "ST"):
-        holidays[date(year, 1, 6)] = "Heilige Drei Könige"
-    if st in ("BE", "MV"):
-        holidays[date(year, 3, 8)] = "Internationaler Frauentag"
-    if st in ("BY", "SL"):
-        holidays[date(year, 8, 15)] = "Mariä Himmelfahrt"
-    if st == "TH":
-        holidays[date(year, 9, 20)] = "Weltkindertag"
-    if st in ("BB", "HB", "HH", "MV", "NI", "SN", "ST", "SH", "TH"):
-        holidays[date(year, 10, 31)] = "Reformationstag"
-    if st in ("BW", "BY", "NW", "RP", "SL"):
-        holidays[date(year, 11, 1)] = "Allerheiligen"
+    st = (state or "BW").strip().upper()
+    try:
+        region = normalize_region(f"DE-{st}")
+    except ValueError:
+        region = "DE"  # unknown code → nationwide holidays only
+    return {h.date: h.name for h in holidays_for(year, region) if h.kind != KIND_PARTIAL}
 
-    # State specific movable holidays
-    if st in ("BW", "BY", "HE", "NW", "RP", "SL"):
-        holidays[easter + timedelta(days=60)] = "Fronleichnam"
-    if st == "BB":
-        holidays[easter] = "Ostersonntag"
-        holidays[easter + timedelta(days=49)] = "Pfingstsonntag"
 
-    return dict(sorted(holidays.items()))
+def state_is_assumed() -> bool:
+    """True when no state is configured and the BW fallback is in effect."""
+    _resolve_state_code()
+    return _state_assumed
 
 
 def get_calendar_context(dt: Optional[datetime] = None, state: Optional[str] = None) -> Dict[str, Any]:
@@ -140,6 +113,8 @@ def get_calendar_context(dt: Optional[datetime] = None, state: Optional[str] = N
         dt = now()
 
     st_code = (state or _resolve_state_code()).upper()
+    assumed = state is None and state_is_assumed()
+    st_label = f"{st_code} (Annahme — kein Bundesland konfiguriert; bei Arbeitszeitfragen klären)" if assumed else st_code
     iso_year, iso_week, iso_day = dt.isocalendar()
 
     day_de = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"][iso_day - 1]
@@ -163,7 +138,7 @@ def get_calendar_context(dt: Optional[datetime] = None, state: Optional[str] = N
         f"ISO Calendar Week (KW): KW {iso_week:02d} (ISO {iso_year}-W{iso_week:02d}: Montag {monday_date.strftime('%Y-%m-%d')} bis Sonntag {sunday_date.strftime('%Y-%m-%d')})\n"
         f"ISO Day of Week: Tag {iso_day} ({day_de} / {day_en})\n"
         f"ISO 8601 Standard: Montag ist Tag 1 der Woche, Sonntag ist Tag 7.\n"
-        f"Region / Bundesland: {st_code}\n"
+        f"Region / Bundesland: {st_label}\n"
         f"Feiertags-Status ({st_code}): {hol_status}"
     )
 
@@ -245,12 +220,13 @@ def reset_cache() -> None:
     config edit or ``HERMES_TIMEZONE`` update) to force ``get_timezone()`` /
     ``now()`` to read the new value instead of the value cached at first use.
     """
-    global _cached_tz, _cached_tz_name, _cache_resolved, _cached_default_tz_name, _cached_state_code
+    global _state_assumed, _cached_tz, _cached_tz_name, _cache_resolved, _cached_default_tz_name, _cached_state_code
     _cached_tz = None
     _cached_tz_name = None
     _cache_resolved = False
     _cached_default_tz_name = None
     _cached_state_code = None
+    _state_assumed = False
 
 
 def now() -> datetime:
