@@ -1452,6 +1452,10 @@ def build_skills_system_prompt(
     if not skills_by_category:
         result = ""
     else:
+        # A table of contents, not a catalog: one line of names per category.
+        # Descriptions used to be rendered here for every skill (~3.4k tokens
+        # for 65 skills, on every request); they now come back with the
+        # search hit, which is the only moment the model needs them.
         index_lines = []
         for category in sorted(skills_by_category.keys()):
             cat_desc = category_descriptions.get(category, "")
@@ -1459,52 +1463,39 @@ def build_skills_system_prompt(
                 index_lines.append(f"  {category}: {cat_desc}")
             else:
                 index_lines.append(f"  {category}:")
-            # Deduplicate and sort skills within each category
-            seen = set()
-            for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
-                if name in seen:
-                    continue
-                seen.add(name)
-                if desc:
-                    index_lines.append(f"    - {name}: {desc}")
-                else:
-                    index_lines.append(f"    - {name}")
+            names = sorted({name for name, _desc in skills_by_category[category] if name})
+            index_lines.append("    " + ", ".join(names))
 
-        skill_tool_hint = (
-            "you MUST load it with `mcp_IAMDS_mcp_memory_skill` (or the applicable memory skill tool) if available, "
-            "otherwise `skill_view(name)` or `skills_read(name)`, and follow its instructions."
-            if "mcp_IAMDS_mcp_memory_skill" in (available_tools or set()) or "memory_skill" in (available_tools or set())
-            else "you MUST load it with `skill_view(name)` or `skills_read(name)` if available, and follow its instructions."
+        tools_set = set(available_tools or set())
+        server_skill_tool = _resolve_memory_tool_name(tools_set, "skill") if tools_set else None
+        if server_skill_tool:
+            load_hint = (
+                f"load it with `skill_view(name)` (local skills) or `{server_skill_tool}(action='read', slug=…)` "
+                "(skills the memory server suggests)"
+            )
+        else:
+            load_hint = "load it with `skill_view(name)` (or `skills_read(name)` where that is the available reader)"
+        find_hint = (
+            "`tool_search(query, kind='skill')` returns the best-fitting skills with their descriptions"
+            if "tool_search" in tools_set
+            else "`skills_list` shows every skill with its description"
         )
 
         result = (
             "## Skills\n"
-            "Before replying, scan the skills below. If a skill matches or is relevant "
-            f"to your task, {skill_tool_hint} "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
-            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
-            "even if you think you could handle the task with basic tools like web_search or terminal. "
-            "Skills also encode the user's preferred approach, conventions, and quality standards "
-            "for tasks like code review, planning, and testing — load them even for tasks you "
-            "already know how to do, because the skill defines how it should be done here.\n"
-            "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
-            "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
-            "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
-            "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
-            "`hermes setup`) so you don't have to guess or invent workarounds.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
-            "After difficult/iterative tasks, offer to save as a skill. "
-            "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
+            "Skills are the established workflows for this workspace; the index below lists "
+            "their names by category. Before a non-trivial task, find the matching skill — "
+            f"{find_hint} — then {load_hint} and follow it, even for tasks you could do "
+            "without it: the skill defines how the task is done here. "
+            "For anything about configuring, installing or troubleshooting Hermes Agent itself, "
+            "load the `hermes-agent` skill first. "
+            "If a skill you used was missing steps or had wrong commands, fix it with "
+            "skill_manage(action='patch') before finishing.\n"
             "Items listed under <available_skills> are NOT callable functions. Do not attempt to invoke skill names or domain prefixes directly.\n"
             "\n"
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"
-            "</available_skills>\n"
-            "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
+            "</available_skills>"
             + hidden_note
         )
 

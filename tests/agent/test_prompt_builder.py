@@ -283,8 +283,11 @@ class TestBuildSkillsSystemPrompt:
         )
         result = build_skills_system_prompt()
         assert "python-debug" in result
-        assert "Debug Python scripts" in result
+        # The index is a table of contents: descriptions are delivered by the
+        # search hit (tool_search kind='skill'), not on every request.
+        assert "Debug Python scripts" not in result
         assert "available_skills" in result
+        assert "coding:" in result
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -295,7 +298,8 @@ class TestBuildSkillsSystemPrompt:
             (d / "SKILL.md").write_text("---\ndescription: Search stuff\n---\n")
         result = build_skills_system_prompt()
         # "search" should appear only once per category
-        assert result.count("- search") == 1
+        block = result.split("<available_skills>", 1)[1].split("</available_skills>", 1)[0]
+        assert block.count("search") == 1
 
     def test_hidden_categories_pruned_with_note(self, monkeypatch, tmp_path):
         """Posture-driven pruning drops whole categories and discloses it."""
@@ -379,7 +383,7 @@ class TestBuildSkillsSystemPrompt:
             result = build_skills_system_prompt()
 
         assert "imessage" in result
-        assert "Send iMessages" in result
+        assert "imessage" in result  # names only; descriptions come with the search hit
 
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):
         """Skills in the user's disabled list should not appear in the system prompt."""
@@ -1662,3 +1666,45 @@ class TestMemoryPromptDemandsSessionInit:
         from agent.prompt_builder import build_remote_mcp_memory_prompt
 
         assert build_remote_mcp_memory_prompt({"terminal", "read_file"}) == ""
+
+
+
+class TestSkillsIndexIsATableOfContents:
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
+    def _seed(self, tmp_path, n_per_cat=30, cats=("aimds_custom", "productivity", "research")):
+        for cat in cats:
+            for i in range(n_per_cat):
+                d = tmp_path / "skills" / cat / f"{cat}-skill-{i}"
+                d.mkdir(parents=True)
+                (d / "SKILL.md").write_text(
+                    f"---\nname: {cat}-skill-{i}\ndescription: "
+                    + ("A long description that would cost tokens on every request " * 3)
+                    + "\n---\n"
+                )
+
+    def test_ninety_skills_fit_in_a_small_budget(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._seed(tmp_path)
+        result = build_skills_system_prompt(available_tools={"tool_search", "skill_view"})
+        assert result.count("-skill-") == 90
+        assert "would cost tokens" not in result
+        # ~800 tokens at 4 chars/token for 90 names + preamble
+        assert len(result) < 3600, len(result)
+
+    def test_find_and_load_hints_follow_the_session_tools(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._seed(tmp_path, n_per_cat=1, cats=("coding",))
+        with_search = build_skills_system_prompt(
+            available_tools={"tool_search", "skill_view", "mcp_AIMDSSuiteMCP_mcp_memory_skill"}
+        )
+        assert "tool_search(query, kind='skill')" in with_search
+        assert "mcp_AIMDSSuiteMCP_mcp_memory_skill(action='read', slug=…)" in with_search
+        without = build_skills_system_prompt(available_tools={"skill_view"})
+        assert "skills_list" in without and "tool_search" not in without
+        assert "NOT callable functions" in without

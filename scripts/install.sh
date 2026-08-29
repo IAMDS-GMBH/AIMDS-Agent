@@ -2557,10 +2557,13 @@ SOUL_EOF
             "productivity/notion" \
             "media/songsee" \
             "dogfood" \
-            "yuanbao" \
-            "github"; do
+            "yuanbao"; do
             rm -rf "$HERMES_HOME/skills/$blocked_skill_dir"
         done
+        # "github" used to be on this list. The skills index is a table of
+        # contents now (names only) and skills are found through tool_search,
+        # so a category no longer costs prompt budget per skill; with GithubMCP
+        # shipped, the github skills are worth having.
 
     fi
 
