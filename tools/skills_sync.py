@@ -25,12 +25,13 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import is_excluded_skill_path
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,21 @@ NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
 # Legacy bundled-skill rename map (old -> new). Used to prevent stale duplicate
 # folders surviving reinstall/update when a bundled skill slug is renamed.
 _SKILL_RENAMES: Tuple[Dict[str, str], ...] = ()
+
+# ---------------------------------------------------------------------------
+# Shipped skills are the product surface. They are not a user setting: the
+# user's opt-out is ``skills.disabled`` (the Skills page); an `rm` of a skill
+# folder is respected too. What is NOT respected is the curator moving a
+# shipped skill into ``.archive/`` or deleting it outright (it did both,
+# right after an update, before anyone had used the skills). The sync brings
+# those back: an archived copy is moved to its shipped place, and a skill the
+# curator deleted (evidence in the curator run logs) is re-copied pristine.
+# A one-shot, versioned policy step lifts the curator's suppression list for
+# bundled names once so the same run can restore them.
+# ---------------------------------------------------------------------------
+BUNDLED_SKILL_POLICY_VERSION = 1
+_ARCHIVE_STAMP_RE = re.compile(r"^(?P<name>.+)-(?P<stamp>\d{14})$")
+_TERMINAL_MV_TO_ARCHIVE_RE = re.compile(r"\bmv\s+(\S+)\s+\S*\.archive/?(?=\s|$|&|;|\"|')")
 
 
 def _get_bundled_dir() -> Path:
@@ -592,6 +608,191 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
     return backfilled
 
 
+def _archive_dir() -> Path:
+    return SKILLS_DIR / ".archive"
+
+
+def _policy_state_path() -> Path:
+    # get_hermes_home() at call time (not the import-time HERMES_HOME) so a
+    # HERMES_HOME override — every test, named profiles — gets its own state.
+    return get_hermes_home() / "state" / "bundled_skill_policy.json"
+
+
+def _read_policy_version() -> int:
+    try:
+        data = json.loads(_policy_state_path().read_text(encoding="utf-8"))
+        return int(data.get("policy_version", 0))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+
+
+def _write_policy_state(payload: Dict[str, object]) -> None:
+    path = _policy_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        atomic_replace(str(tmp), path)
+    except OSError as e:
+        logger.debug("Could not write %s: %s", path, e)
+
+
+def _find_archived_copy(name: str) -> Optional[Path]:
+    """``.archive/<name>`` — or the newest ``.archive/<name>-<UTC stamp>``
+    (archive_skill appends a stamp on collision). A loose prefix would also
+    match ``<name>-dupe``, so only the 14-digit stamp form counts."""
+    root = _archive_dir()
+    if not root.is_dir():
+        return None
+    exact = root / name
+    if exact.is_dir():
+        return exact
+    best: Optional[Tuple[str, Path]] = None
+    try:
+        for candidate in root.iterdir():
+            match = _ARCHIVE_STAMP_RE.match(candidate.name)
+            if not candidate.is_dir() or not match or match.group("name") != name:
+                continue
+            if best is None or match.group("stamp") > best[0]:
+                best = (match.group("stamp"), candidate)
+    except OSError:
+        return None
+    return best[1] if best else None
+
+
+def _restore_from_archive(name: str, archived: Path, dest: Path, *, quiet: bool) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(archived), str(dest))
+    try:
+        from tools.skill_usage import remove_suppressed_name
+
+        remove_suppressed_name(name)
+    except Exception:
+        pass
+    if not quiet:
+        print(f"  ↩ {name} (restored from archive)")
+
+
+def _disabled_names() -> set:
+    """``skills.disabled`` — the user's opt-out; never restore those."""
+    try:
+        from agent.skill_utils import get_disabled_skill_names
+
+        return set(get_disabled_skill_names())
+    except Exception:
+        return set()
+
+
+def _curator_removed_names() -> set:
+    """Skills the curator archived, pruned, absorbed or deleted, from
+    ``logs/curator/<run>/run.json`` — including the LLM pass's own
+    ``skill_manage delete`` calls and ``terminal mv … .archive/`` commands,
+    which the run summary does not count as ``archived``."""
+    names: set = set()
+    root = get_hermes_home() / "logs" / "curator"
+    if not root.is_dir():
+        return names
+    for run_file in root.glob("*/run.json"):
+        try:
+            data = json.loads(run_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        for key in ("archived", "pruned_names"):
+            names.update(str(n) for n in (data.get(key) or []) if isinstance(n, str))
+        for entry in data.get("consolidated") or []:
+            if isinstance(entry, dict):
+                for key in ("name", "from"):
+                    if isinstance(entry.get(key), str):
+                        names.add(entry[key])
+        for call in data.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            raw_args = call.get("arguments")
+            if call.get("name") == "skill_manage":
+                try:
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+                except ValueError:
+                    continue
+                if isinstance(args, dict) and args.get("action") == "delete" and isinstance(args.get("name"), str):
+                    names.add(args["name"])
+            elif call.get("name") == "terminal":
+                try:
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+                except ValueError:
+                    continue
+                command = args.get("command") if isinstance(args, dict) else None
+                for src in _TERMINAL_MV_TO_ARCHIVE_RE.findall(str(command or "")):
+                    names.add(Path(src.strip("\"'")).name)
+    return {n for n in names if n and "/" not in n}
+
+
+def _apply_bundled_skill_policy(
+    manifest: Dict[str, str],
+    bundled_skills: List[Tuple[str, Path, Path]],
+    suppressed: set,
+    disabled: set,
+    *,
+    quiet: bool,
+) -> Optional[Dict[str, object]]:
+    """One-shot (versioned): lift the curator's suppression of bundled names
+    and forget manifest entries for bundled skills the curator deleted, so
+    this same sync restores them. Returns the state payload to persist once
+    the sync has finished, or None when already applied."""
+    if _read_policy_version() >= BUNDLED_SKILL_POLICY_VERSION:
+        return None
+    bundled_names = {name for name, _, _ in bundled_skills}
+    unsuppressed = sorted(bundled_names & suppressed)
+    for name in unsuppressed:
+        try:
+            from tools.skill_usage import remove_suppressed_name
+
+            remove_suppressed_name(name)
+        except Exception:
+            pass
+        suppressed.discard(name)
+
+    reseeded: List[str] = []
+    removed_by_curator: Optional[set] = None
+    for name, skill_src, source_root in bundled_skills:
+        if name not in manifest or name in disabled:
+            continue
+        if _compute_relative_dest(skill_src, source_root).exists() or _find_archived_copy(name) is not None:
+            continue
+        if removed_by_curator is None:
+            removed_by_curator = _curator_removed_names()
+        if name in removed_by_curator:
+            manifest.pop(name, None)
+            reseeded.append(name)
+    if not quiet and (unsuppressed or reseeded):
+        print(f"  bundled-skill policy v{BUNDLED_SKILL_POLICY_VERSION}: unsuppressed {len(unsuppressed)}, re-seeding {len(reseeded)}")
+    return {
+        "policy_version": BUNDLED_SKILL_POLICY_VERSION,
+        "applied_at": datetime.now(timezone.utc).isoformat(),
+        "unsuppressed": unsuppressed,
+        "reseeded": sorted(reseeded),
+    }
+
+
+def restore_missing_bundled_skills(names: List[str], *, quiet: bool = True) -> dict:
+    """Bring named bundled skills back: an archived copy is moved into place
+    by the sync; otherwise the manifest entry is dropped so the sync copies
+    the pristine bundled version. Used after a curator run."""
+    wanted = [n for n in dict.fromkeys(names) if n]
+    manifest = _read_manifest()
+    changed = False
+    for name in wanted:
+        if name in manifest and _find_archived_copy(name) is None:
+            manifest.pop(name, None)
+            changed = True
+    if changed:
+        _write_manifest(manifest)
+    result = sync_skills(quiet=quiet)
+    back = [n for n in wanted if n in result.get("restored", []) or n in result.get("copied", [])]
+    return {"restored": back, "sync": result}
+
+
 def sync_skills(quiet: bool = False) -> dict:
     """
     Sync bundled skills into ~/.hermes/skills/ using the manifest.
@@ -609,7 +810,7 @@ def sync_skills(quiet: bool = False) -> dict:
         if not quiet:
             print("  (skipped — profile opted out of bundled skills via .no-bundled-skills)")
         return {
-            "copied": [], "updated": [], "skipped": 0,
+            "copied": [], "updated": [], "skipped": 0, "restored": [],
             "user_modified": [], "cleaned": [], "total_bundled": 0,
             "optional_provenance_backfilled": [], "skipped_opt_out": True,
         }
@@ -619,7 +820,7 @@ def sync_skills(quiet: bool = False) -> dict:
     existing_bundled_dirs = [path for path in bundled_dirs if path.exists()]
     if not existing_bundled_dirs:
         return {
-            "copied": [], "updated": [], "skipped": 0,
+            "copied": [], "updated": [], "skipped": 0, "restored": [],
             "user_modified": [], "cleaned": [], "suppressed": [], "total_bundled": 0,
             "optional_provenance_backfilled": [],
         }
@@ -630,9 +831,12 @@ def sync_skills(quiet: bool = False) -> dict:
     bundled_skills = _discover_all_bundled_skills(existing_bundled_dirs, quiet=quiet)
     bundled_names = {name for name, _, _ in bundled_skills}
     suppressed = _read_suppressed_names()
+    disabled = _disabled_names()
+    policy_state = _apply_bundled_skill_policy(manifest, bundled_skills, suppressed, disabled, quiet=quiet)
 
     copied = []
     updated = []
+    restored: List[str] = []
     user_modified = []
     suppressed_skipped: List[str] = []
     skipped = 0
@@ -649,6 +853,21 @@ def sync_skills(quiet: bool = False) -> dict:
 
         dest = _compute_relative_dest(skill_src, source_root)
         bundled_hash = _dir_hash(skill_src)
+        dest_exists = dest.exists()
+
+        if skill_name in manifest and not dest_exists and skill_name not in disabled:
+            # ── In manifest, gone from disk, but sitting in .archive/ ──
+            # The curator put it there; a shipped skill comes back to its
+            # shipped place. (No archived copy → "user deleted", below.)
+            archived = _find_archived_copy(skill_name)
+            if archived is not None:
+                try:
+                    _restore_from_archive(skill_name, archived, dest, quiet=quiet)
+                    restored.append(skill_name)
+                    dest_exists = True
+                except (OSError, IOError) as e:
+                    if not quiet:
+                        print(f"  ! Failed to restore {skill_name} from archive: {e}")
 
         if skill_name not in manifest:
             # ── New skill — never offered before ──
@@ -685,7 +904,7 @@ def sync_skills(quiet: bool = False) -> dict:
                     print(f"  ! Failed to copy {skill_name}: {e}")
                 # Do NOT add to manifest — next sync should retry
 
-        elif dest.exists():
+        elif dest_exists:
             # ── Existing skill — in manifest AND on disk ──
             origin_hash = manifest.get(skill_name, "")
             user_hash = _dir_hash(dest)
@@ -760,11 +979,14 @@ def sync_skills(quiet: bool = False) -> dict:
                     logger.debug("Could not copy %s: %s", desc_md, e)
 
     _write_manifest(manifest)
+    if policy_state is not None:
+        _write_policy_state(policy_state)
     optional_provenance_backfilled = _backfill_optional_provenance(quiet=quiet)
 
     return {
         "copied": copied,
         "updated": updated,
+        "restored": restored,
         "skipped": skipped,
         "user_modified": user_modified,
         "cleaned": cleaned,

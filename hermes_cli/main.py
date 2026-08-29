@@ -9021,6 +9021,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print(
                     f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}"
                 )
+            if result.get("restored"):
+                print(f"  ↩ {len(result['restored'])} restored from archive: {', '.join(result['restored'])}")
             if result.get("user_modified"):
                 print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
             if result.get("cleaned"):

@@ -1,10 +1,15 @@
 """Tests for tools/skills_sync.py — manifest-based skill seeding and updating."""
 
 import json
+import os
+from hermes_constants import get_hermes_home
+import pytest
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
 from tools.skills_sync import (
+    BUNDLED_SKILL_POLICY_VERSION,
     _get_additional_bundled_dirs,
     _get_bundled_dir,
     _read_manifest,
@@ -166,6 +171,19 @@ class TestReadSkillName:
         assert skills[0][0] == "audiocraft-audio-generation"
 
 
+
+from tools.skills_sync import _curator_removed_names as _REAL_CURATOR_REMOVED_NAMES
+
+
+@pytest.fixture(autouse=True)
+def _isolated_hermes_home(tmp_path, monkeypatch):
+    """No test may touch the real ~/.hermes (policy state, curator logs,
+    suppression list) — the sync writes its one-shot state under HERMES_HOME."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("tools.skills_sync._disabled_names", lambda: set())
+    monkeypatch.setattr("tools.skills_sync._curator_removed_names", lambda: set())
+
+
 class TestComputeRelativeDest:
     def test_preserves_category_structure(self):
         bundled = Path("/repo/skills")
@@ -200,6 +218,12 @@ class TestSyncSkills:
         stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
         stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        # Keep the sync away from the real ~/.hermes: state file, curator logs,
+        # suppression list, skills.disabled. The one-shot bundled-skill policy
+        # counts as already applied unless a test says otherwise.
+        stack.enter_context(patch("tools.skills_sync._read_policy_version", return_value=BUNDLED_SKILL_POLICY_VERSION))
+        stack.enter_context(patch("tools.skills_sync._disabled_names", return_value=set()))
+        stack.enter_context(patch("tools.skills_sync._curator_removed_names", return_value=set()))
         return stack
 
     def test_suppressed_builtin_not_reseeded(self, tmp_path):
@@ -693,7 +717,7 @@ class TestSyncSkills:
         with patch("tools.skills_sync._get_bundled_dir", return_value=tmp_path / "nope"):
             result = sync_skills(quiet=True)
         assert result == {
-            "copied": [], "updated": [], "skipped": 0,
+            "copied": [], "updated": [], "skipped": 0, "restored": [],
             "user_modified": [], "cleaned": [], "suppressed": [], "total_bundled": 0,
             "optional_provenance_backfilled": [],
         }
@@ -838,6 +862,12 @@ class TestResetBundledSkill:
         stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
         stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        # Keep the sync away from the real ~/.hermes: state file, curator logs,
+        # suppression list, skills.disabled. The one-shot bundled-skill policy
+        # counts as already applied unless a test says otherwise.
+        stack.enter_context(patch("tools.skills_sync._read_policy_version", return_value=BUNDLED_SKILL_POLICY_VERSION))
+        stack.enter_context(patch("tools.skills_sync._disabled_names", return_value=set()))
+        stack.enter_context(patch("tools.skills_sync._curator_removed_names", return_value=set()))
         return stack
 
     def test_reset_clears_stuck_user_modified_flag(self, tmp_path):
@@ -1150,3 +1180,167 @@ class TestOptOutToggleAndRemove:
             assert "EDITED" in (skills_dir / "beta" / "SKILL.md").read_text()
             # non-bundled local skill never considered
             assert (skills_dir / "mine" / "SKILL.md").exists()
+
+
+class TestBundledSkillRestore:
+    """Shipped skills the curator archived or deleted come back on sync."""
+
+    def _seed_synced(self, tmp_path):
+        """A synced install: bundled + user skills dir with a v2 manifest."""
+        bundled = TestSyncSkills._setup_bundled(self, tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        with TestSyncSkills._patches(self, bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True)
+        return bundled, skills_dir, manifest_file
+
+    def _archive(self, skills_dir, rel, archive_name=None):
+        src = skills_dir / rel
+        dest = skills_dir / ".archive" / (archive_name or src.name)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dest))
+        return dest
+
+    def test_archived_copy_returns_to_its_shipped_place(self, tmp_path):
+        bundled, skills_dir, manifest_file = self._seed_synced(tmp_path)
+        self._archive(skills_dir, "category/new-skill")  # curator's `terminal mv`
+        assert not (skills_dir / "category" / "new-skill").exists()
+
+        with TestSyncSkills._patches(self, bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert result["restored"] == ["new-skill"]
+        assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()  # category path, not flat
+        assert not (skills_dir / ".archive" / "new-skill").exists()
+        assert result["copied"] == []
+
+    def test_newest_stamped_archive_wins_and_dupe_is_ignored(self, tmp_path):
+        bundled, skills_dir, manifest_file = self._seed_synced(tmp_path)
+        self._archive(skills_dir, "old-skill", "old-skill-20260801120000")
+        newer = skills_dir / ".archive" / "old-skill-20260829110606"
+        newer.mkdir(parents=True)
+        (newer / "SKILL.md").write_text("# Old (newest archive)")
+        dupe = skills_dir / ".archive" / "old-skill-dupe"
+        dupe.mkdir()
+        (dupe / "SKILL.md").write_text("# dupe")
+
+        with TestSyncSkills._patches(self, bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert result["restored"] == ["old-skill"]
+        assert (skills_dir / "old-skill" / "SKILL.md").read_text() == "# Old (newest archive)"
+        assert (skills_dir / ".archive" / "old-skill-20260801120000").exists()
+        assert (skills_dir / ".archive" / "old-skill-dupe").exists()
+
+    def test_rm_without_archive_or_curator_evidence_stays_deleted(self, tmp_path):
+        bundled, skills_dir, manifest_file = self._seed_synced(tmp_path)
+        shutil.rmtree(skills_dir / "old-skill")
+
+        with TestSyncSkills._patches(self, bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert result["restored"] == [] and result["copied"] == []
+        assert not (skills_dir / "old-skill").exists()
+
+    def test_curator_deleted_skill_is_recopied_once_by_the_policy(self, tmp_path):
+        bundled, skills_dir, manifest_file = self._seed_synced(tmp_path)
+        shutil.rmtree(skills_dir / "old-skill")  # curator's skill_manage delete → rmtree
+        state = get_hermes_home() / "state" / "bundled_skill_policy.json"
+
+        with TestSyncSkills._patches(self, bundled, skills_dir, manifest_file), \
+                patch("tools.skills_sync._read_policy_version", return_value=0), \
+                patch("tools.skills_sync._curator_removed_names", return_value={"old-skill"}):
+            result = sync_skills(quiet=True)
+
+        assert result["copied"] == ["old-skill"]
+        assert (skills_dir / "old-skill" / "SKILL.md").exists()
+        payload = json.loads(state.read_text())
+        assert payload["policy_version"] == BUNDLED_SKILL_POLICY_VERSION
+        assert payload["reseeded"] == ["old-skill"]
+
+        # Second sync with the policy applied: an rm now stays an rm.
+        shutil.rmtree(skills_dir / "old-skill")
+        with TestSyncSkills._patches(self, bundled, skills_dir, manifest_file), \
+                patch("tools.skills_sync._curator_removed_names", return_value={"old-skill"}):
+            again = sync_skills(quiet=True)
+        assert again["copied"] == [] and not (skills_dir / "old-skill").exists()
+
+    def test_suppressed_bundled_name_is_released_once_and_restored(self, tmp_path):
+        bundled, skills_dir, manifest_file = self._seed_synced(tmp_path)
+        self._archive(skills_dir, "old-skill")
+        released = []
+
+        with TestSyncSkills._patches(self, bundled, skills_dir, manifest_file), \
+                patch("tools.skills_sync._read_policy_version", return_value=0), \
+                patch("tools.skills_sync._read_suppressed_names", return_value={"old-skill", "not-bundled"}), \
+                patch("tools.skill_usage.remove_suppressed_name", side_effect=released.append):
+            result = sync_skills(quiet=True)
+
+        assert result["restored"] == ["old-skill"]
+        assert result["suppressed"] == []
+        assert "old-skill" in released and "not-bundled" not in released
+        payload = json.loads((get_hermes_home() / "state" / "bundled_skill_policy.json").read_text())
+        assert payload["unsuppressed"] == ["old-skill"]
+
+    def test_disabled_skill_is_never_restored(self, tmp_path):
+        bundled, skills_dir, manifest_file = self._seed_synced(tmp_path)
+        self._archive(skills_dir, "old-skill")
+
+        with TestSyncSkills._patches(self, bundled, skills_dir, manifest_file), \
+                patch("tools.skills_sync._disabled_names", return_value={"old-skill"}):
+            result = sync_skills(quiet=True)
+
+        assert result["restored"] == []
+        assert (skills_dir / ".archive" / "old-skill").exists()
+
+    def test_opt_out_marker_writes_no_state_file(self, tmp_path):
+        bundled, skills_dir, manifest_file = self._seed_synced(tmp_path)
+        # The opt-out marker is read via the import-time HERMES_HOME (upstream).
+        (tmp_path / "home").mkdir(exist_ok=True)
+        (tmp_path / "home" / ".no-bundled-skills").write_text("")
+        with TestSyncSkills._patches(self, bundled, skills_dir, manifest_file), \
+                patch("tools.skills_sync.HERMES_HOME", tmp_path / "home"), \
+                patch("tools.skills_sync._read_policy_version", return_value=0):
+            result = sync_skills(quiet=True)
+        assert result.get("skipped_opt_out") is True and result["restored"] == []
+        assert not (get_hermes_home() / "state" / "bundled_skill_policy.json").exists()
+
+    def test_restore_missing_bundled_skills_roundtrip(self, tmp_path):
+        from tools.skills_sync import restore_missing_bundled_skills
+
+        bundled, skills_dir, manifest_file = self._seed_synced(tmp_path)
+        self._archive(skills_dir, "category/new-skill")  # archived → moved back
+        shutil.rmtree(skills_dir / "old-skill")           # deleted → re-copied
+
+        with TestSyncSkills._patches(self, bundled, skills_dir, manifest_file):
+            out = restore_missing_bundled_skills(["new-skill", "old-skill", "unknown"])
+
+        assert out["restored"] == ["new-skill", "old-skill"]
+        assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
+        assert (skills_dir / "old-skill" / "SKILL.md").exists()
+
+
+class TestCuratorRemovedNames:
+    def test_reads_every_evidence_shape_from_run_json(self, tmp_path):
+        _curator_removed_names = _REAL_CURATOR_REMOVED_NAMES  # the autouse fixture stubs the module name
+
+        run_dir = tmp_path / "logs" / "curator" / "20260829-110606"
+        run_dir.mkdir(parents=True)
+        (run_dir / "run.json").write_text(json.dumps({
+            "archived": ["a-archived"],
+            "pruned_names": ["b-pruned"],
+            "consolidated": [{"name": "c-absorbed", "into": "umbrella"}],
+            "tool_calls": [
+                {"name": "skill_manage", "arguments": json.dumps({"action": "delete", "name": "d-deleted", "absorbed_into": "x"})},
+                {"name": "skill_manage", "arguments": json.dumps({"action": "patch", "name": "not-this"})},
+                {"name": "terminal", "arguments": json.dumps({"command": "cd ~/.hermes/skills && mv aimds_custom/e-moved .archive/ && mv productivity/f-moved .archive/ && echo ok"})},
+                {"name": "terminal", "arguments": json.dumps({"command": "ls ~/.hermes/skills/.archive/ | wc -l"})},
+            ],
+        }))
+        (tmp_path / "logs" / "curator" / "broken").mkdir()
+        (tmp_path / "logs" / "curator" / "broken" / "run.json").write_text("{not json")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            names = _curator_removed_names()
+
+        assert names == {"a-archived", "b-pruned", "c-absorbed", "d-deleted", "e-moved", "f-moved"}

@@ -70,6 +70,22 @@ def _patch_managed_uv(request):
         yield
 
 
+
+@pytest.fixture(autouse=True)
+def _never_sync_real_skills(monkeypatch):
+    """cmd_update reaches tools.skills_sync.sync_skills, whose SKILLS_DIR is
+    fixed at import time — an unmocked call syncs (and now restores) the
+    developer's real ~/.hermes/skills. Tests that care patch it themselves."""
+    monkeypatch.setattr(
+        "tools.skills_sync.sync_skills",
+        lambda quiet=True: {
+            "copied": [], "updated": [], "skipped": 0, "restored": [],
+            "user_modified": [], "cleaned": [], "suppressed": [], "total_bundled": 0,
+            "optional_provenance_backfilled": [],
+        },
+    )
+
+
 class TestCmdUpdatePip:
     """Regression tests for pip-install update flows."""
 
