@@ -1177,6 +1177,14 @@ def ensure_hermes_home():
             _secure_dir(d)
         _ensure_default_soul_md(home)
         _ensure_documents_memory_link(home)
+        # Bring an already-seeded workspace up to the shipped template
+        # (missing hubs/HARNESS.md/templates); never overwrites user files.
+        try:
+            from hermes_cli.workspace_template import upgrade_configured_workspace
+
+            upgrade_configured_workspace()
+        except Exception:
+            pass
 
 
 def _ensure_hermes_home_managed(home: Path):

@@ -646,6 +646,10 @@ class VaultMetaIndex:
         results.sort(key=lambda x: x[0], reverse=True)
         return [r for _, r in results[: max(1, int(top_k or 5))]]
 
+    @staticmethod
+    def _display_path_static(path: str) -> str:  # pragma: no cover - thin alias
+        return _display_path(path)
+
     def build_recall_block(
         self,
         query: str,
@@ -665,19 +669,44 @@ class VaultMetaIndex:
             title = str(r.get("title") or "").strip()
             content = str(r.get("content") or "").strip()
             label = f"[{mem_type}] " if mem_type else ""
+            # The path was always stored and never rendered — the model saw a
+            # 200-char excerpt of a vault note it could not open or update.
+            where = _display_path(str(r.get("path") or ""))
+            where = f" ({where})" if where else ""
 
             # Truncate content to keep stubs tight
             if len(content) > 200:
                 content = content[:197].rstrip() + "…"
 
             if title and content:
-                lines.append(f"- {label}{title}: {content}")
+                lines.append(f"- {label}{title}{where}: {content}")
             elif title:
-                lines.append(f"- {label}{title}")
+                lines.append(f"- {label}{title}{where}")
             elif content:
-                lines.append(f"- {label}{content}")
+                lines.append(f"- {label}{content}{where}")
 
         block = "\n".join(lines).strip()
         if len(block) > max_chars:
             block = block[:max_chars - 1].rstrip() + "…"
         return block
+
+
+def _display_path(path: str) -> str:
+    """Vault-relative path for a recall hit (empty for non-file records)."""
+    if not path:
+        return ""
+    try:
+        from pathlib import Path as _P
+
+        p = _P(path)
+        if not p.suffix:
+            return ""
+        try:
+            from agent.runtime_cwd import resolve_agent_cwd
+
+            root = _P(resolve_agent_cwd()).resolve()
+            return str(p.resolve().relative_to(root))
+        except Exception:
+            return p.name
+    except Exception:
+        return ""

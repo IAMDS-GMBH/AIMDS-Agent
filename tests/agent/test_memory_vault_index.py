@@ -373,3 +373,24 @@ def test_sync_workspace_vault_reindexes_changed_files():
         results = index.hybrid_search("oranges")
         assert len(results) >= 1
         assert "oranges" in results[0]["content"]
+
+
+def test_recall_hits_carry_the_vault_relative_path(tmp_path, monkeypatch):
+    """The path was stored in doc_meta but never rendered, so the model could not
+    open or update the note the prompt told it to keep canonical."""
+    from agent.memory_vault_index import VaultMetaIndex
+
+    vault = tmp_path / "vault"
+    (vault / "projects").mkdir(parents=True)
+    note = vault / "projects" / "hub-zeitbuchung.md"
+    note.write_text("# Zeitbuchung hub\nEXT-95 rules\n", encoding="utf-8")
+    monkeypatch.setattr("agent.runtime_cwd.resolve_agent_cwd", lambda: vault)
+
+    index = VaultMetaIndex(db_path=tmp_path / "idx.sqlite")
+    index.sync_record({
+        "id": "vault:hub-zeitbuchung", "slug": "hub-zeitbuchung", "path": str(note),
+        "scope": "project", "type": "hub", "title": "Zeitbuchung hub",
+        "content": "EXT-95 rules and monthly worklog aggregation", "tags": ["worklog"], "source": "vault",
+    })
+    block = index.build_recall_block("worklog EXT-95", max_chars=500)
+    assert "Zeitbuchung hub (projects/hub-zeitbuchung.md):" in block

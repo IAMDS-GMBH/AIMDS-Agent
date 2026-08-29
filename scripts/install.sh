@@ -2270,6 +2270,12 @@ copy_config_templates() {
         # Repair previously-seeded clients: remove .gitkeep placeholders that
         # were copied before filtering was added.
         find "$hermes_work_dir" -type f -name '.gitkeep' -delete 2>/dev/null || true
+        # Upgrade an older workspace to the current template version: adds
+        # missing hubs/HARNESS.md/templates, keeps edited files (a
+        # .template-new sibling shows the new text), stamps the version.
+        if [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+            "$INSTALL_DIR/venv/bin/python" -m hermes_cli.workspace_template "$hermes_work_dir" 2>/dev/null || true
+        fi
         log_success "Workspace template ready at $hermes_work_dir"
     fi
 
