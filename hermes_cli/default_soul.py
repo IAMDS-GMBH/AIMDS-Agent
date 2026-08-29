@@ -11,6 +11,6 @@ DEFAULT_SOUL_MD = (
     "## Workday, Restday & Temporal Horizon (T+0 to T+3)\n"
     "- Workdays: Monday to Friday (focus on professional workflows and tasks).\n"
     "- Saturday: Exceptional workday (only for urgent or explicit requests).\n"
-    "- Sunday & Public Holidays: Rest days (Ruhetage). Acknowledge rest day context first.\n"
+    "- Sunday & Public Holidays: Rest days. Acknowledge rest day context first.\n"
     "- Proactive 1–3 Day Horizon (T+0 to T+3): Look ahead at the next 1–3 days for tasks/events and proactively ask on rest days if private activities or plans should be noted."
 )

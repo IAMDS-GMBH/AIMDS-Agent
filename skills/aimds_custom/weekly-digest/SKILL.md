@@ -1,6 +1,6 @@
 ---
 name: weekly-digest
-description: Wochen-Rückblick (Cron, z.B. Fr 16:00) — sammelt die Woche aus Aufgaben, Findings und aktiven Projekten und liefert einen vorbereiteten Rückblick (Was lief / Was offen blieb / Insights / Plan nächste Woche). Nutzen für "Wochenrückblick", "Weekly Review".
+description: Weekly review digest (cron, e.g. Fri 16:00) — collects the week from tasks, findings and active projects and delivers a prepared retrospective (What went well / What stayed open / Insights / Plan for next week) saved as a journal note in the Obsidian vault. Use for "weekly review", "week in review".
 metadata:
   hermes:
     blueprint:
@@ -9,69 +9,70 @@ metadata:
       default_schedule: "0 16 * * 5"
 ---
 
-# Weekly Digest (Wochen-Rückblick)
+# Weekly Digest (Weekly Review)
 
-## Rolle
-Du bereitest den Wochen-Rückblick vor: sammle, was diese Woche passiert ist, und liefere
-einen kompakten Rückblick, den der Nutzer nur noch um eigene Reflexion ergänzen muss.
-Daten sammeln, nicht schönfärben — ehrlich bei offenen Punkten.
+## Role
+You prepare the weekly review: collect what happened this week and deliver a compact
+retrospective that the user only needs to complement with their own reflection.
+Collect data, do not embellish — be honest about open items.
 
-## Phase 1 — Daten sammeln
-1. `tasks/thisweek.md` — was war geplant, was ist erledigt, was blieb offen.
-2. `tasks/tasks.md` — was aus dem Backlog diese Woche relevant wurde.
-3. `_findings.md` — die wichtigsten Fundstücke der Woche.
-4. `projects/` — **nur `projectStatus: active` oder `waiting`** (siehe
-   `guardrails/project-lifecycle.md`). Pro Projekt: letzte Änderung (`updated:`), offene
-   Punkte, grober Fortschritt. `waiting` nur als Status-Reminder, nie als Aktionspunkt.
-   `dormant`/`done`/`parked` bleiben außen vor. Projektstand zählt der `projectStatus`,
-   nicht die Zahl offener Punkte.
-5. `journal/` — den letzten Wochen-Rückblick für Kontext (was war letzte Woche der Plan?).
+## Phase 1 — Collect data
+1. `tasks/thisweek.md` — what was planned, what is done, what stayed open.
+2. `tasks/tasks.md` — what from the backlog became relevant this week.
+3. `_findings.md` — the most important findings of the week.
+4. `projects/` — **only `projectStatus: active` or `waiting`** (see
+   `guardrails/project-lifecycle.md`). Per project: last change (`updated:`), open
+   items, rough progress. `waiting` only as a status reminder, never as an action item.
+   `dormant`/`done`/`parked` stay out. Project state is determined by `projectStatus`,
+   not by the number of open items.
+5. `journal/` — the most recent weekly review for context (what was last week's plan?).
 
-## Phase 2 — Rückblick bauen
-Struktur und Ton folgen `guardrails/output-format.md`, Abschnitt "Wochen-Rückblick":
+## Phase 2 — Build the review
+Structure and tone follow `guardrails/output-format.md`, section "Weekly review":
 
 ```
-# Wochen-Rückblick KW YYYY-WXX
+# Weekly Review YYYY-WXX
 
-## Was lief diese Woche
+## What went well this week
 - ✅ … (max 5)
 
-## Was offen blieb
+## What stayed open
 - 🔴 … (max 5)
 
 ## Insights (0–3, optional)
 - …
 
-## Plan nächste Woche
-1. Top-Priorität
+## Plan for next week
+1. Top priority
 2. …
 3. …
 ```
 
-- **HARD CAP 5 Items pro Sektion.** Der Rest wandert als Backlink nach `_findings.md` —
-  keine Sektion überlaufen lassen.
-- **Insights nur wenn echte da sind.** Null Insights ist ein gültiges Ergebnis; nichts
-  erzwingen, um die Sektion zu füllen.
-- **Plan nächste Woche** ist ein **Vorschlag** (aus offenen Punkten + fälligen Projekt-
-  Prioritäten), klar als Vorschlag gekennzeichnet — der Nutzer entscheidet.
+- **HARD CAP 5 items per section.** The rest goes to `_findings.md` as a backlink —
+  never let a section overflow.
+- **Insights only if there are real ones.** Zero insights is a valid result; do not
+  force anything to fill the section.
+- **Plan for next week** is a **proposal** (from open items + due project
+  priorities), clearly marked as a proposal — the user decides.
 
-## Phase 3 — Ablegen & liefern
-- Rückblick nach `journal/YYYY-WXX-review.md` schreiben (dort designiert `AGENTS.md`
-  Wochen-Reviews). Frontmatter nach `_conventions.md` (`type`, `title`, `created`,
-  `updated`). Existiert der Eintrag schon, erweitern statt doppeln.
-- Eine kompakte Fassung in die Ausgabe (Chat bzw. Cron-Antwort).
-- Optional anbieten (nicht still tun): `tasks/thisweek.md` für die nächste Woche
-  vorbereiten — erledigte Items nach unten, offene übernehmen, vorgeschlagene Top-3 oben.
+## Phase 3 — File & deliver
+- Write the review to `journal/YYYY-MM-DD-weekly-review.md` (`YYYY-MM-DD` = run date;
+  `AGENTS.md` designates `journal/` for weekly reviews). Frontmatter per
+  `_conventions.md` with `type: journal` (`title`, `created`, `updated`, `tags`).
+  If the file already exists, extend it instead of creating a duplicate, and bump `updated:`.
+- A compact version into the output (chat or cron response).
+- Offer optionally (do not do it silently): prepare `tasks/thisweek.md` for next
+  week — done items to the bottom, open ones carried over, the proposed top 3 at the top.
 
-## Verifikation
-- [ ] Nur `active`/`waiting`-Projekte im Rückblick, `waiting` nur als Reminder?
-- [ ] Keine Sektion über 5 Items?
-- [ ] Insights nur, wenn wirklich welche da sind — sonst Sektion weggelassen?
-- [ ] "Plan nächste Woche" als Vorschlag markiert, kein eigenmächtiger Statuswechsel?
-- [ ] Nichts erfunden — keine Erfolge oder Findings, die nicht belegt sind?
-- [ ] Bei ruhiger Woche ehrlich kurz statt künstlich gefüllt?
+## Verification
+- [ ] Only `active`/`waiting` projects in the review, `waiting` only as a reminder?
+- [ ] No section over 5 items?
+- [ ] Insights only if there really are some — otherwise section omitted?
+- [ ] "Plan for next week" marked as a proposal, no unilateral status change?
+- [ ] Nothing invented — no successes or findings that are not backed by evidence?
+- [ ] In a quiet week honestly short instead of artificially filled?
 
-## Was NICHT
-- Keine Zeiterfassungs-, Vertriebs- oder Delegations-Sektion (firmenspezifisch).
-- Projekt-Status nicht selbst ändern — nur vorschlagen (`guardrails/project-lifecycle.md`).
-- Kein Schönfärben offener Punkte.
+## What NOT to do
+- No time-tracking, sales or delegation section (company-specific).
+- Do not change project status yourself — only propose (`guardrails/project-lifecycle.md`).
+- No embellishing of open items.

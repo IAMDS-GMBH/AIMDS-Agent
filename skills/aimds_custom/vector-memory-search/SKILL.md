@@ -1,36 +1,36 @@
 ---
 name: vector-memory-search
-description: Token-effiziente 3-Stufen-Suche über AIMDSSuiteMCP, Qdrant und den lokalen Vektor-Index, um Prompt-Tokens um bis zu 90% zu reduzieren.
+description: Token-efficient 3-stage search across AIMDSSuiteMCP, Qdrant and the local vector index (storage_status, storage_search, memory_search, storage_get_document chunk reading) to cut prompt tokens by up to 90%.
 metadata:
   hermes:
     requires_tools: [memory_search]
 ---
 
-# Vector & Memory Search (Token-Optimiert)
+# Vector & Memory Search (Token-Optimised)
 
-## Zweck
-Verhindert das Laden vollständiger Dokumente in den Prompt-Kontext. Erzwingt ein schrittweises Abfrage-Verfahren, um Antworten präzise und extrem sparsam im Token-Verbrauch zu generieren.
+## Purpose
+Prevents loading complete documents into the prompt context. Enforces a step-by-step query procedure to produce precise answers with extremely low token consumption.
 
-## Das 3-Stufen-Abfragemodell
+## The 3-Stage Query Model
 
 ```
-[Stufe 1: Index & Themen] ──> [Stufe 2: BM25/Vektor-Suche] ──> [Stufe 3: Chunk-Reading]
+[Stage 1: Index & Topics] ──> [Stage 2: BM25/Vector Search] ──> [Stage 3: Chunk Reading]
   storage_status()              storage_search(query)             storage_get_document(
   storage_meta("topics")        memory_search(query)                id, offset_words=...)
-  (~50-150 Tokens)              (~150-300 Tokens)                 (~200-500 Tokens)
+  (~50-150 tokens)              (~150-300 tokens)                 (~200-500 tokens)
 ```
 
-### Stufe 1: Status & Themen-Überblick (Sehr sparsam)
-1. Aufrufen von `storage_status()` zur Prüfung des Index-Zustands.
-2. Bei allgemeinen Themenfragen: `storage_meta({"kind":"topics","limit":10})`.
+### Stage 1: Status & topic overview (very cheap)
+1. Call `storage_status()` to check the index state.
+2. For general topic questions: `storage_meta({"kind":"topics","limit":10})`.
 
-### Stufe 2: Zielgerichtete Suche (Gibt nur IDs & 1-Zeilen-Exzerpte zurück)
-1. Ausführen von `storage_search({"query":"provider:upload type:pdf <Suchbegriffe>","limit":5})` oder `memory_search({"query":"<Suchbegriffe>"})`.
-2. Analysiere die zurückgegebenen IDs, Dokumentennamen und Kurz-Exzerpte.
+### Stage 2: Targeted search (returns only IDs & one-line excerpts)
+1. Run `storage_search({"query":"provider:upload type:pdf <search terms>","limit":5})` or `memory_search({"query":"<search terms>"})`.
+2. Analyse the returned IDs, document names and short excerpts.
 
-### Stufe 3: Selektives Chunk-Reading (Liest nur benötigte Wörter)
-1. Lade NIE das gesamte Dokument, wenn eine spezifische Frage beantwortet werden soll.
-2. Nutze Chunk-Offseting:
+### Stage 3: Selective chunk reading (reads only the words needed)
+1. NEVER load the entire document when a specific question is to be answered.
+2. Use chunk offsetting:
    ```json
    storage_get_document({
      "id": "google_drive:1abcDEF",
@@ -39,6 +39,6 @@ Verhindert das Laden vollständiger Dokumente in den Prompt-Kontext. Erzwingt ei
    })
    ```
 
-## Token-Einsparung & Best Practices
-- **Keine Re-Injections:** Dokumente oder Memory-Ergebnisse nicht erneut im Prompt spiegeln.
-- **Provider-Filter nutzen:** Operatoren wie `provider:upload`, `provider:gdrive`, `type:pdf` oder `tag:<term>` beschleunigen Suchen in Qdrant und `AIMDSSuiteMCP`.
+## Token savings & best practices
+- **No re-injections:** Do not mirror documents or memory results back into the prompt.
+- **Use provider filters:** Operators such as `provider:upload`, `provider:gdrive`, `type:pdf` or `tag:<term>` speed up searches in Qdrant and `AIMDSSuiteMCP`.

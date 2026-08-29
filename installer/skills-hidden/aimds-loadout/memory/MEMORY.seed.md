@@ -1,8 +1,8 @@
-# MEMORY.seed — Startwerte für Agent-Notizen (lokal, Schicht A)
+# MEMORY.seed — starting values for agent notes (local, layer A)
 
-> Nur maschinen-/setup-spezifische Fakten. KEIN Firmenwissen (→ KB), keine
-> portablen User-Fakten (→ User-Memory-MCP). Limit: 2.200 Zeichen.
+> Machine-/setup-specific facts only. NO company knowledge (→ KB), no portable
+> user facts (→ user-memory MCP). Limit: 2,200 characters.
 
-- Firmenwissen wird über das AIMDS-AI-KB abgefragt (`kb_search`), nicht aus dem Gedächtnis.
-- Durable User-Fakten gehören in den zentralen User-Memory-MCP, nicht hierher.
-- <maschinenspezifisch: z.B. Outlook-Profil, Standard-Ablageordner>
+- Company knowledge is looked up in the AIMDS-AI-KB (`kb_search`), never recalled from memory.
+- Durable user facts belong in the central user-memory MCP, not here.
+- <machine-specific: e.g. Outlook profile, default filing folder>

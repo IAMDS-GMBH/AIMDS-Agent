@@ -114,7 +114,7 @@ def get_calendar_context(dt: Optional[datetime] = None, state: Optional[str] = N
 
     st_code = (state or _resolve_state_code()).upper()
     assumed = state is None and state_is_assumed()
-    st_label = f"{st_code} (Annahme — kein Bundesland konfiguriert; bei Arbeitszeitfragen klären)" if assumed else st_code
+    st_label = f"{st_code} (assumed — no state configured; clarify before any work-time calculation)" if assumed else st_code
     iso_year, iso_week, iso_day = dt.isocalendar()
 
     day_de = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"][iso_day - 1]
@@ -128,18 +128,21 @@ def get_calendar_context(dt: Optional[datetime] = None, state: Optional[str] = N
     today_holiday = holidays.get(curr_date)
 
     upcoming = [(d, name) for d, name in holidays.items() if d >= curr_date]
-    next_holiday_str = f"{upcoming[0][1]} ({upcoming[0][0].strftime('%Y-%m-%d')})" if upcoming else "Keine weiteren im Jahr"
+    next_holiday_str = f"{upcoming[0][1]} ({upcoming[0][0].strftime('%Y-%m-%d')})" if upcoming else "no further holidays this year"
 
-    hol_status = f"FEIERTAG: {today_holiday}" if today_holiday else f"Kein Feiertag (Nächster in {st_code}: {next_holiday_str})"
+    hol_status = (
+        f"PUBLIC HOLIDAY: {today_holiday}" if today_holiday
+        else f"none (next in {st_code}: {next_holiday_str})"
+    )
 
     prompt_text = (
         f"Current Local Time & Date: {dt.strftime('%A, %B %d, %Y %H:%M:%S')} ({dt.tzname() or 'Local'})\n"
         f"ISO Date: {curr_date.strftime('%Y-%m-%d')}\n"
-        f"ISO Calendar Week (KW): KW {iso_week:02d} (ISO {iso_year}-W{iso_week:02d}: Montag {monday_date.strftime('%Y-%m-%d')} bis Sonntag {sunday_date.strftime('%Y-%m-%d')})\n"
-        f"ISO Day of Week: Tag {iso_day} ({day_de} / {day_en})\n"
-        f"ISO 8601 Standard: Montag ist Tag 1 der Woche, Sonntag ist Tag 7.\n"
-        f"Region / Bundesland: {st_label}\n"
-        f"Feiertags-Status ({st_code}): {hol_status}"
+        f"ISO Calendar Week (KW): KW {iso_week:02d} (ISO {iso_year}-W{iso_week:02d}: Monday {monday_date.strftime('%Y-%m-%d')} to Sunday {sunday_date.strftime('%Y-%m-%d')})\n"
+        f"ISO Day of Week: day {iso_day} ({day_en})\n"
+        f"ISO 8601 Standard: Monday is day 1 of the week, Sunday is day 7.\n"
+        f"Region / State: {st_label}\n"
+        f"Holiday status ({st_code}): {hol_status}"
     )
 
     return {

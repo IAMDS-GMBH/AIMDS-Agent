@@ -1,40 +1,40 @@
 ---
 name: doc-ingest-analyze
-description: Zweistufiger Ad-hoc Dokumentenupload an go-mcp-customer / Qdrant mit automatischer Text-Extraktion, Vektor-Indexierung und Vault-Notiz.
+description: Two-stage ad-hoc document upload to go-mcp-customer / Qdrant with automatic text extraction, vector indexing, and a vault note; use to ingest PDF, DOCX, XLSX, or TXT files for later customer and CRM search.
 ---
 
 # Document Ingest & Qdrant Analysis
 
-## Zweck
-Ermöglicht den schnellen und speichereffizienten Upload von Ad-hoc-Dokumenten (PDF, DOCX, XLSX, TXT) an `go-mcp-customer` / Qdrant, ohne dass rohe Base64-Bytes das LLM-Kontextfenster belasten.
+## Purpose
+Enables fast, memory-efficient upload of ad-hoc documents (PDF, DOCX, XLSX, TXT) to `go-mcp-customer` / Qdrant without raw Base64 bytes burdening the LLM context window.
 
-## Der 4-Schritt-Ablauf
+## The 4-step flow
 
 ```
 [1. Prepare] ──────────> [2. HTTP Upload] ─────────> [3. Ingest & Qdrant] ─────> [4. Vault Note]
- storage_ingest_upload    POST file bytes            storage_ingest_upload        Notiz ablegen in
+ storage_ingest_upload    POST file bytes            storage_ingest_upload        store the note at
  ({})                     Authorization: Bearer      ({"upload_id": "..."})       documents/<Name>.md
 ```
 
-### Schritt 1: Prepare
-Rufe `storage_ingest_upload({})` (ohne Argumente) auf.
-Ergebnis liefert `upload_url`, unterstützte Dateitypen und Größenlimits.
+### Step 1: Prepare
+Call `storage_ingest_upload({})` (no arguments).
+The result returns `upload_url`, the supported file types, and size limits.
 
-### Schritt 2: HTTP POST Upload
-Übermittle die rohen Datei-Bytes direkt per HTTP POST an die erhaltene `upload_url` mit dem LiteLLM Virtual Key des Nutzers im `Authorization: Bearer <key>` Header.
+### Step 2: HTTP POST Upload
+Send the raw file bytes directly via HTTP POST to the returned `upload_url`, passing the user's LiteLLM Virtual Key in the `Authorization: Bearer <key>` header.
 
-### Schritt 3: Ingest & Qdrant Indexierung
-Rufe `storage_ingest_upload({"upload_id": "<upload_id>"})` auf.
-`go-mcp-customer` führt automatisch aus:
-- Text- & Struktur-Extraktion (via Docling / Native)
-- Erzeugung von Vektor-Embeddings in Qdrant
-- TF-IDF Themenberechnung & Erstellung einer Zusammenfassung
+### Step 3: Ingest & Qdrant indexing
+Call `storage_ingest_upload({"upload_id": "<upload_id>"})`.
+`go-mcp-customer` automatically performs:
+- Text and structure extraction (via Docling / native)
+- Generation of vector embeddings in Qdrant
+- TF-IDF topic computation and creation of a summary
 
-### Schritt 4: Dokumentennotiz im Vault speichern
-Erstelle eine Markdown-Notiz unter `~/Documents/AIMDS-Suite-Vault/documents/<Dokumentenname>.md` mit folgendem Schema:
+### Step 4: Store the document note in the vault
+Create a Markdown note at `~/Documents/AIMDS-Suite-Vault/documents/<DocumentName>.md` following this schema:
 ```markdown
 ---
-title: "<Dokumententitel>"
+title: "<Document title>"
 type: document
 doc_id: "<document_id>"
 created: YYYY-MM-DDTHH:MM:SS
@@ -43,12 +43,12 @@ tags:
   - qdrant
 ---
 
-# <Dokumententitel>
+# <Document title>
 
-## Zusammenfassung
-<Extrahierte Zusammenfassung aus storage_meta(kind="summary", doc_id=...)>
+## Summary
+<Extracted summary from storage_meta(kind="summary", doc_id=...)>
 
-## Qdrant Vektor-Referenz
+## Qdrant vector reference
 - Document ID: `<document_id>`
 - Provider: `upload`
 ```

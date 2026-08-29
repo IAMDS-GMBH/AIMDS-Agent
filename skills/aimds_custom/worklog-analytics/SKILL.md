@@ -1,29 +1,29 @@
 ---
 name: worklog-analytics
-description: Deterministische Erfassung, SQLite-Aggregation und strukturierte Auswertung von Arbeitszeiten, Jira Worklogs und Projektzeiten ohne LLM-Rechenfehler.
+description: Deterministic capture, SQLite aggregation and structured evaluation of working time, Jira and Tempo worklogs, target hours (Sollzeit) and project time without LLM arithmetic errors; the report is saved to the Obsidian vault under reports/worklog/.
 ---
 
 # Worklog & Project Time Analytics
 
-## Zweck & Arbeitsweise
-Dieser Skill definiert den verbindlichen Standard für die Aggregation, Analyse und Dokumentation von Arbeitszeiten, Worklogs (z. B. Jira/Confluence/M365) und Projektbudgets. 
+## Purpose & Approach
+This skill defines the binding standard for aggregating, analysing and documenting working time, worklogs (e.g. Jira/Confluence/M365) and project budgets.
 
-**Kernelement:** LLMs dürfen niemals manuelle Kopfrechnung oder Textschätzungen für Summen durchführen. Alle Zahlen werden deterministisch über SQLite berechnet.
+**Core element:** LLMs must never do mental arithmetic or textual estimates for sums. All numbers are computed deterministically via SQLite.
 
 ---
 
 ## Standard Operating Procedure (SOP)
 
-### Schritt 0: Arbeitszeit-Profil (Region, Wochenmodell)
-- Sollzeit hängt von Land/Bundesland/Kanton, Wochenstunden, Arbeitstagen pro Woche und Halbtagen (24./31.12.) ab. Das Profil liegt im Memory als `Arbeitszeit-Profil`; `workdays(action='profile')` zeigt es.
-- Antwortet `workdays` mit `worktime profile unknown`: **erst per `clarify` mit den gelieferten Choices klären** (Bayern / Baden-Württemberg / anderes Bundesland / Österreich / Schweiz; Wochenstunden; 5- oder 6-Tage-Woche), dann `workdays(action='configure', region=…, weekly_hours=…, days_per_week=…, half_days=[…])` — das speichert im Memory. Niemals BW/DE oder 40h/5 Tage annehmen.
+### Step 0: Working-time profile (region, weekly model)
+- Target hours depend on country/federal state/canton, weekly hours, workdays per week and half days (24 and 31 December). The profile lives in memory as `Arbeitszeit-Profil`; `workdays(action='profile')` shows it.
+- If `workdays` answers `worktime profile unknown`: **first clarify via `clarify` using the supplied choices** (Bayern / Baden-Württemberg / other German federal state / Austria / Switzerland; weekly hours; 5- or 6-day week), then `workdays(action='configure', region=…, weekly_hours=…, days_per_week=…, half_days=[…])` — this saves to memory. Never assume BW/DE or 40 h / 5 days.
 
-### Schritt 1: Rohdaten abrufen
-- Rufe die Rohdaten über die entsprechenden MCP-Tools ab (z. B. `atlassian-jira_get_worklog`, Jira-Suche oder Zeiterfassungsdaten).
-- Vermeide das Zusammenstauchen oder Raten von Einträgen.
+### Step 1: Fetch raw data
+- Fetch the raw data via the appropriate MCP tools (e.g. `atlassian-jira_get_worklog`, Jira search or time-tracking data).
+- Avoid collapsing or guessing entries.
 
-### Schritt 2: Deterministische SQLite-Ingestion
-- Ingestiere die extrahierten Datensätze in die lokale SQLite-Datenbank `~/.hermes/state.db` (Tabelle `mcp_records` oder eine temporäre Tabelle `temp_worklogs`).
+### Step 2: Deterministic SQLite ingestion
+- Ingest the extracted records into the local SQLite database `~/.hermes/state.db` (table `mcp_records` or a temporary table `temp_worklogs`).
 ```sql
 CREATE TEMP TABLE IF NOT EXISTS temp_worklogs (
     id TEXT PRIMARY KEY,
@@ -35,18 +35,18 @@ CREATE TEMP TABLE IF NOT EXISTS temp_worklogs (
 );
 ```
 
-### Schritt 3: Mathematische Aggregation via SQL
-- Führe alle Summen, Durchschnitte, Projekt-Breakdowns und Rundungen ausschließlich per SQL-Query aus:
+### Step 3: Mathematical aggregation via SQL
+- Run all sums, averages, project breakdowns and rounding exclusively via SQL queries:
 ```sql
--- Gesamtsumme & Stunden-Umrechnung
+-- Grand total & conversion to hours
 SELECT 
     COUNT(*) as total_entries,
     SUM(time_spent_seconds) as total_seconds,
     ROUND(SUM(time_spent_seconds) / 3600.0, 2) as total_hours,
-    ROUND(SUM(time_spent_seconds) / (3600.0 * (SELECT MAX(weekly_hours * 1.0 / days_per_week) FROM workday_calendar)), 2) as total_person_days  -- Stunden/Tag aus dem Profil, nicht 8 hartkodiert
+    ROUND(SUM(time_spent_seconds) / (3600.0 * (SELECT MAX(weekly_hours * 1.0 / days_per_week) FROM workday_calendar)), 2) as total_person_days  -- hours per day from the profile, not a hardcoded 8
 FROM temp_worklogs;
 
--- Gruppierung nach Bearbeiter & Ticket
+-- Group by author & ticket
 SELECT 
     author,
     issue_key,
@@ -56,13 +56,13 @@ GROUP BY author, issue_key
 ORDER BY hours_spent DESC;
 ```
 
-### Schritt 3b: Sollzeit deterministisch (kein Kalender-Tippen)
-- Arbeitstage, Feiertage und Sollstunden **nie** als Literale in SQL oder Kommentare schreiben (kein „Jan: 21 Mo–Fr", kein Ostern aus dem Kopf). Quelle ist `workdays`:
+### Step 3b: Target hours deterministically (no typed calendars)
+- **Never** write workdays, public holidays or target hours as literals in SQL or comments (no "Jan: 21 Mon–Fri", no Easter from memory). The source is `workdays`:
 ```text
 workdays(action='materialize', start='2026-01-01', end='2026-08-31')
-→ Tabelle workday_calendar (eine Zeile je Tag: factor 1/0.5/0, target_hours, holiday_name)
+→ table workday_calendar (one row per day: factor 1/0.5/0, target_hours, holiday_name)
 ```
-- Ist/Soll per JOIN — Worklogs **erst je Tag aggregieren**, sonst vervielfachen sich die Sollstunden:
+- Actual vs. target via JOIN — **aggregate worklogs per day first**, otherwise the target hours multiply:
 ```sql
 WITH ist AS (
   SELECT substr(timestamp,1,10) AS day, SUM(duration_seconds)/3600.0 AS hours
@@ -83,28 +83,32 @@ LEFT JOIN urlaub u ON u.month = c.month
 WHERE c.day BETWEEN '2026-01-01' AND '2026-08-31'
 GROUP BY c.month ORDER BY c.month;
 ```
-- Urlaubsbuchungen (zentrales Ticket, z. B. `IAMDS-595`): 0,5h gebucht = halber Tag, 1h = ganzer Tag Sollzeit-Abzug; Stunden pro Tag = `weekly_hours / days_per_week` aus der Tabelle, nicht hartkodiert. Feiertage am Wochenende ziehen nichts ab; Wochenend-Worklogs zählen in Ist, nicht in Soll.
+- Vacation bookings (central ticket, e.g. `IAMDS-595`): 0.5 h booked = half a day, 1 h = a full day of target-hours deduction; hours per day = `weekly_hours / days_per_week` from the table, not hardcoded. Public holidays on weekends deduct nothing; weekend worklogs count towards actual, not towards target.
 
-### Schritt 4: Executive Verification Gate (Plausibilitätsprüfung)
-- **Summenkonsistenz:** Prüfe vor der Ausgabe, ob `Summe(Gruppen-Teilsummen) == Gesamtsumme` — auch für Sollzeit: die Monatszeilen (Arbeitstage, Feiertage, Sollstunden) müssen die Gesamtzeile ergeben; ein per Hand „korrigierter" Monat ist ein Fehler, kein Fix.
-- **Vollständigkeit:** Stimmt die Anzahl der aggregierten Zeilen mit der Anzahl der abgefragten Jira-Tickets/Worklogs überein?
-- **Plausibilität:** Keine negativen Stunden, keine unbegründeten Ausreißer (>24h pro Tag pro Person).
+### Step 4: Executive Verification Gate (plausibility check)
+- **Sum consistency:** Before output, check that `sum(group subtotals) == grand total` — also for target hours: the monthly rows (workdays, public holidays, target hours) must add up to the total row; a month "corrected" by hand is an error, not a fix.
+- **Completeness:** Does the number of aggregated rows match the number of queried Jira tickets/worklogs?
+- **Plausibility:** No negative hours, no unexplained outliers (>24 h per day per person).
 
-### Schritt 5: SQLite Cleanup
-- Bereinige temporäre Zwischentabellen unmittelbar nach der Auswertung:
+### Step 5: SQLite cleanup
+- Drop temporary intermediate tables immediately after the evaluation:
 ```sql
 DROP TABLE IF EXISTS temp_worklogs;
 ```
 
-### Schritt 6: Strukturierte Ausgabe & Vault-Synchronisation
-- Präsentiere das Ergebnis in einer sauberen Markdown-Tabelle für den Nutzer.
-- Aktualisiere bei Bedarf den kanonischen Projekthub im Obsidian Vault (`~/Documents/AIMDS-Suite-Vault/projects/<Projekt>/<Projekt>.md`) im Abschnitt `## Zeiterfassung & Budget`.
+### Step 6: Structured output & vault synchronisation
+- Present the result to the user as a clean Markdown table.
+- Save the report from `_templates/report.md` to `reports/worklog/<topic>-<year>.md` (e.g. `reports/worklog/arbeitszeit-2026.md`); overwrite the same file on every rerun and bump `updated:`.
+- Link it from the topic hub in `projects/` via `related_to`.
+- Never write to `journal/`, never create `_v2`/`FINAL` copies.
+- Frontmatter per `_conventions.md`: `type: report`, `title`, `created`, `updated`, `status`, `covers`, `source`, `related_to`, `tags`.
+- No emoji in headings; only months with data, no forecasts.
 
 ---
 
-## Strikte Guardrails
-1. **Keine Python-Notfallskripte:** Schreibe niemals Ad-hoc Python-Skripte nach `/tmp/` für simple Additionen oder Zählungen.
-2. **Keine unaufgeforderten Excel-Dateien:** Generiere keine `.xlsx`-Dateien über Office-Tools, es sei denn, der Nutzer verlangt explizit einen Excel-Export.
-3. **Keine LLM-Kopfrechnung:** Führe niemals Additionen von 5+ Zahlen im Freitext aus. Nutze immer `sql`.
-4. **Keine getippten Kalender:** Wochentage je Monat, Feiertage, Ostern, Sollstunden kommen aus `workdays` (Tabelle `workday_calendar`), nie aus dem Gedächtnis oder aus SQL-Literalen.
-5. **Region nie raten:** Ohne `Arbeitszeit-Profil` erst `clarify`, dann `workdays(action='configure')`.
+## Strict Guardrails
+1. **No emergency Python scripts:** Never write ad-hoc Python scripts to `/tmp/` for simple additions or counts.
+2. **No unrequested Excel files:** Do not generate `.xlsx` files via Office tools unless the user explicitly asks for an Excel export.
+3. **No LLM mental arithmetic:** Never add 5+ numbers in free text. Always use `sql`.
+4. **No typed calendars:** Weekdays per month, public holidays, Easter and target hours come from `workdays` (table `workday_calendar`), never from memory or SQL literals.
+5. **Never guess the region:** Without an `Arbeitszeit-Profil`, run `clarify` first, then `workdays(action='configure')`.

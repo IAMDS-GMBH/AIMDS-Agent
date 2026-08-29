@@ -24,7 +24,7 @@ Hermes-AIMDS-Loadout/
 │   ├── MEMORY-ARCHITEKTUR.md     ← WIE Memory funktioniert (3 Schichten)
 │   ├── USER.seed.md              ← Seed für das User-Profil
 │   └── MEMORY.seed.md            ← Seed für die Agent-Notizen
-├── skills/                       ← Standard-Skill-Set (agentskills.io)
+├── (skills live in the repo's skills/aimds_custom/ — synced by hermes update, not part of this pack)
 │   ├── README.md
 │   ├── deep-research/SKILL.md
 │   ├── meeting-prep/SKILL.md

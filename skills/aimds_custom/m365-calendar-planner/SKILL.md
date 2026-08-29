@@ -1,6 +1,6 @@
 ---
 name: m365-calendar-planner
-description: Anforderung von Kalenderevents, Terminfindung, Konfliktprüfung und Vorbereitung von Meeting-Kontexten aus E-Mails und CRM.
+description: Queries Microsoft 365 Outlook calendar events, finds meeting slots, checks conflicts, and prepares meeting context from emails and customer CRM data.
 metadata:
   hermes:
     requires_toolsets: [MSOffice365MCP]
@@ -8,10 +8,10 @@ metadata:
 
 # M365 Calendar Planner
 
-## Zweck & Vorgehen
-1. **Kalender abfragen:** Rufe Termine mit `m365_get_events` ab.
-2. **Konflikte identifizieren:** Überprüfe Überschneidungen und Vorbereitungsfenster.
-3. **Meeting-Kontext vorbereiten:**
-   - Suche relevante E-Mails via `m365_list_emails(query=...)`.
-   - Suche Kundeninformationen in `go-mcp-customer` via `storage_search(query=...)`.
-4. **Vorbereitungsnotiz ablegen:** Speichere Meeting-Briefings direkt unter `~/Documents/AIMDS-Suite-Vault/meetings/YYYY-MM-DD-Meeting-<Thema>.md`.
+## Purpose & procedure
+1. **Query the calendar:** Fetch appointments with `m365_get_events`.
+2. **Identify conflicts:** Check overlaps and preparation windows.
+3. **Prepare meeting context:**
+   - Search relevant emails via `m365_list_emails(query=...)`.
+   - Search customer information in `go-mcp-customer` via `storage_search(query=...)`.
+4. **Store the preparation note:** Save meeting briefings directly at `~/Documents/AIMDS-Suite-Vault/meetings/YYYY-MM-DD-Meeting-<Topic>.md`.

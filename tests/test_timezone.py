@@ -478,4 +478,5 @@ class TestGermanHolidaysAndCalendar:
         assert ctx["sunday_date"] == "2026-08-02"
         assert "KW 31" in ctx["formatted_prompt"]
         assert "ISO 8601 Standard" in ctx["formatted_prompt"]
+        assert "Thursday" in ctx["formatted_prompt"] and "Donnerstag" not in ctx["formatted_prompt"]
 

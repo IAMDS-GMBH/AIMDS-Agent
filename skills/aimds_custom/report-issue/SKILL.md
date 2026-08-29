@@ -22,12 +22,12 @@ Guides and assists users with reporting bugs, submitting support logs, or propos
    - Give the user their ticket reference ID and explain that status can be tracked under Settings -> Support Tickets.
 
 ## Key Categories
-- `chat_issue`: Chat & Antworten (Problem im Chat / KI antwortet nicht)
-- `mcp_tools`: MCP & Tools (Werkzeug oder Server nicht gefunden / fehlerhaft)
-- `feature_request`: Verbesserungsvorschlag & Idee
-- `ui_bug`: Benutzeroberfläche & Anzeige
-- `llm_timeout`: KI-Verbindung & Timeout
-- `connection_error`: Gateway/Netzwerk-Verbindung
-- `performance`: Performance & Tempo
-- `installation_update`: Installation & Update
-- `other`: Sonstiges
+- `chat_issue`: chat & answers (problem in the chat / the AI does not answer)
+- `mcp_tools`: MCP & tools (tool or server not found / faulty)
+- `feature_request`: improvement suggestion & idea
+- `ui_bug`: user interface & display
+- `llm_timeout`: AI connection & timeout
+- `connection_error`: gateway / network connection
+- `performance`: performance & speed
+- `installation_update`: installation & update
+- `other`: other

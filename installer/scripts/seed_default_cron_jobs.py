@@ -44,7 +44,7 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
         "name": "Morning Brief",
         "schedule": "0 8 * * 1-5",
         "prompt": (
-            "Create the morning brief using digest and available context in the user's language (German or English). "
+            "Create the morning brief using digest and available context in the user's language. "
             "If MSOffice365MCP is active/connected, query Outlook calendar appointments, unread/actionable emails, and Teams updates. "
             "Restrict the schedule/task focus strictly to the current work week (Mon-Fri) or over weekends to the next working day (Monday). "
             "Write the full brief, including the preview for tomorrow/next working day, to the workspace file journal/YYYY-MM-DD-morning-brief.md "
@@ -60,7 +60,7 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
         "name": "Weekly Review",
         "schedule": "0 16 * * 5",
         "prompt": (
-            "Create a concise weekly review in the user's language (German or English) in this exact structure: "
+            "Create a concise weekly review in the user's language in this exact structure: "
             "1) Key outcomes this week, "
             "2) Carry-over items, "
             "3) Next week top 3 priorities, "
@@ -109,7 +109,7 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
             "Perform periodic background maintenance on the Vault (AIMDS-Suite-Vault) and memories:\n"
             "1) Clean up any stray HermesMemory symlinks/junctions in Vault or legacy Documents locations.\n"
             "2) Migrate any loose project or user files from ~/.hermes/memories/ into AIMDS-Suite-Vault/projects/ or /users/.\n"
-            "3) Ensure Vault notes follow a clean 3–4 level deep hierarchy (projects/<bereich>/<projekt>/<thema>.md, users/<user>/<kategorie>/<thema>.md, notes/<bereich>/<jahr_monat>/<thema>.md).\n"
+            "3) Ensure Vault notes follow a clean 3–4 level deep hierarchy (projects/<area>/<project>/<topic>.md, users/<user>/<category>/<topic>.md, knowledge/<area>/<topic>.md).\n"
             "4) Clean up stale backup directories (HermesMemory.backup.*) and broken links.\n"
             "5) Trigger incremental vault re-indexing so hybrid search recall remains fast and up to date.\n"
             "6) Move _inbox/ entries older than 7 days into _inbox/_archive/ (never delete)."

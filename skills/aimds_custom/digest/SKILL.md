@@ -35,6 +35,9 @@ metadata:
    - **Risks/open questions needing decisions** (If decision missing: `OPEN_QUESTION_NEEDED: ...`)
 9. **Stay calm:** if nothing relevant exists → briefly say "nothing urgent" / "Nichts Dringendes" instead of noise.
 
+## Output file
+Write each run to `journal/YYYY-MM-DD-<kind>.md` in the active workspace, where `<kind>` is `morning-brief`, `evening-digest`, or `weekly-review`. One file per day and kind; a rerun overwrites the existing file. Frontmatter uses `type: journal` with `title`, `created`, `updated`, and `tags`.
+
 ## Escalation — counter-check before flagging "stale"
 A date alone is not a finding. Before reporting an item as "open for N days", resolve the linked project and read its `projectStatus`: if `active` **and** `updated:` is younger than 14 days, do **not** escalate (the stale-looking line is likely leftover). `waiting`/`dormant`/`parked` may escalate; `done` must not. Never conclude a project is dead from a single waiting line — the project status wins.
 

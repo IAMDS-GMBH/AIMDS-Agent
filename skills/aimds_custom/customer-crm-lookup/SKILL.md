@@ -1,12 +1,12 @@
 ---
 name: customer-crm-lookup
-description: Schneller und gezielter Abruf von Kundendaten, Verträgen und Ansprechpartnern aus go-mcp-customer / Qdrant.
+description: Fast, targeted retrieval of customer CRM data, contracts, and contact persons from go-mcp-customer / Qdrant, cross-referenced with Microsoft 365 calendar and email context.
 ---
 
 # Customer CRM Lookup
 
-## Zweck & Vorgehen
-1. **Kundensuche:** Führe BM25/Vektorsuche mit `storage_search({"query":"<Kundenname> <Thema>"})` aus.
-2. **Dokumente & Historie lesen:** Rufe Zusammenfassungen mit `storage_meta({"kind":"summary","doc_id":"..."})` oder Abschnitte via `storage_get_document` ab.
-3. **Kontext abgleichen:** Verknüpfe Kundenergebnisse mit M365 Kalender- oder E-Mail-Kontexten.
-4. **Verzeichnis-Synchronisation:** Speichere Kundenexzerpte bei Bedarf unter `~/Documents/AIMDS-Suite-Vault/contacts/<Kundenname>.md`.
+## Purpose & procedure
+1. **Customer search:** Run a BM25/vector search with `storage_search({"query":"<CustomerName> <Topic>"})`.
+2. **Read documents & history:** Fetch summaries with `storage_meta({"kind":"summary","doc_id":"..."})` or sections via `storage_get_document`.
+3. **Cross-reference context:** Link customer results with M365 calendar or email context.
+4. **Directory sync:** When needed, store customer excerpts at `~/Documents/AIMDS-Suite-Vault/contacts/<CustomerName>.md`.
