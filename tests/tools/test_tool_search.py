@@ -118,21 +118,43 @@ class TestClassification:
         assert not is_deferrable_tool_name("skill_manage")
         assert not is_deferrable_tool_name("skills_list")
 
-    def test_memory_mcp_primitives_never_defer(self):
-        from tools.tool_search import is_deferrable_tool_name
+    def test_primary_server_bootstrap_tools_never_defer(self, monkeypatch):
+        """Only the primary memory server's bootstrap tools stay visible."""
+        from tools import tool_search as ts
+        from tools.registry import registry
+
+        monkeypatch.setattr(ts, "_primary_mcp_server_name", lambda: "AIMDSSuiteMCP")
         for name in [
             "memory_context",
-            "custommemory_context",
-            "mcp_IAMDS_mcp_memory_memory_context",
-            "memory_skill",
-            "mcp_IAMDS_mcp_memory_memory_skill",
             "memory_save",
-            "custommemory_save",
-            "mcp_IAMDS_mcp_memory_memory_save",
+            "mcp_AIMDSSuiteMCP_mcp_memory_memory_context",
+            "mcp_AIMDSSuiteMCP_mcp_memory_skill",
+            "mcp_AIMDSSuiteMCP_mcp_memory_memory_save",
+            "mcp_AIMDSSuiteMCP_mcp_memory_memory_search",
+            "mcp_AIMDSSuiteMCP_mcp_memory_memory_read",
+            "mcp_AIMDSSuiteMCP_mcp_memory_memory_summarize_session",
         ]:
-            assert not is_deferrable_tool_name(name), (
-                f"Critical memory-MCP tool '{name}' must remain model-visible"
+            assert ts.is_bootstrap_memory_tool(name), name
+            assert not ts.is_deferrable_tool_name(name), (
+                f"Bootstrap memory tool '{name}' must remain model-visible"
             )
+
+        # everything else the server offers — and every other server — defers
+        for name, toolset in [
+            ("mcp_AIMDSSuiteMCP_mcp_memory_memory_list", "mcp-AIMDSSuiteMCP"),
+            ("mcp_AIMDSSuiteMCP_mcp_memory_memory_manage", "mcp-AIMDSSuiteMCP"),
+            ("mcp_AIMDSSuiteMCP_kb_search", "mcp-AIMDSSuiteMCP"),
+            ("mcp_CustomMemory_memory_context", "mcp-CustomMemory"),
+            ("mcp_CustomMemory_memory_save", "mcp-CustomMemory"),
+        ]:
+            registry.register(name=name, toolset=toolset, schema=_td(name)["function"],
+                              handler=lambda a, **k: "{}")
+            assert not ts.is_bootstrap_memory_tool(name), name
+            assert ts.is_deferrable_tool_name(name), f"'{name}' must be deferrable"
+
+    def test_no_user_specific_server_aliases_in_product_code(self):
+        from tools.tool_search import SOURCE_ALIASES
+        assert not any("entwickler" in k or v == "EnwicklerMemoryMCP" for k, v in SOURCE_ALIASES.items())
 
     def test_unknown_tool_not_deferrable(self):
         """Defensive: a tool name we cannot resolve to a registry entry must
@@ -1168,59 +1190,6 @@ class TestNamedSourceIsAlwaysRepresented:
         assert len(names) <= 3
 
 
-class TestVaultIndexIsActuallyReachable:
-    """The vault lookup in `search_catalog` was dead code.
-
-    It did `from agent.memory_vault_index import VaultIndex` — a symbol that
-    has never existed; the class is `VaultMetaIndex`. Inside a bare
-    `except Exception: pass`, the ImportError fired on every single search, so
-    `vault_vector_hits` stayed empty and the +50 boost never applied. The index
-    it meant to consult already holds every MCP tool via `sync_mcp_tools`.
-    """
-
-    def test_the_index_class_can_be_imported(self):
-        from agent.memory_vault_index import VaultMetaIndex
-
-        assert VaultMetaIndex is not None
-
-    def test_the_symbol_it_used_to_import_still_does_not_exist(self):
-        import agent.memory_vault_index as mvi
-
-        assert not hasattr(mvi, "VaultIndex"), (
-            "if a VaultIndex alias is ever added, this guard and the comment "
-            "in tool_search should be revisited"
-        )
-
-    def test_the_accessor_returns_the_real_class_or_none(self):
-        from tools.tool_search import _get_vault_index
-
-        index = _get_vault_index()
-
-        assert index is None or type(index).__name__ == "VaultMetaIndex"
-
-    def test_the_accessor_is_cached(self):
-        """Constructing one opens SQLite; search_catalog runs per tool call."""
-        from tools.tool_search import _get_vault_index
-
-        assert _get_vault_index() is _get_vault_index()
-
-    def test_a_broken_index_does_not_break_search(self, monkeypatch):
-        import tools.tool_search as ts
-
-        monkeypatch.setattr(ts, "_VAULT_INDEX_TRIED", False)
-        monkeypatch.setattr(ts, "_VAULT_INDEX", None)
-        monkeypatch.setattr(
-            "agent.memory_vault_index.VaultMetaIndex",
-            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("no db")),
-        )
-
-        catalog = ts.build_catalog(
-            [{"type": "function", "function": {"name": "mcp_X_do", "description": "do", "parameters": {}}}]
-        )
-
-        assert ts.search_catalog(catalog, "do") is not None
-
-
 class TestCatalogIsCached:
     """`build_catalog` ran from scratch on every tool_search call.
 
@@ -1275,3 +1244,109 @@ class TestCatalogIsCached:
         catalog = ts._cached_catalog(self._defs())
 
         assert ts.search_catalog(catalog, "tool") is not None
+
+
+class TestSkillsInCatalog:
+    """Local skills join the catalog as kind="skill" and are found by the same search."""
+
+    _SKILLS = [
+        {"name": "worklog-analytics", "description": "Monthly worklog analysis with SQL over Tempo records",
+         "category": "aimds_custom", "tags": ["tempo", "sql"], "kind": "skill",
+         "how_to_use": "skill_view(name='worklog-analytics')"},
+        {"name": "release-changelog", "description": "Generate release notes from tags and PRs",
+         "category": "aimds_custom", "kind": "skill", "how_to_use": "skill_view(name='release-changelog')"},
+        {"name": "obsidian-vault-manager", "description": "Keep the Obsidian vault tidy",
+         "category": "note-taking", "kind": "skill", "how_to_use": "skill_view(name='obsidian-vault-manager')"},
+    ]
+
+    def _catalog(self):
+        from tools.tool_search import build_catalog
+        defs = [
+            _td("mcp_TempoMCP_retrieveWorklogs", "Retrieve Tempo worklogs for a date range"),
+            _td("mcp_AtlassianMCP_jira_get_worklog", "Get worklogs of one Jira issue"),
+            _td("mcp_GithubMCP_list_releases", "List GitHub releases"),
+        ]
+        return build_catalog(defs, skills=self._SKILLS)
+
+    def test_skill_entries_carry_kind_and_how_to_use(self):
+        catalog = self._catalog()
+        skills = [e for e in catalog if e.kind == "skill"]
+        assert {e.name for e in skills} == {s["name"] for s in self._SKILLS}
+        assert all(e.how_to_use.startswith("skill_view(") for e in skills)
+        assert all(e.source == "skill" for e in skills)
+
+    def test_search_finds_a_skill_and_a_tool_for_the_same_question(self):
+        from tools.tool_search import search_catalog, _format_search_hit
+        hits = search_catalog(self._catalog(), "worklog analyse monat", limit=5)
+        names = [h.name for h in hits]
+        assert "worklog-analytics" in names
+        assert "mcp_TempoMCP_retrieveWorklogs" in names
+        skill_hit = _format_search_hit(next(h for h in hits if h.name == "worklog-analytics"))
+        assert skill_hit["kind"] == "skill"
+        assert skill_hit["how_to_use"] == "skill_view(name='worklog-analytics')"
+        assert skill_hit["category"] == "aimds_custom"
+
+    def test_kind_filter_and_cap(self):
+        from tools.tool_search import cap_skill_hits, search_catalog
+        hits = search_catalog(self._catalog(), "release notes worklog vault", limit=10)
+        only_tools = cap_skill_hits(hits, "release notes worklog vault", "tool")
+        assert only_tools and all(e.kind == "tool" for e in only_tools)
+        only_skills = cap_skill_hits(hits, "release notes worklog vault", "skill")
+        assert only_skills and all(e.kind == "skill" for e in only_skills)
+        capped = cap_skill_hits(hits, "release notes worklog vault", None)
+        assert sum(1 for e in capped if e.kind == "skill") <= 2
+        assert sum(1 for e in cap_skill_hits(hits, "which skill?", None) if e.kind == "skill") == \
+            sum(1 for e in hits if e.kind == "skill")
+
+    def test_a_skill_never_claims_the_named_source_slot(self):
+        """The reserved slot for a server the query names goes to that server's
+        tool; a skill that merely mentions the server does not count."""
+        from tools.tool_search import search_catalog
+        hits = search_catalog(self._catalog(), "tempo worklog", limit=2)
+        assert any(h.name == "mcp_TempoMCP_retrieveWorklogs" for h in hits)
+        assert any(h.kind == "tool" for h in hits)
+
+    def test_sibling_fill_ignores_skills(self, monkeypatch):
+        import tools.tool_search as ts
+        # no keyword expansion from the installed skills — isolate the fill logic
+        monkeypatch.setattr(ts, "_get_dynamic_skill_keywords_map", lambda: {})
+        defs = [_td(f"mcp_GithubMCP_op_{i}", f"github operation {i}") for i in range(3)]
+        catalog = ts.build_catalog(defs, skills=self._SKILLS)
+        hits = ts.search_catalog(catalog, "github operation", limit=6)
+        assert {h.name for h in hits if h.kind == "tool"} == {f"mcp_GithubMCP_op_{i}" for i in range(3)}
+        assert all(h.kind == "tool" for h in hits)
+
+    def test_disabled_skills_are_excluded_from_catalog_input(self, monkeypatch):
+        import tools.tool_search as ts
+        seen = {}
+
+        def fake_find_all_skills(skip_disabled=False, include_source=False):
+            seen["skip_disabled"] = skip_disabled
+            return [{"name": "x", "description": "y", "category": "c", "updated_at": 1}]
+
+        monkeypatch.setattr("tools.skills_tool._find_all_skills", fake_find_all_skills)
+        entries = ts.local_skill_catalog_entries()
+        assert seen["skip_disabled"] is False  # True would *include* disabled skills
+        assert entries[0]["kind"] == "skill" and entries[0]["how_to_use"] == "skill_view(name='x')"
+
+    def test_dispatch_lists_skills_only_when_the_session_can_read_them(self, monkeypatch):
+        import tools.tool_search as ts
+        monkeypatch.setattr(ts, "local_skill_catalog_entries", lambda: self._SKILLS)
+        from tools.registry import registry
+        registry.register(name="mcp_SkillsSrv_worklog_tool", toolset="mcp-SkillsSrv",
+                          schema=_td("mcp_SkillsSrv_worklog_tool", "worklog tool")["function"],
+                          handler=lambda a, **k: "{}")
+        defs_without = [_td("mcp_SkillsSrv_worklog_tool", "worklog tool")]
+        defs_with = defs_without + [_td("skill_view", "read a skill")]
+        without = json.loads(ts.dispatch_tool_search({"query": "worklog"}, current_tool_defs=defs_without))
+        with_ = json.loads(ts.dispatch_tool_search({"query": "worklog"}, current_tool_defs=defs_with))
+        assert all(m["kind"] == "tool" for m in without["matches"])
+        assert any(m["kind"] == "skill" and m["name"] == "worklog-analytics" for m in with_["matches"])
+        assert "worklog-analytics" not in with_["autoload"]
+
+    def test_describe_answers_for_a_skill_name(self, monkeypatch):
+        import tools.tool_search as ts
+        monkeypatch.setattr(ts, "local_skill_catalog_entries", lambda: self._SKILLS)
+        out = json.loads(ts.dispatch_tool_describe(
+            {"name": "release-changelog"}, current_tool_defs=[_td("skill_view")]))
+        assert out["kind"] == "skill" and out["how_to_use"] == "skill_view(name='release-changelog')"

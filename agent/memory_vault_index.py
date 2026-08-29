@@ -387,7 +387,9 @@ class VaultMetaIndex:
             # incremental check below compared against time.time(), never
             # matched, and re-embedded plus re-committed every skill on every
             # turn — and `path` was always stored empty.
-            skills = _find_all_skills(skip_disabled=True, include_source=True)
+            # skip_disabled=True would *include* disabled skills (it skips the
+            # check); the index must not surface skills the user switched off.
+            skills = _find_all_skills(skip_disabled=False, include_source=True)
         except Exception:
             return 0
 

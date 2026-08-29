@@ -23,6 +23,20 @@ for the full rationale):
 * Display and trajectory unwrap is implemented here so the user (CLI activity
   feed, gateway, saved trajectories) always sees the underlying tool, not
   the bridge.
+* The catalog is stateless, the *session* is not: ``agent/deferred_tools.py``
+  keeps the set of deferred tools a session has loaded into its tools array
+  (after a search, a describe, a tool_call, or a direct call by name) and
+  re-validates that set against ``registry._generation`` before every API
+  call. Statelessness here and per-agent state there are two different
+  things; the cron regression above was about the former.
+* The catalog holds tools *and skills*. Skills are ``kind="skill"`` entries
+  with ``how_to_use`` (``skill_view(name=…)``); the bridge returns them
+  alongside tools so the model has one search for "what can help here?".
+* Always-visible memory tools are derived from the configured primary
+  memory server (``get_primary_mcp_server_name``) and a short list of
+  bootstrap suffixes — never from a hardcoded server or tool list. Any
+  other server, including a custom memory MCP, is an ordinary deferrable
+  source.
 """
 
 from __future__ import annotations
@@ -166,39 +180,81 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
+# Memory-server tools the session needs before it can search anything: the
+# session-start context load, saving/reading/searching the vault, the
+# server-side skill reader, and the session close-out. Everything else the
+# server offers (list/manage/backlinks/meta/agent/transfer/kb_*/web_*) is
+# discoverable through tool_search like any other tool.
+BOOTSTRAP_MEMORY_SUFFIXES = frozenset({
+    "memory_context",
+    "memory_save",
+    "memory_search",
+    "memory_read",
+    "skill",
+    "memory_summarize_session",
+})
+
+_PRIMARY_SERVER_CACHE: "tuple | None" = None
+
+
+def _primary_mcp_server_name() -> str:
+    """Configured primary memory server, cached per registry generation.
+
+    ``is_deferrable_tool_name`` runs once per tool per assembly; reading the
+    config for every call would be ~100 config loads per assembly.
+    """
+    global _PRIMARY_SERVER_CACHE
+    try:
+        from tools.registry import registry as _registry
+
+        generation = int(getattr(_registry, "_generation", 0) or 0)
+    except Exception:
+        generation = -1
+    if _PRIMARY_SERVER_CACHE is not None and _PRIMARY_SERVER_CACHE[0] == generation:
+        return _PRIMARY_SERVER_CACHE[1]
+    try:
+        from hermes_cli.config import get_primary_mcp_server_name
+
+        primary = str(get_primary_mcp_server_name() or "").strip()
+    except Exception:
+        primary = ""
+    _PRIMARY_SERVER_CACHE = (generation, primary)
+    return primary
+
+
+def is_bootstrap_memory_tool(name: str, primary_server: Optional[str] = None) -> bool:
+    """True for a bootstrap memory tool of the *primary* server.
+
+    Bare names (``memory_context`` …) are the memory-provider path and always
+    count. Prefixed MCP names count only under ``mcp_{primary}_``; a second
+    or custom memory server is deferrable like any other server.
+    """
+    if not name:
+        return False
+    if name in BOOTSTRAP_MEMORY_SUFFIXES:
+        return True
+    primary = (primary_server if primary_server is not None else _primary_mcp_server_name()).strip()
+    if not primary or not name.startswith(f"mcp_{primary}_"):
+        return False
+    return any(name.endswith(f"_{suffix}") for suffix in BOOTSTRAP_MEMORY_SUFFIXES)
+
+
 def is_deferrable_tool_name(name: str) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
     A tool is deferrable iff it is registered with an MCP toolset prefix
     OR it is not in ``_HERMES_CORE_TOOLS``. Core tools are never deferred
     even when their toolset is technically plugin-provided (this protects
-    against accidental shadowing).
+    against accidental shadowing). The primary memory server's bootstrap
+    tools (``BOOTSTRAP_MEMORY_SUFFIXES``) stay visible too — the session
+    start relies on ``memory_context`` being callable before the first
+    search.
     """
     if name in BRIDGE_TOOL_NAMES:
         return False
     if name in _core_tool_names():
         return False
-    # Keep critical memory-MCP primitives model-visible even when tool_search
-    # is active: session bootstrap relies on memory_context being directly
-    # callable as the first tool round, and onboarding may need memory_skill
-    # immediately after.
-    if (
-        name.endswith("memory_context")
-        or name.endswith("memory_skill")
-        or name.endswith("memory_save")
-        or name.endswith("memory_search")
-        or name.endswith("memory_read")
-        or name.endswith("memory_list")
-        or name.endswith("memory_manage")
-        or name.endswith("memory_backlinks")
-        or name.endswith("memory_meta")
-        or name.endswith("memory_agent")
-        or name.endswith("memory_summarize_session")
-        or name.endswith("memory_upsert")
-        or name.endswith("memory_get")
-        or name.endswith("memory_delete")
-        or name.endswith("memory_transfer")
-    ):
+    if is_bootstrap_memory_tool(name):
         return False
     # Check registry toolset for MCP prefix.
     try:
@@ -300,8 +356,12 @@ class CatalogEntry:
     name: str
     description: str
     schema: Dict[str, Any]  # The full {"type":"function", "function": {...}} entry.
-    source: str  # "mcp" | "plugin" | "other"
-    source_name: str  # Toolset name, e.g. "mcp-github" or "kanban"
+    source: str  # "mcp" | "plugin" | "other" | "skill"
+    source_name: str  # Toolset name, e.g. "mcp-github" or "kanban"; "skill:<category>" for skills
+    # "tool" (callable after load) | "skill" (local, read with skill_view)
+    # | "mcp_skill" (served by the memory MCP, read with its skill tool)
+    kind: str = "tool"
+    how_to_use: str = ""
 
     # Pre-tokenized fields for BM25.
     _tokens: List[str] = field(default_factory=list)
@@ -400,7 +460,10 @@ def _get_dynamic_skill_keywords_map() -> Dict[str, List[str]]:
     """
     try:
         from tools.skills_tool import _find_all_skills
-        skills = _find_all_skills(skip_disabled=True)
+        # skip_disabled=True means "include disabled skills" (it skips the
+        # disabled *check*). Query expansion must not learn from skills the
+        # user switched off.
+        skills = _find_all_skills(skip_disabled=False)
     except Exception:
         return {}
 
@@ -448,11 +511,69 @@ def _get_mcp_server_metadata() -> Dict[str, Dict[str, Any]]:
         return {}
 
 
-def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
-    """Build the deferred-tool catalog from a tool-defs list.
+SKILL_HIT_CAP = 2  # skill hits per search unless the query asks for skills
+
+
+def local_skill_catalog_entries() -> List[Dict[str, Any]]:
+    """Installed skills as catalog input (``kind="skill"``), disabled ones excluded."""
+    try:
+        from tools.skills_tool import _find_all_skills
+
+        skills = _find_all_skills(skip_disabled=False, include_source=True)
+    except Exception:
+        return []
+    out: List[Dict[str, Any]] = []
+    for sk in skills:
+        if not isinstance(sk, dict) or not sk.get("name"):
+            continue
+        name = str(sk["name"])
+        out.append({
+            "name": name,
+            "description": str(sk.get("description") or ""),
+            "category": str(sk.get("category") or ""),
+            "tags": sk.get("tags") or [],
+            "updated_at": sk.get("updated_at", 0),
+            "kind": "skill",
+            "how_to_use": f"skill_view(name='{name}')",
+        })
+    return out
+
+
+def _skill_catalog_entry(sk: Dict[str, Any]) -> Tuple[CatalogEntry, str]:
+    name = str(sk.get("name") or "")
+    desc = str(sk.get("description") or "")
+    category = str(sk.get("category") or "")
+    tags = sk.get("tags") or []
+    tag_blob = " ".join(str(t) for t in tags) if isinstance(tags, list) else str(tags)
+    name_words = _split_words(name)
+    cat_words = _split_words(category)
+    kind = str(sk.get("kind") or "skill")
+    entry = CatalogEntry(
+        name=name,
+        description=desc,
+        schema={},
+        source="skill",
+        source_name=f"skill:{category}" if category else "skill",
+        kind=kind,
+        how_to_use=str(sk.get("how_to_use") or f"skill_view(name='{name}')"),
+        _tokens=_tokenize(f"{name_words} {name_words} {cat_words} {desc} {tag_blob}"),
+        _name_tokens=set(_tokenize(name_words)),
+        _source_tokens={"skill", "skills"} | set(_tokenize(cat_words)),
+    )
+    return entry, f"{name_words} {name_words} {cat_words} {desc}"
+
+
+def build_catalog(
+    tool_defs: List[Dict[str, Any]],
+    skills: Optional[List[Dict[str, Any]]] = None,
+) -> List[CatalogEntry]:
+    """Build the catalog from a tool-defs list plus optional skill dicts.
 
     Caller is expected to pass only the deferrable subset (``classify_tools``
-    returns it as the second element).
+    returns it as the second element). ``skills`` are dicts with ``name``,
+    ``description``, ``category`` and optionally ``tags``/``kind``/
+    ``how_to_use`` (see ``local_skill_catalog_entries``). Tools and skills
+    share one IDF corpus so a query is weighted the same against both.
     """
     catalog: List[CatalogEntry] = []
     mcp_meta = _get_mcp_server_metadata()
@@ -502,6 +623,13 @@ def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
         # would otherwise rank below its undocumented siblings. Doubling the
         # most reliable signal offsets that.
         entry_texts.append(f"{name_words} {name_words} {source_words} {desc}")
+
+    for sk in skills or []:
+        if not isinstance(sk, dict) or not sk.get("name"):
+            continue
+        entry, text = _skill_catalog_entry(sk)
+        catalog.append(entry)
+        entry_texts.append(text)
 
     idf = _shared_compute_idf(entry_texts)
     for entry, text in zip(catalog, entry_texts):
@@ -632,9 +760,6 @@ SOURCE_ALIASES: Dict[str, str] = {
     "github": "GithubMCP",
     "githubmcp": "GithubMCP",
     "git": "GithubMCP",
-    "memorymcp": "EnwicklerMemoryMCP",
-    "entwicklermemory": "EnwicklerMemoryMCP",
-    "entwicklermemorymcp": "EnwicklerMemoryMCP",
     "aimds": "AIMDSSuiteMCP",
     "aimdssuite": "AIMDSSuiteMCP",
     "aimdssuitemcp": "AIMDSSuiteMCP",
@@ -674,31 +799,6 @@ def _match_full_source(catalog: List[CatalogEntry], query_lower: str) -> List[Ca
         if _normalize_source_key(source_name) == norm_query:
             return sorted(entries, key=lambda e: e.name)
     return []
-
-
-_VAULT_INDEX = None
-_VAULT_INDEX_TRIED = False
-
-
-def _get_vault_index():
-    """Shared `VaultMetaIndex`, or None when it cannot be constructed.
-
-    Cached because constructing one opens a SQLite connection and runs
-    `_init_db`, and this runs on every `tool_search` call. A failure is
-    remembered so a broken index does not cost an import attempt per search.
-    """
-    global _VAULT_INDEX, _VAULT_INDEX_TRIED
-    if _VAULT_INDEX_TRIED:
-        return _VAULT_INDEX
-    _VAULT_INDEX_TRIED = True
-    try:
-        from agent.memory_vault_index import VaultMetaIndex
-
-        _VAULT_INDEX = VaultMetaIndex()
-    except Exception:
-        _VAULT_INDEX = None
-
-    return _VAULT_INDEX
 
 
 def _build_vector(text: str, idf: "Dict[str, float] | None" = None) -> Dict[str, float]:
@@ -747,27 +847,6 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
     catalog_idf = next((e._idf for e in catalog if e._idf), None)
     query_vec = _build_vector(query_raw, catalog_idf)
 
-    # Optional VaultIndex vector search lookup (if local index is present)
-    vault_vector_hits: Set[str] = set()
-    try:
-        # Was `VaultIndex` — a symbol that has never existed in this repo; the
-        # class is `VaultMetaIndex`. Sitting inside a bare `except Exception`,
-        # the ImportError fired on every single search, so `vault_vector_hits`
-        # was always empty and the +50 boost below was dead code. The index it
-        # meant to consult already holds every MCP tool via `sync_mcp_tools`.
-        v_index = _get_vault_index()
-        if v_index is None:
-            raise RuntimeError("vault index unavailable")
-        v_results = v_index.hybrid_search(query_raw, top_k=limit * 2, scope_filter="mcp")
-        for vr in v_results:
-            if isinstance(vr, dict):
-                v_title = str(vr.get("title") or "").lower()
-                v_slug = str(vr.get("slug") or "").lower()
-                vault_vector_hits.add(v_title)
-                vault_vector_hits.add(v_slug)
-    except Exception:
-        pass
-
     # Expand query tokens with synonyms for BM25 fallback
     expanded_tokens = set(query_tokens)
     dynamic_mcp = _get_dynamic_mcp_keywords_map()
@@ -805,15 +884,6 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
             entry_vec = _build_vector(entry_text, catalog_idf)
         vec_sim = _cosine_sim(query_vec, entry_vec)
 
-        vault_hit = False
-        if vault_vector_hits:
-            e_name_low = entry.name.lower()
-            e_src_low = entry.source_name.lower()
-            for vh in vault_vector_hits:
-                if vh in e_name_low or vh in e_src_low or e_name_low in vh:
-                    vault_hit = True
-                    break
-
         doc_tf: Dict[str, int] = {}
         for t in entry._tokens:
             doc_tf[t] = doc_tf.get(t, 0) + 1
@@ -835,8 +905,23 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
                 tf = doc_tf[q]
                 norm = tf * (k1 + 1) / (tf + k1 * (1 - b + b * len(entry._tokens) / max(avg_dl, 1.0)))
                 bm25_score += idf * norm
+            elif len(q) >= 5 and q not in _GENERIC_SEARCH_TERMS:
+                # Inflection tolerance for the false-positive filter below:
+                # "worklog" must count as matching a tool that only says
+                # "worklogs" (and vice versa). The trigram vector already
+                # scores such pairs; without this the filter dropped them
+                # anyway because no *exact* token overlapped.
+                if any(
+                    (t.startswith(q) or q.startswith(t)) and abs(len(t) - len(q)) <= 3
+                    for t in doc_tf
+                    if len(t) >= 5
+                ):
+                    matched_query_tokens.add(q)
+                    matched_specific_tokens.add(q)
+                    if any((t.startswith(q) or q.startswith(t)) for t in entry._name_tokens if len(t) >= 5):
+                        matched_name_tokens.add(q)
 
-        if vec_sim <= 0 and not vault_hit and bm25_score <= 0 and not matched_query_tokens:
+        if vec_sim <= 0 and bm25_score <= 0 and not matched_query_tokens:
             continue
 
         boost = 0.0
@@ -860,7 +945,7 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
                 boost -= 15.0
 
         # Vector similarity receives primary weighting
-        vector_score = (vec_sim * 100.0) + (50.0 if vault_hit else 0.0)
+        vector_score = vec_sim * 100.0
         total_score = vector_score + bm25_score + boost
 
         # Filtering: if user searched specific terms (e.g. 'jira'), but entry matched ONLY generic terms (e.g. 'search')
@@ -890,7 +975,7 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
     named_sources = {
         entry.source_name
         for entry in catalog
-        if entry.source_name and any(t in entry._source_tokens for t in query_tokens)
+        if entry.kind == "tool" and entry.source_name and any(t in entry._source_tokens for t in query_tokens)
     }
     if named_sources and scored:
         represented = {e.source_name for e in results}
@@ -910,11 +995,36 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
         for entry in catalog:
             if len(results) >= limit:
                 break
+            if entry.source != "mcp":
+                continue
             if entry.name not in seen_names and entry.source_name in top_sources:
                 results.append(entry)
                 seen_names.add(entry.name)
 
     return results
+
+
+def cap_skill_hits(results: List[CatalogEntry], query: str, kind: Optional[str] = None) -> List[CatalogEntry]:
+    """At most ``SKILL_HIT_CAP`` skills per search unless skills were asked for.
+
+    ``kind="skill"`` keeps only skills, ``kind="tool"`` only tools; a query
+    that says "skill" lifts the cap.
+    """
+    if kind == "skill":
+        return [e for e in results if e.kind != "tool"]
+    if kind == "tool":
+        return [e for e in results if e.kind == "tool"]
+    if "skill" in query.lower():
+        return results
+    kept: List[CatalogEntry] = []
+    skills_seen = 0
+    for entry in results:
+        if entry.kind != "tool":
+            if skills_seen >= SKILL_HIT_CAP:
+                continue
+            skills_seen += 1
+        kept.append(entry)
+    return kept
 
 
 # ---------------------------------------------------------------------------
@@ -930,23 +1040,22 @@ def bridge_tool_schemas(deferred_count: int) -> List[Dict[str, Any]]:
     about the call sequence the model should follow.
     """
     desc_search = (
-        f"Search {deferred_count} additional tools that are loaded on demand. "
-        "Use this whenever the task likely needs external data or side effects "
-        "(API calls, remote reads, ticket/file updates, sends, writes) and a "
-        "directly listed tool is not an exact fit. Returns up to ``limit`` "
-        "matches with name and description. Follow "
-        f"with `{TOOL_DESCRIBE_NAME}` to load a tool's full parameter schema, "
-        f"then `{TOOL_CALL_NAME}` to invoke it. Tools listed at the top of this "
-        "system prompt are already available and do not need to be searched."
+        f"Search {deferred_count} additional tools (loaded on demand) and the "
+        "installed skills. Use it whenever the task needs external data or side "
+        "effects (API calls, remote reads, ticket/file updates, sends, writes) "
+        "and no tool in your list is an exact fit. Each match carries `kind`: "
+        "tools marked `status: loaded` are added to your tools list — call them "
+        f"directly by `name` next; for others call `{TOOL_DESCRIBE_NAME}` first. "
+        "Skills are not callable: read them with the command in `how_to_use`."
     )
     desc_describe = (
-        f"Load the full JSON schema for one tool returned by `{TOOL_SEARCH_NAME}`. "
-        f"Required before `{TOOL_CALL_NAME}` if the tool's parameters are unknown."
+        f"Load one deferred tool's full schema into your tools list so you can "
+        f"call it directly by name (the result tells you when it is loaded)."
     )
     desc_call = (
-        "Invoke a deferred tool by name with the given arguments. Argument shape "
-        f"matches the tool's schema (see `{TOOL_DESCRIBE_NAME}`). Policy, hooks, "
-        "and approvals run exactly as for any directly-listed tool."
+        "Fallback: invoke a deferred tool by name without loading it first. "
+        f"Argument shape matches the tool's schema (see `{TOOL_DESCRIBE_NAME}`). "
+        "Policy, hooks, and approvals run exactly as for any directly-listed tool."
     )
 
     return [
@@ -965,6 +1074,11 @@ def bridge_tool_schemas(deferred_count: int) -> List[Dict[str, Any]]:
                         "limit": {
                             "type": "integer",
                             "description": "Maximum number of results to return. Default 8.",
+                        },
+                        "kind": {
+                            "type": "string",
+                            "enum": ["tool", "skill"],
+                            "description": "Restrict results to tools or to skills. Omit for both.",
                         },
                     },
                     "required": ["query"],
@@ -1069,11 +1183,17 @@ def assemble_tool_defs(
 
     bridge = bridge_tool_schemas(len(deferrable))
     result = visible + bridge
-    threshold_tokens = int((context_length or 0) * (config.threshold_pct / 100.0))
+    # Mirror should_activate: the auto threshold is capped at 8k tokens. The
+    # uncapped figure (e.g. 25,600 for a 256k model) used to be logged here,
+    # which made the activation look mis-tuned.
+    threshold_tokens = min(int((context_length or 0) * (config.threshold_pct / 100.0)), 8_000)
+    if config.enabled == "on":
+        threshold_tokens = 0
 
     logger.info(
-        "[AIS-161] tool_search activated: %d core/visible tools kept, %d deferred (~%d tokens, threshold ~%d)",
-        len(visible), len(deferrable), deferrable_tokens, threshold_tokens,
+        "[AIS-161] tool_search activated: %d core/visible tools kept, %d deferred (~%d tokens, %s)",
+        len(visible), len(deferrable), deferrable_tokens,
+        "enabled=on" if config.enabled == "on" else f"auto threshold ~{threshold_tokens} (cap 8000)",
     )
 
     return AssemblyResult(
@@ -1106,7 +1226,10 @@ def _ensure_mcp_discovery_completed() -> None:
 _CATALOG_CACHE: "tuple | None" = None
 
 
-def _cached_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
+def _cached_catalog(
+    tool_defs: List[Dict[str, Any]],
+    skills: Optional[List[Dict[str, Any]]] = None,
+) -> List[CatalogEntry]:
     """`build_catalog` bound to the registry generation and the def set.
 
     Building a catalog resolves every tool through `registry.get_entry`, pulls
@@ -1128,11 +1251,15 @@ def _cached_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
     except Exception:
         generation = None
 
-    key = (generation, tuple(td.get("function", {}).get("name", "") for td in tool_defs))
+    key = (
+        generation,
+        tuple(td.get("function", {}).get("name", "") for td in tool_defs),
+        tuple((sk.get("name", ""), sk.get("updated_at", 0), sk.get("kind", "skill")) for sk in (skills or [])),
+    )
     if _CATALOG_CACHE is not None and _CATALOG_CACHE[0] == key:
         return _CATALOG_CACHE[1]
 
-    catalog = build_catalog(tool_defs)
+    catalog = build_catalog(tool_defs, skills=skills)
     _CATALOG_CACHE = (key, catalog)
 
     return catalog
@@ -1145,12 +1272,26 @@ def _format_search_hit(entry: CatalogEntry) -> Dict[str, Any]:
         first_line = first_line[:147] + "..."
     hit: Dict[str, Any] = {
         "name": entry.name,
-        "kind": "tool",
+        "kind": entry.kind or "tool",
         "description": first_line,
     }
+    if entry.kind != "tool":
+        category = entry.source_name.removeprefix("skill:") if entry.source_name else ""
+        if category:
+            hit["category"] = category
+        hit["how_to_use"] = entry.how_to_use
+        return hit
     if entry.source_name:
         hit["source"] = entry.source_name
     return hit
+
+
+def _skills_in_scope(current_tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Local skills join the catalog only when the session can read them."""
+    names = {(td.get("function") or {}).get("name", "") for td in current_tool_defs}
+    if "skill_view" not in names and "skills_read" not in names:
+        return []
+    return local_skill_catalog_entries()
 
 
 def dispatch_tool_search(args: Dict[str, Any],
@@ -1171,6 +1312,10 @@ def dispatch_tool_search(args: Dict[str, Any],
     else:
         limit = max(1, min(config.max_search_limit, _safe_int(raw_limit, config.search_default_limit)))
 
+    kind = str(args.get("kind") or "").strip().lower() or None
+    if kind not in (None, "tool", "skill"):
+        kind = None
+
     _, deferrable = classify_tools(current_tool_defs)
     if not any(d.get("function", {}).get("name", "").startswith("mcp_") for d in deferrable):
         try:
@@ -1181,14 +1326,19 @@ def dispatch_tool_search(args: Dict[str, Any],
                 deferrable = live_deferrable
         except Exception:
             pass
-    catalog = _cached_catalog(deferrable)
-    hits = search_catalog(catalog, query, limit=limit)
+    skills = _skills_in_scope(current_tool_defs)
+    catalog = _cached_catalog(deferrable, skills)
+    # Skills compete for the same slots; fetch a little deeper so the cap
+    # does not leave the result short of tools.
+    hits = search_catalog(catalog, query, limit=limit + SKILL_HIT_CAP)
+    hits = cap_skill_hits(hits, query, kind)[:limit]
     # A query that names a whole server browses its catalog (up to 60 hits);
     # loading all of those would defeat deferral, so only ranked searches
     # nominate hits for autoload. The executor (agent/deferred_tools.py)
     # performs the load — this function has no session in hand.
     browsing = bool(_match_full_source(catalog, query.lower()))
-    autoload = [] if browsing else [h.name for h in hits[: max(0, config.autoload_top_n)]]
+    tool_hits = [h for h in hits if h.kind == "tool"]
+    autoload = [] if browsing else [h.name for h in tool_hits[: max(0, config.autoload_top_n)]]
     return json.dumps({
         "query": query,
         "mode": "source_browse" if browsing else "ranked",
@@ -1253,6 +1403,16 @@ def dispatch_tool_describe(args: Dict[str, Any],
 
     resolved_name, entry, err = _resolve_tool_entry(raw_name)
     if err or entry is None or not resolved_name:
+        for sk in _skills_in_scope(current_tool_defs):
+            if sk["name"].lower() == raw_name.lower():
+                return json.dumps({
+                    "name": sk["name"],
+                    "kind": "skill",
+                    "description": sk["description"],
+                    "category": sk["category"],
+                    "how_to_use": sk["how_to_use"],
+                    "note": "Skills are not callable functions; read the skill and follow it.",
+                }, ensure_ascii=False)
         return json.dumps({
             "error": err or (
                 f"Tool '{raw_name}' is not registered or found. "
@@ -1355,6 +1515,10 @@ __all__ = [
     "AssemblyResult",
     "load_config",
     "is_deferrable_tool_name",
+    "is_bootstrap_memory_tool",
+    "BOOTSTRAP_MEMORY_SUFFIXES",
+    "local_skill_catalog_entries",
+    "cap_skill_hits",
     "classify_tools",
     "estimate_tokens_from_schemas",
     "should_activate",

@@ -50,6 +50,12 @@ MAX_AUTOLOADED_TOOLS = 40
 _LOADED_ATTR = "_loaded_deferred_tools"
 _LOADED_GEN_ATTR = "_loaded_deferred_gen"
 _SCOPE_CACHE_ATTR = "_deferred_scope_cache"
+# Skills the primary memory server advertises in its memory_context reply
+# (``suggested_skills``). They are served by the server, read with its
+# ``skill`` tool, and never shipped locally — the catalog lists them next to
+# local skills so one search covers both.
+_MCP_SKILLS_ATTR = "_mcp_skill_catalog"
+MCP_SKILL_HIT_CAP = 2
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +370,90 @@ def unknown_tool_hint(agent) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Server-side skills (memory_context.suggested_skills)
+# ---------------------------------------------------------------------------
+
+
+def _is_memory_context_tool(name: str) -> bool:
+    return name == "memory_context" or name.endswith("_memory_context")
+
+
+def _skill_read_tool_name(agent) -> Optional[str]:
+    try:
+        from agent.prompt_builder import _resolve_memory_tool_name
+
+        return _resolve_memory_tool_name(_valid_names(agent), "skill")
+    except Exception:
+        return None
+
+
+def remember_mcp_skills(agent, function_name: str, function_result: Any) -> int:
+    """Capture ``suggested_skills`` from a memory_context result on the agent.
+
+    Returns the number of skills remembered (0 when the result carried none).
+    """
+    if not _is_memory_context_tool(function_name) or not isinstance(function_result, str):
+        return 0
+    try:
+        payload = json.loads(function_result)
+    except Exception:
+        return 0
+    raw = payload.get("suggested_skills") if isinstance(payload, dict) else None
+    if not isinstance(raw, list):
+        return 0
+    read_tool = _skill_read_tool_name(agent)
+    skills: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        slug = str(item.get("slug") or item.get("name") or "").strip()
+        name = str(item.get("name") or slug).strip()
+        if not slug or not name:
+            continue
+        how = (
+            f"{read_tool}(action='read', slug='{slug}')" if read_tool
+            else f"read skill '{slug}' with the memory server's skill tool"
+        )
+        skills.append({
+            "name": name,
+            "slug": slug,
+            "description": str(item.get("description") or ""),
+            "category": str(item.get("category") or ""),
+            "updated_at": str(item.get("hash") or ""),
+            "kind": "mcp_skill",
+            "how_to_use": how,
+        })
+    try:
+        setattr(agent, _MCP_SKILLS_ATTR, skills)
+    except Exception:
+        return 0
+    return len(skills)
+
+
+def mcp_skills(agent) -> List[Dict[str, Any]]:
+    skills = getattr(agent, _MCP_SKILLS_ATTR, None)
+    return list(skills) if isinstance(skills, list) else []
+
+
+def _mcp_skill_hits(agent, query: str, kind: Optional[str]) -> List[Dict[str, Any]]:
+    """Rank the server's skills against the query with the catalog scorer."""
+    if kind == "tool":
+        return []
+    skills = mcp_skills(agent)
+    if not skills or not query:
+        return []
+    try:
+        from tools.tool_search import _format_search_hit, build_catalog, search_catalog
+
+        catalog = build_catalog([], skills=skills)
+        hits = search_catalog(catalog, query, limit=MCP_SKILL_HIT_CAP)
+    except Exception as exc:
+        logger.debug("mcp skill ranking failed: %s", exc)
+        return []
+    return [_format_search_hit(h) for h in hits]
+
+
+# ---------------------------------------------------------------------------
 # Bridge results: load what search/describe surfaced
 # ---------------------------------------------------------------------------
 
@@ -394,6 +484,9 @@ def absorb_bridge_result(agent, function_name: str, function_args: Any, function
     applies); every tool hit gets a ``status``.
     Anything else passes through untouched.
     """
+    if _is_memory_context_tool(function_name):
+        remember_mcp_skills(agent, function_name, function_result)
+        return function_result
     try:
         from tools.tool_search import TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME
     except Exception:
@@ -440,6 +533,14 @@ def absorb_bridge_result(agent, function_name: str, function_args: Any, function
             if hit.get("kind", "tool") != "tool":
                 continue
             hit["status"] = _status_for(agent, str(hit.get("name") or ""))
+        # Server-side skills are ranked here (the dispatcher has no session
+        # in hand) and listed first: on a name collision with a local skill
+        # the server's copy is the maintained one.
+        query = str((function_args or {}).get("query") or payload.get("query") or "") if isinstance(function_args, dict) else str(payload.get("query") or "")
+        kind = str((function_args or {}).get("kind") or "").lower() or None if isinstance(function_args, dict) else None
+        server_hits = _mcp_skill_hits(agent, query, kind)
+        if server_hits:
+            payload["matches"] = server_hits + matches
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -450,6 +551,8 @@ __all__ = [
     "ensure_loaded_tools_current",
     "is_loaded",
     "load_deferred_tool",
+    "mcp_skills",
+    "remember_mcp_skills",
     "resolve_unknown_tool_name",
     "scoped_defs_map",
     "scoped_deferrable_names",

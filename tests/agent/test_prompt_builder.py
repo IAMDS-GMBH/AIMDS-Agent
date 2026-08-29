@@ -1295,9 +1295,11 @@ class TestResolveMemoryToolNames:
         names = {"mcp_IAMDS_mcp_memory_memory_save", "outlook_write_email"}
         assert _resolve_memory_save_tool_name(names) == "mcp_IAMDS_mcp_memory_memory_save"
 
-    def test_resolves_suffix_only_as_last_resort(self):
-        names = {"weird_custom_prefix_memory_save"}
-        assert _resolve_memory_save_tool_name(names) == "weird_custom_prefix_memory_save"
+    def test_custom_prefix_is_never_picked_as_the_memory_backend(self):
+        """A second/custom memory server must not silently become the backend:
+        only the configured primary server (or a bare memory_* name) resolves."""
+        assert _resolve_memory_save_tool_name({"weird_custom_prefix_memory_save"}) is None
+        assert _resolve_memory_save_tool_name({"memory_save", "weird_custom_prefix_memory_save"}) == "memory_save"
 
     def test_does_not_match_unrelated_suffix(self):
         names = {"memory_context", "memory_skill_read"}

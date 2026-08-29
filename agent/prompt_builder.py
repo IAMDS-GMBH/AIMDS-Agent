@@ -1636,14 +1636,8 @@ def _resolve_memory_tool_name(valid_tool_names: "set[str] | None", suffix: str) 
         )
         if matches:
             return matches[0]
-    # Last-resort compatibility for unusual/custom prefixes.
-    suffix_matches = sorted(
-        original
-        for original, normalized in normalized_map.items()
-        if normalized.endswith(f"_{suffix}")
-    )
-    if suffix_matches:
-        return suffix_matches[0]
+    # No last-resort "any *_{suffix}" match: with a second or custom memory
+    # server in the session that silently made it the memory backend.
     return None
 
 

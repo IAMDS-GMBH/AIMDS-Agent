@@ -265,3 +265,49 @@ class TestEndToEnd:
             enabled_toolsets=["mcp-dt-e2e"],
         ))
         assert result["ok"] is True
+
+
+class TestServerSkills:
+    _CTX = {
+        "rules": [],
+        "suggested_skills": [
+            {"auto_suggest": True, "builtin": True, "category": "coding", "slug": "repo-map",
+             "name": "Repository Index Map", "description": "Cache architecture maps and file trees", "hash": "111b8b3b"},
+            {"auto_suggest": True, "builtin": False, "category": "workflow", "slug": "session-start",
+             "name": "Session Start", "description": "Mandatory session startup sequence", "hash": "55e4d073"},
+        ],
+    }
+
+    def _agent_with_skill_tool(self):
+        agent = _agent(["mcp-dt-srvskills"])
+        agent.tools.append(_td("mcp_AIMDSSuiteMCP_mcp_memory_skill", "read a server skill", {"slug": {"type": "string"}}))
+        agent.valid_tool_names.add("mcp_AIMDSSuiteMCP_mcp_memory_skill")
+        return agent
+
+    def test_memory_context_result_captures_suggested_skills(self):
+        agent = self._agent_with_skill_tool()
+        raw = json.dumps(self._CTX)
+        out = dt.absorb_bridge_result(agent, "mcp_AIMDSSuiteMCP_mcp_memory_memory_context", {}, raw)
+        assert out == raw  # untouched
+        skills = dt.mcp_skills(agent)
+        assert [s["slug"] for s in skills] == ["repo-map", "session-start"]
+        assert skills[0]["kind"] == "mcp_skill"
+        assert skills[0]["how_to_use"] == "mcp_AIMDSSuiteMCP_mcp_memory_skill(action='read', slug='repo-map')"
+
+    def test_server_skills_are_ranked_into_search_results_first(self):
+        agent = self._agent_with_skill_tool()
+        dt.remember_mcp_skills(agent, "mcp_AIMDSSuiteMCP_mcp_memory_memory_context", json.dumps(self._CTX))
+        payload = {"query": "repository architecture map", "mode": "ranked", "total_available": 1,
+                   "matches": [{"name": "mcp_x_op", "kind": "tool", "description": "x"}], "autoload": []}
+        out = json.loads(dt.absorb_bridge_result(agent, "tool_search", {"query": "repository architecture map"}, json.dumps(payload)))
+        assert out["matches"][0]["kind"] == "mcp_skill"
+        assert out["matches"][0]["name"] == "Repository Index Map"
+        assert "slug='repo-map'" in out["matches"][0]["how_to_use"]
+        assert out["matches"][-1]["name"] == "mcp_x_op"
+
+    def test_kind_tool_filter_suppresses_server_skills(self):
+        agent = self._agent_with_skill_tool()
+        dt.remember_mcp_skills(agent, "memory_context", json.dumps(self._CTX))
+        payload = {"query": "session start", "mode": "ranked", "total_available": 0, "matches": [], "autoload": []}
+        out = json.loads(dt.absorb_bridge_result(agent, "tool_search", {"query": "session start", "kind": "tool"}, json.dumps(payload)))
+        assert out["matches"] == []
