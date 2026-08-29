@@ -3717,9 +3717,6 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, pr
                 if image_tag:
                     parts.append(image_tag)
             text_result = "\n".join(parts) if parts else ""
-            text_result = _maybe_correct_memory_priority_skill_content(
-                tool_name, provider, text_result
-            )
 
             # Combine content + structuredContent when both are present.
             # MCP spec: content is model-oriented (text), structuredContent
@@ -4312,58 +4309,13 @@ _MCP_TOOL_DESCRIPTION_NOTES: Dict[Tuple[str, str], str] = {
         "date format' error."
     ),
 }
-# Cloud/cross-device memory MCP tools (server key is "AIMDS" in current
-# configs, legacy "IAMDS" alias preserved for backward compatibility — see
-# installer/scripts/upsert_aimds_defaults.py). Without an explicit nudge here,
-# the model tends to default to this tool for everything since its raw,
-# server-provided description carries no signal that a narrower-scoped local
-# `memory` tool (session-specific/detailed/working info) should be preferred
-# by default; see agent/prompt_builder.py build_remote_mcp_memory_prompt()
-# for the complementary system-prompt-level guidance.
-_CLOUD_MEMORY_NOTE = (
-    " NOTE: Primary AIMDS-Suite & Local Vault Memory Store — use for durable cross-device "
-    "knowledge, facts, and profile notes across sessions. (For session-specific temporary scratchpad, prefer local `memory` tool)."
-)
-for _server_name in ("AIMDSSuiteMCP", "AIMDS", "IAMDS"):
-    for _tool_name in ("mcp_memory_memory_save", "mcp_memory_memory_context"):
-        _MCP_TOOL_DESCRIPTION_NOTES[(_server_name, _tool_name)] = _CLOUD_MEMORY_NOTE
+# The memory server's own tool descriptions and skills stand as the server
+# delivers them. A "prefer the local memory tool" note used to be appended to
+# memory_save/memory_context, and the server's memory-priority skill was
+# rewritten with a "Hermes correction" telling the model to ignore it. Both
+# asserted the opposite of the intended architecture (the MCP vault is the
+# primary store) and are gone.
 
-# The cloud memory MCP's own seeded "memory-priority" skill (surfaced via its
-# `skill` tool) tells the model the cloud vault IS the primary store and
-# client-native memory is secondary/fallback-only -- appropriate for generic
-# OWU/Claude-Desktop-style clients, but the exact opposite of Hermes's own
-# local-workspace-primary policy (see agent/prompt_builder.py
-# build_remote_mcp_memory_prompt()). Unlike _MCP_TOOL_DESCRIPTION_NOTES above
-# (which only annotates a tool's *description*, visible before it's called),
-# this content only appears in the tool *result* of `skill(action="read")` --
-# so it must be corrected after the call, in _make_tool_handler() below.
-# Matched narrowly on this skill's distinctive heading text to avoid
-# false-positives on unrelated skill content.
-_MEMORY_PRIORITY_SKILL_MARKER = "Primary vs. Secondary Memory"
-_MEMORY_PRIORITY_CORRECTION_NOTE = (
-    "\n\n---\nHermes correction: this skill was written for generic MCP "
-    "clients without their own workspace. In Hermes, treat the LOCAL "
-    "workspace/Obsidian vault as PRIMARY (default for session files, local "
-    "notes, and working context); use this cloud memory server only for "
-    "facts that specifically must persist and sync across ALL "
-    "sessions/devices (durable profile facts, standing preferences, "
-    "contacts). Do not follow this skill's PRIMARY/SECONDARY framing."
-)
-
-
-def _maybe_correct_memory_priority_skill_content(
-    tool_name: str, provider: Optional[str], text: str
-) -> str:
-    """Append a corrective note when a cloud-memory `skill` tool result
-    contains the contradicting "cloud memory is primary" guidance, so the
-    model doesn't override Hermes's local-primary policy mid-session."""
-    if not text or str(provider or "").strip().lower() != "iamds":
-        return text
-    if not tool_name.endswith("skill"):
-        return text
-    if _MEMORY_PRIORITY_SKILL_MARKER not in text:
-        return text
-    return text + _MEMORY_PRIORITY_CORRECTION_NOTE
 
 # Catalog server names that _MCP_TOOL_DESCRIPTION_NOTES keys above are known
 # to reference, for the suffix-match fallback below.
@@ -4406,7 +4358,7 @@ def _lookup_tool_description_note(
         note = _MCP_TOOL_DESCRIPTION_NOTES.get(("AIMDSSuiteMCP", tool_name)) or _MCP_TOOL_DESCRIPTION_NOTES.get(("AIMDS", tool_name))
         if note is not None:
             return note
-        return _CLOUD_MEMORY_NOTE
+        return None
     if "memory" in server_name.lower() and server_name not in ("AIMDSSuiteMCP", "AIMDS", "IAMDS"):
         return f" NOTE: Custom External MCP Server '{server_name}' — secondary store."
     return None

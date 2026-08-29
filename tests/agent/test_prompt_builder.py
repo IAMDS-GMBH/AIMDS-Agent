@@ -53,17 +53,14 @@ class TestGuidanceConstants:
         assert "like a diary" not in MEMORY_GUIDANCE
         assert ">80%" not in MEMORY_GUIDANCE
 
-    def test_memory_guidance_differentiates_local_default_from_cloud_tool(self):
-        """MEMORY_GUIDANCE must explain the local `memory` tool is the PRIMARY
-        default and that a separate, narrower-scoped cloud/cross-device
-        memory tool exists — without this, models default to whichever
-        memory-like tool they see regardless of scope (see
-        build_remote_mcp_memory_prompt for the companion MCP-session prompt).
-        """
-        assert "PRIMARY" in MEMORY_GUIDANCE
-        assert "session-specific" in MEMORY_GUIDANCE
-        assert "cross-device" in MEMORY_GUIDANCE
-        assert "general-purpose or default memory store" in MEMORY_GUIDANCE
+    def test_memory_guidance_names_the_vault_as_primary_when_present(self):
+        """The local `memory` tool used to call itself the PRIMARY store while
+        the memory MCP was framed as narrow/opt-in — the inverse of the
+        architecture (vault primary, local a small fallback)."""
+        assert "PRIMARY, default" not in MEMORY_GUIDANCE
+        assert "general-purpose or default memory store" not in MEMORY_GUIDANCE
+        assert "primary store for durable facts" in MEMORY_GUIDANCE
+        assert "session-scoped notes" in MEMORY_GUIDANCE
 
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
@@ -1361,23 +1358,24 @@ class TestBuildRemoteMcpMemoryPrompt:
         assert "mcp_IAMDS_mcp_memory-memory_save" in text
 
     def test_onboarding_save_hint_falls_back_to_local_memory_when_missing_mcp_save(self):
-        text = build_remote_mcp_memory_prompt({"memory_context"})
+        text = build_remote_mcp_memory_prompt({"memory_context", "memory"})
         assert 'local `memory` with target="user"' in text
 
-    def test_keeps_local_as_the_default_working_store(self):
-        """The storage split stays: working detail local, durable facts in the
-        vault. What changed is the *retrieval* framing — the block used to call
-        the vault "narrower/opt-in" and say "Do not default to it", which models
-        read as "skip memory entirely", so sessions started cold and re-derived
-        context the vault already held. Reading is now expected; writing
-        session-specific detail into it still is not.
-        """
+    def test_onboarding_save_hint_falls_back_to_the_vault_profile_note_without_local_memory(self):
         text = build_remote_mcp_memory_prompt({"memory_context"})
-        assert "DEFAULT" in text
-        assert "Session-specific working detail stays local" in text
-        # Legitimate cross-device use cases must remain intact.
+        assert "users/<user>/profile.md" in text
+        assert 'local `memory`' not in text
+
+    def test_the_vault_is_the_primary_store_and_files_are_files(self):
+        """The block used to mark the local workspace as "Primary, DEFAULT" and
+        the MCP as a narrow cross-device sync — the inverse of the intended
+        architecture. Now: durable facts in the vault, files in the workspace,
+        and nothing else counts as memory."""
+        text = build_remote_mcp_memory_prompt({"memory_context", "memory_save", "memory_summarize_session"})
+        assert "primary store for durable facts" in text
+        assert "Primary, DEFAULT" not in text
         assert "durable facts, standing rules, preferences, contacts" in text
-        # The discouraging framing must not come back.
+        assert "SESSION CLOSE" in text and "memory_summarize_session" in text
         assert "narrower/opt-in" not in text
         assert "Do not default to it" not in text
 
@@ -1391,11 +1389,12 @@ class TestBuildRemoteMcpMemoryPrompt:
             "resolve_agent_cwd",
             lambda: Path("/tmp/fake-vault-root"),
         )
-        text = build_remote_mcp_memory_prompt({"memory_context"})
+        text = build_remote_mcp_memory_prompt({"memory_context", "search_files", "read_file"})
         assert "/tmp/fake-vault-root" in text
-        assert "search_tool" in text
+        assert "search_files" in text
         assert "read_file" in text
         assert ".brain" in text  # explicit anti-hallucination example
+        assert "users/" in text
 
     def test_omits_workspace_path_line_when_resolution_fails(self, monkeypatch):
         """If cwd resolution throws for any reason, degrade gracefully instead
@@ -1408,7 +1407,7 @@ class TestBuildRemoteMcpMemoryPrompt:
             build_remote_mcp_memory_prompt.__globals__, "resolve_agent_cwd", _boom
         )
         text = build_remote_mcp_memory_prompt({"memory_context"})
-        assert "search_tool" not in text
+        assert "# Workspace (Obsidian vault)" not in text
         assert "memory_context" in text
 
 

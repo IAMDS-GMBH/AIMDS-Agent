@@ -202,21 +202,18 @@ class TestSchemaConversion:
 
     @pytest.mark.parametrize("server_name", ["AIMDS", "IAMDS"])
     @pytest.mark.parametrize("tool_name", ["mcp_memory_memory_save", "mcp_memory_memory_context"])
-    def test_appends_cross_device_scope_note_to_cloud_memory_tools(self, server_name, tool_name):
-        """The cloud/cross-device memory MCP tools' raw, server-provided
-        description carries no signal that the local `memory` tool should be
-        preferred by default — nudge the model, via the description it
-        actually sees, toward using the cloud tool only for durable
-        cross-device facts.
-        """
+    def test_memory_tool_descriptions_are_not_rewritten_toward_local_memory(self, server_name, tool_name):
+        """A note used to be appended here telling the model to "prefer local
+        `memory`" for anything session-specific — the inverse of the
+        architecture (the MCP vault is primary). The server's description
+        stands as delivered."""
         from tools.mcp_tool import _convert_mcp_schema
 
         mcp_tool = _make_mcp_tool(name=tool_name, description="Save a memory entry")
         schema = _convert_mcp_schema(server_name, mcp_tool)
 
         assert "Save a memory entry" in schema["description"]
-        assert "cross-device" in schema["description"].lower()
-        assert "local `memory`" in schema["description"]
+        assert "local `memory`" not in schema["description"]
 
     @pytest.mark.parametrize("server_name", ["memory", "aimds-gateway", "remoteMCP", "remote", "MyCloudMemory"])
     @pytest.mark.parametrize("tool_name", ["mcp_memory_memory_save", "mcp_memory_memory_context"])
@@ -236,8 +233,8 @@ class TestSchemaConversion:
         mcp_tool = _make_mcp_tool(name=tool_name, description="Save a memory entry")
         schema = _convert_mcp_schema(server_name, mcp_tool, provider="iamds")
 
-        assert "cross-device" in schema["description"].lower()
-        assert "local `memory`" in schema["description"]
+        assert schema["description"].startswith("Save a memory entry")
+        assert "local `memory`" not in schema["description"]
 
     def test_no_cross_device_note_for_non_iamds_provider_and_unrelated_name(self):
         """Guard against over-matching: a server with neither an AIMDS/IAMDS
@@ -656,10 +653,10 @@ class TestToolHandler:
         finally:
             _servers.pop("test_srv", None)
 
-    def test_iamds_skill_result_gets_memory_priority_correction(self):
-        """A skill(action='read') result from an iamds-provider server carrying
-        the cloud-memory-is-primary framing must be corrected so the model
-        doesn't override Hermes's local-primary policy."""
+    def test_iamds_skill_result_is_delivered_as_the_server_wrote_it(self):
+        """The server's memory-priority skill used to get a "Hermes correction"
+        appended that told the model to ignore it. The vault IS primary; the
+        skill stands as the server delivers it."""
         from tools.mcp_tool import _make_tool_handler, _servers
 
         contradicting_content = (
@@ -677,9 +674,8 @@ class TestToolHandler:
             handler = _make_tool_handler("memory", "skill", 120, provider="iamds")
             with self._patch_mcp_loop():
                 result = json.loads(handler({"action": "read", "id": "memory-priority"}))
-            assert "Hermes correction" in result["result"]
-            assert "local" in result["result"].lower()
-            assert contradicting_content in result["result"]
+            assert "Hermes correction" not in result["result"]
+            assert result["result"] == contradicting_content
         finally:
             _servers.pop("memory", None)
 

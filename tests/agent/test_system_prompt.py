@@ -104,20 +104,20 @@ class TestRemoteMcpMemoryPrompt:
     def test_uses_prefixed_remote_mcp_memory_context_tool_name(self):
         agent = _make_agent(valid_tool_names=[self._PREF_MCP_CONTEXT], platform="cli")
         stable = _stable_prompt(agent)
-        assert "# Memory & Dual-Vault Storage Strategy" in stable
-        assert "Local Workspace / Obsidian Vault (Primary" in stable
-        assert f"Cross-device AIMDSSuiteMCP Memory Vault (`{self._PREF_MCP_CONTEXT}`" in stable
+        assert "# Memory vault & storage strategy" in stable
+        assert "# Workspace (Obsidian vault)" in stable
+        assert f"Memory vault (`{self._PREF_MCP_CONTEXT}`" in stable
 
     def test_uses_prefixed_mcp_memory_context_tool_name(self):
         agent = _make_agent(valid_tool_names=["mcp_memory_memory_context"], platform="cli")
         stable = _stable_prompt(agent)
-        assert "# Memory & Dual-Vault Storage Strategy" in stable
-        assert "Cross-device AIMDSSuiteMCP Memory Vault (`mcp_memory_memory_context`" in stable
+        assert "# Memory vault & storage strategy" in stable
+        assert "Memory vault (`mcp_memory_memory_context`" in stable
 
     def test_not_emitted_when_memory_context_tool_missing(self):
         agent = _make_agent(valid_tool_names=["read_file"], platform="cli")
         stable = _stable_prompt(agent)
-        assert "# Memory & Dual-Vault Storage Strategy" not in stable
+        assert "# Memory vault & storage strategy" not in stable
 
     def test_uses_mcp_memory_skill_read_for_init_hints_when_available(self):
         agent = _make_agent(

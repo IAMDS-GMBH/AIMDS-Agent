@@ -137,32 +137,35 @@ HERMES_AGENT_HELP_GUIDANCE = (
     "it — or when you need to understand your own features, tools, or capabilities, "
     "the documentation at https://hermes-agent.nousresearch.com/docs is your "
     "authoritative reference and always holds the latest, most up-to-date "
-    "information. Load the `hermes-agent` skill with skill_view(name='hermes-agent') "
+    "information."
+)
+HERMES_AGENT_HELP_SKILL_HINT = (
+    " Load the `hermes-agent` skill with skill_view(name='hermes-agent') "
     "for additional guidance and proven workflows, but treat the docs as the source "
     "of truth when the two differ."
 )
+
+
+def build_hermes_agent_help_guidance(valid_tool_names: "set[str] | None" = None) -> str:
+    """The help pointer; the skill_view sentence only when that tool is in the session.
+
+    Sessions without the skills toolset (cron, restricted profiles) used to be
+    told to call skill_view anyway — thirteen rejected calls in one month.
+    """
+    names = set(valid_tool_names or set())
+    if "skill_view" in names:
+        return HERMES_AGENT_HELP_GUIDANCE + HERMES_AGENT_HELP_SKILL_HINT
+    return HERMES_AGENT_HELP_GUIDANCE
 
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Save durable facts using the memory "
     "tool: user preferences, environment details, tool quirks, and stable conventions. "
     "Memory is injected into every turn, so keep it compact and focused on facts that "
     "will still matter later.\n"
-    "The local `memory` tool is the PRIMARY, default store — use it for session-specific, "
-    "detailed, or working information. A SEPARATE cloud/cross-device memory tool may also "
-    "be available (an MCP tool, e.g. `memory_save`/`memory_context`); it is narrower in "
-    "scope and meant only for durable facts that must persist and sync across ALL sessions "
-    "and devices (user profile, standing preferences, contacts) — do not use it as a "
-    "general-purpose or default memory store.\n"
-    "Vault Directory Hierarchy (AIMDS-Suite-Vault): When storing or organizing notes in the Vault, "
-    "enforce a clean, 3–4 level deep directory hierarchy to prevent flat directories:\n"
-    "- `projects/<bereich>/<projekt>/<thema>.md` (e.g. `projects/aimds/hermes-agent/architecture.md`)\n"
-    "- `users/<user>/<kategorie>/<thema>.md` (e.g. `users/johannes/preferences/editor.md`)\n"
-    "- `notes/<bereich>/<jahr_monat>/<thema>.md` (e.g. `notes/dev/2026_08/findings.md`)\n"
-    "Project and user memories must always be stored directly in the Vault under their structured subdirectories "
-    "(projects/, users/, notes/) and NEVER under legacy `~/.hermes/memories/project` or `user` paths.\n"
-    "Reflection & Context Cleanup: Before saving findings, perform a brief Reflection step to verify that "
-    "the destination path matches the 3–4 level schema. After storing findings, automatically discard "
-    "temporary extraction boilerplate from your active context window.\n"
+    "The local `memory` tool is a small local store (a few thousand characters). When a "
+    "memory vault tool is also in the session (an MCP `memory_save`/`memory_context`, or "
+    "`vault_memory`), that vault is the primary store for durable facts, rules, profile and "
+    "decisions; keep the local tool for short session-scoped notes only.\n"
     "Prioritize what reduces future user steering — the most valuable memory is one "
     "that prevents the user from having to correct or remind you again. "
     "User preferences and recurring corrections matter more than procedural task details.\n"
@@ -316,33 +319,68 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "without acting are not acceptable."
 )
 
-SQL_AGGREGATION_GUIDANCE = (
-    "# Mathematical Calculations, Budgets & Data Aggregations (Deterministic SQL)\n"
-    "CRITICAL ACCURACY DIRECTIVE: NEVER perform mental arithmetic, manual summing, budget calculations, or estimation on datasets, tables, rates, or numbers in text.\n"
-    "LLMs make severe calculation errors. Always execute deterministic SQLite queries using the `sql` tool (SUM, COUNT, AVG, ROUND, GROUP BY, arithmetic expressions, CTEs/temp tables).\n"
-    "STRICT PROHIBITION: NEVER write throwaway Python scripts, NEVER create `/tmp/*.txt` manual text dumps, and NEVER invoke `office_excel` or `office_word` as ad-hoc calculators.\n"
-    "Use SQLite for:\n"
-    "- Time tracking & worklog aggregations (e.g. `SELECT substr(timestamp, 1, 7) AS month, ROUND(SUM(duration_seconds)/3600.0, 2) AS hours FROM mcp_records ... GROUP BY month`)\n"
-    "- Budgets, financial planning & cost rates (e.g. `SELECT budget_total - SUM(spent) AS remaining, ROUND(SUM(spent)/budget_total * 100, 2) AS pct_used FROM ...`)\n"
-    "- Ad-hoc formulas, multi-step math, and percentages via `SELECT ...` or `WITH ... AS (...)` queries to ensure 100% mathematical precision."
-)
+def build_data_handling_guidance(valid_tool_names: "set[str] | None" = None) -> str:
+    """The data-handling ladder, one rung per tool the session actually has.
 
-EXECUTIVE_VERIFICATION_GUIDANCE = (
-    "# AIMDS Executive Principal & Chief of Staff Quality Gate\n"
-    "CRITICAL QUALITY INVARIANT: You are an Executive Principal and Senior Chief of Staff. Never act like an unguided novice or blunt command receiver.\n"
-    "1. Strict Verification Gate: Before presenting any summary, table, calculation, or report, conduct a rigorous internal sanity check:\n"
-    "   - Consistency: Verify that subtotals and category breakdowns sum up exactly to the total.\n"
-    "   - Completeness: Confirm that the entire requested dataset was processed (e.g. all 12 months, all tickets) and was not accidentally truncated or skipped.\n"
-    "   - Accuracy: Cross-reference ticket keys, dates, and metrics against real tool outputs. Never guess or fabricate plausible-sounding placeholders.\n"
-    "2. Anti-Improvisation & Methodical Tool Usage:\n"
-    "   - NEVER write throwaway Python scripts (`cat > script.py`), create `/tmp/*.txt` manual scratchpad files, or invoke document generation tools (`office_excel`) as fake calculators.\n"
-    "   - ALL data calculations, aggregations, worklogs, and financial metrics MUST be executed deterministically using the native `sql` tool.\n"
-    "3. Canonical Obsidian Vault Management:\n"
-    "   - Maintain exactly ONE canonical hub note per subject in `~/Documents/AIMDS-Suite-Vault/` (e.g. `projects/hub-zeitbuchung-2026.md`).\n"
-    "   - ALWAYS search before creating (`obsidian_search` / `obsidian_read_file`). Update existing hub notes with fresh YAML frontmatter (`updated: ...`) instead of creating fragmented duplicate files (`_neu.md`, `_v2.md`).\n"
-    "4. Executive-Grade Presentation:\n"
-    "   - Deliver crisp, structured Markdown tables, highlighted key metrics, anomaly callouts, and clear numbered next steps."
-)
+    This replaces three blocks that each *forbade* Python for data work and
+    *demanded* the `sql` tool — in sessions that had no `sql` tool (every
+    TUI and cron session until the toolset fix). A prohibition without an
+    available alternative produces exactly the behaviour it prohibits: 77
+    throwaway scripts in a month. The ladder names the preferred path first
+    and allows the fallback explicitly, so the model can say why it took it.
+    """
+    names = set(valid_tool_names or set())
+    has_kb = any(n == "kb_search" or n.endswith("_kb_search") for n in names)
+    has_search = "tool_search" in names
+    has_sql = "sql" in names
+    has_terminal = "terminal" in names
+
+    rungs = []
+    if has_kb:
+        kb_tool = next(n for n in names if n == "kb_search" or n.endswith("_kb_search"))
+        rungs.append(
+            f"Company knowledge (policies, products, customers, internal how-tos): `{kb_tool}` first — "
+            "never answer such questions from model memory."
+        )
+    rungs.append(
+        "A tool that answers the question directly beats any post-processing: "
+        + ("search with `tool_search` before assembling a result from several calls "
+           if has_search else "check your tools list ")
+        + "(one worklog retrieval with a date range, not one call per issue)."
+    )
+    if has_sql:
+        rungs.append(
+            "Large or structured tool results are auto-ingested into SQLite `mcp_records` "
+            "(~/.hermes/state.db). Aggregate, sum, group and compare with the `sql` tool "
+            "(SUM/COUNT/ROUND/GROUP BY, CTEs) instead of mental arithmetic — and fetch in "
+            "bounded slices (month by month) rather than one call for everything."
+        )
+    else:
+        rungs.append(
+            "Never do arithmetic on datasets in your head; ask for a deterministic path "
+            "(the `sql` tool is not in this session — say so instead of estimating)."
+        )
+    if has_terminal:
+        rungs.append(
+            "`terminal`/Python only when the rungs above demonstrably do not cover the task "
+            "(build tools, git, system diagnostics, a format nothing else can read) — never as "
+            "the first move for data that is already in SQLite, and say in one line why you "
+            "needed it. Do not write throwaway scripts or /tmp scratch files for data you can query."
+        )
+    core_files = [t for t in ("read_file", "write_file", "patch", "search_files") if t in names]
+    file_rung = (
+        f"Files: use {', '.join(f'`{t}`' for t in core_files)} rather than cat/grep/sed in a shell."
+        if core_files else ""
+    )
+    lines = ["# Data handling — preferred path first", "Work down this list and stop at the first rung that fits:"]
+    lines += [f"{i}. {r}" for i, r in enumerate(rungs, 1)]
+    if file_rung:
+        lines.append(file_rung)
+    lines.append(
+        "Before delivering a table, calculation or report: subtotals sum to the total, the whole "
+        "requested range was processed, ticket keys and dates come from tool output — not from memory."
+    )
+    return "\n".join(lines)
 
 TOOL_SEARCH_ANTI_HALLUCINATION_GUIDANCE = (
     "# Deferred tool search anti-hallucination directive\n"
@@ -354,9 +392,12 @@ TOOL_SEARCH_ANTI_HALLUCINATION_GUIDANCE = (
     "When a specific action tool is ALREADY listed in your JSON schema tools (such as `jira_search`, `memory_search`, `mcp_customer__storage_search`), invoke that action tool directly! Do NOT call empty resource listing tools (e.g. `list_resources` or `mcp_AtlassianMCP_list_resources`) when a direct action tool exists.\n"
     "When asked about real-time or external platform state (such as JIRA tickets, emails, pull requests, calendar, web data, or files), "
     "always search for or use live tools (`tool_search` if not present) to fetch up-to-date data instead of assuming cached memory/vault snapshots are complete or current.\n"
-    "If a required tool is missing from your active tools array, call `tool_search(query='...')` first — "
-    "tools returned by tool_search are IMMEDIATELY callable; you do not need to load, install, or activate them first. "
-    "After tool_search returns a tool name, call that tool directly in your next step."
+    "If a required tool is missing from your active tools array, call `tool_search(query='...')` first. "
+    "Every result carries `kind`: a tool hit marked `status: loaded` — and any tool you fetch with "
+    "`tool_describe(name)` — is added to your tools list; call it directly by its exact `name` in your next step. "
+    "For a tool hit without that status call `tool_describe(name)` first, or use `tool_call(name, arguments)` as the fallback. "
+    "Hits with kind `skill`/`mcp_skill` are not functions: read them with the command in `how_to_use`. "
+    "Never call a name that is neither in your tools list nor returned by tool_search."
 )
 
 # Model name substrings that trigger tool-use enforcement guidance.
@@ -388,14 +429,11 @@ DELIBERATION_AND_REASONING_GUIDANCE = (
 )
 
 PREFER_NATIVE_TOOLS_GUIDANCE = (
-    "# Native Tool Preference & Data Processing Directive\n"
-    "CRITICAL: Avoid using the `terminal` tool or spawning Python/shell scripts for data processing, file reading, or querying that can be accomplished with native core or MCP tools.\n"
-    "- Large Data Payloads & Ingested Records: When any tool returns structured or large data, use the native `sql` tool directly against `~/.hermes/state.db` (`mcp_records`, `sessions`, `messages`, `todos`, etc.) to filter, aggregate, and query data cleanly — NEVER run terminal shell commands, `sqlite3`, or custom Python scripts!\n"
-    "- Reading & Editing Files: Use `read_file`, `write_file`, `patch`, `search_files` — do NOT run `cat`, `grep`, `sed`, `echo`, or Python scripts in the terminal for file operations.\n"
-    "- Task & Memory Management: Use `todo` and `memory` tools — do NOT write custom JSON files via terminal commands.\n"
-    "- External APIs & MCP Tools: Call the specific MCP or core tool directly (`jira_*`, `mcp_*`) with targeted filter parameters (e.g. active user filters, specific date ranges). Do NOT request huge unfiltered payloads or rely on terminal scripts to clean up API results.\n"
-    "- Skills & Workflows: Before starting complex or external tool tasks, scan `<available_skills>` and load applicable skills with `skill_view` / `skills_read` to follow established workflows.\n"
-    "Use `terminal` ONLY when no native tool, MCP tool, or skill exists for the task (e.g. running build tools, git commands, system diagnostics). Spawning Python scripts or CMD shell commands triggers security consent prompts and slows down execution unnecessarily."
+    "# Native tool preference\n"
+    "Call the specific tool for the job with targeted filters (active user, a date range) "
+    "rather than requesting an unfiltered payload and cleaning it up afterwards. "
+    "Spawning shell or Python scripts triggers consent prompts and slows execution; "
+    "see the data-handling ladder for when a shell is the right rung."
 )
 TASK_COMPLETION_GUIDANCE = (
     "# Finishing the job\n"
@@ -1678,7 +1716,7 @@ def build_local_profile_fallback_prompt() -> str:
     """
     return (
         "# Profile (local fallback)\n"
-        "No remote memory service (MCP memory_context) is active in this session. "
+        "No memory vault (MCP memory_context) is active in this session. "
         "Your user profile from USER.md above is the authoritative source for personal context. "
         "Use it when the user asks about their name, role, preferences, or history. "
         "When the user shares new durable profile facts (name, role, preferences, work style), "
@@ -1686,37 +1724,51 @@ def build_local_profile_fallback_prompt() -> str:
     )
 
 
+def build_workspace_prompt(valid_tool_names: "set[str] | None" = None) -> str:
+    """The Obsidian workspace block: where files live and how the vault stays tidy.
+
+    Independent of the memory MCP — an install without it still has the vault
+    (it used to lose this whole block together with the MCP session-init text).
+    Empty when the cwd cannot be resolved.
+    """
+    names = set(valid_tool_names or set())
+    try:
+        workspace_path = str(resolve_agent_cwd())
+    except Exception:
+        return ""
+    obsidian_vault_path = os.environ.get("OBSIDIAN_VAULT_PATH") or os.path.expanduser("~/Documents/AIMDS-Suite-Vault")
+    lookup_tools = [t for t in ("search_files", "read_file", "search_tool") if t in names] or ["search_files", "read_file"]
+    lookup = "/".join(f"`{t}`" for t in lookup_tools)
+    return (
+        "# Workspace (Obsidian vault)\n"
+        f"The active user execution directory / CWD is `{workspace_path}`. Use {lookup} on that path to look things up; "
+        "never invent or guess paths (e.g. `.brain`) that were not returned by a tool.\n"
+        f"The canonical Obsidian Vault root for markdown notes, templates, knowledge, and documents is `{obsidian_vault_path}` "
+        "(contains `_inbox/`, `_templates/`, `contacts/`, `decisions/`, `documents/`, `ideas/`, `journal/`, `knowledge/`, "
+        "`meetings/`, `notes/`, `projects/`, `security/`, `tasks/`, `users/`, `HermesMemory`; every folder has a `_hub.md` — read it before filing).\n"
+        "DEFAULT RULE FOR DOCUMENT/NOTE CREATION & VAULT HYGIENE:\n"
+        f"1. Save all created or generated markdown files, notes, specs, summaries, and meeting records inside `{obsidian_vault_path}/<subfolder>/` "
+        "unless the user explicitly specifies a different custom path or target directory.\n"
+        f"2. CRITICAL DEDUPLICATION RULE: Before creating a new file in the vault, ALWAYS search existing notes (with {lookup} or memory search) "
+        "to check if a canonical note, Hub document (e.g. `[[hub-...]]`), or existing tracking file for the topic already exists. "
+        "If an existing note exists, UPDATE or append to that canonical note instead of creating duplicate/fragmented files with slight name variations (`_neu.md`, `_v2.md`).\n"
+        "3. Structure long-running topics and hubs under `projects/` or `knowledge/`, people under `users/<user>/`, and link related notes via Obsidian wikilinks `[[note-title]]`. "
+        "Use `tasks/` only for short-lived checklists. Keep frontmatter (`type`, `title`, `created`, `updated`, `tags`) as `_conventions.md` prescribes.\n"
+    )
+
+
 def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -> str:
-    """Build a strict session-init block for memory_context when that tool exists."""
+    """Build the storage-strategy + session-init block when the memory MCP is in the session."""
     names = set(valid_tool_names or set())
     tool_name = _resolve_memory_context_tool_name(names)
     if not tool_name:
         return ""
-    skill_read_tool_name = _resolve_memory_skill_read_tool_name(names)
+    skill_read_tool_name = _resolve_memory_skill_read_tool_name(names) or _resolve_memory_tool_name(names, "skill")
     memory_save_tool_name = _resolve_memory_save_tool_name(names)
+    summarize_tool_name = _resolve_memory_tool_name(names, "memory_summarize_session")
     has_clarify = "clarify" in names
-    try:
-        workspace_path = str(resolve_agent_cwd())
-    except Exception:
-        workspace_path = ""
-
-    obsidian_vault_path = os.environ.get("OBSIDIAN_VAULT_PATH") or os.path.expanduser("~/Documents/AIMDS-Suite-Vault")
-
-    workspace_line = (
-        f"The active user execution directory / CWD is `{workspace_path}`. Use `search_tool`/`read_file` on that path to look things up; never invent or guess paths (e.g. `.brain`) that were not returned by a tool.\n"
-        f"The canonical primary Obsidian Vault root for markdown notes, templates, knowledge, and documents is `{obsidian_vault_path}` "
-        "(contains `_inbox/`, `_templates/`, `contacts/`, `decisions/`, `documents/`, `ideas/`, `journal/`, `knowledge/`, `meetings/`, `notes/`, `projects/`, `security/`, `tasks/`, `HermesMemory`).\n"
-        f"DEFAULT RULE FOR DOCUMENT/NOTE CREATION & VAULT HYGIENE:\n"
-        f"1. Save all created or generated markdown files, notes, specs, summaries, and meeting records inside `{obsidian_vault_path}/<subfolder>/` "
-        "unless the user explicitly specifies a different custom path or target directory.\n"
-        "2. CRITICAL DEDUPLICATION RULE: Before creating a new file in the vault, ALWAYS search existing notes (using search_files, read_file, search_tool, or memory search) "
-        "to check if a canonical note, Hub document (e.g. `[[hub-...]]`), or existing tracking file for the topic already exists. "
-        "If an existing note exists, UPDATE or append to that canonical note instead of creating duplicate/fragmented files with slight name variations.\n"
-        "3. Structure long-running topics and hubs under `projects/` or `knowledge/`, and link related notes via Obsidian wikilinks `[[note-title]]`. "
-        "Use `tasks/` only for short-lived checklists.\n"
-        if workspace_path
-        else ""
-    )
+    workspace_line = build_workspace_prompt(names)
+    workspace_path = workspace_line  # truthiness only — see the log line below
 
     onboarding_hint = (
         f"If onboarding hints mention an init/onboarding skill or suggested skills, use `{skill_read_tool_name}` "
@@ -1738,7 +1790,11 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
     onboarding_save_hint = (
         f"When onboarding confirms durable profile facts (name/role/preferences/work style), persist them via `{memory_save_tool_name}` before concluding onboarding.\n"
         if memory_save_tool_name
-        else "When onboarding confirms durable profile facts (name/role/preferences/work style) and no MCP memory_save tool is available, persist them via local `memory` with target=\"user\".\n"
+        else (
+            "When onboarding confirms durable profile facts (name/role/preferences/work style) and no MCP memory_save tool is available, "
+            + ("persist them via local `memory` with target=\"user\".\n" if "memory" in names
+               else "write them to the vault profile note (`users/<user>/profile.md`).\n")
+        )
     )
     logger.debug(
         "memory prompt build: context_tool=%s skill_read_tool=%s memory_save_tool=%s has_clarify=%s",
@@ -1748,16 +1804,30 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
         has_clarify,
     )
 
+    close_hint = (
+        f"SESSION CLOSE: when the work is done or the topic changes, call `{summarize_tool_name}` with a short summary, "
+        "the decisions taken and tags — the runtime also does this at session end as a safety net, but you know the outcome best.\n"
+        if summarize_tool_name else ""
+    )
+    save_hint = (
+        f"persist them immediately via `{memory_save_tool_name}`"
+        if memory_save_tool_name
+        else "persist them in the vault profile note (`users/<user>/profile.md`)"
+    )
     return (
-        "# Memory & Dual-Vault Storage Strategy\n"
-        "- **Local Workspace / Obsidian Vault (Primary, DEFAULT)**: Treat local workspace files, local markdown notes, code, and project artifacts as the primary working store. Use it BY DEFAULT for session files, detailed local notes, and session-specific/working context.\n"
+        "# Memory vault & storage strategy\n"
+        f"- **Memory vault (`{tool_name}` and its sibling memory tools)**: the primary store for durable facts — standing rules, the user profile, "
+        "topic hubs, decisions, session summaries, and what you learn about tools. It is synchronized across devices.\n"
         f"{workspace_line}"
-        f"- **Cross-device AIMDSSuiteMCP Memory Vault (`{tool_name}`)**: Central synchronized store across devices and WebUI interfaces (exclusive primary server: `AIMDSSuiteMCP`). It holds standing rules, the user profile, and topic hubs.\n"
+        "- **Vault files** (the Obsidian workspace above): notes, documents, artifacts, drafts — anything a person opens as a file.\n"
+        "Nothing else is a memory store: the transcript is not, and scratch files are not.\n"
         f"SESSION START: call `{tool_name}` exactly ONCE, before the first substantive tool call of the session, and apply what it returns. This SHRINKS the conversation — rules and hubs you already hold replace re-deriving them from the filesystem, and a hub answers in one read what a directory scan costs in twenty. Do NOT repeat it every turn; one load per session is enough.\n"
         f"BEFORE DERIVING: when a task touches a topic the vault may already document (a repo, a client, a recurring workflow, a past decision), search memory first rather than reconstructing it. A stale hit is still a starting point; an unsearched vault is wasted context.\n"
-        f"WHAT LIVES WHERE: durable facts, standing rules, preferences, contacts and cross-device context belong in the vault. Session-specific working detail stays local — do not push working files into it.\n"
-        f"When the user shares or confirms durable preferences, rules, instructions, or contacts that must be available on every device, persist them immediately via `{memory_save_tool_name or 'memory_save'}` (or local `memory` when no cross-device tool is available) so the central vault stays up to date.\n"
+        "WHAT LIVES WHERE: durable facts, standing rules, preferences, contacts, decisions and cross-device context belong in the vault; "
+        "files, notes and documents belong in the workspace folders. Do not push working files into the vault and do not keep facts only in a file.\n"
+        f"When the user shares or confirms durable preferences, rules, instructions, or contacts, {save_hint} so the vault stays up to date.\n"
         "Use memory read/list/search tools for explicit retrieval or editing tasks.\n"
+        f"{close_hint}"
         f"{onboarding_hint}"
         f"If `{tool_name}` returns onboarding steps, complete that flow before other work. "
         f"{onboarding_flow_hint}"

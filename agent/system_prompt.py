@@ -46,8 +46,9 @@ from agent.prompt_builder import (
     TOOL_SEARCH_ANTI_HALLUCINATION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
-    SQL_AGGREGATION_GUIDANCE,
-    EXECUTIVE_VERIFICATION_GUIDANCE,
+    build_data_handling_guidance,
+    build_hermes_agent_help_guidance,
+    build_workspace_prompt,
 )
 from agent.runtime_cwd import resolve_context_cwd
 
@@ -106,8 +107,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
-    # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+    # Pointer to the docs (+ the hermes-agent skill when skill_view is in the session).
+    stable_parts.append(build_hermes_agent_help_guidance(agent.valid_tool_names))
     # Keep todo persistence preference in the main prompt so the model always
     # knows the canonical todo-storage policy (guarded by "if available").
     stable_parts.append(TODO_PERSISTENCE_GUIDANCE)
@@ -122,6 +123,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         stable_parts.append(DELIBERATION_AND_REASONING_GUIDANCE)
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
         stable_parts.append(PREFER_NATIVE_TOOLS_GUIDANCE)
+        # The data-handling ladder names only tools this session has
+        # (kb_search / tool_search / sql / terminal rungs appear per tool).
+        stable_parts.append(build_data_handling_guidance(agent.valid_tool_names))
 
     # Universal confirmation_required/clarify enforcement — NOT gated by
     # model-name pattern matching (unlike TOOL_USE_ENFORCEMENT_GUIDANCE
@@ -136,8 +140,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     tool_guidance = []
     if "memory" in agent.valid_tool_names:
         tool_guidance.append(MEMORY_GUIDANCE)
-    if "sql" in agent.valid_tool_names:
-        tool_guidance.append(SQL_AGGREGATION_GUIDANCE)
     if "session_search" in agent.valid_tool_names:
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)
     if "skill_manage" in agent.valid_tool_names:
@@ -171,12 +173,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     remote_mcp_memory_prompt = _r.build_remote_mcp_memory_prompt(agent.valid_tool_names)
     if remote_mcp_memory_prompt:
         stable_parts.append(remote_mcp_memory_prompt)
-    elif getattr(agent, "_user_profile_enabled", False):
-        # MCP memory is not available — inject a short note so the model knows to
-        # treat USER.md (already in volatile_parts above) as the profile fallback.
-        local_fallback = _r.build_local_profile_fallback_prompt()
-        if local_fallback:
-            stable_parts.append(local_fallback)
+    else:
+        # No memory MCP in the session: the workspace block still applies (the
+        # vault exists regardless of the MCP), and USER.md is the profile.
+        if agent.valid_tool_names:
+            workspace_prompt = build_workspace_prompt(agent.valid_tool_names)
+            if workspace_prompt:
+                stable_parts.append(workspace_prompt)
+        if getattr(agent, "_user_profile_enabled", False):
+            local_fallback = _r.build_local_profile_fallback_prompt()
+            if local_fallback:
+                stable_parts.append(local_fallback)
 
     outlook_memory_guidance = _r.build_outlook_memory_guidance(agent.valid_tool_names)
     if outlook_memory_guidance:
@@ -454,6 +461,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),
         "context":  "\n\n".join(p.strip() for p in context_parts  if p and p.strip()),
         "volatile": "\n\n".join(p.strip() for p in volatile_parts if p and p.strip()),
+        # Per-block sizes of the stable tier for `hermes prompt-size`: the
+        # first line of each block is its label (usually a "# heading").
+        "stable_blocks": [
+            (p.strip().splitlines()[0][:60], len(p.strip())) for p in stable_parts if p and p.strip()
+        ],
     }
 
 

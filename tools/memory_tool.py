@@ -821,11 +821,11 @@ _OLD_MEMORY_DESCRIPTION = (
 MEMORY_SCHEMA = {
     "name": "memory",
     "description": (
-        "Store durable memory entries across sessions. This is the PRIMARY, default memory "
-        "store — use it for session-specific, detailed, or working information. Use target=user "
-        "for profile, target=memory for notes. NOT for durable cross-device facts that must sync "
-        "across all sessions/devices (user profile, standing preferences, contacts) — prefer the "
-        "cloud/cross-device memory tool for those, when available."
+        "Store durable memory entries across sessions in a small local store "
+        "(a few thousand characters). Use target=user for profile, target=memory for notes. "
+        "When a memory vault tool is in the session (an MCP memory_save/memory_context or "
+        "vault_memory), that vault is the primary store for durable facts, rules, profile and "
+        "decisions — keep this tool for short session-scoped notes."
     ),
     "parameters": {
         "type": "object",

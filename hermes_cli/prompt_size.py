@@ -97,9 +97,15 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
         ("volatile (memory/profile/timestamp)", len(volatile), _bytes(volatile)),
     ]
 
+    stable_blocks = [
+        {"label": label, "chars": chars}
+        for label, chars in (parts.get("stable_blocks") or [])
+    ]
+
     return {
         "platform": platform,
         "model": getattr(agent, "model", "") or "",
+        "stable_blocks": stable_blocks,
         "system_prompt": {"chars": len(full), "bytes": _bytes(full)},
         "skills_index": {"chars": len(skills_index), "bytes": _bytes(skills_index)},
         "memory": {"chars": len(memory_block), "bytes": _bytes(memory_block)},
@@ -133,6 +139,12 @@ def render_breakdown(data: Dict[str, Any]) -> str:
     for label, chars, byts in data["sections"]:
         lines.append(f"    {label:<36}: {byts:>8,} B  ({_fmt_kb(byts)})")
     lines.append("")
+    blocks = data.get("stable_blocks") or []
+    if blocks:
+        lines.append("  Stable-tier blocks (largest first):")
+        for blk in sorted(blocks, key=lambda b: -b["chars"]):
+            lines.append(f"    {blk['label'][:44]:<44}: {blk['chars']:>7,} chars")
+        lines.append("")
     tools = data["tools"]
     lines.append(f"  Tool schemas         : {tools['json_bytes']:>8,} B  ({_fmt_kb(tools['json_bytes'])}, {tools['count']} tools)")
     return "\n".join(lines)
