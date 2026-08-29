@@ -1230,10 +1230,14 @@ def anthropic_prompt_cache_policy(
         or "/litellm/" in eff_base_url.lower()
     )
     if is_iamds_litellm:
-        # AIMDS-Suite / LiteLLM handles prompt caching automatically on the server
-        # side. Client-side cache_control injection is omitted to avoid conflicts
-        # or exceeding Anthropic's breakpoint limits.
-        return False, False
+        # AIMDS-Suite / LiteLLM: the client owns the breakpoints. The proxy's
+        # prompt_cache_hook only ever marked `system` and the last tool, so
+        # the growing conversation was re-sent uncached every turn (~30 %
+        # hit rate measured). We send the OpenAI-wire layout — tools + system
+        # at the prefix TTL, the newest user/assistant messages at 5m; the
+        # hook keeps client markers as they are and LiteLLM maps them per
+        # provider (Anthropic cache_control, Gemini context caching).
+        return True, False
     # Nous Portal Qwen (e.g. qwen3.6-plus) takes the same envelope-layout
     # cache_control path as Portal Claude. Portal proxies to OpenRouter
     # and the upstream Qwen route accepts cache_control markers; without

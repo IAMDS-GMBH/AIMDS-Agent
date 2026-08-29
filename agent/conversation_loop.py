@@ -2202,12 +2202,15 @@ def run_conversation(
             # passing through non-native gateways/proxies (e.g. LiteLLM) that
             # attach cache_control to the tools schema, limit message breakpoints
             # to 3 so the 4-block limit is never exceeded.
+            # Budget of 4: last tool (mark_last_tool in build_api_kwargs) +
+            # system + 2 messages when tools are present; system + 3 otherwise.
             max_bp = 3 if (bool(getattr(agent, "tools", None)) or not agent._use_native_cache_layout) else 4
             api_messages = apply_anthropic_cache_control(
                 api_messages,
-                cache_ttl=agent._cache_ttl,
                 native_anthropic=agent._use_native_cache_layout,
                 max_breakpoints=max_bp,
+                prefix_ttl=agent._cache_ttl,
+                message_ttl=getattr(agent, "_message_cache_ttl", "5m"),
             )
 
         # Safety net: strip orphaned tool results / add stubs for missing

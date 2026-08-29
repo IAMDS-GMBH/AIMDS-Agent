@@ -500,7 +500,10 @@ def init_agent(
     # config.yaml under prompt_caching.cache_ttl; unknown values keep "5m".
     # 1h tier costs 2x on write vs 1.25x for 5m, but amortizes across long
     # sessions with >5-minute pauses between turns (#14971).
+    # `cache_ttl` is the PREFIX tier (tools + system prompt, written once per
+    # session); `message_ttl` covers the moving conversation breakpoints.
     agent._cache_ttl = "5m"
+    agent._message_cache_ttl = "5m"
     try:
         from hermes_cli.config import load_config as _load_pc_cfg
 
@@ -508,6 +511,9 @@ def init_agent(
         _ttl = _pc_cfg.get("cache_ttl", "5m")
         if _ttl in {"5m", "1h"}:
             agent._cache_ttl = _ttl
+        _mttl = _pc_cfg.get("message_ttl", "5m")
+        if _mttl in {"5m", "1h"}:
+            agent._message_cache_ttl = _mttl
     except Exception:
         pass
 
@@ -997,13 +1003,19 @@ def init_agent(
     
     # Show prompt caching status
     if agent._use_prompt_caching and not agent.quiet_mode:
+        _prov = str(getattr(agent, "provider", "") or "").lower()
         if agent._use_native_cache_layout and agent.provider == "anthropic":
             source = "native Anthropic"
         elif agent._use_native_cache_layout:
             source = "Anthropic-compatible endpoint"
+        elif _prov.startswith(("aimds", "iamds")):
+            source = "AIMDS Suite via LiteLLM"
         else:
-            source = "Claude via OpenRouter"
-        print(f"💾 Prompt caching: ENABLED ({source}, {agent._cache_ttl} TTL)")
+            source = "OpenAI-compatible gateway"
+        print(
+            f"💾 Prompt caching: ENABLED ({source}, prefix {agent._cache_ttl} / "
+            f"messages {getattr(agent, '_message_cache_ttl', '5m')} TTL)"
+        )
     
     # Session logging setup - auto-save conversation trajectories for debugging
     agent.session_start = datetime.now()

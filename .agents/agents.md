@@ -56,7 +56,7 @@ If multiple PRs target same integration category (providers/backends/notifiers),
 - Secrets only in `.env` (keys/tokens/passwords).
 - Behavioral settings belong in `config.yaml`, not new user-facing `HERMES_*` env vars.
 - Canonical AIMDS Suite provider instance keys are `aimds-suite-prod` (`suite.iamds.com`), `aimds-suite-staging` (`staging.suite.iamds.com`), and `aimds-suite-dev` (`dev.suite.iamds.com`). Custom domains (e.g. `https://<custom-domain>/litellm/mcp/`) are dynamically resolved from the configured provider `base_url`. Legacy `iamds-litellm*` aliases are preserved for backward compatibility.
-- AIMDS Suite endpoints handle prompt caching server-side (via `prompt_cache_hook.py`); Hermes client-side `cache_control` injection is omitted (`anthropic_prompt_cache_policy` returns `False`) to prevent breakpoint conflicts.
+- AIMDS Suite endpoints: Hermes owns the cache breakpoints (`anthropic_prompt_cache_policy` returns `(True, False)`): last tool + system prompt at `prompt_caching.cache_ttl` (1h by policy), the newest user/assistant messages at `prompt_caching.message_ttl` (5m). The proxy's `prompt_cache_hook.py` keeps client markers untouched and only adds its own when a request carries none.
 - Request timeouts default to 180s in `config.yaml` for AIMDS Suite endpoints.
 - API calls scale timeouts exponentially on retries (`2 ** retry_count` multiplier). Live progress status notifications must inform the user during retry attempts, and terminal API errors must be formatted as friendly, actionable messages rather than raw technical stack/string dumps.
 - Use profile-aware paths:

@@ -561,6 +561,15 @@ def build_api_kwargs(agent, api_messages: list, retry_count: int = 0) -> dict:
     except Exception:
         pass
     tools_for_api = agent.tools
+    # Prompt caching: the last tool carries the prefix-tier breakpoint (a
+    # copy — deferred tools are appended to agent.tools mid-session).
+    if getattr(agent, "_use_prompt_caching", False) and tools_for_api:
+        try:
+            from agent.prompt_caching import mark_last_tool
+
+            tools_for_api = mark_last_tool(tools_for_api, getattr(agent, "_cache_ttl", "5m"))
+        except Exception:
+            tools_for_api = agent.tools
 
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()

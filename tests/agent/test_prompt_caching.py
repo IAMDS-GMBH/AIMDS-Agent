@@ -158,3 +158,90 @@ class TestApplyAnthropicCacheControl:
             elif "cache_control" in msg:
                 count += 1
         assert count == 3
+
+
+
+# ---------------------------------------------------------------------------
+# Prefix/message TTL split and the last-tool breakpoint (LiteLLM layout)
+# ---------------------------------------------------------------------------
+
+from agent.prompt_caching import mark_last_tool  # noqa: E402
+
+
+def _conv():
+    return [
+        {"role": "system", "content": "SYSTEM PROMPT " * 300},
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "1", "type": "function", "function": {"name": "sql", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "1", "content": "rows"},
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "content": "second"},
+    ]
+
+
+class TestPrefixAndMessageTtl:
+    def test_system_takes_prefix_ttl_and_messages_take_message_ttl(self):
+        out = apply_anthropic_cache_control(_conv(), native_anthropic=False, max_breakpoints=3, prefix_ttl="1h", message_ttl="5m")
+        assert out[0]["content"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+        marked = [m for m in out[1:] if any("cache_control" in (c if isinstance(c, dict) else {}) for c in (m.get("content") or []) if isinstance(m.get("content"), list)) or "cache_control" in m]
+        assert [m["role"] for m in marked] == ["assistant", "user"]  # newest two markable messages
+        for m in marked:
+            cc = m.get("cache_control") or m["content"][-1]["cache_control"]
+            assert cc == {"type": "ephemeral"}  # 5m carries no ttl key
+
+    def test_openai_layout_skips_tool_messages_and_marks_earlier_ones(self):
+        msgs = _conv() + [
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "2", "type": "function", "function": {"name": "sql", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "2", "content": "rows2"},
+            {"role": "tool", "tool_call_id": "3", "content": "rows3"},
+        ]
+        out = apply_anthropic_cache_control(msgs, native_anthropic=False, max_breakpoints=3, prefix_ttl="1h")
+        assert "cache_control" not in out[-1] and "cache_control" not in out[-2]
+        assert out[-3]["cache_control"] == {"type": "ephemeral"}  # assistant with tool_calls (content None → envelope)
+        assert out[5]["content"][0]["cache_control"] == {"type": "ephemeral"}  # "second" user message
+
+    def test_native_layout_may_mark_tool_messages(self):
+        out = apply_anthropic_cache_control(_conv(), native_anthropic=True, max_breakpoints=4, prefix_ttl="1h")
+        assert out[3]["cache_control"] == {"type": "ephemeral"}
+
+    def test_legacy_single_ttl_argument_still_sets_both(self):
+        out = apply_anthropic_cache_control(_conv(), cache_ttl="1h", max_breakpoints=2)
+        assert out[0]["content"][0]["cache_control"]["ttl"] == "1h"
+        assert out[-1]["content"][0]["cache_control"]["ttl"] == "1h"
+
+
+class TestMarkLastTool:
+    def _tools(self):
+        return [
+            {"type": "function", "function": {"name": "a", "parameters": {}}},
+            {"type": "function", "function": {"name": "b", "parameters": {}}},
+        ]
+
+    def test_marks_a_copy_and_leaves_the_agent_list_alone(self):
+        tools = self._tools()
+        marked = mark_last_tool(tools, "1h")
+        assert marked[-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+        assert "cache_control" not in tools[-1] and marked[0] is tools[0]
+
+    def test_after_a_deferred_load_only_the_new_last_tool_is_marked(self):
+        tools = self._tools()
+        first = mark_last_tool(tools, "1h")
+        tools.append({"type": "function", "function": {"name": "c", "parameters": {}}})
+        second = mark_last_tool(tools, "1h")
+        assert sum("cache_control" in t for t in second) == 1 and second[-1]["function"]["name"] == "c"
+        assert sum("cache_control" in t for t in first) == 1
+
+    def test_existing_marker_is_kept_and_empty_lists_pass_through(self):
+        tools = [{"type": "function", "function": {"name": "a"}, "cache_control": {"type": "ephemeral"}}]
+        assert mark_last_tool(tools, "1h")[-1]["cache_control"] == {"type": "ephemeral"}
+        assert mark_last_tool([], "1h") == [] and mark_last_tool(None, "1h") is None
+
+
+def test_full_request_layout_has_four_breakpoints_in_anthropic_order():
+    """last tool (1h) → system (1h) → two newest messages (5m)."""
+    tools = mark_last_tool([{"type": "function", "function": {"name": "x"}}], "1h")
+    msgs = apply_anthropic_cache_control(_conv(), native_anthropic=False, max_breakpoints=3, prefix_ttl="1h", message_ttl="5m")
+    markers = [tools[-1]["cache_control"], msgs[0]["content"][0]["cache_control"]]
+    markers += [m.get("cache_control") or m["content"][-1]["cache_control"] for m in msgs[1:] if "cache_control" in m or (isinstance(m.get("content"), list) and "cache_control" in m["content"][-1])]
+    assert len(markers) == 4
+    assert [mk.get("ttl", "5m") for mk in markers] == ["1h", "1h", "5m", "5m"]

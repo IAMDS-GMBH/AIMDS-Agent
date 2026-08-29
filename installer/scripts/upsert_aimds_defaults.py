@@ -29,7 +29,7 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
     from utils import advisory_file_lock, atomic_yaml_write
 
-_AIMDS_DEFAULTS_VERSION = 16
+_AIMDS_DEFAULTS_VERSION = 17
 _AIMDS_DEFAULTS_VERSION_KEY = "aimds_defaults_version"
 
 # ---------------------------------------------------------------------------
@@ -54,6 +54,7 @@ _AIMDS_ENFORCED_POLICY = (
     "tools.tool_search.search_default_limit",
     "tools.tool_search.max_search_limit",
     "prompt_caching.cache_ttl",
+    "prompt_caching.message_ttl",
     "memory.enforce_initial_memory_context",
     "memory.session_start_compact_workspace_hydration",
     "memory.session_start_bootstrap_contract_enabled",
@@ -396,8 +397,12 @@ def upsert_aimds_defaults(config: dict, fetch=None, lines: list[str] | None = No
     tool_search["search_default_limit"] = 8
     tool_search["max_search_limit"] = 20
 
+    # Prefix tier (tools + system prompt, written once per session) at 1h so
+    # pauses > 5 min and cron runs within the hour still hit; the moving
+    # conversation breakpoints stay on 5m.
     prompt_caching = _ensure_dict(cfg, "prompt_caching")
-    prompt_caching["cache_ttl"] = "5m"
+    prompt_caching["cache_ttl"] = "1h"
+    prompt_caching["message_ttl"] = "5m"
 
     memory = _ensure_dict(cfg, "memory")
     # The session-start memory_context load is deterministic (the SOUL asks
