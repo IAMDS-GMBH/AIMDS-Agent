@@ -11697,6 +11697,12 @@ def cmd_insights(args):
         from agent.insights import InsightsEngine
 
         db = SessionDB()
+        if getattr(args, "cache", False):
+            from agent.cache_insights import cache_report, format_cache_report
+
+            print(format_cache_report(cache_report(db, days=args.days, session_id=getattr(args, "session", None))))
+            db.close()
+            return
         engine = InsightsEngine(db)
         report = engine.generate(days=args.days, source=args.source)
         print(engine.format_terminal(report))

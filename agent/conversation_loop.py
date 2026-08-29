@@ -2027,63 +2027,27 @@ def run_conversation(
             except Exception as _step_err:
                 logger.debug("step_callback error (iteration %s): %s", api_call_count, _step_err)
 
-        # Track tool-calling iterations for skill nudge.
-        # Counter resets whenever skill_manage is actually used.
-        if (agent._skill_nudge_interval > 0
-                and "skill_manage" in agent.valid_tool_names):
-            agent._iters_since_skill += 1
-        
-        # ── Pre-API-call /steer drain ──────────────────────────────────
-        # If a /steer arrived during the previous API call (while the model
-        # was thinking), drain it now — before we build api_messages — so
-        # the model sees the steer text on THIS iteration.  Without this,
-        # steers sent during an API call only land after the NEXT tool batch,
-        # which may never come if the model returns a final response.
-        #
-        # We scan backwards for the last tool-role message in the messages
-        # list.  If found, the steer is appended there.  If not (first
-        # iteration, no tools yet), the steer stays pending for the next
-        # tool batch — injecting into a user message would break role
-        # alternation, and there's no tool output to piggyback on.
+        # Pre-API-call steer drain: a steer sent during the previous API call
+        # becomes its own user message at the end of the history
+        # (agent/steer_injection.py). It used to be appended to the last tool
+        # message — rewriting a message before the cache breakpoints threw
+        # the cached conversation prefix away on every steer. With no tool
+        # result yet (first iteration) it stays pending for the post-tool drain.
         _pre_api_steer = agent._drain_pending_steer()
         if _pre_api_steer:
-            _injected = False
-            for _si in range(len(messages) - 1, -1, -1):
-                _sm = messages[_si]
-                if isinstance(_sm, dict) and _sm.get("role") == "tool":
-                    from agent.prompt_builder import format_steer_marker
-                    marker = format_steer_marker(_pre_api_steer)
-                    existing = _sm.get("content", "")
-                    if isinstance(existing, str):
-                        _sm["content"] = existing + marker
-                    else:
-                        # Multimodal content blocks — append text block
-                        try:
-                            blocks = list(existing) if existing else []
-                            blocks.append({"type": "text", "text": marker})
-                            _sm["content"] = blocks
-                        except Exception:
-                            pass
-                    _injected = True
-                    logger.debug(
-                        "Pre-API-call steer drain: injected into tool msg at index %d",
-                        _si,
-                    )
-                    break
-            if not _injected:
-                # No tool message to inject into — put it back so
-                # the post-tool-execution drain picks it up later.
+            from agent.steer_injection import inject_pre_api_steer
+
+            if inject_pre_api_steer(messages, _pre_api_steer):
+                logger.debug("Pre-API-call steer drain: appended as user message (prefix cache kept)")
+            else:
+                # No tool result yet — put it back for the post-tool drain.
                 _lock = getattr(agent, "_pending_steer_lock", None)
                 if _lock is not None:
                     with _lock:
-                        if agent._pending_steer:
-                            agent._pending_steer = agent._pending_steer + "\n" + _pre_api_steer
-                        else:
-                            agent._pending_steer = _pre_api_steer
+                        agent._pending_steer = (agent._pending_steer + "\n" + _pre_api_steer) if agent._pending_steer else _pre_api_steer
                 else:
-                    existing = getattr(agent, "_pending_steer", None)
+                    existing = getattr(agent, "_pending_steer", "")
                     agent._pending_steer = (existing + "\n" + _pre_api_steer) if existing else _pre_api_steer
-
         # Prepare messages for API call
         # If we have an ephemeral system prompt, prepend it to the messages
         # Note: Reasoning is embedded in content via <think> tags for trajectory storage.
@@ -2582,6 +2546,7 @@ def run_conversation(
                 )
                 
                 api_duration = time.time() - api_start_time
+                agent._last_api_duration = api_duration
                 
                 # Stop thinking spinner silently -- the response box or tool
                 # execution messages that follow are more informative.
@@ -3213,6 +3178,32 @@ def run_conversation(
                     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
                     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
                     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+
+                    # One api_calls row per request (served model, cache
+                    # accounting, latency) — the session totals cannot show
+                    # a mid-session model switch or a per-call cache miss.
+                    if agent._session_db and agent.session_id:
+                        try:
+                            _served = getattr(response, "served_model", None) or getattr(response, "model", None)
+                            _pd = getattr(response, "provider_data", None) or {}
+                            if not _served and isinstance(_pd, dict):
+                                _served = _pd.get("served_model")
+                            agent._session_db.record_api_call(
+                                agent.session_id,
+                                requested_model=agent.model,
+                                served_model=str(_served or ""),
+                                provider=str(agent.provider or ""),
+                                input_tokens=canonical_usage.input_tokens,
+                                cache_read_tokens=canonical_usage.cache_read_tokens,
+                                cache_write_tokens=canonical_usage.cache_write_tokens,
+                                output_tokens=canonical_usage.output_tokens,
+                                prompt_tokens=prompt_tokens,
+                                tools_count=len(getattr(agent, "tools", None) or []),
+                                breakpoints=(4 if getattr(agent, "tools", None) else 3) if getattr(agent, "_use_prompt_caching", False) else 0,
+                                latency_ms=int((getattr(agent, "_last_api_duration", 0.0) or 0.0) * 1000),
+                            )
+                        except Exception as _rec_exc:
+                            logger.debug("api_calls record skipped: %s", _rec_exc)
 
                     # Log API call details for debugging/observability
                     _cache_pct = ""

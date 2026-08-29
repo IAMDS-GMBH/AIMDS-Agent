@@ -156,6 +156,9 @@ class AnthropicTransport(ProviderTransport):
         provider_data = {}
         if reasoning_details:
             provider_data["reasoning_details"] = reasoning_details
+        served = getattr(response, "model", None)
+        if served:
+            provider_data["served_model"] = str(served)
         # Only worth carrying the ordered-blocks channel when the turn
         # actually interleaves signed thinking with tool_use — that's the
         # only shape the parallel lists reconstruct incorrectly. A turn that

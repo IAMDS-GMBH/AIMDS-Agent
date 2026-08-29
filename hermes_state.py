@@ -507,6 +507,28 @@ CREATE TABLE IF NOT EXISTS compression_locks (
     expires_at REAL NOT NULL
 );
 
+-- One row per LLM API call: what the client sent vs. what the proxy served,
+-- and the provider's cache accounting. Session rows only hold totals, which
+-- cannot show a mid-session model switch or a per-call cache miss.
+CREATE TABLE IF NOT EXISTS api_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    ts REAL NOT NULL,
+    requested_model TEXT,
+    served_model TEXT,
+    provider TEXT,
+    input_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    prompt_tokens INTEGER DEFAULT 0,
+    tools_count INTEGER DEFAULT 0,
+    breakpoints INTEGER DEFAULT 0,
+    latency_ms INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_api_calls_session ON api_calls(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_api_calls_ts ON api_calls(ts);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
@@ -1471,6 +1493,57 @@ class SessionDB:
                 (model, session_id),
             )
         self._execute_write(_do)
+
+    API_CALLS_RETENTION_DAYS = 30
+
+    def record_api_call(
+        self,
+        session_id: str,
+        *,
+        requested_model: str = "",
+        served_model: str = "",
+        provider: str = "",
+        input_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        output_tokens: int = 0,
+        prompt_tokens: int = 0,
+        tools_count: int = 0,
+        breakpoints: int = 0,
+        latency_ms: int = 0,
+    ) -> None:
+        """Append one api_calls row; prunes rows older than the retention window."""
+        if not session_id:
+            return
+        now = time.time()
+
+        def _insert(conn):
+            conn.execute(
+                """INSERT INTO api_calls (session_id, ts, requested_model, served_model, provider,
+                   input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, prompt_tokens,
+                   tools_count, breakpoints, latency_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    session_id, now, str(requested_model or ""), str(served_model or ""), str(provider or ""),
+                    int(input_tokens or 0), int(cache_read_tokens or 0), int(cache_write_tokens or 0),
+                    int(output_tokens or 0), int(prompt_tokens or 0), int(tools_count or 0), int(breakpoints or 0),
+                    int(latency_ms or 0),
+                ),
+            )
+            conn.execute("DELETE FROM api_calls WHERE ts < ?", (now - self.API_CALLS_RETENTION_DAYS * 86400,))
+
+        self._execute_write(_insert)
+
+    def get_api_calls(self, session_id: Optional[str] = None, days: Optional[int] = None) -> List[Dict[str, Any]]:
+        """api_calls rows (oldest first), optionally for one session / a window."""
+        clauses, params = [], []
+        if session_id:
+            clauses.append("session_id = ?"); params.append(session_id)
+        if days:
+            clauses.append("ts >= ?"); params.append(time.time() - days * 86400)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._lock:
+            rows = self._conn.execute(f"SELECT * FROM api_calls{where} ORDER BY ts ASC, id ASC", params).fetchall()
+        return [dict(r) for r in rows]
 
     def update_token_counts(
         self,

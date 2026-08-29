@@ -108,6 +108,11 @@ class NormalizedResponse:
     usage: Usage | None = None
     provider_data: dict[str, Any] | None = field(default=None, repr=False)
 
+    @property
+    def served_model(self) -> str | None:
+        """Model name reported by the provider/gateway for this response."""
+        return (self.provider_data or {}).get("served_model")
+
     # ── Backward compatibility ──────────────────────────────────
     # The shim _nr_to_assistant_message() mapped these from provider_data.
     # These properties let NormalizedResponse pass through directly.

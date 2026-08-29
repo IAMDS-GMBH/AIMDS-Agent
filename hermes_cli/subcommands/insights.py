@@ -22,4 +22,11 @@ def build_insights_parser(subparsers, *, cmd_insights: Callable) -> None:
     insights_parser.add_argument(
         "--source", help="Filter by platform (cli, telegram, discord, etc.)"
     )
+    insights_parser.add_argument(
+        "--cache", action="store_true",
+        help="Prompt-cache report per request: hit rate, steady-state rate, served-model switches",
+    )
+    insights_parser.add_argument(
+        "--session", help="With --cache: one session id instead of the window"
+    )
     insights_parser.set_defaults(func=cmd_insights)

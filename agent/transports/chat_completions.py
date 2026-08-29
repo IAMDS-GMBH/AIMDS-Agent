@@ -665,6 +665,11 @@ class ChatCompletionsTransport(ProviderTransport):
                 reasoning_content = model_extra["reasoning_content"]
 
         provider_data: Dict[str, Any] = {}
+        # The model the gateway actually served (LiteLLM's AIMDS-Suite-Auto
+        # resolves to a concrete deployment) — visible per call in insights.
+        served = getattr(response, "model", None)
+        if served:
+            provider_data["served_model"] = str(served)
         if reasoning_content is not None:
             provider_data["reasoning_content"] = reasoning_content
         rd = getattr(msg, "reasoning_details", None)
