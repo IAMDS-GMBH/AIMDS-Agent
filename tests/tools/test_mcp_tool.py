@@ -4720,3 +4720,16 @@ class TestReconnectMcpServer:
             result = reconnect_mcp_server("removed")
 
         assert result == ["mcp_other_tool"]
+
+
+def test_tempo_tools_get_a_description_when_the_server_ships_none():
+    """@ivelin-web/tempo-mcp-server registers tools without descriptions; the
+    catalog saw "MCP tool retrieveWorklogs from TempoMCP" and ranked it below
+    every described Jira tool."""
+    from tools.mcp_tool import _convert_mcp_schema
+    from tests.tools.test_mcp_tool import _make_mcp_tool  # noqa: F401
+
+    tool = _make_mcp_tool(name="retrieveWorklogs", description="")
+    schema = _convert_mcp_schema("TempoMCP", tool)
+    assert "date range" in schema["description"]
+    assert "jira_get_worklog" in schema["description"]

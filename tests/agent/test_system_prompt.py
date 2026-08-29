@@ -221,3 +221,17 @@ class TestToolUseEnforcementWithToolSearch:
         )
         stable = _stable_prompt(agent)
         assert "# Confirmation-required tool results" in stable
+
+
+class TestChoicesAreClickableAndPlansComeFirst:
+    def test_options_go_into_clarify_choices(self):
+        agent = _make_agent(valid_tool_names=["clarify"], platform="cli")
+        stable = _stable_prompt(agent)
+        assert "put them into `clarify` as `choices`" in stable
+
+    def test_a_request_for_the_plan_is_answered_with_the_plan(self):
+        agent = _make_agent(valid_tool_names=["tool_search", "clarify"], _tool_use_enforcement="auto",
+                            model="AIMDS-Suite-Auto", platform="cli")
+        stable = _stable_prompt(agent)
+        assert "the plan IS the deliverable" in stable
+        assert "start executing only after the user picks one" in stable

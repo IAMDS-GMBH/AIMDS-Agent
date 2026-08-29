@@ -4293,6 +4293,32 @@ _MCP_TOOL_DESCRIPTION_NOTES: Dict[Tuple[str, str], str] = {
         "Connect, and follow the on-screen instructions there rather than "
         "asking them to paste a token manually."
     ),
+    # @ivelin-web/tempo-mcp-server registers its tools with a schema but no
+    # description, so the catalog saw "MCP tool retrieveWorklogs from TempoMCP"
+    # and ranked the tool below every described Jira tool — the model then
+    # fetched worklogs issue by issue. Say what the tool does.
+    ("TempoMCP", "retrieveWorklogs"): (
+        " Retrieve Tempo worklogs (time bookings) for a date range: `startDate`/`endDate` "
+        "as YYYY-MM-DD, by default only the authenticated user's own entries. ONE call "
+        "replaces per-issue `jira_get_worklog` loops for hour totals, timesheets and "
+        "monthly worklog analysis; fetch month by month for long ranges."
+    ),
+    ("TempoMCP", "getWorklogAnalytics"): (
+        " Aggregated Tempo worklog analytics for a date range (`startDate`/`endDate`, "
+        "YYYY-MM-DD): hours per issue/day for the authenticated user."
+    ),
+    ("TempoMCP", "getMissingWorklogDays"): (
+        " Working days in a date range (`startDate`/`endDate`, YYYY-MM-DD) without a "
+        "Tempo booking for the authenticated user."
+    ),
+    ("TempoMCP", "createWorklog"): (
+        " Book time in Tempo on one issue (`issueKey`, date, hours/`timeSpentSeconds`, description)."
+    ),
+    ("TempoMCP", "bulkCreateWorklogs"): (
+        " Book several Tempo worklogs in one call (list of issueKey/date/time entries)."
+    ),
+    ("TempoMCP", "editWorklog"): (" Edit an existing Tempo worklog by id."),
+    ("TempoMCP", "deleteWorklog"): (" Delete a Tempo worklog by id."),
     ("AtlassianMCP", "jira_add_worklog"): (
         " NOTE: always pass an explicit `started` timestamp reflecting when "
         "the work actually began, and derive `time_spent` from the real "

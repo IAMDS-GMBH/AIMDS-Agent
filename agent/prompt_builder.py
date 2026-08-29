@@ -316,7 +316,12 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "the task, use them instead of telling the user what you would do.\n"
     "Every response should either (a) contain tool calls that make progress, or "
     "(b) deliver a final result to the user. Responses that only describe intentions "
-    "without acting are not acceptable."
+    "without acting are not acceptable.\n"
+    "Exception — the user asked for the plan: when the message asks how you would "
+    "proceed, what you would do, or for an approach ('Wie würdest du vorgehen?'), the "
+    "plan IS the deliverable. Look things up only as far as the plan needs it, present "
+    "the steps, and hand the decision back with `clarify` choices; start executing only "
+    "after the user picks one."
 )
 
 def build_data_handling_guidance(valid_tool_names: "set[str] | None" = None) -> str:
@@ -480,7 +485,10 @@ CONFIRMATION_REQUIRED_ENFORCEMENT = (
     "forces the user to type free text. Ending your turn without calling "
     "`clarify` here is a hard error, not a style choice; only re-call the "
     "original tool with confirm=true after `clarify` returns an affirmative "
-    "answer."
+    "answer.\n"
+    "The same applies whenever you end a reply by offering the user options "
+    "('Variante 1 / Variante 2', 'shall I A or B?'): put them into `clarify` as "
+    "`choices` (max 4, short labels) so the user can click instead of typing a number."
 )
 
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes

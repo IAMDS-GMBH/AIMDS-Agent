@@ -4,6 +4,7 @@ into local SQLite table 'mcp_records' in ~/.hermes/state.db.
 """
 
 import json
+import re
 import logging
 import sqlite3
 import uuid
@@ -183,24 +184,50 @@ def _extract_items(data: Any) -> List[Dict[str, Any]]:
     return []
 
 
-def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str) -> Tuple:
+def _parse_duration(value: Any) -> int:
+    """Seconds from an int, a numeric string, or a Jira-style "1h 30m"."""
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value or "").strip().lower()
+    if not text:
+        return 0
+    try:
+        return int(float(text))
+    except ValueError:
+        pass
+    total = 0
+    for amount, unit in re.findall(r"(\d+(?:[.,]\d+)?)\s*([wdhm])", text):
+        amount = float(amount.replace(",", "."))
+        total += amount * {"w": 5 * 8 * 3600, "d": 8 * 3600, "h": 3600, "m": 60}[unit]
+    return int(total)
+
+
+def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fallback_ref: str = "") -> Tuple:
     """Extract structured fields from a single item dict."""
     record_id = str(item.get("id") or item.get("key") or item.get("case_id") or uuid.uuid4().hex)
 
-    # Reference Key (issue key, ticket key, case ID, etc.)
+    # Reference Key (issue key, ticket key, case ID, etc.) — for per-issue
+    # tools (jira_get_worklog) the key is only in the request, not the reply.
     ref_key = (
         item.get("issueKey")
+        or item.get("issue_key")
         or item.get("key")
         or item.get("ticket_id")
         or item.get("case_id")
         or (item.get("issue") if isinstance(item.get("issue"), str) else (item.get("issue") or {}).get("key"))
+        or fallback_ref
         or ""
     )
 
     # Timestamp
     timestamp = (
         item.get("started")
+        or item.get("startDate")
+        or item.get("start_date")
         or item.get("created_at")
+        or item.get("created")
         or item.get("date")
         or item.get("createdAt")
         or item.get("updated_at")
@@ -214,13 +241,17 @@ def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str) -> T
     else:
         user_id = str(author or "")
 
-    # Duration in seconds
-    duration = item.get("timeSpentSeconds") or item.get("duration_seconds") or item.get("seconds") or item.get("duration") or 0
-    if not isinstance(duration, (int, float)):
-        try:
-            duration = int(duration)
-        except (ValueError, TypeError):
-            duration = 0
+    # Duration in seconds (camelCase, snake_case, or "1h 30m")
+    duration = _parse_duration(
+        item.get("timeSpentSeconds")
+        or item.get("time_spent_seconds")
+        or item.get("duration_seconds")
+        or item.get("seconds")
+        or item.get("duration")
+        or item.get("timeSpent")
+        or item.get("time_spent")
+        or 0
+    )
 
     # Category / Type / Status
     category = item.get("category") or item.get("type") or item.get("status") or item.get("case_status") or "default"
@@ -246,17 +277,105 @@ def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str) -> T
     )
 
 
+_NON_DATA_TOOL_MARKERS = ("memory", "_skill", "skill_", "kb_", "web_search", "web_fetch", "list_resources", "read_resource", "list_prompts", "get_prompt")
+_BRIDGE_TOOLS = frozenset({"tool_search", "tool_describe", "tool_call"})
+
+
+def should_ingest_tool(tool_name: str) -> bool:
+    """Only results of *data* tools belong in mcp_records.
+
+    The bridge tools (tool_search/describe/call), the core tools (sql, file
+    and terminal tools, todo …), memory/skill/knowledge-base tools and the
+    MCP resource/prompt utilities return JSON too; ingesting them produced one
+    junk row per call ("Auto-ingested 1 records" on every tool_search, on every
+    memory_context) and polluted the table the sql tool aggregates.
+    """
+    name = str(tool_name or "")
+    if not name or name in _BRIDGE_TOOLS:
+        return False
+    try:
+        from toolsets import _HERMES_CORE_TOOLS
+
+        if name in _HERMES_CORE_TOOLS:
+            return False
+    except Exception:
+        pass
+    lowered = name.lower()
+    return not any(marker in lowered for marker in _NON_DATA_TOOL_MARKERS)
+
+
+def _is_error_payload(data: Any) -> bool:
+    """`{"error": …}` (optionally wrapped in {"result": …}) is not a record."""
+    if not isinstance(data, dict):
+        return False
+    if data.get("error") and not any(isinstance(data.get(k), list) for k in ("worklogs", "issues", "items", "results")):
+        return True
+    res = data.get("result")
+    if isinstance(res, str):
+        stripped = res.strip()
+        if stripped.startswith("{"):
+            try:
+                return _is_error_payload(json.loads(stripped))
+            except Exception:
+                return False
+        return False
+    return _is_error_payload(res) if isinstance(res, dict) else False
+
+
+_NESTED_WORKLOG_KEYS = ("worklog", "worklogs")
+
+
+def _flatten_nested_worklogs(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Issues that carry their worklogs (jira_search with fields=worklog) become
+    one record per worklog, tagged with the issue key — the query the user
+    actually wants (`SUM(duration_seconds) GROUP BY reference_key`) needs the
+    booking rows, not the issue container with 0 hours."""
+    out: List[Dict[str, Any]] = []
+    for item in items:
+        out.append(item)
+        issue_key = item.get("key") or item.get("issueKey") or ""
+        containers = [item, item.get("fields") if isinstance(item.get("fields"), dict) else {}]
+        for container in containers:
+            wl = container.get("worklog")
+            wl_list = wl.get("worklogs") if isinstance(wl, dict) else (wl if isinstance(wl, list) else None)
+            if not wl_list and isinstance(container.get("worklogs"), list) and container is not item:
+                wl_list = container.get("worklogs")
+            if not isinstance(wl_list, list):
+                continue
+            for entry in wl_list:
+                if not isinstance(entry, dict):
+                    continue
+                row = dict(entry)
+                row.setdefault("issueKey", issue_key)
+                row.setdefault("type", "worklog")
+                out.append(row)
+    return out
+
+
+def _reference_key_from_args(tool_args: Any) -> str:
+    if not isinstance(tool_args, dict):
+        return ""
+    for key in ("issue_key", "issueKey", "issue", "key", "ticket", "ticket_id", "case_id"):
+        val = tool_args.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
+
+
 def try_auto_ingest_json(
     content: str,
     tool_name: str = "mcp",
     tool_use_id: str = "",
     db_path: Optional[Path] = None,
+    tool_args: Optional[Dict[str, Any]] = None,
 ) -> int:
     """Attempt to parse content as JSON and ingest into SQLite mcp_records table.
 
     Returns the number of records ingested (0 if content is not JSON or has no items).
     """
     if not content or not isinstance(content, str):
+        return 0
+    if not should_ingest_tool(tool_name):
         return 0
 
     content_strip = content.strip()
@@ -276,11 +395,15 @@ def try_auto_ingest_json(
     except Exception:
         return 0
 
-    items = _extract_items(data)
+    if _is_error_payload(data):
+        return 0
+
+    items = _flatten_nested_worklogs(_extract_items(data))
+    fallback_ref = _reference_key_from_args(tool_args)
     if not items:
         return 0
 
-    records = [_extract_fields(item, tool_name, tool_use_id) for item in items]
+    records = [_extract_fields(item, tool_name, tool_use_id, fallback_ref) for item in items]
 
     try:
         conn = get_db_connection(db_path)

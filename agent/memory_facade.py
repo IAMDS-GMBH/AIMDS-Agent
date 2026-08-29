@@ -476,6 +476,19 @@ _SUMMARY_PROMPT = (
 )
 
 
+def _main_runtime(agent) -> Dict[str, Any]:
+    """The session's own model/provider as the auxiliary fallback (see
+    ContextCompressor._generate_summary — without it, `auxiliary.*: auto`
+    resolves to nothing on an install that only has the LiteLLM provider)."""
+    return {
+        "model": getattr(agent, "model", None),
+        "provider": getattr(agent, "provider", None),
+        "base_url": getattr(agent, "base_url", None),
+        "api_key": getattr(agent, "api_key", None),
+        "api_mode": getattr(agent, "api_mode", None),
+    }
+
+
 def _count_user_turns(messages: List[Dict[str, Any]]) -> int:
     return sum(1 for m in messages or [] if isinstance(m, dict) and m.get("role") == "user")
 
@@ -523,6 +536,7 @@ def summarize_session_into_memory(agent, messages: List[Dict[str, Any]], *, reas
 
         response = call_llm(
             task="compression",
+            main_runtime=_main_runtime(agent),
             messages=[{"role": "user", "content": _SUMMARY_PROMPT + excerpt}],
             max_tokens=700,
         )

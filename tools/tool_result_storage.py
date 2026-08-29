@@ -26,6 +26,7 @@ import logging
 import os
 import shlex
 import uuid
+from typing import Any, Dict, Optional
 
 from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
@@ -158,7 +159,18 @@ def _build_persisted_message(
     msg += f"Full output saved to: {file_path}\n"
     if ingest_count > 0:
         msg += _build_ingest_hint(tool_name, ingest_count, sql_available=sql_available) + "\n"
-    msg += "Use the read_file tool with offset and limit to access specific sections of this output.\n\n"
+        if sql_available:
+            # Reading the saved file back costs the context the persistence
+            # just saved (a 96k payload becomes a 96k read_file); the rows
+            # are already in SQLite. Point at the query, not the file.
+            msg += (
+                "Do NOT read the saved file back with read_file — query `mcp_records` with the "
+                "`sql` tool instead; the file is only for a spot check of a single row.\n\n"
+            )
+        else:
+            msg += "Use the read_file tool with offset and limit to access specific sections of this output.\n\n"
+    else:
+        msg += "Use the read_file tool with offset and limit to access specific sections of this output.\n\n"
     msg += f"Preview (first {len(preview)} chars):\n"
     msg += preview
     if has_more:
@@ -175,6 +187,7 @@ def maybe_persist_tool_result(
     config: BudgetConfig = DEFAULT_BUDGET,
     threshold: int | float | None = None,
     sql_available: bool = True,
+    tool_args: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Layer 2: persist oversized result into the sandbox, return preview + path.
 
@@ -201,7 +214,7 @@ def maybe_persist_tool_result(
     if isinstance(content, str):
         try:
             from tools.mcp_json_ingestor import try_auto_ingest_json
-            ingest_count = try_auto_ingest_json(content, tool_name=tool_name, tool_use_id=tool_use_id)
+            ingest_count = try_auto_ingest_json(content, tool_name=tool_name, tool_use_id=tool_use_id, tool_args=tool_args)
         except Exception as exc:
             logger.debug("Auto-ingest failed for %s: %s", tool_use_id, exc)
 

@@ -1350,3 +1350,88 @@ class TestSkillsInCatalog:
         out = json.loads(ts.dispatch_tool_describe(
             {"name": "release-changelog"}, current_tool_defs=[_td("skill_view")]))
         assert out["kind"] == "skill" and out["how_to_use"] == "skill_view(name='release-changelog')"
+
+
+class TestNamedServerSurvivesKeywordBlobs:
+    """Reproduction of session 20260829_132903_2bb072: five searches for
+    "TempoMCP worklog retrieve" returned only AtlassianMCP tools although
+    TempoMCP was registered with seven tools. Two things conspired:
+
+    * the server metadata keyword blob (hundreds of tokens for a chatty
+      server) was part of the tokens that decide whether a query "names" a
+      server, so "worklog"/"retrieve" named Atlassian and GitHub as well;
+    * the reservation loop popped the last result for every named server,
+      so each reserved entry evicted the previous one — the last server
+      iterated (GitHub) survived, Tempo did not.
+    """
+
+    @staticmethod
+    def _register(name, toolset, description=""):
+        from tools.registry import registry
+        registry.register(name=name, toolset=toolset, schema=_td(name, description)["function"],
+                          handler=lambda a, **k: "{}")
+
+    def _catalog(self, monkeypatch):
+        import tools.tool_search as ts
+        blob = ("jira issue worklog retrieve search create update transition comment sprint board epic "
+                "timesheet booking hours log time tracking retrieve worklogs entries ").split() * 20
+        monkeypatch.setattr(ts, "_get_mcp_server_metadata", lambda: {
+            "AtlassianMCP": {"keywords": blob},
+            "GithubMCP": {"keywords": ["retrieve", "worklog", "pull", "request", "issue"] * 30},
+            "TempoMCP": {"keywords": []},
+        })
+        # the real expansion maps turned these three words into 1,043 tokens
+        garbage = ['"09', '"jirafield"', '"q1",', '"select",', "jira", "issue", "atlassian", "update",
+                   "transition", "comment", "create", "sprint", "board", "epic", "ticket", "field"] * 60
+        monkeypatch.setattr(ts, "_get_dynamic_mcp_keywords_map", lambda: {"worklog": garbage, "retrieve": garbage, "tempo": garbage})
+        monkeypatch.setattr(ts, "_get_dynamic_skill_keywords_map", lambda: {"worklog": ["jira", "booking", "hours", "analytics"]})
+        defs = []
+        for i, op in enumerate(["get_worklog", "update_issue", "transition_issue", "add_comment", "create_issue",
+                                "get_issue", "get_transitions", "get_issue_sla", "list_resources", "list_prompts",
+                                "read_resource", "get_prompt", "add_worklog", "jql_query"]):
+            name = f"mcp_AtlassianMCP_jira_{op}"
+            self._register(name, "mcp-AtlassianMCP", f"Jira {op.replace('_', ' ')} for an issue")
+            defs.append(_td(name, f"Jira {op.replace('_', ' ')} for an issue"))
+        for op in ["retrieveWorklogs", "createWorklog", "bulkCreateWorklogs", "editWorklog", "deleteWorklog",
+                   "getMissingWorklogDays", "getWorklogAnalytics"]:
+            name = f"mcp_TempoMCP_{op}"
+            self._register(name, "mcp-TempoMCP", f"MCP tool {op} from TempoMCP")  # the server ships no description
+            defs.append(_td(name, f"MCP tool {op} from TempoMCP"))
+        for op in ["create_pull_request", "list_issues", "get_file"]:
+            name = f"mcp_GithubMCP_{op}"
+            self._register(name, "mcp-GithubMCP", f"GitHub {op}")
+            defs.append(_td(name, f"GitHub {op}"))
+        return ts.build_catalog(defs)
+
+    @pytest.mark.parametrize("query", [
+        "TempoMCP worklog retrieve",
+        "Tempo retrieve worklog",
+        "tempo worklog retrieve timesheets worklogs TempoMCP",
+    ])
+    def test_the_named_server_is_in_the_top_hits(self, monkeypatch, query):
+        from tools.tool_search import search_catalog
+        hits = search_catalog(self._catalog(monkeypatch), query, limit=8)
+        names = [h.name for h in hits]
+        assert names[0].startswith("mcp_TempoMCP_"), names
+
+    def test_expansions_are_bounded_and_clean(self):
+        from tools.tool_search import _bounded_expansions, MAX_EXPANSIONS_PER_TOKEN
+        terms = ['"09', '"jirafield"', "jira", "issue", "atlassian", "update", "transition", "comment", "x", "board"]
+        out = _bounded_expansions(terms)
+        assert len(out) == MAX_EXPANSIONS_PER_TOKEN
+        assert all(t.isalpha() for t in out) and '"09' not in out and "x" not in out
+
+    def test_keyword_blob_tokens_do_not_name_a_server(self, monkeypatch):
+        catalog = self._catalog(monkeypatch)
+        jira = next(e for e in catalog if e.name == "mcp_AtlassianMCP_jira_get_worklog")
+        tempo = next(e for e in catalog if e.name == "mcp_TempoMCP_retrieveWorklogs")
+        assert "worklog" in jira._source_tokens          # still matchable
+        assert "worklog" not in jira._server_tokens      # but it does not "name" Atlassian
+        assert {"tempo", "tempomcp"} <= tempo._server_tokens
+        assert "worklogs" in tempo._server_tokens        # SOURCE_ALIASES: worklogs → TempoMCP
+
+    def test_two_named_servers_do_not_evict_each_other(self, monkeypatch):
+        from tools.tool_search import search_catalog
+        hits = search_catalog(self._catalog(monkeypatch), "github tempo worklog", limit=4)
+        sources = {h.source_name for h in hits}
+        assert {"mcp-TempoMCP", "mcp-GithubMCP"} <= sources, [h.name for h in hits]

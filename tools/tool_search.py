@@ -366,6 +366,13 @@ class CatalogEntry:
     # Pre-tokenized fields for BM25.
     _tokens: List[str] = field(default_factory=list)
     _name_tokens: set[str] = field(default_factory=set)
+    # Tokens of the source *name* only ("mcp-TempoMCP" → {mcp, tempo}, plus
+    # the alias keys that map to it). This is what decides whether a query
+    # "names" a server. `_source_tokens` additionally carries the server's
+    # metadata keyword blob (hundreds of tokens for a chatty server), which
+    # is fine for matching but useless for that decision: with it, "worklog"
+    # named three servers at once.
+    _server_tokens: set[str] = field(default_factory=set)
     _source_tokens: set[str] = field(default_factory=set)
     # Precomputed at catalog-build time. `search_catalog` used to rebuild every
     # entry's vector on every single call; the catalog itself is already
@@ -558,6 +565,7 @@ def _skill_catalog_entry(sk: Dict[str, Any]) -> Tuple[CatalogEntry, str]:
         how_to_use=str(sk.get("how_to_use") or f"skill_view(name='{name}')"),
         _tokens=_tokenize(f"{name_words} {name_words} {cat_words} {desc} {tag_blob}"),
         _name_tokens=set(_tokenize(name_words)),
+        _server_tokens=set(),
         _source_tokens={"skill", "skills"} | set(_tokenize(cat_words)),
     )
     return entry, f"{name_words} {name_words} {cat_words} {desc}"
@@ -607,6 +615,14 @@ def build_catalog(
         extra_blob = " ".join(extra_mcp_tokens)
         search_blob = f"{_entry_search_text(td, source_name)} {extra_blob}".strip()
 
+        server_key = _normalize_source_key(source_name) if source_name else ""
+        server_tokens = set(_tokenize(source_words)) - {"mcp"}
+        if server_key:
+            server_tokens.add(server_key)
+            server_tokens.update(
+                alias for alias, target in SOURCE_ALIASES.items()
+                if re.sub(r"[^a-z0-9]", "", target.lower()) == server_key
+            )
         entry = CatalogEntry(
             name=name,
             description=desc,
@@ -615,6 +631,7 @@ def build_catalog(
             source_name=source_name,
             _tokens=_tokenize(search_blob),
             _name_tokens=set(_tokenize(name_words)),
+            _server_tokens=server_tokens,
             _source_tokens=set(_tokenize(f"{source_words} {extra_blob}")),
         )
         catalog.append(entry)
@@ -819,6 +836,19 @@ def _cosine_sim(v1: Dict[str, float], v2: Dict[str, float]) -> float:
     return _shared_cosine(v1, v2)
 
 
+MAX_EXPANSIONS_PER_TOKEN = 6
+MAX_EXPANDED_QUERY_TOKENS = 40
+_CLEAN_TERM_RE = re.compile(r"^[a-zäöüß][a-zäöüß0-9_-]{2,}$")
+
+
+def _bounded_expansions(terms: Optional[Iterable[str]]) -> List[str]:
+    """At most MAX_EXPANSIONS_PER_TOKEN clean word-like terms, deterministic order."""
+    if not terms:
+        return []
+    clean = sorted({str(t).strip().lower() for t in terms if _CLEAN_TERM_RE.match(str(t).strip().lower())})
+    return clean[:MAX_EXPANSIONS_PER_TOKEN]
+
+
 def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> List[CatalogEntry]:
     """Return top catalog entries using vector-first similarity + BM25 keyword fallback.
 
@@ -847,18 +877,23 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
     catalog_idf = next((e._idf for e in catalog if e._idf), None)
     query_vec = _build_vector(query_raw, catalog_idf)
 
-    # Expand query tokens with synonyms for BM25 fallback
+    # Expand query tokens with synonyms for BM25 fallback — bounded. The
+    # dynamic MCP/skill maps are scraped from descriptions and configs and
+    # turned "tempo worklog retrieve" into 1,043 tokens, JSON fragments
+    # included; those then dominated BM25 across every long-description tool
+    # and buried the one tool whose name the query contained.
     expanded_tokens = set(query_tokens)
     dynamic_mcp = _get_dynamic_mcp_keywords_map()
     dynamic_skills = _get_dynamic_skill_keywords_map()
     for qt in query_tokens:
         if qt in _GERMAN_SYNONYMS:
             expanded_tokens.update(_GERMAN_SYNONYMS[qt])
-        if qt in dynamic_mcp:
-            expanded_tokens.update(dynamic_mcp[qt])
-        if qt in dynamic_skills:
-            expanded_tokens.update(dynamic_skills[qt])
-    expanded_query_tokens = list(expanded_tokens)
+        expanded_tokens.update(_bounded_expansions(dynamic_mcp.get(qt)))
+        expanded_tokens.update(_bounded_expansions(dynamic_skills.get(qt)))
+    expanded_query_tokens = list(expanded_tokens)[:MAX_EXPANDED_QUERY_TOKENS]
+    for qt in query_tokens:
+        if qt not in expanded_query_tokens:
+            expanded_query_tokens.append(qt)
 
     query_lower = query.lower().strip()
     non_generic_query_tokens = [t for t in query_tokens if t not in _GENERIC_SEARCH_TERMS]
@@ -893,18 +928,24 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
         matched_specific_tokens: set[str] = set()
         matched_name_tokens: set[str] = set()
 
+        original_tokens = set(query_tokens)
         for q in set(expanded_query_tokens):
             if q in doc_tf:
                 matched_query_tokens.add(q)
                 if q not in _GENERIC_SEARCH_TERMS:
                     matched_specific_tokens.add(q)
-                if q in entry._name_tokens or q in entry._source_tokens:
+                # Only a token the user typed can count as a *name* match.
+                # Synonym expansions ("worklog" → jira, issue, atlassian,
+                # update …) used to earn the same +5 per token, so every
+                # Jira tool outscored the Tempo tool whose name the query
+                # actually contained.
+                if q in original_tokens and (q in entry._name_tokens or q in entry._server_tokens):
                     matched_name_tokens.add(q)
                 df = doc_freq.get(q, 0)
                 idf = math.log(1 + (n_docs - df + 0.5) / (df + 0.5))
                 tf = doc_tf[q]
                 norm = tf * (k1 + 1) / (tf + k1 * (1 - b + b * len(entry._tokens) / max(avg_dl, 1.0)))
-                bm25_score += idf * norm
+                bm25_score += idf * norm * (1.0 if q in original_tokens else 0.5)
             elif len(q) >= 5 and q not in _GENERIC_SEARCH_TERMS:
                 # Inflection tolerance for the false-positive filter below:
                 # "worklog" must count as matching a tool that only says
@@ -972,20 +1013,34 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
     # matched fourteen Jira tools while "tempo" matched seven Tempo ones. The
     # model then worked around the absence by fetching worklogs issue by
     # issue — sixteen calls to do one tool's job.
+    # A server is "named" when a query token is part of its *name* (or an
+    # alias of it) — not when it merely appears in the server's metadata
+    # keyword blob, which made "worklog" name three servers at once. Each
+    # named server gets one slot; the slot is taken from the lowest-ranked
+    # result that does not itself belong to a named server, so two named
+    # servers can no longer evict each other (that is how TempoMCP lost its
+    # slot to GithubMCP on "TempoMCP worklog retrieve").
     named_sources = {
         entry.source_name
         for entry in catalog
-        if entry.kind == "tool" and entry.source_name and any(t in entry._source_tokens for t in query_tokens)
+        if entry.kind == "tool" and entry.source_name and any(t in entry._server_tokens for t in query_tokens)
     }
     if named_sources and scored:
         represented = {e.source_name for e in results}
-        for source in named_sources - represented:
+        for source in sorted(named_sources - represented):
             best = next((e for _, e in scored if e.source_name == source), None)
             if best is None:
                 continue
             if len(results) >= limit:
-                results.pop()
+                victim = next(
+                    (i for i in range(len(results) - 1, -1, -1) if results[i].source_name not in named_sources),
+                    None,
+                )
+                if victim is None:
+                    continue
+                results.pop(victim)
             results.append(best)
+            represented.add(source)
 
     # MCP Server Grouping: if top matches belong to an MCP server/toolset,
     # include sibling tools from the same source so the model gets related actions in 1 turn.

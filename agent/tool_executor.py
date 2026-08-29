@@ -828,6 +828,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_use_id=tc.id,
             env=get_active_env(effective_task_id),
             sql_available="sql" in (getattr(agent, "valid_tool_names", None) or ()),
+            tool_args=args if isinstance(args, dict) else None,
         ) if not _is_multimodal_tool_result(function_result) else function_result
 
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
@@ -1544,6 +1545,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_use_id=tool_call.id,
             env=get_active_env(effective_task_id),
             sql_available="sql" in (getattr(agent, "valid_tool_names", None) or ()),
+            tool_args=function_args if isinstance(function_args, dict) else None,
         ) if not _is_multimodal_tool_result(function_result) else function_result
 
         # Discover subdirectory context files from tool arguments

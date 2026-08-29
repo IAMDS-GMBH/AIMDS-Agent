@@ -627,3 +627,15 @@ class TestPerToolThresholds:
             assert "Note on jira_get_worklog" in hint
             assert "Tempo sync bot" in hint
             assert "TempoMCP" in hint
+
+
+def test_ingested_results_are_queried_not_read_back(tmp_path):
+    from tools.tool_result_storage import _build_persisted_message
+
+    with_sql = _build_persisted_message("preview", True, 900000, "/tmp/x.txt", ingest_count=58,
+                                        tool_name="mcp_AtlassianMCP_jira_search", sql_available=True)
+    assert "Do NOT read the saved file back" in with_sql
+    assert "Use the read_file tool" not in with_sql
+    without_ingest = _build_persisted_message("preview", True, 900000, "/tmp/x.txt", ingest_count=0,
+                                              tool_name="terminal", sql_available=True)
+    assert "Use the read_file tool" in without_ingest
