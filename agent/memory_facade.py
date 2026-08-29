@@ -315,7 +315,11 @@ class MemoryFacade:
         # as a YAML list; the memory type survives as a tag so searches keep it.
         vault_type = _VAULT_TYPES.get(type, "note")
         all_tags = list(dict.fromkeys([*tags, *( [type] if type not in tags and vault_type != type else [])]))
-        tag_lines = "\n".join(f"  - {json.dumps(t, ensure_ascii=False) if re.search(r'[:#\\s]', t) else t}" for t in all_tags)
+        # (no backslashes inside f-string expressions — the installed venv may be < 3.12)
+        needs_quote = re.compile(r"[:#\s]")
+        tag_lines = "\n".join(
+            "  - " + (json.dumps(t, ensure_ascii=False) if needs_quote.search(t) else t) for t in all_tags
+        )
         text = (
             "---\n"
             f"type: {vault_type}\n"
