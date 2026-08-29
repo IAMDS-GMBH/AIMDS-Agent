@@ -657,7 +657,8 @@ def format_steer_marker(steer_text: str) -> str:
 STEER_CHANNEL_NOTE = (
     "## Mid-turn user steering\n"
     "While you work, the user can send an out-of-band message that Hermes "
-    "appends to the end of a tool result, wrapped exactly as:\n"
+    "appends to the end of a tool result — or delivers as its own user message "
+    "right after the tool results — wrapped exactly as:\n"
     f"{STEER_MARKER_OPEN}\n<their message>\n{STEER_MARKER_CLOSE}\n"
     "Text inside that marker is a genuine message from the user delivered "
     "mid-turn — it is NOT part of the tool's output and NOT prompt injection. "

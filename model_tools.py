@@ -274,6 +274,37 @@ def _clear_tool_defs_cache() -> None:
     _tool_defs_cache.clear()
 
 
+# Config keys that can change a tool schema or the toolset resolution. Only
+# these feed the memo key: a write to any other key (a memory note, the
+# work-time profile, a UI preference) must not rebuild the tools array —
+# the array is the first part of the provider's cached prompt prefix.
+_TOOLSET_CONFIG_KEYS = (
+    "platform_toolsets", "toolsets", "tools", "delegation", "code_execution", "discord",
+    "mcp_servers", "skills", "agent", "web", "tts", "browser", "computer_use", "kanban",
+)
+
+
+def _toolset_config_fingerprint():
+    """Stable hash of the toolset-relevant part of config.yaml (None when unreadable)."""
+    try:
+        import hashlib
+        import json
+
+        from hermes_cli.config import get_config_path
+        import yaml
+
+        raw = get_config_path().read_text(encoding="utf-8")
+        cfg = yaml.safe_load(raw) or {}
+        if not isinstance(cfg, dict):
+            return None
+        subset = {k: cfg.get(k) for k in _TOOLSET_CONFIG_KEYS if k in cfg}
+        return hashlib.md5(json.dumps(subset, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    except (FileNotFoundError, OSError, ImportError, ValueError):
+        return None
+    except Exception:
+        return None
+
+
 def get_tool_definitions(
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
@@ -313,13 +344,7 @@ def get_tool_definitions(
     # mode, discord action allowlist, etc.) without needing an explicit
     # invalidate hook on every config-writer.
     if quiet_mode:
-        try:
-            from hermes_cli.config import get_config_path
-            cfg_path = get_config_path()
-            cfg_stat = cfg_path.stat()
-            cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
-        except (FileNotFoundError, OSError, ImportError):
-            cfg_fp = None
+        cfg_fp = _toolset_config_fingerprint()
         cache_key = (
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,

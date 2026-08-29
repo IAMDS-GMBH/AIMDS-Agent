@@ -587,3 +587,20 @@ class TestCoerceNumberInfNan:
         assert _coerce_number("42") == 42
         assert _coerce_number("3.14") == 3.14
         assert _coerce_number("1e3") == 1000
+
+
+def test_tool_memo_key_ignores_unrelated_config_writes(tmp_path, monkeypatch):
+    """A memory/profile/UI write to config.yaml must not rebuild the tools
+    array (first part of the cached prompt prefix); a toolset change must."""
+    import model_tools
+
+    cfg = tmp_path / "config.yaml"
+    monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: cfg)
+    cfg.write_text("platform_toolsets:\n  cli: [hermes-cli]\ndisplay:\n  language: de\n", encoding="utf-8")
+    fp1 = model_tools._toolset_config_fingerprint()
+    cfg.write_text("platform_toolsets:\n  cli: [hermes-cli]\ndisplay:\n  language: en\nworktime:\n  region: DE-BY\n", encoding="utf-8")
+    assert model_tools._toolset_config_fingerprint() == fp1
+    cfg.write_text("platform_toolsets:\n  cli: [hermes-cli, web]\n", encoding="utf-8")
+    assert model_tools._toolset_config_fingerprint() != fp1
+    cfg.unlink()
+    assert model_tools._toolset_config_fingerprint() is None

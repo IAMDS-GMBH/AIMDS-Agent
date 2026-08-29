@@ -248,7 +248,10 @@ def build_turn_context(
     today_str = _hermes_now().strftime("%Y-%m-%d")
     cached_date = getattr(agent, "_cached_system_prompt_date", None)
     if cached_date and cached_date != today_str:
-        logger.info("Date changed from %s to %s — invalidating system prompt cache", cached_date, today_str)
+        logger.info(
+            "Date changed from %s to %s — rebuilding the system prompt (prompt cache prefix reset: date rollover)",
+            cached_date, today_str,
+        )
         agent._cached_system_prompt = None
 
     # ── System prompt (cached per session for prefix caching) ──
