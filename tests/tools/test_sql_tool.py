@@ -76,3 +76,34 @@ def test_mcp_records_pruning(tmp_path: Path):
     conn.close()
 
 
+
+
+def test_select_with_leading_comment_and_cte_returns_rows(tmp_path: Path):
+    """Agents prefix queries with `-- comments` and wrap them in CTEs; the
+    result must still be the rows, not {"rows_affected": -1}."""
+    db_file = tmp_path / "state.db"
+    execute_sql("INSERT INTO mcp_records (id, reference_key, duration_seconds) VALUES ('r1', 'IAMDS-595', 3600)", db_path=db_file)
+    execute_sql("INSERT INTO mcp_records (id, reference_key, duration_seconds) VALUES ('r2', 'EXT-95', 1800)", db_path=db_file)
+
+    res = execute_sql(
+        "\n-- Schritt 1: Stunden je Vorgang\n"
+        "WITH t AS (SELECT reference_key, duration_seconds FROM mcp_records)\n"
+        "SELECT reference_key, ROUND(SUM(duration_seconds)/3600.0, 2) AS hours FROM t GROUP BY reference_key ORDER BY 1;",
+        db_path=db_file,
+    )
+    assert "rows_affected" not in res
+    assert "| EXT-95 | 0.5 |" in res and "| IAMDS-595 | 1.0 |" in res
+    assert "2 rows returned" in res
+
+
+def test_write_with_leading_comment_reports_rows_affected(tmp_path: Path):
+    db_file = tmp_path / "state.db"
+    res = execute_sql("-- add one\nINSERT INTO mcp_records (id, reference_key) VALUES ('x', 'A-1')", db_path=db_file)
+    assert json.loads(res) == {"status": "success", "rows_affected": 1}
+    assert "1 rows returned" in execute_sql("/* read */ SELECT id FROM mcp_records", db_path=db_file)
+
+
+def test_default_db_path_follows_hermes_home_at_call_time(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    execute_sql("INSERT INTO mcp_records (id, reference_key) VALUES ('h', 'A-1')")
+    assert (tmp_path / "home" / "state.db").exists()

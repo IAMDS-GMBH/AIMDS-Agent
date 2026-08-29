@@ -53,6 +53,13 @@ def _sql_authorizer(
     return sqlite3.SQLITE_OK
 
 
+def _default_db_path() -> Path:
+    """~/.hermes/state.db resolved at call time (HERMES_HOME may change after import)."""
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "state.db"
+
+
 def execute_sql(
     query: str,
     db_path: Optional[Path] = None,
@@ -69,7 +76,7 @@ def execute_sql(
     if not query or not query.strip():
         return tool_error("Query string cannot be empty")
 
-    path = db_path or DEFAULT_DB_PATH
+    path = db_path or _default_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -78,13 +85,23 @@ def execute_sql(
         init_mcp_tables(conn)
 
         query_clean = query.strip()
-        is_select = query_clean.upper().startswith("SELECT") or query_clean.upper().startswith("PRAGMA") or query_clean.upper().startswith("EXPLAIN") or query_clean.upper().startswith("WITH")
 
+        # Whether a statement returns rows is decided by SQLite, not by the
+        # first keyword: agents prefix queries with `-- comments`, wrap them
+        # in CTEs, or add PRAGMA/EXPLAIN. A leading comment used to make a
+        # SELECT look like a write and its rows were silently dropped
+        # ({"status": "success", "rows_affected": -1}).
         cursor = conn.cursor()
-        if is_select:
+        with conn:
             cursor.execute(query_clean)
-            col_names = [desc[0] for desc in cursor.description] if cursor.description else []
-            rows = cursor.fetchmany(MAX_SQL_ROWS)
+            returns_rows = cursor.description is not None
+            if returns_rows:
+                col_names = [desc[0] for desc in cursor.description]
+                rows = cursor.fetchmany(MAX_SQL_ROWS)
+            else:
+                affected = cursor.rowcount
+
+        if returns_rows:
             total_fetched = len(rows)
 
             if not rows:
@@ -105,11 +122,7 @@ def execute_sql(
             summary += ")"
 
             return f"{table_md}\n\n_{summary}_"
-        else:
-            with conn:
-                cursor.execute(query_clean)
-                affected = cursor.rowcount
-            return json.dumps({"status": "success", "rows_affected": affected}, ensure_ascii=False)
+        return json.dumps({"status": "success", "rows_affected": affected}, ensure_ascii=False)
 
     except Exception as exc:
         logger.debug("SQL execution failed: %s", exc)

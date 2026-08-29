@@ -16,9 +16,18 @@ from hermes_state import DEFAULT_DB_PATH
 logger = logging.getLogger(__name__)
 
 
+def _default_db_path() -> Path:
+    """~/.hermes/state.db resolved at call time — the import-time constant
+    ignored a HERMES_HOME set later (every test), so tests wrote synthetic
+    worklogs into the developer's real database."""
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "state.db"
+
+
 def get_db_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """Get a connection to SQLite database, ensuring tables exist."""
-    path = db_path or DEFAULT_DB_PATH
+    path = db_path or _default_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=10.0)
     init_mcp_tables(conn)
@@ -204,67 +213,82 @@ def _parse_duration(value: Any) -> int:
     return int(total)
 
 
+def _normalize_key(key: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(key).lower())
+
+
+def _pick(norm: Dict[str, Any], *names: str) -> Any:
+    """First present, non-empty value among the normalized key names."""
+    for name in names:
+        value = norm.get(name)
+        if value is None or value == "" or value == {} or value == []:
+            continue
+        return value
+    return None
+
+
 def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fallback_ref: str = "") -> Tuple:
-    """Extract structured fields from a single item dict."""
-    record_id = str(item.get("id") or item.get("key") or item.get("case_id") or uuid.uuid4().hex)
+    """Extract structured fields from a single item dict.
+
+    Keys are matched case- and separator-insensitively: JSON servers send
+    ``issueKey``/``timeSpentSeconds``, Jira REST ``started``, and the
+    delimited-text servers (TempoMCP) ``IssueKey``/``Date``/``Hours``/
+    ``TempoWorklogId``. Before this, the Tempo rows landed with no key, no
+    date, no duration and a fresh UUID per call — SQL had nothing to sum.
+    """
+    norm: Dict[str, Any] = {}
+    for key, value in item.items():
+        norm.setdefault(_normalize_key(key), value)
+
+    record_id = _pick(norm, "id", "tempoworklogid", "worklogid", "key", "caseid") or uuid.uuid4().hex
 
     # Reference Key (issue key, ticket key, case ID, etc.) — for per-issue
     # tools (jira_get_worklog) the key is only in the request, not the reply.
+    issue = norm.get("issue")
     ref_key = (
-        item.get("issueKey")
-        or item.get("issue_key")
-        or item.get("key")
-        or item.get("ticket_id")
-        or item.get("case_id")
-        or (item.get("issue") if isinstance(item.get("issue"), str) else (item.get("issue") or {}).get("key"))
+        _pick(norm, "issuekey", "key", "ticketid", "caseid")
+        or (issue if isinstance(issue, str) else (issue or {}).get("key") if isinstance(issue, dict) else None)
         or fallback_ref
         or ""
     )
 
-    # Timestamp
-    timestamp = (
-        item.get("started")
-        or item.get("startDate")
-        or item.get("start_date")
-        or item.get("created_at")
-        or item.get("created")
-        or item.get("date")
-        or item.get("createdAt")
-        or item.get("updated_at")
-        or ""
-    )
+    # Timestamp — a bare date plus a start time is joined into one value.
+    timestamp = _pick(norm, "started", "startdate", "createdat", "created", "date", "updatedat") or ""
+    start_time = _pick(norm, "starttime")
+    if timestamp and start_time and isinstance(timestamp, str) and isinstance(start_time, str) \
+            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", timestamp.strip()) and re.fullmatch(r"\d{2}:\d{2}(:\d{2})?", start_time.strip()):
+        timestamp = f"{timestamp.strip()}T{start_time.strip()}"
 
     # User / Author
-    author = item.get("author") or item.get("user") or item.get("assignee")
+    author = _pick(norm, "author", "user", "assignee", "worker", "authoraccountid", "username")
     if isinstance(author, dict):
         user_id = author.get("displayName") or author.get("name") or author.get("emailAddress") or ""
     else:
         user_id = str(author or "")
 
-    # Duration in seconds (camelCase, snake_case, or "1h 30m")
-    duration = _parse_duration(
-        item.get("timeSpentSeconds")
-        or item.get("time_spent_seconds")
-        or item.get("duration_seconds")
-        or item.get("seconds")
-        or item.get("duration")
-        or item.get("timeSpent")
-        or item.get("time_spent")
-        or 0
-    )
+    # Duration in seconds (camelCase, snake_case, "1h 30m", or decimal hours)
+    duration_value = _pick(norm, "timespentseconds", "durationseconds", "seconds", "billableseconds", "duration", "timespent")
+    if duration_value is not None:
+        duration = _parse_duration(duration_value)
+    else:
+        hours = _pick(norm, "hours", "timespenthours")
+        try:
+            duration = int(round(float(str(hours).replace(",", ".")) * 3600)) if hours is not None else 0
+        except ValueError:
+            duration = _parse_duration(hours)
 
     # Category / Type / Status
-    category = item.get("category") or item.get("type") or item.get("status") or item.get("case_status") or "default"
+    category = _pick(norm, "category", "type", "status", "casestatus") or "default"
     if isinstance(category, dict):
         category = category.get("name") or category.get("value") or "default"
 
     # Comment / Description / Summary
-    comment = item.get("comment") or item.get("summary") or item.get("description") or ""
+    comment = _pick(norm, "comment", "summary", "description") or ""
 
     raw_data = json.dumps(item, ensure_ascii=False)
 
     return (
-        record_id,
+        str(record_id),
         tool_name,
         tool_use_id,
         str(ref_key),
@@ -362,6 +386,23 @@ def _reference_key_from_args(tool_args: Any) -> str:
     return ""
 
 
+def _isolate_json_document(text: str) -> str:
+    """The JSON document inside a tool result that may carry a preamble
+    ("The following content was retrieved from an external source…") and a
+    trailing note ("[Auto-ingested N records …]") — as stored transcripts do.
+    Returns "" when no JSON document starts at a line boundary."""
+    if text.startswith("{") or text.startswith("["):
+        body = text
+    else:
+        match = re.search(r"(?m)^[\[{]", text)
+        if not match:
+            return ""
+        body = text[match.start():]
+    closer = "}" if body[0] == "{" else "]"
+    end = body.rfind(closer)
+    return body[: end + 1] if end != -1 else body
+
+
 def try_auto_ingest_json(
     content: str,
     tool_name: str = "mcp",
@@ -387,7 +428,8 @@ def try_auto_ingest_json(
         if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
             content_strip = content_strip[start_idx + 1 : end_idx].strip()
 
-    if not (content_strip.startswith("{") or content_strip.startswith("[")):
+    content_strip = _isolate_json_document(content_strip)
+    if not content_strip:
         return 0
 
     try:

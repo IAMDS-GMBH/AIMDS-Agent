@@ -551,7 +551,7 @@ class TestPerToolThresholds:
 
     def test_maybe_persist_tool_result_auto_ingest_when_env_none(self, tmp_path):
         from tools.tool_result_storage import maybe_persist_tool_result
-        from hermes_state import DEFAULT_DB_PATH
+        from hermes_constants import get_hermes_home
         import sqlite3, json
 
         large_json_payload = json.dumps([
@@ -573,7 +573,8 @@ class TestPerToolThresholds:
         assert "Tempo sync bot" in result
         assert "TempoMCP" in result
 
-        conn = sqlite3.connect(str(DEFAULT_DB_PATH))
+        # The per-test HERMES_HOME (conftest) — never the developer's real state.db.
+        conn = sqlite3.connect(str(get_hermes_home() / "state.db"))
         count = conn.execute("SELECT COUNT(*) FROM mcp_records WHERE tool_use_id = 'call_no_env'").fetchone()[0]
         assert count == 100
 
