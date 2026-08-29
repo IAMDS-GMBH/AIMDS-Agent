@@ -225,31 +225,35 @@ def _tool_search_scoped_names(agent) -> frozenset:
     except Exception:
         return frozenset()
 
-    enabled = getattr(agent, "enabled_toolsets", None)
-    disabled = getattr(agent, "disabled_toolsets", None)
-    cache_key = (
-        getattr(_registry, "_generation", 0),
-        frozenset(enabled) if enabled is not None else None,
-        frozenset(disabled) if disabled is not None else None,
-    )
-    cached = getattr(agent, "_tool_search_scope_cache", None)
-    if cached is not None and cached[0] == cache_key:
-        return cached[1]
+    # The scope computation moved to agent.deferred_tools so the per-session
+    # loader and this gate can never disagree about what is in scope.
     try:
-        scoped_defs = model_tools.get_tool_definitions(
-            enabled_toolsets=enabled,
-            disabled_toolsets=disabled,
-            quiet_mode=True,
-            skip_tool_search_assembly=True,
-        ) or []
-        names = _ts.scoped_deferrable_names(scoped_defs)
+        from agent.deferred_tools import scoped_deferrable_names
+
+        return scoped_deferrable_names(agent)
     except Exception:
-        names = frozenset()
+        return frozenset()
+
+
+def _load_deferred_after_unwrap(agent, underlying: str) -> None:
+    """A tool invoked through tool_call is loaded so the next call can be direct."""
     try:
-        agent._tool_search_scope_cache = (cache_key, names)
-    except Exception:
-        pass
-    return names
+        from agent.deferred_tools import load_deferred_tool
+
+        load_deferred_tool(agent, underlying, reason="call")
+    except Exception as exc:
+        logger.debug("deferred load after tool_call unwrap failed: %s", exc)
+
+
+def _absorb_bridge_result(agent, function_name: str, function_args, function_result):
+    """Load tools that tool_search/tool_describe surfaced; annotate the result."""
+    try:
+        from agent.deferred_tools import absorb_bridge_result
+
+        return absorb_bridge_result(agent, function_name, function_args, function_result)
+    except Exception as exc:
+        logger.debug("absorb_bridge_result failed for %s: %s", function_name, exc)
+        return function_result
 
 
 def _apply_tool_request_middleware_for_agent(
@@ -374,6 +378,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     if _underlying in _tool_search_scoped_names(agent):
                         function_name = _underlying
                         function_args = _underlying_args
+                        _load_deferred_after_unwrap(agent, _underlying)
                     else:
                         _ts_scope_block = json.dumps({
                             "error": (
@@ -831,6 +836,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # Text-only servers get a string-safe fallback here so a rejected
         # image tool result never poisons canonical session history.
         # String results pass through unchanged.
+        function_result = _absorb_bridge_result(agent, name, args, function_result)
         _tool_content = agent._tool_result_content_for_active_model(name, function_result)
         messages.append(make_tool_result_message(name, _tool_content, tc.id))
 
@@ -897,6 +903,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     if _underlying in _tool_search_scoped_names(agent):
                         function_name = _underlying
                         function_args = _underlying_args
+                        _load_deferred_after_unwrap(agent, _underlying)
                     else:
                         _ts_scope_block = (
                             f"'{_underlying}' is not available in this session. "
@@ -1537,6 +1544,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
+        function_result = _absorb_bridge_result(agent, function_name, function_args, function_result)
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
         messages.append(make_tool_result_message(function_name, _tool_content, tool_call.id))
 

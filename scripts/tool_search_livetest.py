@@ -240,6 +240,21 @@ SCENARIOS: List[Dict[str, Any]] = [
         "prompt": "What's 7 times 8? Answer with just the number.",
         "expected_underlying_tools": [],
     },
+    {
+        "id": "F_search_then_direct_call",
+        "description": (
+            "After tool_search returns a deferred tool, the model calls it by its "
+            "real name — no tool_call wrapper (agent/deferred_tools.py loads the "
+            "hit into the session's tools array)"
+        ),
+        "prompt": (
+            "First search your tools for something that can open a GitHub issue. "
+            "Then open an issue in repo 'acme/widget' titled 'Login button unresponsive' "
+            "with body 'Clicking Login does nothing on Safari.' Then tell me you're done."
+        ),
+        "expected_underlying_tools": ["github_create_issue"],
+        "expected_direct_deferred_call": True,  # enabled run: github_create_issue emitted by name
+    },
 ]
 
 
@@ -417,6 +432,7 @@ def run_one_scenario(scenario: Dict[str, Any], enabled: bool, out_dir: Path) -> 
     # accurate than monkey-patching: this is the actual wire shape the
     # model emitted.
     bridge_call_log = _extract_bridge_calls(messages_out)
+    direct_deferred_calls = _extract_direct_deferred_calls(messages_out)
 
     # Compose the trace.
     record = {
@@ -429,6 +445,7 @@ def run_one_scenario(scenario: Dict[str, Any], enabled: bool, out_dir: Path) -> 
         "n_fake_tools_registered": n_registered,
         "elapsed_seconds": round(elapsed, 2),
         "bridge_calls": bridge_call_log,
+        "direct_deferred_calls": direct_deferred_calls,
         "underlying_tool_calls": tool_call_log,
         "final_response": _redact_secrets(final_response),
         "n_iterations": _count_assistant_turns(messages_out),
@@ -482,6 +499,26 @@ def _count_assistant_turns(messages: List[Dict[str, Any]]) -> int:
     return sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant")
 
 
+def _extract_direct_deferred_calls(messages: List[Dict[str, Any]]) -> List[str]:
+    """Names of fake (deferred) tools the model emitted directly, not via tool_call.
+
+    Non-empty in a tool_search=enabled run means the per-session loader did its
+    job: the tool the search surfaced became callable by name.
+    """
+    fake_names = {t["name"] for t in FAKE_MCP_TOOLS}
+    out: List[str] = []
+    for m in messages or []:
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        for c in m.get("tool_calls") or []:
+            if not isinstance(c, dict):
+                continue
+            name = (c.get("function") or {}).get("name")
+            if name in fake_names:
+                out.append(name)
+    return out
+
+
 def _extract_bridge_calls(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Pull out every tool_search / tool_describe / tool_call from a transcript."""
     bridges = ("tool_search", "tool_describe", "tool_call")
@@ -531,7 +568,9 @@ def main():
                 "elapsed": record["elapsed_seconds"],
                 "error": bool(err),
                 "underlying_tools_called": [c["name"] for c in record["underlying_tool_calls"]],
+                "direct_deferred_calls": record["direct_deferred_calls"],
                 "expected": scenario.get("expected_underlying_tools", []),
+                "expected_direct_deferred_call": scenario.get("expected_direct_deferred_call", False),
             })
 
     summary_path = out_dir / "_summary.json"

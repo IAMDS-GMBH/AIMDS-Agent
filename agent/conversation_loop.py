@@ -5175,10 +5175,16 @@ def run_conversation(
                 # Repair mismatched tool names before validating
                 for tc in assistant_message.tool_calls:
                     if tc.function.name not in agent.valid_tool_names:
-                        repaired = agent._repair_tool_call(tc.function.name)
-                        if repaired:
-                            print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
-                            tc.function.name = repaired
+                        # A deferred tool called by its real name (the way the
+                        # prompt tells the model to) is loaded into the session
+                        # instead of rejected; the fuzzy repair runs otherwise.
+                        from agent.deferred_tools import resolve_unknown_tool_name
+                        resolved = resolve_unknown_tool_name(agent, tc.function.name)
+                        if resolved and resolved != tc.function.name:
+                            print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{resolved}'")
+                            tc.function.name = resolved
+                        elif resolved:
+                            agent._buffer_vprint(f"🔎 Loaded deferred tool '{resolved}' into this session")
                 _apply_onboarding_clarify_context(
                     assistant_message,
                     messages=messages,
@@ -5217,9 +5223,11 @@ def run_conversation(
 
                     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                     messages.append(assistant_msg)
+                    from agent.deferred_tools import unknown_tool_hint
+                    _unknown_hint = unknown_tool_hint(agent)
                     for tc in assistant_message.tool_calls:
                         if tc.function.name not in agent.valid_tool_names:
-                            content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}"
+                            content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}{_unknown_hint}"
                         else:
                             content = "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
                         messages.append({

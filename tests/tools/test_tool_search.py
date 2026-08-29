@@ -73,6 +73,13 @@ class TestConfigParsing:
         cfg = ToolSearchConfig.from_raw({"threshold_pct": -5})
         assert cfg.threshold_pct == 0.0
 
+    def test_autoload_top_n_defaults_and_clamps(self):
+        from tools.tool_search import ToolSearchConfig
+        assert ToolSearchConfig.from_raw({"enabled": "on"}).autoload_top_n == 3
+        assert ToolSearchConfig.from_raw({"autoload_top_n": 0}).autoload_top_n == 0
+        assert ToolSearchConfig.from_raw({"autoload_top_n": 99, "max_search_limit": 10}).autoload_top_n == 10
+        assert ToolSearchConfig.from_raw({"autoload_top_n": "nonsense"}).autoload_top_n == 3
+
     def test_search_limits_clamped(self):
         from tools.tool_search import ToolSearchConfig
         cfg = ToolSearchConfig.from_raw({
@@ -606,6 +613,51 @@ class TestBridgeDispatch:
 # ---------------------------------------------------------------------------
 # End-to-end via the real handle_function_call (smoke test).
 # ---------------------------------------------------------------------------
+
+
+class TestSearchResultNominatesAutoload:
+    """dispatch_tool_search names the hits the executor should load into the session."""
+
+    @staticmethod
+    def _register(name, toolset, description):
+        from tools.registry import registry
+
+        registry.register(
+            name=name,
+            handler=lambda args, **kw: json.dumps({"ok": True}),
+            schema=_td(name, description, {"q": {"type": "string"}}),
+            toolset=toolset,
+        )
+
+    def test_ranked_search_nominates_top_n_tool_hits(self):
+        import model_tools
+
+        for i in range(5):
+            self._register(f"mcp_al_srv_alpha_tickets_{i}", "mcp-al-srv", f"alpha operation {i} for tickets")
+        parsed = json.loads(model_tools.handle_function_call(
+            function_name="tool_search",
+            function_args={"query": "alpha tickets"},
+            enabled_toolsets=["mcp-al-srv"],
+        ))
+        assert parsed["mode"] == "ranked"
+        assert len(parsed["matches"]) >= 3
+        assert len(parsed["autoload"]) == 3
+        assert set(parsed["autoload"]) <= {m["name"] for m in parsed["matches"]}
+        assert all(m["kind"] == "tool" for m in parsed["matches"])
+
+    def test_browsing_a_whole_server_nominates_nothing(self):
+        import model_tools
+
+        for i in range(4):
+            self._register(f"mcp_BrowseSrv_op_{i}", "mcp-BrowseSrv", f"browse op {i}")
+        parsed = json.loads(model_tools.handle_function_call(
+            function_name="tool_search",
+            function_args={"query": "BrowseSrv"},
+            enabled_toolsets=["mcp-BrowseSrv"],
+        ))
+        assert parsed["mode"] == "source_browse"
+        assert parsed["autoload"] == []
+        assert len(parsed["matches"]) == 4
 
 
 class TestHandleFunctionCallIntegration:

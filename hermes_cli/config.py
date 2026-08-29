@@ -2662,6 +2662,10 @@ DEFAULT_CONFIG = {
             "search_default_limit": 8,
             # Hard upper bound the model can request via ``limit``. Range 1..50.
             "max_search_limit": 20,
+            # Top-ranked hits a tool_search call loads into the session's
+            # tools array so the model can call them by name next turn.
+            # 0 disables; tool_describe / a direct call still load a tool.
+            "autoload_top_n": 3,
         },
     },
 

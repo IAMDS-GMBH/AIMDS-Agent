@@ -23,6 +23,7 @@ Requires `OPENROUTER_API_KEY` set or present in `~/.hermes/.env`.
 | C multi_tool_chain | Multi-step task chaining two deferred tools (GitHub + Slack) |
 | D core_plus_deferred | Mixed: core tool (read_file) called directly, deferred tool (Slack) via bridge |
 | E no_tool_needed | Pure-knowledge prompt; verify no spurious tool_search invocations |
+| F search_then_direct_call | tool_search surfaces a deferred tool, then the model calls it by name (no tool_call wrapper) — `direct_deferred_calls` must be non-empty in the enabled run |
 
 Each scenario runs with `tool_search.enabled = on` and again with `off` for an
 A/B baseline. The harness records:

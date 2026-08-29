@@ -7638,10 +7638,8 @@ def _refresh_cached_agent_tools(session_id: str | None = None) -> None:
         if not agent:
             continue
         try:
-            agent.tools = new_defs
-            agent.valid_tool_names = (
-                {t["function"]["name"] for t in new_defs} if new_defs else set()
-            )
+            from agent.deferred_tools import apply_tool_definitions
+            apply_tool_definitions(agent, new_defs)
             _emit("session.info", sid, _session_info(agent, session))
         except Exception as exc:
             logger.warning(

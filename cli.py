@@ -8692,14 +8692,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             # Refresh the agent's tool list so the model can call new tools
             if self.agent is not None:
-                self.agent.tools = get_tool_definitions(
+                from agent.deferred_tools import apply_tool_definitions
+                apply_tool_definitions(self.agent, get_tool_definitions(
                     enabled_toolsets=self.agent.enabled_toolsets
                     if hasattr(self.agent, "enabled_toolsets") else None,
                     quiet_mode=True,
-                )
-                self.agent.valid_tool_names = {
-                    tool["function"]["name"] for tool in self.agent.tools
-                } if self.agent.tools else set()
+                ))
 
             # Inject a message at the END of conversation history so the
             # model knows tools changed.  Appended after all existing

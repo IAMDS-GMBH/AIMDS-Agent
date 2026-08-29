@@ -554,6 +554,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 def build_api_kwargs(agent, api_messages: list, retry_count: int = 0) -> dict:
     """Build the keyword arguments dict for the active API mode."""
+    try:
+        from agent.deferred_tools import ensure_loaded_tools_current
+
+        ensure_loaded_tools_current(agent)
+    except Exception:
+        pass
     tools_for_api = agent.tools
 
     if agent.api_mode == "anthropic_messages":

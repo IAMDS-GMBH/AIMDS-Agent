@@ -68,6 +68,9 @@ class ToolSearchConfig:
     threshold_pct: float  # 0..100 — only used when enabled == "auto"
     search_default_limit: int
     max_search_limit: int
+    # How many top-ranked tool hits a ``tool_search`` call loads into the
+    # session's tools array (0 disables). See ``agent/deferred_tools.py``.
+    autoload_top_n: int = 3
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -106,11 +109,14 @@ class ToolSearchConfig:
         search_default_limit = max(1, min(max_search_limit,
                                           _safe_int(raw.get("search_default_limit"), 8)))
 
+        autoload_top_n = max(0, min(max_search_limit, _safe_int(raw.get("autoload_top_n"), 3)))
+
         return cls(
             enabled=enabled,
             threshold_pct=threshold_pct,
             search_default_limit=search_default_limit,
             max_search_limit=max_search_limit,
+            autoload_top_n=autoload_top_n,
         )
 
 
@@ -1139,6 +1145,7 @@ def _format_search_hit(entry: CatalogEntry) -> Dict[str, Any]:
         first_line = first_line[:147] + "..."
     hit: Dict[str, Any] = {
         "name": entry.name,
+        "kind": "tool",
         "description": first_line,
     }
     if entry.source_name:
@@ -1176,10 +1183,18 @@ def dispatch_tool_search(args: Dict[str, Any],
             pass
     catalog = _cached_catalog(deferrable)
     hits = search_catalog(catalog, query, limit=limit)
+    # A query that names a whole server browses its catalog (up to 60 hits);
+    # loading all of those would defeat deferral, so only ranked searches
+    # nominate hits for autoload. The executor (agent/deferred_tools.py)
+    # performs the load — this function has no session in hand.
+    browsing = bool(_match_full_source(catalog, query.lower()))
+    autoload = [] if browsing else [h.name for h in hits[: max(0, config.autoload_top_n)]]
     return json.dumps({
         "query": query,
+        "mode": "source_browse" if browsing else "ranked",
         "total_available": len(catalog),
         "matches": [_format_search_hit(h) for h in hits],
+        "autoload": autoload,
     }, ensure_ascii=False)
 
 

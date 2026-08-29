@@ -3330,6 +3330,16 @@ class AIAgent:
         from agent.system_prompt import invalidate_system_prompt
         invalidate_system_prompt(self)
 
+    def set_tool_definitions(self, tool_defs):
+        """Install a freshly assembled tool list, keeping tools this session loaded.
+
+        Forwarder — see ``agent.deferred_tools.apply_tool_definitions``. Every
+        toolset/MCP reload must go through here rather than assigning
+        ``self.tools`` directly, or the reload forgets what tool_search loaded.
+        """
+        from agent.deferred_tools import apply_tool_definitions
+        apply_tool_definitions(self, tool_defs)
+
     @staticmethod
     def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
         """Generate a deterministic call_id from tool call content.

@@ -10768,10 +10768,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 disabled_toolsets=getattr(_agent, "disabled_toolsets", None),
                                 quiet_mode=True,
                             )
-                            _agent.tools = new_defs
-                            _agent.valid_tool_names = {
-                                t["function"]["name"] for t in new_defs
-                            } if new_defs else set()
+                            from agent.deferred_tools import apply_tool_definitions
+                            apply_tool_definitions(_agent, new_defs)
             except Exception as _exc:
                 logger.debug(
                     "Failed to update cached agent tools after MCP reload: %s",
