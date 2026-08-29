@@ -310,11 +310,14 @@ def _disable_prune_builtins(curator_env, monkeypatch):
     monkeypatch.setattr(u, "_prune_builtins_enabled", lambda: False)
 
 
-def test_prune_builtins_default_on(curator_env):
-    # Shipped default is ON: with no explicit config, built-ins are eligible.
+def test_prune_builtins_default_off(curator_env):
+    # Shipped default is OFF: with no explicit config, built-ins are read-only
+    # for the curator (the update/sync policy also enforces the key to False).
     c = curator_env["curator"]
-    # _load_config returns {} (fixture) → default True surfaces.
-    assert c.get_prune_builtins() is True
+    u = curator_env["usage"]
+    # _load_config returns {} (fixture) → default False surfaces on both paths.
+    assert c.get_prune_builtins() is False
+    assert u._prune_builtins_enabled() is False
 
 
 def test_prune_builtins_off_excludes_bundled(curator_env, monkeypatch):
