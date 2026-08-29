@@ -11456,7 +11456,7 @@ def _cmd_memory_reconcile_files(_args) -> None:
     except Exception as exc:
         print(f"\n  ✗ Could not load filesystem memory module: {exc}\n")
         return
-    out = reconcile_filesystem_memory_to_structured()
+    out = reconcile_filesystem_memory_to_structured(force=True)
     print(
         f"\n  ✓ Reconciled filesystem memory: updated={int(out.get('updated') or 0)}, "
         f"skipped={int(out.get('skipped') or 0)}\n"

@@ -303,19 +303,22 @@ class TestMemoryStoreAdd:
         result = store.add("memory", "this will exceed the limit")
         assert result["success"] is False
         assert "exceed" in result["error"].lower()
-        # Overflow response gives the model what it needs to consolidate in-turn
-        assert "current_entries" in result
+        # Overflow response points at 'read'/'remove' but does NOT echo the whole
+        # store back (that dump cost ~2k chars on every failed write).
+        assert "current_entries" not in result
         assert "usage" in result
+        assert result["entry_count"] == 1
         assert "retry" in result["error"].lower()
 
     def test_replace_exceeding_limit_returns_consolidation_context(self, store):
-        # A replace that blows the budget should mirror the add-overflow shape:
-        # echo current_entries + usage and tell the model to retry in-turn.
+        # A replace that blows the budget mirrors the add-overflow shape:
+        # usage + entry_count, no store dump, and a retry hint.
         store.add("memory", "short")
         result = store.replace("memory", "short", "y" * 600)
         assert result["success"] is False
-        assert "current_entries" in result
+        assert "current_entries" not in result
         assert "usage" in result
+        assert result["entry_count"] == 1
         assert "retry" in result["error"].lower()
 
     def test_add_injection_blocked(self, store):

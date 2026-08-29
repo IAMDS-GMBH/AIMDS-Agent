@@ -16,10 +16,13 @@ from agent.memory_dual_write import (
 )
 
 
-def test_is_mcp_memory_save_tool_matches_suffix():
+def test_is_mcp_memory_save_tool_matches_primary_server_only():
     assert is_mcp_memory_save_tool("memory_save")
-    assert is_mcp_memory_save_tool("mcp_IAMDS_mcp_memory_memory_save")
-    assert not is_mcp_memory_save_tool("memory_context")
+    assert is_mcp_memory_save_tool("mcp_AIMDSSuiteMCP_mcp_memory_memory_save", primary_server="AIMDSSuiteMCP")
+    assert not is_mcp_memory_save_tool("mcp_AIMDSSuiteMCP_mcp_memory_memory_context", primary_server="AIMDSSuiteMCP")
+    # A custom/secondary memory server never feeds the local mirror.
+    assert not is_mcp_memory_save_tool("mcp_EnwicklerMemoryMCP_memory_save", primary_server="AIMDSSuiteMCP")
+    assert not is_mcp_memory_save_tool("mcp_Custom_memory_save", primary_server="")
 
 
 def test_tool_result_success_parsing():
@@ -42,51 +45,60 @@ def test_build_local_payload_maps_profile_to_user():
     assert "concise bullet points" in content
 
 
-def test_mirror_mcp_save_to_local_calls_memory_tool(monkeypatch):
-    called = {}
+def test_mirror_mcp_save_never_writes_the_flat_local_store(monkeypatch, tmp_path):
+    """Regression: every MCP save used to be appended to MEMORY.md/USER.md via
+    memory(action="add") until the 2,200-char store was full (59 limit errors
+    in one month). The mirror is now structured-only."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("agent.memory_dual_write._primary_mcp_server_name", lambda: "AIMDSSuiteMCP")
 
-    def fake_memory_tool(**kwargs):
-        called.update(kwargs)
-        return '{"success": true}'
+    def forbidden_memory_tool(**kwargs):
+        raise AssertionError(f"flat local memory write attempted: {kwargs}")
 
-    monkeypatch.setattr("tools.memory_tool.memory_tool", fake_memory_tool)
+    monkeypatch.setattr("tools.memory_tool.memory_tool", forbidden_memory_tool)
 
     agent = SimpleNamespace(
-        _memory_store=object(),
         _build_memory_write_metadata=lambda **kwargs: {"session_id": "s1", **kwargs},
     )
-    mirror_mcp_memory_save_to_local(
+    for i in range(50):
+        written = mirror_mcp_memory_save_to_local(
+            agent,
+            "mcp_AIMDSSuiteMCP_mcp_memory_memory_save",
+            {"title": f"Fact {i}", "type": "profile", "content": f"User prefers English {i}."},
+            '{"success": true}',
+            effective_task_id="t1",
+            tool_call_id=f"c{i}",
+        )
+        assert written is True
+    assert not (tmp_path / "memories" / "MEMORY.md").exists()
+    assert not (tmp_path / "memories" / "USER.md").exists()
+    assert len(read_structured_mirror_records(limit=100)) == 50
+
+
+def test_mirror_mcp_save_ignores_secondary_memory_server(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("agent.memory_dual_write._primary_mcp_server_name", lambda: "AIMDSSuiteMCP")
+    agent = SimpleNamespace(_build_memory_write_metadata=lambda **kwargs: {"session_id": "s1", **kwargs})
+    written = mirror_mcp_memory_save_to_local(
         agent,
-        "mcp_IAMDS_mcp_memory_memory_save",
-        {"title": "Lang", "type": "profile", "content": "User prefers English."},
+        "mcp_EnwicklerMemoryMCP_memory_save",
+        {"title": "Custom", "type": "notes", "content": "Only on the custom server."},
         '{"success": true}',
-        effective_task_id="t1",
-        tool_call_id="c1",
     )
-    assert called["action"] == "add"
-    assert called["target"] == "user"
-    assert "User prefers English." in called["content"]
-    assert called["metadata"]["write_origin"] == "mcp_mirror"
+    assert written is False
+    assert read_structured_mirror_records(limit=10) == []
 
 
 def test_mirror_mcp_save_writes_structured_record(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-    called = {}
-
-    def fake_memory_tool(**kwargs):
-        called.update(kwargs)
-        return '{"success": true}'
-
-    monkeypatch.setattr("tools.memory_tool.memory_tool", fake_memory_tool)
+    monkeypatch.setattr("agent.memory_dual_write._primary_mcp_server_name", lambda: "AIMDSSuiteMCP")
 
     agent = SimpleNamespace(
-        _memory_store=object(),
         _build_memory_write_metadata=lambda **kwargs: {"session_id": "s-structured", **kwargs},
     )
     mirror_mcp_memory_save_to_local(
         agent,
-        "mcp_IAMDS_mcp_memory_memory_save",
+        "mcp_AIMDSSuiteMCP_mcp_memory_memory_save",
         {
             "title": "Spanish preference",
             "type": "profile",
@@ -106,7 +118,7 @@ def test_mirror_mcp_save_writes_structured_record(monkeypatch, tmp_path):
     assert row["title"] == "Spanish preference"
     assert row["scope"] == "user"
     assert row["target"] == "user"
-    assert row["source_tool"] == "mcp_IAMDS_mcp_memory_memory_save"
+    assert row["source_tool"] == "mcp_AIMDSSuiteMCP_mcp_memory_memory_save"
     assert row["write_origin"] == "mcp_mirror"
     assert row["tool_call_id"] == "call-1"
     assert row["task_id"] == "task-1"
@@ -116,16 +128,14 @@ def test_mirror_mcp_save_writes_structured_record(monkeypatch, tmp_path):
 
 def test_mirror_mcp_save_failure_does_not_write_structured_record(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-    monkeypatch.setattr("tools.memory_tool.memory_tool", lambda **_kwargs: '{"success": true}')
+    monkeypatch.setattr("agent.memory_dual_write._primary_mcp_server_name", lambda: "AIMDSSuiteMCP")
 
     agent = SimpleNamespace(
-        _memory_store=object(),
         _build_memory_write_metadata=lambda **kwargs: {"session_id": "s-fail", **kwargs},
     )
     mirror_mcp_memory_save_to_local(
         agent,
-        "mcp_IAMDS_mcp_memory_memory_save",
+        "mcp_AIMDSSuiteMCP_mcp_memory_memory_save",
         {"title": "Should not persist", "type": "profile", "content": "x"},
         '{"success": false, "error": "denied"}',
         effective_task_id="task-fail",
@@ -261,39 +271,41 @@ def test_detect_preference_candidates_caps_at_five():
     assert len(candidates) <= 5
 
 
-def test_mirror_local_memory_to_mcp_invokes_mcp_save(monkeypatch):
-    from types import SimpleNamespace
-    from agent.memory_dual_write import mirror_local_memory_to_mcp
+def test_memory_context_snapshot_goes_to_its_own_file_not_user_md(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from agent.memory_dual_write import mirror_mcp_memory_context_to_user_md, mcp_profile_snapshot_path
 
-    calls = []
+    monkeypatch.setattr("model_tools._is_memory_context_tool_name", lambda name: name.endswith("memory_context"))
+    result = json.dumps({"profile": [{"content": "**Profile: @user**\n- Communication: concise German answers, tables preferred."}]})
+    agent = SimpleNamespace()
+    assert mirror_mcp_memory_context_to_user_md(agent, "mcp_AIMDSSuiteMCP_mcp_memory_memory_context", result) is True
+    snapshot = mcp_profile_snapshot_path()
+    assert snapshot.exists()
+    assert "concise German" in snapshot.read_text(encoding="utf-8")
+    assert not (tmp_path / "memories" / "USER.md").exists()
+    # identical content is a no-op
+    assert mirror_mcp_memory_context_to_user_md(agent, "mcp_AIMDSSuiteMCP_mcp_memory_memory_context", result) is False
 
-    def mock_handle_function_call(name, args, task_id, **kwargs):
-        calls.append((name, args, task_id, kwargs))
-        return '{"success": true}'
 
-    monkeypatch.setattr("run_agent.handle_function_call", mock_handle_function_call)
-
-    agent = SimpleNamespace(
-        valid_tool_names={"memory", "mcp_IAMDS_mcp_memory_memory_save"},
-        session_id="session-123",
-        _current_turn_id="turn-1",
-        _current_api_request_id="req-1",
+def test_reconcile_skips_unchanged_tree(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from agent.memory_dual_write import (
+        reconcile_filesystem_memory_to_structured,
+        _filesystem_memory_root,
+        FILESYSTEM_PROJECT_DIR,
     )
 
-    success = mirror_local_memory_to_mcp(
-        agent=agent,
-        tool_name="memory",
-        tool_args={"action": "add", "target": "user", "content": "Prefer concise bullet points"},
-        tool_result='{"success": true}',
-        effective_task_id="task-1",
-    )
+    root = _filesystem_memory_root()
+    (root / FILESYSTEM_PROJECT_DIR).mkdir(parents=True, exist_ok=True)
+    note = root / FILESYSTEM_PROJECT_DIR / "alpha.md"
+    note.write_text("---\n{\"title\": \"Alpha\", \"type\": \"project\"}\n---\nAlpha body\n", encoding="utf-8")
 
-    assert success is True
-    assert len(calls) == 1
-    m_name, m_args, m_task_id, m_kwargs = calls[0]
-    assert m_name == "mcp_IAMDS_mcp_memory_memory_save"
-    assert m_args["content"] == "Prefer concise bullet points"
-    assert m_args["type"] == "profile"
-    assert m_args["__mcp_mirror"] is True
-    assert m_kwargs["session_id"] == "session-123"
-
+    first = reconcile_filesystem_memory_to_structured()
+    assert first["updated"] == 1
+    second = reconcile_filesystem_memory_to_structured()
+    assert second["updated"] == 0 and second.get("unchanged") == 1
+    assert reconcile_filesystem_memory_to_structured(force=True)["updated"] == 1
+    note.write_text(note.read_text(encoding="utf-8") + "more\n", encoding="utf-8")
+    import os
+    os.utime(note, None)
+    assert reconcile_filesystem_memory_to_structured()["updated"] == 1

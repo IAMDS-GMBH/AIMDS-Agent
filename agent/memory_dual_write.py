@@ -1,4 +1,13 @@
-"""Bridge helpers for dual-writing memory across MCP + local Hermes memory."""
+"""Local read-cache of the MCP memory vault.
+
+The MCP memory server is the source of truth. This module keeps a
+one-directional mirror of successful ``memory_save`` calls (JSONL store +
+editable markdown under ``~/.hermes/memories/{user,project}`` + the
+``VaultMetaIndex``) so recall keeps working offline. Nothing here writes back
+to the MCP and nothing here writes into the flat ``MEMORY.md``/``USER.md``
+store — that is what used to fill the 2,200-char local memory with every
+remote save.
+"""
 
 from __future__ import annotations
 
@@ -19,10 +28,33 @@ FILESYSTEM_USER_DIR = "user"
 FILESYSTEM_PROJECT_DIR = "project"
 
 
-def is_mcp_memory_save_tool(tool_name: str) -> bool:
+def _primary_mcp_server_name() -> str:
+    try:
+        from hermes_cli.config import get_primary_mcp_server_name
+
+        return str(get_primary_mcp_server_name() or "").strip()
+    except Exception:
+        return ""
+
+
+def is_mcp_memory_save_tool(tool_name: str, primary_server: Optional[str] = None) -> bool:
+    """True for a ``memory_save`` of the *primary* memory server only.
+
+    A bare ``memory_save`` (memory-manager path) always counts. Prefixed MCP
+    tools count only when they belong to ``primary_server`` (default: the
+    configured primary MCP server) — a custom or secondary server must never
+    feed the local mirror.
+    """
     if not tool_name:
         return False
-    return tool_name == "memory_save" or tool_name.endswith("_memory_save")
+    if tool_name == "memory_save":
+        return True
+    if not tool_name.endswith("_memory_save"):
+        return False
+    primary = (primary_server if primary_server is not None else _primary_mcp_server_name()).strip()
+    if not primary:
+        return False
+    return tool_name.startswith(f"mcp_{primary}_") or tool_name.startswith(f"{primary}_")
 
 
 def tool_result_indicates_success(result: Any) -> bool:
@@ -676,13 +708,40 @@ def _parse_frontmatter_and_body(text: str) -> Tuple[Dict[str, Any], str]:
     return {}, body
 
 
-def reconcile_filesystem_memory_to_structured() -> Dict[str, int]:
-    """Apply filesystem edits (HermesMemory) back into the structured mirror."""
+FILESYSTEM_RECONCILE_CURSOR = ".filesystem_reconcile_cursor"
+
+
+def _filesystem_memory_stamp(files: List[Path]) -> str:
+    """Cheap change signature for the editable markdown tree (count + newest mtime)."""
+    newest = 0
+    for path in files:
+        try:
+            newest = max(newest, int(path.stat().st_mtime_ns))
+        except OSError:
+            continue
+    return f"{len(files)}:{newest}"
+
+
+def reconcile_filesystem_memory_to_structured(*, force: bool = False) -> Dict[str, int]:
+    """Apply filesystem edits (HermesMemory) into the structured mirror.
+
+    Cheap when nothing changed: the tree's ``(file count, newest mtime)``
+    stamp is remembered in ``.filesystem_reconcile_cursor`` and the walk is
+    skipped while it matches. ``force=True`` (CLI) always re-reads.
+    """
     _ensure_filesystem_memory_layout()
     root = _filesystem_memory_root()
     updated = 0
     skipped = 0
     files = list((root / FILESYSTEM_USER_DIR).glob("*.md")) + list((root / FILESYSTEM_PROJECT_DIR).glob("*.md"))
+    cursor = root / FILESYSTEM_RECONCILE_CURSOR
+    stamp = _filesystem_memory_stamp(files)
+    if not force:
+        try:
+            if cursor.exists() and cursor.read_text(encoding="utf-8").strip() == stamp:
+                return {"updated": 0, "skipped": 0, "unchanged": len(files)}
+        except OSError:
+            pass
     for path in files:
         try:
             text = path.read_text(encoding="utf-8")
@@ -729,6 +788,13 @@ def reconcile_filesystem_memory_to_structured() -> Dict[str, int]:
             updated += 1
         except Exception:
             skipped += 1
+    # upsert_structured_mirror_record rewrites the markdown it just read, so
+    # the stamp must be taken AFTER the pass — otherwise our own writes look
+    # like user edits and every turn reconciles again.
+    try:
+        cursor.write_text(_filesystem_memory_stamp(files), encoding="utf-8")
+    except OSError:
+        pass
     return {"updated": updated, "skipped": skipped}
 
 
@@ -1023,9 +1089,11 @@ def mirror_mcp_memory_save_to_local(
     effective_task_id: str = "",
     tool_call_id: Optional[str] = None,
 ) -> bool:
-    """Mirror successful MCP memory_save writes into local Hermes memory."""
-    if not getattr(agent, "_memory_store", None):
-        return False
+    """Mirror a successful MCP memory_save into the local structured cache.
+
+    Writes the JSONL/markdown mirror only. It never touches the flat
+    ``MEMORY.md``/``USER.md`` store.
+    """
     if not is_mcp_memory_save_tool(tool_name):
         return False
     if not tool_result_indicates_success(tool_result):
@@ -1065,34 +1133,19 @@ def mirror_mcp_memory_save_to_local(
     except Exception:
         pass
 
-    flat_written = False
-    try:
-        from tools.memory_tool import memory_tool as _memory_tool
-
-        flat_result = _memory_tool(
-            action="add",
-            target=target,
-            content=content,
-            store=agent._memory_store,
-            metadata=write_meta,
-        )
-        try:
-            parsed = json.loads(str(flat_result))
-            flat_written = bool(parsed.get("success") is True)
-        except Exception:
-            # Non-JSON responses from the local memory tool are treated as success.
-            flat_written = bool(str(flat_result).strip())
-    except Exception:
-        flat_written = False
-
-    return structured_written or flat_written
+    return structured_written
 
 
 # ---------------------------------------------------------------------------
-# memory_context → USER.md snapshot sync
+# memory_context → profile snapshot (fallback reading source, never USER.md)
 # ---------------------------------------------------------------------------
 
 _MCP_SNAPSHOT_MARKER = "<!-- mcp_context_snapshot -->"
+MCP_PROFILE_SNAPSHOT_FILENAME = "mcp_profile_snapshot.md"
+
+
+def mcp_profile_snapshot_path() -> Path:
+    return _filesystem_memory_root() / MCP_PROFILE_SNAPSHOT_FILENAME
 # Profile-like top-level keys to extract from a memory_context JSON result.
 _PROFILE_EXTRACT_KEYS = (
     "profile", "user", "user_profile", "personal_info", "summary",
@@ -1172,19 +1225,16 @@ def mirror_mcp_memory_context_to_user_md(
     function_name: str,
     result: Any,
 ) -> bool:
-    """After a successful memory_context call, snapshot the profile into USER.md.
+    """After a successful memory_context call, snapshot the profile to disk.
 
-    Writes a clearly-marked snapshot section so that if MCP becomes unavailable
-    in a future session, USER.md acts as a meaningful local fallback.
+    The snapshot lives in ``~/.hermes/memories/mcp_profile_snapshot.md`` — a
+    read-only fallback for sessions without the MCP. It is deliberately NOT
+    written into ``USER.md`` (1,375-char budget the model also writes to).
 
     Returns True when a write was performed.
     """
     from model_tools import _is_memory_context_tool_name  # avoid circular at module level
     if not _is_memory_context_tool_name(function_name):
-        return False
-    if not getattr(agent, "_memory_store", None):
-        return False
-    if not getattr(agent, "_user_profile_enabled", False):
         return False
 
     profile_content = _extract_profile_content_from_memory_context(result)
@@ -1192,7 +1242,7 @@ def mirror_mcp_memory_context_to_user_md(
         return False
 
     try:
-        path = agent._memory_store._path_for("user")
+        path = mcp_profile_snapshot_path()
         existing = path.read_text(encoding="utf-8") if path.exists() else ""
     except Exception:
         return False
@@ -1220,11 +1270,6 @@ def mirror_mcp_memory_context_to_user_md(
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(new_text, encoding="utf-8")
-        # Reload the in-memory store to reflect the new content.
-        try:
-            agent._memory_store.load_from_disk()
-        except Exception:
-            pass
         import logging as _logging
         _logging.getLogger(__name__).debug(
             "mirror_mcp_memory_context_to_user_md: wrote snapshot (%d chars) via %s",
@@ -1234,84 +1279,3 @@ def mirror_mcp_memory_context_to_user_md(
         return True
     except Exception:
         return False
-
-
-def mirror_local_memory_to_mcp(
-    agent: Any,
-    tool_name: str,
-    tool_args: Dict[str, Any],
-    tool_result: Any,
-    *,
-    effective_task_id: str = "",
-    tool_call_id: Optional[str] = None,
-) -> bool:
-    """Mirror successful local Hermes memory writes to remote MCP memory_save if available."""
-    if tool_name != "memory":
-        return False
-    if not tool_result_indicates_success(tool_result):
-        return False
-
-    args = tool_args or {}
-    if args.get("__mcp_mirror"):
-        return False  # Prevent re-mirror loop
-
-    action = str(args.get("action") or "").strip().lower()
-    if action not in {"add", "replace", "update_structured"}:
-        return False
-
-    content = str(args.get("content") or "").strip()
-    if not content:
-        return False
-
-    valid_tools = set(getattr(agent, "valid_tool_names", []) or [])
-    from agent.prompt_builder import _resolve_memory_save_tool_name
-
-    mcp_save_tool = _resolve_memory_save_tool_name(valid_tools)
-    if not mcp_save_tool:
-        return False
-
-    target = str(args.get("target") or "memory").strip().lower()
-    mem_type = "profile" if target == "user" else "notes"
-
-    # Extract first line or short snippet for title
-    first_line = content.splitlines()[0].strip() if content else "Local memory update"
-    title = first_line[:60].lstrip("#").strip() or "Local memory update"
-
-    save_args = {
-        "title": title,
-        "content": content,
-        "type": mem_type,
-        "tags": ["local-sync", "hermes-memory"],
-        "__mcp_mirror": True,
-    }
-
-    try:
-        import run_agent as _ra
-
-        _ra.handle_function_call(
-            mcp_save_tool,
-            save_args,
-            effective_task_id,
-            tool_call_id=f"mcp-mirror-{uuid4().hex[:8]}",
-            session_id=agent.session_id or "",
-            turn_id=getattr(agent, "_current_turn_id", "") or "",
-            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-            enabled_tools=list(valid_tools),
-            skip_pre_tool_call_hook=True,
-            skip_tool_request_middleware=True,
-        )
-        import logging as _logging
-
-        _logging.getLogger(__name__).info(
-            "mirror_local_memory_to_mcp: mirrored local memory write to %s", mcp_save_tool
-        )
-        return True
-    except Exception as exc:
-        import logging as _logging
-
-        _logging.getLogger(__name__).debug(
-            "mirror_local_memory_to_mcp failed for %s: %s", mcp_save_tool, exc
-        )
-        return False
-
-
