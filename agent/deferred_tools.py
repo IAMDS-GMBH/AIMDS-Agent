@@ -469,6 +469,16 @@ def _compact_arguments(parameters: Any) -> Dict[str, str]:
     return out
 
 
+def _finding_notes(agent, name: str) -> str:
+    """What earlier sessions learned about this tool (agent/tool_findings.py)."""
+    try:
+        from agent.tool_findings import finding_notes_for
+
+        return finding_notes_for(agent, name)
+    except Exception:
+        return ""
+
+
 def _status_for(agent, name: str) -> str:
     if name in _valid_names(agent):
         return "loaded"
@@ -519,6 +529,9 @@ def absorb_bridge_result(agent, function_name: str, function_args: Any, function
                 "call it directly by that name."
             ),
         }
+        notes = _finding_notes(agent, loaded)
+        if notes:
+            rewritten["notes"] = notes
         return json.dumps(rewritten, ensure_ascii=False)
 
     # tool_search
@@ -532,7 +545,12 @@ def absorb_bridge_result(agent, function_name: str, function_args: Any, function
                 continue
             if hit.get("kind", "tool") != "tool":
                 continue
-            hit["status"] = _status_for(agent, str(hit.get("name") or ""))
+            hit_name = str(hit.get("name") or "")
+            hit["status"] = _status_for(agent, hit_name)
+            if hit["status"] == "loaded":
+                notes = _finding_notes(agent, hit_name)
+                if notes:
+                    hit["notes"] = notes
         # Server-side skills are ranked here (the dispatcher has no session
         # in hand) and listed first: on a name collision with a local skill
         # the server's copy is the maintained one.

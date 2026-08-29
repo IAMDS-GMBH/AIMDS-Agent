@@ -388,14 +388,26 @@ def finalize_turn(
         messages=messages,
     )
 
-    # Background memory/skill review — runs AFTER the response is delivered
+    # Tool findings: did this turn teach something about a tool? (an error
+    # recovered with changed arguments, a first successful use of a tool
+    # tool_search loaded, the same tool called repeatedly)
+    _tool_triggers = {}
+    try:
+        from agent.tool_findings import turn_triggers
+
+        _tool_triggers = turn_triggers(agent)
+    except Exception:
+        _tool_triggers = {}
+
+    # Background memory/skill/tool review — runs AFTER the response is delivered
     # so it never competes with the user's task for model attention.
-    if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+    if final_response and not interrupted and (_should_review_memory or _should_review_skills or _tool_triggers):
         try:
             agent._spawn_background_review(
                 messages_snapshot=list(messages),
                 review_memory=_should_review_memory,
                 review_skills=_should_review_skills,
+                review_tools=_tool_triggers or None,
             )
         except Exception:
             pass  # Background review is best-effort

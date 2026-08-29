@@ -235,6 +235,16 @@ def _tool_search_scoped_names(agent) -> frozenset:
         return frozenset()
 
 
+def _record_tool_finding_outcome(agent, name, args, result, is_error) -> None:
+    """Tally the outcome for the turn-end tool-findings review (never raises)."""
+    try:
+        from agent.tool_findings import record_tool_outcome
+
+        record_tool_outcome(agent, name, args, result, bool(is_error))
+    except Exception as exc:
+        logger.debug("tool finding record failed: %s", exc)
+
+
 def _load_deferred_after_unwrap(agent, underlying: str) -> None:
     """A tool invoked through tool_call is loaded so the next call can be direct."""
     try:
@@ -768,6 +778,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     )
                 except Exception as _ver_err:
                     logging.debug("file-mutation verifier record failed: %s", _ver_err)
+                _record_tool_finding_outcome(agent, function_name, function_args, function_result, is_error)
                 _maybe_persist_blocking_clarify_open_question(
                     agent,
                     function_name=function_name,
@@ -1495,6 +1506,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 )
             except Exception as _ver_err:
                 logging.debug("file-mutation verifier record failed: %s", _ver_err)
+            _record_tool_finding_outcome(agent, function_name, function_args, function_result, _is_error_result)
             _maybe_persist_blocking_clarify_open_question(
                 agent,
                 function_name=function_name,

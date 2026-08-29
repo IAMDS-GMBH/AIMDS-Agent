@@ -481,7 +481,7 @@ def _run_review_in_thread(
                     if isinstance(tool_def, dict) and "function" in tool_def:
                         t_name = tool_def["function"].get("name", "")
                         lower_name = t_name.lower()
-                        if "memory" in lower_name or "skill" in lower_name:
+                        if "memory" in lower_name or "skill" in lower_name or t_name == "vault_memory":
                             review_whitelist.add(t_name)
             set_thread_tool_whitelist(
                 review_whitelist,
@@ -583,11 +583,27 @@ def _run_review_in_thread(
             pass
 
 
+def _memory_save_hint(agent) -> str:
+    names = set(getattr(agent, "valid_tool_names", None) or [])
+    try:
+        from agent.prompt_builder import _resolve_memory_save_tool_name
+
+        tool = _resolve_memory_save_tool_name(names)
+    except Exception:
+        tool = None
+    if tool:
+        return f"`{tool}`"
+    if "vault_memory" in names:
+        return "`vault_memory(action='save', …)`"
+    return "the memory tool"
+
+
 def spawn_background_review_thread(
     agent: Any,
     messages_snapshot: List[Dict],
     review_memory: bool = False,
     review_skills: bool = False,
+    review_tools: Optional[Dict[str, List[str]]] = None,
 ):
     """Build the review thread target and prompt for a background review.
 
@@ -602,8 +618,15 @@ def spawn_background_review_thread(
         prompt = getattr(agent, "_COMBINED_REVIEW_PROMPT", _COMBINED_REVIEW_PROMPT)
     elif review_memory:
         prompt = getattr(agent, "_MEMORY_REVIEW_PROMPT", _MEMORY_REVIEW_PROMPT)
-    else:
+    elif review_skills:
         prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
+    else:
+        prompt = ""
+    if review_tools:
+        from agent.tool_findings import build_review_prompt
+
+        tool_prompt = build_review_prompt(review_tools, _memory_save_hint(agent))
+        prompt = f"{prompt}\n\n{tool_prompt}" if prompt else tool_prompt
 
     def _target() -> None:
         _run_review_in_thread(agent, messages_snapshot, prompt)

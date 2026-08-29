@@ -206,6 +206,14 @@ def build_turn_context(
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
 
+    # Fresh tally of tool outcomes for the turn-end tool-findings review.
+    try:
+        from agent.tool_findings import reset_turn
+
+        reset_turn(agent)
+    except Exception:
+        pass
+
     # Track memory nudge trigger (turn-based, checked here).
     should_review_memory = False
     _has_memory_surface = "memory" in agent.valid_tool_names and agent._memory_store
