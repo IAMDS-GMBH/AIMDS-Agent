@@ -1055,3 +1055,132 @@ def test_curator_slot_is_canonical_aux_task():
 
     # 4. web/src/pages/ModelsPage.tsx is checked at build time; the tsx
     #    array and this tuple share a ``Must match _AUX_TASK_SLOTS`` comment.
+
+
+# ---------------------------------------------------------------------------
+# Bundled skills are read-only for the LLM pass
+# ---------------------------------------------------------------------------
+
+def _write_bundled_skill(skills_dir: Path, name: str) -> Path:
+    d = skills_dir / "aimds_custom" / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SKILL.md").write_text(f"---\nname: {name}\ndescription: shipped\n---\n# {name}\n", encoding="utf-8")
+    manifest = skills_dir / ".bundled_manifest"
+    existing = manifest.read_text(encoding="utf-8") if manifest.exists() else ""
+    manifest.write_text(existing + f"{name}:abc\n", encoding="utf-8")
+    return d
+
+
+def _llm_result(summary="stubbed"):
+    return {"final": summary, "summary": summary, "model": "m", "provider": "p", "tool_calls": [], "error": None}
+
+
+def test_prompt_marks_bundled_skills_read_only(curator_env):
+    c = curator_env["curator"]
+    assert "READ-ONLY" in c.CURATOR_REVIEW_PROMPT
+    assert "`terminal mv`" in c.CURATOR_REVIEW_PROMPT
+
+
+def test_llm_pass_restores_a_bundled_skill_it_archived(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+    u.mark_agent_created("a")
+    shipped = _write_bundled_skill(skills_dir, "shipped")
+
+    def _stub(prompt):  # the pass ignores the rule and `terminal mv`s the skill away
+        (skills_dir / ".archive").mkdir(exist_ok=True)
+        shipped.rename(skills_dir / ".archive" / "shipped")
+        return _llm_result()
+
+    monkeypatch.setattr(c, "_run_llm_review", _stub)
+    restore_calls = []
+
+    def _fake_restore(names, quiet=True):
+        restore_calls.append(list(names))
+        for name in names:
+            (skills_dir / ".archive" / name).rename(skills_dir / "aimds_custom" / name)
+        return {"restored": list(names), "sync": {}}
+
+    monkeypatch.setattr("tools.skills_sync.restore_missing_bundled_skills", _fake_restore)
+
+    captured = []
+    c.run_curator_review(on_summary=lambda s: captured.append(s), synchronous=True)
+
+    assert restore_calls == [["shipped"]]
+    assert (shipped / "SKILL.md").exists()
+    assert any("restored 1 bundled skill(s) the curator removed: shipped" in s for s in captured)
+
+
+def test_llm_pass_only_warns_when_it_edited_a_bundled_skill(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+    u.mark_agent_created("a")
+    shipped = _write_bundled_skill(skills_dir, "shipped")
+
+    def _stub(prompt):
+        (shipped / "SKILL.md").write_text("patched by the curator", encoding="utf-8")
+        return _llm_result()
+
+    monkeypatch.setattr(c, "_run_llm_review", _stub)
+    monkeypatch.setattr("tools.skills_sync.restore_missing_bundled_skills", lambda *a, **k: pytest.fail("no restore for edits"))
+
+    captured = []
+    c.run_curator_review(on_summary=lambda s: captured.append(s), synchronous=True)
+
+    assert (shipped / "SKILL.md").read_text(encoding="utf-8") == "patched by the curator"  # no auto-revert
+    assert any("edited bundled skill(s) shipped" in s and "read-only" in s for s in captured)
+
+
+def test_dry_run_skips_the_bundled_guard(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+    u.mark_agent_created("a")
+    shipped = _write_bundled_skill(skills_dir, "shipped")
+
+    def _stub(prompt):
+        (skills_dir / ".archive").mkdir(exist_ok=True)
+        shipped.rename(skills_dir / ".archive" / "shipped")
+        return _llm_result()
+
+    monkeypatch.setattr(c, "_run_llm_review", _stub)
+    monkeypatch.setattr("tools.skills_sync.restore_missing_bundled_skills", lambda *a, **k: pytest.fail("dry-run must not restore"))
+
+    captured = []
+    c.run_curator_review(on_summary=lambda s: captured.append(s), synchronous=True, dry_run=True)
+    assert not shipped.exists()
+    assert not any("restored" in s for s in captured)
+
+
+def test_llm_fork_runs_under_the_background_review_origin(curator_env, monkeypatch):
+    """The skill_manage guard keys on the write origin; the fork must set it."""
+    import types
+    from tools import skill_provenance
+
+    c = importlib.reload(curator_env["curator"])  # the fixture stubs _run_llm_review; use the real one
+    seen = []
+
+    class _FakeAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, user_message):
+            seen.append(skill_provenance.get_current_write_origin())
+            return {"final_response": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(__import__("sys").modules, "run_agent", types.SimpleNamespace(AIAgent=_FakeAgent))
+    monkeypatch.setattr(c, "_resolve_review_runtime", lambda cfg: types.SimpleNamespace(provider="p", model="m", explicit_api_key=None, explicit_base_url=None))
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **k: {"api_key": "k", "base_url": "u", "api_mode": "chat", "provider": "p"})
+
+    meta = c._run_llm_review("prompt")
+    assert meta["error"] is None, meta
+    assert seen == [skill_provenance.BACKGROUND_REVIEW]
+    assert skill_provenance.get_current_write_origin() != skill_provenance.BACKGROUND_REVIEW  # reset afterwards

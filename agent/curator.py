@@ -28,7 +28,7 @@ import re
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
 from tools import skill_usage
@@ -357,8 +357,11 @@ CURATOR_REVIEW_PROMPT = (
     "bodies + `references/`, `templates/`, and `scripts/` subfiles for "
     "session-specific detail — not one-session-one-skill micro-entries.\n\n"
     "Hard rules — do not violate:\n"
-    "1. DO NOT touch bundled or hub-installed skills. The candidate list "
-    "below is already filtered to agent-created skills only.\n"
+    "1. Bundled (shipped) and hub-installed skills are READ-ONLY. Never "
+    "archive, delete, patch, edit, write files into, or use them as an "
+    "umbrella/absorption target — not via skill_manage and not via "
+    "`terminal mv`/`rm`. The candidate list below is already filtered to "
+    "agent-created skills only; anything not on it is off-limits.\n"
     "2. DO NOT delete any skill. Archiving (moving the skill's directory "
     "into ~/.hermes/skills/.archive/) is the maximum destructive action. "
     "Archives are recoverable; deletion is not.\n"
@@ -1405,6 +1408,63 @@ def _render_candidate_list() -> str:
     return "\n".join(lines)
 
 
+def _bundled_skill_snapshot() -> Dict[str, Tuple[Path, str]]:
+    """Shipped skill dirs on disk (name → (path, content hash)) before the LLM pass."""
+    try:
+        from tools.skills_sync import _discover_active_skills, _dir_hash
+
+        bundled = skill_usage._read_bundled_manifest_names()
+        snapshot: Dict[str, Tuple[Path, str]] = {}
+        for name, path in _discover_active_skills(skill_usage._skills_dir()):
+            if name in bundled:
+                snapshot[name] = (path, _dir_hash(path))
+        return snapshot
+    except Exception as e:
+        logger.debug("Curator bundled snapshot failed: %s", e, exc_info=True)
+        return {}
+
+
+def _guard_bundled_after_llm_pass(snapshot: Dict[str, Tuple[Path, str]], llm_meta: Any) -> List[str]:
+    """Bundled skills are read-only for the LLM pass: a shipped skill the pass
+    archived or deleted is restored right away (archive copy or pristine
+    bundle, via the skill sync); one it edited is only reported — a user edit
+    would look identical, so no auto-revert."""
+    if not snapshot:
+        return []
+    lines: List[str] = []
+    meta = llm_meta if isinstance(llm_meta, dict) else {}
+    try:
+        from tools.skills_sync import _dir_hash, restore_missing_bundled_skills
+
+        missing = sorted(n for n, (path, _) in snapshot.items() if not path.exists())
+        modified = sorted(n for n, (path, digest) in snapshot.items() if path.exists() and _dir_hash(path) != digest)
+    except Exception as e:
+        logger.debug("Curator bundled guard failed: %s", e, exc_info=True)
+        return []
+    if missing:
+        try:
+            restored = list(restore_missing_bundled_skills(missing, quiet=True).get("restored", []))
+        except Exception as e:
+            logger.debug("Curator bundled restore failed: %s", e, exc_info=True)
+            restored = []
+        meta["restored_bundled"] = restored
+        if restored:
+            lines.append(f"restored {len(restored)} bundled skill(s) the curator removed: {', '.join(restored)}")
+        still_missing = [n for n in missing if n not in restored]
+        if still_missing:
+            lines.append(
+                "bundled skill(s) removed by the curator could not be restored: "
+                f"{', '.join(still_missing)} — run `hermes skills reset <name> --restore`"
+            )
+    if modified:
+        meta["modified_bundled"] = modified
+        lines.append(
+            f"warning: the curator edited bundled skill(s) {', '.join(modified)} — bundled skills are "
+            "read-only; review the change or run `hermes skills reset <name> --restore`"
+        )
+    return lines
+
+
 def run_curator_review(
     on_summary: Optional[Callable[[str], None]] = None,
     synchronous: bool = False,
@@ -1528,10 +1588,17 @@ def run_curator_review(
                     )
                 else:
                     prompt = f"{CURATOR_REVIEW_PROMPT}{builtins_note}\n\n{candidate_list}"
+                # Bundled skills are read-only for the LLM pass. Snapshot them
+                # so whatever the pass removed comes straight back and edits
+                # are reported (no auto-revert: a user edit looks the same).
+                bundled_snapshot = {} if (dry_run or get_prune_builtins()) else _bundled_skill_snapshot()
                 llm_meta = _run_llm_review(prompt)
                 final_summary = (
                     f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"
                 )
+                guard_lines = _guard_bundled_after_llm_pass(bundled_snapshot, llm_meta)
+                if guard_lines:
+                    final_summary = final_summary + "\n" + "\n".join(guard_lines)
         except Exception as e:
             logger.debug("Curator LLM pass failed: %s", e, exc_info=True)
             final_summary = f"{prefix}{auto_summary}; llm: error ({e})"
@@ -1769,10 +1836,26 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # terminal. The background-thread runner also hides it; this
         # belt-and-suspenders path matters when a caller invokes
         # run_curator_review(synchronous=True) from the CLI.
-        with open(os.devnull, "w", encoding="utf-8") as _devnull, \
-             contextlib.redirect_stdout(_devnull), \
-             contextlib.redirect_stderr(_devnull):
-            conv_result = review_agent.run_conversation(user_message=prompt)
+        # The fork is a background review: skill_manage refuses writes to
+        # bundled skills under this origin (tools/skill_manager_tool.py).
+        _origin_token = None
+        try:
+            from tools import skill_provenance as _prov
+
+            _origin_token = _prov.set_current_write_origin(_prov.BACKGROUND_REVIEW)
+        except Exception:
+            _origin_token = None
+        try:
+            with open(os.devnull, "w", encoding="utf-8") as _devnull, \
+                 contextlib.redirect_stdout(_devnull), \
+                 contextlib.redirect_stderr(_devnull):
+                conv_result = review_agent.run_conversation(user_message=prompt)
+        finally:
+            if _origin_token is not None:
+                try:
+                    _prov.reset_current_write_origin(_origin_token)
+                except Exception:
+                    pass
 
         final = ""
         if isinstance(conv_result, dict):

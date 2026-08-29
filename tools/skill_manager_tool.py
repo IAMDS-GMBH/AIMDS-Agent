@@ -134,6 +134,36 @@ def _containing_skills_root(skill_path: Path) -> Path:
     return SKILLS_DIR
 
 
+_BUNDLED_READONLY_ACTIONS = {"delete", "edit", "patch", "write_file", "remove_file"}
+
+
+def _bundled_readonly_guard(name: str, action: str) -> Optional[str]:
+    """Refusal message when a background review / curator fork tries to write
+    a bundled skill, else None.
+
+    Shipped skills are the product surface; the curator archived and absorbed
+    freshly shipped ones before anyone used them. The foreground agent (the
+    user asking) may still edit or delete them; the review fork may not —
+    unless ``curator.prune_builtins`` explicitly makes built-ins eligible.
+    """
+    if action not in _BUNDLED_READONLY_ACTIONS or not name:
+        return None
+    try:
+        from tools import skill_provenance, skill_usage
+
+        if not skill_provenance.is_background_review():
+            return None
+        if skill_usage.is_bundled(name) and not skill_usage.is_curation_eligible(name):
+            return (
+                f"'{name}' is a bundled skill and read-only for background review and the "
+                "curator: it is not archived, deleted, patched or used as an umbrella. "
+                "Consolidate agent-created skills only."
+            )
+    except Exception as e:
+        logger.debug("bundled read-only guard skipped for %s: %s", name, e)
+    return None
+
+
 def _pinned_guard(name: str) -> Optional[str]:
     """Return a refusal message if *name* is pinned, else None.
 
@@ -912,6 +942,10 @@ def skill_manage(
     # to review inline, so they always stage regardless of origin); when off
     # (default) passes straight through. The gate is bypassed when this call is
     # itself replaying an already-approved staged write (_skill_apply_pending).
+    refusal = _bundled_readonly_guard(name, action)
+    if refusal:
+        return tool_error(refusal, success=False)
+
     gate_result = _apply_skill_write_gate(
         action, name, content=content, category=category,
         file_path=file_path, file_content=file_content,
