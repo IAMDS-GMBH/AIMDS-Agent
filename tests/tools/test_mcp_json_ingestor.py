@@ -74,7 +74,7 @@ def test_auto_ingest_nested_jira_result_string(tmp_path: Path):
 
 def test_only_data_tools_are_ingested():
     from tools.mcp_json_ingestor import should_ingest_tool
-    for name in ("tool_search", "tool_describe", "tool_call", "sql", "read_file", "terminal", "memory",
+    for name in ("tool_search", "tool_describe", "tool_call", "sql", "workdays", "read_file", "terminal", "memory",
                  "mcp_AIMDSSuiteMCP_mcp_memory_memory_context", "mcp_AIMDSSuiteMCP_mcp_memory_skill",
                  "mcp_AIMDSSuiteMCP_kb_search", "mcp_AtlassianMCP_list_resources"):
         assert should_ingest_tool(name) is False, name

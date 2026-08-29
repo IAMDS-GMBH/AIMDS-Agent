@@ -63,6 +63,7 @@ CONFIGURABLE_TOOLSETS = [
     ("desktop_todos",   "📋 Desktop Todos",             "todo"),
     ("memory",          "💾 Memory",                    "persistent memory across sessions"),
     ("sql",             "📊 SQL / Deterministic Data",  "query ingested MCP records & state.db"),
+    ("workdays",        "📅 Working Days & Holidays",   "DACH holidays, working days, target hours"),
     ("context_engine",  "🧩 Context Engine",            "runtime tools from the active context engine"),
     ("session_search",  "🔎 Session Search",            "search past conversations"),
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
@@ -1359,6 +1360,11 @@ def _get_platform_tools(
         legacy_default_core = {"web", "terminal", "file", "skills", "memory"}
         if legacy_default_core.issubset(set(toolset_names)):
             toolset_names = [*toolset_names, "sql"]
+    # Same recovery for ``workdays`` (core since the calendar tool landed).
+    if "workdays" not in toolset_names:
+        legacy_default_core = {"web", "terminal", "file", "skills", "memory"}
+        if legacy_default_core.issubset(set(toolset_names)):
+            toolset_names = [*toolset_names, "workdays"]
 
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
     plugin_ts_keys = _get_plugin_toolset_keys()

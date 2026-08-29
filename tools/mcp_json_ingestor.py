@@ -301,7 +301,7 @@ def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fall
     )
 
 
-_NON_DATA_TOOL_MARKERS = ("memory", "_skill", "skill_", "kb_", "web_search", "web_fetch", "list_resources", "read_resource", "list_prompts", "get_prompt")
+_NON_DATA_TOOL_MARKERS = ("memory", "_skill", "skill_", "kb_", "web_search", "web_fetch", "list_resources", "read_resource", "list_prompts", "get_prompt", "workdays")
 _BRIDGE_TOOLS = frozenset({"tool_search", "tool_describe", "tool_call"})
 
 

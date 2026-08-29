@@ -1039,6 +1039,8 @@ class TestDynamicMCPKeywordIndexing:
         for query in ("urlaub", "officezeiten", "feiertage", "abwesenheit"):
             results = search_catalog(catalog, query)
             assert len(results) >= 1, f"Failed for query {query}"
+            # "feiertage" also maps to the workdays tool; with only the m365
+            # tool in this catalog the calendar tool still wins.
             assert results[0].name == "m365_get_events"
 
     def test_dynamic_skill_keywords_expansion(self, monkeypatch):

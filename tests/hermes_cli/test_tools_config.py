@@ -1703,3 +1703,37 @@ def test_sql_tool_definition_survives_platform_resolution():
     names = {d["function"]["name"] for d in defs}
 
     assert "sql" in names
+
+
+# --- workdays: same guarantees as sql (core tool, configurable, recovered) ---
+
+def test_configurable_toolsets_include_workdays():
+    assert any(ts_key == "workdays" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+
+
+def test_get_platform_tools_keeps_workdays_for_composite_cli_config():
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "web", "outlook"]}}
+    assert "workdays" in _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+
+def test_get_platform_tools_default_cli_includes_workdays():
+    assert "workdays" in _get_platform_tools({}, "cli")
+
+
+def test_get_platform_tools_recovers_workdays_for_saved_explicit_lists():
+    config = {"platform_toolsets": {"cli": ["web", "terminal", "file", "skills", "memory", "desktop_todos", "sql"]}}
+    assert "workdays" in _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+
+def test_get_platform_tools_minimal_list_does_not_gain_workdays():
+    config = {"platform_toolsets": {"cli": ["web", "terminal"]}}
+    assert "workdays" not in _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+
+def test_workdays_tool_definition_survives_platform_resolution():
+    import model_tools
+
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "web", "outlook"]}}
+    enabled = sorted(_get_platform_tools(config, "cli", include_default_mcp_servers=False))
+    defs = model_tools.get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True, skip_tool_search_assembly=True)
+    assert "workdays" in {d["function"]["name"] for d in defs}

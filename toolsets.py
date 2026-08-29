@@ -45,6 +45,9 @@ _HERMES_CORE_TOOLS = [
     # Tasks, database & memory (vault_memory appears only when no memory MCP
     # is in the session — see tools/vault_memory_tool.py)
     "todo", "memory", "vault_memory", "sql",
+    # Calendar facts (working days, DACH holidays, target hours) — a query,
+    # never something the model types into SQL.
+    "workdays",
     # Clarifying questions
     "clarify",
     # Code execution
@@ -223,6 +226,11 @@ TOOLSETS = {
     "sql": {
         "description": "Deterministic SQL over ingested MCP records and state.db",
         "tools": ["sql"],
+        "includes": []
+    },
+    "workdays": {
+        "description": "Working days, DACH public holidays and target hours (Sollzeit) — deterministic calendar data",
+        "tools": ["workdays"],
         "includes": []
     },
 
