@@ -88,7 +88,7 @@ class TestConfigure:
         monkeypatch.setattr(wt, "_facade", lambda: _Facade())
         out = _run(action="configure", region="bayern", weekly_hours=40, days_per_week=5, half_days=["12-24", "12-31"], notes="Firma: 24.12./31.12. halbe Tage")
         assert out["memory"] == {"saved": True, "backend": "vault", "ref": "profile/arbeitszeit-profil.md", "error": None}
-        assert saved["title"] == wt.PROFILE_TITLE and saved["type"] == "profile" and "worktime" in saved["tags"]
+        assert saved["title"] == wt.PROFILE_TITLE and saved["type"] == "reference" and "worktime" in saved["tags"]  # not a second `profile` note
         assert "region: DE-BY" in saved["content"] and "half_days: 12-24, 12-31" in saved["content"]
         # the saved profile is used right away, no second lookup
         nxt = _run(action="target_hours", start="2026-01-01", end="2026-01-31")
@@ -119,13 +119,20 @@ class TestActions:
         months = {m["month"]: m for m in out["months"]}
         assert months["2026-01"]["workdays_net"] == 20 and months["2026-03"]["workdays_net"] == 22
         assert out["totals"]["target_hours"] == 1312.0 and out["totals"]["holidays_on_workdays"] == 8
-        assert out["range"]["inclusive"] is True and "Sollzeit_netto" in out["formula"]
+        assert out["range"]["inclusive"] is True and "target_net" in out["formula"]
 
     def test_workdays_with_days_and_six_day_week(self):
         out = _run(action="workdays", start="2026-08-01", end="2026-08-31", include_days=True, region="DE-BY", weekly_hours=48, days_per_week=6)
         assert out["totals"]["workdays_net"] == 25 and "target_hours" not in out["totals"]
         sat = next(d for d in out["days"] if d["day"] == "2026-08-15")
         assert sat["reason"] == "holiday" and sat["holiday"] == "Mariä Himmelfahrt"
+
+    def test_days_returns_every_calendar_day_in_one_call(self):
+        out = _run(action="days", year=2026, **BY)
+        assert len(out["days"]) == 365 and out["totals"]["target_hours"] > 0
+        by_day = {d["day"]: d for d in out["days"]}
+        assert by_day["2026-04-03"] == {"day": "2026-04-03", "weekday": 5, "factor": 0.0, "reason": "holiday", "holiday": "Karfreitag"}
+        assert by_day["2026-12-24"]["factor"] == 0.5 and by_day["2026-08-16"]["reason"] == "weekend"
 
     def test_invalid_input_is_a_tool_error(self):
         assert _run(action="holidays", year=2026, region="XX")["success"] is False

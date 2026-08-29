@@ -42,9 +42,9 @@ _PROFILE_TTL_SECONDS = 600
 CLARIFY_CHOICES = [
     "Bayern (DE-BY)",
     "Baden-Württemberg (DE-BW)",
-    "anderes deutsches Bundesland (DE-…)",
-    "Österreich (AT oder AT-W, AT-NÖ, …)",
-    "Schweiz (CH-ZH, CH-BE, …)",
+    "another German state (DE-…)",
+    "Austria (AT, or AT-W, AT-NÖ, …)",
+    "Switzerland (CH-ZH, CH-BE, …)",
 ]
 
 _profile_cache: Dict[str, Any] = {"at": 0.0, "profile": None, "source": ""}
@@ -153,8 +153,8 @@ def _profile_text(profile: Dict[str, Any]) -> str:
             lines.append(f"{key}: {profile[key]}")
     lines.append("")
     lines.append(
-        "Persönliches Arbeitszeitprofil für Sollzeit-/Überstundenrechnungen (`workdays`-Tool). "
-        "Halbtage = 0,5 Arbeitstag Sollzeit. Bei Änderung: `workdays(action='configure', …)`."
+        "Personal work-time profile for target-hours / overtime calculations (`workdays` tool). "
+        "Half days count as 0.5 working day. Change it with `workdays(action='configure', …)`."
     )
     return "\n".join(lines)
 
@@ -164,10 +164,13 @@ def save_profile(profile: Dict[str, Any]) -> Dict[str, Any]:
     if facade.mode == "none":
         _profile_cache.update({"at": time.time(), "profile": dict(profile, _source="parameters (no memory backend)")})
         return {"saved": False, "backend": "none", "note": "no memory backend available — profile applies to this call only"}
+    # type "reference", not "profile": the memory server's init skill keeps
+    # exactly one profile note per user and merges extras — that would eat
+    # this structured note. Lookup is by title, so the type is free.
     result = facade.save(
         title=PROFILE_TITLE,
         content=_profile_text(profile),
-        type="profile",
+        type="reference",
         tags=["worktime", "arbeitszeit", "sollzeit"],
         priority=8,
     )
@@ -186,9 +189,10 @@ def _unknown_profile(missing: List[str]) -> str:
         "error": "worktime profile unknown",
         "missing": missing,
         "ask": (
-            "Für Arbeitszeit-/Sollzeitfragen brauche ich Land und Bundesland/Kanton sowie das Wochenmodell. "
-            "Bitte per `clarify` erfragen (Choices unten), dann mit workdays(action='configure', region=…, "
-            "weekly_hours=…, days_per_week=…, half_days=[…]) im Memory speichern — nie annehmen."
+            "Work-time / target-hours questions need the user's country and state/canton plus the week model "
+            "(hours per week, days per week, half days). Ask the user with `clarify` using the choices below "
+            "(in the user's language), then persist the answer with workdays(action='configure', region=…, "
+            "weekly_hours=…, days_per_week=…, half_days=[…]) — it is saved to memory. Never assume."
         ),
         "clarify_choices": CLARIFY_CHOICES,
         "week_model_defaults": {"weekly_hours": wc.DEFAULT_WEEKLY_HOURS, "days_per_week": wc.DEFAULT_DAYS_PER_WEEK, "half_days": list(wc.DEFAULT_HALF_DAYS)},
@@ -262,9 +266,9 @@ def _assumptions(p: Dict[str, Any], hours: float) -> Dict[str, Any]:
 
 
 FORMULA = (
-    "Sollzeit_netto = Arbeitstage_netto × Stunden/Tag − Urlaubsabzug (aus den Buchungen, per sql); "
-    "Istzeit = SUM(duration_seconds)/3600 aller Worklogs außer Urlaub (Wochenende zählt in Ist, nicht in Soll); "
-    "Über-/Unterzeit = Istzeit − Sollzeit_netto"
+    "target_net = workdays_net × hours_per_day − vacation_deduction (from the bookings, via sql); "
+    "actual = SUM(duration_seconds)/3600 of all worklogs except vacation (weekend bookings count in actual, not in target); "
+    "balance = actual − target_net"
 )
 
 
@@ -290,7 +294,7 @@ def _act_holidays(args: Dict[str, Any]) -> str:
         "range": {"start": start.isoformat(), "end": end.isoformat(), "inclusive": True},
         "count_on_workdays": sum(1 for i in items if i["on_workday"]),
         "holidays": items, "source": wc.SOURCE,
-        "note": "kind=partial applies only in parts of the region and is never deducted; regional = state patron day (AT).",
+        "note": "kind=partial applies only in parts of the region and is never deducted; regional = state patron day (AT). Answer the user in their language.",
     }, ensure_ascii=False)
 
 
@@ -316,13 +320,13 @@ def _compute(args: Dict[str, Any]):
     return (p, start, end, days, hours, months), None
 
 
-def _act_workdays(args: Dict[str, Any], with_hours: bool) -> str:
+def _act_workdays(args: Dict[str, Any], with_hours: bool, all_days: bool = False) -> str:
     computed, err = _compute(args)
     if err:
         return err
     p, start, end, days, hours, months = computed
     payload: Dict[str, Any] = {
-        "action": "target_hours" if with_hours else "workdays",
+        "action": "days" if all_days else ("target_hours" if with_hours else "workdays"),
         "range": {"start": start.isoformat(), "end": end.isoformat(), "inclusive": True},
         "assumptions": _assumptions(p, hours),
         "months": months,
@@ -334,14 +338,15 @@ def _act_workdays(args: Dict[str, Any], with_hours: bool) -> str:
         payload["totals"].pop("target_hours", None)
     else:
         payload["formula"] = FORMULA
-    if args.get("include_days"):
+    if all_days or args.get("include_days"):
         payload["days"] = [
             {"day": d.day.isoformat(), "weekday": d.day.isoweekday(), "factor": d.factor, "reason": d.reason,
              **({"holiday": d.holiday.name} if d.holiday else {})}
             for d in days
         ]
     payload["next"] = (
-        "Für Ist/Soll-Vergleiche: workdays(action='materialize', …) und dann per sql gegen mcp_records joinen."
+        "For actual-vs-target comparisons: workdays(action='materialize', …), then JOIN workday_calendar "
+        "against mcp_records with sql. Present results in the user's language."
     )
     return json.dumps(payload, ensure_ascii=False)
 
@@ -397,8 +402,8 @@ def _act_materialize(args: Dict[str, Any], db_path: Optional[Path] = None) -> st
         "formula": FORMULA,
         "note": (
             "One calendar row per day: aggregate worklogs per day (CTE) BEFORE joining, or target hours multiply. "
-            "Urlaubsabzug (z. B. IAMDS-595: 0,5h → halber Tag, 1h → ganzer Tag) per sql aus den Buchungen; "
-            "Wochenend-Worklogs zählen in Ist, nicht in Soll."
+            "Vacation deduction (e.g. central ticket IAMDS-595: 0.5h booked = half day, 1h = full day) comes from "
+            "the bookings via sql; weekend worklogs count in actual, not in target. Present results in the user's language."
         ),
     }, ensure_ascii=False)
 
@@ -432,7 +437,7 @@ def _act_profile() -> str:
     return json.dumps({"action": "profile", "profile": profile, "source": source, "title": PROFILE_TITLE}, ensure_ascii=False)
 
 
-ACTIONS = ("holidays", "workdays", "target_hours", "materialize", "configure", "profile")
+ACTIONS = ("holidays", "workdays", "target_hours", "days", "materialize", "configure", "profile")
 
 
 def execute_workdays(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
@@ -444,6 +449,8 @@ def execute_workdays(args: Dict[str, Any], db_path: Optional[Path] = None) -> st
             return _act_workdays(args, with_hours=False)
         if action == "target_hours":
             return _act_workdays(args, with_hours=True)
+        if action == "days":
+            return _act_workdays(args, with_hours=True, all_days=True)
         if action == "materialize":
             return _act_materialize(args, db_path=db_path)
         if action == "configure":
@@ -461,15 +468,18 @@ WORKDAYS_SCHEMA = {
     "name": "workdays",
     "description": (
         "Deterministic calendar facts for work-time questions: working days, public holidays for DE/AT/CH "
-        "(per Bundesland/canton), target hours (Sollzeit), half days (24./31.12.), 5- or 6-day weeks.\n"
-        "MANDATORY for Sollzeit, Überstunden, Arbeitstage, Feiertage, Brückentage: NEVER type calendars, weekday "
+        "(per state/canton), target hours, half days (24./31.12.), 5- or 6-day weeks.\n"
+        "MANDATORY for target hours, overtime, working days, public holidays, bridge days: NEVER type calendars, weekday "
         "counts or holiday dates into SQL or prose, never compute Easter yourself.\n"
-        "Actions: 'target_hours' (per-month working days + target hours, default), 'workdays', 'holidays', "
-        "'materialize' (writes table workday_calendar into ~/.hermes/state.db so `sql` can JOIN target hours "
-        "against the ingested worklogs in mcp_records — use this for Ist/Soll comparisons), 'profile' (show the "
-        "saved work-time profile), 'configure' (save region/week model to memory as 'Arbeitszeit-Profil').\n"
-        "If the answer is 'worktime profile unknown': ask the user with `clarify` using the returned choices, then "
-        "call action='configure' — never assume a state or week model."
+        "Actions: 'target_hours' (per-month working days + target hours, default), 'days' (the same plus EVERY "
+        "calendar day of the range in one call: weekday, factor 1/0.5/0, reason, holiday name — ask once for the "
+        "whole range, never month by month), 'workdays', 'holidays', 'materialize' (writes table workday_calendar "
+        "into ~/.hermes/state.db so `sql` can JOIN target hours against the ingested worklogs in mcp_records — use "
+        "this for actual-vs-target comparisons), 'profile' (show the saved work-time profile), 'configure' (save "
+        "region/week model to memory as 'Arbeitszeit-Profil').\n"
+        "If the answer is 'worktime profile unknown': ask the user with `clarify` using the returned choices (in the "
+        "user's language), then call action='configure' — never assume a state or week model. Present results in "
+        "the user's language."
     ),
     "parameters": {
         "type": "object",
