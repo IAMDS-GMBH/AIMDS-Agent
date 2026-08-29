@@ -2909,6 +2909,7 @@ class AIAgent:
         NOT called per-turn — only at CLI exit, /reset, gateway
         session expiry, etc.
         """
+        self._summarize_session_into_memory(messages, reason="session_end")
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
@@ -2933,6 +2934,7 @@ class AIAgent:
         Called when session_id rotates (e.g. /new, context compression);
         providers keep their state and continue running under the old
         session_id — they just flush pending extraction now."""
+        self._summarize_session_into_memory(messages, reason="session_rotate")
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
@@ -2952,6 +2954,22 @@ class AIAgent:
                 )
             except Exception:
                 pass
+
+    def _summarize_session_into_memory(self, messages: list | None, *, reason: str) -> None:
+        """Safety net behind the prompt's SESSION CLOSE: one vault summary per session.
+
+        Skipped for short sessions (memory.session_summary_min_turns), for
+        compaction rotations (the compaction summary is saved separately) and
+        when no memory backend exists. Never raises.
+        """
+        if reason == "session_rotate" and getattr(self, "_compaction_rotation_in_progress", False):
+            return
+        try:
+            from agent.memory_facade import summarize_session_into_memory
+
+            summarize_session_into_memory(self, list(messages or []), reason=reason)
+        except Exception as exc:
+            logging.getLogger(__name__).debug("session summary skipped: %s", exc)
 
     def _sync_external_memory_for_turn(
         self,

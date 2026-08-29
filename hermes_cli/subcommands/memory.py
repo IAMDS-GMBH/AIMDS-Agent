@@ -50,6 +50,13 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
         default="all",
         help="Which store to reset: 'all' (default), 'memory', or 'user'",
     )
+    _migrate_parser = memory_sub.add_parser(
+        "migrate",
+        help="Move MEMORY.md/USER.md entries into the memory vault (MCP or Obsidian workspace)",
+    )
+    _migrate_parser.add_argument("--dry-run", action="store_true", help="Show what would be saved, write nothing")
+    _migrate_parser.add_argument("--yes", "-y", action="store_true", help="Clear the local files after a successful migration without asking")
+
     # list-structured subcommand
     _ls_parser = memory_sub.add_parser(
         "list-structured",

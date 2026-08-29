@@ -11449,6 +11449,74 @@ def _cmd_memory_list_files(args) -> None:
     print()
 
 
+def _cmd_memory_migrate(args) -> None:
+    """Move the §-delimited MEMORY.md/USER.md entries into the memory vault."""
+    from hermes_constants import get_hermes_home
+    from agent.memory_facade import MODE_NONE, MemoryFacade
+
+    mem_dir = get_hermes_home() / "memories"
+    facade = MemoryFacade.for_process()
+    if facade.mode == MODE_NONE:
+        print("\n  ✗ No memory vault available (no memory MCP registered and no Obsidian workspace as cwd).\n")
+        return
+    print(f"\n  Memory vault: {facade.describe_for_prompt()}")
+
+    entries = []
+    for fname, mem_type in (("MEMORY.md", "notes"), ("USER.md", "profile")):
+        path = mem_dir / fname
+        if not path.exists():
+            continue
+        raw = path.read_text(encoding="utf-8")
+        for chunk in raw.split("\n§\n"):
+            chunk = chunk.strip()
+            if chunk:
+                entries.append((fname, mem_type, chunk))
+    if not entries:
+        print("  Nothing to migrate — MEMORY.md/USER.md are empty.\n")
+        return
+
+    dry = getattr(args, "dry_run", False)
+    saved, skipped = 0, 0
+    for fname, mem_type, chunk in entries:
+        first = chunk.splitlines()[0].lstrip("#*- ").strip()
+        title = (first[:70] or f"{fname} entry").rstrip(":")
+        existing = facade.search(title, limit=1)
+        duplicate = bool(existing) and str(existing[0].get("title", "")).strip().lower() == title.lower()
+        flag = "skip (exists)" if duplicate else ("would save" if dry else "save")
+        print(f"  [{flag:<13}] {fname}: {title}")
+        if duplicate:
+            skipped += 1
+            continue
+        if dry:
+            continue
+        res = facade.save(title=title, content=chunk, type=mem_type, tags=["migrated-local", fname.lower()],
+                          scope="user" if mem_type == "profile" else "project")
+        if res.ok:
+            saved += 1
+        else:
+            print(f"      ✗ {res.error}")
+    print(f"\n  {'Would save' if dry else 'Saved'} {(len(entries) - skipped) if dry else saved}, skipped {skipped}.")
+    if dry or saved == 0:
+        print()
+        return
+    if not getattr(args, "yes", False):
+        try:
+            answer = input("  Clear MEMORY.md/USER.md now (a .bak copy is kept)? Type 'yes' to confirm: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer != "yes":
+            print("  Local files left as they are.\n")
+            return
+    import shutil, time as _time
+    stamp = _time.strftime("%Y%m%d-%H%M%S")
+    for fname in ("MEMORY.md", "USER.md"):
+        path = mem_dir / fname
+        if path.exists():
+            shutil.copy2(path, mem_dir / f"{fname}.bak.{stamp}")
+            path.write_text("", encoding="utf-8")
+    print(f"  ✓ Local files cleared (backups: *.bak.{stamp}).\n")
+
+
 def _cmd_memory_reconcile_files(_args) -> None:
     """Reconcile editable filesystem memory into structured mirror."""
     try:
@@ -11495,6 +11563,8 @@ def cmd_memory(args):
         _cmd_memory_list_files(args)
     elif sub == "reconcile-files":
         _cmd_memory_reconcile_files(args)
+    elif sub == "migrate":
+        _cmd_memory_migrate(args)
     elif sub == "open":
         _cmd_memory_open_slug(args)
     elif sub == "off":

@@ -38,8 +38,9 @@ _MEMORY_REVIEW_PROMPT = (
     "preferences, or personal details worth remembering?\n"
     "2. Has the user expressed expectations about how you should behave, their work "
     "style, or ways they want you to operate?\n\n"
-    "If something stands out, save it using the memory tool. "
-    "If nothing is worth saving, just say 'Nothing to save.' and stop."
+    "If something stands out, save it with the memory tool that reaches the vault — the MCP "
+    "memory_save tool or `vault_memory` when that is in your tools; the local `memory` tool only "
+    "if neither is. If nothing is worth saving, just say 'Nothing to save.' and stop."
 )
 
 _SKILL_REVIEW_PROMPT = (
@@ -152,7 +153,8 @@ _COMBINED_REVIEW_PROMPT = (
     "**Memory**: who the user is. Did the user reveal persona, "
     "desires, preferences, personal details, or expectations about "
     "how you should behave? Save facts about the user and durable "
-    "preferences with the memory tool.\n\n"
+    "preferences with the memory tool that reaches the vault (the MCP memory_save tool "
+    "or `vault_memory`; the local `memory` tool only if neither is available).\n\n"
     "**Skills**: how to do this class of task. Be ACTIVE — most "
     "sessions produce at least one skill update. A pass that does "
     "nothing is a missed learning opportunity, not a neutral outcome.\n\n"

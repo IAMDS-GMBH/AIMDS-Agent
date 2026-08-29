@@ -29,8 +29,8 @@ def test_upsert_aimds_defaults_creates_required_sections():
     assert out["tools"]["tool_search"]["enabled"] == "on"
     assert out["tools"]["tool_search"]["threshold_pct"] == 10
     assert out["prompt_caching"]["cache_ttl"] == "5m"
-    assert out["memory"]["enforce_initial_memory_context"] is False
-    assert out["memory"]["session_start_compact_workspace_hydration"] is False
+    assert out["memory"]["enforce_initial_memory_context"] is True
+    assert out["memory"]["session_start_compact_workspace_hydration"] is True
     assert out["memory"]["session_start_bootstrap_contract_enabled"] is False
 
     for slot in ("goal_judge", "compression", "approval", "mcp", "title_generation"):
@@ -65,26 +65,26 @@ def test_migrate_aimds_defaults_sets_version_and_applies_when_missing():
     out, changed, status = migrate_aimds_defaults(cfg)
 
     assert changed is True
-    assert "applied v14 (from v0)" in status
-    assert out["aimds_defaults_version"] == 14
+    assert "applied v15 (from v0)" in status
+    assert out["aimds_defaults_version"] == 15
     assert out["tools"]["tool_search"]["enabled"] == "on"
 
 
 def test_migrate_aimds_defaults_reenforces_policy_when_already_current():
     cfg = {
-        "aimds_defaults_version": 14,
+        "aimds_defaults_version": 15,
         "memory": {
-            "enforce_initial_memory_context": True,
-            "session_start_compact_workspace_hydration": True,
+            "enforce_initial_memory_context": False,
+            "session_start_compact_workspace_hydration": False,
             "session_start_bootstrap_contract_enabled": True,
         },
     }
     out, changed, status = migrate_aimds_defaults(cfg)
 
     assert changed is True
-    assert "enforced policy v14 (already current v14)" in status
-    assert out["memory"]["enforce_initial_memory_context"] is False
-    assert out["memory"]["session_start_compact_workspace_hydration"] is False
+    assert "enforced policy v15 (already current v15)" in status
+    assert out["memory"]["enforce_initial_memory_context"] is True
+    assert out["memory"]["session_start_compact_workspace_hydration"] is True
     assert out["memory"]["session_start_bootstrap_contract_enabled"] is False
 
 

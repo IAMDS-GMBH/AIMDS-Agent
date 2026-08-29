@@ -29,7 +29,7 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
     from utils import advisory_file_lock, atomic_yaml_write
 
-_AIMDS_DEFAULTS_VERSION = 14
+_AIMDS_DEFAULTS_VERSION = 15
 _AIMDS_DEFAULTS_VERSION_KEY = "aimds_defaults_version"
 
 
@@ -177,9 +177,14 @@ def upsert_aimds_defaults(config: dict) -> dict:
     prompt_caching["cache_ttl"] = "5m"
 
     memory = _ensure_dict(cfg, "memory")
-    memory["enforce_initial_memory_context"] = False
-    memory["session_start_compact_workspace_hydration"] = False
+    # The session-start memory_context load is deterministic (the SOUL asks
+    # for it and the runtime does it); the compact workspace hydration reads
+    # thisweek/findings/active projects that the vault template is built for.
+    memory["enforce_initial_memory_context"] = True
+    memory["session_start_compact_workspace_hydration"] = True
     memory["session_start_bootstrap_contract_enabled"] = False
+    memory["backend"] = "auto"
+    memory["local_tool"] = "auto"
 
     auxiliary = _ensure_dict(cfg, "auxiliary")
     for slot in ("goal_judge", "compression", "approval", "mcp", "title_generation"):

@@ -2158,6 +2158,17 @@ DEFAULT_CONFIG = {
         "enforce_context_for_personal_queries": True,
         # Force initial memory_context call on turn 1 of new sessions.
         "enforce_initial_memory_context": True,
+        # Memory backend for every runtime writer (agent/memory_facade.py):
+        #   auto  — the primary memory MCP when its tools are in the session,
+        #           otherwise the Obsidian workspace (vault_memory tool)
+        #   mcp / vault — force one side (vault is the fallback either way)
+        "backend": "auto",
+        # The local MEMORY.md/USER.md tool: auto (hidden while a vault backend
+        # exists), always, off.
+        "local_tool": "auto",
+        # Session-end summary (memory_summarize_session) only for sessions
+        # with at least this many user turns.
+        "session_summary_min_turns": 4,
         # If memory_context reports missing/stale context, add a compact local
         # workspace fallback (thisweek summary, findings tail, active/waiting
         # projects from frontmatter) instead of broad file preloads.

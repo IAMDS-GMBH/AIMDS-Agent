@@ -2250,6 +2250,16 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 """
         
         logger.info("Job '%s' completed successfully", job_name)
+        # A cron run that did real work leaves a trace in the vault (the
+        # agent is built with skip_memory, so nothing else would write one).
+        try:
+            _messages = result.get("messages") if isinstance(result, dict) else None
+            if isinstance(_messages, list) and sum(1 for m in _messages if isinstance(m, dict) and m.get("role") == "tool") >= 3:
+                from agent.memory_facade import summarize_session_into_memory
+
+                summarize_session_into_memory(agent, _messages, reason=f"cron:{job_id}")
+        except Exception as _sum_exc:
+            logger.debug("Job '%s': session summary skipped: %s", job_name, _sum_exc)
         return True, output, final_response, None
         
     except Exception as e:

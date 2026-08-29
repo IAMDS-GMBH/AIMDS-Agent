@@ -224,6 +224,21 @@ def capture_durable_topic(
         session_id=str(session_id or ""),
         turn_id=str(turn_id or ""),
     )
+    if not mcp_saved:
+        # No memory MCP reachable: the facade writes into the Obsidian vault.
+        try:
+            from agent.memory_facade import MODE_NONE, MemoryFacade
+
+            facade = MemoryFacade.for_process()
+            if facade.mode != MODE_NONE:
+                vault_result = facade.save(
+                    title=clean_title, content=clean_content,
+                    type=str(memory_type or "notes"), tags=topic_tags, scope=str(scope or "project"),
+                )
+                if vault_result.ok:
+                    mcp_saved, mcp_reason = True, f"saved_via_{vault_result.backend}"
+        except Exception as exc:
+            logger.debug("topic_capture: vault fallback failed: %s", exc)
     reason = "saved_local_and_mcp" if local_saved and mcp_saved else (
         "saved_local_only" if local_saved else mcp_reason
     )

@@ -208,9 +208,15 @@ def build_turn_context(
 
     # Track memory nudge trigger (turn-based, checked here).
     should_review_memory = False
-    if (agent._memory_nudge_interval > 0
-            and "memory" in agent.valid_tool_names
-            and agent._memory_store):
+    _has_memory_surface = "memory" in agent.valid_tool_names and agent._memory_store
+    if not _has_memory_surface:
+        try:
+            from agent.memory_facade import MODE_NONE, MemoryFacade
+
+            _has_memory_surface = MemoryFacade.for_agent(agent).mode != MODE_NONE
+        except Exception:
+            _has_memory_surface = False
+    if agent._memory_nudge_interval > 0 and _has_memory_surface:
         agent._turns_since_memory += 1
         if agent._turns_since_memory >= agent._memory_nudge_interval:
             should_review_memory = True

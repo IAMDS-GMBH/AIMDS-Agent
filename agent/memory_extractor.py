@@ -394,6 +394,21 @@ def _run_extraction(
                 except Exception:
                     mcp_saved = False
 
+            if not mcp_saved:
+                # No MCP save tool (or it failed): the facade writes to the
+                # Obsidian vault so the fact is not lost in the local mirror only.
+                try:
+                    from agent.memory_facade import MODE_NONE, MemoryFacade
+
+                    _facade = MemoryFacade.for_agent(agent)
+                    if _facade.mode != MODE_NONE:
+                        mcp_saved = _facade.save(
+                            title=fact["title"], content=fact["content"], type=fact["type"],
+                            tags=list(fact.get("tags") or []), scope=str(fact.get("scope") or "project"),
+                        ).ok
+                except Exception:
+                    pass
+
             # Local structured mirror fallback/secondary persistence.
             record = build_structured_mirror_record(
                 tool_args={**fact, "hints": hints},

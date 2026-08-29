@@ -770,8 +770,28 @@ def memory_tool(
 
 
 def check_memory_requirements() -> bool:
-    """Memory tool has no external requirements -- always available."""
-    return True
+    """The local MEMORY.md/USER.md tool is the fallback behind the memory vault.
+
+    ``memory.local_tool``: ``auto`` (default) hides it while a vault backend
+    (the memory MCP or the Obsidian workspace via vault_memory) exists,
+    ``always`` keeps it, ``off`` removes it.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        mode = str(((load_config() or {}).get("memory") or {}).get("local_tool") or "auto").strip().lower()
+    except Exception:
+        mode = "auto"
+    if mode == "always":
+        return True
+    if mode == "off":
+        return False
+    try:
+        from agent.memory_facade import MODE_NONE, resolve_mode
+
+        return resolve_mode(None) == MODE_NONE
+    except Exception:
+        return True
 
 
 def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:

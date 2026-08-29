@@ -1610,6 +1610,13 @@ def _resolve_office_mail_tools(valid_tool_names: "set[str] | None") -> "dict | N
     }
 
 
+# Server-name segments the shipped memory MCP has been configured under
+# (installer/scripts/upsert_aimds_defaults.py merges these into AIMDSSuiteMCP).
+_LEGACY_MEMORY_SERVER_SEGMENTS = frozenset({
+    "aimdssuitemcp", "aimds", "iamds", "memory", "aimds-gateway", "aimdsgateway", "remotemcp", "remote",
+})
+
+
 def _resolve_memory_tool_name(valid_tool_names: "set[str] | None", suffix: str) -> str | None:
     """Generic resolver for a memory MCP tool by its canonical suffix (e.g. ``memory_context``,
     ``memory_skill_read``, ``memory_save``).
@@ -1654,7 +1661,6 @@ def _resolve_memory_tool_name(valid_tool_names: "set[str] | None", suffix: str) 
                 f"{preferred_server_name}_",
             ]
         )
-    prefixes.append("mcp_")
 
     for prefix in prefixes:
         normalized_prefix = _normalize_tool_name_for_match(prefix)
@@ -1665,8 +1671,20 @@ def _resolve_memory_tool_name(valid_tool_names: "set[str] | None", suffix: str) 
         )
         if matches:
             return matches[0]
-    # No last-resort "any *_{suffix}" match: with a second or custom memory
-    # server in the session that silently made it the memory backend.
+
+    # Generic ``mcp_<server>_…`` fallback only for the legacy names the memory
+    # server was configured under before the AIMDSSuiteMCP rename. Any other
+    # server segment is a second/custom memory MCP, which must never silently
+    # become the memory backend (there is also no "any *_{suffix}" last resort).
+    generic = sorted(
+        original
+        for original, normalized in normalized_map.items()
+        if normalized.startswith("mcp_")
+        and normalized.endswith(f"_{suffix}")
+        and normalized.split("_", 2)[1].lower() in _LEGACY_MEMORY_SERVER_SEGMENTS
+    )
+    if generic:
+        return generic[0]
     return None
 
 

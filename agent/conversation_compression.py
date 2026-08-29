@@ -444,6 +444,15 @@ def compress_context(
         _release_lock()
         raise
 
+    # The compaction summary goes into the memory vault too. The transcript
+    # keeps only a pointer next to the inline summary, so a long session's
+    # state lives where later sessions can find it instead of only in a
+    # message that the next compaction eats.
+    try:
+        _persist_compaction_summary(agent, compressed)
+    except Exception as _persist_exc:
+        logger.debug("compaction summary persistence skipped: %s", _persist_exc)
+
     # If compression aborted (aux LLM failed to produce a usable summary)
     # the compressor returns the input messages unchanged.  Surface the
     # error to the user, skip the session-rotation work entirely (no
@@ -503,7 +512,13 @@ def compress_context(
             # Propagate title to the new session with auto-numbering
             old_title = agent._session_db.get_session_title(agent.session_id)
             # Trigger memory extraction on the old session before it rotates.
-            agent.commit_memory_session(messages)
+            # (The compaction summary itself was just saved to the vault; the
+            # rotation must not also write a session summary.)
+            agent._compaction_rotation_in_progress = True
+            try:
+                agent.commit_memory_session(messages)
+            finally:
+                agent._compaction_rotation_in_progress = False
             agent._session_db.end_session(agent.session_id, "compression")
             old_session_id = agent.session_id
             agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
@@ -800,3 +815,47 @@ __all__ = [
     "compress_context",
     "try_shrink_image_parts_in_messages",
 ]
+
+
+def _persist_compaction_summary(agent, compressed) -> None:
+    """Save the fresh compaction summary to the memory vault and point at it."""
+    compressor = getattr(agent, "context_compressor", None)
+    summary = getattr(compressor, "_previous_summary", None) if compressor is not None else None
+    if not isinstance(summary, str) or not summary.strip():
+        return
+    from agent.memory_facade import MODE_NONE, MemoryFacade
+
+    facade = MemoryFacade.for_agent(agent)
+    if facade.mode == MODE_NONE:
+        return
+    count = int(getattr(agent, "_compaction_count", 0) or 0) + 1
+    try:
+        agent._compaction_count = count
+    except Exception:
+        pass
+    session_id = str(getattr(agent, "session_id", "") or "unknown")
+    result = facade.save(
+        title=f"Session {session_id} · compaction {count}",
+        content=summary.strip(),
+        type="session",
+        tags=["session", "compaction", str(getattr(agent, "platform", "") or "cli")],
+        scope="project",
+    )
+    if not result.ok or not result.ref:
+        return
+    pointer = (
+        f"\n\n(Full detail of this compaction is saved in the memory vault — {result.backend} ref "
+        f"`{result.ref}`; read it with the memory read tool if the summary is not enough.)"
+    )
+    try:
+        from agent.context_compressor import SUMMARY_PREFIX
+        marker = SUMMARY_PREFIX[:20]
+    except Exception:
+        marker = "[CONTEXT COMPACTION"
+    for msg in compressed:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, str) and marker in content and "memory vault" not in content:
+            msg["content"] = content + pointer
+            break

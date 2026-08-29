@@ -42,8 +42,9 @@ _HERMES_CORE_TOOLS = [
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
     # (disabled — browser tools removed from core toolset)
-    # Tasks, database & memory
-    "todo", "memory", "sql",
+    # Tasks, database & memory (vault_memory appears only when no memory MCP
+    # is in the session — see tools/vault_memory_tool.py)
+    "todo", "memory", "vault_memory", "sql",
     # Clarifying questions
     "clarify",
     # Code execution
@@ -214,8 +215,8 @@ TOOLSETS = {
     },
     
     "memory": {
-        "description": "Persistent memory across sessions (personal notes + user profile)",
-        "tools": ["memory"],
+        "description": "Persistent memory: the memory vault (MCP or Obsidian workspace) plus the local MEMORY.md/USER.md fallback",
+        "tools": ["memory", "vault_memory"],
         "includes": []
     },
 
