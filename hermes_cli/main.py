@@ -11455,6 +11455,15 @@ def _cmd_memory_migrate(args) -> None:
     from agent.memory_facade import MODE_NONE, MemoryFacade
 
     mem_dir = get_hermes_home() / "memories"
+    # A bare CLI process has no MCP tools registered; without discovery the
+    # facade would see no memory server and migrate into the vault instead.
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+
+        print("\n  Connecting configured MCP servers …")
+        discover_mcp_tools()
+    except Exception as exc:
+        print(f"  (MCP discovery failed: {exc}; the Obsidian vault is the fallback)")
     facade = MemoryFacade.for_process()
     if facade.mode == MODE_NONE:
         print("\n  ✗ No memory vault available (no memory MCP registered and no Obsidian workspace as cwd).\n")
