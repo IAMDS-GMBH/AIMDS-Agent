@@ -1,14 +1,14 @@
 ---
 type: security
-title: ""
-date: ""
+title: "{{title}}"
+date: null
 severity: low | medium | high | critical
 status: open | in_progress | resolved | accepted
 related_to: []
 tags:
   - security
-created: ""
-updated: ""
+created: {{date}}
+updated: {{date}}
 ---
 
 # {{title}}

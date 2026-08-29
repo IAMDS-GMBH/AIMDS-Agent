@@ -1,0 +1,17 @@
+{
+  "types": {
+    "created": "date",
+    "updated": "date",
+    "due": "date",
+    "source_date": "date",
+    "tags": "tags",
+    "aliases": "aliases",
+    "related_to": "multitext",
+    "type": "text",
+    "status": "text",
+    "projectStatus": "text",
+    "covers": "text",
+    "source": "text",
+    "title": "text"
+  }
+}

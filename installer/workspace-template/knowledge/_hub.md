@@ -1,6 +1,7 @@
 ---
 type: hub
 title: "Personal knowledge"
+aliases: ["Knowledge hub"]
 status: reference
 updated: ""
 purpose: "The user's OWN reference material — how I do X, learnings, standards."

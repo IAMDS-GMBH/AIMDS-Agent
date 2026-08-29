@@ -1,0 +1,80 @@
+{
+  "AGENTS.md": {
+    "v2": "dcac6d653283ae345f5d2d0203bdc56e"
+  },
+  "HARNESS.md": {
+    "v2": "47da74c29f8cd61ae5ddffe845b24bbe"
+  },
+  "README.md": {
+    "v2": "118791840902e79350f931e833e6f0a2"
+  },
+  "SETUP.md": {
+    "v2": "af6f9041e33a301bcb4e4eb34d7ad42e"
+  },
+  "_conventions.md": {
+    "v2": "dbf60070a0f1621d5131f4d2baf371d0"
+  },
+  "_inbox/_hub.md": {
+    "v2": "2d1147b73b7b693850abc3cd90f1d4ed"
+  },
+  "_templates/_hub.md": {
+    "v2": "7fbdcd3d451d2e7fedfe101c7088d6f7"
+  },
+  "_templates/contact.md": {
+    "v2": "40226d5edfc7ab1407315f158c56d4bd"
+  },
+  "_templates/decision.md": {
+    "v2": "a722b917e5d6fd7e2290ca48ad7eb988"
+  },
+  "_templates/document.md": {
+    "v2": "849d5c0e97745826164123ec0d4e9448"
+  },
+  "_templates/idea.md": {
+    "v2": "3f808d76189ceea09438e15ba8e29682"
+  },
+  "_templates/meeting.md": {
+    "v2": "96e61d0adbb315b7428cb086a27b3971"
+  },
+  "_templates/note.md": {
+    "v2": "b96f2000347ac1322506dd8b2402dfcb"
+  },
+  "_templates/project.md": {
+    "v2": "4588c481b029a17e6f3d25e4c8e95154"
+  },
+  "_templates/security.md": {
+    "v2": "efed3c0123253dcda5474fd26095f065"
+  },
+  "contacts/_hub.md": {
+    "v2": "3c5b34aacece6c736171cc55a9dcc98d"
+  },
+  "decisions/_hub.md": {
+    "v2": "a472e74e1f0350366426b3039ba50529"
+  },
+  "documents/_hub.md": {
+    "v2": "7266b8eda903df573cc538a3e09ee462"
+  },
+  "ideas/_hub.md": {
+    "v2": "74dfa95f80e8944c002d92d98c8eba2d"
+  },
+  "journal/_hub.md": {
+    "v2": "6a348ac245888a1f4100923464922cb1"
+  },
+  "knowledge/_hub.md": {
+    "v2": "61e2c29be9ef2c393bd894025209772d"
+  },
+  "meetings/_hub.md": {
+    "v2": "539e9a5df8953d583cadec5ee1bba083"
+  },
+  "notes/_hub.md": {
+    "v2": "40ce07da41957cb108a6dcb20360fc72"
+  },
+  "projects/_hub.md": {
+    "v2": "5d18937746aa7924f5c62f7f2902963b"
+  },
+  "security/_hub.md": {
+    "v2": "f67dba167e59d4157b7918063854cdf0"
+  },
+  "tasks/_hub.md": {
+    "v2": "c0b95991cccad876c239f9f9b5d3a826"
+  }
+}

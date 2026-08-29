@@ -72,8 +72,12 @@ class TestVaultMode:
         path = workspace / res.ref
         assert path.is_file() and res.ref.startswith("knowledge/")
         text = path.read_text(encoding="utf-8")
-        for key in ("type: rule", 'title: "EVN time booking rule"', "created:", "updated:", "tags: [evn, worklog]"):
+        # _conventions.md schema: closed type vocabulary, YYYY-MM-DD, YAML list tags;
+        # the memory type "rule" survives as a tag.
+        for key in ("type: knowledge", 'title: "EVN time booking rule"', "tags:\n  - evn\n  - worklog\n  - rule"):
             assert key in text, key
+        import re as _re
+        assert _re.search(r"^created: \d{4}-\d{2}-\d{2}$", text, _re.M) and _re.search(r"^updated: \d{4}-\d{2}-\d{2}$", text, _re.M)
 
         hits = facade.search("EXT-95 booking")
         assert hits and hits[0]["title"] == "EVN time booking rule"

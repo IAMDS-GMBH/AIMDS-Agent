@@ -1,0 +1,20 @@
+# Obsidian Bases (core plugin, Obsidian ≥ 1.9): a live view of every report — no stale dashboards.
+filters:
+  and:
+    - file.hasProperty("type")
+    - type == "report"
+properties:
+  file.name:
+    displayName: File
+views:
+  - type: table
+    name: Reports
+    order:
+      - file.name
+      - title
+      - covers
+      - status
+      - updated
+    sort:
+      - property: updated
+        direction: DESC

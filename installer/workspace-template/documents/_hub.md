@@ -1,6 +1,7 @@
 ---
 type: hub
 title: "Documents"
+aliases: ["Documents hub"]
 status: reference
 updated: ""
 purpose: "Generated files (Word/Excel/PDF) and attachments — kept out of note folders so the wikilink graph stays clean."

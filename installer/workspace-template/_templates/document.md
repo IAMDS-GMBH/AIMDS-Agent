@@ -1,14 +1,14 @@
 ---
 type: document
-title: ""
-date: ""
-source_file: ""
+title: "{{title}}"
+source_date: null
+source_file: null
 status: reference
 related_to: []
 tags:
   - document
-created: ""
-updated: ""
+created: {{date}}
+updated: {{date}}
 ---
 
 # {{title}}

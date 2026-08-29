@@ -57,6 +57,13 @@ _VAULT_FOLDERS = {
     "reference": "knowledge",
     "tool": "knowledge/tools",
     "notes": "knowledge",
+    "report": "reports",
+}
+# Memory types → the vault's closed `type:` vocabulary (_conventions.md).
+_VAULT_TYPES = {
+    "session": "journal", "decision": "decision", "profile": "note", "person": "contact", "project": "project",
+    "rule": "knowledge", "reference": "knowledge", "tool": "knowledge", "notes": "note", "note": "note",
+    "report": "report", "meeting": "meeting", "idea": "idea", "document": "document", "hub": "hub",
 }
 _WORKSPACE_MARKERS = (".workspace-template-version", "_conventions.md", "AGENTS.md")
 
@@ -304,15 +311,19 @@ class MemoryFacade:
                     created = m.group(1)
             except Exception:
                 pass
-        tag_str = ", ".join(tags)
+        # _conventions.md schema: YYYY-MM-DD dates, closed type vocabulary, tags
+        # as a YAML list; the memory type survives as a tag so searches keep it.
+        vault_type = _VAULT_TYPES.get(type, "note")
+        all_tags = list(dict.fromkeys([*tags, *( [type] if type not in tags and vault_type != type else [])]))
+        tag_lines = "\n".join(f"  - {json.dumps(t, ensure_ascii=False) if re.search(r'[:#\\s]', t) else t}" for t in all_tags)
         text = (
             "---\n"
-            f"type: {type}\n"
+            f"type: {vault_type}\n"
             f"title: {json.dumps(title, ensure_ascii=False)}\n"
-            f"created: {created}\n"
-            f"updated: {_now_iso()}\n"
-            f"tags: [{tag_str}]\n"
-            f"scope: {scope}\n"
+            f"created: {created[:10]}\n"
+            f"updated: {_now_iso()[:10]}\n"
+            + (f"tags:\n{tag_lines}\n" if all_tags else "tags: []\n")
+            + f"scope: {scope}\n"
             "source: memory-facade\n"
             "---\n\n"
             f"# {title}\n\n{content}\n"

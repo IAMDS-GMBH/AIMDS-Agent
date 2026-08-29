@@ -179,7 +179,19 @@ def _frontmatter_from_record(record: Dict[str, Any]) -> str:
             else None
         ),
     }
-    return "---\n" + json.dumps(meta, ensure_ascii=False, indent=2) + "\n---\n"
+    # YAML, not JSON: the same shape Obsidian and the vault index read.
+    lines = ["---"]
+    for key, value in meta.items():
+        if isinstance(value, list):
+            lines.append(f"{key}: [{', '.join(json.dumps(str(v), ensure_ascii=False) for v in value)}]")
+        elif value is None:
+            lines.append(f"{key}: null")
+        elif isinstance(value, (int, float)):
+            lines.append(f"{key}: {value}")
+        else:
+            lines.append(f"{key}: {json.dumps(str(value), ensure_ascii=False)}")
+    lines.append("---")
+    return "\n".join(lines) + "\n"
 
 
 def _record_filesystem_path(record: Dict[str, Any]) -> Path:

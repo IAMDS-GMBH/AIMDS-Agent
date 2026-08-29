@@ -9023,6 +9023,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
             if result.get("restored"):
                 print(f"  ↩ {len(result['restored'])} restored from archive: {', '.join(result['restored'])}")
+            try:
+                from hermes_cli.workspace_template import upgrade_configured_workspace
+
+                ws = upgrade_configured_workspace()
+                if ws and (ws.get("added") or ws.get("replaced") or ws.get("normalized") or ws.get("conflicts")):
+                    print(
+                        f"  ▣ workspace template {ws.get('version')}: {len(ws.get('added', []))} added, "
+                        f"{len(ws.get('replaced', []))} replaced, {len(ws.get('normalized', []))} notes normalised, "
+                        f"{len(ws.get('conflicts', []))} kept as .template-new"
+                    )
+            except Exception as _ws_exc:
+                logger.debug("workspace template upgrade during update failed: %s", _ws_exc)
             if result.get("user_modified"):
                 print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
             if result.get("cleaned"):

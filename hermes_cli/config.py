@@ -1177,14 +1177,12 @@ def ensure_hermes_home():
             _secure_dir(d)
         _ensure_default_soul_md(home)
         _ensure_documents_memory_link(home)
-        # Bring an already-seeded workspace up to the shipped template
-        # (missing hubs/HARNESS.md/templates); never overwrites user files.
-        try:
-            from hermes_cli.workspace_template import upgrade_configured_workspace
-
-            upgrade_configured_workspace()
-        except Exception:
-            pass
+        # The workspace template upgrade is NOT run here: ensure_hermes_home()
+        # fires on every config load and module import, and since v3 the
+        # upgrade rewrites vault notes (frontmatter normalisation). A stray
+        # `python -c "import agent.prompt_builder"` on a developer machine
+        # normalised the real vault once. It runs explicitly at gateway start
+        # and in `hermes update` (upgrade_configured_workspace).
 
 
 def _ensure_hermes_home_managed(home: Path):

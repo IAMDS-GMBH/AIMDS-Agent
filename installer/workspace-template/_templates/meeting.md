@@ -1,10 +1,10 @@
 ---
 type: meeting
-title: ""
-date: ""
+title: "{{title}}"
+date: null
 attendees: []
 related_to: []
-created: ""
+created: {{date}}
 ---
 
 # {{title}} — {{date}}

@@ -1,6 +1,7 @@
 ---
 type: hub
 title: "Ideas"
+aliases: ["Ideas hub"]
 status: reference
 updated: ""
 purpose: "Ideas the user wants to keep and develop."

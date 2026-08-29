@@ -1,6 +1,7 @@
 ---
 type: hub
 title: "Decisions"
+aliases: ["Decisions hub"]
 status: reference
 updated: ""
 purpose: "Decisions made, with context and date — so WHY is traceable later."

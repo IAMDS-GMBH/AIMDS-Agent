@@ -66,6 +66,50 @@ _MAX_VAULT_SCAN_FILES = 2000
 _MAX_VAULT_SYNC_PER_CALL = 200
 
 
+
+def parse_frontmatter(raw: str) -> Tuple[Dict[str, Any], str]:
+    """(frontmatter, body) for a note whose --- block is JSON (the old mirror
+    shape) or YAML (the vault's _conventions.md schema). Unparseable → ({}, body)."""
+    raw = str(raw or "")
+    if not raw.startswith("---") or "---" not in raw[3:]:
+        return {}, raw.strip()
+    parts = raw.split("---", 2)
+    if len(parts) < 3:
+        return {}, raw.strip()
+    block = parts[1].strip()
+    fm: Dict[str, Any] = {}
+    if block.startswith("{"):
+        try:
+            loaded = json.loads(block)
+            fm = loaded if isinstance(loaded, dict) else {}
+        except Exception:
+            fm = {}
+    else:
+        try:
+            import yaml
+
+            loaded = yaml.safe_load(block)
+            fm = loaded if isinstance(loaded, dict) else {}
+        except Exception:
+            fm = {}
+    return fm, parts[2].strip()
+
+
+def _updated_at_from(fm: Dict[str, Any], fallback: int) -> int:
+    """Epoch seconds from `updated_at` (epoch) or `updated`/`created` (YYYY-MM-DD)."""
+    raw = fm.get("updated_at")
+    if isinstance(raw, (int, float)) and raw > 0:
+        return int(raw)
+    for key in ("updated", "created"):
+        value = fm.get(key)
+        text = value.isoformat() if hasattr(value, "isoformat") else str(value or "")
+        m = re.match(r"(\d{4})-(\d{2})-(\d{2})", text)
+        if m:
+            from datetime import datetime, timezone
+
+            return int(datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), tzinfo=timezone.utc).timestamp())
+    return int(fallback)
+
 class VaultMetaIndex:
     """Local SQLite Meta-Index providing hybrid BM25 + Vector recall over memory stubs."""
 
@@ -241,21 +285,14 @@ class VaultMetaIndex:
                 raw = str(text or "")
                 fm: Dict[str, Any] = {}
                 body = raw.strip()
-                if raw.startswith("---") and "---" in raw[3:]:
-                    parts = raw.split("---", 2)
-                    if len(parts) >= 3:
-                        try:
-                            fm = json.loads(parts[1].strip())
-                        except Exception:
-                            fm = {}
-                        body = parts[2].strip()
+                fm, body = parse_frontmatter(raw)
 
                 slug = str(fm.get("slug") or p.stem).strip()
-                scope = str(fm.get("scope") or ("user" if p.parent.name == "user" else "project")).strip()
+                scope = str(fm.get("scope") or ("user" if p.parent.name in ("user", "users") else "project")).strip()
                 mem_type = str(fm.get("type") or ("profile" if scope == "user" else "notes")).strip()
                 title = str(fm.get("title") or p.stem.replace("-", " ").strip()).strip()
                 tags = fm.get("tags") or []
-                updated_at = int(fm.get("updated_at") or int(p.stat().st_mtime))
+                updated_at = _updated_at_from(fm, int(p.stat().st_mtime))
 
                 if existing.get(slug) == updated_at:
                     continue  # unchanged since the last sync -- skip re-embedding

@@ -27,7 +27,7 @@ substrate — links are how the agent (and the user) find related things later.
 - Notes: `raw` · `active` · `waiting` · `done` · `parked` · `reference`
 - Projects (`projectStatus`): `active` · `waiting` · `dormant` · `done` · `parked`
 - `type`: `project` · `knowledge` · `idea` · `decision` · `contact` · `meeting` · `document` · `security` · `hub` ·
-  `journal` · `task-list` · `note` · `automation` · `archive`
+  `journal` · `task-list` · `note` · `automation` · `archive` · `report` · `conventions`
 
 A value not in this list is a bug, not a variant. New value needed? Add it here
 first, then use it. (Reference vault had 51 type variants before enforcement —
@@ -46,6 +46,14 @@ deliberately, not per-note):
 
 A tag that's used once is noise. When unsure, don't tag — the folder + links already
 carry meaning.
+
+## Obsidian rendering — three rules that decide how the vault looks
+
+- Links carry the path: `[[projects/_hub|Projects]]` — thirteen folders share the file name `_hub.md`, a bare `[[_hub]]` is ambiguous.
+- No emoji in headings; status markers only as list/table markers: ✅ 🔴 🟡 🟢 ⚠.
+- Properties come from the schema above only. Obsidian types a property vault-wide on first use, so a stray `updated: 2026-08-29T21:10:00+02:00` or a JSON block between `---` breaks the Properties panel for every note.
+
+Generated data reports (target hours, budgets, rollups) live in `reports/<topic>/` from `_templates/report.md` — one canonical file per topic and period, overwritten on rerun, never a `_v2`/`FINAL` copy. `journal/` holds retrospectives only.
 
 ## Filing map
 

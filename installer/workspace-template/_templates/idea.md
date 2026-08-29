@@ -1,8 +1,8 @@
 ---
 type: idea
-title: ""
+title: "{{title}}"
 status: raw          # raw | developing | parked
-created: ""
+created: {{date}}
 related_to: []
 tags: []
 ---

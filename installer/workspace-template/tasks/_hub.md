@@ -1,6 +1,7 @@
 ---
 type: hub
 title: "Tasks"
+aliases: ["Tasks hub"]
 status: reference
 updated: ""
 purpose: "The user's own to-dos only. Team/project tasks live in the team's PM tool (Jira etc.) — this workspace is a personal todo, not project management."

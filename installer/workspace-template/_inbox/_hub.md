@@ -1,6 +1,7 @@
 ---
 type: hub
 title: "Inbox"
+aliases: ["Inbox hub"]
 status: reference
 updated: ""
 purpose: "Staging for anything unclear. Processed items move to _archive/ — never deleted."

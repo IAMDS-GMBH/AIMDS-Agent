@@ -1,6 +1,7 @@
 ---
 type: hub
 title: "Security"
+aliases: ["Security hub"]
 status: reference
 updated: ""
 purpose: "Security audits, vulnerability assessments, compliance reviews, and access policy records for systems and repositories."

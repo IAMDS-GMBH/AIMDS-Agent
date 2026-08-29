@@ -1,6 +1,7 @@
 ---
 type: hub
 title: "Meetings"
+aliases: ["Meetings hub"]
 status: reference
 updated: ""
 purpose: "Meeting recaps: decisions, action items, follow-ups."

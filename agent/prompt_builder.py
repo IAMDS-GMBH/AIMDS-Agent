@@ -318,7 +318,7 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "(b) deliver a final result to the user. Responses that only describe intentions "
     "without acting are not acceptable.\n"
     "Exception — the user asked for the plan: when the message asks how you would "
-    "proceed, what you would do, or for an approach ('Wie würdest du vorgehen?'), the "
+    "proceed, what you would do, or for an approach ('how would you go about this?'), the "
     "plan IS the deliverable. Look things up only as far as the plan needs it, present "
     "the steps, and hand the decision back with `clarify` choices; start executing only "
     "after the user picks one."
@@ -356,8 +356,8 @@ def build_data_handling_guidance(valid_tool_names: "set[str] | None" = None) -> 
     )
     if has_workdays:
         rungs.append(
-            "Calendar facts — working days, public holidays (DE/AT/CH per Bundesland/canton), target hours "
-            "(Sollzeit), half days, 5/6-day weeks — come from the `workdays` tool; never type calendars, weekday "
+            "Calendar facts — working days, public holidays (DE/AT/CH per state/canton), target hours, "
+            "half days, 5/6-day weeks — come from the `workdays` tool; never type calendars, weekday "
             "counts or holiday dates into SQL or prose, never compute Easter yourself. For Ist/Soll comparisons "
             "run `workdays(action='materialize')` and JOIN `workday_calendar` against `mcp_records` with `sql`. "
             "If it answers 'worktime profile unknown', the user's country/state or week model is not known: ask "
@@ -1782,7 +1782,7 @@ def build_workspace_prompt(valid_tool_names: "set[str] | None" = None) -> str:
         "never invent or guess paths (e.g. `.brain`) that were not returned by a tool.\n"
         f"The canonical Obsidian Vault root for markdown notes, templates, knowledge, and documents is `{obsidian_vault_path}` "
         "(contains `_inbox/`, `_templates/`, `contacts/`, `decisions/`, `documents/`, `ideas/`, `journal/`, `knowledge/`, "
-        "`meetings/`, `notes/`, `projects/`, `security/`, `tasks/`, `users/`, `HermesMemory`; every folder has a `_hub.md` — read it before filing).\n"
+        "`meetings/`, `notes/`, `projects/`, `reports/`, `security/`, `tasks/`, `users/`; every folder has a `_hub.md` — read it before filing).\n"
         "DEFAULT RULE FOR DOCUMENT/NOTE CREATION & VAULT HYGIENE:\n"
         f"1. Save all created or generated markdown files, notes, specs, summaries, and meeting records inside `{obsidian_vault_path}/<subfolder>/` "
         "unless the user explicitly specifies a different custom path or target directory.\n"
@@ -1790,7 +1790,10 @@ def build_workspace_prompt(valid_tool_names: "set[str] | None" = None) -> str:
         "to check if a canonical note, Hub document (e.g. `[[hub-...]]`), or existing tracking file for the topic already exists. "
         "If an existing note exists, UPDATE or append to that canonical note instead of creating duplicate/fragmented files with slight name variations (`_neu.md`, `_v2.md`).\n"
         "3. Structure long-running topics and hubs under `projects/` or `knowledge/`, people under `users/<user>/`, and link related notes via Obsidian wikilinks `[[note-title]]`. "
-        "Use `tasks/` only for short-lived checklists. Keep frontmatter (`type`, `title`, `created`, `updated`, `tags`) as `_conventions.md` prescribes.\n"
+        "Use `tasks/` only for short-lived checklists. Frontmatter is YAML per `_conventions.md`: `type` (closed vocabulary), `title`, "
+        "`created` and `updated` as YYYY-MM-DD, `tags` as a list, `related_to` with `[[path/links]]` — never a JSON block, never timestamps.\n"
+        "4. Generated data reports (target hours, budgets, rollups) go to `reports/<topic>/` from `_templates/report.md` — one canonical file per "
+        "topic and period, overwritten on rerun (bump `updated:`), no `_v2`/`FINAL` copies, no emoji in headings; `journal/` is for retrospectives only.\n"
     )
 
 
@@ -2090,7 +2093,7 @@ def build_jira_guidance(valid_tool_names: "set[str] | None" = None) -> str:
 
     guidance = (
         "# Jira Query & Result Optimization Strategy\n"
-        "- **Scope queries to active user**: When querying tickets, worklogs, or timesheets (e.g. 'meine Tickets', 'Urlaub', 'Arbeitszeiten'), ALWAYS filter JQL or query parameters by the active user (e.g., `assignee = currentUser()`, `worklogAuthor = currentUser()`, or filter by user ID/name). Do NOT fetch unfiltered company-wide or team-wide ticket lists unless explicitly asked!\n"
+        "- **Scope queries to active user**: When querying tickets, worklogs, or timesheets (e.g. 'my tickets', 'vacation', 'working hours'), ALWAYS filter JQL or query parameters by the active user (e.g., `assignee = currentUser()`, `worklogAuthor = currentUser()`, or filter by user ID/name). Do NOT fetch unfiltered company-wide or team-wide ticket lists unless explicitly asked!\n"
         "- **Keep JQL specific**: Use precise JQL filters (e.g., `project = AIS AND assignee = currentUser() AND statusCategory != Done`). Avoid broad or unbounded JQL queries.\n"
         "- **Limit result count**: Always pass `limit` set to 10 or 15 (maximum 20) per search call to prevent large payload context overruns.\n"
         "- **Select essential fields only**: Always use `fields` parameter to request specific fields (e.g., `fields=\"key,summary,status,priority,assignee,updated\"`) rather than fetching full issue structures.\n"
@@ -2107,7 +2110,7 @@ def build_jira_guidance(valid_tool_names: "set[str] | None" = None) -> str:
             "the result by user afterwards is unreliable.\n"
             "ALWAYS prefer TempoMCP's `retrieveWorklogs` (with required `startDate`/`endDate` "
             "and optional `users`, which defaults to the token owner's own worklogs) or "
-            "`getWorklogAnalytics` for worklog/timesheet/vacation/Urlaub questions — these hit "
+            "`getWorklogAnalytics` for worklog/timesheet/vacation questions — these hit "
             "Tempo's own API with correct per-user attribution and real date-range filtering. "
             "Only fall back to `jira_get_worklog` for issues you already know have a handful of "
             "worklog entries (e.g. a single task you personally logged time on)."

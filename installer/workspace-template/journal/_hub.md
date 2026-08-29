@@ -1,6 +1,7 @@
 ---
 type: hub
 title: "Journal"
+aliases: ["Journal hub"]
 status: reference
 updated: ""
 purpose: "Weekly reviews and insights — time-bound retrospectives."

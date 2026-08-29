@@ -1,6 +1,7 @@
 ---
 type: hub
 title: "Notes"
+aliases: ["Notes hub"]
 status: reference
 updated: ""
 purpose: "Quick captures that do not fit a more specific folder."

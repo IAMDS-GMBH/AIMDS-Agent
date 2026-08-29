@@ -1,6 +1,7 @@
 ---
 type: hub
 title: "Templates"
+aliases: ["Templates hub"]
 status: reference
 updated: ""
 purpose: "The shapes the agent uses when creating new files. Change a template here to change every future file of that type."

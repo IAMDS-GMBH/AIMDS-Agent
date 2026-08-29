@@ -1,6 +1,7 @@
 ---
 type: hub
 title: "Contacts"
+aliases: ["Contacts hub"]
 status: reference
 updated: ""
 purpose: "One file per person or company the user works with."

@@ -15982,6 +15982,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     try:
         from tools.skills_sync import sync_skills
         sync_skills(quiet=True)
+        # Bring the Obsidian workspace up to the shipped template (v3 also
+        # normalises legacy frontmatter once, backups under .archive/).
+        try:
+            from hermes_cli.workspace_template import upgrade_configured_workspace
+
+            upgrade_configured_workspace()
+        except Exception as _ws_exc:
+            logger.debug("workspace template upgrade skipped: %s", _ws_exc)
     except Exception:
         pass
 

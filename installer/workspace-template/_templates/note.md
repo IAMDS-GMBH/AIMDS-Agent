@@ -1,8 +1,8 @@
 ---
 type: note
-title: ""
-created: ""
-updated: ""
+title: "{{title}}"
+created: {{date}}
+updated: {{date}}
 related_to: []
 tags: []
 ---

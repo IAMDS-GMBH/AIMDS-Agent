@@ -1,10 +1,10 @@
 ---
 type: contact
-name: ""
-company: ""
-role: ""
-created: ""
-updated: ""
+name: null
+company: null
+role: null
+created: {{date}}
+updated: {{date}}
 tags: []
 ---
 

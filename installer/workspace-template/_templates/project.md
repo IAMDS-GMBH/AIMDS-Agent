@@ -1,10 +1,10 @@
 ---
 type: project
-title: ""
+title: "{{title}}"
 projectStatus: active        # active | waiting | dormant | done | parked
-created: ""
-updated: ""
-due: ""                       # a project has an end date; leave empty if none — do NOT omit
+created: {{date}}
+updated: {{date}}
+due: null                       # a project has an end date; leave empty if none — do NOT omit
 due-reason: ""                # required when `due` is empty: why no end date (e.g. "ongoing", "runs open-ended")
 related_to: []
 tags: []

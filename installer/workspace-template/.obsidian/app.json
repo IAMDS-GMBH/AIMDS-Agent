@@ -1,0 +1,11 @@
+{
+  "legacyEditor": false,
+  "livePreview": true,
+  "attachmentFolderPath": "documents",
+  "newLinkFormat": "absolute",
+  "useMarkdownLinks": false,
+  "userIgnoreFilters": [
+    "_templates/",
+    ".archive/"
+  ]
+}

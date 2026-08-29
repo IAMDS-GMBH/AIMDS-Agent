@@ -1,9 +1,9 @@
 ---
 type: decision
-title: ""
-date: ""
+title: "{{title}}"
+date: null
 related_to: []
-created: ""
+created: {{date}}
 ---
 
 # {{title}}

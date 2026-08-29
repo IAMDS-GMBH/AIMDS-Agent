@@ -1,6 +1,7 @@
 ---
 type: hub
 title: "Projects"
+aliases: ["Projects hub"]
 status: reference
 updated: ""
 purpose: "Ongoing work WITH a goal and an end. Status lives in frontmatter (projectStatus). Only the user's own open points — team tasks stay in the team's PM tool."
