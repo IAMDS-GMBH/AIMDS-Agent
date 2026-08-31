@@ -2292,6 +2292,35 @@ def _cprint(text: str):
             pass
 
 
+def _first_run_onboarding_note(session_db, has_history: bool, config: dict) -> Optional[str]:
+    """Profile-build directive for the very first message of a fresh install.
+
+    Mirrors gateway/run.py's first-message onboarding: fires only when there
+    is no conversation history and no prior session in state.db (the current
+    session's row already exists, hence ``> 1``), the onboarding mode is
+    "ask" and the flag is unseen. Marks the flag seen (config.yaml + the
+    in-memory config) so the offer happens at most once per install.
+    """
+    if has_history or session_db is None:
+        return None
+    from agent.onboarding import (
+        PROFILE_BUILD_FLAG,
+        is_seen,
+        mark_seen,
+        profile_build_directive,
+        profile_build_mode,
+    )
+
+    if session_db.session_count() > 1:
+        return None
+    if profile_build_mode(config) != "ask" or is_seen(config, PROFILE_BUILD_FLAG):
+        return None
+    directive = profile_build_directive()
+    mark_seen(_hermes_home / "config.yaml", PROFILE_BUILD_FLAG)
+    config.setdefault("onboarding", {}).setdefault("seen", {})[PROFILE_BUILD_FLAG] = True
+    return directive
+
+
 def _prepend_note_to_message(message, note: str):
     """Prepend a one-shot system-style note to a user message.
 
@@ -10088,6 +10117,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if _srn:
                     agent_message = _prepend_note_to_message(agent_message, _srn)
                     self._pending_skills_reload_note = None
+                # First-message onboarding (mirrors gateway/run.py): on the
+                # very first message of a fresh install offer the profile
+                # build once. Exception-guarded — onboarding must never
+                # break a turn.
+                try:
+                    _pb_note = _first_run_onboarding_note(
+                        self._session_db, bool(self.conversation_history[:-1]), CLI_CONFIG
+                    )
+                    if _pb_note:
+                        if isinstance(agent_message, str):
+                            agent_message = agent_message + _pb_note
+                        else:
+                            agent_message = _prepend_note_to_message(agent_message, _pb_note)
+                except Exception as _pb_err:
+                    logging.debug("Profile-build onboarding directive failed: %s", _pb_err)
                 try:
                     result = self.agent.run_conversation(
                         user_message=agent_message,

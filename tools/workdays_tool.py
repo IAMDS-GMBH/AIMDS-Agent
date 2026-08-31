@@ -25,7 +25,7 @@ import json
 import logging
 import sqlite3
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -35,8 +35,13 @@ from tools.registry import registry, tool_error
 logger = logging.getLogger(__name__)
 
 PROFILE_TITLE = "Arbeitszeit-Profil"
-PROFILE_KEYS = ("region", "weekly_hours", "days_per_week", "half_days", "employment_start", "employment_end", "part_time_factor", "notes")
+PROFILE_KEYS = (
+    "region", "weekly_hours", "days_per_week", "work_weekdays", "employment_label", "half_days",
+    "employment_start", "employment_end", "part_time_factor",
+    "worklog_source_tool", "vacation_booking_patterns", "vacation_hour_factor", "notes",
+)
 TABLE = "workday_calendar"
+ABSENCES_TABLE = "absences"
 _PROFILE_TTL_SECONDS = 600
 
 CLARIFY_CHOICES = [
@@ -76,9 +81,9 @@ def _parse_profile_text(text: str) -> Dict[str, Any]:
         if not sep or key not in PROFILE_KEYS:
             continue
         value = value.strip()
-        if key == "half_days":
+        if key in ("half_days", "work_weekdays"):
             out[key] = [v.strip() for v in value.replace(";", ",").split(",") if v.strip()]
-        elif key in ("weekly_hours", "part_time_factor"):
+        elif key in ("weekly_hours", "part_time_factor", "vacation_hour_factor"):
             try:
                 out[key] = float(value.replace(",", "."))
             except ValueError:
@@ -146,9 +151,12 @@ def _profile_text(profile: Dict[str, Any]) -> str:
         f"region: {profile.get('region', '')}",
         f"weekly_hours: {profile.get('weekly_hours', wc.DEFAULT_WEEKLY_HOURS):g}",
         f"days_per_week: {profile.get('days_per_week', wc.DEFAULT_DAYS_PER_WEEK)}",
-        "half_days: " + ", ".join(profile.get("half_days") or []),
     ]
-    for key in ("employment_start", "employment_end", "part_time_factor", "notes"):
+    if profile.get("work_weekdays"):
+        lines.append("work_weekdays: " + ", ".join(str(v) for v in profile["work_weekdays"]))
+    lines.append("half_days: " + ", ".join(profile.get("half_days") or []))
+    for key in ("employment_start", "employment_end", "part_time_factor", "employment_label",
+                "worklog_source_tool", "vacation_booking_patterns", "vacation_hour_factor", "notes"):
         if profile.get(key) not in (None, ""):
             lines.append(f"{key}: {profile[key]}")
     lines.append("")
@@ -189,15 +197,11 @@ def _unknown_profile(missing: List[str]) -> str:
         "error": "worktime profile unknown",
         "missing": missing,
         "ask": (
-            "Work-time / target-hours questions need the user's country and state/canton plus the week model "
-            "(hours per week, days per week, half days). Ask the user with `clarify` using the choices below "
-            "(in the user's language), then persist the answer with workdays(action='configure', region=…, "
-            "weekly_hours=…, days_per_week=…, half_days=[…]) — it is saved to memory. Never assume."
+            "Ask the user (in their language) for state/canton and the week model — hours/week, working days "
+            "(Mo-Fr, Mo-Sa, or work_weekdays like Mo-We), half days — then workdays(action='configure', …). Never assume."
         ),
         "clarify_choices": CLARIFY_CHOICES,
-        "week_model_defaults": {"weekly_hours": wc.DEFAULT_WEEKLY_HOURS, "days_per_week": wc.DEFAULT_DAYS_PER_WEEK, "half_days": list(wc.DEFAULT_HALF_DAYS)},
-        "valid_regions": wc.valid_regions(),
-        "then": "workdays(action='configure', region='DE-BY', weekly_hours=40, days_per_week=5, half_days=['12-24','12-31'])",
+        "estimate": "action='estimate_profile' proposes a week model from ingested worklogs — user must CONFIRM before configure.",
     }, ensure_ascii=False)
 
 
@@ -229,6 +233,22 @@ def _resolve(args: Dict[str, Any]) -> Dict[str, Any]:
     take("part_time_factor", 1.0)
     take("employment_start")
     take("employment_end")
+    take("work_weekdays")
+    take("employment_label")
+    take("worklog_source_tool")
+    take("vacation_booking_patterns")
+    take("vacation_hour_factor", 1.0)
+    weekday_set = wc.parse_work_weekdays(picked.get("work_weekdays"))
+    if weekday_set:
+        explicit = picked.get("days_per_week")
+        if picked["_source"].get("days_per_week") == "parameter" and int(explicit) != len(weekday_set):
+            raise ValueError(
+                f"days_per_week={explicit} contradicts work_weekdays ({len(weekday_set)} days) — pass only one of them"
+            )
+        picked["days_per_week"] = len(weekday_set)
+        picked["_source"]["days_per_week"] = "derived (work_weekdays)"
+        if "days_per_week" in picked.get("_missing", []):
+            picked["_missing"].remove("days_per_week")
     return picked
 
 
@@ -246,8 +266,13 @@ def _range(args: Dict[str, Any]) -> tuple:
     return date(today.year, 1, 1), date(today.year, 12, 31)
 
 
+_DAY_ABBR = {1: "Mo", 2: "Tu", 3: "We", 4: "Th", 5: "Fr", 6: "Sa", 7: "Su"}
+
+
 def _assumptions(p: Dict[str, Any], hours: float) -> Dict[str, Any]:
-    return {
+    weekday_set = wc.parse_work_weekdays(p.get("work_weekdays"))
+    weekend = wc.weekend_days(int(p["days_per_week"]), weekday_set)
+    out = {
         "region": p["region"],
         "region_name": wc.region_name(p["region"]),
         "weekly_hours": float(p["weekly_hours"]),
@@ -257,19 +282,41 @@ def _assumptions(p: Dict[str, Any], hours: float) -> Dict[str, Any]:
         "half_days": list(p.get("half_days") or []),
         "employment_start": p.get("employment_start") or None,
         "employment_end": p.get("employment_end") or None,
-        "weekend": "Sa+So" if int(p["days_per_week"]) == 5 else ("So" if int(p["days_per_week"]) == 6 else "none"),
+        "weekend": "+".join(_DAY_ABBR[d] for d in sorted(weekend)) or "none",
         "holiday_on_weekend": "listed, not deducted",
         "partial_holidays": "listed, not deducted (add via extra_holidays if they apply to you)",
         "source": wc.SOURCE,
         "profile_source": p.get("_source", {}),
     }
+    if weekday_set:
+        out["work_weekdays"] = [_DAY_ABBR[d] for d in sorted(weekday_set)]
+    if p.get("employment_label"):
+        out["employment_label"] = str(p["employment_label"])
+    return out
 
 
 FORMULA = (
-    "target_net = workdays_net × hours_per_day − vacation_deduction (from the bookings, via sql); "
-    "actual = SUM(duration_seconds)/3600 of all worklogs except vacation (weekend bookings count in actual, not in target); "
-    "balance = actual − target_net"
+    "target_net = target_gross − vacation_credit (absences.portion × per-day target_hours, via sql); "
+    "actual = SUM(duration_seconds)/3600 of all worklogs except vacation bookings (weekend bookings count in actual, not in target); "
+    "delta = actual − target_net"
 )
+
+
+def _split_patterns(value: Any) -> List[str]:
+    """Comma-separated string or list → list of SQL LIKE patterns."""
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [v.strip() for v in str(value or "").split(",") if v.strip()]
+
+
+def _like_sql(column: str, patterns: List[str]) -> str:
+    """Parameterized OR-of-LIKEs clause; bind the patterns in order."""
+    return "(" + " OR ".join(f"{column} LIKE ?" for _ in patterns) + ")"
+
+
+def _like_literal(column: str, patterns: List[str]) -> str:
+    """Display-only OR-of-LIKEs clause with inlined literals (for example_sql)."""
+    return "(" + " OR ".join(f"{column} LIKE '{p}'" for p in patterns) + ")"
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +330,7 @@ def _act_holidays(args: Dict[str, Any]) -> str:
         return _unknown_profile(["region"])
     start, end = _range(args)
     region = wc.normalize_region(p["region"])
-    weekend = wc.weekend_days(int(p.get("days_per_week") or wc.DEFAULT_DAYS_PER_WEEK))
+    weekend = wc.weekend_days(int(p.get("days_per_week") or wc.DEFAULT_DAYS_PER_WEEK), wc.parse_work_weekdays(p.get("work_weekdays")))
     items = []
     for h in wc.holidays_between(start, end, region):
         row = h.as_dict()
@@ -311,11 +358,15 @@ def _compute(args: Dict[str, Any]):
     days = wc.calendar_days(
         start, end, region,
         days_per_week=int(p["days_per_week"]),
+        work_weekdays=p.get("work_weekdays") or None,
         half_days=p.get("half_days") or None,
         extra_holidays=args.get("extra_holidays") or None,
         employment_start=emp_start, employment_end=emp_end,
     )
-    hours = wc.hours_per_day(float(p["weekly_hours"]), int(p["days_per_week"]), float(p.get("part_time_factor") or 1.0))
+    hours = wc.hours_per_day(
+        float(p["weekly_hours"]), int(p["days_per_week"]), float(p.get("part_time_factor") or 1.0),
+        work_weekdays=p.get("work_weekdays") or None,
+    )
     months = wc.monthly_summary(days, hours)
     return (p, start, end, days, hours, months), None
 
@@ -345,8 +396,9 @@ def _act_workdays(args: Dict[str, Any], with_hours: bool, all_days: bool = False
             for d in days
         ]
     payload["next"] = (
-        "For actual-vs-target comparisons: workdays(action='materialize', …), then JOIN workday_calendar "
-        "against mcp_records with sql. Present results in the user's language."
+        "For actual-vs-target comparisons prefer workdays(action='report') — one call, all math in SQL. "
+        "Advanced path: action='materialize', then JOIN workday_calendar against mcp_records with sql. "
+        "Present results in the user's language."
     )
     return json.dumps(payload, ensure_ascii=False)
 
@@ -394,16 +446,17 @@ def _act_materialize(args: Dict[str, Any], db_path: Optional[Path] = None) -> st
                     "factor", "target_hours", "reason", "region", "days_per_week", "weekly_hours", "generated_at"],
         "example_sql": (
             "WITH ist AS (SELECT substr(timestamp, 1, 10) AS day, SUM(duration_seconds) / 3600.0 AS hours "
-            "FROM mcp_records WHERE tool_name = 'mcp_TempoMCP_retrieveWorklogs' AND reference_key != 'IAMDS-595' GROUP BY 1) "
-            f"SELECT c.month, ROUND(SUM(c.target_hours), 2) AS soll_brutto, ROUND(COALESCE(SUM(ist.hours), 0), 2) AS ist "
+            f"FROM mcp_records WHERE {_like_literal('tool_name', _split_patterns(p.get('worklog_source_tool')) or ['<your worklog tool_name>'])} GROUP BY 1) "
+            f"SELECT c.month, ROUND(SUM(c.target_hours), 2) AS target_gross, ROUND(COALESCE(SUM(ist.hours), 0), 2) AS actual "
             f"FROM {TABLE} c LEFT JOIN ist ON ist.day = c.day "
             f"WHERE c.day BETWEEN '{start.isoformat()}' AND '{end.isoformat()}' GROUP BY c.month ORDER BY c.month"
         ),
         "formula": FORMULA,
         "note": (
             "One calendar row per day: aggregate worklogs per day (CTE) BEFORE joining, or target hours multiply. "
-            "Vacation deduction (e.g. central ticket IAMDS-595: 0.5h booked = half day, 1h = full day) comes from "
-            "the bookings via sql; weekend worklogs count in actual, not in target. Present results in the user's language."
+            f"Vacation credit comes from the {ABSENCES_TABLE} table (fill it via action='absences'); weekend "
+            "worklogs count in actual, not in target. Prefer action='report' — it runs this join for you. "
+            "Present results in the user's language."
         ),
     }, ensure_ascii=False)
 
@@ -413,8 +466,38 @@ def _act_configure(args: Dict[str, Any]) -> str:
         return tool_error("configure needs region (e.g. DE-BY, AT-W, CH-ZH) — ask the user first, never assume", success=False)
     profile: Dict[str, Any] = {"region": wc.normalize_region(args["region"])}
     profile["weekly_hours"] = float(args.get("weekly_hours") or wc.DEFAULT_WEEKLY_HOURS)
-    profile["days_per_week"] = int(args.get("days_per_week") or wc.DEFAULT_DAYS_PER_WEEK)
-    wc.hours_per_day(profile["weekly_hours"], profile["days_per_week"])  # validates
+    weekday_set = wc.parse_work_weekdays(args.get("work_weekdays"))
+    if weekday_set:
+        if args.get("days_per_week") and int(args["days_per_week"]) != len(weekday_set):
+            return tool_error(
+                f"days_per_week={args['days_per_week']} contradicts work_weekdays ({len(weekday_set)} days) — pass only one of them",
+                success=False,
+            )
+        profile["work_weekdays"] = [_DAY_ABBR[d].lower() for d in sorted(weekday_set)]
+        profile["days_per_week"] = len(weekday_set)
+    else:
+        profile["days_per_week"] = int(args.get("days_per_week") or wc.DEFAULT_DAYS_PER_WEEK)
+    wc.hours_per_day(
+        profile["weekly_hours"], profile["days_per_week"],
+        float(args.get("part_time_factor") or 1.0), work_weekdays=weekday_set,
+    )  # validates
+    if args.get("employment_label"):
+        label = str(args["employment_label"]).strip().lower()
+        if label not in ("vollzeit", "teilzeit"):
+            return tool_error("employment_label must be 'vollzeit' or 'teilzeit'", success=False)
+        profile["employment_label"] = label
+    if args.get("worklog_source_tool"):
+        patterns = _split_patterns(args["worklog_source_tool"])
+        if not patterns:
+            return tool_error("worklog_source_tool must be a non-empty LIKE pattern (or comma-separated list)", success=False)
+        profile["worklog_source_tool"] = ", ".join(patterns)
+    if args.get("vacation_booking_patterns"):
+        profile["vacation_booking_patterns"] = ", ".join(_split_patterns(args["vacation_booking_patterns"]))
+    if args.get("vacation_hour_factor"):
+        factor = float(args["vacation_hour_factor"])
+        if factor <= 0:
+            return tool_error("vacation_hour_factor must be > 0", success=False)
+        profile["vacation_hour_factor"] = factor
     half = args.get("half_days")
     profile["half_days"] = list(half) if isinstance(half, list) else list(wc.DEFAULT_HALF_DAYS) if half is None else [s.strip() for s in str(half).split(",") if s.strip()]
     wc._half_day_set(profile["half_days"], [date.today().year])  # validates format
@@ -437,7 +520,380 @@ def _act_profile() -> str:
     return json.dumps({"action": "profile", "profile": profile, "source": source, "title": PROFILE_TITLE}, ensure_ascii=False)
 
 
-ACTIONS = ("holidays", "workdays", "target_hours", "days", "materialize", "configure", "profile")
+# ---------------------------------------------------------------------------
+# Absences (source-neutral vacation/sick store), estimate, report
+# ---------------------------------------------------------------------------
+
+
+def _open_db(db_path: Optional[Path]) -> sqlite3.Connection:
+    from tools.mcp_json_ingestor import init_mcp_tables
+
+    path = db_path or _default_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=10.0)
+    init_mcp_tables(conn)
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS {ABSENCES_TABLE} (
+            day TEXT NOT NULL,
+            portion REAL NOT NULL DEFAULT 1.0,
+            kind TEXT NOT NULL DEFAULT 'vacation',
+            source TEXT NOT NULL,
+            note TEXT,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (day, kind))"""
+    )
+    conn.commit()
+    return conn
+
+
+def _upsert_absences(conn: sqlite3.Connection, rows: List[tuple]) -> None:
+    conn.executemany(
+        f"INSERT INTO {ABSENCES_TABLE} (day, portion, kind, source, note, created_at) VALUES (?,?,?,?,?,?) "
+        "ON CONFLICT(day, kind) DO UPDATE SET portion=excluded.portion, source=excluded.source, "
+        "note=excluded.note, created_at=excluded.created_at",
+        rows,
+    )
+    conn.commit()
+
+
+def _absences_summary(conn: sqlite3.Connection, start: Optional[str] = None, end: Optional[str] = None) -> List[Dict[str, Any]]:
+    where, params = "", []
+    if start and end:
+        where, params = "WHERE day BETWEEN ? AND ?", [start, end]
+    rows = conn.execute(
+        f"SELECT substr(day, 1, 4) AS year, kind, COUNT(*), ROUND(SUM(portion), 2), GROUP_CONCAT(DISTINCT source) "
+        f"FROM {ABSENCES_TABLE} {where} GROUP BY 1, 2 ORDER BY 1, 2",
+        params,
+    ).fetchall()
+    return [{"year": y, "kind": k, "days": n, "portions": p, "sources": s} for y, k, n, p, s in rows]
+
+
+def _act_absences(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
+    op = str(args.get("op") or "list").strip().lower()
+    kind = str(args.get("kind") or "vacation").strip().lower()
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn = _open_db(db_path)
+    try:
+        if op == "list":
+            return json.dumps({"action": "absences", "op": "list", "summary": _absences_summary(conn)}, ensure_ascii=False)
+
+        if op == "add":
+            portion = float(args.get("portion") or 1.0)
+            if not 0 < portion <= 1:
+                return tool_error("portion must be in (0, 1]", success=False)
+            source = str(args.get("source") or "user").strip()
+            note = str(args.get("note") or "").strip() or None
+            rows: List[tuple] = []
+            for item in args.get("days") or []:
+                if isinstance(item, dict) and (item.get("from") or item.get("to")):
+                    d_from = wc.parse_iso_date(item.get("from"), "days.from")
+                    d_to = wc.parse_iso_date(item.get("to") or item.get("from"), "days.to")
+                    p = _resolve({})
+                    if p.get("_missing"):
+                        return _unknown_profile(p["_missing"])  # ranges expand to working days — needs the calendar
+                    for d in wc.calendar_days(
+                        d_from, d_to, wc.normalize_region(p["region"]),
+                        days_per_week=int(p["days_per_week"]),
+                        work_weekdays=p.get("work_weekdays") or None,
+                        half_days=p.get("half_days") or None,
+                    ):
+                        if d.factor > 0:
+                            rows.append((d.day.isoformat(), min(portion, d.factor), kind, source, note, now))
+                elif isinstance(item, dict):
+                    day = wc.parse_iso_date(item.get("day"), "days.day")
+                    item_portion = float(item.get("portion") or portion)
+                    rows.append((day.isoformat(), item_portion, kind, source, note, now))
+                else:
+                    rows.append((wc.parse_iso_date(item, "days").isoformat(), portion, kind, source, note, now))
+            if not rows:
+                return tool_error("op='add' needs days: ['YYYY-MM-DD', …] and/or [{'from': …, 'to': …}]", success=False)
+            _upsert_absences(conn, rows)
+            return json.dumps({
+                "action": "absences", "op": "add", "upserted": len(rows), "kind": kind, "source": source,
+                "summary": _absences_summary(conn),
+            }, ensure_ascii=False)
+
+        if op == "remove":
+            conditions, params = ["kind = ?"], [kind]
+            days = [wc.parse_iso_date(d, "days").isoformat() for d in args.get("days") or []]
+            if days:
+                conditions.append("day IN (" + ",".join("?" * len(days)) + ")")
+                params += days
+            elif args.get("start") or args.get("year"):
+                start, end = _range(args)
+                conditions.append("day BETWEEN ? AND ?")
+                params += [start.isoformat(), end.isoformat()]
+            elif args.get("source"):
+                pass  # source alone is a valid filter
+            else:
+                return tool_error("op='remove' needs days, start/end/year, or source — refusing to wipe the table", success=False)
+            if args.get("source"):
+                conditions.append("source LIKE ?")
+                params.append(str(args["source"]))
+            cur = conn.execute(f"DELETE FROM {ABSENCES_TABLE} WHERE " + " AND ".join(conditions), params)
+            conn.commit()
+            return json.dumps({"action": "absences", "op": "remove", "deleted": cur.rowcount,
+                               "summary": _absences_summary(conn)}, ensure_ascii=False)
+
+        if op == "import_from_bookings":
+            p = _resolve(args)
+            missing = p.get("_missing", [])
+            if missing:
+                return _unknown_profile(missing)
+            patterns = _split_patterns(args.get("vacation_booking_patterns") or p.get("vacation_booking_patterns"))
+            if not patterns:
+                return json.dumps({
+                    "action": "absences", "op": "import_from_bookings",
+                    "error": "no vacation_booking_patterns configured",
+                    "ask": (
+                        "Ask the user for the vacation booking reference (may change per year — patterns are "
+                        "additive), or take vacation days directly (op='add'), from a vault note, or extracted "
+                        "from a document (Excel/PDF) they provide."
+                    ),
+                }, ensure_ascii=False)
+            factor = float(args.get("vacation_hour_factor") or p.get("vacation_hour_factor") or 1.0)
+            hours = wc.hours_per_day(
+                float(p["weekly_hours"]), int(p["days_per_week"]), float(p.get("part_time_factor") or 1.0),
+                work_weekdays=p.get("work_weekdays") or None,
+            )
+            where = _like_sql("reference_key", patterns)
+            params: List[Any] = list(patterns)
+            if args.get("start") or args.get("year"):
+                start, end = _range(args)
+                where += " AND substr(timestamp, 1, 10) BETWEEN ? AND ?"
+                params += [start.isoformat(), end.isoformat()]
+            booked = conn.execute(
+                "SELECT substr(timestamp, 1, 10) AS day, SUM(duration_seconds) / 3600.0 "
+                f"FROM mcp_records WHERE {where} AND duration_seconds > 0 GROUP BY 1",
+                params,
+            ).fetchall()
+            source = "bookings:" + ", ".join(patterns)
+            rows = [(day, min(1.0, round(booked_h * factor / hours, 4)), kind, source, None, now) for day, booked_h in booked]
+            _upsert_absences(conn, rows)
+            return json.dumps({
+                "action": "absences", "op": "import_from_bookings", "patterns": patterns,
+                "vacation_hour_factor": factor, "hours_per_day": hours, "upserted": len(rows),
+                "summary": _absences_summary(conn),
+            }, ensure_ascii=False)
+
+        return tool_error("unknown op; one of add, list, remove, import_from_bookings", success=False)
+    finally:
+        conn.close()
+
+
+def _act_estimate(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
+    conn = _open_db(db_path)
+    try:
+        sources = conn.execute(
+            "SELECT tool_name, COUNT(*) AS n, MIN(substr(timestamp, 1, 10)), MAX(substr(timestamp, 1, 10)) "
+            "FROM mcp_records WHERE duration_seconds > 0 AND timestamp IS NOT NULL "
+            "GROUP BY tool_name ORDER BY n DESC LIMIT 5"
+        ).fetchall()
+        if not sources:
+            return json.dumps({
+                "action": "estimate_profile",
+                "error": "no ingested worklog data to estimate from",
+                "ask": "Ask the user directly for their work-time model: hours/week, working days (Mo-Fr, Mo-Sa, Mo-We, …), full/part time, region.",
+                "clarify_choices": CLARIFY_CHOICES,
+            }, ensure_ascii=False)
+        top = sources[0][0]
+        hist = conn.execute(
+            "SELECT CAST(strftime('%w', substr(timestamp, 1, 10)) AS INTEGER) AS wd, "
+            "COUNT(DISTINCT substr(timestamp, 1, 10)) FROM mcp_records "
+            "WHERE tool_name = ? AND duration_seconds > 0 GROUP BY 1",
+            (top,),
+        ).fetchall()
+        iso_hist = {((wd + 6) % 7) + 1: n for wd, n in hist}  # %w: 0=Sun → ISO 1=Mon
+        max_booked = max(iso_hist.values())
+        proposed_days = sorted(d for d, n in iso_hist.items() if n >= 0.2 * max_booked)
+        monday = date.today() - timedelta(days=date.today().weekday())
+        weeks = conn.execute(
+            "SELECT strftime('%Y-%W', substr(timestamp, 1, 10)) AS wk, SUM(duration_seconds) / 3600.0 "
+            "FROM mcp_records WHERE tool_name = ? AND duration_seconds > 0 AND substr(timestamp, 1, 10) < ? "
+            "GROUP BY wk ORDER BY wk DESC LIMIT 8",
+            (top, monday.isoformat()),
+        ).fetchall()
+        avg = round(sum(h for _, h in weeks) / len(weeks), 1) if weeks else None
+        snapped = min((20.0, 25.0, 30.0, 38.5, 40.0, 42.0), key=lambda x: abs(x - avg)) if avg else None
+        vacation_candidates = conn.execute(
+            "SELECT reference_key, COUNT(*) AS n FROM mcp_records "
+            "WHERE tool_name = ? AND duration_seconds BETWEEN 1 AND 7200 AND reference_key IS NOT NULL "
+            "GROUP BY reference_key HAVING n >= 3 ORDER BY n DESC LIMIT 3",
+            (top,),
+        ).fetchall()
+        profile = load_profile() or {}
+        missing = [k for k in ("region", "weekly_hours", "days_per_week") if not profile.get(k)]
+        proposal: Dict[str, Any] = {"worklog_source_tool": top}
+        if proposed_days:
+            proposal["work_weekdays"] = [_DAY_ABBR[d].lower() for d in proposed_days]
+        if snapped is not None:
+            proposal["weekly_hours"] = snapped
+        return json.dumps({
+            "action": "estimate_profile",
+            "proposal": proposal,
+            "evidence": {
+                "sources": [{"tool_name": t, "rows": n, "first_day": f, "last_day": l} for t, n, f, l in sources],
+                "weekday_booked_days": {_DAY_ABBR[d]: n for d, n in sorted(iso_hist.items())},
+                "avg_weekly_hours_last_8_complete_weeks": avg,
+            },
+            "candidates": {"vacation_booking_patterns": [k for k, _ in vacation_candidates]},
+            "missing": missing or ["confirmation"],
+            "next": (
+                "Present this proposal to the user in their language and ask them to CONFIRM or correct it "
+                "(region is never estimated — ask for it; also ask full/part time), then persist via "
+                "workdays(action='configure', …)."
+            ),
+        }, ensure_ascii=False)
+    finally:
+        conn.close()
+
+
+def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
+    p = _resolve(args)
+    missing = list(p.get("_missing", []))
+    src_patterns = _split_patterns(p.get("worklog_source_tool"))
+    if not src_patterns:
+        missing.append("worklog_source_tool")
+    if missing:
+        return json.dumps({
+            "error": "report needs a complete worktime profile",
+            "missing": missing,
+            "ask": (
+                "Configure the missing keys with workdays(action='configure', …); worklog_source_tool is the LIKE "
+                "pattern matching the user's time bookings in mcp_records (any worklog tool, not vendor-specific)."
+            ),
+            "estimate": "workdays(action='estimate_profile') proposes values from ingested data — confirm with the user first.",
+        }, ensure_ascii=False)
+    today = date.today()
+    if args.get("start") or args.get("year"):
+        start, end = _range(args)
+    else:
+        emp = p.get("employment_start")
+        start = wc.parse_iso_date(emp, "employment_start") if emp else date(today.year, 1, 1)
+        end = today
+    requested = {"start": start.isoformat(), "end": end.isoformat(), "inclusive": True}
+    clamped = end > today
+    if clamped:
+        end = today
+    if start > end:
+        return tool_error(f"range starts in the future ({start.isoformat()}) — nothing to report yet", success=False)
+    target_full_range = None
+    if clamped:
+        computed_full, err = _compute(dict(args, start=requested["start"], end=requested["end"]))
+        if err:
+            return err
+        target_full_range = wc.totals(computed_full[5])["target_hours"]
+    mat = json.loads(_act_materialize(dict(args, start=start.isoformat(), end=end.isoformat()), db_path=db_path))
+    if mat.get("error"):
+        return json.dumps(mat, ensure_ascii=False)
+
+    vac_patterns = _split_patterns(p.get("vacation_booking_patterns"))
+    ist_where = _like_sql("tool_name", src_patterns)
+    ist_params: List[Any] = list(src_patterns)
+    if vac_patterns:
+        ist_where += " AND NOT " + _like_sql("reference_key", vac_patterns)
+        ist_params += vac_patterns
+    s, e = start.isoformat(), end.isoformat()
+    ctes = f"""
+        WITH ist AS (
+            SELECT substr(timestamp, 1, 10) AS day, SUM(duration_seconds) / 3600.0 AS hours
+            FROM mcp_records
+            WHERE {ist_where} AND substr(timestamp, 1, 10) BETWEEN ? AND ?
+            GROUP BY 1),
+        vac AS (
+            SELECT c.month AS month, SUM(a.portion * c.target_hours) AS hours
+            FROM {ABSENCES_TABLE} a JOIN {TABLE} c ON c.day = a.day
+            WHERE a.kind = 'vacation' AND a.day BETWEEN ? AND ?
+            GROUP BY 1)
+    """
+    cte_params = ist_params + [s, e, s, e]
+    conn = _open_db(db_path)
+    try:
+        month_rows = conn.execute(
+            ctes + f"""
+            SELECT c.month,
+                   ROUND(SUM(c.target_hours), 2),
+                   ROUND(COALESCE(MAX(v.hours), 0), 2),
+                   ROUND(SUM(c.target_hours) - COALESCE(MAX(v.hours), 0), 2),
+                   ROUND(COALESCE(SUM(i.hours), 0), 2),
+                   ROUND(COALESCE(SUM(i.hours), 0) - (SUM(c.target_hours) - COALESCE(MAX(v.hours), 0)), 2)
+            FROM {TABLE} c
+            LEFT JOIN ist i ON i.day = c.day
+            LEFT JOIN vac v ON v.month = c.month
+            WHERE c.day BETWEEN ? AND ?
+            GROUP BY c.month ORDER BY c.month""",
+            cte_params + [s, e],
+        ).fetchall()
+        total = conn.execute(
+            ctes + f"""
+            SELECT tg, vc, ROUND(tg - vc, 2), act, ROUND(act - (tg - vc), 2) FROM (
+                SELECT ROUND(SUM(c.target_hours), 2) AS tg,
+                       ROUND(COALESCE((SELECT SUM(hours) FROM vac), 0), 2) AS vc,
+                       ROUND(COALESCE((SELECT SUM(hours) FROM ist), 0), 2) AS act
+                FROM {TABLE} c WHERE c.day BETWEEN ? AND ?)""",
+            cte_params + [s, e],
+        ).fetchone()
+        coverage = []
+        for pat in src_patterns:
+            n, first, last = conn.execute(
+                "SELECT COUNT(*), MIN(substr(timestamp, 1, 10)), MAX(substr(timestamp, 1, 10)) FROM mcp_records "
+                "WHERE tool_name LIKE ? AND substr(timestamp, 1, 10) BETWEEN ? AND ?",
+                (pat, s, e),
+            ).fetchone()
+            coverage.append({"pattern": pat, "rows": n, "first_day": first, "last_day": last})
+        absence_cov = conn.execute(
+            f"SELECT source, COUNT(*), ROUND(SUM(portion), 2) FROM {ABSENCES_TABLE} "
+            "WHERE kind = 'vacation' AND day BETWEEN ? AND ? GROUP BY source",
+            (s, e),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    hints = []
+    if all(c["rows"] == 0 for c in coverage):
+        hints.append(
+            f"no bookings in mcp_records match '{', '.join(src_patterns)}' for {s}..{e} — fetch them with the "
+            "worklog tool matching that pattern (results auto-ingest into mcp_records), then rerun report"
+        )
+    else:
+        last_booked = max((c["last_day"] for c in coverage if c["last_day"]), default=None)
+        if last_booked and last_booked < (end - timedelta(days=7)).isoformat():
+            hints.append(
+                f"data_gap: bookings end at {last_booked} but the range ends {e} — fetch the missing tail, then rerun report"
+            )
+    if not absence_cov:
+        hints.append(
+            "no absences recorded for this range — import via workdays(action='absences', op='import_from_bookings'), "
+            "add days directly (op='add'), or extract them from a vault note/document; vacation_credit is 0 until then"
+        )
+
+    payload: Dict[str, Any] = {
+        "action": "report",
+        "range": {"start": s, "end": e, "inclusive": True},
+        "totals": {"target_gross": total[0], "vacation_credit": total[1], "target_net": total[2],
+                   "actual": total[3], "delta": total[4]},
+        "months": [
+            {"month": m, "target_gross": tg, "vacation_credit": vc, "target_net": tn, "actual": act, "delta": dl}
+            for m, tg, vc, tn, act, dl in month_rows
+        ],
+        "assumptions": mat.get("assumptions"),
+        "coverage": {
+            "worklog_sources": coverage,
+            "vacation_absences": [{"source": src, "days": n, "portions": pt} for src, n, pt in absence_cov],
+        },
+        "formula": FORMULA,
+    }
+    if clamped:
+        payload["clamped_to_today"] = True
+        payload["requested_range"] = requested
+        payload["target_full_range"] = target_full_range
+    if hints:
+        payload["hints"] = hints
+    payload["note"] = "Present results in the user's language."
+    return json.dumps(payload, ensure_ascii=False)
+
+
+ACTIONS = ("holidays", "workdays", "target_hours", "days", "report", "estimate_profile", "absences", "materialize", "configure", "profile")
 
 
 def execute_workdays(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
@@ -451,6 +907,12 @@ def execute_workdays(args: Dict[str, Any], db_path: Optional[Path] = None) -> st
             return _act_workdays(args, with_hours=True)
         if action == "days":
             return _act_workdays(args, with_hours=True, all_days=True)
+        if action == "report":
+            return _act_report(args, db_path=db_path)
+        if action == "estimate_profile":
+            return _act_estimate(args, db_path=db_path)
+        if action == "absences":
+            return _act_absences(args, db_path=db_path)
         if action == "materialize":
             return _act_materialize(args, db_path=db_path)
         if action == "configure":
@@ -467,19 +929,25 @@ def execute_workdays(args: Dict[str, Any], db_path: Optional[Path] = None) -> st
 WORKDAYS_SCHEMA = {
     "name": "workdays",
     "description": (
-        "Deterministic calendar facts for work-time questions: working days, public holidays for DE/AT/CH "
-        "(per state/canton), target hours, half days (24./31.12.), 5- or 6-day weeks.\n"
+        "Deterministic calendar facts and work-time accounting: working days, public holidays for DE/AT/CH "
+        "(per state/canton), target hours, half days (24./31.12.), week models incl. explicit work_weekdays "
+        "(e.g. Mo-We), and a one-call actual-vs-target report.\n"
         "MANDATORY for target hours, overtime, working days, public holidays, bridge days: NEVER type calendars, weekday "
         "counts or holiday dates into SQL or prose, never compute Easter yourself.\n"
-        "Actions: 'target_hours' (per-month working days + target hours, default), 'days' (the same plus EVERY "
-        "calendar day of the range in one call: weekday, factor 1/0.5/0, reason, holiday name — ask once for the "
-        "whole range, never month by month), 'workdays', 'holidays', 'materialize' (writes table workday_calendar "
-        "into ~/.hermes/state.db so `sql` can JOIN target hours against the ingested worklogs in mcp_records — use "
-        "this for actual-vs-target comparisons), 'profile' (show the saved work-time profile), 'configure' (save "
-        "region/week model to memory as 'Arbeitszeit-Profil').\n"
-        "If the answer is 'worktime profile unknown': ask the user with `clarify` using the returned choices (in the "
-        "user's language), then call action='configure' — never assume a state or week model. Present results in "
-        "the user's language."
+        "Actions: 'report' (THE one-call actual-vs-target balance up to today: target, actual from ingested worklogs "
+        "in mcp_records via the profile's worklog_source_tool pattern, vacation credit from the absences table, "
+        "delta — all math in SQLite), 'estimate_profile' (propose a week model from ingested worklog data when the "
+        "profile is unknown — present the proposal and let the user CONFIRM before configure; region is never "
+        "estimated), 'absences' (source-neutral vacation/sick store in state.db: op=add/list/remove/"
+        "import_from_bookings — days can come from booking tickets, the user directly, a vault note, or a document), "
+        "'target_hours' (per-month working days + target hours, default), 'days' (the same plus EVERY calendar day "
+        "of the range in one call — ask once for the whole range, never month by month), 'workdays', 'holidays', "
+        "'materialize' (writes table workday_calendar into ~/.hermes/state.db for manual sql JOINs — advanced path), "
+        "'profile' (show the saved work-time profile), 'configure' (save region/week model/source patterns to "
+        "memory as 'Arbeitszeit-Profil').\n"
+        "If the answer is 'worktime profile unknown': try action='estimate_profile', present the proposal, and ask "
+        "the user with `clarify` (in their language) — never assume a state or week model. Present results in the "
+        "user's language."
     ),
     "parameters": {
         "type": "object",
@@ -490,8 +958,19 @@ WORKDAYS_SCHEMA = {
             "year": {"type": "integer", "description": "Whole year instead of start/end."},
             "region": {"type": "string", "description": "DE-BY, DE-BW, …, AT, AT-W, …, CH-ZH, … (or a name like 'Bayern'). Taken from the saved profile when omitted."},
             "weekly_hours": {"type": "number", "description": "Contract hours per week (profile default)."},
-            "days_per_week": {"type": "integer", "enum": [5, 6, 7], "description": "Working days per week (profile default)."},
+            "days_per_week": {"type": "integer", "enum": [5, 6, 7], "description": "Working days per week (profile default). For other models pass work_weekdays instead."},
+            "work_weekdays": {"type": "array", "items": {"type": "string"}, "description": "Explicit working weekdays for models like Mo-We: mo,tu,we,th,fr,sa,su (German di/mi/do/so or ISO 1-7). Overrides days_per_week."},
+            "employment_label": {"type": "string", "enum": ["vollzeit", "teilzeit"], "description": "configure only: full/part-time label shown in assumptions (math stays weekly_hours/part_time_factor)."},
             "part_time_factor": {"type": "number", "description": "0 < factor <= 1 (default 1)."},
+            "worklog_source_tool": {"type": "string", "description": "SQL LIKE pattern (comma-separated for several) matching mcp_records.tool_name rows that are the user's time bookings — any worklog tool, not vendor-specific. Needed for report/estimate."},
+            "vacation_booking_patterns": {"type": "string", "description": "LIKE pattern(s) on mcp_records.reference_key for vacation bookings (the ticket workaround; may differ per year — patterns are additive)."},
+            "vacation_hour_factor": {"type": "number", "description": "Credit hours per booked vacation hour for absences import (default 1.0; e.g. 8.0 when 1h booked = one 8h day)."},
+            "op": {"type": "string", "enum": ["add", "list", "remove", "import_from_bookings"], "description": "absences only: what to do (default list)."},
+            "days": {"type": "array", "items": {}, "description": "absences add/remove: 'YYYY-MM-DD' strings, {day, portion} objects, or {from, to} ranges (ranges expand to working days only)."},
+            "portion": {"type": "number", "description": "absences add: fraction of a day per entry, 0 < portion <= 1 (default 1.0)."},
+            "kind": {"type": "string", "description": "absences: vacation (default), sick, or other."},
+            "source": {"type": "string", "description": "absences: where the days came from, e.g. 'user', 'document:<id>', 'vault:<note>' (default user)."},
+            "note": {"type": "string", "description": "absences add: free-text note stored with the entries."},
             "half_days": {"type": "array", "items": {"type": "string"}, "description": "MM-DD or YYYY-MM-DD days counted as half a working day (profile default: 12-24, 12-31)."},
             "extra_holidays": {"type": "array", "items": {"type": "string"}, "description": "Additional company holidays, YYYY-MM-DD."},
             "employment_start": {"type": "string", "description": "YYYY-MM-DD; days before it carry no target time."},

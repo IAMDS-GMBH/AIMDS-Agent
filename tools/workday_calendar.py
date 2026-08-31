@@ -42,6 +42,43 @@ DEFAULT_WEEKLY_HOURS = 40.0
 DEFAULT_DAYS_PER_WEEK = 5
 DEFAULT_HALF_DAYS: Tuple[str, ...] = ("12-24", "12-31")
 
+# ISO weekday tokens (Mon=1 … Sun=7): English two-letter plus the German
+# aliases that differ (mo/fr/sa are shared between both languages).
+WEEKDAY_TOKENS: Dict[str, int] = {
+    "mo": 1, "tu": 2, "we": 3, "th": 4, "fr": 5, "sa": 6, "su": 7,
+    "di": 2, "mi": 3, "do": 4, "so": 7,
+}
+_WEEKDAY_HINT = "valid weekday tokens: mo, tu, we, th, fr, sa, su (German di, mi, do, so) or ISO numbers 1-7"
+
+
+def parse_work_weekdays(value: Any) -> Optional[frozenset]:
+    """``["mo", "di", 3]`` → ``frozenset({1, 2, 3})``; empty input → ``None``.
+
+    Accepts a list or a comma-separated string of two-letter tokens (longer
+    words like "monday"/"dienstag" match by their first two letters) and ISO
+    numbers 1-7. Raises ``ValueError`` naming the valid tokens — never guesses.
+    """
+    if value in (None, "", [], ()):
+        return None
+    items = value.replace(";", ",").split(",") if isinstance(value, str) else list(value)
+    out = set()
+    for item in items:
+        text = "" if item is None else str(item).strip().lower()
+        if not text:
+            continue
+        key = text if text in WEEKDAY_TOKENS else text[:2]
+        if text.isalpha() and key in WEEKDAY_TOKENS:
+            out.add(WEEKDAY_TOKENS[key])
+            continue
+        try:
+            iso = int(text)
+        except ValueError:
+            raise ValueError(f"unknown weekday '{item}'; {_WEEKDAY_HINT}") from None
+        if not 1 <= iso <= 7:
+            raise ValueError(f"weekday number {iso} out of range; {_WEEKDAY_HINT}")
+        out.add(iso)
+    return frozenset(out) or None
+
 # ---------------------------------------------------------------------------
 # Regions
 # ---------------------------------------------------------------------------
@@ -413,14 +450,16 @@ def _extra_holidays(extra: Optional[Iterable[Any]]) -> Dict[date, str]:
     return out
 
 
-def weekend_days(days_per_week: int) -> frozenset:
+def weekend_days(days_per_week: int, work_weekdays: Optional[frozenset] = None) -> frozenset:
+    if work_weekdays:
+        return frozenset(range(1, 8)) - parse_work_weekdays(work_weekdays)
     if days_per_week == 5:
         return frozenset({6, 7})
     if days_per_week == 6:
         return frozenset({7})
     if days_per_week == 7:
         return frozenset()
-    raise ValueError("days_per_week must be 5, 6 or 7")
+    raise ValueError("days_per_week must be 5, 6 or 7 (use work_weekdays for explicit day sets)")
 
 
 def calendar_days(
@@ -429,6 +468,7 @@ def calendar_days(
     region: str,
     *,
     days_per_week: int = DEFAULT_DAYS_PER_WEEK,
+    work_weekdays: Optional[Iterable[Any]] = None,
     half_days: Optional[Iterable[str]] = DEFAULT_HALF_DAYS,
     extra_holidays: Optional[Iterable[Any]] = None,
     employment_start: Optional[date] = None,
@@ -443,7 +483,7 @@ def calendar_days(
     if end < start:
         raise ValueError("end must not be before start")
     region = normalize_region(region)
-    weekend = weekend_days(days_per_week)
+    weekend = weekend_days(days_per_week, parse_work_weekdays(work_weekdays))
     years = range(start.year, end.year + 1)
     halves = _half_day_set(half_days, years)
     extras = _extra_holidays(extra_holidays)
@@ -474,13 +514,21 @@ def calendar_days(
     return out
 
 
-def hours_per_day(weekly_hours: float, days_per_week: int, part_time_factor: float = 1.0) -> float:
+def hours_per_day(
+    weekly_hours: float, days_per_week: int, part_time_factor: float = 1.0,
+    work_weekdays: Optional[Iterable[Any]] = None,
+) -> float:
     if weekly_hours <= 0:
         raise ValueError("weekly_hours must be positive")
-    weekend_days(days_per_week)  # validates
+    parsed = parse_work_weekdays(work_weekdays)
+    if parsed:
+        divisor = len(parsed)
+    else:
+        weekend_days(days_per_week)  # validates
+        divisor = days_per_week
     if not 0 < part_time_factor <= 1:
         raise ValueError("part_time_factor must be in (0, 1]")
-    return round(weekly_hours / days_per_week * part_time_factor, 4)
+    return round(weekly_hours / divisor * part_time_factor, 4)
 
 
 def monthly_summary(days: Sequence[DayInfo], hours: float) -> List[Dict[str, Any]]:
@@ -533,7 +581,8 @@ def month_range(year: int, month: int) -> Tuple[date, date]:
 __all__ = [
     "AT_STATES", "CH_CANTONS", "COUNTRIES", "DE_STATES", "DEFAULT_DAYS_PER_WEEK", "DEFAULT_HALF_DAYS",
     "DEFAULT_WEEKLY_HOURS", "DayInfo", "Holiday", "KIND_PARTIAL", "KIND_REGIONAL", "KIND_STATUTORY", "SOURCE",
-    "buss_und_bettag", "calendar_days", "easter_sunday", "eidgenoessischer_bettag", "holidays_between",
-    "holidays_for", "hours_per_day", "jeune_genevois", "month_range", "monthly_summary", "naefelser_fahrt",
-    "normalize_region", "parse_iso_date", "region_name", "totals", "valid_regions", "weekend_days",
+    "WEEKDAY_TOKENS", "buss_und_bettag", "calendar_days", "easter_sunday", "eidgenoessischer_bettag",
+    "holidays_between", "holidays_for", "hours_per_day", "jeune_genevois", "month_range", "monthly_summary",
+    "naefelser_fahrt", "normalize_region", "parse_iso_date", "parse_work_weekdays", "region_name", "totals",
+    "valid_regions", "weekend_days",
 ]

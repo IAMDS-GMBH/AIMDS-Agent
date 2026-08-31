@@ -319,3 +319,6 @@ def test_profile_build_directive_asks_language_and_offers_the_worktime_profile()
     assert "preferred answer language" in text
     assert "workdays(action='configure'" in text
     assert "user's own language" in text
+    # week model examples and the estimate-then-confirm path
+    assert "work_weekdays" in text and "full or part time" in text
+    assert "estimate_profile" in text and "confirm" in text

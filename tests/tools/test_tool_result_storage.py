@@ -640,3 +640,39 @@ def test_ingested_results_are_queried_not_read_back(tmp_path):
     without_ingest = _build_persisted_message("preview", True, 900000, "/tmp/x.txt", ingest_count=0,
                                               tool_name="terminal", sql_available=True)
     assert "Use the read_file tool" in without_ingest
+
+
+class TestIngestedThreshold:
+    """Once rows are ingested into mcp_records, a 10K threshold applies (not 100K)."""
+
+    @staticmethod
+    def _payload(n):
+        import json
+        return json.dumps([
+            {"id": f"it_{i}", "key": "PROJ-1", "timeSpentSeconds": 3600, "comment": "x" * 400}
+            for i in range(n)
+        ])
+
+    def test_ingested_payload_is_persisted_above_10k(self):
+        content = self._payload(120)  # ~55K — under the 100K default, over the 10K ingested cap
+        assert 10_000 < len(content) < DEFAULT_RESULT_SIZE_CHARS
+        result = maybe_persist_tool_result(
+            content=content, tool_name="mcp_TimeMCP_getWorklogs", tool_use_id="tc_ing_big", env=None,
+        )
+        assert result != content and "Auto-ingested" in result
+        assert len(result) < len(content)
+
+    def test_non_ingestible_payload_keeps_the_default_threshold(self):
+        content = "plain text " * 5_000  # ~55K, nothing to ingest
+        result = maybe_persist_tool_result(
+            content=content, tool_name="mcp_TimeMCP_getWorklogs", tool_use_id="tc_plain", env=None,
+        )
+        assert result == content
+
+    def test_small_ingested_payload_stays_inline_with_hint(self):
+        content = self._payload(10)
+        assert len(content) < 10_000
+        result = maybe_persist_tool_result(
+            content=content, tool_name="mcp_TimeMCP_getWorklogs", tool_use_id="tc_ing_small", env=None,
+        )
+        assert result.startswith(content) and "Auto-ingested" in result

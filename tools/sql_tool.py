@@ -148,6 +148,8 @@ SQL_SCHEMA = {
         "3. Arbitrary Arithmetic & Formulas: SELECT ROUND((174.5 / 160.0 - 1.0) * 100, 2) AS deviation_pct;\n\n"
         "Available tables:\n"
         "- mcp_records: (id, tool_name, reference_key, timestamp, user_id, duration_seconds, category, comment, raw_data)\n"
+        "- workday_calendar: (day, month, iso_week, weekday, is_weekend, is_holiday, holiday_name, holiday_kind, factor, target_hours, reason, region, days_per_week, weekly_hours, generated_at) — written by workdays(action='materialize'/'report')\n"
+        "- absences: (day, portion, kind, source, note, created_at) — vacation/sick days, filled via workdays(action='absences')\n"
         "- sessions: (id, source, user_id, model, started_at, title, message_count)\n"
         "- messages: (id, session_id, role, content, tool_name, created_at)\n"
         "- todos: (id, content, status, created_at)\n"
