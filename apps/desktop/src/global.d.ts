@@ -67,6 +67,11 @@ declare global {
       }
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
+      logRendererError?: (payload: {
+        componentStack?: string
+        label?: string
+        message: string
+      }) => Promise<{ ok: boolean }>
       sendSupportLogs: (payload?: {
         reason?: string
         maxLines?: number

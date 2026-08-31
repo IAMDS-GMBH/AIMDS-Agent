@@ -37,6 +37,10 @@ export function BootFailureOverlay() {
   const [logs, setLogs] = useState<string[]>([])
   const [showLogs, setShowLogs] = useState(false)
   const [remoteReauth, setRemoteReauth] = useState<RemoteReauth | null>(null)
+  // Must live above the visibility early-return: declared below it, the hook
+  // count changed whenever boot.error flipped, crashing the root boundary
+  // with React #310/#300 exactly when the recovery UI was needed (AIS-276).
+  const [reportOpen, setReportOpen] = useState(false)
 
   const visible = Boolean(boot.error) && !boot.running
   // While first-run onboarding owns the picker/flow we let it surface its own
@@ -166,7 +170,6 @@ export function BootFailureOverlay() {
   }
 
   const openLogs = () => void window.hermesDesktop?.revealLogs().catch(() => undefined)
-  const [reportOpen, setReportOpen] = useState(false)
 
   const sendSupportLogs = async () => {
     setBusy('support')

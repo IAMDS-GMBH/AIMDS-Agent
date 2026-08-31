@@ -507,62 +507,12 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   const [forcePreview, setForcePreview] = useState(false)
   const [renderMarkdownAsSource, setRenderMarkdownAsSource] = useState(false)
   const filePath = filePathForTarget(target)
-
-  if (isOfficeDocument(target, filePath)) {
-    const handleOpen = () => {
-      if (window.hermesDesktop?.openPath) {
-        void window.hermesDesktop.openPath(filePath)
-      } else if (window.hermesDesktop?.openExternal) {
-        void window.hermesDesktop.openExternal(target.url)
-      }
-    }
-
-    const handleShowInFolder = () => {
-      void window.hermesDesktop?.showItemInFolder?.(filePath)
-    }
-
-    return (
-      <PreviewEmptyState
-        body={
-          <div className="grid gap-2">
-            <span className="break-all font-mono text-xs text-muted-foreground">{filePath}</span>
-            <span className="text-xs text-muted-foreground/80">{t.preview.officeDocumentDescription}</span>
-          </div>
-        }
-        primaryAction={{ label: t.preview.openInDefaultApp, onClick: handleOpen }}
-        secondaryAction={{ label: t.rightSidebar.showInFolder, onClick: handleShowInFolder }}
-        title={target.label || previewName(filePath)}
-      />
-    )
-  }
-
-  if (isJsonOrYamlDocument(target, filePath) && !forcePreview) {
-    const handleOpen = () => {
-      if (window.hermesDesktop?.openPath) {
-        void window.hermesDesktop.openPath(filePath)
-      } else if (window.hermesDesktop?.openExternal) {
-        void window.hermesDesktop.openExternal(target.url)
-      }
-    }
-
-    const handleShowSource = () => {
-      setForcePreview(true)
-    }
-
-    return (
-      <PreviewEmptyState
-        body={
-          <div className="grid gap-2">
-            <span className="break-all font-mono text-xs text-muted-foreground">{filePath}</span>
-            <span className="text-xs text-muted-foreground/80">{t.preview.jsonYamlDocumentDescription}</span>
-          </div>
-        }
-        primaryAction={{ label: t.preview.openInDefaultApp, onClick: handleOpen }}
-        secondaryAction={{ label: t.preview.viewAsSource, onClick: handleShowSource }}
-        title={target.label || previewName(filePath)}
-      />
-    )
-  }
+  // Both document gates are computed up front and the load effect lives above
+  // the early returns: a hook below them changed the hook count whenever the
+  // preview target switched document kinds, crashing the boundary with React
+  // #310/#300 (AIS-276).
+  const officeDoc = isOfficeDocument(target, filePath)
+  const dataDoc = isJsonOrYamlDocument(target, filePath) && !forcePreview
 
   const isImage = target.previewKind === 'image'
 
@@ -577,6 +527,13 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     let active = true
 
     async function load() {
+      if (officeDoc || dataDoc) {
+        // Document empty-state paths render no file content.
+        setState({ loading: false })
+
+        return
+      }
+
       if (blockedByTarget) {
         setState({ loading: false })
 
@@ -633,7 +590,65 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     return () => {
       active = false
     }
-  }, [blockedByTarget, filePath, forcePreview, isImage, isText, reloadKey, target.dataUrl, target.language])
+  }, [blockedByTarget, dataDoc, filePath, forcePreview, isImage, isText, officeDoc, reloadKey, target.dataUrl, target.language])
+
+  if (officeDoc) {
+    const handleOpen = () => {
+      if (window.hermesDesktop?.openPath) {
+        void window.hermesDesktop.openPath(filePath)
+      } else if (window.hermesDesktop?.openExternal) {
+        void window.hermesDesktop.openExternal(target.url)
+      }
+    }
+
+    const handleShowInFolder = () => {
+      void window.hermesDesktop?.showItemInFolder?.(filePath)
+    }
+
+    return (
+      <PreviewEmptyState
+        body={
+          <div className="grid gap-2">
+            <span className="break-all font-mono text-xs text-muted-foreground">{filePath}</span>
+            <span className="text-xs text-muted-foreground/80">{t.preview.officeDocumentDescription}</span>
+          </div>
+        }
+        primaryAction={{ label: t.preview.openInDefaultApp, onClick: handleOpen }}
+        secondaryAction={{ label: t.rightSidebar.showInFolder, onClick: handleShowInFolder }}
+        title={target.label || previewName(filePath)}
+      />
+    )
+  }
+
+  if (dataDoc) {
+    const handleOpen = () => {
+      if (window.hermesDesktop?.openPath) {
+        void window.hermesDesktop.openPath(filePath)
+      } else if (window.hermesDesktop?.openExternal) {
+        void window.hermesDesktop.openExternal(target.url)
+      }
+    }
+
+    const handleShowSource = () => {
+      setForcePreview(true)
+    }
+
+    return (
+      <PreviewEmptyState
+        body={
+          <div className="grid gap-2">
+            <span className="break-all font-mono text-xs text-muted-foreground">{filePath}</span>
+            <span className="text-xs text-muted-foreground/80">{t.preview.jsonYamlDocumentDescription}</span>
+          </div>
+        }
+        primaryAction={{ label: t.preview.openInDefaultApp, onClick: handleOpen }}
+        secondaryAction={{ label: t.preview.viewAsSource, onClick: handleShowSource }}
+        title={target.label || previewName(filePath)}
+      />
+    )
+  }
+
+
 
   if (state.loading) {
     return <PageLoader label={t.preview.loading} />

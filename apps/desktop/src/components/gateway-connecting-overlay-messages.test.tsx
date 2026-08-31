@@ -1,6 +1,8 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as HermesModule from '@/hermes'
+import type * as I18nModule from '@/i18n'
 import { $desktopBoot } from '@/store/boot'
 import { setGatewayState } from '@/store/session'
 
@@ -11,7 +13,7 @@ let mockConfig: any = { model: { base_url: '' } }
 let mockEnvVars: any = {}
 
 vi.mock('@/i18n', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/i18n')>()
+  const actual = await importOriginal<typeof I18nModule>()
 
   return {
     ...actual,
@@ -23,7 +25,7 @@ vi.mock('@/i18n', async (importOriginal) => {
 })
 
 vi.mock('@/hermes', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/hermes')>()
+  const actual = await importOriginal<typeof HermesModule>()
 
   return {
     ...actual,
@@ -38,7 +40,7 @@ function resetStores() {
   mockConfig = { model: { base_url: '' } }
   mockEnvVars = {}
 
-  try { localStorage.clear() } catch {}
+  try { localStorage.clear() } catch { /* storage unavailable in jsdom variants */ }
   $desktopBoot.set({
     error: null,
     fakeMode: false,

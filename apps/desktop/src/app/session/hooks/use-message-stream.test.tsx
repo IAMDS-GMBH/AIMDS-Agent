@@ -1,3 +1,4 @@
+import type { QueryClient } from '@tanstack/react-query'
 /**
  * AIS-275: session.rotated handling and the bounded busy-escape.
  *
@@ -8,7 +9,6 @@
  * the escape clears it after a grace window and backfills the transcript.
  */
 import { cleanup, render } from '@testing-library/react'
-import type { QueryClient } from '@tanstack/react-query'
 import type { MutableRefObject } from 'react'
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'

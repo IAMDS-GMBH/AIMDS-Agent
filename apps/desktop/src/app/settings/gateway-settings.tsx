@@ -378,6 +378,7 @@ export function SystemStatusContent() {
                       // healthy just because config lists tools for it.
                       const unloaded = isMcpServerConfiguredButUnloaded(server)
                       const configured = getMcpServerConfiguredToolCount(server)
+
                       const countLabel = unloaded
                         ? `0/${configured} Tools`
                         : count !== null

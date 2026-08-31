@@ -13,6 +13,7 @@ import { translateNow } from '@/i18n'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
+import { ErrorBoundary } from '../components/error-boundary'
 import {
   bulkDeleteSessions,
   getCronJobs,
@@ -718,7 +719,9 @@ export function DesktopController() {
                       }
                     }
                   }
-                } catch (_) {}
+                } catch (_) {
+                  // best-effort — fall through to the cron-session match below
+                }
 
                 const matchRun = $cronSessions.get().find((s: { id: string }) => s.id.startsWith(`cron_${jobId}_`))
 
@@ -1020,9 +1023,16 @@ export function DesktopController() {
       <ModelPickerOverlay gateway={gatewayRef.current || undefined} onSelect={selectModel} />
       <SessionPickerOverlay onResume={resumeSession} />
       <ModelVisibilityOverlay gateway={gatewayRef.current || undefined} onOpenProviders={openProviderSettings} />
-      <UpdatesOverlay />
+      {/* Labeled boundaries: a crash in these overlays must identify its
+          subtree in desktop.log instead of taking down the whole app via the
+          root boundary (AIS-276). */}
+      <ErrorBoundary label="updates-overlay">
+        <UpdatesOverlay />
+      </ErrorBoundary>
       <GatewayConnectingOverlay />
-      <BootFailureOverlay />
+      <ErrorBoundary label="boot-failure-overlay">
+        <BootFailureOverlay />
+      </ErrorBoundary>
       <CommandPalette />
       <SessionSwitcher />
 

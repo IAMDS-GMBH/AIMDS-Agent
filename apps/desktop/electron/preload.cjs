@@ -54,6 +54,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   revealLogs: () => ipcRenderer.invoke('hermes:logs:reveal'),
   getRecentLogs: () => ipcRenderer.invoke('hermes:logs:recent'),
+  logRendererError: payload => ipcRenderer.invoke('hermes:logs:rendererError', payload),
   sendSupportLogs: payload => ipcRenderer.invoke('hermes:support:sendLogs', payload),
   reportIssue: payload => ipcRenderer.invoke('hermes:support:reportIssue', payload),
   sendTelemetry: payload => ipcRenderer.invoke('hermes:support:sendTelemetry', payload),

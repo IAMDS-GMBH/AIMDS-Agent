@@ -172,32 +172,6 @@ function ModelResults({
   const { t } = useI18n()
   const copy = t.modelPicker
 
-  if (loading) {
-    return <LoadingResults />
-  }
-
-  if (error) {
-    return (
-      <div className="px-3 py-3">
-        <InlineNotice kind="error" title={copy.loadFailed}>
-          {error}
-        </InlineNotice>
-      </div>
-    )
-  }
-
-  if (providers.length === 0) {
-    return <div className="px-4 py-6 text-sm text-muted-foreground">{copy.noAuthenticatedProviders}</div>
-  }
-
-  const q = search.trim().toLowerCase()
-
-  const matches = (provider: ModelOptionProvider, model: string) =>
-    !q ||
-    model.toLowerCase().includes(q) ||
-    provider.name.toLowerCase().includes(q) ||
-    provider.slug.toLowerCase().includes(q)
-
   // Only configured providers (those with curated models) are selectable
   // here. Switching to a NOT-yet-configured provider goes through the
   // "Add provider" footer button, which opens the full onboarding selector.
@@ -230,6 +204,33 @@ function ModelResults({
 
     return result
   }, [providers])
+
+  if (loading) {
+    return <LoadingResults />
+  }
+
+  if (error) {
+    return (
+      <div className="px-3 py-3">
+        <InlineNotice kind="error" title={copy.loadFailed}>
+          {error}
+        </InlineNotice>
+      </div>
+    )
+  }
+
+  if (providers.length === 0) {
+    return <div className="px-4 py-6 text-sm text-muted-foreground">{copy.noAuthenticatedProviders}</div>
+  }
+
+  const q = search.trim().toLowerCase()
+
+  const matches = (provider: ModelOptionProvider, model: string) =>
+    !q ||
+    model.toLowerCase().includes(q) ||
+    provider.name.toLowerCase().includes(q) ||
+    provider.slug.toLowerCase().includes(q)
+
 
   return (
     <>

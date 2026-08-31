@@ -235,7 +235,7 @@ export function GatewayConnectingOverlay() {
               if (active) {
                 setIsIamds(true)
 
-                try { localStorage.setItem('is_iamds_endpoint', 'true') } catch {}
+                try { localStorage.setItem('is_iamds_endpoint', 'true') } catch { /* best-effort cache */ }
 
                 return
               }
@@ -270,7 +270,7 @@ export function GatewayConnectingOverlay() {
             if (active) {
               setIsIamds(true)
 
-              try { localStorage.setItem('is_iamds_endpoint', 'true') } catch {}
+              try { localStorage.setItem('is_iamds_endpoint', 'true') } catch { /* best-effort cache */ }
 
               return
             }
