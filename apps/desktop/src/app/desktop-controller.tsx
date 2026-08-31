@@ -82,6 +82,7 @@ import {
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
+  setSelectedStoredSessionId,
   setSessionProfileTotals,
   setSessions,
    setSessionsLoading,
@@ -568,9 +569,37 @@ export function DesktopController() {
     [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
   )
 
+  // Context compression rotates the SQLite session id server-side
+  // (session.rotated). Converge the client: remap the runtime-sid lookup
+  // (keeping the old id as an alias), move the selection, and rewrite the
+  // route so reload/deeplink land on the current session (AIS-275).
+  const handleSessionRotated = useCallback(
+    (oldKey: string, newKey: string, runtimeSid: string) => {
+      const map = runtimeIdByStoredSessionIdRef.current
+      const runtime = runtimeSid || (oldKey ? map.get(oldKey) : undefined) || ''
+
+      if (runtime) {
+        map.set(newKey, runtime)
+
+        if (oldKey) {
+          map.set(oldKey, runtime)
+        }
+      }
+
+      if (oldKey && selectedStoredSessionIdRef.current === oldKey) {
+        setSelectedStoredSessionId(newKey)
+        navigate(sessionRoute(newKey), { replace: true })
+      }
+
+      void refreshSessions()
+    },
+    [navigate, refreshSessions, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef]
+  )
+
   const { handleGatewayEvent } = useMessageStream({
     activeSessionIdRef,
     hydrateFromStoredSession,
+    onSessionRotated: handleSessionRotated,
     queryClient,
     refreshHermesConfig,
     refreshSessions,

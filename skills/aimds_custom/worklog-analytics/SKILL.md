@@ -117,6 +117,14 @@ DROP TABLE IF EXISTS temp_worklogs;
 
 ---
 
+### Step 3d: Freshness — `mcp_records` mirrors past fetches
+- `mcp_records` is NOT live data: it holds whatever past fetches returned. A fetch is authoritative only for its **requested date window** — the ingestor replaces that window on re-fetch, but ranges outside the window keep their old rows.
+- **When the user says bookings changed** (vacation moved, worklog corrected/deleted): re-fetch the affected range explicitly (include the changed dates in `startDate`/`endDate`), then recompute. Never re-run SQL over the old mirror and present it as current.
+- Check data age: `report` coverage shows `last_fetched_at` per source; an old value means stale mirror even though the range looks covered.
+- Repair for a range no fetch will cover again: `DELETE FROM mcp_records WHERE tool_name = '...' AND substr(timestamp,1,10) BETWEEN '...' AND '...'` via `sql`, then re-fetch.
+- For sums/counts always filter `duration_seconds > 0` — flattened container rows carry 0 duration and inflate counts.
+- After a re-fetch that touches vacation bookings, rerun `workdays(action='absences', op='import_from_bookings')` — it drops its previously derived rows in the window before re-importing, so cancelled days disappear from vacation credit.
+
 ## Strict Guardrails
 1. **No emergency Python scripts:** Never write ad-hoc Python scripts to `/tmp/` for simple additions or counts.
 2. **No unrequested Excel files:** Do not generate `.xlsx` files via Office tools unless the user explicitly asks for an Excel export.

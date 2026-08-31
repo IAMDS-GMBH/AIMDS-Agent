@@ -55,13 +55,63 @@ def cleanup_scratch_tables(conn: sqlite3.Connection) -> int:
         return 0
 
 
+# Capacity policy (AIS-275). The old 5000-row global cap saturated in
+# production: every ingest silently evicted the oldest rows, and because a
+# re-fetch bumps its own rows to "newest", it pushed UNRELATED worklogs out —
+# aggregate SQL over old ranges went silently incomplete. Raised global cap
+# plus a per-tool cap so one chatty tool cannot starve the others; both (and
+# the TTL) are overridable via config `ingest.*`.
+DEFAULT_MCP_RECORDS_TTL_DAYS = 14
+DEFAULT_MCP_RECORDS_MAX_ROWS = 20000
+DEFAULT_MCP_RECORDS_PER_TOOL_MAX_ROWS = 6000
+
+
+def _ingest_limits() -> tuple:
+    ttl = DEFAULT_MCP_RECORDS_TTL_DAYS
+    max_rows = DEFAULT_MCP_RECORDS_MAX_ROWS
+    per_tool = DEFAULT_MCP_RECORDS_PER_TOOL_MAX_ROWS
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = (load_config() or {}).get("ingest") or {}
+        ttl = int(cfg.get("mcp_records_ttl_days") or ttl)
+        max_rows = int(cfg.get("mcp_records_max_rows") or max_rows)
+        per_tool = int(cfg.get("mcp_records_per_tool_max_rows") or per_tool)
+    except Exception:
+        pass
+    return ttl, max_rows, per_tool
+
+
+class PruneResult(int):
+    """int-compatible prune outcome: value = TTL-deleted rows (the historic
+    return), plus the cap-eviction count that used to happen silently."""
+
+    cap_evicted: int = 0
+
+    def __new__(cls, ttl_deleted: int = 0, cap_evicted: int = 0):
+        obj = super().__new__(cls, ttl_deleted)
+        obj.cap_evicted = cap_evicted
+        return obj
+
+
 def prune_mcp_records(
     conn: Optional[sqlite3.Connection] = None,
-    older_than_days: int = 14,
-    max_records: int = 5000,
+    older_than_days: Optional[int] = None,
+    max_records: Optional[int] = None,
+    per_tool_max_records: Optional[int] = None,
     db_path: Optional[Path] = None,
-) -> int:
-    """Prune old auto-ingested records to prevent unbounded growth of state.db."""
+) -> PruneResult:
+    """Prune old auto-ingested records to prevent unbounded growth of state.db.
+
+    ``None`` limits resolve from config (``ingest.mcp_records_*``) with the
+    module defaults as fallback. Cap evictions are counted and logged — they
+    remove rows that were NOT re-fetched, so downstream sums can silently
+    lose data (AIS-275).
+    """
+    cfg_ttl, cfg_max, cfg_per_tool = _ingest_limits()
+    older_than_days = cfg_ttl if older_than_days is None else older_than_days
+    max_records = cfg_max if max_records is None else max_records
+    per_tool_max_records = cfg_per_tool if per_tool_max_records is None else per_tool_max_records
     should_close = False
     if conn is None:
         conn = get_db_connection(db_path)
@@ -73,7 +123,21 @@ def prune_mcp_records(
                 (f"-{older_than_days} days",),
             )
             deleted = cursor.rowcount or 0
-            conn.execute(
+            evicted = 0
+            cursor = conn.execute(
+                """
+                DELETE FROM mcp_records WHERE id IN (
+                    SELECT id FROM (
+                        SELECT id, ROW_NUMBER() OVER (
+                            PARTITION BY tool_name ORDER BY created_at DESC, id DESC
+                        ) AS rn FROM mcp_records
+                    ) WHERE rn > ?
+                )
+                """,
+                (per_tool_max_records,),
+            )
+            evicted += cursor.rowcount or 0
+            cursor = conn.execute(
                 """
                 DELETE FROM mcp_records WHERE id NOT IN (
                     SELECT id FROM mcp_records ORDER BY created_at DESC LIMIT ?
@@ -81,11 +145,19 @@ def prune_mcp_records(
                 """,
                 (max_records,),
             )
+            evicted += cursor.rowcount or 0
+            if evicted:
+                logger.warning(
+                    "mcp_records at capacity: evicted %d rows beyond the caps "
+                    "(per-tool %d / global %d) — aggregate sums over old ranges "
+                    "may be incomplete until those ranges are re-fetched",
+                    evicted, per_tool_max_records, max_records,
+                )
             cleanup_scratch_tables(conn)
-            return deleted
+            return PruneResult(deleted, evicted)
     except Exception as exc:
         logger.debug("Prune mcp_records error: %s", exc)
-        return 0
+        return PruneResult(0, 0)
     finally:
         if should_close:
             conn.close()
@@ -386,6 +458,61 @@ def _reference_key_from_args(tool_args: Any) -> str:
     return ""
 
 
+_DATE_WINDOW_KEY_PAIRS = (
+    ("startdate", "enddate"),
+    ("datefrom", "dateto"),
+    ("from", "to"),
+    ("start", "end"),
+)
+_ISO_DAY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
+
+
+def _date_window_from_args(tool_args: Any) -> Optional[tuple]:
+    """The requested date window (start_day, end_day) from the tool call args.
+
+    Recognizes startDate/endDate, dateFrom/dateTo, from/to, start/end in any
+    casing/underscore style; values must begin with an ISO day (datetimes are
+    truncated). Returns None unless both ends parse and start <= end — a
+    fetch is only treated as window-authoritative when the window is explicit
+    and sane (AIS-275).
+    """
+    if not isinstance(tool_args, dict):
+        return None
+    norm = {
+        str(k).lower().replace("_", "").replace("-", ""): v
+        for k, v in tool_args.items()
+    }
+    for start_key, end_key in _DATE_WINDOW_KEY_PAIRS:
+        raw_start, raw_end = norm.get(start_key), norm.get(end_key)
+        if raw_start is None or raw_end is None:
+            continue
+        m_start = _ISO_DAY_RE.match(str(raw_start).strip())
+        m_end = _ISO_DAY_RE.match(str(raw_end).strip())
+        if not (m_start and m_end):
+            continue
+        start, end = m_start.group(1), m_end.group(1)
+        if start <= end:
+            return (start, end)
+    return None
+
+
+class IngestResult(int):
+    """int-compatible ingest outcome: value = rows ingested (the historic
+    return), plus window-replacement and cap-eviction metadata (AIS-275)."""
+
+    replaced: int = 0
+    evicted: int = 0
+    window: Optional[tuple] = None
+
+    def __new__(cls, ingested: int = 0, replaced: int = 0, evicted: int = 0,
+                window: Optional[tuple] = None):
+        obj = super().__new__(cls, ingested)
+        obj.replaced = replaced
+        obj.evicted = evicted
+        obj.window = window
+        return obj
+
+
 def _isolate_json_document(text: str) -> str:
     """The JSON document inside a tool result that may carry a preamble
     ("The following content was retrieved from an external source…") and a
@@ -409,15 +536,25 @@ def try_auto_ingest_json(
     tool_use_id: str = "",
     db_path: Optional[Path] = None,
     tool_args: Optional[Dict[str, Any]] = None,
-) -> int:
+) -> IngestResult:
     """Attempt to parse content as JSON and ingest into SQLite mcp_records table.
 
-    Returns the number of records ingested (0 if content is not JSON or has no items).
+    Returns an int-compatible :class:`IngestResult` — its value is the number
+    of records ingested (0 if content is not JSON or has no items).
+
+    Window-authoritative ingest (AIS-275): when the tool args carry an
+    explicit date window AND the payload parsed into >0 records, the rows of
+    the SAME tool inside that window are deleted first — the fetch replaces
+    its window, so upstream deletions/moves (a Tempo "move" is delete + new
+    id) no longer leave stale rows behind. A parsed-but-empty response
+    deliberately deletes NOTHING: 0 extracted items is indistinguishable from
+    an unrecognized payload shape, and wiping on ambiguity is the worse
+    failure (repair path: DELETE via the sql tool, then re-fetch).
     """
     if not content or not isinstance(content, str):
-        return 0
+        return IngestResult(0)
     if not should_ingest_tool(tool_name):
-        return 0
+        return IngestResult(0)
 
     content_strip = content.strip()
 
@@ -430,35 +567,54 @@ def try_auto_ingest_json(
 
     content_strip = _isolate_json_document(content_strip)
     if not content_strip:
-        return 0
+        return IngestResult(0)
 
     try:
         data = json.loads(content_strip)
     except Exception:
-        return 0
+        return IngestResult(0)
 
     if _is_error_payload(data):
-        return 0
+        return IngestResult(0)
 
     items = _flatten_nested_worklogs(_extract_items(data))
     fallback_ref = _reference_key_from_args(tool_args)
     if not items:
-        return 0
+        return IngestResult(0)
 
     records = [_extract_fields(item, tool_name, tool_use_id, fallback_ref) for item in items]
+    window = _date_window_from_args(tool_args)
 
     try:
         conn = get_db_connection(db_path)
+        replaced = 0
         with conn:
+            if window is not None:
+                # This fetch is authoritative for its requested window: drop
+                # the same tool's rows in that range first so stale entries
+                # (moved/deleted upstream) do not survive the re-fetch.
+                cursor = conn.execute(
+                    "DELETE FROM mcp_records WHERE tool_name = ? "
+                    "AND substr(timestamp, 1, 10) BETWEEN ? AND ?",
+                    (tool_name, window[0], window[1]),
+                )
+                replaced = cursor.rowcount or 0
             conn.executemany("""
             INSERT OR REPLACE INTO mcp_records (
                 id, tool_name, tool_use_id, reference_key, timestamp, user_id,
                 duration_seconds, category, comment, raw_data
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, records)
-            prune_mcp_records(conn)
-        logger.info("Auto-ingested %d MCP records into mcp_records (tool: %s)", len(records), tool_name)
-        return len(records)
+            prune_result = prune_mcp_records(conn)
+        logger.info(
+            "Auto-ingested %d MCP records into mcp_records (tool: %s%s)",
+            len(records), tool_name,
+            f", replaced {replaced} rows in window {window[0]}..{window[1]}" if window else "",
+        )
+        return IngestResult(
+            len(records), replaced=replaced,
+            evicted=getattr(prune_result, "cap_evicted", 0), window=window,
+        )
     except Exception as exc:
         logger.warning("Failed to store MCP records in SQLite: %s", exc)
-        return 0
+        return IngestResult(0)

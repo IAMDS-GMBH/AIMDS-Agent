@@ -1766,9 +1766,26 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
     if stored_prompt:
         # Continuing session — reuse the exact system prompt from the
-        # previous turn so the Anthropic cache prefix matches.
-        agent._cached_system_prompt = stored_prompt
-        return
+        # previous turn so the Anthropic cache prefix matches. But only if
+        # its calendar block is from TODAY: a restored prompt used to pin
+        # its "ISO Date:"/KW lines forever (the restore never set
+        # _cached_system_prompt_date, so the rollover guard was dead) — on
+        # 31.08 the model still reasoned from 30.08 and called the current
+        # week "next week" (AIS-275). A stale or unparseable date falls
+        # through to a fresh build (one deliberate prefix-cache miss).
+        from hermes_time import now as _hermes_now
+
+        today_str = _hermes_now().strftime("%Y-%m-%d")
+        m = re.search(r"^ISO Date: (\d{4}-\d{2}-\d{2})\s*$", stored_prompt, re.M)
+        if m and m.group(1) == today_str:
+            agent._cached_system_prompt = stored_prompt
+            agent._cached_system_prompt_date = m.group(1)
+            return
+        logger.info(
+            "Stored system prompt for session %s is dated %s (today: %s) — "
+            "rebuilding fresh (prompt cache prefix reset: date rollover)",
+            agent.session_id, m.group(1) if m else "unknown", today_str,
+        )
 
     if conversation_history and stored_state in ("null", "empty"):
         # Continuing session whose stored prompt is unusable.  The
@@ -1790,16 +1807,19 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # Plugin hook: on_session_start — fired once when a brand-new
     # session is created (not on continuation).  Plugins can use this
     # to initialise session-scoped state (e.g. warm a memory cache).
-    try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
-        _invoke_hook(
-            "on_session_start",
-            session_id=agent.session_id,
-            model=agent.model,
-            platform=getattr(agent, "platform", None) or "",
-        )
-    except Exception as exc:
-        logger.warning("on_session_start hook failed: %s", exc)
+    # Guarded on empty history: rebuild-on-continuation paths (stale/broken
+    # stored prompt, date rollover — AIS-275) must not re-fire it.
+    if not conversation_history:
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_session_start",
+                session_id=agent.session_id,
+                model=agent.model,
+                platform=getattr(agent, "platform", None) or "",
+            )
+        except Exception as exc:
+            logger.warning("on_session_start hook failed: %s", exc)
 
     # Cold-start credits seed (L3) — fallback for the first-turn path. The TUI/
     # desktop build seeds at session OPEN (see seed_credits_at_session_start in

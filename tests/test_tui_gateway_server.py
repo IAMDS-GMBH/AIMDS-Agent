@@ -3911,7 +3911,7 @@ def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
     )
 
     try:
-        with patch("tui_gateway.server._emit"):
+        with patch("tui_gateway.server._emit") as emit:
             server.handle_request(
                 {
                     "id": "1",
@@ -3923,8 +3923,45 @@ def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
         assert server._sessions["sid"]["session_key"] == "rotated-id"
         assert server._sessions["sid"]["pending_title"] is None
         assert len(restart_calls) == 1
+        # AIS-275: the rotated-away key is kept as an alias so a resume by
+        # the old DB id still finds this live session…
+        assert "old-key" in server._sessions["sid"]["session_key_aliases"]
+        assert server._find_live_session_by_key("old-key") is not None
+        assert server._find_live_session_by_key("rotated-id") is not None
+        # …and the client is told about the rotation.
+        rotated = [
+            c for c in emit.call_args_list if c.args and c.args[0] == "session.rotated"
+        ]
+        assert len(rotated) == 1
+        assert rotated[0].args[2] == {
+            "old_session_key": "old-key",
+            "new_session_key": "rotated-id",
+        }
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_get_usage_clamps_post_compression_sentinel():
+    """last_prompt_tokens=-1 (post-compression sentinel) must not leak into
+    the context gauge — it rendered '0/200.0k 0%' on the desktop (AIS-275)."""
+    agent = types.SimpleNamespace(
+        model="m",
+        session_input_tokens=10,
+        session_output_tokens=5,
+        session_cache_read_tokens=0,
+        session_cache_write_tokens=0,
+        session_reasoning_tokens=0,
+        session_prompt_tokens=10,
+        session_completion_tokens=5,
+        session_total_tokens=15,
+        session_api_calls=1,
+        context_compressor=types.SimpleNamespace(
+            last_prompt_tokens=-1, context_length=200_000, compression_count=1
+        ),
+    )
+    usage = server._get_usage(agent)
+    assert usage["context_used"] == 15  # falls back to session totals, never -1
+    assert usage["context_percent"] >= 0
 
 
 def test_prompt_submit_sets_approval_session_key(monkeypatch):

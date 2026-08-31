@@ -147,3 +147,33 @@ def test_concurrent_acquire_only_one_winner(db: SessionDB) -> None:
     assert sum(1 for r in results if r is False) == 7
     # The single winner still owns it
     assert db.get_compression_lock_holder("contended_session") is not None
+
+
+def test_init_sweeps_expired_locks_globally(tmp_path) -> None:
+    """Expired locks of OTHER sessions are reclaimed at SessionDB init —
+    previously only the same session's re-acquire cleaned them, so a lock
+    whose session never compressed again lived forever (AIS-275)."""
+    import sqlite3
+    import time as _time
+
+    path = tmp_path / "state.db"
+    first = SessionDB(path)
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "INSERT INTO compression_locks (session_id, holder, acquired_at, expires_at) VALUES (?, ?, ?, ?)",
+        ("dead-session", "crashed-holder", _time.time() - 600, _time.time() - 300),
+    )
+    conn.commit()
+    conn.close()
+    first.close()
+
+    fresh = SessionDB(path)
+    try:
+        conn = sqlite3.connect(str(path))
+        count = conn.execute(
+            "SELECT COUNT(*) FROM compression_locks WHERE session_id = 'dead-session'"
+        ).fetchone()[0]
+        conn.close()
+        assert count == 0
+    finally:
+        fresh.close()

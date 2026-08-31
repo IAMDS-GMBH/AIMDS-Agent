@@ -21,6 +21,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from agent.conversation_loop import _restore_or_build_system_prompt
+from hermes_time import now as _hermes_now
+
+
+def _dated(prompt: str) -> str:
+    """Stored prompts are only reused when their calendar block is from
+    today (AIS-275) — append a current ISO Date line like the real prompt
+    builder does."""
+    return f"{prompt}\nISO Date: {_hermes_now().strftime('%Y-%m-%d')}"
 
 
 def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
@@ -43,7 +51,7 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
 class TestStoredPromptReuse:
     def test_present_row_is_reused_verbatim(self, caplog):
         """Continuing session with a stored prompt → reuse byte-for-byte."""
-        stored = "Stored prompt from turn 1 — byte-identical reuse"
+        stored = _dated("Stored prompt from turn 1 — byte-identical reuse")
         db = MagicMock()
         db.get_session.return_value = {"system_prompt": stored}
         agent = _make_agent(session_db=db)
@@ -59,7 +67,7 @@ class TestStoredPromptReuse:
 
     def test_present_row_with_unicode_preserved(self):
         """Non-ASCII bytes in the stored prompt are not mangled."""
-        stored = "Stored prompt with unicode: ☤ ⚗ ◆ — and emoji 🦊"
+        stored = _dated("Stored prompt with unicode: ☤ ⚗ ◆ — and emoji 🦊")
         db = MagicMock()
         db.get_session.return_value = {"system_prompt": stored}
         agent = _make_agent(session_db=db)
@@ -200,7 +208,7 @@ class TestPromptStabilityInvariant:
         This is the core invariant: any byte-level change at this point
         invalidates KV cache on every prefix-cache backend.
         """
-        stored = (
+        stored = _dated(
             "You are Hermes Agent.\n"
             "\n"
             "Conversation started: Sunday, May 17, 2026\n"
@@ -221,3 +229,47 @@ class TestPromptStabilityInvariant:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ---------------------------------------------------------------------------
+# Date-rollover behavior (AIS-275)
+# ---------------------------------------------------------------------------
+
+
+class TestStoredPromptDateRollover:
+    def test_stale_dated_prompt_is_rebuilt(self):
+        """A stored prompt from a previous day must NOT be reused — its
+        calendar block ("ISO Date:"/KW lines) would pin yesterday forever."""
+        stored = "Old prompt\nISO Date: 2026-08-30"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == "BUILT_PROMPT"
+        agent._build_system_prompt.assert_called_once()
+
+    def test_undated_prompt_is_rebuilt(self):
+        """A stored prompt without an ISO Date line (legacy) is treated as
+        stale — one deliberate rebuild re-arms the rollover guard."""
+        stored = "Legacy prompt without a calendar block"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == "BUILT_PROMPT"
+
+    def test_current_dated_prompt_sets_the_rollover_date(self):
+        """Reusing a fresh prompt must arm the turn_context rollover guard."""
+        stored = _dated("Fresh prompt")
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == stored
+        assert agent._cached_system_prompt_date == _hermes_now().strftime("%Y-%m-%d")

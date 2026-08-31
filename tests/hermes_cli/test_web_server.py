@@ -670,6 +670,41 @@ class TestWebServerEndpoints:
         assert payload["session_id"] == "desktop-tip"
         assert [m["content"] for m in payload["messages"]] == ["after compression"]
 
+    def test_get_session_messages_follows_tip_even_when_parent_has_messages(self):
+        """The d716aa failure (AIS-275): the compression parent KEEPS its
+        messages, so resolve_resume_session_id's has-messages early return
+        never redirected — the desktop's transcript fallback silently showed
+        the pre-compression state. The endpoint must resolve to the tip and
+        return the full lineage transcript."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="full-root", source="tui")
+            db.append_message(session_id="full-root", role="user", content="old question")
+            db.append_message(session_id="full-root", role="assistant", content="old answer")
+            db.end_session("full-root", "compression")
+            now = _time.time()
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (now - 10, now - 5, "full-root"),
+            )
+            db.create_session(session_id="full-tip", source="tui", parent_session_id="full-root")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 4, "full-tip"))
+            db.append_message(session_id="full-tip", role="assistant", content="post-compression answer")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/full-root/messages")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["session_id"] == "full-tip"
+        contents = [m["content"] for m in payload["messages"]]
+        assert contents == ["old question", "old answer", "post-compression answer"]
+
     def test_get_sessions_archived_is_boolean(self):
         from hermes_state import SessionDB
 

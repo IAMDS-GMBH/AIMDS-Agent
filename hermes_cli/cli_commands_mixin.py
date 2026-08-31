@@ -661,10 +661,13 @@ class CLICommandsMixin:
             _cprint("  Use /history or `hermes sessions list` to see available sessions.")
             return
 
-        # If the target is the empty head of a compression chain, redirect to
-        # the descendant that actually holds the transcript. See #15000.
+        # If the target is part of a compression chain, redirect to the tip —
+        # resuming (and later reopening) a compression parent would NULL its
+        # end_reason='compression' and break the chain walk (AIS-275). The
+        # resume resolver then still handles the empty-head case (#15000).
         try:
-            resolved_id = self._session_db.resolve_resume_session_id(target_id)
+            resolved_id = self._session_db.get_compression_tip(target_id) or target_id
+            resolved_id = self._session_db.resolve_resume_session_id(resolved_id)
         except Exception:
             resolved_id = target_id
         if resolved_id and resolved_id != target_id:

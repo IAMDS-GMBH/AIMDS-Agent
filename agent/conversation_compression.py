@@ -511,6 +511,15 @@ def compress_context(
         try:
             # Propagate title to the new session with auto-numbering
             old_title = agent._session_db.get_session_title(agent.session_id)
+            # The continuation must inherit the working directory — session
+            # 20260831_132014_018da0 was created with an empty cwd while its
+            # parent carried one (AIS-275).
+            old_cwd = ""
+            try:
+                parent_row = agent._session_db.get_session(agent.session_id) or {}
+                old_cwd = str(parent_row.get("cwd") or "")
+            except Exception:
+                pass
             # Trigger memory extraction on the old session before it rotates.
             # (The compaction summary itself was just saved to the vault; the
             # rotation must not also write a session summary.)
@@ -552,6 +561,7 @@ def compress_context(
                 model=agent.model,
                 model_config=agent._session_init_model_config,
                 parent_session_id=old_session_id,
+                cwd=old_cwd or None,
             )
             agent._session_db_created = True
             # Auto-number the title for the continuation session

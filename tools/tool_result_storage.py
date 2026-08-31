@@ -114,9 +114,14 @@ def _build_ingest_hint(tool_name: str, ingest_count: int, *, sql_available: bool
     unreliable on Tempo-synced entries.
     """
     columns = "(id, tool_name, reference_key, timestamp, user_id, duration_seconds, category, comment, raw_data)"
+    # ingest_count may be an IngestResult (int subclass) carrying window-
+    # replacement / cap-eviction metadata (AIS-275).
+    replaced = int(getattr(ingest_count, "replaced", 0) or 0)
+    evicted = int(getattr(ingest_count, "evicted", 0) or 0)
+    window = getattr(ingest_count, "window", None)
     if sql_available:
         hint = (
-            f"[Auto-ingested {ingest_count} records into SQLite table 'mcp_records' (~/.hermes/state.db). "
+            f"[Auto-ingested {int(ingest_count)} records into SQLite table 'mcp_records' (~/.hermes/state.db). "
             f"Columns: {columns}. Query them with the `sql` tool, e.g. "
             "`SELECT reference_key, ROUND(SUM(duration_seconds)/3600.0, 2) AS hours FROM mcp_records "
             "WHERE tool_name = '...' GROUP BY reference_key`. "
@@ -124,9 +129,24 @@ def _build_ingest_hint(tool_name: str, ingest_count: int, *, sql_available: bool
         )
     else:
         hint = (
-            f"[Auto-ingested {ingest_count} records into SQLite table 'mcp_records' (~/.hermes/state.db). "
+            f"[Auto-ingested {int(ingest_count)} records into SQLite table 'mcp_records' (~/.hermes/state.db). "
             f"Columns: {columns}. The `sql` tool is not in this session — ask for it "
             "or work from the persisted output.]"
+        )
+    if window:
+        hint += (
+            f"\n[Freshness: this fetch is authoritative for {window[0]}..{window[1]} — "
+            f"{replaced} previously ingested rows in that window were replaced. mcp_records only "
+            "mirrors past fetches: if upstream data changed OUTSIDE this window, re-fetch that "
+            "range too (the ingest replaces it). Stale-row repair for a range no fetch will cover: "
+            "`DELETE FROM mcp_records WHERE tool_name = '...' AND substr(timestamp,1,10) BETWEEN "
+            "'...' AND '...'` via `sql`, then re-fetch.]"
+        )
+    if evicted:
+        hint += (
+            f"\n[Capacity: mcp_records hit its row cap — {evicted} old rows from ranges NOT covered "
+            "by this fetch were evicted; aggregate sums over old ranges may be incomplete until "
+            "those ranges are re-fetched.]"
         )
     if _is_jira_get_worklog_tool(tool_name):
         hint += (

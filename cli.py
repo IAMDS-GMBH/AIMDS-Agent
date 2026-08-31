@@ -415,7 +415,15 @@ def load_cli_config() -> Dict[str, Any]:
         },
         "compression": {
             "enabled": True,      # Auto-compress when approaching context limit
-            "threshold": 0.50,    # Compress at 50% of model's context limit
+            "threshold": 0.75,    # Compress at 75% of model's context limit (raised from 0.50 — AIS-275)
+        },
+        "ingest": {
+            # mcp_records capacity policy (AIS-275): TTL plus per-tool and
+            # global row caps; cap evictions are logged and surfaced in the
+            # ingest hint because they silently remove un-refetched rows.
+            "mcp_records_ttl_days": 14,
+            "mcp_records_max_rows": 20000,
+            "mcp_records_per_tool_max_rows": 6000,
         },
         "agent": {
             "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)

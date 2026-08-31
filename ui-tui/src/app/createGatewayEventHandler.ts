@@ -20,6 +20,7 @@ import type { GatewayEventHandlerContext } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
+import { writeActiveSessionFile } from './useSessionLifecycle.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
 
@@ -415,6 +416,22 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         return
+      case 'session.rotated': {
+        // Context compression rotated the SQLite session id (AIS-275); keep
+        // the active-session pointer file current so `hermes --resume` and
+        // shell integrations land on the continuation, not the ended parent.
+        const newKey = ev.payload?.new_session_key
+
+        if (typeof newKey === 'string' && newKey) {
+          try {
+            writeActiveSessionFile(newKey)
+          } catch {
+            // best-effort pointer update — never break the event stream
+          }
+        }
+
+        return
+      }
       case 'session.info': {
         const info = ev.payload
 
