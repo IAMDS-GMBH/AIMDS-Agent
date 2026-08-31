@@ -87,16 +87,15 @@ GROUP BY month, reference_key, user_id
 ORDER BY month DESC;
 ```
 
-#### Leave / Vacation Calculation (IAMDS-595 or Leave Tasks)
-For vacation policies where <=30 min = 0.5 day and >30 min/1h = 1.0 day:
+#### Leave / Vacation Calculation
+Vacation days live in the source-neutral `absences` table (filled via `workdays(action='absences')` — booking import with the profile's `vacation_booking_patterns`, direct user input, vault notes, or documents). Never hardcode a vacation ticket key:
 ```sql
-SELECT 
-    strftime('%Y-%m', timestamp) AS month,
-    SUM(CASE WHEN duration_seconds <= 1800 THEN 0.5 ELSE 1.0 END) AS days_taken,
-    30.0 - SUM(SUM(CASE WHEN duration_seconds <= 1800 THEN 0.5 ELSE 1.0 END)) 
-           OVER (ORDER BY strftime('%Y-%m', timestamp)) AS remaining_leave_balance
-FROM mcp_records
-WHERE reference_key = 'IAMDS-595' OR category LIKE '%leave%'
+SELECT
+    strftime('%Y-%m', day) AS month,
+    ROUND(SUM(portion), 2) AS days_taken,
+    30.0 - SUM(SUM(portion)) OVER (ORDER BY strftime('%Y-%m', day)) AS remaining_leave_balance
+FROM absences
+WHERE kind = 'vacation'
 GROUP BY month;
 ```
 

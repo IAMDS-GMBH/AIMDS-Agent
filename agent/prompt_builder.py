@@ -357,12 +357,15 @@ def build_data_handling_guidance(valid_tool_names: "set[str] | None" = None) -> 
     if has_workdays:
         rungs.append(
             "Calendar facts — working days, public holidays (DE/AT/CH per state/canton), target hours, "
-            "half days, 5/6-day weeks — come from the `workdays` tool; never type calendars, weekday "
-            "counts or holiday dates into SQL or prose, never compute Easter yourself. For Ist/Soll comparisons "
-            "run `workdays(action='materialize')` and JOIN `workday_calendar` against `mcp_records` with `sql`. "
-            "If it answers 'worktime profile unknown', the user's country/state or week model is not known: ask "
-            "once with `clarify` using the returned choices, then `workdays(action='configure', …)` saves the "
-            "profile to memory — never assume a state (not BW, not DE) or a week model."
+            "half days, week models incl. explicit work_weekdays — come from the `workdays` tool; never type "
+            "calendars, weekday counts or holiday dates into SQL or prose, never compute Easter yourself. For "
+            "actual-vs-target comparisons prefer `workdays(action='report')` — one call, clamped to today, all "
+            "math in SQLite; vacation comes from the source-neutral `absences` table (`workdays(action='absences')`: "
+            "booking import, direct user input, vault notes, documents). The advanced path is "
+            "`workdays(action='materialize')` + JOIN `workday_calendar` against `mcp_records` with `sql`. "
+            "If it answers 'worktime profile unknown', try `workdays(action='estimate_profile')`, present the "
+            "proposal, and confirm with `clarify` — then `workdays(action='configure', …)` saves the profile to "
+            "memory. Never assume a state (not BW, not DE) or a week model."
         )
     if has_sql:
         rungs.append(

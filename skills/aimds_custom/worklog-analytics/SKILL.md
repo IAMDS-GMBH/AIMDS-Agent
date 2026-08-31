@@ -14,9 +14,12 @@ This skill defines the binding standard for aggregating, analysing and documenti
 
 ## Standard Operating Procedure (SOP)
 
-### Step 0: Working-time profile (region, weekly model)
-- Target hours depend on country/federal state/canton, weekly hours, workdays per week and half days (24 and 31 December). The profile lives in memory as `Arbeitszeit-Profil`; `workdays(action='profile')` shows it.
-- If `workdays` answers `worktime profile unknown`: **first clarify via `clarify` using the supplied choices** (Bayern / Baden-Württemberg / other German federal state / Austria / Switzerland; weekly hours; 5- or 6-day week), then `workdays(action='configure', region=…, weekly_hours=…, days_per_week=…, half_days=[…])` — this saves to memory. Never assume BW/DE or 40 h / 5 days.
+### Step 0: Working-time profile (region, weekly model, source patterns)
+- Target hours depend on country/federal state/canton, weekly hours, working days (5/6-day weeks or explicit `work_weekdays` like Mo–We), full/part time and half days (24 and 31 December). The profile lives in memory as `Arbeitszeit-Profil`; `workdays(action='profile')` shows it. It also carries the genericity keys: `worklog_source_tool` (LIKE pattern matching the user's time bookings in `mcp_records.tool_name` — works for any worklog MCP, not just Tempo/Jira) and optionally `vacation_booking_patterns` + `vacation_hour_factor` for the booking-ticket workaround.
+- If `workdays` answers `worktime profile unknown`: **first try `workdays(action='estimate_profile')`** — it proposes a week model and source tool from already-ingested worklog data. Present the proposal and confirm via `clarify` (region is never estimated; also confirm weekly hours and full/part time), then `workdays(action='configure', region=…, weekly_hours=…, days_per_week=… or work_weekdays=[…], half_days=[…], worklog_source_tool=…, …)` — this saves to memory. Never assume BW/DE or 40 h / 5 days.
+
+### Step 0b: Preferred path — one-call report
+- For actual-vs-target questions call `workdays(action='report', start=…, end=…)` first: it materializes the calendar, aggregates actuals from `mcp_records` via the profile's `worklog_source_tool`, credits vacation from the `absences` table, and computes delta — all in SQLite, clamped to today (a full-year request additionally returns `target_full_range`). Follow its `hints` when data is missing or stale. Only fall back to the manual JOIN below for custom breakdowns.
 
 ### Step 1: Fetch raw data
 - Fetch the raw data via the appropriate MCP tools (e.g. `atlassian-jira_get_worklog`, Jira search or time-tracking data).
@@ -62,28 +65,36 @@ ORDER BY hours_spent DESC;
 workdays(action='materialize', start='2026-01-01', end='2026-08-31')
 → table workday_calendar (one row per day: factor 1/0.5/0, target_hours, holiday_name)
 ```
-- Actual vs. target via JOIN — **aggregate worklogs per day first**, otherwise the target hours multiply:
+- Actual vs. target via JOIN — **aggregate worklogs per day first**, otherwise the target hours multiply. `<worklog pattern>` and `<vacation pattern>` come from the profile (`worklog_source_tool`, `vacation_booking_patterns`), never hardcoded tool or ticket names:
 ```sql
 WITH ist AS (
   SELECT substr(timestamp,1,10) AS day, SUM(duration_seconds)/3600.0 AS hours
-  FROM mcp_records WHERE tool_name = 'mcp_TempoMCP_retrieveWorklogs' AND reference_key != 'IAMDS-595' GROUP BY 1),
+  FROM mcp_records WHERE tool_name LIKE '<worklog pattern>' AND reference_key NOT LIKE '<vacation pattern>' GROUP BY 1),
 urlaub AS (
-  SELECT substr(timestamp,1,7) AS month,
-         SUM(CASE WHEN ROUND(duration_seconds/3600.0,1) = 0.5 THEN 0.5 WHEN ROUND(duration_seconds/3600.0,1) = 1.0 THEN 1.0 ELSE 0 END) AS days
-  FROM mcp_records WHERE reference_key = 'IAMDS-595' GROUP BY 1)
+  SELECT c.month AS month, SUM(a.portion * c.target_hours) AS hours
+  FROM absences a JOIN workday_calendar c ON c.day = a.day
+  WHERE a.kind = 'vacation' GROUP BY 1)
 SELECT c.month,
-       ROUND(SUM(c.target_hours),2)                              AS soll_brutto,
-       ROUND(COALESCE(MAX(u.days),0) * MAX(c.weekly_hours)/MAX(c.days_per_week),2) AS urlaub_h,
-       ROUND(SUM(c.target_hours) - COALESCE(MAX(u.days),0) * MAX(c.weekly_hours)/MAX(c.days_per_week),2) AS soll_netto,
-       ROUND(COALESCE(SUM(i.hours),0),2)                         AS ist,
-       ROUND(COALESCE(SUM(i.hours),0) - (SUM(c.target_hours) - COALESCE(MAX(u.days),0) * MAX(c.weekly_hours)/MAX(c.days_per_week)),2) AS saldo
+       ROUND(SUM(c.target_hours),2)                               AS soll_brutto,
+       ROUND(COALESCE(MAX(u.hours),0),2)                          AS urlaub_h,
+       ROUND(SUM(c.target_hours) - COALESCE(MAX(u.hours),0),2)    AS soll_netto,
+       ROUND(COALESCE(SUM(i.hours),0),2)                          AS ist,
+       ROUND(COALESCE(SUM(i.hours),0) - (SUM(c.target_hours) - COALESCE(MAX(u.hours),0)),2) AS saldo
 FROM workday_calendar c
 LEFT JOIN ist i ON i.day = c.day
 LEFT JOIN urlaub u ON u.month = c.month
 WHERE c.day BETWEEN '2026-01-01' AND '2026-08-31'
 GROUP BY c.month ORDER BY c.month;
 ```
-- Vacation bookings (central ticket, e.g. `IAMDS-595`): 0.5 h booked = half a day, 1 h = a full day of target-hours deduction; hours per day = `weekly_hours / days_per_week` from the table, not hardcoded. Public holidays on weekends deduct nothing; weekend worklogs count towards actual, not towards target.
+- Public holidays on weekends deduct nothing; weekend worklogs count towards actual, not towards target.
+
+### Step 3c: Vacation sources (the `absences` table)
+Vacation credit always comes from the source-neutral `absences` table (day, portion, kind, source) — a booking ticket is only one way to fill it, and the ticket may change per year:
+1. **Booking import (workaround):** `workdays(action='absences', op='import_from_bookings')` converts bookings matching the profile's `vacation_booking_patterns` into day portions via `vacation_hour_factor` (e.g. factor 8.0: 1 h booked = a full 8 h day, 0.5 h = half a day).
+2. **Direct user input:** the user states their vacation ("3.–14. August") → `workdays(action='absences', op='add', days=[{'from': '2026-08-03', 'to': '2026-08-14'}])` — ranges expand to working days only.
+3. **Vault note:** read the note, extract the days, then `op='add'` with `source='vault:<note>'`.
+4. **Document (Excel/PDF):** ingest via the doc-ingest flow, pull the FULL markdown (never word-chunks — they cut table rows), parse the day-level dates (disambiguate DD.MM.YYYY), then `op='add'` with `source='document:<doc_id>'`.
+If none of these is available, ask the user for a reference or the vacation days themselves — never guess.
 
 ### Step 4: Executive Verification Gate (plausibility check)
 - **Sum consistency:** Before output, check that `sum(group subtotals) == grand total` — also for target hours: the monthly rows (workdays, public holidays, target hours) must add up to the total row; a month "corrected" by hand is an error, not a fix.

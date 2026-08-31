@@ -221,6 +221,11 @@ def maybe_persist_tool_result(
     ingest_hint = ""
     if ingest_count > 0:
         ingest_hint = "\n\n" + _build_ingest_hint(tool_name, ingest_count, sql_available=sql_available)
+        # The rows live in mcp_records now — keeping the raw payload inline
+        # only re-sends it every turn. Pinned-inf tools (read_file) keep their
+        # exemption; core tools never ingest (should_ingest_tool).
+        if effective_threshold != float("inf"):
+            effective_threshold = min(effective_threshold, config.ingested_result_size)
 
     if effective_threshold == float("inf"):
         if ingest_count > 0 and isinstance(content, str):

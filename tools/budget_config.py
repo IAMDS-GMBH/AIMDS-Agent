@@ -18,6 +18,10 @@ DEFAULT_RESULT_SIZE_CHARS: int = 100_000
 DEFAULT_JIRA_RESULT_SIZE_CHARS: int = 25_000
 DEFAULT_TURN_BUDGET_CHARS: int = 200_000
 DEFAULT_PREVIEW_SIZE_CHARS: int = 1_500
+# Once rows are auto-ingested into mcp_records the raw payload is redundant —
+# a much lower persistence threshold applies (session 20260829_223307: a 99K
+# worklog response sat just under the 100K default and was re-sent every turn).
+DEFAULT_INGESTED_RESULT_SIZE_CHARS: int = 10_000
 
 
 @dataclass(frozen=True)
@@ -33,6 +37,7 @@ class BudgetConfig:
     default_result_size: int = DEFAULT_RESULT_SIZE_CHARS
     turn_budget: int = DEFAULT_TURN_BUDGET_CHARS
     preview_size: int = DEFAULT_PREVIEW_SIZE_CHARS
+    ingested_result_size: int = DEFAULT_INGESTED_RESULT_SIZE_CHARS
     tool_overrides: Dict[str, int] = field(default_factory=dict)
 
     def resolve_threshold(self, tool_name: str) -> int | float:

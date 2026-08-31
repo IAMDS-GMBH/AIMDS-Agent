@@ -34,7 +34,10 @@ class TestProfileResolution:
         assert out["error"] == "worktime profile unknown"
         assert "region" in out["missing"]
         assert "Bayern (DE-BY)" in out["clarify_choices"]
-        assert "configure" in out["then"]
+        assert "configure" in out["ask"] and "estimate_profile" in out["estimate"]
+        # the error blob stays slim: no 54-entry region list, no defaults block
+        assert "valid_regions" not in out and "week_model_defaults" not in out
+        assert len(json.dumps(out)) < 700
 
     def test_parameters_alone_are_enough(self):
         out = _run(action="target_hours", start="2026-01-01", end="2026-01-31", **BY)
@@ -143,8 +146,11 @@ class TestActions:
 class TestMaterialize:
     def test_table_joins_with_ingested_worklogs_without_multiplying(self, tmp_path):
         db = tmp_path / "state.db"
-        out = json.loads(wt.execute_workdays({"action": "materialize", "start": "2026-01-01", "end": "2026-01-31", **BY}, db_path=db))
+        out = json.loads(wt.execute_workdays(
+            {"action": "materialize", "start": "2026-01-01", "end": "2026-01-31",
+             "worklog_source_tool": "mcp_TempoMCP_retrieveWorklogs", **BY}, db_path=db))
         assert out["table"] == "workday_calendar" and out["rows"] == 31 and out["totals"]["target_hours"] == 160.0
+        assert "mcp_TempoMCP_retrieveWorklogs" in out["example_sql"]  # from the profile/args, not hardcoded
 
         # two worklogs on one day must not double the target hours
         conn = sqlite3.connect(str(db))
@@ -159,7 +165,7 @@ class TestMaterialize:
         conn.commit()
         conn.close()
         res = execute_sql(out["example_sql"], db_path=db)
-        assert "| 2026-01 | 160.0 | 3.0 |" in res
+        assert "| 2026-01 | 160.0 | 4.0 |" in res  # 3h work + 1h vacation booking; report excludes vacation, this raw join does not
 
         # second run replaces the range instead of duplicating it
         json.loads(wt.execute_workdays({"action": "materialize", "start": "2026-01-01", "end": "2026-01-31", **BY}, db_path=db))
@@ -183,3 +189,165 @@ def test_registered_as_a_core_tool():
     assert "workdays" in toolsets._HERMES_CORE_TOOLS
     assert "workdays" in toolsets.TOOLSETS and toolsets.TOOLSETS["workdays"]["tools"] == ["workdays"]
     assert any(e.name == "workdays" for e in registry._snapshot_entries())
+
+
+INSERT_MCP = ("INSERT INTO mcp_records (id, tool_name, tool_use_id, reference_key, timestamp, user_id, "
+              "duration_seconds, category, comment, raw_data) VALUES (?,?,?,?,?,?,?,?,?,?)")
+
+
+def _seed_mcp(db, rows):
+    conn = sqlite3.connect(str(db))
+    from tools.mcp_json_ingestor import init_mcp_tables
+    init_mcp_tables(conn)
+    conn.executemany(INSERT_MCP, rows)
+    conn.commit()
+    conn.close()
+
+
+class TestNewProfileKeys:
+    def test_profile_text_roundtrip_with_all_new_keys(self):
+        profile = {
+            "region": "DE-BY", "weekly_hours": 20.0, "days_per_week": 3,
+            "work_weekdays": ["mo", "tu", "we"], "employment_label": "teilzeit",
+            "half_days": ["12-24"], "worklog_source_tool": "mcp_TempoMCP_retrieveWorklogs",
+            "vacation_booking_patterns": "IAMDS-595, IAMDS-9%", "vacation_hour_factor": 8.0,
+        }
+        parsed = wt._parse_profile_text(wt._profile_text(profile))
+        assert parsed["work_weekdays"] == ["mo", "tu", "we"]
+        assert parsed["employment_label"] == "teilzeit"
+        assert parsed["worklog_source_tool"] == "mcp_TempoMCP_retrieveWorklogs"
+        assert parsed["vacation_booking_patterns"] == "IAMDS-595, IAMDS-9%"
+        assert parsed["vacation_hour_factor"] == 8.0
+
+    def test_configure_validates_the_new_keys(self, monkeypatch):
+        monkeypatch.setattr(wt, "_facade", lambda: SimpleNamespace(mode="none"))
+        out = _run(action="configure", region="DE-BY", work_weekdays=["mo", "di", "mi"], days_per_week=5)
+        assert out["success"] is False and "contradicts" in out["error"]
+        assert _run(action="configure", region="DE-BY", employment_label="fulltime")["success"] is False
+        assert _run(action="configure", region="DE-BY", vacation_hour_factor=-1)["success"] is False
+        ok = _run(action="configure", region="DE-BY", weekly_hours=20, work_weekdays=["mo", "di", "mi"],
+                  employment_label="teilzeit", worklog_source_tool="my_worklog_tool",
+                  vacation_booking_patterns="VAC-1", vacation_hour_factor=8)
+        assert ok["profile"]["days_per_week"] == 3 and ok["profile"]["work_weekdays"] == ["mo", "tu", "we"]
+
+    def test_target_hours_with_explicit_weekdays(self):
+        out = _run(action="target_hours", start="2026-04-01", end="2026-04-12", region="DE-BY",
+                   weekly_hours=20, work_weekdays=["mo", "di", "mi"])
+        assert out["assumptions"]["work_weekdays"] == ["Mo", "Tu", "We"]
+        assert out["assumptions"]["weekend"] == "Th+Fr+Sa+Su"
+        assert out["totals"]["target_hours"] == 20.0  # 3 working days x 6.6667 h
+
+
+class TestAbsences:
+    def test_add_range_expands_to_working_days_only(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: dict(BY, _source="memory (mcp)"))
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        db = tmp_path / "s.db"
+        out = json.loads(wt.execute_workdays(
+            {"action": "absences", "op": "add", "days": [{"from": "2026-08-03", "to": "2026-08-14"}]}, db_path=db))
+        assert out["upserted"] == 10  # two full Mo-Fr weeks, weekends skipped
+        again = json.loads(wt.execute_workdays(
+            {"action": "absences", "op": "add", "days": [{"from": "2026-08-03", "to": "2026-08-14"}]}, db_path=db))
+        assert again["summary"][0]["days"] == 10  # UPSERT, not duplicated
+
+    def test_import_from_bookings_converts_hours_to_day_portions(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: dict(
+            BY, vacation_booking_patterns="IAMDS-595", vacation_hour_factor=8.0, _source="memory (mcp)"))
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        db = tmp_path / "s.db"
+        _seed_mcp(db, [
+            ("v1", "t", "u", "IAMDS-595", "2026-08-03T08:00:00", "", 3600, "", "", "{}"),   # 1h x 8 / 8h = full day
+            ("v2", "t", "u", "IAMDS-595", "2026-08-04T08:00:00", "", 1800, "", "", "{}")])  # 0.5h -> half day
+        out = json.loads(wt.execute_workdays({"action": "absences", "op": "import_from_bookings"}, db_path=db))
+        assert out["upserted"] == 2 and out["vacation_hour_factor"] == 8.0
+        rows = dict(sqlite3.connect(str(db)).execute("SELECT day, portion FROM absences").fetchall())
+        assert rows["2026-08-03"] == 1.0 and rows["2026-08-04"] == 0.5
+
+    def test_import_without_patterns_asks_for_a_source(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: dict(BY, _source="memory (mcp)"))
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        out = json.loads(wt.execute_workdays(
+            {"action": "absences", "op": "import_from_bookings"}, db_path=tmp_path / "s.db"))
+        assert out["error"] == "no vacation_booking_patterns configured" and "vault" in out["ask"]
+
+    def test_remove_refuses_to_wipe_without_filter(self, tmp_path):
+        out = json.loads(wt.execute_workdays({"action": "absences", "op": "remove"}, db_path=tmp_path / "s.db"))
+        assert out["success"] is False
+
+
+class TestEstimateProfile:
+    def test_estimate_proposes_week_model_and_demands_confirmation(self, tmp_path):
+        from datetime import date as _date, timedelta as _td
+        base = _date.today() - _td(weeks=10)
+        base -= _td(days=base.weekday())  # a Monday, safely in the past
+        rows, i = [], 0
+        for week in range(8):
+            for offset in (0, 1, 2):  # Mon, Tue, Wed
+                d = base + _td(days=week * 7 + offset)
+                rows.append((f"r{i}", "mcp_MyTimeMCP_getWorklogs", "u", f"PROJ-{i}",
+                             f"{d.isoformat()}T08:00:00", "", int(6.67 * 3600), "", "", "{}"))
+                i += 1
+        db = tmp_path / "s.db"
+        _seed_mcp(db, rows)
+        out = json.loads(wt.execute_workdays({"action": "estimate_profile"}, db_path=db))
+        assert out["proposal"]["worklog_source_tool"] == "mcp_MyTimeMCP_getWorklogs"
+        assert out["proposal"]["work_weekdays"] == ["mo", "tu", "we"]
+        assert out["proposal"]["weekly_hours"] == 20.0
+        assert "region" in out["missing"] and "CONFIRM" in out["next"]
+
+    def test_estimate_with_empty_db_asks_directly(self, tmp_path):
+        out = json.loads(wt.execute_workdays({"action": "estimate_profile"}, db_path=tmp_path / "s.db"))
+        assert out["error"].startswith("no ingested worklog data")
+        assert "clarify_choices" in out
+
+
+class TestReport:
+    def _seed(self, db, monkeypatch, **extra):
+        profile = dict(BY, worklog_source_tool="mcp_MyTimeMCP_%", vacation_booking_patterns="VAC-1",
+                       vacation_hour_factor=8.0, _source="memory (mcp)")
+        profile.update(extra)
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: profile)
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        _seed_mcp(db, [
+            ("w1", "mcp_MyTimeMCP_getWorklogs", "u", "PROJ-1", "2026-01-05T08:00:00", "", 8 * 3600, "", "", "{}"),
+            ("w2", "mcp_MyTimeMCP_getWorklogs", "u", "PROJ-1", "2026-01-06T09:00:00", "", 4 * 3600, "", "", "{}"),
+            ("vc", "mcp_MyTimeMCP_getWorklogs", "u", "VAC-1", "2026-01-07T08:00:00", "", 3600, "", "", "{}"),
+        ])
+
+    def test_report_computes_target_actual_vacation_delta_in_sql(self, tmp_path, monkeypatch):
+        db = tmp_path / "s.db"
+        self._seed(db, monkeypatch)
+        json.loads(wt.execute_workdays({"action": "absences", "op": "import_from_bookings"}, db_path=db))
+        out = json.loads(wt.execute_workdays(
+            {"action": "report", "start": "2026-01-01", "end": "2026-01-31"}, db_path=db))
+        assert out["totals"] == {"target_gross": 160.0, "vacation_credit": 8.0, "target_net": 152.0,
+                                 "actual": 12.0, "delta": -140.0}
+        assert out["months"][0]["month"] == "2026-01"
+        assert out["coverage"]["worklog_sources"][0]["rows"] == 3
+        assert "clamped_to_today" not in out
+
+    def test_report_clamps_future_ranges_and_adds_full_target(self, tmp_path, monkeypatch):
+        from datetime import date as _date, timedelta as _td
+        db = tmp_path / "s.db"
+        self._seed(db, monkeypatch)
+        future = (_date.today() + _td(days=30)).isoformat()
+        out = json.loads(wt.execute_workdays({"action": "report", "start": "2026-01-01", "end": future}, db_path=db))
+        assert out["clamped_to_today"] is True and out["requested_range"]["end"] == future
+        assert out["range"]["end"] == _date.today().isoformat()
+        assert out["target_full_range"] >= out["totals"]["target_gross"]
+
+    def test_report_without_source_pattern_is_a_compact_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: dict(BY, _source="memory (mcp)"))
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        out = json.loads(wt.execute_workdays(
+            {"action": "report", "start": "2026-01-01", "end": "2026-01-31"}, db_path=tmp_path / "s.db"))
+        assert out["missing"] == ["worklog_source_tool"] and "estimate" in out
+
+    def test_report_with_no_matching_rows_names_the_pattern(self, tmp_path, monkeypatch):
+        db = tmp_path / "s.db"
+        self._seed(db, monkeypatch, worklog_source_tool="mcp_OtherTool_%")
+        out = json.loads(wt.execute_workdays(
+            {"action": "report", "start": "2026-01-01", "end": "2026-01-31"}, db_path=db))
+        assert out["totals"]["actual"] == 0.0
+        assert any("mcp_OtherTool_%" in h for h in out["hints"])
+        assert any("no absences" in h for h in out["hints"])

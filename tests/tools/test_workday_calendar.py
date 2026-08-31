@@ -159,3 +159,35 @@ class TestWorkingDaysAndTargetHours:
         with pytest.raises(ValueError):
             wc.parse_iso_date("31.12.2026")
         assert wc.parse_iso_date("2026-12-31T08:00:00") == date(2026, 12, 31)
+
+
+class TestExplicitWorkWeekdays:
+    def test_parse_work_weekdays_accepts_english_german_and_numbers(self):
+        assert wc.parse_work_weekdays(["mo", "di", "mi"]) == frozenset({1, 2, 3})
+        assert wc.parse_work_weekdays("Mo, We, fr") == frozenset({1, 3, 5})
+        assert wc.parse_work_weekdays(["monday", "dienstag", 7]) == frozenset({1, 2, 7})
+        assert wc.parse_work_weekdays(["mo", "montag", "1"]) == frozenset({1})  # dedupe
+        assert wc.parse_work_weekdays(None) is None and wc.parse_work_weekdays([]) is None
+        with pytest.raises(ValueError):
+            wc.parse_work_weekdays(["xx"])
+        with pytest.raises(ValueError):
+            wc.parse_work_weekdays([0])
+
+    def test_weekend_is_the_complement_of_work_weekdays(self):
+        assert wc.weekend_days(5, frozenset({1, 2, 3})) == frozenset({4, 5, 6, 7})
+        assert wc.weekend_days(5) == frozenset({6, 7})  # unchanged without the set
+
+    def test_mo_we_model_counts_only_its_own_days(self):
+        days = {d.day: d for d in wc.calendar_days(
+            date(2026, 4, 1), date(2026, 4, 12), "DE-BY", work_weekdays=["mo", "di", "mi"], half_days=None)}
+        assert days[date(2026, 4, 3)].reason == "weekend"  # Karfreitag on a non-working Friday: listed, not deducted
+        assert days[date(2026, 4, 6)].reason == "holiday"  # Ostermontag on a working Monday: deducted
+        assert sum(d.factor for d in days.values()) == 3.0  # Apr 1 (We), Apr 7 (Tu), Apr 8 (We)
+
+    def test_half_day_on_a_non_working_day_costs_nothing(self):
+        day = wc.calendar_days(date(2026, 12, 24), date(2026, 12, 24), "DE-BY", work_weekdays=["mo", "tu", "we"])[0]
+        assert day.reason == "weekend" and day.factor == 0.0  # 24.12.2026 is a Thursday
+
+    def test_hours_per_day_divides_by_the_explicit_day_count(self):
+        assert wc.hours_per_day(20, 5, work_weekdays=["mo", "di", "mi"]) == 6.6667
+        assert wc.hours_per_day(40, 5) == 8.0
