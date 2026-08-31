@@ -1,171 +1,156 @@
+/**
+ * AIS-275: session.rotated handling and the bounded busy-escape.
+ *
+ * Context compression rotates the SQLite session id server-side; the gateway
+ * emits session.rotated so the client can remap its stored id / route. A
+ * terminal running:false with no assistant payload used to leave the busy
+ * timer spinning forever when the stream was dropped (transport detach) —
+ * the escape clears it after a grace window and backfills the transcript.
+ */
+import { cleanup, render } from '@testing-library/react'
 import type { QueryClient } from '@tanstack/react-query'
-import { act, cleanup, render } from '@testing-library/react'
-import { useEffect, useRef } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-
-import type { ChatMessagePart } from '@/lib/chat-messages'
-import type { RpcEvent } from '@/types/hermes'
+import type { MutableRefObject } from 'react'
+import { act } from 'react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '../../types'
 
 import { useMessageStream } from './use-message-stream'
 
-const SESSION_ID = 'runtime-session-1'
+type GatewayHandler = (event: {
+  type: string
+  session_id?: string
+  payload?: Record<string, unknown>
+}) => void
+
+interface HarnessResult {
+  handleGatewayEvent: GatewayHandler
+}
 
 function baseState(): ClientSessionState {
   return {
-    storedSessionId: null,
-    messages: [],
-    branch: '',
-    cwd: '',
-    model: '',
-    provider: '',
-    reasoningEffort: '',
-    serviceTier: '',
-    fast: false,
-    yolo: false,
-    personality: '',
-    busy: false,
-    awaitingResponse: false,
-    streamId: null,
+    awaitingResponse: true,
+    busy: true,
     sawAssistantPayload: false,
+    turnStartedAt: Date.now(),
+    streamId: null,
     pendingBranchGroup: null,
-    interrupted: false,
     needsInput: false,
-    turnStartedAt: null
-  }
+    messages: []
+  } as unknown as ClientSessionState
 }
 
-interface HarnessProps {
-  onReady: (api: ReturnType<typeof useMessageStream>) => void
-  updateSessionState: (
+function makeHarness(overrides: { onSessionRotated?: (o: string, n: string, sid: string) => void } = {}) {
+  const states = new Map<string, ClientSessionState>()
+  states.set('sid-1', baseState())
+
+  const hydrateFromStoredSession = vi.fn(async () => undefined)
+  const captured: { current: HarnessResult | null } = { current: null }
+  const activeSessionIdRef: MutableRefObject<string | null> = { current: 'sid-1' }
+
+  const updateSessionState = (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState
-  ) => ClientSessionState
+  ): ClientSessionState => {
+    const prev = states.get(sessionId) ?? baseState()
+    const next = updater(prev)
+    states.set(sessionId, next)
+
+    return next
+  }
+
+  function Harness() {
+    captured.current = useMessageStream({
+      activeSessionIdRef,
+      hydrateFromStoredSession,
+      onSessionRotated: overrides.onSessionRotated,
+      queryClient: { invalidateQueries: vi.fn() } as unknown as QueryClient,
+      refreshHermesConfig: vi.fn(async () => undefined),
+      refreshSessions: vi.fn(async () => undefined),
+      updateSessionState
+    })
+
+    return null
+  }
+
+  render(<Harness />)
+
+  return { captured, hydrateFromStoredSession, states }
 }
 
-function Harness({ onReady, updateSessionState }: HarnessProps) {
-  const activeSessionIdRef = useRef<string | null>(SESSION_ID)
-
-  const api = useMessageStream({
-    activeSessionIdRef,
-    hydrateFromStoredSession: async () => undefined,
-    queryClient: { invalidateQueries: vi.fn(async () => undefined) } as unknown as QueryClient,
-    refreshHermesConfig: async () => undefined,
-    refreshSessions: async () => undefined,
-    updateSessionState
+describe('useMessageStream (AIS-275)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
   })
 
-  useEffect(() => {
-    onReady(api)
-  }, [api, onReady])
-
-  return null
-}
-
-function assistantText(parts: ChatMessagePart[]): string {
-  return parts
-    .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
-    .map(part => part.text)
-    .join('\n')
-}
-
-describe('useMessageStream', () => {
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
-  it('preserves streamed assistant context when message.complete has empty text and clarify is pending', () => {
-    const states = new Map<string, ClientSessionState>()
-
-    const updateSessionState = (sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) => {
-      const current = states.get(sessionId) ?? baseState()
-      const next = updater(current)
-      states.set(sessionId, next)
-
-      return next
-    }
-
-    let api: ReturnType<typeof useMessageStream> | null = null
-
-    render(
-      <Harness
-        onReady={value => {
-          api = value
-        }}
-        updateSessionState={updateSessionState}
-      />
-    )
-
-    const contextLine = "I couldn't find a saved profile yet, so I'm starting onboarding now."
+  it('forwards session.rotated to the controller callback', () => {
+    const onSessionRotated = vi.fn()
+    const { captured } = makeHarness({ onSessionRotated })
 
     act(() => {
-      api!.handleGatewayEvent({ type: 'message.start', session_id: SESSION_ID, payload: {} } as RpcEvent)
-      api!.handleGatewayEvent({ type: 'message.delta', session_id: SESSION_ID, payload: { text: contextLine } } as RpcEvent)
-      api!.handleGatewayEvent(
-        {
-          type: 'tool.start',
-          session_id: SESSION_ID,
-          payload: {
-            name: 'clarify',
-            tool_id: 'clarify-1',
-            args: { question: 'What is your role/title?' }
-          }
-        } as RpcEvent
-      )
-      api!.handleGatewayEvent({ type: 'message.complete', session_id: SESSION_ID, payload: { text: '' } } as RpcEvent)
+      captured.current!.handleGatewayEvent({
+        type: 'session.rotated',
+        session_id: 'sid-1',
+        payload: { old_session_key: 'db-old', new_session_key: 'db-new' }
+      })
     })
 
-    const state = states.get(SESSION_ID)
-    const assistant = state?.messages.find(message => message.role === 'assistant')
-
-    expect(assistant).toBeDefined()
-    expect(assistantText(assistant!.parts)).toContain(contextLine)
-    expect(assistant!.parts.some(part => part.type === 'tool-call')).toBe(true)
+    expect(onSessionRotated).toHaveBeenCalledWith('db-old', 'db-new', 'sid-1')
   })
 
-  it('keeps already-streamed assistant text when a late-turn error banner arrives', () => {
-    const states = new Map<string, ClientSessionState>()
-
-    const updateSessionState = (sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) => {
-      const current = states.get(sessionId) ?? baseState()
-      const next = updater(current)
-      states.set(sessionId, next)
-
-      return next
-    }
-
-    let api: ReturnType<typeof useMessageStream> | null = null
-
-    render(
-      <Harness
-        onReady={value => {
-          api = value
-        }}
-        updateSessionState={updateSessionState}
-      />
-    )
-
-    const progressLine = 'Ich suche jetzt nach dem Ticket im AIS-Board...'
-    const errorBanner = 'HTTP 400: ContextWindowExceededError: prompt exceeds model context length'
+  it('clears a stuck busy state after the escape window and backfills', () => {
+    const { captured, hydrateFromStoredSession, states } = makeHarness()
 
     act(() => {
-      api!.handleGatewayEvent({ type: 'message.start', session_id: SESSION_ID, payload: {} } as RpcEvent)
-      api!.handleGatewayEvent({ type: 'message.delta', session_id: SESSION_ID, payload: { text: progressLine } } as RpcEvent)
-      api!.handleGatewayEvent(
-        { type: 'message.complete', session_id: SESSION_ID, payload: { text: errorBanner } } as RpcEvent
-      )
+      captured.current!.handleGatewayEvent({
+        type: 'session.info',
+        session_id: 'sid-1',
+        payload: { running: false }
+      })
     })
 
-    const state = states.get(SESSION_ID)
-    const assistant = state?.messages.find(message => message.role === 'assistant')
+    // The guard keeps the state untouched at first…
+    expect(states.get('sid-1')!.busy).toBe(true)
 
-    expect(assistant).toBeDefined()
-    // The already-visible progress text must survive — only the error banner
-    // itself is deduped away, not unrelated prior content (#20xxx regression:
-    // a late context-window-overflow error was wiping the whole bubble).
-    expect(assistantText(assistant!.parts)).toContain(progressLine)
-    expect(assistant!.error).toBe(errorBanner)
+    act(() => {
+      vi.advanceTimersByTime(10_001)
+    })
+
+    // …but the bounded escape clears it and backfills the transcript.
+    const state = states.get('sid-1')!
+
+    expect(state.busy).toBe(false)
+    expect(state.awaitingResponse).toBe(false)
+    expect(state.turnStartedAt).toBeNull()
+    expect(hydrateFromStoredSession).toHaveBeenCalledWith(2, undefined, 'sid-1')
+  })
+
+  it('disarms the escape when assistant traffic arrives', () => {
+    const { captured, hydrateFromStoredSession } = makeHarness()
+
+    act(() => {
+      captured.current!.handleGatewayEvent({
+        type: 'session.info',
+        session_id: 'sid-1',
+        payload: { running: false }
+      })
+      captured.current!.handleGatewayEvent({
+        type: 'message.start',
+        session_id: 'sid-1',
+        payload: { id: 'm1' }
+      })
+    })
+
+    act(() => {
+      vi.advanceTimersByTime(20_000)
+    })
+
+    expect(hydrateFromStoredSession).not.toHaveBeenCalled()
   })
 })

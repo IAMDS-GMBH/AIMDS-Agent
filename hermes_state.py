@@ -1041,6 +1041,19 @@ class SessionDB:
         except sqlite3.OperationalError as exc:
             logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
 
+        # ── Expired compression-lock sweep ─────────────────────────────
+        # try_acquire_compression_lock only reclaims the lock of the SAME
+        # session; a lock whose session never compresses again lived forever
+        # (a July leftover was found in production — AIS-275). Cheap global
+        # sweep at init.
+        try:
+            cursor.execute(
+                "DELETE FROM compression_locks WHERE expires_at < ?",
+                (time.time(),),
+            )
+        except sqlite3.OperationalError as exc:
+            logger.debug("compression_locks sweep skipped: %s", exc)
+
         # ── Migrate legacy cwd paths in sessions table ──────────────────
         # Canonical target is ~/Documents/AIMDS-Suite-Vault. Handles:
         #   - old pre-rename dirs (HermesWorkingDirectory, AIMDS-Workspace)
@@ -2581,7 +2594,8 @@ class SessionDB:
         self._execute_write(_do)
 
     def get_messages(
-        self, session_id: str, include_inactive: bool = False
+        self, session_id: str, include_inactive: bool = False,
+        include_ancestors: bool = False,
     ) -> List[Dict[str, Any]]:
         """Load messages for a session in insertion order.
 
@@ -2590,15 +2604,23 @@ class SessionDB:
         audit / debug views of rewound history). See
         :meth:`rewind_to_message` for the soft-delete mechanic.
 
+        Pass ``include_ancestors=True`` to prepend the messages of the
+        compression-continuation lineage (root → tip), so a transcript view
+        of a continuation shows the full visible history.
+
         Ordered by AUTOINCREMENT id (true insertion order) rather than
         timestamp — see c03acca50 for the WSL2 clock-regression rationale.
         """
+        session_ids = [session_id]
+        if include_ancestors:
+            session_ids = self._session_lineage_root_to_tip(session_id)
         active_clause = "" if include_inactive else " AND active = 1"
         with self._lock:
+            placeholders = ",".join("?" for _ in session_ids)
             cursor = self._conn.execute(
-                "SELECT * FROM messages WHERE session_id = ?"
+                f"SELECT * FROM messages WHERE session_id IN ({placeholders})"
                 f"{active_clause} ORDER BY id",
-                (session_id,),
+                tuple(session_ids),
             )
             rows = cursor.fetchall()
         result = []

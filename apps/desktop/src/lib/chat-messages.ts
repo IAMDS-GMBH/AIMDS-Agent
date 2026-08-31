@@ -64,6 +64,10 @@ export type GatewayEventPayload = {
   // terminal.read.request (GUI agent reading the in-app terminal pane)
   start?: number
   count?: number
+  // session.rotated (context compression rotated the SQLite session id)
+  old_session_key?: string
+  new_session_key?: string
+  session_key?: string
 }
 
 export function textPart(text: string): ChatMessagePart {

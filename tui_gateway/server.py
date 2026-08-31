@@ -2310,6 +2310,14 @@ def _sync_session_key_after_compress(
     if not new_session_id or new_session_id == old_key:
         return
 
+    # Remember every rotated-away key: session.resume after a compression
+    # arrives with the OLD DB id (the client's route/store still carries it),
+    # and _find_live_session_by_key must keep matching this live session so
+    # the reconnect re-binds the transport instead of building a second agent
+    # on the ended parent (AIS-275).
+    if old_key:
+        session.setdefault("session_key_aliases", set()).add(old_key)
+
     try:
         from tools.approval import (
             disable_session_yolo,
@@ -2355,6 +2363,18 @@ def _sync_session_key_after_compress(
         except Exception:
             pass
 
+    # Tell the client the DB session id rotated so it can remap its stored
+    # id / route; without this the desktop keeps routing (and later resuming)
+    # by the ended parent id (AIS-275). All three sync call sites (manual
+    # /compress RPC, post-turn auto-compress, live slash) funnel through here.
+    try:
+        _emit("session.rotated", sid, {
+            "old_session_key": old_key,
+            "new_session_key": new_session_id,
+        })
+    except Exception:
+        pass
+
 
 def _get_usage(agent) -> dict:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
@@ -2373,6 +2393,12 @@ def _get_usage(agent) -> dict:
     comp = getattr(agent, "context_compressor", None)
     if comp:
         ctx_used = getattr(comp, "last_prompt_tokens", 0) or usage["total"] or 0
+        # last_prompt_tokens is parked at the -1 sentinel right after a
+        # compression (awaiting the first real usage report); -1 is truthy,
+        # so the `or` chain above lets it through and the desktop gauge
+        # rendered "0/200.0k 0%". Clamp like cli.py's status bar does.
+        if ctx_used < 0:
+            ctx_used = usage["total"] or 0
         ctx_max = getattr(comp, "context_length", 0) or 0
         if ctx_max:
             usage["context_used"] = ctx_used
@@ -2512,6 +2538,10 @@ def _session_info(agent, session: dict | None = None) -> dict:
     info: dict = {
         "model": model,
         "provider": getattr(agent, "provider", ""),
+        # The current SQLite session id; rotates on context compression (the
+        # session.rotated event announces the change, this field lets late
+        # joiners converge).
+        "session_key": str((session or {}).get("session_key") or ""),
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
@@ -2938,7 +2968,19 @@ def _agent_cbs(sid: str) -> dict:
             question,
             len(c or []),
         )
-        return _block("clarify.request", sid, {"question": q, "choices": c})
+        # clarify.timeout is the single source of truth (the CLI honours the
+        # same key); _block's own 300s default stays for approval/sudo/secret
+        # prompts only (AIS-275 — the two paths used to disagree 120s vs 300s).
+        try:
+            clarify_timeout = float(
+                ((_load_cfg().get("clarify") or {}).get("timeout")) or 120
+            )
+        except Exception:
+            clarify_timeout = 120.0
+        return _block(
+            "clarify.request", sid, {"question": q, "choices": c},
+            timeout=clarify_timeout,
+        )
 
     return {
         "tool_start_callback": lambda tc_id, name, args: _on_tool_start(
@@ -4113,9 +4155,25 @@ def _(rid, params: dict) -> dict:
             target = found["id"]
         else:
             return _err(rid, 4007, "session not found")
+    # A compression parent must never be resumed directly: reopen_session()
+    # would NULL its end_reason='compression', which breaks the chain walk in
+    # get_compression_tip for every later lookup. Resolve to the chain tip and
+    # resume that instead (AIS-275).
+    requested_id = target
+    try:
+        tip = db.get_compression_tip(target)
+        if tip and tip != target:
+            target = tip
+            tip_row = db.get_session(tip)
+            if tip_row:
+                found = tip_row
+    except Exception:
+        pass
     # Fast path: if the session is already live, reuse it under the lock.
     with _session_resume_lock:
         live = _find_live_session_by_key(target)
+        if live is None and requested_id != target:
+            live = _find_live_session_by_key(requested_id)
         if live is not None:
             sid, session = live
             payload = _live_session_payload(
@@ -4126,6 +4184,8 @@ def _(rid, params: dict) -> dict:
                 transport=current_transport() or _stdio_transport,
             )
             payload["resumed"] = target
+            if requested_id != target:
+                payload["redirected_from"] = requested_id
             return _ok(rid, payload)
 
     # Build the agent OUTSIDE the lock — _make_agent can block for seconds
@@ -4234,21 +4294,21 @@ def _(rid, params: dict) -> dict:
                 lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
         session = _sessions.get(sid) or {}
-    return _ok(
-        rid,
-        {
-            "session_id": sid,
-            "resumed": target,
-            "message_count": len(messages),
-            "messages": messages,
-            "info": _session_info(agent, session),
-            "inflight": None,
-            "running": False,
-            "session_key": target,
-            "started_at": float(session.get("created_at") or time.time()),
-            "status": "idle",
-        },
-    )
+    payload = {
+        "session_id": sid,
+        "resumed": target,
+        "message_count": len(messages),
+        "messages": messages,
+        "info": _session_info(agent, session),
+        "inflight": None,
+        "running": False,
+        "session_key": target,
+        "started_at": float(session.get("created_at") or time.time()),
+        "status": "idle",
+    }
+    if requested_id != target:
+        payload["redirected_from"] = requested_id
+    return _ok(rid, payload)
 
 
 @method("session.cwd.set")
@@ -4344,6 +4404,10 @@ def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
         if session.get("_finalized"):
             continue
         if str(session.get("session_key") or "") == session_key:
+            return sid, session
+        # Compression rotated this live session away from session_key; a
+        # resume by any lineage id must still hit it (AIS-275).
+        if session_key in (session.get("session_key_aliases") or ()):
             return sid, session
     return None
 

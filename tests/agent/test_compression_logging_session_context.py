@@ -78,3 +78,25 @@ def test_logging_session_context_follows_compression_rotation(tmp_path: Path) ->
         )
     finally:
         hermes_logging.clear_session_context()
+
+
+def test_continuation_session_inherits_parent_cwd(tmp_path: Path) -> None:
+    """The compression continuation row must carry the parent's cwd — session
+    20260831_132014_018da0 was created with an empty cwd (AIS-275)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "PARENT_CWD_SESSION"
+    db.create_session(parent_sid, source="tui", cwd="/home/someone/project")
+
+    agent = _build_agent_with_db(db, parent_sid)
+    hermes_logging.set_session_context(parent_sid)
+    try:
+        messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+        agent._compress_context(messages, "sys", approx_tokens=120_000)
+        assert agent.session_id != parent_sid
+
+        child = db.get_session(agent.session_id)
+        assert child is not None
+        assert child.get("cwd") == "/home/someone/project"
+        assert child.get("parent_session_id") == parent_sid
+    finally:
+        hermes_logging.clear_session_context()

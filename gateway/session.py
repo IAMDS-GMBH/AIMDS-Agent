@@ -1261,7 +1261,11 @@ class SessionStore:
 
         if self._db:
             try:
-                self._db.reopen_session(target_session_id)
+                # Never reopen a compression parent — that would NULL its
+                # end_reason='compression' and break the chain walk in
+                # get_compression_tip (AIS-275). Reopen the chain tip instead.
+                reopen_id = self._db.get_compression_tip(target_session_id) or target_session_id
+                self._db.reopen_session(reopen_id)
             except Exception as e:
                 logger.debug("Session DB reopen_session failed: %s", e)
 

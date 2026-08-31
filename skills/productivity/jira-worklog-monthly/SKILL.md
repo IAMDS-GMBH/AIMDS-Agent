@@ -36,6 +36,8 @@ When retrieving worklogs for a heavy issue:
 ### 2. SQLite Ingestion & SQL Querying
 Instead of writing in-prompt Python string-parsing or array-filtering loops, always ingest the retrieved worklog dataset into local SQLite (`~/.hermes/state.db` table `mcp_records` or `external_worklogs`) as described in the `sql-tabular-processor` skill.
 
+Freshness: `mcp_records` mirrors past fetches — a fetch replaces only its requested date window. When the user reports changed bookings, re-fetch the affected range (include those dates in `startDate`/`endDate`) before recomputing; for sums always filter `duration_seconds > 0` (container rows carry 0 duration). Stale-range repair: `DELETE FROM mcp_records WHERE tool_name='...' AND substr(timestamp,1,10) BETWEEN '...' AND '...'`, then re-fetch.
+
 Perform calculations (monthly totals, leave balance deductions, daily timelines) using standard SQL queries:
 ```sql
 SELECT 

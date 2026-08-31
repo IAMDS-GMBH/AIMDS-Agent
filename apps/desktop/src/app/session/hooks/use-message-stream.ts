@@ -49,6 +49,7 @@ interface MessageStreamOptions {
     storedSessionId?: string | null,
     runtimeSessionId?: string | null
   ) => Promise<void>
+  onSessionRotated?: (oldKey: string, newKey: string, runtimeSid: string) => void
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
   refreshSessions: () => Promise<void>
@@ -58,6 +59,12 @@ interface MessageStreamOptions {
     storedSessionId?: string | null
   ) => ClientSessionState
 }
+
+// Grace window before a terminal running:false with no assistant payload is
+// treated as a dropped stream (transport detach / session rotation) and the
+// busy state is force-cleared + the transcript backfilled (AIS-275). Real
+// deltas arriving inside the window make the escape a no-op.
+const BUSY_ESCAPE_MS = 10_000
 
 interface QueuedStreamDeltas {
   assistant: string
@@ -250,11 +257,23 @@ function delegateTaskPayloads(
 export function useMessageStream({
   activeSessionIdRef,
   hydrateFromStoredSession,
+  onSessionRotated,
   queryClient,
   refreshHermesConfig,
   refreshSessions,
   updateSessionState
 }: MessageStreamOptions) {
+  const busyEscapeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const clearBusyEscape = useCallback(() => {
+    if (busyEscapeTimerRef.current) {
+      clearTimeout(busyEscapeTimerRef.current)
+      busyEscapeTimerRef.current = null
+    }
+  }, [])
+
+  useEffect(() => clearBusyEscape, [clearBusyEscape])
+
   // Patch the in-flight assistant message (or seed it). Centralises the
   // streamId/groupId bookkeeping every event callback would otherwise repeat.
   const mutateStream = useCallback(
@@ -708,7 +727,28 @@ export function useMessageStream({
       const sessionId = explicitSid || activeSessionIdRef.current
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
+      // Any real assistant traffic disarms the pending busy-escape (AIS-275).
+      if (
+        event.type === 'message.start' ||
+        event.type === 'message.delta' ||
+        event.type === 'message.complete'
+      ) {
+        clearBusyEscape()
+      }
+
       if (event.type === 'gateway.ready') {
+        return
+      } else if (event.type === 'session.rotated') {
+        // Context compression rotated the SQLite session id; the runtime sid
+        // (event.session_id) is unchanged. Let the controller remap stored
+        // ids / route (AIS-275).
+        const oldKey = typeof payload?.old_session_key === 'string' ? payload.old_session_key : ''
+        const newKey = typeof payload?.new_session_key === 'string' ? payload.new_session_key : ''
+
+        if (newKey) {
+          onSessionRotated?.(oldKey, newKey, explicitSid)
+        }
+
         return
       } else if (event.type === 'session.info') {
         // Apply session-scoped fields when the event targets the active
@@ -769,7 +809,7 @@ export function useMessageStream({
 
         if (apply) {
           if (runningChanged && sessionId) {
-            updateSessionState(sessionId, state => {
+            const afterRunning = updateSessionState(sessionId, state => {
               const busy = Boolean(payload!.running)
 
               if (state.busy === busy && (busy || !state.awaitingResponse)) {
@@ -797,6 +837,48 @@ export function useMessageStream({
                 turnStartedAt: null
               }
             })
+
+            if (payload!.running) {
+              clearBusyEscape()
+            } else if (
+              afterRunning.busy &&
+              afterRunning.awaitingResponse &&
+              !afterRunning.sawAssistantPayload &&
+              !busyEscapeTimerRef.current
+            ) {
+              // Terminal running:false while still awaiting the first
+              // assistant payload — the stream may have been dropped
+              // (transport detach / session rotation). Bounded escape: if
+              // nothing arrives within the grace window, clear the stuck
+              // busy state and backfill from the store (AIS-275). The old
+              // guard kept the timer spinning forever.
+              const escapeSessionId = sessionId
+              busyEscapeTimerRef.current = setTimeout(() => {
+                busyEscapeTimerRef.current = null
+                let cleared = false
+                updateSessionState(escapeSessionId, state => {
+                  if (!state.awaitingResponse || state.sawAssistantPayload || !state.busy) {
+                    return state
+                  }
+
+                  cleared = true
+
+                  return {
+                    ...state,
+                    awaitingResponse: false,
+                    busy: false,
+                    needsInput: false,
+                    pendingBranchGroup: null,
+                    streamId: null,
+                    turnStartedAt: null
+                  }
+                })
+
+                if (cleared) {
+                  void hydrateFromStoredSession(2, undefined, escapeSessionId)
+                }
+              }, BUSY_ESCAPE_MS)
+            }
           }
         }
 
@@ -1050,9 +1132,12 @@ export function useMessageStream({
       appendAssistantDelta,
       appendReasoningDelta,
       activeSessionIdRef,
+      clearBusyEscape,
       completeAssistantMessage,
       failAssistantMessage,
       flushQueuedDeltas,
+      hydrateFromStoredSession,
+      onSessionRotated,
       queryClient,
       refreshHermesConfig,
       updateSessionState,

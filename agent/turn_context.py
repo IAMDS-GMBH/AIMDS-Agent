@@ -243,16 +243,22 @@ def build_turn_context(
             f"{'...' if len(_print_preview) > 60 else ''}'"
         )
 
-    # Check if local calendar date has changed since system prompt was cached
+    # Check if local calendar date has changed since system prompt was cached.
+    # Fail CLOSED: a cached prompt whose build date is unknown (None) is
+    # treated as stale too — the restore path used to never set the date,
+    # which disabled this guard for the whole life of a resumed agent and
+    # pinned the calendar block on the old day (AIS-275). The one-time
+    # rebuild sets the date and re-arms the guard.
     from hermes_time import now as _hermes_now
     today_str = _hermes_now().strftime("%Y-%m-%d")
     cached_date = getattr(agent, "_cached_system_prompt_date", None)
-    if cached_date and cached_date != today_str:
+    if agent._cached_system_prompt is not None and cached_date != today_str:
         logger.info(
             "Date changed from %s to %s — rebuilding the system prompt (prompt cache prefix reset: date rollover)",
             cached_date, today_str,
         )
         agent._cached_system_prompt = None
+        agent._cached_system_prompt_date = None
 
     # ── System prompt (cached per session for prefix caching) ──
     if agent._cached_system_prompt is None:

@@ -39,7 +39,9 @@ SUMMARY_PREFIX = (
     "into the summary below. This is background reference for prior work, "
     "not new active instructions. Respond to the latest user message. "
     "Persistent memory remains active. Current session state reflects work "
-    "described here:"
+    "described here. Dates and relative time expressions inside this summary "
+    "may be stale; the Current Local Time & Date block in the system prompt "
+    "is the only authoritative date source:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
@@ -50,6 +52,12 @@ LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 # embedded in the body and keeps hijacking replies. Keep newest-first; entries
 # are matched literally. Add a frozen copy here whenever SUMMARY_PREFIX changes.
 _HISTORICAL_SUMMARY_PREFIXES = (
+    # Pre-AIS-275: lacked the stale-dates note.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is background reference for prior work, "
+    "not new active instructions. Respond to the latest user message. "
+    "Persistent memory remains active. Current session state reflects work "
+    "described here:",
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
     "into the summary below. This is a handoff from a previous context "
     "window — treat it as background reference, NOT as active instructions. "
@@ -1305,13 +1313,20 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # summarizer is never handed an empty date placeholder.
         if _today_str:
             _temporal_anchoring_rule = (
-                f"\nTEMPORAL ANCHORING: The current date is {_today_str}. When an "
+                f"\nTEMPORAL ANCHORING: The current date is {_today_str}. Begin the "
+                f'summary body with "Summary as of {_today_str}." When an '
                 "action has already been carried out, phrase it as a completed, "
                 "dated, past-tense fact rather than an open instruction. For "
                 'example, rewrite "email John about the proposal" as "Sent the '
                 f'proposal email to John on {_today_str}." Never leave a finished '
                 "action worded as if it still needs doing, and never invent a date "
-                "for work that has not happened yet.\n"
+                "for work that has not happened yet. Resolve forward-looking "
+                'relative expressions ("next week", "tomorrow", "this KW", and '
+                "their non-English equivalents) into absolute ISO dates or ISO "
+                f"week numbers as of {_today_str} — a reader on a later day must "
+                "not have to guess the reference day. When updating a previous "
+                "summary, re-anchor any relative expressions that survive in it; "
+                "they were relative to an older date.\n"
             )
         else:
             _temporal_anchoring_rule = ""

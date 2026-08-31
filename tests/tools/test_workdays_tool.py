@@ -351,3 +351,64 @@ class TestReport:
         assert out["totals"]["actual"] == 0.0
         assert any("mcp_OtherTool_%" in h for h in out["hints"])
         assert any("no absences" in h for h in out["hints"])
+
+
+class TestAbsencesRefresh:
+    def test_reimport_drops_cancelled_booking_rows_in_window(self, tmp_path, monkeypatch):
+        """A cancelled/moved booking must disappear from absences on re-import
+        (AIS-275): derived 'bookings:%' rows in the window are replaced."""
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: dict(
+            BY, vacation_booking_patterns="IAMDS-595", vacation_hour_factor=8.0, _source="memory (mcp)"))
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        db = tmp_path / "s.db"
+        _seed_mcp(db, [
+            ("v1", "t", "u", "IAMDS-595", "2026-09-07T08:00:00", "", 3600, "", "", "{}"),
+            ("v2", "t", "u", "IAMDS-595", "2026-09-08T08:00:00", "", 3600, "", "", "{}"),
+        ])
+        out = json.loads(wt.execute_workdays(
+            {"action": "absences", "op": "import_from_bookings", "start": "2026-09-01", "end": "2026-09-30"},
+            db_path=db))
+        assert out["upserted"] == 2
+
+        # Upstream: the vacation moved — v1/v2 deleted, new booking v3.
+        conn = sqlite3.connect(str(db))
+        conn.execute("DELETE FROM mcp_records WHERE id IN ('v1', 'v2')")
+        conn.execute(INSERT_MCP, ("v3", "t", "u", "IAMDS-595", "2026-09-14T08:00:00", "", 3600, "", "", "{}"))
+        conn.commit(); conn.close()
+
+        out = json.loads(wt.execute_workdays(
+            {"action": "absences", "op": "import_from_bookings", "start": "2026-09-01", "end": "2026-09-30"},
+            db_path=db))
+        assert out["deleted"] == 2 and out["upserted"] == 1
+        days = sorted(r[0] for r in sqlite3.connect(str(db)).execute(
+            "SELECT day FROM absences WHERE kind = 'vacation'").fetchall())
+        assert days == ["2026-09-14"]
+
+    def test_reimport_keeps_user_added_days(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: dict(
+            BY, vacation_booking_patterns="IAMDS-595", vacation_hour_factor=8.0, _source="memory (mcp)"))
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        db = tmp_path / "s.db"
+        json.loads(wt.execute_workdays(
+            {"action": "absences", "op": "add", "days": ["2026-09-21"], "source": "user"}, db_path=db))
+        out = json.loads(wt.execute_workdays(
+            {"action": "absences", "op": "import_from_bookings", "start": "2026-09-01", "end": "2026-09-30"},
+            db_path=db))
+        assert out["deleted"] == 0  # only bookings:% rows are replaced
+        days = [r[0] for r in sqlite3.connect(str(db)).execute("SELECT day FROM absences").fetchall()]
+        assert days == ["2026-09-21"]
+
+
+class TestReportDataAge:
+    def test_report_coverage_carries_fetch_age(self, tmp_path, monkeypatch):
+        profile = dict(BY, worklog_source_tool="mcp_MyTimeMCP_%", _source="memory (mcp)")
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: profile)
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        db = tmp_path / "s.db"
+        _seed_mcp(db, [
+            ("w1", "mcp_MyTimeMCP_getWorklogs", "u", "PROJ-1", "2026-01-05T08:00:00", "", 8 * 3600, "", "", "{}"),
+        ])
+        out = json.loads(wt.execute_workdays(
+            {"action": "report", "start": "2026-01-01", "end": "2026-01-31"}, db_path=db))
+        src = out["coverage"]["worklog_sources"][0]
+        assert src["last_fetched_at"]  # created_at of the mirror row (UTC)

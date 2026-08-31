@@ -1587,7 +1587,7 @@ DEFAULT_CONFIG = {
 
     "compression": {
         "enabled": True,
-        "threshold": 0.50,            # compress when context usage exceeds this ratio
+        "threshold": 0.75,            # compress when context usage exceeds this ratio (raised from 0.50 — AIS-272 slashed the fixed per-turn cost, 0.50 caused compression thrash and 5-deep session chains, AIS-275)
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
@@ -1618,6 +1618,16 @@ DEFAULT_CONFIG = {
                                       # exact route is affected — gpt-5.5 on OpenAI's
                                       # direct API, OpenRouter, and Copilot keep the
                                       # global threshold regardless.
+    },
+
+    # mcp_records capacity policy (AIS-275): TTL plus per-tool and global row
+    # caps for the auto-ingest mirror in state.db; cap evictions are logged
+    # and surfaced in the ingest hint because they silently remove rows that
+    # were not re-fetched.
+    "ingest": {
+        "mcp_records_ttl_days": 14,
+        "mcp_records_max_rows": 20000,
+        "mcp_records_per_tool_max_rows": 6000,
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
@@ -7277,7 +7287,7 @@ def show_config():
     enabled = compression.get('enabled', True)
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if enabled:
-        print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
+        print(f"  Threshold:    {compression.get('threshold', 0.75) * 100:.0f}%")
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
         print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
         print(f"  Protect first: {compression.get('protect_first_n', 3)} non-system head messages")

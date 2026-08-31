@@ -52,6 +52,11 @@ class _FakeAgent:
             protect_first_n=2, protect_last_n=2
         )
         self._cached_system_prompt = "SYSTEM"
+        # Arm the date-rollover guard (fails closed since AIS-275: an unknown
+        # build date would trigger a rebuild).
+        from hermes_time import now as _hermes_now
+
+        self._cached_system_prompt_date = _hermes_now().strftime("%Y-%m-%d")
         self._memory_store = None
         self._memory_manager = None
         self._memory_nudge_interval = 0

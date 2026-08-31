@@ -124,3 +124,113 @@ def test_per_issue_tools_take_the_issue_key_from_the_request(tmp_path: Path):
                          tool_args={"issue_key": "IAMDS-595"})
     row = sqlite3.connect(str(db_file)).execute("SELECT reference_key, duration_seconds FROM mcp_records").fetchone()
     assert row == ("IAMDS-595", 5400)
+
+
+# ---------------------------------------------------------------------------
+# Window-authoritative ingest + capacity policy (AIS-275)
+# ---------------------------------------------------------------------------
+
+def _worklog(id_, day, seconds=3600, key="PROJ-1"):
+    return {"id": id_, "key": key, "started": f"{day}T08:00:00Z", "timeSpentSeconds": seconds}
+
+
+def _ingest(db_file, items, tool_args=None, tool_name="mcp_MyTimeMCP_getWorklogs", tool_use_id="c1"):
+    return try_auto_ingest_json(
+        json.dumps(items), tool_name=tool_name, tool_use_id=tool_use_id,
+        db_path=db_file, tool_args=tool_args,
+    )
+
+
+def test_date_window_extraction_variants():
+    from tools.mcp_json_ingestor import _date_window_from_args
+
+    assert _date_window_from_args({"startDate": "2026-01-01", "endDate": "2026-01-31"}) == ("2026-01-01", "2026-01-31")
+    assert _date_window_from_args({"date_from": "2026-01-01T00:00:00Z", "dateTo": "2026-02-01"}) == ("2026-01-01", "2026-02-01")
+    assert _date_window_from_args({"from": "2026-01-01", "to": "2026-01-02"}) == ("2026-01-01", "2026-01-02")
+    # missing one end, malformed, inverted, non-dict → None
+    assert _date_window_from_args({"startDate": "2026-01-01"}) is None
+    assert _date_window_from_args({"startDate": "gestern", "endDate": "2026-01-31"}) is None
+    assert _date_window_from_args({"startDate": "2026-02-01", "endDate": "2026-01-01"}) is None
+    assert _date_window_from_args(None) is None
+
+
+def test_window_refetch_replaces_stale_rows_in_window_only(tmp_path: Path):
+    db_file = tmp_path / "s.db"
+    # First fetch: whole year, includes a vacation week in September.
+    first = [_worklog("w1", "2026-01-05"), _worklog("v1", "2026-09-07", key="VAC-1"), _worklog("v2", "2026-09-08", key="VAC-1")]
+    res = _ingest(db_file, first, tool_args={"startDate": "2026-01-01", "endDate": "2026-12-31"})
+    assert res == 3 and res.replaced == 0 and res.window == ("2026-01-01", "2026-12-31")
+
+    # The vacation moved upstream (delete + new ids). Re-fetch September only.
+    second = [_worklog("v3", "2026-09-14", key="VAC-1")]
+    res = _ingest(db_file, second, tool_args={"startDate": "2026-09-01", "endDate": "2026-09-30"}, tool_use_id="c2")
+    assert res == 1 and res.replaced == 2  # v1+v2 dropped, September is authoritative
+
+    conn = sqlite3.connect(str(db_file))
+    days = sorted(r[0] for r in conn.execute("SELECT substr(timestamp,1,10) FROM mcp_records").fetchall())
+    assert days == ["2026-01-05", "2026-09-14"]  # January survived, old September rows gone
+
+
+def test_window_delete_scoped_to_same_tool(tmp_path: Path):
+    db_file = tmp_path / "s.db"
+    _ingest(db_file, [_worklog("a1", "2026-03-03")], tool_name="mcp_OtherMCP_getWorklogs",
+            tool_args={"startDate": "2026-03-01", "endDate": "2026-03-31"})
+    res = _ingest(db_file, [_worklog("b1", "2026-03-10")],
+                  tool_args={"startDate": "2026-03-01", "endDate": "2026-03-31"})
+    assert res == 1 and res.replaced == 0  # other tool's rows untouched
+    conn = sqlite3.connect(str(db_file))
+    assert conn.execute("SELECT COUNT(*) FROM mcp_records").fetchone()[0] == 2
+
+
+def test_empty_or_error_result_never_wipes_the_window(tmp_path: Path):
+    db_file = tmp_path / "s.db"
+    _ingest(db_file, [_worklog("w1", "2026-05-05")],
+            tool_args={"startDate": "2026-05-01", "endDate": "2026-05-31"})
+    # Empty list: parsed fine, 0 items — deliberately does NOT delete.
+    res = _ingest(db_file, [], tool_args={"startDate": "2026-05-01", "endDate": "2026-05-31"}, tool_use_id="c2")
+    assert res == 0
+    # Error payload: same.
+    err = try_auto_ingest_json(
+        json.dumps({"error": "boom"}), tool_name="mcp_MyTimeMCP_getWorklogs",
+        tool_use_id="c3", db_path=db_file,
+        tool_args={"startDate": "2026-05-01", "endDate": "2026-05-31"},
+    )
+    assert err == 0
+    conn = sqlite3.connect(str(db_file))
+    assert conn.execute("SELECT COUNT(*) FROM mcp_records").fetchone()[0] == 1
+
+
+def test_prune_enforces_per_tool_and_global_caps(tmp_path: Path):
+    from tools.mcp_json_ingestor import init_mcp_tables, prune_mcp_records
+
+    db_file = tmp_path / "s.db"
+    conn = sqlite3.connect(str(db_file))
+    init_mcp_tables(conn)
+    rows = []
+    for tool, n in (("tool_a", 8), ("tool_b", 3)):
+        for i in range(n):
+            rows.append((f"{tool}-{i}", tool, "u", "K", f"2026-01-{i+1:02d}T08:00:00", "", 60, "", "", "{}",
+                         f"2026-08-01 00:00:{i:02d}"))
+    conn.executemany(
+        "INSERT INTO mcp_records (id, tool_name, tool_use_id, reference_key, timestamp, user_id, "
+        "duration_seconds, category, comment, raw_data, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+    result = prune_mcp_records(conn, older_than_days=365, max_records=9, per_tool_max_records=5)
+    # tool_a trimmed 8→5 (3 evicted); then global 8→... already ≤9 → nothing more
+    assert result.cap_evicted == 3
+    counts = dict(conn.execute("SELECT tool_name, COUNT(*) FROM mcp_records GROUP BY tool_name").fetchall())
+    assert counts == {"tool_a": 5, "tool_b": 3}
+
+
+def test_ingest_hint_reports_window_and_eviction():
+    from tools.mcp_json_ingestor import IngestResult
+    from tools.tool_result_storage import _build_ingest_hint
+
+    res = IngestResult(10, replaced=4, evicted=7, window=("2026-01-01", "2026-01-31"))
+    hint = _build_ingest_hint("mcp_MyTimeMCP_getWorklogs", res)
+    assert "Auto-ingested 10 records" in hint
+    assert "authoritative for 2026-01-01..2026-01-31" in hint
+    assert "4 previously ingested rows" in hint
+    assert "7 old rows" in hint and "may be incomplete" in hint

@@ -7330,8 +7330,15 @@ async def get_session_messages(session_id: str, profile: Optional[str] = None):
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
+        # Follow the compression chain to the tip BEFORE the resume resolver:
+        # resolve_resume_session_id returns early when the requested session
+        # already has messages, and a compression parent always does — the
+        # desktop's transcript fallback then silently showed the
+        # pre-compression state (AIS-275). Ancestors are included so the
+        # continuation view carries the full visible history.
+        sid = db.get_compression_tip(sid) or sid
         sid = db.resolve_resume_session_id(sid)
-        messages = db.get_messages(sid)
+        messages = db.get_messages(sid, include_ancestors=True)
         return {"session_id": sid, "messages": messages}
     finally:
         db.close()

@@ -66,6 +66,20 @@ def _default_db_path() -> Path:
     return get_hermes_home() / "state.db"
 
 
+def _today() -> date:
+    """Today in the configured HERMES_TIMEZONE, not server-local time.
+
+    The prompt's calendar block uses hermes_time.now(); date.today() here
+    could disagree with it around midnight in a non-local timezone (AIS-275).
+    """
+    try:
+        from hermes_time import now as _hermes_now
+
+        return _hermes_now().date()
+    except Exception:
+        return date.today()
+
+
 def _facade():
     from agent.memory_facade import MemoryFacade
 
@@ -262,7 +276,7 @@ def _range(args: Dict[str, Any]) -> tuple:
     if args.get("start"):
         start = wc.parse_iso_date(args["start"], "start")
         return start, date(start.year, 12, 31)
-    today = date.today()
+    today = _today()
     return date(today.year, 1, 1), date(today.year, 12, 31)
 
 
@@ -405,7 +419,7 @@ def _act_workdays(args: Dict[str, Any], with_hours: bool, all_days: bool = False
 
 def _act_materialize(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
     if not (args.get("start") or args.get("year")):
-        today = date.today()
+        today = _today()
         args = dict(args, start=date(today.year - 1, 1, 1).isoformat(), end=date(today.year + 1, 12, 31).isoformat())
     computed, err = _compute(args)
     if err:
@@ -500,7 +514,7 @@ def _act_configure(args: Dict[str, Any]) -> str:
         profile["vacation_hour_factor"] = factor
     half = args.get("half_days")
     profile["half_days"] = list(half) if isinstance(half, list) else list(wc.DEFAULT_HALF_DAYS) if half is None else [s.strip() for s in str(half).split(",") if s.strip()]
-    wc._half_day_set(profile["half_days"], [date.today().year])  # validates format
+    wc._half_day_set(profile["half_days"], [_today().year])  # validates format
     for key in ("employment_start", "employment_end"):
         if args.get(key):
             profile[key] = wc.parse_iso_date(args[key], key).isoformat()
@@ -667,12 +681,23 @@ def _act_absences(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
                 f"FROM mcp_records WHERE {where} AND duration_seconds > 0 GROUP BY 1",
                 params,
             ).fetchall()
+            # Refresh semantics (AIS-275): derived booking rows in the import
+            # window are dropped first, so a cancelled/moved vacation booking
+            # disappears instead of silently inflating vacation credit. Only
+            # 'bookings:%' rows are touched — user/vault/document entries stay.
+            delete_sql = f"DELETE FROM {ABSENCES_TABLE} WHERE kind = ? AND source LIKE 'bookings:%'"
+            delete_params: List[Any] = [kind]
+            if args.get("start") or args.get("year"):
+                delete_sql += " AND day BETWEEN ? AND ?"
+                delete_params += [start.isoformat(), end.isoformat()]
+            deleted = conn.execute(delete_sql, delete_params).rowcount or 0
             source = "bookings:" + ", ".join(patterns)
             rows = [(day, min(1.0, round(booked_h * factor / hours, 4)), kind, source, None, now) for day, booked_h in booked]
             _upsert_absences(conn, rows)
             return json.dumps({
                 "action": "absences", "op": "import_from_bookings", "patterns": patterns,
                 "vacation_hour_factor": factor, "hours_per_day": hours, "upserted": len(rows),
+                "deleted": deleted,
                 "summary": _absences_summary(conn),
             }, ensure_ascii=False)
 
@@ -706,7 +731,7 @@ def _act_estimate(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
         iso_hist = {((wd + 6) % 7) + 1: n for wd, n in hist}  # %w: 0=Sun → ISO 1=Mon
         max_booked = max(iso_hist.values())
         proposed_days = sorted(d for d, n in iso_hist.items() if n >= 0.2 * max_booked)
-        monday = date.today() - timedelta(days=date.today().weekday())
+        monday = _today() - timedelta(days=_today().weekday())
         weeks = conn.execute(
             "SELECT strftime('%Y-%W', substr(timestamp, 1, 10)) AS wk, SUM(duration_seconds) / 3600.0 "
             "FROM mcp_records WHERE tool_name = ? AND duration_seconds > 0 AND substr(timestamp, 1, 10) < ? "
@@ -764,7 +789,7 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
             ),
             "estimate": "workdays(action='estimate_profile') proposes values from ingested data — confirm with the user first.",
         }, ensure_ascii=False)
-    today = date.today()
+    today = _today()
     if args.get("start") or args.get("year"):
         start, end = _range(args)
     else:
@@ -835,14 +860,21 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
         ).fetchone()
         coverage = []
         for pat in src_patterns:
-            n, first, last = conn.execute(
-                "SELECT COUNT(*), MIN(substr(timestamp, 1, 10)), MAX(substr(timestamp, 1, 10)) FROM mcp_records "
+            n, first, last, fetched = conn.execute(
+                "SELECT COUNT(*), MIN(substr(timestamp, 1, 10)), MAX(substr(timestamp, 1, 10)), "
+                "MAX(created_at) FROM mcp_records "
                 "WHERE tool_name LIKE ? AND substr(timestamp, 1, 10) BETWEEN ? AND ?",
                 (pat, s, e),
             ).fetchone()
-            coverage.append({"pattern": pat, "rows": n, "first_day": first, "last_day": last})
+            # last_fetched_at = when this local mirror was last refreshed from
+            # upstream (UTC); an old value means the data may be stale even
+            # though the range looks covered (AIS-275).
+            coverage.append({
+                "pattern": pat, "rows": n, "first_day": first, "last_day": last,
+                "last_fetched_at": fetched,
+            })
         absence_cov = conn.execute(
-            f"SELECT source, COUNT(*), ROUND(SUM(portion), 2) FROM {ABSENCES_TABLE} "
+            f"SELECT source, COUNT(*), ROUND(SUM(portion), 2), MAX(created_at) FROM {ABSENCES_TABLE} "
             "WHERE kind = 'vacation' AND day BETWEEN ? AND ? GROUP BY source",
             (s, e),
         ).fetchall()
@@ -879,7 +911,10 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
         "assumptions": mat.get("assumptions"),
         "coverage": {
             "worklog_sources": coverage,
-            "vacation_absences": [{"source": src, "days": n, "portions": pt} for src, n, pt in absence_cov],
+            "vacation_absences": [
+                {"source": src, "days": n, "portions": pt, "last_updated_at": upd}
+                for src, n, pt, upd in absence_cov
+            ],
         },
         "formula": FORMULA,
     }
