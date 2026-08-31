@@ -352,7 +352,7 @@ test('readDirForIpc filters macOS system directories on darwin', async t => {
   }
 })
 
-test('readDirForIpc filters Windows system directories and legacy junctions on win32', async t => {
+test('readDirForIpc filters Windows system directories and legacy junctions on win32', async () => {
   const input = path.join('virtual-win32-root')
   const resolved = path.resolve(input)
   const systemNames = [

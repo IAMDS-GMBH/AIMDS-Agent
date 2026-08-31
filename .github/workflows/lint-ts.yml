@@ -1,0 +1,38 @@
+# .github/workflows/lint-ts.yml
+#
+# ESLint gate for the TypeScript packages (AIS-276). The repo already set
+# react-hooks/rules-of-hooks to 'error', but no workflow ever ran the lint —
+# four hooks-order violations shipped and crashed the desktop's root error
+# boundary with React #300/#310 during updates. This gate blocks the next one.
+name: Lint TS
+
+on:
+  pull_request:
+    paths:
+      - 'apps/desktop/**'
+      - 'ui-tui/**'
+      - 'package-lock.json'
+      - '.github/workflows/lint-ts.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/desktop/**'
+      - 'ui-tui/**'
+      - 'package-lock.json'
+      - '.github/workflows/lint-ts.yml'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: [ui-tui, apps/desktop]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run --prefix ${{ matrix.package }} lint

@@ -15,6 +15,17 @@ from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 
 
+@pytest.fixture(autouse=True)
+def _no_real_process_spawns(monkeypatch):
+    """Safety net (AIS-276): no test in this file may ever launch a real
+    process. Two unpatched platform-gate tests used to pass every gate and
+    spawn an actual detached ``setsid hermes update --gateway`` on the
+    developer's machine — with the leaked pytest HERMES_HOME poisoning the
+    real ``~/.hermes`` update markers. Tests that assert on the spawn still
+    override this with their own ``patch("subprocess.Popen", ...)``."""
+    monkeypatch.setattr("subprocess.Popen", MagicMock(name="blocked_popen"))
+
+
 def _make_event(text="/update", platform=Platform.TELEGRAM,
                 user_id="12345", chat_id="67890", thread_id=None):
     """Build a MessageEvent for testing."""
@@ -472,7 +483,7 @@ class TestUpdateCommandPlatformGate:
         assert "only available from messaging platforms" not in result
 
     @pytest.mark.asyncio
-    async def test_allows_homeassistant_via_registry_fallback(self, monkeypatch):
+    async def test_allows_homeassistant_via_registry_fallback(self, monkeypatch, tmp_path):
         """Same as DISCORD/MATTERMOST: HOMEASSISTANT is now plugin-migrated
         (PR #40709) and not in the hardcoded frozenset; the registry must
         keep /update working via ``allow_update_command=True``.
@@ -492,12 +503,19 @@ class TestUpdateCommandPlatformGate:
         event = _make_event(platform=Platform.HOMEASSISTANT)
         monkeypatch.setenv("HERMES_MANAGED", "")
 
-        result = await runner._handle_update_command(event)
+        # The platform gate is the ONLY thing under test — everything past it
+        # must be stubbed. Unpatched, this test passed every gate and spawned
+        # a REAL detached `hermes update --gateway` on the developer's machine
+        # with the leaked pytest HERMES_HOME, poisoning ~/.hermes update
+        # markers (AIS-276).
+        with patch("gateway.run._hermes_home", tmp_path), \
+             patch("subprocess.Popen", MagicMock()):
+            result = await runner._handle_update_command(event)
 
         assert "only available from messaging platforms" not in result
 
     @pytest.mark.asyncio
-    async def test_allows_builtin_platform_in_allowlist(self, monkeypatch):
+    async def test_allows_builtin_platform_in_allowlist(self, monkeypatch, tmp_path):
         """``Platform.TELEGRAM`` is in the hardcoded allowlist — gate
         must pass without consulting the registry.
         """
@@ -509,7 +527,11 @@ class TestUpdateCommandPlatformGate:
         event = _make_event(platform=Platform.TELEGRAM)
         monkeypatch.setenv("HERMES_MANAGED", "")
 
-        result = await runner._handle_update_command(event)
+        # See test_allows_homeassistant_via_registry_fallback: without these
+        # patches the test spawned a REAL detached update process (AIS-276).
+        with patch("gateway.run._hermes_home", tmp_path), \
+             patch("subprocess.Popen", MagicMock()):
+            result = await runner._handle_update_command(event)
 
         assert "only available from messaging platforms" not in result
 

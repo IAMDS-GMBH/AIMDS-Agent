@@ -34,6 +34,17 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   componentDidCatch(error: Error, info: ErrorInfo) {
     const tag = this.props.label ? `[error-boundary:${this.props.label}]` : '[error-boundary]'
     console.error(tag, error, info.componentStack)
+    // Forward to the main-process log file unconditionally: the renderer
+    // console never reaches desktop.log, so before this the componentStack —
+    // the one line that identifies the crashing component — was lost unless
+    // the user clicked "Send support logs" (AIS-276).
+    void window.hermesDesktop
+      ?.logRendererError?.({
+        componentStack: info.componentStack ?? undefined,
+        label: this.props.label,
+        message: error?.message || String(error)
+      })
+      .catch(() => undefined)
     // Keep the stack on state: the support report is filed from the fallback,
     // which otherwise only sees the Error and would upload a case with no
     // indication of where the crash came from.

@@ -140,7 +140,9 @@ export function UpdatesOverlay() {
   )
 }
 
-function IdleView({
+// Exported for the AIS-276 regression test: a mounted IdleView must survive
+// every status transition without changing its hook count.
+export function IdleView({
   behind,
   checking,
   commits,
@@ -161,7 +163,11 @@ function IdleView({
   status: DesktopUpdateStatus | null
   target: UpdateTarget
 }) {
-  const { t } = useI18n()
+  // locale is destructured here too: a hook below the early returns violated
+  // the Rules of Hooks — a mounted IdleView switching from the changelog path
+  // to any status path rendered fewer hooks and crashed the root boundary
+  // with React #300 (AIS-276).
+  const { locale, t } = useI18n()
   const u = t.updates
 
   if (!status && checking) {
@@ -229,7 +235,6 @@ function IdleView({
     )
   }
 
-  const { locale } = useI18n()
   const groups = buildCommitChangelog(commits, { locale })
   const shownItems = totalItems(groups)
   const remaining = Math.max(0, behind - shownItems)

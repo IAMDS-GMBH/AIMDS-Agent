@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatSlidingVerb, padVerb, SLIDE_IN_STEPS, SLIDE_HOLD_STEPS, TOTAL_SLIDE_STEPS, VERB_PAD_LEN } from '../components/appChrome.js'
+import { formatSlidingVerb, padVerb, SLIDE_HOLD_STEPS, SLIDE_IN_STEPS, TOTAL_SLIDE_STEPS, VERB_PAD_LEN } from '../components/appChrome.js'
 import { VERBS } from '../content/verbs.js'
 
 describe('FaceTicker verb padding and sliding animation', () => {
@@ -18,6 +18,7 @@ describe('FaceTicker verb padding and sliding animation', () => {
 
   it('preserves exact VERB_PAD_LEN width across all sliding animation steps', () => {
     const verb = 'analyzing'
+
     for (let step = 0; step < TOTAL_SLIDE_STEPS * 2; step++) {
       const formatted = formatSlidingVerb(verb, step)
       expect(formatted).toHaveLength(VERB_PAD_LEN)

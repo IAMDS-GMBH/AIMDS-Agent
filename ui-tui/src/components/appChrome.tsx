@@ -36,6 +36,7 @@ export const formatSlidingVerb = (verb: string, step: number): string => {
 
   if (currentStep < SLIDE_IN_STEPS) {
     const offset = SLIDE_IN_STEPS - currentStep
+
     return ' '.repeat(offset) + padded.slice(0, VERB_PAD_LEN - offset)
   }
 
@@ -44,6 +45,7 @@ export const formatSlidingVerb = (verb: string, step: number): string => {
   }
 
   const outStep = currentStep - (SLIDE_IN_STEPS + SLIDE_HOLD_STEPS) + 1
+
   return padded.slice(outStep) + ' '.repeat(outStep)
 }
 
@@ -503,6 +505,7 @@ export function StatusRule({
   // mid-segment, so status/model/context are never crushed.
   const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
+
   const fits = (w: number) => {
     if (tailBudget >= w) {
       tailBudget -= w
@@ -516,6 +519,7 @@ export function StatusRule({
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
   const costText = typeof usage.cost_usd === 'number' ? `$${usage.cost_usd.toFixed(4)}` : ''
+
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
   // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
   // math (display formatting) — never parseFloat a *_usd. Signed: a mid-session top-up that

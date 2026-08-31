@@ -24,9 +24,11 @@ export const isDevEnvironment = (info?: { model?: string; profile_name?: string 
   if (typeof process !== 'undefined' && (process.env?.HERMES_DEV_MODE || process.env?.HERMES_DEV_CREDITS)) {
     return true
   }
-  if (!info) return false
+
+  if (!info) {return false}
   const model = (info.model || '').toLowerCase()
   const profile = (info.profile_name || '').toLowerCase()
+
   return model.includes('dev') || profile.includes('dev')
 }
 

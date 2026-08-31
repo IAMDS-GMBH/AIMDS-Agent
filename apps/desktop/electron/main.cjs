@@ -5178,6 +5178,35 @@ async function startHermes() {
       }
     }
 
+    // Spawn with an EADDRINUSE retry (AIS-276): after an update handoff the
+    // old backend's listener can outlive the port probe (children inherit the
+    // listen fd), so pickPort() says "free" but uvicorn's bind fails and the
+    // backend exits before ready. Re-picking the port on each attempt
+    // self-heals — the retry either finds the port released or moves on to
+    // the next free one.
+    const BACKEND_SPAWN_ATTEMPTS = 3
+    const BACKEND_SPAWN_RETRY_DELAY_MS = 2000
+    let lastSpawnError = null
+    for (let spawnAttempt = 1; spawnAttempt <= BACKEND_SPAWN_ATTEMPTS; spawnAttempt += 1) {
+      try {
+        return await spawnLocalBackendOnce(spawnAttempt)
+      } catch (error) {
+        lastSpawnError = error
+        const failureText = `${error?.message || ''}\n${recentHermesLog()}`
+        const portRace = /address already in use|EADDRINUSE/i.test(failureText)
+        if (!portRace || spawnAttempt === BACKEND_SPAWN_ATTEMPTS) {
+          throw error
+        }
+        rememberLog(
+          `[boot] Backend bind race detected (attempt ${spawnAttempt}/${BACKEND_SPAWN_ATTEMPTS}) — ` +
+          `retrying with a fresh port in ${BACKEND_SPAWN_RETRY_DELAY_MS}ms`
+        )
+        await new Promise(resolve => setTimeout(resolve, BACKEND_SPAWN_RETRY_DELAY_MS))
+      }
+    }
+    throw lastSpawnError
+
+    async function spawnLocalBackendOnce(spawnAttempt) {
     await advanceBootProgress('backend.port', 'Finding an open local port', 16)
     const port = await pickPort()
     const token = crypto.randomBytes(32).toString('base64url')
@@ -5197,7 +5226,7 @@ async function startHermes() {
     const webDist = resolveWebDist()
 
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
-    rememberLog(`Starting Hermes backend via ${backend.label}`)
+    rememberLog(`Starting Hermes backend via ${backend.label}` + (spawnAttempt > 1 ? ` (attempt ${spawnAttempt})` : ''))
 
     hermesProcess = spawn(backend.command, backend.args, hiddenWindowsChildOptions({
       cwd: hermesCwd,
@@ -5292,6 +5321,7 @@ async function startHermes() {
       wsUrl: `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(token)}`,
       logs: hermesLog.slice(-80),
       ...getWindowState()
+    }
     }
   })().catch(error => {
     const message = error instanceof Error ? error.message : String(error)
@@ -6236,6 +6266,17 @@ ipcMain.handle('hermes:logs:reveal', async () => {
 })
 
 ipcMain.handle('hermes:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, lines: hermesLog.slice(-200) }))
+// Renderer crash forwarding (AIS-276): the error boundary's console.error
+// never reaches desktop.log (no console-message listener), so the component
+// stack that identifies the crashing component was lost unless the user
+// clicked "Send support logs". Persist it unconditionally.
+ipcMain.handle('hermes:logs:rendererError', async (_event, payload) => {
+  const label = typeof payload?.label === 'string' && payload.label ? payload.label : 'root'
+  const message = String(payload?.message || 'unknown renderer error').slice(0, 2000)
+  const stack = String(payload?.componentStack || '').slice(0, 8000)
+  rememberLog(`[renderer error-boundary:${label}] ${message}${stack ? `\ncomponentStack:${stack}` : ''}`)
+  return { ok: true }
+})
 ipcMain.handle('hermes:support:sendLogs', async (_event, payload) => runSupportLogUpload(payload))
 ipcMain.handle('hermes:support:reportIssue', async (_event, payload) => runSupportLogUpload(payload))
 ipcMain.handle('hermes:support:sendTelemetry', async (_event, payload) => sendClientTelemetry(payload))
