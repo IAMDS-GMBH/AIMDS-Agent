@@ -38,6 +38,7 @@ PROFILE_TITLE = "Arbeitszeit-Profil"
 PROFILE_KEYS = (
     "region", "weekly_hours", "days_per_week", "work_weekdays", "employment_label", "half_days",
     "employment_start", "employment_end", "part_time_factor",
+    "municipality", "plz", "partial_holidays",
     "worklog_source_tool", "vacation_booking_patterns", "vacation_hour_factor", "notes",
 )
 TABLE = "workday_calendar"
@@ -95,8 +96,14 @@ def _parse_profile_text(text: str) -> Dict[str, Any]:
         if not sep or key not in PROFILE_KEYS:
             continue
         value = value.strip()
-        if key in ("half_days", "work_weekdays"):
-            out[key] = [v.strip() for v in value.replace(";", ",").split(",") if v.strip()]
+        if key in ("half_days", "work_weekdays", "partial_holidays"):
+            items = [v.strip() for v in value.replace(";", ",").split(",") if v.strip()]
+            # partial_holidays distinguishes "unset" (never clarified) from
+            # "[]" (user confirmed none apply); the flat text stores the
+            # latter as the sentinel `none` (AIS-277).
+            if key == "partial_holidays" and items and all(v.lower() in ("none", "keine") for v in items):
+                items = []
+            out[key] = items
         elif key in ("weekly_hours", "part_time_factor", "vacation_hour_factor"):
             try:
                 out[key] = float(value.replace(",", "."))
@@ -169,7 +176,10 @@ def _profile_text(profile: Dict[str, Any]) -> str:
     if profile.get("work_weekdays"):
         lines.append("work_weekdays: " + ", ".join(str(v) for v in profile["work_weekdays"]))
     lines.append("half_days: " + ", ".join(profile.get("half_days") or []))
+    if isinstance(profile.get("partial_holidays"), list):
+        lines.append("partial_holidays: " + (", ".join(profile["partial_holidays"]) or "none"))
     for key in ("employment_start", "employment_end", "part_time_factor", "employment_label",
+                "municipality", "plz",
                 "worklog_source_tool", "vacation_booking_patterns", "vacation_hour_factor", "notes"):
         if profile.get(key) not in (None, ""):
             lines.append(f"{key}: {profile[key]}")
@@ -249,6 +259,17 @@ def _resolve(args: Dict[str, Any]) -> Dict[str, Any]:
     take("employment_end")
     take("work_weekdays")
     take("employment_label")
+    take("municipality")
+    take("plz")
+    # partial_holidays needs its own resolution: `take()` treats [] as absent,
+    # but here an empty list is MEANINGFUL — the user confirmed that none of
+    # the region's municipal holidays apply (unset = never clarified, AIS-277).
+    if isinstance(args.get("partial_holidays"), list):
+        picked["partial_holidays"] = args["partial_holidays"]
+        picked["_source"]["partial_holidays"] = "parameter"
+    elif isinstance(profile.get("partial_holidays"), list):
+        picked["partial_holidays"] = profile["partial_holidays"]
+        picked["_source"]["partial_holidays"] = profile.get("_source", "profile")
     take("worklog_source_tool")
     take("vacation_booking_patterns")
     take("vacation_hour_factor", 1.0)
@@ -298,15 +319,52 @@ def _assumptions(p: Dict[str, Any], hours: float) -> Dict[str, Any]:
         "employment_end": p.get("employment_end") or None,
         "weekend": "+".join(_DAY_ABBR[d] for d in sorted(weekend)) or "none",
         "holiday_on_weekend": "listed, not deducted",
-        "partial_holidays": "listed, not deducted (add via extra_holidays if they apply to you)",
         "source": wc.SOURCE,
         "profile_source": p.get("_source", {}),
     }
+    partials = p.get("partial_holidays")
+    if isinstance(partials, list):
+        out["partial_holidays"] = list(partials) if partials else "none apply (user confirmed)"
+    else:
+        out["partial_holidays"] = (
+            "unresolved — municipal/partial holidays are NOT deducted; confirm with the user and persist "
+            "via workdays(action='configure', partial_holidays=[…] or [])"
+        )
     if weekday_set:
         out["work_weekdays"] = [_DAY_ABBR[d] for d in sorted(weekday_set)]
     if p.get("employment_label"):
         out["employment_label"] = str(p["employment_label"])
+    if p.get("municipality"):
+        out["municipality"] = str(p["municipality"])
+    if p.get("plz"):
+        out["plz"] = str(p["plz"])
     return out
+
+
+def _partial_holidays_hint(p: Dict[str, Any], start: date, end: date) -> Optional[Dict[str, Any]]:
+    """Ask-once hint when the region has partial holidays in the range and the
+    profile never clarified whether they apply (unset; [] means clarified)."""
+    if isinstance(p.get("partial_holidays"), list):
+        return None
+    try:
+        names = sorted({
+            h.name
+            for year in range(start.year, end.year + 1)
+            for h in wc.partial_holidays_for(p["region"], year)
+            if start <= h.date <= end
+        })
+    except Exception:
+        return None
+    if not names:
+        return None
+    return {
+        "names": names,
+        "ask": (
+            "These municipal/partial holidays may or may not apply to this user — they are NOT deducted yet. "
+            "Ask once (municipality/PLZ helps; e.g. Augsburg = PLZ 86150-86199), then persist via "
+            "workdays(action='configure', partial_holidays=[…]) — or partial_holidays=[] if none apply."
+        ),
+    }
 
 
 FORMULA = (
@@ -345,18 +403,28 @@ def _act_holidays(args: Dict[str, Any]) -> str:
     start, end = _range(args)
     region = wc.normalize_region(p["region"])
     weekend = wc.weekend_days(int(p.get("days_per_week") or wc.DEFAULT_DAYS_PER_WEEK), wc.parse_work_weekdays(p.get("work_weekdays")))
+    applicable = {str(n).strip().lower() for n in (p.get("partial_holidays") or [])}
     items = []
     for h in wc.holidays_between(start, end, region):
         row = h.as_dict()
-        row["on_workday"] = h.date.isoweekday() not in weekend and h.kind != wc.KIND_PARTIAL
+        row["on_workday"] = h.date.isoweekday() not in weekend and (
+            h.kind != wc.KIND_PARTIAL or h.name.lower() in applicable
+        )
         items.append(row)
-    return json.dumps({
+    payload = {
         "action": "holidays", "region": region, "region_name": wc.region_name(region),
         "range": {"start": start.isoformat(), "end": end.isoformat(), "inclusive": True},
         "count_on_workdays": sum(1 for i in items if i["on_workday"]),
         "holidays": items, "source": wc.SOURCE,
-        "note": "kind=partial applies only in parts of the region and is never deducted; regional = state patron day (AT). Answer the user in their language.",
-    }, ensure_ascii=False)
+        "note": (
+            "kind=partial applies only in parts of the region and deducts only when confirmed in the profile's "
+            "partial_holidays; regional = state patron day (AT). Answer the user in their language."
+        ),
+    }
+    hint = _partial_holidays_hint(p, start, end)
+    if hint:
+        payload["partial_holidays_unresolved"] = hint
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _compute(args: Dict[str, Any]):
@@ -375,6 +443,7 @@ def _compute(args: Dict[str, Any]):
         work_weekdays=p.get("work_weekdays") or None,
         half_days=p.get("half_days") or None,
         extra_holidays=args.get("extra_holidays") or None,
+        applicable_partial_holidays=p.get("partial_holidays") or None,
         employment_start=emp_start, employment_end=emp_end,
     )
     hours = wc.hours_per_day(
@@ -409,6 +478,9 @@ def _act_workdays(args: Dict[str, Any], with_hours: bool, all_days: bool = False
              **({"holiday": d.holiday.name} if d.holiday else {})}
             for d in days
         ]
+    hint = _partial_holidays_hint(p, start, end)
+    if hint:
+        payload["partial_holidays_unresolved"] = hint
     payload["next"] = (
         "For actual-vs-target comparisons prefer workdays(action='report') — one call, all math in SQL. "
         "Advanced path: action='materialize', then JOIN workday_calendar against mcp_records with sql. "
@@ -451,7 +523,7 @@ def _act_materialize(args: Dict[str, Any], db_path: Optional[Path] = None) -> st
             conn.executemany(f"INSERT INTO {TABLE} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     finally:
         conn.close()
-    return json.dumps({
+    mat_payload: Dict[str, Any] = {
         "action": "materialize", "table": TABLE, "rows": len(rows),
         "range": {"start": start.isoformat(), "end": end.isoformat(), "inclusive": True},
         "assumptions": _assumptions(p, hours),
@@ -472,10 +544,23 @@ def _act_materialize(args: Dict[str, Any], db_path: Optional[Path] = None) -> st
             "worklogs count in actual, not in target. Prefer action='report' — it runs this join for you. "
             "Present results in the user's language."
         ),
-    }, ensure_ascii=False)
+    }
+    hint = _partial_holidays_hint(p, start, end)
+    if hint:
+        mat_payload["partial_holidays_unresolved"] = hint
+    return json.dumps(mat_payload, ensure_ascii=False)
 
 
 def _act_configure(args: Dict[str, Any]) -> str:
+    # Merge semantics (AIS-277): configure UPDATES the stored profile — keys
+    # not passed keep their stored value instead of resetting to defaults.
+    # Every hint in this tool says "re-run configure with partial_holidays=[…]"
+    # (or a single other key); that must never wipe the week model or the
+    # worklog source patterns.
+    base = {k: v for k, v in (load_profile() or {}).items() if k in PROFILE_KEYS}
+    merged = dict(base)
+    merged.update({k: v for k, v in (args or {}).items() if v is not None})
+    args = merged
     if not args.get("region"):
         return tool_error("configure needs region (e.g. DE-BY, AT-W, CH-ZH) — ask the user first, never assume", success=False)
     profile: Dict[str, Any] = {"region": wc.normalize_region(args["region"])}
@@ -520,10 +605,49 @@ def _act_configure(args: Dict[str, Any]) -> str:
             profile[key] = wc.parse_iso_date(args[key], key).isoformat()
     if args.get("part_time_factor"):
         profile["part_time_factor"] = float(args["part_time_factor"])
+    if args.get("municipality"):
+        profile["municipality"] = str(args["municipality"]).strip()
+    if args.get("plz"):
+        plz = str(args["plz"]).strip()
+        if not (plz.isdigit() and 4 <= len(plz) <= 6):
+            return tool_error("plz must be a 4-6 digit postal code", success=False)
+        profile["plz"] = plz
+    partial_arg = args.get("partial_holidays")
+    if isinstance(partial_arg, str):
+        partial_arg = [s.strip() for s in partial_arg.replace(";", ",").split(",") if s.strip()]
+    if partial_arg is not None:
+        valid = {h.name.lower(): h.name for h in wc.partial_holidays_for(profile["region"], _today().year)}
+        canonical: List[str] = []
+        for name in partial_arg:
+            key = str(name).strip().lower()
+            if not key or key in ("none", "keine"):
+                continue
+            if key not in valid:
+                return tool_error(
+                    f"unknown partial holiday '{name}' for {profile['region']}; "
+                    f"valid: {', '.join(sorted(valid.values())) or 'none in this region'}",
+                    success=False,
+                )
+            canonical.append(valid[key])
+        profile["partial_holidays"] = canonical
     if args.get("notes"):
         profile["notes"] = str(args["notes"]).strip()
     result = save_profile(profile)
-    return json.dumps({"action": "configure", "profile": profile, "memory": result, "title": PROFILE_TITLE}, ensure_ascii=False)
+    response: Dict[str, Any] = {"action": "configure", "profile": profile, "memory": result, "title": PROFILE_TITLE}
+    if partial_arg is None:
+        # Region has municipal/partial holidays and the caller did not decide:
+        # SUGGEST (never auto-save) from municipality/PLZ evidence (AIS-277).
+        suggestions = wc.suggest_partial_holidays(
+            profile["region"], profile.get("municipality"), profile.get("plz"), year=_today().year,
+        )
+        if suggestions:
+            response["partial_holiday_suggestions"] = suggestions
+            response["confirm"] = (
+                "Municipal/partial holidays exist in this region and are not configured yet "
+                "(true = municipality/PLZ evidence says it applies, null = unknown). Ask the user to confirm, "
+                "then re-run configure with partial_holidays=[…] — or partial_holidays=[] if none apply."
+            )
+    return json.dumps(response, ensure_ascii=False)
 
 
 def _act_profile() -> str:
@@ -610,6 +734,7 @@ def _act_absences(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
                         days_per_week=int(p["days_per_week"]),
                         work_weekdays=p.get("work_weekdays") or None,
                         half_days=p.get("half_days") or None,
+                        applicable_partial_holidays=p.get("partial_holidays") or None,
                     ):
                         if d.factor > 0:
                             rows.append((d.day.isoformat(), min(portion, d.factor), kind, source, note, now))
@@ -765,7 +890,8 @@ def _act_estimate(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
             "missing": missing or ["confirmation"],
             "next": (
                 "Present this proposal to the user in their language and ask them to CONFIRM or correct it "
-                "(region is never estimated — ask for it; also ask full/part time), then persist via "
+                "(region is never estimated — ask for it; also ask full/part time, and when the region has "
+                "municipal partial holidays, ask for municipality/PLZ too), then persist via "
                 "workdays(action='configure', …)."
             ),
         }, ensure_ascii=False)
@@ -924,6 +1050,9 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
         payload["target_full_range"] = target_full_range
     if hints:
         payload["hints"] = hints
+    partial_hint = _partial_holidays_hint(p, start, end)
+    if partial_hint:
+        payload["partial_holidays_unresolved"] = partial_hint
     payload["note"] = "Present results in the user's language."
     return json.dumps(payload, ensure_ascii=False)
 
@@ -981,8 +1110,10 @@ WORKDAYS_SCHEMA = {
         "'profile' (show the saved work-time profile), 'configure' (save region/week model/source patterns to "
         "memory as 'Arbeitszeit-Profil').\n"
         "If the answer is 'worktime profile unknown': try action='estimate_profile', present the proposal, and ask "
-        "the user with `clarify` (in their language) — never assume a state or week model. Present results in the "
-        "user's language."
+        "the user with `clarify` (in their language) — never assume a state or week model. Municipal/partial "
+        "holidays (e.g. Augsburger Friedensfest — city of Augsburg only) deduct ONLY after the user confirmed "
+        "them: when a result carries 'partial_holidays_unresolved', ask once (municipality/PLZ helps) and persist "
+        "via configure partial_holidays=[…] or []. Present results in the user's language."
     ),
     "parameters": {
         "type": "object",
@@ -1008,6 +1139,9 @@ WORKDAYS_SCHEMA = {
             "note": {"type": "string", "description": "absences add: free-text note stored with the entries."},
             "half_days": {"type": "array", "items": {"type": "string"}, "description": "MM-DD or YYYY-MM-DD days counted as half a working day (profile default: 12-24, 12-31)."},
             "extra_holidays": {"type": "array", "items": {"type": "string"}, "description": "Additional company holidays, YYYY-MM-DD."},
+            "municipality": {"type": "string", "description": "configure: the user's city/municipality — evidence for whether municipal partial holidays apply (e.g. 'Augsburg')."},
+            "plz": {"type": "string", "description": "configure: postal code (4-6 digits) — evidence for municipal partial holidays (Augsburg = 86150-86199)."},
+            "partial_holidays": {"type": "array", "items": {"type": "string"}, "description": "Names of the region's municipal/partial holidays that APPLY to this user (deducted like statutory once confirmed); [] = user confirmed none apply. Never set without asking the user."},
             "employment_start": {"type": "string", "description": "YYYY-MM-DD; days before it carry no target time."},
             "employment_end": {"type": "string", "description": "YYYY-MM-DD; days after it carry no target time."},
             "include_days": {"type": "boolean", "description": "Also return one entry per calendar day."},

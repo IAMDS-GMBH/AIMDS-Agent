@@ -322,3 +322,5 @@ def test_profile_build_directive_asks_language_and_offers_the_worktime_profile()
     # week model examples and the estimate-then-confirm path
     assert "work_weekdays" in text and "full or part time" in text
     assert "estimate_profile" in text and "confirm" in text
+    # municipal/partial holidays are asked at location granularity (AIS-277)
+    assert "municipal holidays" in text and "Augsburger Friedensfest" in text

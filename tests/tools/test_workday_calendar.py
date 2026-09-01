@@ -191,3 +191,56 @@ class TestExplicitWorkWeekdays:
     def test_hours_per_day_divides_by_the_explicit_day_count(self):
         assert wc.hours_per_day(20, 5, work_weekdays=["mo", "di", "mi"]) == 6.6667
         assert wc.hours_per_day(40, 5) == 8.0
+
+
+class TestPartialHolidayApplicability:
+    """AIS-277: partial holidays deduct only when confirmed applicable.
+
+    2025 is used because 8 Aug 2025 is a FRIDAY — the old never-deduct test
+    used 2026 where it falls on a Saturday and passed for the wrong reason.
+    """
+
+    def test_partial_not_deducted_without_confirmation(self):
+        day = {d.day: d for d in wc.calendar_days(date(2025, 8, 4), date(2025, 8, 8), "DE-BY")}
+        assert day[date(2025, 8, 8)].factor == 1.0 and day[date(2025, 8, 8)].reason == "workday"
+
+    def test_applicable_partial_deducts_and_keeps_its_kind(self):
+        days = {d.day: d for d in wc.calendar_days(
+            date(2025, 8, 4), date(2025, 8, 8), "DE-BY",
+            applicable_partial_holidays=["Augsburger Friedensfest"])}
+        friedensfest = days[date(2025, 8, 8)]
+        assert friedensfest.factor == 0.0 and friedensfest.reason == "holiday"
+        assert friedensfest.holiday is not None and friedensfest.holiday.kind == wc.KIND_PARTIAL
+
+    def test_applicable_matching_is_case_insensitive(self):
+        days = {d.day: d for d in wc.calendar_days(
+            date(2025, 8, 8), date(2025, 8, 8), "DE-BY",
+            applicable_partial_holidays=["augsburger friedensfest"])}
+        assert days[date(2025, 8, 8)].factor == 0.0
+
+    def test_swiss_partial_applies_when_confirmed(self):
+        # Fronleichnam 2025-06-19 (Thu) is KIND_PARTIAL in AG.
+        plain = wc.calendar_days(date(2025, 6, 19), date(2025, 6, 19), "CH-AG")[0]
+        assert plain.factor == 1.0
+        confirmed = wc.calendar_days(
+            date(2025, 6, 19), date(2025, 6, 19), "CH-AG",
+            applicable_partial_holidays=["Fronleichnam"])[0]
+        assert confirmed.factor == 0.0 and confirmed.holiday.kind == wc.KIND_PARTIAL
+
+    def test_partial_holidays_for_lists_only_partials(self):
+        names = {h.name for h in wc.partial_holidays_for("DE-BY", 2025)}
+        assert names == {"Augsburger Friedensfest"}
+        assert wc.partial_holidays_for("DE-BE", 2025) == []
+
+    def test_suggest_partial_holidays_positive_evidence_only(self):
+        # PLZ inside the Augsburg range or a matching municipality → True
+        assert wc.suggest_partial_holidays("DE-BY", plz="86159", year=2025) == {"Augsburger Friedensfest": True}
+        assert wc.suggest_partial_holidays("DE-BY", municipality="Augsburg", year=2025) == {"Augsburger Friedensfest": True}
+        assert wc.suggest_partial_holidays("DE-BY", municipality=" augsburg ", year=2025) == {"Augsburger Friedensfest": True}
+        # Non-matching evidence is NOT proof of the opposite → None (ask)
+        assert wc.suggest_partial_holidays("DE-BY", plz="80331", year=2025) == {"Augsburger Friedensfest": None}
+        assert wc.suggest_partial_holidays("DE-BY", year=2025) == {"Augsburger Friedensfest": None}
+        # Unresolvable cases have no resolver → None (ask)
+        assert wc.suggest_partial_holidays("DE-SN", year=2025) == {"Fronleichnam": None}
+        # Regions without partials → empty
+        assert wc.suggest_partial_holidays("DE-BE", year=2025) == {}

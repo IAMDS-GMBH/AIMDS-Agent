@@ -412,3 +412,93 @@ class TestReportDataAge:
             {"action": "report", "start": "2026-01-01", "end": "2026-01-31"}, db_path=db))
         src = out["coverage"]["worklog_sources"][0]
         assert src["last_fetched_at"]  # created_at of the mirror row (UTC)
+
+
+class TestPartialHolidays:
+    """AIS-277: municipal/partial holidays via ask-and-store profile keys."""
+
+    def test_profile_text_roundtrip_including_empty_sentinel(self):
+        parsed = wt._parse_profile_text(wt._profile_text({
+            "region": "DE-BY", "weekly_hours": 40.0, "days_per_week": 5,
+            "partial_holidays": ["Augsburger Friedensfest"],
+            "municipality": "Augsburg", "plz": "86159",
+        }))
+        assert parsed["partial_holidays"] == ["Augsburger Friedensfest"]
+        assert parsed["municipality"] == "Augsburg" and parsed["plz"] == "86159"
+        # user confirmed "none apply" survives as an EMPTY list, not as unset
+        parsed_none = wt._parse_profile_text(wt._profile_text({
+            "region": "DE-BY", "weekly_hours": 40.0, "days_per_week": 5, "partial_holidays": [],
+        }))
+        assert parsed_none["partial_holidays"] == []
+
+    def test_unresolved_hint_appears_and_clears(self, monkeypatch):
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: dict(BY, _source="memory (mcp)"))
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        out = _run(action="target_hours", start="2025-08-01", end="2025-08-31")
+        assert out["partial_holidays_unresolved"]["names"] == ["Augsburger Friedensfest"]
+        assert "configure" in out["partial_holidays_unresolved"]["ask"]
+        assert out["totals"]["target_hours"] == 160.0  # 20 workdays (Mariä Himmelfahrt already statutory) — partial NOT deducted while unresolved
+
+        # user confirmed none apply → hint gone, still no deduction
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: dict(
+            BY, partial_holidays=[], _source="memory (mcp)"))
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        out = _run(action="target_hours", start="2025-08-01", end="2025-08-31")
+        assert "partial_holidays_unresolved" not in out
+        assert out["assumptions"]["partial_holidays"] == "none apply (user confirmed)"
+        assert out["totals"]["target_hours"] == 160.0
+
+    def test_applicable_partial_reduces_target_and_marks_table(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: dict(
+            BY, partial_holidays=["Augsburger Friedensfest"], _source="memory (mcp)"))
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        out = _run(action="target_hours", start="2025-08-01", end="2025-08-31")
+        assert out["totals"]["target_hours"] == 152.0  # one 8h day less than the 160h statutory baseline
+        assert "partial_holidays_unresolved" not in out
+        assert out["assumptions"]["partial_holidays"] == ["Augsburger Friedensfest"]
+
+        mat = json.loads(wt.execute_workdays(
+            {"action": "materialize", "start": "2025-08-01", "end": "2025-08-31"}, db_path=tmp_path / "s.db"))
+        assert mat["totals"]["target_hours"] == 152.0
+        row = sqlite3.connect(str(tmp_path / "s.db")).execute(
+            "SELECT holiday_name, holiday_kind, factor FROM workday_calendar WHERE day = '2025-08-08'"
+        ).fetchone()
+        assert row == ("Augsburger Friedensfest", "partial", 0.0)
+
+    def test_holidays_action_marks_applicable_partial_as_workday(self, monkeypatch):
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: dict(
+            BY, partial_holidays=["Augsburger Friedensfest"], _source="memory (mcp)"))
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        out = _run(action="holidays", year=2025)
+        friedensfest = next(h for h in out["holidays"] if h["date"] == "2025-08-08")
+        assert friedensfest["kind"] == "partial" and friedensfest["on_workday"] is True
+
+    def test_configure_validates_and_suggests(self, monkeypatch):
+        monkeypatch.setattr(wt, "_facade", lambda: SimpleNamespace(mode="none"))
+        bad = _run(action="configure", region="DE-BY", partial_holidays=["Oktoberfest"])
+        assert bad["success"] is False and "Augsburger Friedensfest" in bad["error"]
+
+        # plz evidence without a decision → suggestion + confirm, never auto-saved
+        out = _run(action="configure", region="DE-BY", weekly_hours=40, days_per_week=5, plz="86159")
+        assert out["partial_holiday_suggestions"] == {"Augsburger Friedensfest": True}
+        assert "confirm" in out and "partial_holidays" not in out["profile"]
+
+        # explicit decision (canonicalized case) → stored, no suggestions
+        out = _run(action="configure", region="DE-BY", partial_holidays=["augsburger friedensfest"])
+        assert out["profile"]["partial_holidays"] == ["Augsburger Friedensfest"]
+        assert "partial_holiday_suggestions" not in out
+
+        bad_plz = _run(action="configure", region="DE-BY", plz="ABC")
+        assert bad_plz["success"] is False
+
+    def test_configure_merges_with_stored_profile(self, monkeypatch):
+        monkeypatch.setattr(wt, "_facade", lambda: SimpleNamespace(mode="none"))
+        _run(action="configure", region="DE-BY", weekly_hours=20, work_weekdays=["mo", "di", "mi"],
+             worklog_source_tool="my_tool_%")
+        # follow-up with ONLY partial_holidays must not wipe the week model
+        out = _run(action="configure", partial_holidays=["Augsburger Friedensfest"])
+        assert out["profile"]["region"] == "DE-BY"
+        assert out["profile"]["weekly_hours"] == 20.0
+        assert out["profile"]["work_weekdays"] == ["mo", "tu", "we"]
+        assert out["profile"]["worklog_source_tool"] == "my_tool_%"
+        assert out["profile"]["partial_holidays"] == ["Augsburger Friedensfest"]
