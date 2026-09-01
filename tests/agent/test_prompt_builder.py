@@ -1707,3 +1707,16 @@ class TestSkillsIndexIsATableOfContents:
         without = build_skills_system_prompt(available_tools={"skill_view"})
         assert "skills_list" in without and "tool_search" not in without
         assert "NOT callable functions" in without
+
+
+def test_memory_prompt_teaches_active_contexts_hygiene():
+    """AIS-279 follow-up: the LLM must know to act on the memory server's
+    maintenance hints (unset active_contexts, stale/duplicate memories) —
+    ask-and-store, never silently filter or delete."""
+    from agent.prompt_builder import build_remote_mcp_memory_prompt
+
+    text = build_remote_mcp_memory_prompt({"memory_context"})
+    assert "MEMORY HYGIENE" in text
+    assert "active_contexts" in text
+    assert "`always`" in text  # tag global rules before filtering
+    assert "user confirms" in text
