@@ -2169,6 +2169,10 @@ DEFAULT_CONFIG = {
         # Inject structured JSONL mirror records (MCP_MIRROR_MEMORY.jsonl) into
         # the volatile system-prompt tier alongside MEMORY.md/USER.md blocks.
         "inject_structured_mirror": True,
+        # Hard char budget for the mirror profile block in the system prompt
+        # (AIS-279: uncapped it grew to 25K chars / ~8K tokens, duplicating
+        # memory_context). 0 disables the cap.
+        "structured_mirror_max_chars": 6000,
         # Force memory_context revalidation when the user asks personal/profile
         # questions after the first turn ("who am I", preferences/history, etc.).
         "enforce_context_for_personal_queries": True,

@@ -22,6 +22,28 @@ from typing import Any, Dict, List, Optional
 
 VALID_TTLS = ("5m", "1h")
 
+# The system prompt ends with a volatile timestamp block (calendar line,
+# session id, model, provider — see agent/system_prompt.py's volatile tier).
+# Splitting that tail OUT of the cached block is what makes the 1h prefix
+# reusable across sessions and minutes (AIS-279): with the timestamp inside,
+# the cache key changed every minute — two sessions 38s apart with a
+# byte-identical 58KB prompt both paid the cache-write premium and read 0.
+SYSTEM_VOLATILE_MARKER = "Current Local Time & Date: "
+
+
+def split_system_for_caching(text: str) -> tuple:
+    """(stable, volatile) split of a system prompt string.
+
+    ``stable`` is everything up to the final timestamp block (cacheable);
+    ``volatile`` is the timestamp block including its leading separator, so
+    stable + volatile reproduces the input byte-for-byte. When no marker is
+    found the whole text is stable and volatile is empty.
+    """
+    idx = text.rfind("\n\n" + SYSTEM_VOLATILE_MARKER)
+    if idx <= 0:
+        return text, ""
+    return text[:idx], text[idx:]
+
 
 def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = False) -> None:
     """Add cache_control to a single message, handling all format variations."""
@@ -105,7 +127,22 @@ def apply_anthropic_cache_control(
     breakpoints_used = 0
 
     if messages[0].get("role") == "system":
-        _apply_cache_marker(messages[0], _build_marker(prefix_ttl), native_anthropic=native_anthropic)
+        marker = _build_marker(prefix_ttl)
+        content = messages[0].get("content")
+        volatile = ""
+        if isinstance(content, str):
+            stable, volatile = split_system_for_caching(content)
+        if volatile:
+            # Two text blocks: the breakpoint sits on the stable part so the
+            # per-minute timestamp tail can no longer bust the prefix cache.
+            # The Anthropic adapter and LiteLLM pass content-block system
+            # messages through with cache_control intact.
+            messages[0]["content"] = [
+                {"type": "text", "text": stable, "cache_control": marker},
+                {"type": "text", "text": volatile},
+            ]
+        else:
+            _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
         breakpoints_used += 1
 
     remaining = max_breakpoints - breakpoints_used

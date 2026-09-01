@@ -232,10 +232,37 @@ def test_format_structured_mirror_for_system_prompt_project_scope(monkeypatch, t
     )
     upsert_structured_mirror_record(record)
 
-    result = format_structured_mirror_for_system_prompt()
+    # Without an active context, project-scope records stay OUT of the
+    # system prompt (AIS-279: the old `or True` default would have injected
+    # the entire project store — measured 463KB in production).
+    assert format_structured_mirror_for_system_prompt() is None
+
+    result = format_structured_mirror_for_system_prompt(active_context="my-project")
     assert result is not None
-    assert "project context" in result.lower() or "Saved project" in result
+    assert "Saved project context (my-project)" in result
     assert "API key format" in result
+
+
+def test_structured_mirror_block_is_capped(monkeypatch, tmp_path):
+    """AIS-279: the mirror block has a hard char budget — uncapped it grew to
+    25K chars of profile dossiers duplicating memory_context."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for i in range(40):
+        record = build_structured_mirror_record(
+            tool_args={
+                "type": "profile", "title": f"Fact {i}",
+                "content": "x" * 400,
+            },
+            write_meta={},
+            tool_name="memory_save",
+            effective_task_id="",
+        )
+        upsert_structured_mirror_record(record)
+
+    result = format_structured_mirror_for_system_prompt(scope_filter="user")
+    assert result is not None
+    assert len(result) <= 6200  # 6000 budget + truncation note
+    assert "profile mirror truncated" in result
 
 
 def test_annotate_tool_result_with_local_mirror_for_json_dict():

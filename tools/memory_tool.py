@@ -525,6 +525,14 @@ class MemoryStore:
         limit = self._char_limit(target)
         content = ENTRY_DELIMITER.join(entries)
         current = len(content)
+        if limit > 0 and current > limit:
+            # The on-disk file can exceed the budget (hand-edited MEMORY.md,
+            # legacy oversized single entries) — the add/replace checks only
+            # guard tool-driven writes. The PROMPT is what the budget
+            # protects, so hard-cap at render time (AIS-279: a 4,136-char
+            # block shipped under a "2,200/2,200" header).
+            content = content[: limit - 1].rstrip() + "…"
+            current = len(content)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
         if target == "user":

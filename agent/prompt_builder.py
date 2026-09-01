@@ -407,7 +407,6 @@ TOOL_SEARCH_ANTI_HALLUCINATION_GUIDANCE = (
     "# Deferred tool search anti-hallucination directive\n"
     "CRITICAL: `tool_search` is active and some tools or features are deferred.\n"
     "STRICT RULE: Only invoke function names that literally appear in your active JSON schema tools. Never invoke any function name that is not listed in your JSON schema.\n"
-    "Items listed under <available_skills> are NOT callable functions. Do not attempt to invoke skill names or domain prefixes directly.\n"
     "NEVER guess, invent, or fabricate tool names based on domain prefixes or wildcard patterns (e.g. NEVER invent function names like 'outlook_*', 'jira_*', 'github_*', 'office_*', 'outlook_calendar_check', 'outlook_calendar_read', etc.).\n"
     "In `tool_search` results, the value of the `name` field (e.g. `mcp_IAMDS_mcp_memory_read`) is the EXACT function name to call. Do NOT confuse the tool `name` with its `description` or `source_name`.\n"
     "When a specific action tool is ALREADY listed in your JSON schema tools (such as `jira_search`, `memory_search`, `mcp_customer__storage_search`), invoke that action tool directly! Do NOT call empty resource listing tools (e.g. `list_resources` or `mcp_AtlassianMCP_list_resources`) when a direct action tool exists.\n"

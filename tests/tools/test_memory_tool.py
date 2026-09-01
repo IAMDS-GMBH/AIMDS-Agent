@@ -673,3 +673,17 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+
+def test_render_block_hard_caps_oversized_on_disk_content():
+    """AIS-279: hand-edited MEMORY.md entries can exceed the budget the
+    add/replace checks enforce — the rendered prompt block must still honor
+    it (a 4,136-char block shipped under a '2,200/2,200' header)."""
+    from tools.memory_tool import MemoryStore
+
+    mem = MemoryStore(memory_char_limit=200)
+    block = mem._render_block("memory", ["x" * 500])
+    content = block.split("═" * 46)[-1].strip()
+    assert len(content) <= 200
+    assert content.endswith("…")
+    assert "100% — 200/200" in block

@@ -190,3 +190,21 @@ def test_no_review_when_memory_disabled():
     agent = _FakeAgent()
     ctx = _build(agent)
     assert ctx.should_review_memory is False
+
+
+def test_mirror_recall_skips_trivial_queries(monkeypatch):
+    """AIS-279: 'Hallo' (5 chars) used to be inflated to 1,231 chars by the
+    mirror-recall block; trivial queries must not trigger recall."""
+    calls = []
+    monkeypatch.setattr(
+        "agent.memory_dual_write.build_mirror_recall_context",
+        lambda query, top_k=5, max_chars=1000: calls.append(query) or "RECALL",
+    )
+    agent = _FakeAgent()
+    agent._inject_structured_mirror = True
+
+    ctx = _build(agent, user_message="Hallo")
+    assert calls == [] and "RECALL" not in (ctx.ext_prefetch_cache or "")
+
+    ctx = _build(agent, user_message="Wie viele Stunden habe ich im August gebucht?")
+    assert calls and (ctx.ext_prefetch_cache or "").endswith("RECALL")
