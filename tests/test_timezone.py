@@ -480,3 +480,75 @@ class TestGermanHolidaysAndCalendar:
         assert "ISO 8601 Standard" in ctx["formatted_prompt"]
         assert "Thursday" in ctx["formatted_prompt"] and "Donnerstag" not in ctx["formatted_prompt"]
 
+
+
+class TestProfileAwarePartialHolidays:
+    """AIS-278: the prompt's holiday line honors confirmed municipal partial
+    holidays from the workdays profile (8 Aug 2025 = Friday, Friedensfest)."""
+
+    def test_partial_excluded_by_default_included_when_confirmed(self):
+        friedensfest = datetime(2025, 8, 8).date()
+        assert friedensfest not in hermes_time.get_public_holidays(2025, region="DE-BY")
+        confirmed = hermes_time.get_public_holidays(
+            2025, region="DE-BY", applicable_partial_holidays=["Augsburger Friedensfest"])
+        assert confirmed[friedensfest] == "Augsburger Friedensfest"
+        # [] = user confirmed none apply; matching is case-insensitive
+        assert friedensfest not in hermes_time.get_public_holidays(
+            2025, region="DE-BY", applicable_partial_holidays=[])
+        assert friedensfest in hermes_time.get_public_holidays(
+            2025, region="DE-BY", applicable_partial_holidays=["augsburger friedensfest"])
+
+    def test_region_codes_beyond_germany(self):
+        at = hermes_time.get_public_holidays(2025, region="AT-W")
+        assert at[datetime(2025, 10, 26).date()] == "Nationalfeiertag"
+
+    def test_calendar_context_shows_confirmed_partial(self):
+        test_dt = datetime(2025, 8, 8, 9, 0, 0, tzinfo=timezone.utc)
+        ctx = hermes_time.get_calendar_context(
+            test_dt, region="DE-BY", applicable_partial_holidays=["Augsburger Friedensfest"])
+        assert ctx["today_holiday"] == "Augsburger Friedensfest"
+        assert "PUBLIC HOLIDAY: Augsburger Friedensfest" in ctx["formatted_prompt"]
+        assert ctx["state"] == "BY" and "assumed" not in ctx["formatted_prompt"]
+        # unresolved profile → the partial stays invisible, exactly like the tool
+        ctx_plain = hermes_time.get_calendar_context(test_dt, region="DE-BY")
+        assert ctx_plain["today_holiday"] is None
+
+    def test_context_consults_workdays_profile(self, monkeypatch):
+        from tools import workdays_tool as wt
+
+        monkeypatch.setattr(
+            wt, "load_profile",
+            lambda force=False: {"region": "DE-BY", "partial_holidays": ["Augsburger Friedensfest"]},
+        )
+        test_dt = datetime(2025, 8, 8, 9, 0, 0, tzinfo=timezone.utc)
+        ctx = hermes_time.get_calendar_context(test_dt)  # no args — production path
+        assert ctx["today_holiday"] == "Augsburger Friedensfest"
+        assert ctx["region"] == "DE-BY"
+
+    def test_profile_failure_falls_back_to_legacy_chain(self, monkeypatch):
+        from tools import workdays_tool as wt
+
+        def _boom(force=False):
+            raise RuntimeError("memory backend down")
+
+        monkeypatch.setattr(wt, "load_profile", _boom)
+        hermes_time._cached_state_code = None
+        hermes_time._state_assumed = False
+        monkeypatch.setenv("HERMES_STATE", "BY")
+        try:
+            ctx = hermes_time.get_calendar_context(datetime(2025, 8, 8, 9, 0, 0, tzinfo=timezone.utc))
+            assert ctx["state"] == "BY" and ctx["today_holiday"] is None  # fail-open, partial filtered
+        finally:
+            hermes_time._cached_state_code = None
+            hermes_time._state_assumed = False
+
+    def test_explicit_state_bypasses_profile(self, monkeypatch):
+        from tools import workdays_tool as wt
+
+        def _must_not_be_called(force=False):
+            raise AssertionError("profile must not be consulted when state is explicit")
+
+        monkeypatch.setattr(wt, "load_profile", _must_not_be_called)
+        ctx = hermes_time.get_calendar_context(
+            datetime(2025, 8, 8, 9, 0, 0, tzinfo=timezone.utc), state="BY")
+        assert ctx["state"] == "BY"
