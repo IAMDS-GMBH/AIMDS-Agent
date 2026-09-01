@@ -245,3 +245,54 @@ def test_full_request_layout_has_four_breakpoints_in_anthropic_order():
     markers += [m.get("cache_control") or m["content"][-1]["cache_control"] for m in msgs[1:] if "cache_control" in m or (isinstance(m.get("content"), list) and "cache_control" in m["content"][-1])]
     assert len(markers) == 4
     assert [mk.get("ttl", "5m") for mk in markers] == ["1h", "1h", "5m", "5m"]
+
+
+class TestSystemPromptCacheSplit:
+    """AIS-279: the volatile timestamp tail must live OUTSIDE the cached
+    system block — with it inside, the 58KB prefix changed every minute and
+    cross-session cache_read was structurally 0."""
+
+    SYSTEM = (
+        "# SOUL\nstable guidance here\n\n"
+        "## User preferences & profile\n- [profile] Language: English\n\n"
+        "Current Local Time & Date: Monday, September 01, 2026 10:00:00 (CEST)\n"
+        "ISO Date: 2026-09-01\n"
+        "Session ID: 20260901_100000_abc123"
+    )
+
+    def test_split_is_byte_exact_and_marker_anchored(self):
+        from agent.prompt_caching import split_system_for_caching
+
+        stable, volatile = split_system_for_caching(self.SYSTEM)
+        assert stable + volatile == self.SYSTEM
+        assert volatile.startswith("\n\nCurrent Local Time & Date: ")
+        assert "Session ID:" in volatile and "Session ID:" not in stable
+        # no marker → everything stable
+        assert split_system_for_caching("just guidance") == ("just guidance", "")
+
+    def test_system_message_becomes_two_blocks_with_marker_on_stable(self):
+        from agent.prompt_caching import apply_anthropic_cache_control
+
+        messages = [
+            {"role": "system", "content": self.SYSTEM},
+            {"role": "user", "content": "Hallo"},
+        ]
+        out = apply_anthropic_cache_control(messages, prefix_ttl="1h", message_ttl="5m")
+        system = out[0]["content"]
+        assert isinstance(system, list) and len(system) == 2
+        assert system[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+        assert "cache_control" not in system[1]
+        assert system[0]["text"] + system[1]["text"] == self.SYSTEM
+        # original input untouched (deep copy)
+        assert isinstance(messages[0]["content"], str)
+
+    def test_system_without_marker_keeps_single_block_behavior(self):
+        from agent.prompt_caching import apply_anthropic_cache_control
+
+        out = apply_anthropic_cache_control(
+            [{"role": "system", "content": "guidance only"}, {"role": "user", "content": "hi"}],
+            prefix_ttl="1h",
+        )
+        system = out[0]["content"]
+        assert isinstance(system, list) and len(system) == 1
+        assert system[0]["cache_control"]["ttl"] == "1h"

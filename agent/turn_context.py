@@ -425,7 +425,11 @@ def build_turn_context(
     if getattr(agent, "_inject_structured_mirror", False):
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
-            if _query.strip():
+            # Trivial turns ("Hallo", "ok", "ja") carry no recallable terms —
+            # the recall block still fired and inflated a 5-char greeting to
+            # 1,231 chars (AIS-279). Require a minimally substantive query.
+            _substantive = len(_query.strip()) >= 12 and len(_query.split()) >= 2
+            if _query.strip() and _substantive:
                 from agent.memory_dual_write import build_mirror_recall_context
                 _mirror_ctx = build_mirror_recall_context(
                     _query,

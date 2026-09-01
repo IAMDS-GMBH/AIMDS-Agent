@@ -911,6 +911,24 @@ def build_mirror_recall_context(
     return block
 
 
+# Hard budget for the system-prompt mirror block (AIS-279). The formatter
+# had NO cap at all — a grown profile injected 25,220 chars (~8,000 tokens)
+# of user records into every session's prompt, largely duplicating what the
+# session's own memory_context call returns anyway. Overridable via config
+# `memory.structured_mirror_max_chars`.
+DEFAULT_STRUCTURED_MIRROR_MAX_CHARS = 6000
+
+
+def _structured_mirror_max_chars() -> int:
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = (load_config() or {}).get("memory") or {}
+        return int(cfg.get("structured_mirror_max_chars") or DEFAULT_STRUCTURED_MIRROR_MAX_CHARS)
+    except Exception:
+        return DEFAULT_STRUCTURED_MIRROR_MAX_CHARS
+
+
 def format_structured_mirror_for_system_prompt(
     *,
     active_context: str = "",
@@ -923,6 +941,11 @@ def format_structured_mirror_for_system_prompt(
     - user-scope records: always included (unless scope_filter restricts)
     - project-scope records: included only when active_context is non-empty
     Deduplicates by slug (last-write-wins order from JSONL).
+
+    The result is capped at ``memory.structured_mirror_max_chars`` (default
+    6000): records are included newest-block-first until the budget is hit,
+    with a truncation note — the full store stays reachable via
+    memory_context / per-turn recall (AIS-279).
 
     Args:
         active_context: a project/cwd hint (e.g. cwd basename or project name).
@@ -991,19 +1014,27 @@ def format_structured_mirror_for_system_prompt(
         lines = [l for l in lines if l]
         if lines:
             blocks.append("## User preferences & profile\n" + "\n".join(lines))
-    # Project-scope records: inject when active_context is set, or always as
-    # a safe backward-compatible default when active_context is empty.
-    _include_project = bool(active_context) or True  # keep "always" default for now
-    if project_records and _include_project:
+    # Project-scope records only when an active context names the project —
+    # the previous `or True` default would have dumped the ENTIRE project
+    # store into the prompt the moment the user-scope filter was relaxed
+    # (measured: 205 records / 462,870 chars in production — AIS-279).
+    if project_records and bool(active_context):
         lines = [_format_record(r) for r in project_records]
         lines = [l for l in lines if l]
         if lines:
-            header = f"## Saved project context" + (f" ({active_context})" if active_context else "")
+            header = f"## Saved project context ({active_context})"
             blocks.append(header + "\n" + "\n".join(lines))
 
     if not blocks:
         return None
-    return "\n\n".join(blocks)
+    result = "\n\n".join(blocks)
+    max_chars = _structured_mirror_max_chars()
+    if max_chars > 0 and len(result) > max_chars:
+        result = result[: max_chars - 1].rstrip() + (
+            "…\n[profile mirror truncated — the full store is available via "
+            "memory_context / memory_search]"
+        )
+    return result
 
 
 # ── Preference patterns for auto-capture ─────────────────────────────────────

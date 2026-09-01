@@ -193,7 +193,9 @@ class TestToolUseEnforcementWithToolSearch:
         assert "# Tool-use enforcement" in stable
         assert "# Deferred tool search anti-hallucination directive" in stable
         assert "STRICT RULE: Only invoke function names that literally appear in your active JSON schema tools" in stable
-        assert "Items listed under <available_skills> are NOT callable functions" in stable
+        # The <available_skills> sentence lives ONLY in the skills listing now
+        # (it was emitted verbatim twice — AIS-279 dedupe).
+        assert stable.count("Items listed under <available_skills> are NOT callable functions") <= 1
 
     def test_auto_does_not_enforce_for_custom_model_alias_without_tool_search(self):
         agent = _make_agent(
