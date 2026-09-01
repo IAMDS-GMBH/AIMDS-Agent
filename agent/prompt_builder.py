@@ -365,7 +365,9 @@ def build_data_handling_guidance(valid_tool_names: "set[str] | None" = None) -> 
             "`workdays(action='materialize')` + JOIN `workday_calendar` against `mcp_records` with `sql`. "
             "If it answers 'worktime profile unknown', try `workdays(action='estimate_profile')`, present the "
             "proposal, and confirm with `clarify` — then `workdays(action='configure', …)` saves the profile to "
-            "memory. Never assume a state (not BW, not DE) or a week model."
+            "memory. Never assume a state (not BW, not DE) or a week model. Municipal/partial holidays deduct "
+            "only after user confirmation: on `partial_holidays_unresolved` in a workdays result, ask once "
+            "(municipality/PLZ helps) and persist via configure partial_holidays=[…] or []."
         )
     if has_sql:
         rungs.append(

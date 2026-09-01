@@ -389,6 +389,47 @@ def holidays_for(year: int, region: str) -> List[Holiday]:
     return sorted(out, key=lambda h: (h.date, h.kind != KIND_STATUTORY, h.name))
 
 
+def partial_holidays_for(region: str, year: int) -> List[Holiday]:
+    """The region's ``partial``-kind holidays of ``year`` — the ones that
+    apply only in parts of the region and need a per-user decision."""
+    return [h for h in holidays_for(year, region) if h.kind == KIND_PARTIAL]
+
+
+# Positive-evidence resolvers for partial holidays (AIS-277): given the
+# user's municipality / postal code, return True when the evidence clearly
+# says the holiday applies, otherwise None (= must ask the user). NEVER
+# False — a non-matching PLZ is not proof the holiday does not apply (people
+# commute), and unresolvable cases (catholic municipalities in SN/TH, Swiss
+# municipal splits) are deliberately absent from this table.
+def _augsburg_matcher(municipality: str, plz: str) -> Optional[bool]:
+    if "augsburg" in municipality:
+        return True
+    if plz.isdigit() and len(plz) == 5 and 86150 <= int(plz) <= 86199:
+        return True
+    return None
+
+
+_PARTIAL_RESOLVERS = {
+    "augsburger friedensfest": _augsburg_matcher,
+}
+
+
+def suggest_partial_holidays(
+    region: str, municipality: Optional[str] = None, plz: Optional[str] = None,
+    year: Optional[int] = None,
+) -> Dict[str, Optional[bool]]:
+    """Per partial-holiday name: True when municipality/PLZ evidence says it
+    applies (suggestion only — the user must still confirm), None when the
+    question cannot be resolved from the data and must be asked."""
+    muni = str(municipality or "").strip().lower()
+    plz_text = str(plz or "").strip()
+    out: Dict[str, Optional[bool]] = {}
+    for h in partial_holidays_for(region, year or date.today().year):
+        resolver = _PARTIAL_RESOLVERS.get(h.name.lower())
+        out[h.name] = resolver(muni, plz_text) if resolver else None
+    return out
+
+
 def holidays_between(start: date, end: date, region: str) -> List[Holiday]:
     out: List[Holiday] = []
     for year in range(start.year, end.year + 1):
@@ -471,6 +512,7 @@ def calendar_days(
     work_weekdays: Optional[Iterable[Any]] = None,
     half_days: Optional[Iterable[str]] = DEFAULT_HALF_DAYS,
     extra_holidays: Optional[Iterable[Any]] = None,
+    applicable_partial_holidays: Optional[Iterable[str]] = None,
     employment_start: Optional[date] = None,
     employment_end: Optional[date] = None,
 ) -> List[DayInfo]:
@@ -478,7 +520,11 @@ def calendar_days(
 
     Rules: a holiday on a weekend is listed but costs nothing (the weekend
     already does); a half day only halves an otherwise working day; a
-    holiday beats a half day; ``partial`` holidays never deduct.
+    holiday beats a half day; ``partial`` holidays deduct ONLY when their
+    name is in ``applicable_partial_holidays`` (they apply only in parts of
+    the region — e.g. Augsburger Friedensfest in the CITY of Augsburg, not
+    all of Bavaria — so the caller must confirm they apply to this user).
+    A deducted partial keeps ``kind='partial'`` for transparency.
     """
     if end < start:
         raise ValueError("end must not be before start")
@@ -487,9 +533,10 @@ def calendar_days(
     years = range(start.year, end.year + 1)
     halves = _half_day_set(half_days, years)
     extras = _extra_holidays(extra_holidays)
+    applicable = {str(n).strip().lower() for n in (applicable_partial_holidays or ()) if str(n).strip()}
     by_date: Dict[date, Holiday] = {}
     for h in holidays_between(start, end, region):
-        if h.kind == KIND_PARTIAL:
+        if h.kind == KIND_PARTIAL and h.name.lower() not in applicable:
             continue
         by_date.setdefault(h.date, h)
     for day, name in extras.items():
@@ -583,6 +630,6 @@ __all__ = [
     "DEFAULT_WEEKLY_HOURS", "DayInfo", "Holiday", "KIND_PARTIAL", "KIND_REGIONAL", "KIND_STATUTORY", "SOURCE",
     "WEEKDAY_TOKENS", "buss_und_bettag", "calendar_days", "easter_sunday", "eidgenoessischer_bettag",
     "holidays_between", "holidays_for", "hours_per_day", "jeune_genevois", "month_range", "monthly_summary",
-    "naefelser_fahrt", "normalize_region", "parse_iso_date", "parse_work_weekdays", "region_name", "totals",
-    "valid_regions", "weekend_days",
+    "naefelser_fahrt", "normalize_region", "parse_iso_date", "parse_work_weekdays", "partial_holidays_for",
+    "region_name", "suggest_partial_holidays", "totals", "valid_regions", "weekend_days",
 ]
