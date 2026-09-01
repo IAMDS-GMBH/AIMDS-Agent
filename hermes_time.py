@@ -84,21 +84,62 @@ def get_easter_sunday(year: int) -> date:
     return easter_sunday(year)
 
 
-def get_public_holidays(year: int, state: str = "BW") -> Dict[date, str]:
-    """German public holidays (Feiertage) for a year and state code.
+def profile_calendar_hints() -> tuple:
+    """(region, partial_holidays) from the user's workdays profile — fail-open.
+
+    Region is the normalized code stored by ``workdays(action='configure')``
+    (e.g. ``DE-BY``, ``AT-W``); ``partial_holidays`` follows the AIS-277
+    contract: absent key = never clarified (keep filtering partials), ``[]``
+    = user confirmed none apply, a non-empty list = these municipal/partial
+    holidays apply and count as holidays. Any failure (no profile, memory
+    backend down, import problem) yields ``(None, None)`` — the legacy
+    HERMES_STATE/config-key chain then applies unchanged.
+    """
+    try:
+        from tools.workdays_tool import load_profile
+
+        profile = load_profile() or {}
+        region = str(profile["region"]) if profile.get("region") else None
+        partials = profile["partial_holidays"] if isinstance(profile.get("partial_holidays"), list) else None
+        return region, partials
+    except Exception:
+        return None, None
+
+
+def get_public_holidays(
+    year: int, state: str = "BW", *,
+    region: Optional[str] = None,
+    applicable_partial_holidays: Optional[list] = None,
+) -> Dict[date, str]:
+    """Public holidays for a year and state code (or full region code).
 
     Delegates to ``tools.workday_calendar`` — the same tables the ``workdays``
     tool uses, so the prompt line and the tool never disagree. Holidays that
-    apply only in parts of a state (``partial``) are left out here.
+    apply only in parts of a state (``partial``) are left out UNLESS their
+    name is in ``applicable_partial_holidays`` (the user confirmed they apply
+    — AIS-278; same case-insensitive predicate as ``calendar_days``).
+    ``region`` takes an already-normalized code (``DE-BY``, ``AT-W``,
+    ``CH-ZH``) and wins over the German-only ``state`` shorthand.
     """
     from tools.workday_calendar import KIND_PARTIAL, holidays_for, normalize_region
 
-    st = (state or "BW").strip().upper()
-    try:
-        region = normalize_region(f"DE-{st}")
-    except ValueError:
-        region = "DE"  # unknown code → nationwide holidays only
-    return {h.date: h.name for h in holidays_for(year, region) if h.kind != KIND_PARTIAL}
+    if region:
+        try:
+            resolved = normalize_region(region)
+        except ValueError:
+            resolved = "DE"
+    else:
+        st = (state or "BW").strip().upper()
+        try:
+            resolved = normalize_region(f"DE-{st}")
+        except ValueError:
+            resolved = "DE"  # unknown code → nationwide holidays only
+    applicable = {str(n).strip().lower() for n in (applicable_partial_holidays or ()) if str(n).strip()}
+    return {
+        h.date: h.name
+        for h in holidays_for(year, resolved)
+        if h.kind != KIND_PARTIAL or h.name.lower() in applicable
+    }
 
 
 def state_is_assumed() -> bool:
@@ -107,14 +148,34 @@ def state_is_assumed() -> bool:
     return _state_assumed
 
 
-def get_calendar_context(dt: Optional[datetime] = None, state: Optional[str] = None) -> Dict[str, Any]:
-    """Calculate comprehensive ISO-8601 calendar, week, day, and holiday details."""
+def get_calendar_context(
+    dt: Optional[datetime] = None, state: Optional[str] = None, *,
+    region: Optional[str] = None,
+    applicable_partial_holidays: Optional[list] = None,
+) -> Dict[str, Any]:
+    """Calculate comprehensive ISO-8601 calendar, week, day, and holiday details.
+
+    When neither ``state`` nor ``region`` is passed (the production case —
+    the system-prompt calendar block), the user's workdays profile is
+    consulted first (region + confirmed municipal ``partial_holidays``,
+    AIS-278) with the legacy HERMES_STATE/config chain as fallback.
+    """
     if dt is None:
         dt = now()
 
-    st_code = (state or _resolve_state_code()).upper()
-    assumed = state is None and state_is_assumed()
-    st_label = f"{st_code} (assumed — no state configured; clarify before any work-time calculation)" if assumed else st_code
+    if state is None and region is None:
+        region, applicable_partial_holidays = profile_calendar_hints()
+
+    if region:
+        # Profile regions are explicit user configuration — never "assumed".
+        country, _, sub = str(region).upper().partition("-")
+        st_code = sub if country == "DE" and sub else str(region).upper()
+        assumed = False
+        st_label = st_code
+    else:
+        st_code = (state or _resolve_state_code()).upper()
+        assumed = state is None and state_is_assumed()
+        st_label = f"{st_code} (assumed — no state configured; clarify before any work-time calculation)" if assumed else st_code
     iso_year, iso_week, iso_day = dt.isocalendar()
 
     day_de = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"][iso_day - 1]
@@ -124,7 +185,10 @@ def get_calendar_context(dt: Optional[datetime] = None, state: Optional[str] = N
     monday_date = curr_date - timedelta(days=iso_day - 1)
     sunday_date = monday_date + timedelta(days=6)
 
-    holidays = get_public_holidays(dt.year, st_code)
+    holidays = get_public_holidays(
+        dt.year, st_code, region=region,
+        applicable_partial_holidays=applicable_partial_holidays,
+    )
     today_holiday = holidays.get(curr_date)
 
     upcoming = [(d, name) for d, name in holidays.items() if d >= curr_date]
@@ -156,6 +220,7 @@ def get_calendar_context(dt: Optional[datetime] = None, state: Optional[str] = N
         "monday_date": monday_date.strftime("%Y-%m-%d"),
         "sunday_date": sunday_date.strftime("%Y-%m-%d"),
         "state": st_code,
+        "region": region or None,
         "today_holiday": today_holiday,
         "next_holiday": next_holiday_str,
         "formatted_prompt": prompt_text,
