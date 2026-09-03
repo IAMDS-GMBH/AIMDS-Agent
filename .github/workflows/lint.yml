@@ -9,6 +9,10 @@ name: Lint (ruff + ty)
 #      enforcement fails.
 
 on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
   release:
     types: [published]
 
@@ -17,7 +21,7 @@ permissions:
   pull-requests: write # needed to post/update PR comments
 
 concurrency:
-  group: lint-${{ github.ref }}
+  group: lint-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -93,6 +97,10 @@ jobs:
           echo "base ty:   $(wc -c < .lint-reports/base/ty.json) bytes"
 
       - name: Generate diff summary
+        env:
+          # Branch names are attacker-controlled on PRs; pass via env instead
+          # of interpolating into the shell script (actionlint: expression).
+          HEAD_REF: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
         run: |
           python scripts/lint_diff.py \
             --base-ruff .lint-reports/base/ruff.json \
@@ -100,7 +108,7 @@ jobs:
             --base-ty   .lint-reports/base/ty.json \
             --head-ty   .lint-reports/head/ty.json \
             --base-ref  "${{ steps.base.outputs.ref }}" \
-            --head-ref  "${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}" \
+            --head-ref  "$HEAD_REF" \
             --output    .lint-reports/summary.md
           cat .lint-reports/summary.md >> "$GITHUB_STEP_SUMMARY"
 

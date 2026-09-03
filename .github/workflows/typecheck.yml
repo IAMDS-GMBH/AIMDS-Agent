@@ -2,8 +2,33 @@
 name: Typecheck
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "ui-tui/**"
+      - "web/**"
+      - "apps/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/typecheck.yml"
+  push:
+    branches: [main]
+    paths:
+      - "ui-tui/**"
+      - "web/**"
+      - "apps/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/typecheck.yml"
   release:
     types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: typecheck-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   typecheck:

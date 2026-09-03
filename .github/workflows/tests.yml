@@ -1,6 +1,15 @@
 name: Tests
 
 on:
+  # PR gate: opened / synchronize / reopened (GitHub defaults). Feature
+  # branches are deliberately NOT in `push`, so opening a PR or pushing a
+  # commit to it starts exactly one run — never a push run plus a PR run.
+  pull_request:
+    branches: [main]
+  # Post-merge run on main keeps the duration cache (save-durations) fresh
+  # and catches merge-order breakage.
+  push:
+    branches: [main]
   release:
     types: [published]
   workflow_dispatch:
@@ -8,9 +17,10 @@ on:
 permissions:
   contents: read
 
-# Cancel in-progress runs for the same PR/branch
+# One run per PR (or per ref for pushes); a newer commit cancels the older
+# run of the same PR. Tests are safe to cancel — no deploy side effects.
 concurrency:
-  group: tests-${{ github.ref }}
+  group: tests-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -209,3 +219,24 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+
+  # Single aggregate status for branch rulesets: require "Tests passed"
+  # instead of six matrix contexts + e2e. Runs always() so a failed or
+  # cancelled dependency still yields a reported (failing) status instead
+  # of a check stuck in "pending".
+  tests-passed:
+    name: Tests passed
+    needs: [test, e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Evaluate matrix + e2e results
+        run: |
+          echo "test: ${{ needs.test.result }}"
+          echo "e2e:  ${{ needs.e2e.result }}"
+          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.e2e.result }}" != "success" ]; then
+            echo "::error::At least one test job did not succeed."
+            exit 1
+          fi
+          echo "All test jobs succeeded."
