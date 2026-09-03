@@ -118,6 +118,16 @@ class TestGmiModelCatalog:
             },
         )
         monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda api_key, base_url: None)
+        # provider_model_ids also tries the generic provider-profile path
+        # (providers.get_provider_profile("gmi").fetch_models), which really
+        # calls GMI's /v1/models — with network access that returned the live
+        # catalog and made this test flaky. Stub it so the static fallback is
+        # exercised hermetically.
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("gmi")
+        if profile is not None:
+            monkeypatch.setattr(profile, "fetch_models", lambda **_kwargs: None)
 
         assert provider_model_ids("gmi") == list(_PROVIDER_MODELS["gmi"])
 
