@@ -686,7 +686,31 @@ export const de
       connectAnother: 'Weiteren Anbieter verbinden',
       otherProviders: 'Andere Anbieter',
       noProviderKeys: 'Keine Anbieter-API-Schlüssel verfügbar.',
-      loading: 'Lade Anbieter...'
+      loading: 'Lade Anbieter...',
+      suite: {
+        title: 'AIMDS-Suite-Umgebungen',
+        intro: 'Base-URL je Umgebung. Mit Keycloak-SSO anmelden, um den API-Schlüssel zu holen oder zu erneuern.',
+        connected: 'Verbunden',
+        needsReauth: 'Neu anmelden erforderlich',
+        notConfigured: 'Nicht konfiguriert',
+        unreachable: 'Nicht geprüft',
+        signInSso: 'Mit SSO anmelden',
+        reauthenticate: 'Neu anmelden',
+        enterUrlFirst: 'Zuerst die Base-URL eintragen',
+        saveUrls: 'Anbieter-URLs speichern',
+        saving: 'Speichere…',
+        saved: 'AIMDS-Suite-Anbieter-URLs gespeichert',
+        checking: 'Prüfe…',
+        reason: {
+          keyMissing: 'Kein API-Schlüssel hinterlegt',
+          urlMissing: 'Keine Base-URL konfiguriert',
+          envMismatch: 'Umgebungsvariable zeigt auf einen anderen Host als die konfigurierte URL',
+          unauthorized: 'Der hinterlegte Schlüssel wurde vom Server abgelehnt',
+          runtime: 'Die laufende Sitzung hat einen Authentifizierungsfehler erhalten',
+          network: 'Server nicht erreichbar',
+          ok: 'Schlüssel akzeptiert'
+        }
+      }
     },
     sessions: {
       loading: 'Lade archivierte Sitzungen…',

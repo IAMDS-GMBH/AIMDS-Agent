@@ -3,6 +3,7 @@ import { JsonRpcGatewayClient } from '@hermes/shared'
 import type {
   ActionResponse,
   ActionStatusResponse,
+  AimdsSuiteStatusResponse,
   AnalyticsResponse,
   AudioSpeakResponse,
   AudioTranscriptionResponse,
@@ -435,6 +436,21 @@ export function keycloakLogin(params: {
   redirectUri?: string
 }): Promise<{ ok: boolean; apiKey: string; baseUrl: string }> {
   return window.hermesDesktop.keycloakLogin(params)
+}
+
+export function getAimdsSuiteStatus(options: { probe?: boolean } = {}): Promise<AimdsSuiteStatusResponse> {
+  return window.hermesDesktop.api<AimdsSuiteStatusResponse>({
+    ...profileScoped(),
+    path: `/api/providers/aimds-suite/status${options.probe ? '?probe=true' : ''}`
+  })
+}
+
+export function completeAimdsSuiteReauth(env: string): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
+    path: `/api/providers/aimds-suite/${encodeURIComponent(env)}/reauth-complete`,
+    method: 'POST'
+  })
 }
 
 export function validateProviderCredential(

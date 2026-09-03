@@ -473,6 +473,35 @@ export function DesktopController() {
   }, [])
 
   const { gatewayLogLines, inferenceStatus, statusSnapshot } = useStatusSnapshot(gatewayState, requestGateway)
+  const notifiedSuiteAuthRef = useRef<Record<string, number>>({})
+
+  // AIS-286: /api/status.provider_auth carries runtime 401s of AIMDS-Suite
+  // environments (LLM or IAMDS MCP). Surface each new failure once so the
+  // user re-authenticates in Settings → Providers instead of hitting
+  // "no available entries" in silence.
+  useEffect(() => {
+    const flags = statusSnapshot?.provider_auth ?? {}
+    const seen = notifiedSuiteAuthRef.current
+
+    for (const [providerId, flag] of Object.entries(flags)) {
+      if (!flag || seen[providerId] === flag.since) {
+        continue
+      }
+
+      seen[providerId] = flag.since
+      notify({
+        kind: 'error',
+        message: `${providerId}: ${flag.source === 'mcp' ? 'AIMDS MCP' : 'LiteLLM'} rejected the stored API key (HTTP ${flag.http_status ?? 401}). Re-authenticate via Settings → Providers → AIMDS-Suite.`,
+        title: 'AIMDS-Suite: re-authentication required'
+      })
+    }
+
+    for (const providerId of Object.keys(seen)) {
+      if (!(providerId in flags)) {
+        delete seen[providerId]
+      }
+    }
+  }, [statusSnapshot?.provider_auth])
 
   const updateActiveSessionRuntimeInfo = useCallback(
     (info: { branch?: string; cwd?: string }) => {

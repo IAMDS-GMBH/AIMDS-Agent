@@ -1570,7 +1570,50 @@ async def get_status():
         "active_sessions": active_sessions,
         "auth_required": auth_required,
         "auth_providers": auth_providers,
+        # Runtime auth failures of AIMDS-Suite environments (401 from LiteLLM
+        # or the IAMDS MCP). Desktop polls this every 15 s and raises the
+        # "re-authenticate" prompt (AIS-286). Cleared by apply_reauth().
+        "provider_auth": _suite_provider_auth_flags(),
     }
+
+
+def _suite_provider_auth_flags() -> Dict[str, Any]:
+    try:
+        from hermes_cli.iamds_suite import suite_auth_failures
+
+        return suite_auth_failures()
+    except Exception:
+        return {}
+
+
+@app.get("/api/providers/aimds-suite/status")
+async def get_aimds_suite_status(request: Request, probe: bool = False, profile: Optional[str] = None):
+    """Tri-state status of every AIMDS-Suite environment (see hermes_cli.iamds_suite).
+
+    ``probe=true`` performs a live GET against LiteLLM with the stored key and
+    therefore requires the dashboard token; the cheap variant is unauthenticated
+    like ``/api/status``.
+    """
+    if probe:
+        _require_token(request)
+    from hermes_cli.iamds_suite import all_suite_statuses
+
+    with _profile_scope(profile):
+        return await asyncio.get_running_loop().run_in_executor(None, lambda: all_suite_statuses(probe=probe))
+
+
+@app.post("/api/providers/aimds-suite/{env}/reauth-complete")
+async def complete_aimds_suite_reauth(env: str, request: Request, profile: Optional[str] = None):
+    """Make a freshly stored key/URL effective without a restart (desktop SSO path)."""
+    _require_token(request)
+    from hermes_cli.iamds_suite import apply_reauth, canonical_suite_provider
+
+    provider = canonical_suite_provider(env)
+    if not provider:
+        raise HTTPException(status_code=400, detail=f"Unknown AIMDS-Suite environment {env!r}")
+    with _profile_scope(profile):
+        result = await asyncio.get_running_loop().run_in_executor(None, lambda: apply_reauth(provider))
+    return {"ok": True, **result}
 
 
 @app.get("/api/subagents")
@@ -3408,6 +3451,10 @@ def _apply_model_assignment_sync(
 def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     """Reverse _normalize_config_for_web before saving.
 
+    ``config_parse_error`` is a read-only marker appended by ``GET /api/config``
+    (see get_config); clients round-trip the whole record, so strip it here
+    or it lands as an empty section in config.yaml (AIS-286).
+
     Reconstructs ``model`` as a dict by reading the current on-disk config
     to recover model subkeys (provider, base_url, api_mode, etc.) that were
     stripped from the GET response.  The frontend only sees model as a flat
@@ -3417,6 +3464,9 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     as ``context_length``.  A value of 0 or absent means "auto-detect" (omitted
     from the dict so get_model_context_length() uses its normal resolution).
     """
+    if isinstance(config, dict):
+        config = dict(config)
+        config.pop("config_parse_error", None)
     config = dict(config)
     # Remove any _model_meta that might have leaked in (shouldn't happen
     # with the stripped GET response, but be defensive)
@@ -3461,8 +3511,18 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
 async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
     try:
         with _profile_scope(body.profile or profile):
-            save_config(_denormalize_config_from_web(body.config))
-        return {"ok": True}
+            saved = _denormalize_config_from_web(body.config)
+            save_config(saved)
+            env_sync: Dict[str, str] = {}
+            if isinstance(body.config, dict) and "providers" in body.config:
+                # providers.<aimds-suite-*>.base_url is authoritative; mirror it
+                # into the *_BASE_URL env vars so nothing else can drift (AIS-286).
+                try:
+                    from hermes_cli.iamds_suite import sync_suite_env_from_providers
+                    env_sync = sync_suite_env_from_providers(saved)
+                except Exception:
+                    _log.debug("suite env sync after config save failed", exc_info=True)
+        return {"ok": True, "env_sync": env_sync}
     except HTTPException:
         raise
     except Exception:
@@ -3476,10 +3536,15 @@ async def get_env_vars(profile: Optional[str] = None):
         env_on_disk = load_env()
     channel_keys = _channel_managed_env_keys()
     result = {}
+    from hermes_cli.auth import has_usable_secret as _has_usable_secret
     for var_name, info in OPTIONAL_ENV_VARS.items():
         value = env_on_disk.get(var_name)
+        # Secrets count as set only when they look usable (no placeholders,
+        # no 1-3 char leftovers) — the desktop card derives "connected" from
+        # this flag (AIS-286).
+        is_set = bool(value) and (_has_usable_secret(value) if info.get("password") else True)
         result[var_name] = {
-            "is_set": bool(value),
+            "is_set": is_set,
             "redacted_value": redact_key(value) if value else None,
             "description": info.get("description", ""),
             "url": info.get("url"),
@@ -3581,6 +3646,25 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
             return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
         except Exception:
             return {"ok": False, "reachable": False, "message": f"Could not reach {url}."}
+
+    try:
+        from hermes_cli.iamds_suite import SUITE_ENVIRONMENTS, probe_suite_endpoint, resolve_suite_endpoint
+
+        _suite_env = next((e for e in SUITE_ENVIRONMENTS.values() if e.key_env == key), None)
+    except Exception:
+        _suite_env = None
+    if _suite_env is not None:
+        ep = resolve_suite_endpoint(_suite_env.provider_id, allow_default=False)
+        if not ep.base_url:
+            return {"ok": False, "reachable": False, "message": f"Configure the {_suite_env.label} base URL first."}
+        code, err = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: probe_suite_endpoint(ep.base_url, value)
+        )
+        if code is None:
+            return {"ok": False, "reachable": False, "message": f"Could not reach {ep.base_url}: {err}"}
+        if code in (401, 403):
+            return {"ok": False, "reachable": True, "message": f"{_suite_env.label} rejected this key (HTTP {code})."}
+        return {"ok": code < 500, "reachable": True, "message": "" if code < 500 else f"HTTP {code} from {ep.base_url}"}
 
     probe = _CREDENTIAL_PROBES.get(key)
     if not probe:
@@ -5474,16 +5558,16 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                 "last_refresh": raw.get("last_refresh"),
             }
         if provider_id == "iamds-keycloak":
-            try:
-                from hermes_cli.config import get_env_value
-                api_key = (get_env_value("IAMDS_LITELLM_API_KEY") or "").strip()
-            except Exception:
-                api_key = os.getenv("IAMDS_LITELLM_API_KEY", "").strip()
+            from hermes_cli.iamds_suite import STATE_CONNECTED, suite_environment_status
+            st = suite_environment_status("aimds-suite-prod", probe=False, include_mcp=False)
             return {
-                "logged_in": bool(api_key),
+                "logged_in": st["state"] == STATE_CONNECTED,
+                "state": st["state"],
+                "reason": st["reason"],
+                "base_url": st["base_url"],
                 "source": "iamds_keycloak",
                 "source_label": "IAMDS LiteLLM (Keycloak SSO)",
-                "token_preview": _truncate_token(api_key),
+                "token_preview": st.get("key_preview") or "",
                 "expires_at": None,
                 "has_refresh_token": False,
             }
@@ -6359,22 +6443,23 @@ _IAMDS_KEYCLOAK_DEFAULT_REALM = "aimds"
 _IAMDS_KEYCLOAK_DEFAULT_CLIENT_ID = "hermes-app"
 
 
-def _iamds_keycloak_base_url() -> str:
-    """Derive the IAMDS suite base URL from IAMDS_LITELLM_BASE_URL.
+def _iamds_keycloak_base_url(env: str = "aimds-suite-prod") -> str:
+    """Derive the IAMDS suite root URL for a Suite environment.
 
-    Strips the /litellm (or /litellm/v1) suffix so the caller can append
-    Keycloak paths like /auth/realms/{realm}/protocol/openid-connect/auth.
-    Raises RuntimeError if the env var is unset.
+    Uses the same precedence as the runtime (config.yaml providers.<slug>
+    before the env var, never a default host — AIS-286) and strips the
+    /litellm (or /litellm/v1) suffix so the caller can append Keycloak paths
+    like /auth/realms/{realm}/protocol/openid-connect/auth.
+    Raises RuntimeError if no base URL is configured.
     """
-    try:
-        from hermes_cli.config import get_env_value
-        raw = (get_env_value("IAMDS_LITELLM_BASE_URL") or "").strip().rstrip("/")
-    except Exception:
-        raw = os.getenv("IAMDS_LITELLM_BASE_URL", "").strip().rstrip("/")
+    from hermes_cli.iamds_suite import resolve_suite_endpoint
+
+    ep = resolve_suite_endpoint(env, allow_default=False)
+    raw = ep.base_url.strip().rstrip("/")
     if not raw:
         raise RuntimeError(
-            "IAMDS_LITELLM_BASE_URL is not set. "
-            "Configure it in Settings → IAMDS LiteLLM before connecting via Keycloak."
+            f"No base URL configured for {ep.label}. "
+            "Configure it in Settings → Providers → AIMDS-Suite before connecting via Keycloak."
         )
     for suffix in ("/litellm/v1", "/litellm", "/auth"):
         if raw.endswith(suffix):
@@ -6402,16 +6487,18 @@ def _iamds_keycloak_extract_api_key(access_token: str) -> str:
     return key
 
 
-def _start_iamds_keycloak_loopback_flow() -> Dict[str, Any]:
-    """Begin the IAMDS Keycloak loopback PKCE flow.
+def _start_iamds_keycloak_loopback_flow(env: str = "aimds-suite-prod") -> Dict[str, Any]:
+    """Begin the IAMDS Keycloak loopback PKCE flow for one Suite environment.
 
-    Derives the Keycloak endpoint from IAMDS_LITELLM_BASE_URL, binds a local
-    callback server, and spawns a background worker. Returns the authorize URL
-    for the client to open in the browser.
+    Derives the Keycloak endpoint from the environment's configured base URL,
+    binds a local callback server, and spawns a background worker. Returns
+    the authorize URL for the client to open in the browser.
     """
     from hermes_cli import auth as hauth
+    from hermes_cli.iamds_suite import SUITE_ENVIRONMENTS, canonical_suite_provider
 
-    base_url = _iamds_keycloak_base_url()
+    env = canonical_suite_provider(env) or "aimds-suite-prod"
+    base_url = _iamds_keycloak_base_url(env)
     realm = os.getenv("IAMDS_KEYCLOAK_REALM", _IAMDS_KEYCLOAK_DEFAULT_REALM)
     client_id = os.getenv("IAMDS_KEYCLOAK_CLIENT_ID", _IAMDS_KEYCLOAK_DEFAULT_CLIENT_ID)
 
@@ -6462,6 +6549,8 @@ def _start_iamds_keycloak_loopback_flow() -> Dict[str, Any]:
     sess["state"] = state
     sess["token_endpoint"] = token_endpoint
     sess["client_id"] = client_id
+    sess["suite_env"] = env
+    sess["target_key_env"] = SUITE_ENVIRONMENTS[env].key_env
     sess["expires_at"] = time.time() + _IAMDS_KEYCLOAK_LOOPBACK_TIMEOUT_SECONDS
 
     threading.Thread(
@@ -6560,12 +6649,20 @@ def _iamds_keycloak_loopback_worker(session_id: str) -> None:
     if _cancelled():
         return
 
+    target_key_env = str(sess.get("target_key_env") or "IAMDS_LITELLM_API_KEY")
     try:
         from hermes_cli.config import save_env_value
-        save_env_value("IAMDS_LITELLM_API_KEY", api_key)
+        save_env_value(target_key_env, api_key)
     except Exception as exc:
-        _fail(f"Failed to save IAMDS_LITELLM_API_KEY: {exc}")
+        _fail(f"Failed to save {target_key_env}: {exc}")
         return
+    # Make the new key effective right away: pool reset, MCP reconnect,
+    # live sessions rebuild their client (AIS-286 self-healing).
+    try:
+        from hermes_cli.iamds_suite import apply_reauth
+        apply_reauth(str(sess.get("suite_env") or "aimds-suite-prod"))
+    except Exception:
+        _log.debug("apply_reauth after Keycloak login failed", exc_info=True)
 
     with _oauth_sessions_lock:
         s = _oauth_sessions.get(session_id)
@@ -6957,8 +7054,9 @@ async def start_oauth_login(provider_id: str, request: Request):
                 None, _start_xai_loopback_flow
             )
         if catalog_entry["flow"] == "loopback" and provider_id == "iamds-keycloak":
+            _suite_env = str(request.query_params.get("env") or "aimds-suite-prod")
             return await asyncio.get_running_loop().run_in_executor(
-                None, _start_iamds_keycloak_loopback_flow
+                None, lambda: _start_iamds_keycloak_loopback_flow(_suite_env)
             )
     except HTTPException:
         raise

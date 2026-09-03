@@ -3790,6 +3790,28 @@ def run_conversation(
                     print(f"{agent.log_prefix}     • Check credits / billing: https://portal.nousresearch.com")
                     print(f"{agent.log_prefix}     • Verify stored credentials: {_dhh}/auth.json")
                     print(f"{agent.log_prefix}     • Switch providers temporarily: /model <model> --provider openrouter")
+                if status_code in (401, 403) and not _retry.iamds_auth_retry_attempted:
+                    try:
+                        from hermes_cli.iamds_suite import is_suite_provider as _is_suite
+                    except Exception:
+                        _is_suite = None
+                    if _is_suite is not None and _is_suite(getattr(agent, "provider", "")):
+                        _retry.iamds_auth_retry_attempted = True
+                        if agent._try_refresh_iamds_client_credentials():
+                            agent._buffer_vprint("🔐 AIMDS-Suite credentials refreshed from disk after 401. Retrying request...")
+                            continue
+                        # Nothing new on disk: record the failure so the desktop /
+                        # dashboard card flips to "needs re-auth" (AIS-286).
+                        try:
+                            from hermes_cli.iamds_suite import mark_suite_auth_failure as _mark_suite
+
+                            _mark_suite(agent.provider, status_code, str(api_error)[:300], source="llm")
+                        except Exception:
+                            pass
+                        agent._buffer_vprint(
+                            f"🔐 AIMDS-Suite {status_code}: the virtual key was rejected by LiteLLM. "
+                            "Re-authenticate via Settings → Providers → AIMDS-Suite → Re-authenticate (Keycloak SSO)."
+                        )
                 if (
                     agent.provider == "copilot"
                     and status_code == 401

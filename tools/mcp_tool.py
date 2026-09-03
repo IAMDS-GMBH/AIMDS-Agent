@@ -2273,6 +2273,7 @@ class MCPServerTask:
                             self.name,
                             exc,
                         )
+                        _flag_iamds_mcp_auth_failure(self.name, exc, getattr(self, "_config", None))
                         self._error = exc
                         self._ready.set()
                         return
@@ -2513,6 +2514,40 @@ def _unwrap_exception(exc: BaseException) -> BaseException:
     return current
 
 
+def _iamds_provider_for_server(server_name: str, config: Optional[dict] = None) -> Optional[str]:
+    """Return the canonical aimds-suite-* provider a server is tagged with, else None."""
+    try:
+        from hermes_cli.iamds_suite import canonical_suite_provider
+
+        cfg = config if isinstance(config, dict) else (_load_mcp_config() or {}).get(server_name) or {}
+        tag = str(cfg.get("provider") or "").strip().lower()
+        if tag in ("iamds", "aimds") or server_name in ("AIMDSSuiteMCP", "AIMDS", "IAMDS"):
+            # Untagged/short-tagged servers follow the active model provider.
+            try:
+                from hermes_cli.config import load_config
+
+                active = str(((load_config() or {}).get("model") or {}).get("provider") or "")
+            except Exception:
+                active = ""
+            return canonical_suite_provider(active) or "aimds-suite-prod"
+        return canonical_suite_provider(tag)
+    except Exception:
+        return None
+
+
+def _flag_iamds_mcp_auth_failure(server_name: str, exc: BaseException, config: Optional[dict] = None) -> None:
+    """Record an AIMDS MCP 401 so the desktop card flips to "needs re-auth" (AIS-286)."""
+    provider = _iamds_provider_for_server(server_name, config)
+    if not provider:
+        return
+    try:
+        from hermes_cli.iamds_suite import mark_suite_auth_failure
+
+        mark_suite_auth_failure(provider, 401, f"{server_name}: {exc}", source="mcp")
+    except Exception:
+        pass
+
+
 def _is_auth_error(exc: BaseException) -> bool:
     """Return True if ``exc`` indicates an MCP OAuth failure.
 
@@ -2644,14 +2679,24 @@ def _handle_auth_error_and_retry(
     # needs_reauth error. Bumps the circuit breaker so the model stops
     # retrying the tool.
     _bump_server_error(server_name)
+    _iamds_provider = _iamds_provider_for_server(server_name)
+    if _iamds_provider:
+        _flag_iamds_mcp_auth_failure(server_name, exc)
+        _reauth_hint = (
+            f"MCP server '{server_name}' rejected the AIMDS-Suite virtual key (401). "
+            "Ask the user to re-authenticate via Settings → Providers → AIMDS-Suite → "
+            "Re-authenticate (Keycloak SSO). Do NOT retry this tool."
+        )
+    else:
+        _reauth_hint = (
+            f"MCP server '{server_name}' requires re-authentication. "
+            f"Run `hermes mcp login {server_name}` (or delete the tokens "
+            f"file under ~/.hermes/mcp-tokens/ and restart). Do NOT retry "
+            f"this tool — ask the user to re-authenticate."
+        )
     return json.dumps(
         {
-            "error": (
-                f"MCP server '{server_name}' requires re-authentication. "
-                f"Run `hermes mcp login {server_name}` (or delete the tokens "
-                f"file under ~/.hermes/mcp-tokens/ and restart). Do NOT retry "
-                f"this tool — ask the user to re-authenticate."
-            ),
+            "error": _reauth_hint,
             "needs_reauth": True,
             "server": server_name,
         },
@@ -3172,6 +3217,22 @@ def _resolve_iamds_provider_credentials(
                 ).strip()
             except Exception:
                 api_key = str(os.environ.get(key_env, "")).strip()
+
+    if not base_url or not api_key:
+        # Single source of truth for AIMDS-Suite environments (AIS-286):
+        # config.yaml providers.<slug> beats the env var, no cross-env key
+        # fallback. Legacy iamds-litellm* slugs resolve to their successor.
+        try:
+            from hermes_cli.iamds_suite import is_suite_provider, resolve_suite_endpoint
+
+            if is_suite_provider(provider_norm):
+                _ep = resolve_suite_endpoint(provider_norm, config=cfg, allow_default=False)
+                if not base_url and _ep.base_url:
+                    base_url = _ep.base_url
+                if not api_key and _ep.api_key:
+                    api_key = _ep.api_key
+        except Exception:
+            pass
 
     if not base_url:
         base_env = _IAMDS_BASE_ENV_VAR.get(provider_norm, "")

@@ -7670,6 +7670,36 @@ def _(rid, params: dict) -> dict:
 # ── Methods: tools & system ──────────────────────────────────────────
 
 
+def refresh_iamds_credentials_for_sessions(provider: str) -> int:
+    """After an AIMDS-Suite re-auth: rebuild the OpenAI client of every live
+    session on that provider and refresh its tool snapshot (AIS-286).
+
+    Returns the number of sessions whose credentials actually changed.
+    """
+    refreshed = 0
+    try:
+        from hermes_cli.iamds_suite import canonical_suite_provider
+
+        target = canonical_suite_provider(provider)
+    except Exception:
+        target = None
+    if not target:
+        return 0
+    for sid, session in list(_sessions.items()):
+        agent = session.get("agent") if isinstance(session, dict) else None
+        if agent is None:
+            continue
+        try:
+            if canonical_suite_provider(getattr(agent, "provider", "")) != target:
+                continue
+            if agent._try_refresh_iamds_client_credentials():
+                refreshed += 1
+                _refresh_cached_agent_tools(sid)
+        except Exception:
+            logger.debug("IAMDS credential refresh failed for session %s", sid, exc_info=True)
+    return refreshed
+
+
 def _refresh_cached_agent_tools(session_id: str | None = None) -> None:
     """Refresh cached agent tool snapshots from current registry state.
 

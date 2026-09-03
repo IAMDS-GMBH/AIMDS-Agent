@@ -3790,6 +3790,69 @@ class AIAgent:
 
         return True
 
+    def _try_refresh_iamds_client_credentials(self) -> bool:
+        """Re-read the AIMDS-Suite key/URL from disk and rebuild the client.
+
+        Called after a 401/403 from an aimds-suite-* provider: the user may
+        have re-authenticated via Keycloak SSO (new key in ~/.hermes/.env) or
+        fixed the base URL in the settings while this session was running.
+        Returns True only when something actually changed and the shared
+        client was rebuilt (AIS-286).
+        """
+        try:
+            from hermes_cli.iamds_suite import is_suite_provider, resolve_suite_endpoint
+        except Exception:
+            return False
+        if not is_suite_provider(getattr(self, "provider", "")):
+            return False
+        try:
+            from hermes_cli.config import invalidate_env_cache
+
+            invalidate_env_cache()
+        except Exception:
+            pass
+        try:
+            from hermes_cli.env_loader import load_hermes_dotenv
+
+            load_hermes_dotenv()
+        except Exception:
+            pass
+        try:
+            ep = resolve_suite_endpoint(self.provider)
+        except Exception as exc:
+            logger.debug("IAMDS credential refresh: resolve failed: %s", exc)
+            return False
+        if not ep.api_key or not ep.base_url:
+            return False
+        new_key = ep.api_key.strip()
+        new_base = ep.base_url.strip().rstrip("/")
+        if new_key == (self.api_key or "") and new_base == (self.base_url or "").rstrip("/"):
+            return False
+
+        self.api_key = new_key
+        self.base_url = new_base
+        self._client_kwargs["api_key"] = new_key
+        self._client_kwargs["base_url"] = new_base
+        try:
+            self._apply_client_headers_for_base_url(new_base)
+        except Exception:
+            pass
+        if not self._replace_primary_openai_client(reason="iamds_reauth"):
+            return False
+        try:
+            from agent.credential_pool import load_pool
+
+            self._credential_pool = load_pool(self.provider)
+        except Exception:
+            pass
+        try:
+            from hermes_cli.iamds_suite import clear_suite_auth_failure
+
+            clear_suite_auth_failure(self.provider)
+        except Exception:
+            pass
+        return True
+
     def _try_refresh_copilot_client_credentials(self) -> bool:
         """Refresh Copilot credentials and rebuild the shared OpenAI client.
 

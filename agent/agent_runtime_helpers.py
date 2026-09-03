@@ -2375,7 +2375,17 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
     if isinstance(body, dict):
         payload = body.get("error") if isinstance(body.get("error"), dict) else body
     if isinstance(payload, dict):
-        reason = payload.get("code") or payload.get("type") or payload.get("error")
+        # LiteLLM/OpenAI-compatible proxies put the HTTP status into ``code``
+        # ("401") and the actual failure class into ``type``
+        # ("token_not_found_in_db"). A bare number carries no information for
+        # the credential pool's terminal-failure detection, so prefer the
+        # symbolic field when the code is numeric (AIS-286).
+        _code = payload.get("code")
+        _type = payload.get("type")
+        if isinstance(_code, str) and _code.strip().isdigit() and isinstance(_type, str) and _type.strip():
+            reason = _type
+        else:
+            reason = _code or _type or payload.get("error")
         if isinstance(reason, str) and reason.strip():
             context["reason"] = reason.strip()
         message = payload.get("message") or payload.get("error_description")

@@ -600,6 +600,33 @@ export interface PlatformStatus {
   updated_at: string
 }
 
+export type AimdsSuiteState = 'connected' | 'needs_reauth' | 'not_configured' | 'unreachable'
+
+export interface AimdsSuiteEnvStatus {
+  base_url: string
+  base_url_source: '' | 'config' | 'default' | 'env'
+  default_base_url: string
+  env_base_url: string
+  env_mismatch: boolean
+  http_status: null | number
+  id: string
+  key_env: string
+  key_present: boolean
+  key_preview: string
+  key_source: string
+  label: string
+  mcp?: { connected: boolean | null; name: string; url: string; url_matches: boolean | null }
+  probe_error: string
+  reason: string
+  runtime_auth_failure: null | { http_status: null | number; message: string; since: number; source: string; state: string }
+  state: AimdsSuiteState
+}
+
+export interface AimdsSuiteStatusResponse {
+  checked_at: string
+  environments: AimdsSuiteEnvStatus[]
+}
+
 export interface StatusResponse {
   active_sessions: number
   auth_providers?: string[]
@@ -616,6 +643,9 @@ export interface StatusResponse {
   gateway_updated_at: string | null
   hermes_home: string
   latest_config_version: number
+  // Runtime auth failures of AIMDS-Suite environments keyed by provider id
+  // (401 from LiteLLM or the IAMDS MCP); cleared by a successful re-auth.
+  provider_auth?: Record<string, { http_status: null | number; message: string; since: number; source: string; state: string }>
   release_date: string
   started_at?: number
   uptime_seconds?: number
