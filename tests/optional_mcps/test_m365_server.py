@@ -493,13 +493,26 @@ class TestRegression_ScopeTiering:
     def test_all_scopes_is_base_plus_admin(self):
         assert set(server.ALL_SCOPES) == set(server.BASE_SCOPES) | set(server.ADMIN_SCOPES)
 
-    def test_initiate_login_defaults_to_base_scopes(self):
+    def test_initiate_login_defaults_to_self_consent_scopes(self):
+        """AIS-286: the default sign-in requests only tier 0 so non-admins never
+        hit "Need admin approval"; org-tier scopes arrive silently later."""
         mock_app = MagicMock()
         mock_app.initiate_device_flow.return_value = {"user_code": "ABC123", "verification_uri": "https://example.com"}
         with patch.object(server, "_get_msal_app", return_value=mock_app):
             res = server.m365_initiate_login()
             assert res["requested_admin_scopes"] is False
-            mock_app.initiate_device_flow.assert_called_once_with(scopes=server.BASE_SCOPES)
+            assert res["requested_tier"] == "self"
+            mock_app.initiate_device_flow.assert_called_once_with(scopes=server.LOGIN_SCOPES)
+            assert server.LOGIN_SCOPES == server.SELF_CONSENT_SCOPES
+
+    def test_initiate_login_scope_tier_standard_and_invalid(self):
+        mock_app = MagicMock()
+        mock_app.initiate_device_flow.return_value = {"user_code": "ABC123", "verification_uri": "https://example.com"}
+        with patch.object(server, "_get_msal_app", return_value=mock_app):
+            res = server.m365_initiate_login(scope_tier="standard")
+            assert res["requested_tier"] == "standard"
+            mock_app.initiate_device_flow.assert_called_once_with(scopes=server.STANDARD_SCOPES)
+            assert "error" in server.m365_initiate_login(scope_tier="root")
 
     def test_initiate_login_requests_all_scopes_when_admin_opted_in(self):
         mock_app = MagicMock()
@@ -698,3 +711,161 @@ def test_initiate_login_returns_user_code_and_flow_data():
     assert res["flow_data"] is flow
     assert "flow_data" in res["message"]
     assert "unchanged" in res["message"]
+
+
+# --------------------------------------------------------------------------- AIS-286 consent tiers
+
+class TestConsentTiers:
+    # Verified against the Graph permissions reference (2026-09): delegated
+    # scopes whose "Admin consent required" column is Yes.
+    ADMIN_CONSENT_REQUIRED = {
+        "Chat.ReadWrite", "OnlineMeetings.Read", "Presence.Read", "Mail.ReadWrite.Shared",
+        "Mail.Send.Shared", "Calendars.ReadWrite.Shared", "Tasks.ReadWrite",
+        "User.Read.All", "Directory.Read.All",
+    }
+
+    def test_self_consent_tier_has_no_admin_required_scopes(self):
+        assert not (set(server.SELF_CONSENT_SCOPES) & self.ADMIN_CONSENT_REQUIRED)
+        assert set(server.ORG_CONSENT_SCOPES) <= self.ADMIN_CONSENT_REQUIRED
+
+    def test_scope_sources_agree(self):
+        """manifest.yaml (dashboard/CLI login) == server LOGIN_SCOPES == hermes_cli.m365_auth."""
+        import yaml
+        from hermes_cli import m365_auth
+
+        manifest = yaml.safe_load((server_path.parent / "manifest.yaml").read_text(encoding="utf-8"))
+        assert manifest["auth"]["scopes"] == server.LOGIN_SCOPES == m365_auth.M365_LOGIN_SCOPES
+        assert server.SELF_CONSENT_SCOPES == m365_auth.M365_SELF_CONSENT_SCOPES
+        assert server.ORG_CONSENT_SCOPES == m365_auth.M365_ORG_CONSENT_SCOPES
+        assert server.ADMIN_SCOPES == m365_auth.M365_ADMIN_SCOPES
+        assert server.ALL_SCOPES == m365_auth.M365_ALL_SCOPES
+        assert set(manifest["tools"]["default_enabled"]) >= {"m365_initiate_login", "m365_complete_login", "m365_generate_admin_consent_url"}
+        assert manifest["auth"]["env"][1]["default"] == "organizations"
+
+    def test_fallback_literals_match_hermes_cli(self):
+        """The ImportError branch is production code for catalog installs."""
+        import re
+
+        src = server_path.read_text(encoding="utf-8")
+        block = src[src.index("except ImportError:\n    SELF_CONSENT_SCOPES"):src.index("# BASE_SCOPES keeps its historical meaning")]
+        found = {name: re.findall(r'"([A-Za-z.]+)"', block[block.index(name):]) for name in ("SELF_CONSENT_SCOPES", "ORG_CONSENT_SCOPES", "ADMIN_SCOPES")}
+        assert found["SELF_CONSENT_SCOPES"][: len(server.SELF_CONSENT_SCOPES)] == server.SELF_CONSENT_SCOPES
+        assert found["ORG_CONSENT_SCOPES"][: len(server.ORG_CONSENT_SCOPES)] == server.ORG_CONSENT_SCOPES
+        assert found["ADMIN_SCOPES"][: len(server.ADMIN_SCOPES)] == server.ADMIN_SCOPES
+
+    def test_get_access_token_probes_tiers_in_order_and_caches(self, monkeypatch):
+        server._GRANTED_TIER_CACHE.clear()
+        acc = {"home_account_id": "acc-1", "username": "u@example.com"}
+        calls = []
+
+        def silent(scopes, account=None):
+            calls.append(tuple(scopes))
+            return {"access_token": "tok"} if scopes == server.SELF_CONSENT_SCOPES else None
+
+        app = MagicMock()
+        app.get_accounts.return_value = [acc]
+        app.acquire_token_silent.side_effect = silent
+        with patch.object(server, "_get_msal_app", return_value=app), patch.object(server, "_save_cache"):
+            assert server._get_access_token() == "tok"
+            assert calls == [tuple(server.ALL_SCOPES), tuple(server.STANDARD_SCOPES), tuple(server.SELF_CONSENT_SCOPES)]
+            calls.clear()
+            assert server._get_access_token() == "tok"
+            # Cached tier is probed first — no failing network redemptions.
+            assert calls == [tuple(server.SELF_CONSENT_SCOPES)]
+        server._GRANTED_TIER_CACHE.clear()
+
+    def test_get_access_token_prefers_org_tier_after_consent(self):
+        server._GRANTED_TIER_CACHE.clear()
+        acc = {"home_account_id": "acc-2"}
+        app = MagicMock()
+        app.get_accounts.return_value = [acc]
+        app.acquire_token_silent.side_effect = lambda scopes, account=None: (
+            {"access_token": "wide"} if scopes in (server.ALL_SCOPES, server.STANDARD_SCOPES) else None
+        )
+        with patch.object(server, "_get_msal_app", return_value=app), patch.object(server, "_save_cache"):
+            assert server._get_access_token() == "wide"
+            assert server._GRANTED_TIER_CACHE["acc-2"][0] == "admin"
+        server._GRANTED_TIER_CACHE.clear()
+
+    def test_login_scopes_from_argv(self):
+        with patch.object(server.sys, "argv", ["server.py", "--login"]), patch.dict(server.os.environ, {}, clear=False):
+            server.os.environ.pop("M365_REQUEST_ADMIN_SCOPES", None)
+            assert server._login_scopes_from_argv() == server.LOGIN_SCOPES
+        with patch.object(server.sys, "argv", ["server.py", "--login", "--standard"]):
+            assert server._login_scopes_from_argv() == server.STANDARD_SCOPES
+        with patch.object(server.sys, "argv", ["server.py", "--login", "--admin"]):
+            assert server._login_scopes_from_argv() == server.ALL_SCOPES
+
+    def test_admin_consent_url_defaults_client_and_tenant_and_fq_scopes(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        for var in ("M365_CLIENT_ID", "OUTLOOK_CLIENT_ID", "TEAMS_CLIENT_ID", "M365_TENANT_ID", "OUTLOOK_TENANT_ID", "TEAMS_TENANT_ID"):
+            server.os.environ.pop(var, None)
+        with patch.dict(server.os.environ, env):
+            res = server.m365_generate_admin_consent_url()
+        assert res["success"] is True
+        assert res["client_id"] == server.DEFAULT_CLIENT_ID
+        assert res["tenant_id"] == "organizations"
+        url = res["admin_consent_url"]
+        assert url.startswith("https://login.microsoftonline.com/organizations/v2.0/adminconsent?")
+        assert "common" not in url
+        assert "graph.microsoft.com%2FChat.ReadWrite" in url
+        assert "redirect_uri=http%3A%2F%2Flocalhost%3A8400" in url
+        with patch.dict(server.os.environ, env):
+            res = server.m365_generate_admin_consent_url(use_default_scope=True)
+        assert "graph.microsoft.com%2F.default" in res["admin_consent_url"]
+
+    def test_admin_consent_url_never_uses_common_tenant(self, tmp_path):
+        with patch.dict(server.os.environ, {"HERMES_HOME": str(tmp_path), "M365_TENANT_ID": "common", "M365_CLIENT_ID": "app-1"}):
+            res = server.m365_generate_admin_consent_url()
+        assert res["tenant_id"] == "organizations"
+        assert "/organizations/v2.0/adminconsent" in res["admin_consent_url"]
+
+    def test_graph_403_hint_includes_consent_url(self):
+        fake_response = MagicMock(status_code=403, is_error=True, text='{"error":{"code":"Authorization_RequestDenied"}}')
+        fake_client = MagicMock()
+        fake_client.__enter__.return_value.request.return_value = fake_response
+        with patch.object(server, "_get_access_token", return_value="tok"), patch.object(server.httpx, "Client", return_value=fake_client):
+            with pytest.raises(RuntimeError) as exc:
+                server._graph_request("GET", "/me/chats")
+            assert "org-wide admin consent" in str(exc.value)
+            assert "v2.0/adminconsent" in str(exc.value)
+            with pytest.raises(RuntimeError) as exc:
+                server._graph_request("GET", "/users")
+            assert "admin tier" in str(exc.value)
+
+    def test_complete_login_reports_granted_tier_and_consent_hint(self):
+        app = MagicMock()
+        app.acquire_token_by_device_flow.return_value = {"access_token": "t", "id_token_claims": {"preferred_username": "u@example.com"}}
+        acc = {"home_account_id": "acc-3"}
+        app.get_accounts.return_value = [acc]
+        app.acquire_token_silent.side_effect = lambda scopes, account=None: (
+            {"access_token": "t"} if scopes == server.SELF_CONSENT_SCOPES else None
+        )
+        server._GRANTED_TIER_CACHE.clear()
+        with patch.object(server, "_get_msal_app", return_value=app), patch.object(server, "_save_cache"):
+            res = server.m365_complete_login({"user_code": "X"})
+        assert res["success"] is True
+        assert res["granted_tier"] == "self"
+        assert "v2.0/adminconsent" in res["admin_consent_hint"]["admin_consent_url"]
+        server._GRANTED_TIER_CACHE.clear()
+
+    def test_complete_login_consent_failure_returns_url(self):
+        app = MagicMock()
+        app.acquire_token_by_device_flow.return_value = {
+            "error": "invalid_grant",
+            "error_description": "AADSTS90094: The grant requires admin permission.",
+        }
+        with patch.object(server, "_get_msal_app", return_value=app):
+            res = server.m365_complete_login({"user_code": "X"})
+        assert res["category"] == "consent"
+        assert res["error_code"] == "AADSTS90094"
+        assert res["admin_consent_required"] is True
+        assert "v2.0/adminconsent" in res["admin_consent_url"]
+
+    def test_complete_login_declined_has_no_consent_url(self):
+        app = MagicMock()
+        app.acquire_token_by_device_flow.return_value = {"error": "authorization_declined"}
+        with patch.object(server, "_get_msal_app", return_value=app):
+            res = server.m365_complete_login({"user_code": "X"})
+        assert res["category"] == "declined"
+        assert "admin_consent_url" not in res

@@ -17,6 +17,7 @@ import {
   getAimdsSuiteStatus,
   getHermesConfigRecord,
   getMcpCatalog,
+  getMicrosoftAdminConsentUrl,
   installMcpCatalogEntry,
   keycloakLogin,
   listOAuthProviders,
@@ -29,7 +30,7 @@ import { AlertCircle, Check, ChevronRight, ExternalLink, KeyRound, Loader2, Shie
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding'
-import type { AimdsSuiteEnvStatus, EnvVarInfo, HermesConfigRecord, McpCatalogEntry, OAuthProvider } from '@/types/hermes'
+import type { AimdsSuiteEnvStatus, EnvVarInfo, HermesConfigRecord, McpCatalogEntry, MicrosoftAdminConsentResponse, OAuthProvider } from '@/types/hermes'
 
 import { ProviderKeyRows } from './credential-key-ui'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
@@ -629,6 +630,55 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
   )
 }
 
+// Tenant onboarding for the Microsoft 365 app (AIS-286): a tenant admin
+// approves the org-consent tier once; afterwards every signed-in user gets
+// Teams chat / presence / shared mailboxes / To Do silently.
+function M365TenantConsentControl({ loggedIn }: { loggedIn: boolean }) {
+  const { t } = useI18n()
+  const m = t.settings.providers.m365
+  const [info, setInfo] = useState<MicrosoftAdminConsentResponse | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (!loggedIn) {
+      setInfo(null)
+
+      return
+    }
+
+    getMicrosoftAdminConsentUrl().then(setInfo).catch(() => setInfo(null))
+  }, [loggedIn])
+
+  const openConsent = async () => {
+    setBusy(true)
+
+    try {
+      const res = info ?? (await getMicrosoftAdminConsentUrl())
+      setInfo(res)
+      window.open(res.url, '_blank', 'noopener,noreferrer')
+      await navigator.clipboard.writeText(res.url).catch(() => undefined)
+      notify({ kind: 'info', message: m.openedAndCopied, title: m.grantForOrg })
+    } catch (err) {
+      notifyError(err, m.loadFailed)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      {info && loggedIn && (
+        <Pill tone={info.org_consented ? 'primary' : 'muted'}>{info.org_consented ? m.orgApproved : m.selfOnly}</Pill>
+      )}
+      {!info?.org_consented && (
+        <Button disabled={busy} onClick={() => void openConsent()} size="xs" title={m.grantForOrgHint} variant="outline">
+          {busy ? <Loader2 className="size-3.5 animate-spin" /> : m.grantForOrg}
+        </Button>
+      )}
+    </div>
+  )
+}
+
 export function OAuthAccountsPanel() {
   const [providers, setProviders] = useState<OAuthProvider[]>([])
   const [loading, setLoading] = useState(true)
@@ -714,6 +764,7 @@ export function OAuthAccountsPanel() {
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
+                {p.id === 'microsoft' && <M365TenantConsentControl loggedIn={Boolean(loggedIn)} />}
                 {loggedIn ? (
                   <Button
                     disabled={disconnecting === p.id}

@@ -6225,13 +6225,13 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
         if tenant_id == "common":
             tenant_id = "organizations"
 
-        # Request the same scopes as the CLI's `_microsoft_device_code_login`
-        # (hermes_cli/mcp_catalog.py) and the MSOffice365MCP catalog manifest,
-        # not just "User.Read" — a dashboard-initiated login otherwise grants
-        # too little for the MCP's Mail/Calendar/Teams/etc. tools to work.
-        from hermes_cli import mcp_catalog
-        m365_entry = mcp_catalog.get_entry("MSOffice365MCP")
-        scopes = (m365_entry.auth.scopes if m365_entry else None) or ["User.Read"]
+        # Request the self-consent tier (AIS-286): the same list the CLI's
+        # `_microsoft_device_code_login`, the chat tool and the MSOffice365MCP
+        # manifest use. Org-level scopes (Teams chat, presence, shared
+        # mailboxes, To Do) arrive silently after a one-time tenant-admin
+        # consent, so non-admin users never hit "Need admin approval" here.
+        from hermes_cli.m365_auth import M365_LOGIN_SCOPES
+        scopes = list(M365_LOGIN_SCOPES)
 
         def _do_initiate_device_flow():
             from hermes_cli.m365_auth import get_msal_app
@@ -6881,12 +6881,21 @@ def _microsoft_device_code_worker(session_id: str, app_obj: Any, flow: Dict[str,
         result = app_obj.acquire_token_by_device_flow(flow)
         token = result.get("access_token") if result else None
         if not token:
-            err = (result or {}).get("error_description") or (result or {}).get("error") or (
-                "Microsoft sign-in did not complete"
-            )
+            from hermes_cli.m365_auth import build_admin_consent_url, classify_m365_auth_error
+
+            classified = classify_m365_auth_error(result or "Microsoft sign-in did not complete")
+            action_url = None
+            if classified.admin_consent_required:
+                try:
+                    action_url = build_admin_consent_url()
+                except Exception:
+                    action_url = None
             with _oauth_sessions_lock:
                 sess["status"] = "error"
-                sess["error_message"] = str(err)
+                sess["error_message"] = classified.message
+                sess["error_code"] = classified.code or None
+                sess["error_category"] = classified.category
+                sess["action_url"] = action_url
             return
         from hermes_cli.m365_auth import save_msal_cache
         save_msal_cache(app_obj)
@@ -7097,11 +7106,61 @@ async def poll_oauth_session(provider_id: str, session_id: str):
         raise HTTPException(status_code=404, detail="Session not found or expired")
     if sess["provider"] != provider_id:
         raise HTTPException(status_code=400, detail="Provider mismatch for session")
-    return {
+    payload = {
         "session_id": session_id,
         "status": sess["status"],
         "error_message": sess.get("error_message"),
         "expires_at": sess.get("expires_at"),
+    }
+    # Structured failure details (AIS-286): a consent failure carries the
+    # tenant-admin consent URL so the UI can offer it as an action.
+    for key in ("error_code", "error_category", "action_url"):
+        if sess.get(key):
+            payload[key] = sess[key]
+    return payload
+
+
+@app.get("/api/providers/oauth/microsoft/admin-consent-url")
+async def microsoft_admin_consent_url(request: Request, use_default_scope: bool = False):
+    """Tenant-onboarding URL for the Microsoft 365 app (token-protected).
+
+    A tenant administrator opens it once; afterwards every user of that
+    organization silently receives the org-consent tier (Teams chat, presence,
+    shared mailboxes, To Do). ``granted_tier`` reports what the currently
+    cached account can already obtain (None when nobody is signed in).
+    """
+    _require_token(request)
+    from hermes_cli.m365_auth import (
+        M365_ALL_SCOPES,
+        M365_ORG_CONSENT_SCOPES,
+        M365_SELF_CONSENT_SCOPES,
+        build_admin_consent_url,
+        resolve_m365_client_id,
+        resolve_m365_tenant_id,
+    )
+
+    def _probe_granted_tier() -> Optional[str]:
+        try:
+            from hermes_cli.m365_auth import get_msal_app, m365_granted_tier
+
+            app_obj = get_msal_app()
+            accounts = app_obj.get_accounts()
+            if not accounts:
+                return None
+            return m365_granted_tier(app_obj, accounts[0])
+        except Exception:
+            return None
+
+    granted_tier = await asyncio.get_running_loop().run_in_executor(None, _probe_granted_tier)
+    return {
+        "url": build_admin_consent_url(use_default_scope=use_default_scope),
+        "client_id": resolve_m365_client_id(),
+        "tenant_id": resolve_m365_tenant_id(),
+        "scopes": ["https://graph.microsoft.com/.default"] if use_default_scope else list(M365_ALL_SCOPES),
+        "self_consent_scopes": list(M365_SELF_CONSENT_SCOPES),
+        "org_consent_scopes": list(M365_ORG_CONSENT_SCOPES),
+        "granted_tier": granted_tier,
+        "org_consented": granted_tier in ("standard", "admin"),
     }
 
 

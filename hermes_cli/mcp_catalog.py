@@ -648,12 +648,24 @@ def _microsoft_device_code_login(
     if tenant_id == "common":
         tenant_id = "organizations"
 
-    from hermes_cli.m365_auth import get_msal_app, save_msal_cache
+    from hermes_cli.m365_auth import (
+        M365_LOGIN_SCOPES,
+        build_admin_consent_url,
+        classify_m365_auth_error,
+        get_msal_app,
+        save_msal_cache,
+    )
 
     print(color("  Starting Microsoft OAuth device code login...", Colors.CYAN))
     app = get_msal_app(client_id=client_id, tenant_id=tenant_id)
-    flow = app.initiate_device_flow(scopes=entry.auth.scopes or ["User.Read"])
+    # Self-consent tier (AIS-286): identical to the dashboard button and the
+    # chat tool. A manifest may narrow it further but never widen it, so a
+    # non-admin install can't run into "Need admin approval".
+    manifest_scopes = [sc for sc in (entry.auth.scopes or []) if sc in M365_LOGIN_SCOPES]
+    flow = app.initiate_device_flow(scopes=manifest_scopes or list(M365_LOGIN_SCOPES))
     if "user_code" not in flow:
+        classified = classify_m365_auth_error(flow)
+        print(color(f"  ✗ Could not start Microsoft sign-in: {classified.message}", Colors.YELLOW))
         return None
     print(color(
         f"  Open {flow['verification_uri']} and enter code: {flow['user_code']}",
@@ -664,6 +676,14 @@ def _microsoft_device_code_login(
         save_msal_cache(app)
         _enable_m365_toolset_for_cli()
         return result["access_token"]
+    classified = classify_m365_auth_error(result or "Microsoft sign-in did not complete")
+    print(color(f"  ✗ Microsoft sign-in failed: {classified.message}", Colors.YELLOW))
+    if classified.admin_consent_required:
+        print(color(
+            "  A tenant administrator must approve the app once for your organization:\n"
+            f"  {build_admin_consent_url(client_id=client_id, tenant_id=tenant_id)}",
+            Colors.YELLOW,
+        ))
     return None
 
 

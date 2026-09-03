@@ -686,6 +686,15 @@ export const en: Translations = {
       otherProviders: 'Other providers',
       noProviderKeys: 'No provider API keys available.',
       loading: 'Loading providers...',
+      m365: {
+        grantForOrg: 'Grant for organization',
+        grantForOrgHint: 'Tenant admin: approve Teams chat, presence, shared mailboxes and To Do once for everyone',
+        orgApproved: 'Organization approved',
+        selfOnly: 'Mail, calendar and files only',
+        copied: 'Consent link copied',
+        openedAndCopied: 'Consent link opened in the browser and copied. Only a tenant administrator can accept it.',
+        loadFailed: 'Could not build the admin consent link'
+      },
       suite: {
         title: 'AIMDS-Suite environments',
         intro: 'Base URL per environment. Sign in with Keycloak SSO to obtain or renew the API key.',
@@ -1604,6 +1613,9 @@ export const en: Translations = {
     connectedProvider: provider => `${provider} connected`,
     connectedPicking: provider => `${provider} connected. Picking a default model...`,
     signInFailed: 'Sign-in failed. Try again.',
+    adminConsentNeeded: 'Your organization requires admin approval',
+    adminConsentHint: 'Hand this link to a tenant administrator. After a one-time approval every user can sign in; no one has to repeat the sign-in.',
+    openAdminConsent: 'Open admin consent link',
     pickDifferentProvider: 'Pick a different provider',
     signInWith: provider => `Sign in with ${provider}`,
     openedBrowser: provider => `We opened ${provider} in your browser.`,

@@ -783,3 +783,113 @@ def test_microsoft_dashboard_device_flow_requests_manifest_scopes(monkeypatch):
         assert requested_scopes["scopes"] != ["User.Read"]
     finally:
         ws._oauth_sessions.pop(result["session_id"], None)
+
+
+# --------------------------------------------------------------------------- AIS-286 consent tiers
+
+def test_microsoft_device_code_worker_consent_error_carries_action_url(monkeypatch, tmp_path):
+    """"Need admin approval" must surface as a structured consent error with
+    the tenant-admin consent URL so the UI can offer it as an action."""
+    from hermes_cli import web_server as ws
+    from hermes_cli.config import get_env_value
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("M365_TENANT_ID", raising=False)
+
+    class _ConsentApp(_FakeMsalApp):
+        def acquire_token_by_device_flow(self, flow):
+            return {"error": "invalid_grant", "error_description": "AADSTS90094: The grant requires admin permission."}
+
+    sid, _ = ws._new_oauth_session("microsoft", "device_code")
+    try:
+        ws._microsoft_device_code_worker(sid, _ConsentApp(), {"user_code": "MSFT-1234"})
+        sess = ws._oauth_sessions[sid]
+        assert sess["status"] == "error"
+        assert sess["error_code"] == "AADSTS90094"
+        assert sess["error_category"] == "consent"
+        assert "v2.0/adminconsent" in sess["action_url"]
+        assert get_env_value("M365_ACCESS_TOKEN") is None
+
+        poll = asyncio.run(ws.poll_oauth_session("microsoft", sid))
+        assert poll["error_code"] == "AADSTS90094"
+        assert poll["action_url"] == sess["action_url"]
+        assert "admin" in poll["error_message"].lower()
+    finally:
+        ws._oauth_sessions.pop(sid, None)
+
+
+def test_microsoft_device_code_worker_declined_has_no_action_url(monkeypatch, tmp_path):
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class _DeclinedApp(_FakeMsalApp):
+        def acquire_token_by_device_flow(self, flow):
+            return {"error": "authorization_declined"}
+
+    sid, _ = ws._new_oauth_session("microsoft", "device_code")
+    try:
+        ws._microsoft_device_code_worker(sid, _DeclinedApp(), {"user_code": "MSFT-1234"})
+        poll = asyncio.run(ws.poll_oauth_session("microsoft", sid))
+        assert poll["error_category"] == "declined"
+        assert "action_url" not in poll
+    finally:
+        ws._oauth_sessions.pop(sid, None)
+
+
+def test_microsoft_dashboard_login_requests_self_consent_tier(monkeypatch):
+    """The dashboard button requests exactly the self-consent tier (AIS-286)."""
+    import msal
+    from hermes_cli import web_server as ws
+    from hermes_cli.m365_auth import M365_LOGIN_SCOPES, M365_SELF_CONSENT_SCOPES
+
+    requested = {}
+
+    class _ScopeApp(_FakeMsalApp):
+        def initiate_device_flow(self, scopes=None):
+            requested["scopes"] = scopes
+            return super().initiate_device_flow(scopes=scopes)
+
+    monkeypatch.setattr(msal, "PublicClientApplication", _ScopeApp)
+    monkeypatch.setattr(ws, "_microsoft_device_code_worker", lambda *a, **kw: None)
+    result = asyncio.run(ws._start_device_code_flow("microsoft"))
+    try:
+        assert requested["scopes"] == M365_LOGIN_SCOPES == M365_SELF_CONSENT_SCOPES
+        assert "Chat.ReadWrite" not in requested["scopes"]
+    finally:
+        ws._oauth_sessions.pop(result["session_id"], None)
+
+
+def test_microsoft_admin_consent_url_endpoint(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for var in ("M365_CLIENT_ID", "M365_TENANT_ID"):
+        monkeypatch.delenv(var, raising=False)
+
+    class _App:
+        def get_accounts(self):
+            return [{"home_account_id": "a"}]
+
+        def acquire_token_silent(self, scopes, account=None):
+            from hermes_cli.m365_auth import M365_STANDARD_SCOPES
+
+            return {"access_token": "t"} if scopes == M365_STANDARD_SCOPES else None
+
+    monkeypatch.setattr("hermes_cli.m365_auth.get_msal_app", lambda *a, **kw: _App())
+
+    client = TestClient(ws.app)
+    assert client.get("/api/providers/oauth/microsoft/admin-consent-url").status_code in (401, 403)
+    resp = client.get(
+        "/api/providers/oauth/microsoft/admin-consent-url",
+        headers={"X-Hermes-Session-Token": ws._SESSION_TOKEN},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["url"].startswith("https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=41c29967")
+    assert data["granted_tier"] == "standard"
+    assert data["org_consented"] is True
+    assert "Chat.ReadWrite" in data["org_consent_scopes"]
+    assert "Chat.ReadWrite" not in data["self_consent_scopes"]

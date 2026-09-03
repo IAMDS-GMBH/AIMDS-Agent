@@ -77,7 +77,11 @@ jobs:
         # fails if the lock is out of sync with pyproject.toml), giving a
         # reproducible env. It also creates .venv itself, so no separate
         # `uv venv` step is needed.
-        run: uv sync --locked --python 3.11 --extra all --extra dev
+        # `--extra bedrock`: agent.bedrock_adapter calls lazy_deps.ensure() at
+        # import time; without boto3 in the venv every test process that
+        # imports it races a real pip install, which blew the 30 s per-file
+        # budget in CI (AIS-286). Installing the extra up front makes that a no-op.
+        run: uv sync --locked --python 3.11 --extra all --extra dev --extra bedrock
 
       - name: Minimize uv cache
         # Optimized for CI: prunes pre-built wheels that are cheap to
@@ -199,7 +203,11 @@ jobs:
         # fails if the lock is out of sync with pyproject.toml), giving a
         # reproducible env. It also creates .venv itself, so no separate
         # `uv venv` step is needed.
-        run: uv sync --locked --python 3.11 --extra all --extra dev
+        # `--extra bedrock`: agent.bedrock_adapter calls lazy_deps.ensure() at
+        # import time; without boto3 in the venv every test process that
+        # imports it races a real pip install, which blew the 30 s per-file
+        # budget in CI (AIS-286). Installing the extra up front makes that a no-op.
+        run: uv sync --locked --python 3.11 --extra all --extra dev --extra bedrock
 
       - name: Minimize uv cache
         # Optimized for CI: prunes pre-built wheels that are cheap to

@@ -687,6 +687,15 @@ export const de
       otherProviders: 'Andere Anbieter',
       noProviderKeys: 'Keine Anbieter-API-Schlüssel verfügbar.',
       loading: 'Lade Anbieter...',
+      m365: {
+        grantForOrg: 'Für Organisation freigeben',
+        grantForOrgHint: 'Tenant-Admin: Teams-Chat, Präsenz, geteilte Postfächer und To Do einmalig für alle freigeben',
+        orgApproved: 'Organisation freigegeben',
+        selfOnly: 'Nur Mail, Kalender und Dateien',
+        copied: 'Freigabe-Link kopiert',
+        openedAndCopied: 'Freigabe-Link im Browser geöffnet und kopiert. Nur ein Tenant-Administrator kann ihn bestätigen.',
+        loadFailed: 'Admin-Freigabe-Link konnte nicht erzeugt werden'
+      },
       suite: {
         title: 'AIMDS-Suite-Umgebungen',
         intro: 'Base-URL je Umgebung. Mit Keycloak-SSO anmelden, um den API-Schlüssel zu holen oder zu erneuern.',
@@ -1606,6 +1615,9 @@ export const de
     connectedProvider: provider => `${provider} verbunden`,
     connectedPicking: provider => `${provider} verbunden. Standardmodell wird ausgewählt...`,
     signInFailed: 'Anmeldung fehlgeschlagen. Erneut versuchen.',
+    adminConsentNeeded: 'Deine Organisation verlangt eine Admin-Freigabe',
+    adminConsentHint: 'Gib diesen Link an einen Tenant-Administrator. Nach der einmaligen Freigabe kann sich jeder anmelden; niemand muss die Anmeldung wiederholen.',
+    openAdminConsent: 'Admin-Freigabe-Link öffnen',
     pickDifferentProvider: 'Anderen Anbieter wählen',
     signInWith: provider => `Anmelden mit ${provider}`,
     openedBrowser: provider => `${provider} wurde im Browser geöffnet.`,
