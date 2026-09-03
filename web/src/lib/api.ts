@@ -2160,3 +2160,43 @@ export interface PluginProvidersPutRequest {
   memory_provider?: string;
   context_engine?: string;
 }
+
+// ---------------------------------------------------------------------------
+// AIMDS-Suite provider status / re-auth (AIS-286)
+// ---------------------------------------------------------------------------
+
+export type AimdsSuiteState = "connected" | "needs_reauth" | "not_configured" | "unreachable";
+
+export interface AimdsSuiteEnvStatus {
+  id: string;
+  label: string;
+  key_env: string;
+  base_url: string;
+  base_url_source: "config" | "env" | "default" | "";
+  env_mismatch: boolean;
+  key_present: boolean;
+  key_source: string;
+  state: AimdsSuiteState;
+  reason: string;
+  http_status: number | null;
+  runtime_auth_failure: Record<string, unknown> | null;
+  mcp?: Record<string, unknown> | null;
+}
+
+export interface AimdsSuiteStatusResponse {
+  checked_at: string;
+  environments: AimdsSuiteEnvStatus[];
+}
+
+export async function getAimdsSuiteStatus(probe = false): Promise<AimdsSuiteStatusResponse> {
+  return fetchJSON<AimdsSuiteStatusResponse>(
+    `/api/providers/aimds-suite/status${probe ? "?probe=true" : ""}`,
+  );
+}
+
+export async function completeAimdsSuiteReauth(env: string): Promise<{ ok: boolean }> {
+  return fetchJSON<{ ok: boolean }>(
+    `/api/providers/aimds-suite/${encodeURIComponent(env)}/reauth-complete`,
+    { method: "POST" },
+  );
+}

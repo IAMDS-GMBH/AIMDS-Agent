@@ -685,7 +685,31 @@ export const en: Translations = {
       connectAnother: 'Connect another provider',
       otherProviders: 'Other providers',
       noProviderKeys: 'No provider API keys available.',
-      loading: 'Loading providers...'
+      loading: 'Loading providers...',
+      suite: {
+        title: 'AIMDS-Suite environments',
+        intro: 'Base URL per environment. Sign in with Keycloak SSO to obtain or renew the API key.',
+        connected: 'Connected',
+        needsReauth: 'Re-authentication required',
+        notConfigured: 'Not configured',
+        unreachable: 'Not verified',
+        signInSso: 'Sign in with SSO',
+        reauthenticate: 'Re-authenticate',
+        enterUrlFirst: 'Enter the base URL first',
+        saveUrls: 'Save provider URLs',
+        saving: 'Saving…',
+        saved: 'AIMDS-Suite provider URLs saved',
+        checking: 'Checking…',
+        reason: {
+          keyMissing: 'No API key stored',
+          urlMissing: 'No base URL configured',
+          envMismatch: 'Environment variable points to a different host than the configured URL',
+          unauthorized: 'The stored key was rejected by the server',
+          runtime: 'The running session got an authentication error',
+          network: 'Server could not be reached',
+          ok: 'Key accepted'
+        }
+      }
     },
     sessions: {
       loading: 'Loading archived sessions…',

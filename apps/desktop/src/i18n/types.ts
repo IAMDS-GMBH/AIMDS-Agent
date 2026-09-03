@@ -582,6 +582,30 @@ export interface Translations {
       otherProviders: string
       noProviderKeys: string
       loading: string
+      suite: {
+        title: string
+        intro: string
+        connected: string
+        needsReauth: string
+        notConfigured: string
+        unreachable: string
+        signInSso: string
+        reauthenticate: string
+        enterUrlFirst: string
+        saveUrls: string
+        saving: string
+        saved: string
+        checking: string
+        reason: {
+          keyMissing: string
+          urlMissing: string
+          envMismatch: string
+          unauthorized: string
+          runtime: string
+          network: string
+          ok: string
+        }
+      }
     }
     sessions: {
       loading: string

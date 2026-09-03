@@ -342,19 +342,34 @@ function EnvVarRow({
 type SsoPhase = "idle" | "starting" | "awaiting" | "polling" | "approved" | "error";
 
 function IamdsKeycloakSsoSection({ onSuccess }: { onSuccess: () => void }) {
+  const { t } = useI18n();
   const [phase, setPhase] = useState<SsoPhase>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const isMounted = useRef(true);
   const pollTimer = useRef<number | null>(null);
   const sessionRef = useRef<string | null>(null);
+  // AIS-286: backend-derived tri-state for the production environment; the
+  // SSO button stays visible so an expired key can always be renewed.
+  const [suiteStatus, setSuiteStatus] = useState<api.AimdsSuiteEnvStatus | null>(null);
+
+  const loadSuiteStatus = useCallback(async () => {
+    try {
+      const res = await api.getAimdsSuiteStatus(true);
+      if (!isMounted.current) return;
+      setSuiteStatus(res.environments.find((e) => e.id === "aimds-suite-prod") ?? null);
+    } catch {
+      // Advisory only.
+    }
+  }, []);
 
   useEffect(() => {
     isMounted.current = true;
+    void loadSuiteStatus();
     return () => {
       isMounted.current = false;
       if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
     };
-  }, []);
+  }, [loadSuiteStatus]);
 
   const startLogin = async () => {
     setPhase("starting");
@@ -376,6 +391,7 @@ function IamdsKeycloakSsoSection({ onSuccess }: { onSuccess: () => void }) {
           if (poll.status === "approved") {
             window.clearInterval(pollTimer.current!);
             setPhase("approved");
+            void loadSuiteStatus();
             onSuccess();
           } else if (poll.status !== "pending") {
             window.clearInterval(pollTimer.current!);
@@ -404,9 +420,42 @@ function IamdsKeycloakSsoSection({ onSuccess }: { onSuccess: () => void }) {
 
   return (
     <div className="mb-3 rounded border border-border bg-muted/20 p-3 space-y-2">
-      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-        Single Sign-On
-      </p>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Single Sign-On
+        </p>
+        {suiteStatus && (
+          <span
+            className={
+              "inline-flex items-center gap-1 text-xs font-medium " +
+              (suiteStatus.state === "connected"
+                ? "text-green-600 dark:text-green-400"
+                : suiteStatus.state === "needs_reauth"
+                  ? "text-amber-600 dark:text-amber-400"
+                  : "text-muted-foreground")
+            }
+            title={suiteStatus.reason}
+          >
+            {suiteStatus.state === "connected" ? (
+              <Check className="h-3 w-3" />
+            ) : suiteStatus.state === "needs_reauth" ? (
+              <ShieldOff className="h-3 w-3" />
+            ) : null}
+            {suiteStatus.state === "connected"
+              ? t.oauth.connected
+              : suiteStatus.state === "needs_reauth"
+                ? "Re-authentication required"
+                : suiteStatus.state === "unreachable"
+                  ? "Not verified"
+                  : "Not configured"}
+            {suiteStatus.base_url && (
+              <span className="font-normal text-muted-foreground">
+                · {suiteStatus.base_url.replace(/^https?:\/\//, "").replace(/\/litellm(\/v1)?\/?$/, "")}
+              </span>
+            )}
+          </span>
+        )}
+      </div>
 
       {phase === "approved" ? (
         <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
@@ -433,7 +482,7 @@ function IamdsKeycloakSsoSection({ onSuccess }: { onSuccess: () => void }) {
           {phase === "starting" ? (
             <><Loader className="h-3.5 w-3.5 animate-spin" /> Starting…</>
           ) : (
-            <><ShieldCheck className="h-3.5 w-3.5" /> Connect via Keycloak</>
+            <><ShieldCheck className="h-3.5 w-3.5" /> {suiteStatus?.key_present ? "Re-authenticate via Keycloak" : "Connect via Keycloak"}</>
           )}
         </button>
       )}

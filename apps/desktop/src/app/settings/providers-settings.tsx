@@ -12,15 +12,15 @@ import {
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
+  completeAimdsSuiteReauth,
   disconnectOAuthProvider,
-  getEnvVars,
+  getAimdsSuiteStatus,
   getHermesConfigRecord,
   getMcpCatalog,
   installMcpCatalogEntry,
   keycloakLogin,
   listOAuthProviders,
   removeMcpServer,
-  revealEnvVar,
   saveHermesConfig,
   setEnvVar
 } from '@/hermes'
@@ -29,7 +29,7 @@ import { AlertCircle, Check, ChevronRight, ExternalLink, KeyRound, Loader2, Shie
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding'
-import type { EnvVarInfo, HermesConfigRecord, McpCatalogEntry, OAuthProvider } from '@/types/hermes'
+import type { AimdsSuiteEnvStatus, EnvVarInfo, HermesConfigRecord, McpCatalogEntry, OAuthProvider } from '@/types/hermes'
 
 import { ProviderKeyRows } from './credential-key-ui'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
@@ -159,26 +159,154 @@ function readProviderBaseUrl(config: Record<string, unknown>, slug: string): str
   return typeof baseUrl === 'string' ? toEditableBaseUrl(baseUrl) : ''
 }
 
-function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => void } = {}) {
-  const [prodBaseUrl, setProdBaseUrl] = useState('')
-  const [stagingBaseUrl, setStagingBaseUrl] = useState('')
-  const [devBaseUrl, setDevBaseUrl] = useState('')
-  const [localDevBaseUrl, setLocalDevBaseUrl] = useState('')
-  const [isSaving, setIsSaving] = useState(false)
-  const [envVars, setEnvVars] = useState<Record<string, EnvVarInfo>>({})
+// One row per AIMDS-Suite environment: URL field + backend-derived status +
+// an always-available Keycloak SSO / re-auth button (AIS-286). No default
+// host is ever shown as configured; the backend decides connected /
+// needs re-auth / not configured / unreachable.
+const SUITE_ENVS = [
+  { id: 'aimds-suite-prod', label: 'Production', keyEnv: 'IAMDS_LITELLM_API_KEY', legacySlug: 'iamds-litellm', placeholder: 'https://suite.iamds.com' },
+  { id: 'aimds-suite-staging', label: 'Staging', keyEnv: 'IAMDS_LITELLM_STAGING_API_KEY', legacySlug: 'iamds-litellm-staging', placeholder: 'https://staging.suite.iamds.com' },
+  { id: 'aimds-suite-dev', label: 'Development', keyEnv: 'IAMDS_LITELLM_DEV_API_KEY', legacySlug: 'iamds-litellm-dev', placeholder: 'https://dev.suite.iamds.com' },
+  { id: 'aimds-suite-localdev', label: 'Local Dev', keyEnv: 'IAMDS_LITELLM_LOCALDEV_API_KEY', legacySlug: 'iamds-litellm-localdev', placeholder: 'http://localhost:8000' }
+] as const
 
-  const loadEnvVars = async () => {
-    try {
-      const vars = await getEnvVars()
-      setEnvVars(vars)
-    } catch {
-      // Ignore
-    }
+type SuiteEnvId = (typeof SUITE_ENVS)[number]['id']
+
+const SUITE_ENV_NAMES: Record<SuiteEnvId, string> = {
+  'aimds-suite-prod': 'AIMDS-Suite',
+  'aimds-suite-staging': 'AIMDS-Suite (Staging)',
+  'aimds-suite-dev': 'AIMDS-Suite (Development)',
+  'aimds-suite-localdev': 'AIMDS-Suite (Local Dev)'
+}
+
+function suiteReasonText(t: ReturnType<typeof useI18n>['t'], status: AimdsSuiteEnvStatus | undefined): string {
+  if (!status) {
+    return ''
   }
 
-  const handleKeycloakLogin = async (baseUrl: string, targetKeyEnv: string, envLabel: string) => {
+  const r = t.settings.providers.suite.reason
+
+  if (status.reason === 'key_missing') {return r.keyMissing}
+
+  if (status.reason === 'url_missing') {return r.urlMissing}
+
+  if (status.reason === 'env_mismatch') {return r.envMismatch}
+
+  if (status.reason.startsWith('http_40')) {return r.unauthorized}
+
+  if (status.reason.startsWith('runtime_')) {return r.runtime}
+
+  if (status.reason === 'network' || status.reason.startsWith('http_5')) {return r.network}
+
+  if (status.reason === 'ok') {return r.ok}
+
+  return ''
+}
+
+function SuiteEnvStatusPill({ status }: { status: AimdsSuiteEnvStatus | undefined }) {
+  const { t } = useI18n()
+  const labels = t.settings.providers.suite
+
+  if (!status) {
+    return <span className="text-xs text-muted-foreground">{labels.checking}</span>
+  }
+
+  const tone =
+    status.state === 'connected'
+      ? 'text-emerald-500'
+      : status.state === 'needs_reauth'
+        ? 'text-amber-500'
+        : status.state === 'unreachable'
+          ? 'text-muted-foreground'
+          : 'text-muted-foreground'
+
+  const text =
+    status.state === 'connected'
+      ? labels.connected
+      : status.state === 'needs_reauth'
+        ? labels.needsReauth
+        : status.state === 'unreachable'
+          ? labels.unreachable
+          : labels.notConfigured
+
+  const host = status.base_url ? status.base_url.replace(/^https?:\/\//, '').replace(/\/litellm(\/v1)?$/, '') : ''
+
+  return (
+    <span className={cn('inline-flex flex-col items-end text-xs font-medium', tone)} title={suiteReasonText(t, status)}>
+      <span className="inline-flex items-center gap-1.5">
+        {status.state === 'connected' ? <Check className="size-3.5" /> : status.state === 'needs_reauth' ? <AlertCircle className="size-3.5" /> : null}
+        {text}
+      </span>
+      {host && <span className="font-normal text-muted-foreground">{host}</span>}
+    </span>
+  )
+}
+
+function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => void } = {}) {
+  const { t } = useI18n()
+  const labels = t.settings.providers.suite
+
+  const [urls, setUrls] = useState<Record<SuiteEnvId, string>>({
+    'aimds-suite-prod': '',
+    'aimds-suite-staging': '',
+    'aimds-suite-dev': '',
+    'aimds-suite-localdev': ''
+  })
+
+  const [isSaving, setIsSaving] = useState(false)
+  const [statuses, setStatuses] = useState<Partial<Record<SuiteEnvId, AimdsSuiteEnvStatus>>>({})
+  const [busyEnv, setBusyEnv] = useState<null | SuiteEnvId>(null)
+
+  const loadStatuses = useCallback(async (probe = true) => {
     try {
-      let rootDomain = baseUrl.trim().replace(/\/+$/, '')
+      const res = await getAimdsSuiteStatus({ probe })
+      const next: Partial<Record<SuiteEnvId, AimdsSuiteEnvStatus>> = {}
+
+      for (const env of res.environments) {
+        next[env.id as SuiteEnvId] = env
+      }
+
+      setStatuses(next)
+    } catch {
+      // Status is advisory; keep the last known values.
+    }
+  }, [])
+
+  const loadUrls = useCallback(async () => {
+    try {
+      const config = await getHermesConfigRecord()
+      const next = { ...urls }
+
+      for (const env of SUITE_ENVS) {
+        // Only what is configured — never a baked-in default host (AIS-286).
+        next[env.id] = readProviderBaseUrl(config, env.id) || readProviderBaseUrl(config, env.legacySlug)
+      }
+
+      setUrls(next)
+    } catch {
+      // Best-effort prefill only.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    void loadUrls()
+    void loadStatuses(true)
+  }, [loadUrls, loadStatuses])
+
+  const handleKeycloakLogin = async (env: (typeof SUITE_ENVS)[number]) => {
+    const baseUrl = urls[env.id].trim()
+
+    if (!baseUrl) {
+      notify({ kind: 'error', message: labels.enterUrlFirst, title: SUITE_ENV_NAMES[env.id] })
+
+      return
+    }
+
+    setBusyEnv(env.id)
+
+    try {
+      let rootDomain = baseUrl.replace(/\/+$/, '')
 
       for (const suffix of ['/litellm/v1', '/litellm', '/auth']) {
         if (rootDomain.endsWith(suffix)) {
@@ -187,145 +315,105 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
       }
 
       const redirectUri = DEFAULT_REDIRECT_URI || 'hermes://callback'
+      const result = await keycloakLogin({ baseUrl: rootDomain, realm: DEFAULT_REALM, redirectUri })
 
-      const result = await keycloakLogin({
-        baseUrl: rootDomain,
-        realm: DEFAULT_REALM,
-        redirectUri,
-      })
-
-      await setEnvVar(targetKeyEnv, result.apiKey)
+      // Persist the URL for this environment first so the key and the host
+      // are stored as a pair, then the key, then make both effective.
+      await persistUrls({ ...urls, [env.id]: baseUrl }, { silent: true })
+      await setEnvVar(env.keyEnv, result.apiKey)
 
       try {
-        const config = await getHermesConfigRecord()
-        await saveHermesConfig({
-          ...config,
-          model: 'aimds-suite-prod/AIMDS-Suite-Auto',
-        })
+        await completeAimdsSuiteReauth(env.id)
       } catch {
-        // Best-effort model selection
+        // The next 401 self-heals via the credential refresh path.
       }
 
-      await loadEnvVars()
+      if (env.id === 'aimds-suite-prod') {
+        try {
+          const config = await getHermesConfigRecord()
+
+          if (!config.model) {
+            await saveHermesConfig({ ...config, model: 'aimds-suite-prod/AIMDS-Suite-Auto' })
+          }
+        } catch {
+          // Best-effort model selection
+        }
+      }
+
       onRefreshCreds?.()
-      notify({ kind: 'success', message: `API key obtained via Keycloak SSO (${envLabel})`, title: 'Connected' })
+      await loadStatuses(true)
+      notify({ kind: 'success', message: `${SUITE_ENV_NAMES[env.id]}: ${labels.connected}`, title: labels.connected })
     } catch (err) {
       notifyError(err, 'Keycloak SSO failed')
+    } finally {
+      setBusyEnv(null)
     }
   }
 
-  useEffect(() => {
-    let cancelled = false
+  const persistUrls = async (values: Record<SuiteEnvId, string>, options: { silent?: boolean } = {}) => {
+    const normalized = {} as Record<SuiteEnvId, string>
 
-    void (async () => {
-      try {
-        const [config, vars] = await Promise.all([
-          getHermesConfigRecord().catch(() => ({} as HermesConfigRecord)),
-          getEnvVars().catch(() => ({} as Record<string, EnvVarInfo>)),
-        ])
+    for (const env of SUITE_ENVS) {
+      const raw = values[env.id].trim()
+      const value = raw ? normalizeProviderBaseUrl(raw) : ''
 
-        if (!cancelled) {
-          setEnvVars(vars)
-          const mainUrl = readProviderBaseUrl(config, 'aimds-suite-prod') || readProviderBaseUrl(config, 'iamds-litellm')
-          let envUrl = ''
+      if (raw && !value) {
+        notify({ kind: 'error', message: `${env.label} URL is invalid`, title: 'Could not save provider URLs' })
 
-          if (vars.IAMDS_LITELLM_BASE_URL?.is_set) {
-            try {
-              const revealed = await revealEnvVar('IAMDS_LITELLM_BASE_URL')
-              envUrl = revealed.value || ''
-            } catch {
-              // Ignore
-            }
-          }
-
-          setProdBaseUrl(mainUrl || envUrl || DEFAULT_BASE_URL)
-          setStagingBaseUrl(readProviderBaseUrl(config, 'aimds-suite-staging') || readProviderBaseUrl(config, 'iamds-litellm-staging'))
-          setDevBaseUrl(readProviderBaseUrl(config, 'aimds-suite-dev') || readProviderBaseUrl(config, 'iamds-litellm-dev'))
-          setLocalDevBaseUrl(readProviderBaseUrl(config, 'aimds-suite-localdev') || readProviderBaseUrl(config, 'iamds-litellm-localdev'))
-        }
-      } catch {
-        // Best-effort prefill only.
+        return false
       }
-    })()
 
-    return () => {
-      cancelled = true
+      normalized[env.id] = value
     }
-  }, [])
+
+    const config = await getHermesConfigRecord()
+
+    const providers = config.providers && typeof config.providers === 'object' && !Array.isArray(config.providers)
+      ? { ...(config.providers as Record<string, unknown>) }
+      : {}
+
+    for (const env of SUITE_ENVS) {
+      const baseUrl = normalized[env.id]
+
+      if (!baseUrl) {
+        delete providers[env.id]
+        delete providers[env.legacySlug]
+
+        continue
+      }
+
+      const existingRaw = providers[env.id]
+
+      const existing =
+        existingRaw && typeof existingRaw === 'object' && !Array.isArray(existingRaw)
+          ? { ...(existingRaw as Record<string, unknown>) }
+          : {}
+
+      existing.name = SUITE_ENV_NAMES[env.id]
+      existing.base_url = baseUrl
+      existing.key_env = env.keyEnv
+      existing.transport = 'codex_responses'
+      providers[env.id] = existing
+      delete providers[env.legacySlug]
+    }
+
+    // The backend mirrors providers.* into the *_BASE_URL env vars itself.
+    await saveHermesConfig({ ...config, providers })
+
+    if (!options.silent) {
+      notify({ kind: 'success', message: labels.saved, title: 'Saved' })
+    }
+
+    return true
+  }
 
   const saveUrls = async () => {
-    const prodNormalized = normalizeProviderBaseUrl(prodBaseUrl)
-    const stagingNormalized = normalizeProviderBaseUrl(stagingBaseUrl)
-    const devNormalized = normalizeProviderBaseUrl(devBaseUrl)
-    const localDevNormalized = normalizeProviderBaseUrl(localDevBaseUrl)
-
-    if (prodBaseUrl.trim() && !prodNormalized) {
-      notify({ kind: 'error', message: 'Production URL is invalid', title: 'Could not save provider URLs' })
-
-      return
-    }
-
-    if (stagingBaseUrl.trim() && !stagingNormalized) {
-      notify({ kind: 'error', message: 'Staging URL is invalid', title: 'Could not save provider URLs' })
-
-      return
-    }
-
-    if (devBaseUrl.trim() && !devNormalized) {
-      notify({ kind: 'error', message: 'Dev URL is invalid', title: 'Could not save provider URLs' })
-
-      return
-    }
-
-    if (localDevBaseUrl.trim() && !localDevNormalized) {
-      notify({ kind: 'error', message: 'Local Dev URL is invalid', title: 'Could not save provider URLs' })
-
-      return
-    }
-
     setIsSaving(true)
 
     try {
-      const config = await getHermesConfigRecord()
-      const nextProvidersRaw = config.providers
-
-      const nextProviders =
-        nextProvidersRaw && typeof nextProvidersRaw === 'object' && !Array.isArray(nextProvidersRaw)
-          ? { ...(nextProvidersRaw as Record<string, unknown>) }
-          : {}
-
-      const upsertOrDelete = (slug: string, name: string, keyEnv: string, baseUrl: string) => {
-        if (!baseUrl) {
-          delete nextProviders[slug]
-
-          return
-        }
-
-        const existingRaw = nextProviders[slug]
-
-        const existing =
-          existingRaw && typeof existingRaw === 'object' && !Array.isArray(existingRaw)
-            ? { ...(existingRaw as Record<string, unknown>) }
-            : {}
-
-        existing.name = name
-        existing.base_url = baseUrl
-        existing.key_env = keyEnv
-        existing.transport = 'codex_responses'
-        nextProviders[slug] = existing
+      if (await persistUrls(urls)) {
+        await loadStatuses(true)
       }
-
-      upsertOrDelete('aimds-suite-prod', 'AIMDS-Suite', 'IAMDS_LITELLM_API_KEY', prodNormalized)
-      upsertOrDelete('aimds-suite-staging', 'AIMDS-Suite (Staging)', 'IAMDS_LITELLM_STAGING_API_KEY', stagingNormalized)
-      upsertOrDelete('aimds-suite-dev', 'AIMDS-Suite (Development)', 'IAMDS_LITELLM_DEV_API_KEY', devNormalized)
-      upsertOrDelete('aimds-suite-localdev', 'AIMDS-Suite (Local Dev)', 'IAMDS_LITELLM_LOCALDEV_API_KEY', localDevNormalized)
-
-      if (prodNormalized) {
-        await setEnvVar('IAMDS_LITELLM_BASE_URL', prodNormalized)
-      }
-
-      await saveHermesConfig({ ...config, providers: nextProviders })
-      notify({ kind: 'success', message: 'AIMDS-Suite provider URLs saved', title: 'Saved' })
     } catch (err) {
       notifyError(err, 'Failed to save provider URLs')
     } finally {
@@ -335,144 +423,49 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
 
   return (
     <section className="mt-4 rounded-[8px] border border-border bg-muted/20 p-3">
-      <h3 className="text-sm font-medium text-foreground">AIMDS-Suite Base URLs</h3>
-      <p className="mt-1 text-xs text-muted-foreground">
-        Configure production, staging, and dev endpoint URLs here. API keys are edited above in the provider key rows.
-      </p>
+      <h3 className="text-sm font-medium text-foreground">{labels.title}</h3>
+      <p className="mt-1 text-xs text-muted-foreground">{labels.intro}</p>
 
       <div className="mt-3 grid gap-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <label className="text-xs font-medium text-foreground min-w-44 shrink-0" htmlFor="iamds-prod-url">
-            Production Base URL (Default)
-          </label>
-          <div className="flex items-center gap-2 flex-1 max-w-xl sm:ml-auto">
-            <Input
-              className="text-xs flex-1"
-              id="iamds-prod-url"
-              onChange={e => setProdBaseUrl(e.target.value)}
-              placeholder="https://suite.iamds.com"
-              value={prodBaseUrl}
-            />
-            <div className="shrink-0 min-w-36 text-right flex items-center justify-end">
-              {envVars.IAMDS_LITELLM_API_KEY?.is_set ? (
-                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-500 py-1 px-2.5">
-                  <Check className="size-3.5" /> Connected
-                </span>
-              ) : (
-                prodBaseUrl.trim() && (
-                  <Button
-                    onClick={() => void handleKeycloakLogin(prodBaseUrl.trim(), 'IAMDS_LITELLM_API_KEY', 'AIMDS-Suite')}
-                    size="sm"
-                    variant="outline"
-                  >
-                    Production SSO Key
-                  </Button>
-                )
-              )}
-            </div>
-          </div>
-        </div>
+        {SUITE_ENVS.map(env => {
+          const status = statuses[env.id]
+          const hasUrl = Boolean(urls[env.id].trim())
+          const buttonLabel = status?.key_present ? labels.reauthenticate : labels.signInSso
 
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <label className="text-xs font-medium text-foreground min-w-44 shrink-0" htmlFor="iamds-staging-url">
-            Staging Base URL
-          </label>
-          <div className="flex items-center gap-2 flex-1 max-w-xl sm:ml-auto">
-            <Input
-              className="text-xs flex-1"
-              id="iamds-staging-url"
-              onChange={e => setStagingBaseUrl(e.target.value)}
-              placeholder="https://staging.suite.iamds.com"
-              value={stagingBaseUrl}
-            />
-            <div className="shrink-0 min-w-36 text-right flex items-center justify-end">
-              {envVars.IAMDS_LITELLM_STAGING_API_KEY?.is_set ? (
-                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-500 py-1 px-2.5">
-                  <Check className="size-3.5" /> Connected
-                </span>
-              ) : (
-                stagingBaseUrl.trim() && (
+          return (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2" key={env.id}>
+              <label className="text-xs font-medium text-foreground min-w-44 shrink-0" htmlFor={`iamds-${env.id}-url`}>
+                {env.label}
+              </label>
+              <div className="flex items-center gap-2 flex-1 max-w-xl sm:ml-auto">
+                <Input
+                  className="text-xs flex-1"
+                  id={`iamds-${env.id}-url`}
+                  onChange={e => setUrls(prev => ({ ...prev, [env.id]: e.target.value }))}
+                  placeholder={env.placeholder}
+                  value={urls[env.id]}
+                />
+                <div className="shrink-0 min-w-44 flex items-center justify-end gap-2">
+                  <SuiteEnvStatusPill status={status} />
                   <Button
-                    onClick={() => void handleKeycloakLogin(stagingBaseUrl.trim(), 'IAMDS_LITELLM_STAGING_API_KEY', 'AIMDS-Suite Staging')}
+                    disabled={!hasUrl || busyEnv !== null}
+                    onClick={() => void handleKeycloakLogin(env)}
                     size="sm"
-                    variant="outline"
+                    title={hasUrl ? undefined : labels.enterUrlFirst}
+                    variant={status?.state === 'needs_reauth' ? 'default' : 'outline'}
                   >
-                    Staging SSO Key
+                    {busyEnv === env.id ? <Loader2 className="size-3.5 animate-spin" /> : buttonLabel}
                   </Button>
-                )
-              )}
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <label className="text-xs font-medium text-foreground min-w-44 shrink-0" htmlFor="iamds-dev-url">
-            Dev Base URL
-          </label>
-          <div className="flex items-center gap-2 flex-1 max-w-xl sm:ml-auto">
-            <Input
-              className="text-xs flex-1"
-              id="iamds-dev-url"
-              onChange={e => setDevBaseUrl(e.target.value)}
-              placeholder="https://dev.suite.iamds.com"
-              value={devBaseUrl}
-            />
-            <div className="shrink-0 min-w-36 text-right flex items-center justify-end">
-              {envVars.IAMDS_LITELLM_DEV_API_KEY?.is_set ? (
-                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-500 py-1 px-2.5">
-                  <Check className="size-3.5" /> Connected
-                </span>
-              ) : (
-                devBaseUrl.trim() && (
-                  <Button
-                    onClick={() => void handleKeycloakLogin(devBaseUrl.trim(), 'IAMDS_LITELLM_DEV_API_KEY', 'AIMDS-Suite Development')}
-                    size="sm"
-                    variant="outline"
-                  >
-                    Development SSO Key
-                  </Button>
-                )
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <label className="text-xs font-medium text-foreground min-w-44 shrink-0" htmlFor="iamds-localdev-url">
-            Local Dev Base URL
-          </label>
-          <div className="flex items-center gap-2 flex-1 max-w-xl sm:ml-auto">
-            <Input
-              className="text-xs flex-1"
-              id="iamds-localdev-url"
-              onChange={e => setLocalDevBaseUrl(e.target.value)}
-              placeholder="http://localhost:8000"
-              value={localDevBaseUrl}
-            />
-            <div className="shrink-0 min-w-36 text-right flex items-center justify-end">
-              {envVars.IAMDS_LITELLM_LOCALDEV_API_KEY?.is_set ? (
-                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-500 py-1 px-2.5">
-                  <Check className="size-3.5" /> Connected
-                </span>
-              ) : (
-                localDevBaseUrl.trim() && (
-                  <Button
-                    onClick={() => void handleKeycloakLogin(localDevBaseUrl.trim(), 'IAMDS_LITELLM_LOCALDEV_API_KEY', 'AIMDS-Suite Local Dev')}
-                    size="sm"
-                    variant="outline"
-                  >
-                    Local Dev SSO Key
-                  </Button>
-                )
-              )}
-            </div>
-          </div>
-        </div>
+          )
+        })}
       </div>
 
       <div className="mt-3 flex justify-end">
         <Button disabled={isSaving} onClick={() => void saveUrls()} size="sm">
-          {isSaving ? 'Saving…' : 'Save provider URLs'}
+          {isSaving ? labels.saving : labels.saveUrls}
         </Button>
       </div>
     </section>
@@ -490,11 +483,21 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
     setIsKeycloakLoading(true)
     setKeycloakConnected(false)
 
-    const baseUrl = (overrideBaseUrl || DEFAULT_BASE_URL).trim()
     const targetKey = targetKeyEnv || 'IAMDS_LITELLM_API_KEY'
+    let baseUrl = (overrideBaseUrl || DEFAULT_BASE_URL).trim()
 
     if (!baseUrl) {
-      setKeycloakError('Set a base URL to enable Keycloak SSO')
+      // No baked-in default: use the URL configured for production (AIS-286).
+      try {
+        const res = await getAimdsSuiteStatus()
+        baseUrl = res.environments.find(e => e.id === 'aimds-suite-prod')?.base_url ?? ''
+      } catch {
+        baseUrl = ''
+      }
+    }
+
+    if (!baseUrl) {
+      setKeycloakError(t.settings.providers.suite.enterUrlFirst)
       setIsKeycloakLoading(false)
 
       return
@@ -520,11 +523,17 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
       await setEnvVar(targetKey, result.apiKey)
 
       try {
+        await completeAimdsSuiteReauth('aimds-suite-prod')
+      } catch {
+        // The next 401 self-heals via the credential refresh path.
+      }
+
+      try {
         const config = await getHermesConfigRecord()
-        await saveHermesConfig({
-          ...config,
-          model: 'aimds-suite-prod/AIMDS-Suite-Auto',
-        })
+
+        if (!config.model) {
+          await saveHermesConfig({ ...config, model: 'aimds-suite-prod/AIMDS-Suite-Auto' })
+        }
       } catch {
         // Best-effort model selection
       }

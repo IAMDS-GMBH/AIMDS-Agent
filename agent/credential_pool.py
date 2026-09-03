@@ -72,6 +72,10 @@ _TERMINAL_AUTH_REASONS = frozenset({
     "invalid_grant",        # RFC 6749: refresh_token rejected during refresh
     "unauthorized_client",  # RFC 6749: client no longer authorized
     "refresh_token_reused", # Single-use refresh token consumed by another process
+    # LiteLLM proxy (AIMDS-Suite): the virtual key is unknown/revoked on the
+    # server — retrying with the same key can never succeed (AIS-286).
+    "token_not_found_in_db",
+    "invalid_api_key",
 })
 
 # How long a DEAD manual credential is preserved before being pruned.
@@ -638,6 +642,41 @@ class CredentialPool:
         except Exception as exc:
             logger.debug("Failed to sync Codex entry from auth.json: %s", exc)
         return entry
+
+    def _sync_env_entry_from_dotenv(self, entry: PooledCredential) -> PooledCredential:
+        """Adopt a rotated env-var key (``source="env:VAR"``) after a re-auth.
+
+        Only entries whose on-disk value differs from the pooled token are
+        touched; the status is cleared so the entry re-enters rotation.
+        """
+        if not entry.source.startswith("env:"):
+            return entry
+        env_var = entry.source[len("env:"):]
+        try:
+            fresh = _get_env_prefer_dotenv(env_var)
+        except Exception:
+            return entry
+        if not fresh or fresh == (entry.access_token or ""):
+            return entry
+        logger.info(
+            "credential pool: %s re-authed on disk (%s changed) — clearing %s status",
+            self.provider,
+            env_var,
+            entry.last_status,
+        )
+        updated = replace(
+            entry,
+            access_token=fresh,
+            last_status=None,
+            last_status_at=None,
+            last_error_code=None,
+            last_error_reason=None,
+            last_error_message=None,
+            last_error_reset_at=None,
+        )
+        self._replace_entry(entry, updated)
+        self._persist()
+        return updated
 
     def _sync_xai_oauth_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
         """Sync an xAI OAuth pool entry from auth.json if tokens differ.
@@ -1276,6 +1315,17 @@ class CredentialPool:
                     and entry.source == "loopback_pkce"
                     and entry.last_status in {STATUS_EXHAUSTED, STATUS_DEAD}):
                 synced = self._sync_xai_oauth_entry_from_auth_store(entry)
+                if synced is not entry:
+                    entry = synced
+                    cleared_any = True
+            # Env-seeded API keys (AIMDS-Suite via Keycloak SSO, plain
+            # provider keys): a re-auth writes a new value to ~/.hermes/.env
+            # while the pool entry still holds the old key frozen as
+            # exhausted/dead. Adopt the new key and clear the status so
+            # "no available entries" ends without a restart (AIS-286).
+            if (entry.source.startswith("env:")
+                    and entry.last_status in {STATUS_EXHAUSTED, STATUS_DEAD}):
+                synced = self._sync_env_entry_from_dotenv(entry)
                 if synced is not entry:
                     entry = synced
                     cleared_any = True
@@ -2022,6 +2072,17 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     env_url = ""
     if pconfig.base_url_env_var:
         env_url = _get_env_prefer_dotenv(pconfig.base_url_env_var).rstrip("/")
+    # AIMDS-Suite: config.yaml providers.<slug>.base_url beats the env var
+    # (AIS-286) so pool entries carry the same host the settings UI shows.
+    try:
+        from hermes_cli.iamds_suite import is_suite_provider, resolve_suite_endpoint
+
+        if is_suite_provider(provider):
+            _suite_ep = resolve_suite_endpoint(provider, allow_default=False)
+            if _suite_ep.base_url:
+                env_url = _suite_ep.base_url
+    except Exception:
+        pass
 
     env_vars = list(pconfig.api_key_env_vars)
     if provider == "anthropic":
