@@ -26,37 +26,33 @@ def test_no_resume_exactly_directive():
     assert "resume exactly" not in SUMMARY_PREFIX.lower()
 
 
-def test_latest_message_wins_on_conflict():
-    """The prefix must explicitly say latest user message wins on conflict."""
+def test_latest_message_is_the_instruction_source():
+    """The prefix must direct the model to the latest user message. Explicit
+    conflict-resolution wording ("wins", "supersede", "discard") was removed
+    in f7045421b because llm-guard's PromptInjection scanner rejected it."""
     lower = SUMMARY_PREFIX.lower()
     assert "latest user message" in lower
-    # Must have an explicit conflict-resolution rule.
-    assert "wins" in lower or "supersede" in lower or "discard" in lower
+    assert "respond to the latest user message" in lower
 
 
-def test_reverse_signals_called_out():
-    """Reverse signals (stop/undo/never mind/topic change) must be named so
-    the model recognizes them as cancellation triggers, not just background."""
+def test_no_trigger_phrases_for_prompt_injection_scanners():
+    """Reverse-signal verbs and imperative override wording read as prompt
+    injection to llm-guard; the prefix must stay free of them (f7045421b)."""
     lower = SUMMARY_PREFIX.lower()
-    # At least a few of the canonical reverse-signal verbs should appear.
-    reverse_terms = ["stop", "undo", "roll back", "never mind", "just verify"]
-    hits = sum(1 for t in reverse_terms if t in lower)
-    assert hits >= 3, (
-        f"Expected ≥3 reverse-signal terms in SUMMARY_PREFIX, found {hits}. "
-        "Without naming them the model treats reverse signals as ordinary "
-        "context and keeps pushing the cancelled task."
-    )
+    for banned in ("stop", "undo", "roll back", "never mind", "ignore", "override", "resume exactly"):
+        assert banned not in lower, f"trigger phrase {banned!r} back in SUMMARY_PREFIX"
 
 
 def test_summary_marked_reference_only():
     """The REFERENCE ONLY framing must remain — it's the entire point."""
     assert "REFERENCE ONLY" in SUMMARY_PREFIX
     assert "background reference" in SUMMARY_PREFIX
-    assert "NOT as active instructions" in SUMMARY_PREFIX
+    assert "not new active instructions" in SUMMARY_PREFIX
 
 
-def test_memory_authority_preserved():
-    """The fix must not weaken the MEMORY.md / USER.md authority clause."""
-    assert "MEMORY.md" in SUMMARY_PREFIX
-    assert "USER.md" in SUMMARY_PREFIX
-    assert "authoritative" in SUMMARY_PREFIX
+def test_memory_and_date_authority_preserved():
+    """Persistent memory stays authoritative and the date block, not the
+    summary, is the only source of the current date (AIS-275)."""
+    assert "Persistent memory remains active" in SUMMARY_PREFIX
+    assert "Current Local Time & Date" in SUMMARY_PREFIX
+    assert "only authoritative date source" in SUMMARY_PREFIX

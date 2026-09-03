@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import sys
 import time
@@ -152,6 +153,7 @@ class TestFormatters:
 
 class TestSpawnAsyncDiagnostic:
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
+    @pytest.mark.skipif(shutil.which("timeout") is None, reason="needs GNU coreutils `timeout` (absent on stock macOS)")
     def test_spawns_subprocess_and_writes_output(self, tmp_path):
         log_path = tmp_path / "diag.log"
         pid = sf.spawn_async_diagnostic(log_path, "SIGTERM", timeout_seconds=3.0)

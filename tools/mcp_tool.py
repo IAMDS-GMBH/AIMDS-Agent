@@ -663,7 +663,13 @@ def _cache_mcp_image_block(block) -> str:
     return f"MEDIA:{image_path}"
 
 
-def _resolve_mcp_ssl_verify(config: dict) -> bool:
+def _resolve_mcp_ssl_verify(config: dict) -> "bool | str":
+    """Resolve ``ssl_verify`` for an MCP server: ``True``/``False`` or a CA-bundle path.
+
+    httpx accepts a filesystem path as ``verify=``; a string that is not a
+    truthy/falsy keyword is treated as that path (custom corporate CA). It
+    used to be coerced to ``True``, which silently ignored the bundle.
+    """
     env_ssl = os.getenv("HERMES_SSL_VERIFY", "").lower()
     if env_ssl in ("false", "0", "no", "off"):
         return False
@@ -671,7 +677,12 @@ def _resolve_mcp_ssl_verify(config: dict) -> bool:
     if isinstance(val, bool):
         return val
     if isinstance(val, str):
-        return val.lower() not in ("false", "0", "no", "off")
+        lowered = val.strip().lower()
+        if lowered in ("false", "0", "no", "off"):
+            return False
+        if lowered in ("", "true", "1", "yes", "on"):
+            return True
+        return val.strip()  # CA bundle path
     return bool(val)
 
 

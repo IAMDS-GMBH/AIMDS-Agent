@@ -549,12 +549,17 @@ jobs:
           echo "version=$clean" >> "$GITHUB_OUTPUT"
           echo "tag=v$clean" >> "$GITHUB_OUTPUT"
 
-      - name: Persist version bump in repository
+      # main is protected by a branch ruleset (pull requests only), so this
+      # job no longer pushes a version-bump commit. Release flow (AIS-285):
+      #   1. `python scripts/set_version.py <x.y.z>` on a branch, merge via PR
+      #   2. run this workflow with create_release=true (version = <x.y.z>)
+      # The job verifies that main already carries the version and only
+      # creates the tag + release from that commit.
+      - name: Verify version files on main
         id: persist_version
         shell: bash
         env:
           VERSION: ${{ steps.tag.outputs.version }}
-          ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
           python scripts/set_version.py "$VERSION"
@@ -565,22 +570,14 @@ jobs:
             apps/desktop/package.json \
             apps/bootstrap-installer/package.json \
             apps/bootstrap-installer/src-tauri/tauri.conf.json \
-            apps/bootstrap-installer/src-tauri/Cargo.toml; then
-            echo "Version files already up to date"
+            apps/bootstrap-installer/src-tauri/Cargo.toml \
+            acp_registry/agent.json; then
+            echo "Version files already at $VERSION"
             exit 0
           fi
-          git config user.name "$ACTOR"
-          git config user.email "$ACTOR@users.noreply.github.com"
-          git add \
-            pyproject.toml \
-            hermes_cli/__init__.py \
-            apps/desktop/package.json \
-            apps/bootstrap-installer/package.json \
-            apps/bootstrap-installer/src-tauri/tauri.conf.json \
-            apps/bootstrap-installer/src-tauri/Cargo.toml
-          git commit -m "chore: bump version to $VERSION"
-          git push origin HEAD:main
-          echo "target_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git --no-pager diff --stat
+          echo "::error::main is not at version $VERSION. Merge a PR with \`python scripts/set_version.py $VERSION\` first (main accepts pull requests only), then re-run this workflow."
+          exit 1
 
       - name: Ensure release exists
         env:

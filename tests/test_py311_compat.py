@@ -32,11 +32,26 @@ def _py_files():
 
 
 def _pep701_offences(source: str) -> list:
-    """Backslashes inside the {…} expression parts of f-strings (3.12 tokenizer view)."""
+    """Backslashes inside the {…} expression parts of f-strings (3.12 tokenizer view).
+
+    On an interpreter older than 3.12 the tokenizer has no FSTRING_START /
+    FSTRING_MIDDLE / FSTRING_END tokens (they were added with PEP 701), so the
+    token walk below cannot run there. That interpreter *is* the one that
+    rejects the construct, though, so compiling the source is the exact check:
+    3.11 raises "f-string expression part cannot include a backslash".
+    """
     if not _SUSPECT.search(source):
         return []
     import io
     import tokenize
+
+    if not hasattr(tokenize, "FSTRING_START"):
+        try:
+            compile(source, "<pep701-check>", "exec")
+        except SyntaxError as exc:
+            if "f-string" in str(exc.msg).lower() and "backslash" in str(exc.msg).lower():
+                return [(exc.lineno or 0, (exc.text or "").strip()[:80])]
+        return []
 
     offences = []
     fstring_depth = 0

@@ -783,7 +783,12 @@ class TestToolResultPreflightCompression:
         """When tool results push estimated tokens past threshold, compress before next call."""
         agent.compression_enabled = True
         agent.context_compressor.context_length = 200_000
-        agent.context_compressor.threshold_tokens = 130_000  # below the 135k reported usage
+        # threshold_tokens is re-derived from context_length * threshold_percent
+        # when the compressor is recalibrated during the turn (the unknown test
+        # model resolves to a 256k window), so pin the ratio instead of the
+        # derived number: 0.5 * 256k = 128k < the 130k reported usage.
+        agent.context_compressor.threshold_percent = 0.5
+        agent.context_compressor.threshold_tokens = 100_000
         agent.context_compressor.last_prompt_tokens = 130_000
         agent.context_compressor.last_completion_tokens = 5_000
 

@@ -327,8 +327,23 @@ def test_anthropic_pkce_branch_still_works():
     assert "claude.ai" in body["auth_url"]
 
 
-def test_xai_oauth_listed_as_loopback_flow():
-    """xAI Grok OAuth must surface in the catalog as a first-class loopback flow."""
+def test_xai_oauth_listed_as_loopback_flow(monkeypatch):
+    """xAI Grok OAuth must surface in the catalog as a first-class loopback flow.
+
+    ``/api/providers/oauth`` lists only providers with usable credentials (plus
+    GitHub / MCP-backed entries), so pretend xAI is logged in for the listing.
+    """
+    from hermes_cli import web_server as ws
+
+    real_status = ws._resolve_provider_status
+
+    def _status(provider_id, status_fn):
+        if provider_id == "xai-oauth":
+            return {"logged_in": True, "source": "test", "source_label": "test",
+                    "token_preview": "…abcd", "expires_at": None, "has_refresh_token": True}
+        return real_status(provider_id, status_fn)
+
+    monkeypatch.setattr(ws, "_resolve_provider_status", _status)
     resp = client.get("/api/providers/oauth", headers=HEADERS)
     assert resp.status_code == 200, resp.text
     providers = {p["id"]: p for p in resp.json()["providers"]}

@@ -216,16 +216,22 @@ def _apply_capabilities(rows: list[dict]) -> None:
 # ─── Internal: row post-processing ──────────────────────────────────────
 
 
+# Legacy provider slugs that still sit in CANONICAL_PROVIDERS for config
+# back-compat but are presented under their aimds-suite-* successor (config
+# migration v33→34). Skeleton rows are never emitted for the legacy slug.
+LEGACY_PROVIDER_ALIASES: dict[str, str] = {
+    "iamds-litellm": "aimds-suite-prod",
+    "iamds-litellm-staging": "aimds-suite-staging",
+    "iamds-litellm-dev": "aimds-suite-dev",
+    "aimds-suite": "aimds-suite-prod",
+}
+
+
 def _append_unconfigured_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
     """Build skeleton rows for canonical providers missing from ``rows``."""
     from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
 
-    canonical_map = {
-        "iamds-litellm": "aimds-suite-prod",
-        "iamds-litellm-staging": "aimds-suite-staging",
-        "iamds-litellm-dev": "aimds-suite-dev",
-        "aimds-suite": "aimds-suite-prod",
-    }
+    canonical_map = LEGACY_PROVIDER_ALIASES
     seen = set()
     for r in rows:
         slug = r["slug"].lower()

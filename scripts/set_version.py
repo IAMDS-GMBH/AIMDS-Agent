@@ -11,6 +11,7 @@ Updates:
     apps/bootstrap-installer/package.json — version
     apps/bootstrap-installer/src-tauri/tauri.conf.json — version
     apps/bootstrap-installer/src-tauri/Cargo.toml — version
+    acp_registry/agent.json — version + uvx package pin
 
 Called by the GitHub release workflow before building/installing the package so
 that `importlib.metadata.version("hermes-agent")` returns the release tag
@@ -134,6 +135,26 @@ def _patch_installer_cargo_toml(version: str) -> None:
         print(f"  bootstrap-installer/Cargo.toml: version -> {version!r}")
 
 
+def _patch_acp_manifest(version: str) -> None:
+    """acp_registry/agent.json pins the uvx package to the release version;
+    tests/acp/test_registry_manifest.py asserts it matches pyproject."""
+    path = ROOT / "acp_registry" / "agent.json"
+    if not path.exists():
+        return
+    data = json.loads(path.read_text())
+    uvx = data.get("distribution", {}).get("uvx", {})
+    package = uvx.get("package", "")
+    new_package = re.sub(r"==.*$", f"=={version}", package) if "==" in package else package
+    if data.get("version") == version and new_package == package:
+        print(f"  acp_registry/agent.json: already {version!r}, no change")
+        return
+    data["version"] = version
+    if package:
+        uvx["package"] = new_package
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    print(f"  acp_registry/agent.json: version -> {version!r}")
+
+
 def main() -> None:
     version = _validate(sys.argv[1].lstrip("v") if len(sys.argv) > 1 else _git_version())
     release_date = date.today().strftime("%Y.%-m.%-d") if sys.platform != "win32" else date.today().strftime("%Y.%m.%d").lstrip("0").replace(".0", ".")
@@ -144,6 +165,7 @@ def main() -> None:
     _patch_installer_package_json(version)
     _patch_installer_tauri_conf(version)
     _patch_installer_cargo_toml(version)
+    _patch_acp_manifest(version)
     print("Done.")
 
 

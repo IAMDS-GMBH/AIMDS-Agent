@@ -521,7 +521,7 @@ class TestInstall:
         _write_manifest(catalog_dir, "demo", body)
 
         import sys as _sys
-        import msal
+        msal = pytest.importorskip("msal")
         from hermes_cli import mcp_catalog
         from hermes_cli.mcp_catalog import install_entry
         from hermes_cli.config import get_env_value
@@ -566,7 +566,7 @@ class TestInstall:
         _write_manifest(catalog_dir, "demo", body)
 
         import sys as _sys
-        import msal
+        msal = pytest.importorskip("msal")
         from hermes_cli import mcp_catalog
         from hermes_cli.mcp_catalog import install_entry
         from hermes_cli.config import get_env_value
@@ -604,7 +604,7 @@ class TestInstall:
         _write_manifest(catalog_dir, "demo", body)
 
         import sys as _sys
-        import msal
+        msal = pytest.importorskip("msal")
         from hermes_cli.mcp_catalog import install_entry
         from hermes_cli.config import get_env_value, load_config
 
