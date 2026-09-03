@@ -25,6 +25,7 @@ import type {
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
+  MicrosoftAdminConsentResponse,
   ModelAssignmentRequest,
   ModelAssignmentResponse,
   ModelInfoResponse,
@@ -513,6 +514,13 @@ export function submitOAuthCode(providerId: string, sessionId: string, code: str
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}/submit`,
     method: 'POST',
     body: { session_id: sessionId, code }
+  })
+}
+
+export function getMicrosoftAdminConsentUrl(): Promise<MicrosoftAdminConsentResponse> {
+  return window.hermesDesktop.api<MicrosoftAdminConsentResponse>({
+    ...profileScoped(),
+    path: '/api/providers/oauth/microsoft/admin-consent-url'
   })
 }
 

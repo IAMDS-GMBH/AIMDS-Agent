@@ -2058,7 +2058,22 @@ export interface OAuthPollResponse {
   session_id: string;
   status: "pending" | "approved" | "denied" | "expired" | "error";
   error_message?: string | null;
+  /** Structured failure details (AIS-286); consent failures carry the admin-consent URL. */
+  error_code?: string | null;
+  error_category?: string | null;
+  action_url?: string | null;
   expires_at?: number | null;
+}
+
+export interface MicrosoftAdminConsentResponse {
+  url: string;
+  client_id: string;
+  tenant_id: string;
+  scopes: string[];
+  self_consent_scopes: string[];
+  org_consent_scopes: string[];
+  granted_tier: "self" | "standard" | "admin" | null;
+  org_consented: boolean;
 }
 
 // ── Dashboard theme types ──────────────────────────────────────────────
@@ -2199,4 +2214,8 @@ export async function completeAimdsSuiteReauth(env: string): Promise<{ ok: boole
     `/api/providers/aimds-suite/${encodeURIComponent(env)}/reauth-complete`,
     { method: "POST" },
   );
+}
+
+export async function getMicrosoftAdminConsentUrl(): Promise<MicrosoftAdminConsentResponse> {
+  return fetchJSON<MicrosoftAdminConsentResponse>("/api/providers/oauth/microsoft/admin-consent-url");
 }

@@ -582,6 +582,15 @@ export interface Translations {
       otherProviders: string
       noProviderKeys: string
       loading: string
+      m365: {
+        grantForOrg: string
+        grantForOrgHint: string
+        orgApproved: string
+        selfOnly: string
+        copied: string
+        openedAndCopied: string
+        loadFailed: string
+      }
       suite: {
         title: string
         intro: string
@@ -1259,6 +1268,9 @@ export interface Translations {
     connectedProvider: (provider: string) => string
     connectedPicking: (provider: string) => string
     signInFailed: string
+    adminConsentNeeded: string
+    adminConsentHint: string
+    openAdminConsent: string
     pickDifferentProvider: string
     signInWith: (provider: string) => string
     openedBrowser: (provider: string) => string

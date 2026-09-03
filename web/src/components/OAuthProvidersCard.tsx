@@ -123,6 +123,31 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
     }
   };
 
+  // Tenant onboarding (AIS-286): open + copy the admin-consent URL. Only a
+  // tenant administrator can accept it; afterwards every user silently gets
+  // the org-consent tier without signing in again.
+  const openM365AdminConsent = async () => {
+    setBusyId("microsoft-consent");
+    try {
+      const res = await api.getMicrosoftAdminConsentUrl();
+      window.open(res.url, "_blank", "noopener,noreferrer");
+      try {
+        await navigator.clipboard.writeText(res.url);
+      } catch {
+        // clipboard is optional
+      }
+      onSuccess?.(
+        res.org_consented
+          ? "Organization already approved — link opened again in case an admin wants to re-consent."
+          : "Admin consent link opened in a new tab and copied. Hand it to a tenant administrator.",
+      );
+    } catch (e) {
+      onError?.(`Could not build the admin consent link: ${e}`);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const handleDisconnect = async (provider: OAuthProvider) => {
     setBusyId(provider.id);
     setDisconnectTarget(null);
@@ -263,6 +288,17 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0">
+                  {p.id === "microsoft" && p.status.logged_in && (
+                    <Button
+                      size="sm"
+                      outlined
+                      disabled={busyId === "microsoft-consent"}
+                      onClick={() => void openM365AdminConsent()}
+                      title="Tenant admin: approve Teams chat, presence, shared mailboxes and To Do once for the whole organization"
+                    >
+                      Grant for organization
+                    </Button>
+                  )}
                   {p.id === "microsoft" && (
                     <Button
                       ghost

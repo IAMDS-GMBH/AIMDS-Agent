@@ -11,6 +11,7 @@ import json
 import mimetypes
 import os
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -26,48 +27,68 @@ mcp = FastMCP("MSOffice365MCP")
 # Constants
 GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 
-# Scopes every regular tenant member can consent to themselves (Microsoft
-# Graph does not require a tenant admin to approve these as delegated
-# permissions). Covers Mail/Calendar/Teams/OneDrive/Contacts -- the vast
-# majority of what this MCP is used for.
-BASE_SCOPES = [
-    "User.Read",
-    "Mail.ReadWrite",
-    "Mail.Send",
-    "Mail.ReadWrite.Shared",
-    "Mail.Send.Shared",
-    "Calendars.ReadWrite",
-    "Calendars.ReadWrite.Shared",
-    "Chat.ReadWrite",
-    "Files.ReadWrite.All",
-    "Contacts.ReadWrite",
-    "Presence.Read",
-    "OnlineMeetings.Read",
-    "Tasks.ReadWrite",
-]
+# Consent tiers (AIS-286). Single source of truth is hermes_cli/m365_auth.py;
+# the literals below are the standalone mirror for installs that run this
+# server outside the Hermes checkout (catalog installs never receive code
+# fixes, so the fallback branch is production code). A test pins equality.
+#
+#   SELF_CONSENT_SCOPES  tier 0 — every tenant member can consent themselves.
+#                        Login default in dashboard, CLI and chat tool.
+#   ORG_CONSENT_SCOPES   tier 1 — "Admin consent required": a tenant admin grants
+#                        them once org-wide (m365_generate_admin_consent_url);
+#                        afterwards acquire_token_silent hands them to every user.
+#   ADMIN_SCOPES         tier 2 — directory-wide / org-wide write, admins only.
+try:
+    from hermes_cli.m365_auth import (
+        M365_ADMIN_SCOPES as ADMIN_SCOPES,
+        M365_ORG_CONSENT_SCOPES as ORG_CONSENT_SCOPES,
+        M365_SELF_CONSENT_SCOPES as SELF_CONSENT_SCOPES,
+    )
+except ImportError:
+    SELF_CONSENT_SCOPES = [
+        "User.Read",
+        "Mail.ReadWrite",
+        "Mail.Send",
+        "Calendars.ReadWrite",
+        "Contacts.ReadWrite",
+        "Files.ReadWrite.All",
+    ]
+    ORG_CONSENT_SCOPES = [
+        "Mail.ReadWrite.Shared",
+        "Mail.Send.Shared",
+        "Calendars.ReadWrite.Shared",
+        "Chat.ReadWrite",
+        "Presence.Read",
+        "OnlineMeetings.Read",
+        "Tasks.ReadWrite",
+    ]
+    ADMIN_SCOPES = [
+        "User.Read.All",
+        "Directory.Read.All",
+        "Sites.ReadWrite.All",
+    ]
 
-# Scopes Microsoft classifies as requiring tenant-admin consent, because
-# they grant read/write access beyond the signed-in user (directory-wide
-# user search, org-wide SharePoint). Requesting these in the default
-# consent screen blocks sign-in entirely for non-admin users -- reproduced
-# via a customer test where a brand-new (non-admin) account got stuck on
-# an admin-approval wall just to send mail. Only requested when the caller
-# opts in (m365_initiate_login(request_admin_scopes=True)) or when a tenant
-# admin has already granted them org-wide (m365_generate_admin_consent_url),
-# in which case silent token acquisition below picks them up automatically
-# without any extra prompt.
-ADMIN_SCOPES = [
-    "User.Read.All",
-    "Directory.Read.All",
-    "Sites.ReadWrite.All",
-]
-
+# BASE_SCOPES keeps its historical meaning "everything a regular user needs"
+# (tiers 0+1); ALL_SCOPES adds the admin tier. LOGIN_SCOPES is what a fresh
+# sign-in requests: tier 0 only, so non-admin users never hit the
+# "Need admin approval" wall. Tier 1 arrives silently after org consent.
+BASE_SCOPES = SELF_CONSENT_SCOPES + ORG_CONSENT_SCOPES
+STANDARD_SCOPES = BASE_SCOPES
 ALL_SCOPES = BASE_SCOPES + ADMIN_SCOPES
+LOGIN_SCOPES = SELF_CONSENT_SCOPES
 
-# Backwards-compatible alias: some tools (admin consent URL generation) and
-# any external callers still importing SCOPES directly should get the full
-# superset, since that tool is specifically for granting everything at once.
+# Backwards-compatible alias: callers importing SCOPES directly get the full
+# superset (the admin-consent URL grants everything at once).
 SCOPES = ALL_SCOPES
+
+SCOPE_TIERS = {"self": SELF_CONSENT_SCOPES, "standard": STANDARD_SCOPES, "admin": ALL_SCOPES}
+SCOPE_TIER_ORDER = ("admin", "standard", "self")
+_GRANTED_TIER_TTL_SECONDS = 600.0
+# home_account_id -> (tier, monotonic timestamp). Without this cache every
+# Graph call would pay two failing network redemptions before the working tier.
+_GRANTED_TIER_CACHE: Dict[str, Tuple[str, float]] = {}
+
+DEFAULT_CLIENT_ID = "41c29967-8ee6-4fac-b484-e87460272bda"  # IAMDS-owned multi-tenant app
 
 ADMIN_ROLE_IDS = {
     "62e90394-69f5-4237-9190-012177145e10": "Global Administrator",
@@ -234,8 +255,13 @@ def _normalize_datetime_input(dt_str: Optional[str], default_tz: Optional[str] =
 
 try:
     from hermes_cli.m365_auth import (
+        build_admin_consent_url as _build_admin_consent_url,
+        classify_m365_auth_error as _classify_auth_error,
         get_m365_token_cache_path as _get_token_cache_path,
         get_msal_app as _get_msal_app,
+        m365_tier_for_endpoint as _tier_for_endpoint,
+        resolve_m365_client_id as _resolve_client_id,
+        resolve_m365_tenant_id as _resolve_tenant_id,
         save_msal_cache as _save_msal_cache,
         translate_aadsts_error as _translate_aadsts_error,
     )
@@ -246,6 +272,97 @@ try:
 except ImportError:
     def _translate_aadsts_error(err: str) -> str:
         return ""
+
+    class _FallbackAuthError:
+        def __init__(self, raw: Any):
+            text = json.dumps(raw, default=str) if isinstance(raw, dict) else str(raw)
+            oauth = str(raw.get("error") or "") if isinstance(raw, dict) else ""
+            lowered = (text + " " + oauth).lower()
+            self.raw = text
+            self.code = oauth
+            if "aadsts90094" in lowered or "aadsts65001" in lowered or "consent" in lowered or "admin approval" in lowered:
+                self.category, self.admin_consent_required = "consent", True
+                self.message = "Your organization requires admin approval for this sign-in. A tenant administrator must grant consent once using the admin-consent URL."
+            elif oauth in ("authorization_declined", "access_denied"):
+                self.category, self.admin_consent_required = "declined", False
+                self.message = "The sign-in was declined in the browser."
+            elif oauth in ("expired_token", "invalid_grant"):
+                self.category, self.admin_consent_required = "expired", False
+                self.message = "The sign-in expired. Start it again."
+            else:
+                self.category, self.admin_consent_required = "unknown", False
+                self.message = text[:400]
+
+        def to_dict(self) -> Dict[str, Any]:
+            return {"error_code": self.code, "category": self.category, "message": self.message, "admin_consent_required": self.admin_consent_required}
+
+    def _classify_auth_error(raw: Any) -> "_FallbackAuthError":
+        return _FallbackAuthError(raw)
+
+    def _resolve_client_id(client_id: Optional[str] = None) -> str:
+        return (
+            (client_id or "").strip()
+            or os.environ.get("M365_CLIENT_ID", "").strip()
+            or os.environ.get("OUTLOOK_CLIENT_ID", "").strip()
+            or os.environ.get("TEAMS_CLIENT_ID", "").strip()
+            or DEFAULT_CLIENT_ID
+        )
+
+    def _resolve_tenant_id(tenant_id: Optional[str] = None) -> str:
+        candidate = (
+            (tenant_id or "").strip()
+            or os.environ.get("M365_TENANT_ID", "").strip()
+            or os.environ.get("OUTLOOK_TENANT_ID", "").strip()
+            or os.environ.get("TEAMS_TENANT_ID", "").strip()
+        )
+        if candidate and candidate.lower() != "common":
+            return candidate
+        try:
+            cache_path = _get_token_cache_path()
+            if cache_path.exists():
+                data = json.loads(cache_path.read_text(encoding="utf-8"))
+                for acc in (data.get("Account") or {}).values():
+                    realm = (acc.get("realm") or "").strip()
+                    if realm and realm.lower() not in ("common", "organizations"):
+                        return realm
+        except Exception:
+            pass
+        return "organizations"
+
+    def _build_admin_consent_url(
+        *,
+        client_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        scopes: Optional[List[str]] = None,
+        redirect_uri: str = "http://localhost:8400",
+        use_default_scope: bool = False,
+        state: Optional[str] = None,
+    ) -> str:
+        import urllib.parse
+
+        if use_default_scope:
+            scope_value = "https://graph.microsoft.com/.default"
+        else:
+            scope_value = " ".join(
+                sc if sc.startswith("http") else f"https://graph.microsoft.com/{sc}"
+                for sc in (scopes if scopes is not None else ALL_SCOPES)
+            )
+        params = {"client_id": _resolve_client_id(client_id), "scope": scope_value, "redirect_uri": redirect_uri}
+        if state:
+            params["state"] = state
+        return (
+            f"https://login.microsoftonline.com/{_resolve_tenant_id(tenant_id)}/v2.0/adminconsent?"
+            + urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+        )
+
+    def _tier_for_endpoint(endpoint: str) -> str:
+        ep = endpoint or ""
+        if ep.startswith("/users/") and ep.count("/") >= 3:
+            return "standard"
+        for marker, tier in (("/users", "admin"), ("/sites", "admin"), ("/chats", "standard"), ("/presence", "standard"), ("/onlineMeetings", "standard"), ("/todo", "standard"), ("/communications", "standard")):
+            if marker in ep:
+                return tier
+        return "self"
 
     def _get_token_cache_path() -> Path:
         hermes_home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
@@ -268,7 +385,7 @@ except ImportError:
         )
 
         # Defaults: standard multi-tenant client app if no custom app registration provided
-        client_id = custom_client_id or "41c29967-8ee6-4fac-b484-e87460272bda"  # Microsoft Intune / Office multi-tenant app ID
+        client_id = custom_client_id or DEFAULT_CLIENT_ID
         tenant_id = custom_tenant_id or "organizations"
 
         if tenant_id == "common":
@@ -315,6 +432,45 @@ except ImportError:
         os.replace(tmp_path, cache_path)
 
 
+def _acquire_silent_by_tier(app: msal.PublicClientApplication, acc: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Silently acquire a token for ``acc``, widest consent tier first.
+
+    Order: the tier that worked last time for this account (cached for
+    ``_GRANTED_TIER_TTL_SECONDS``), then admin → standard → self. Once a tenant
+    admin has consented org-wide, ``admin``/``standard`` succeed for every user
+    without any prompt; before that, ``self`` keeps mail/calendar/files working.
+    """
+    key = str(acc.get("home_account_id") or acc.get("username") or "")
+    now = time.monotonic()
+    order: List[str] = list(SCOPE_TIER_ORDER)
+    cached = _GRANTED_TIER_CACHE.get(key)
+    if cached and now - cached[1] < _GRANTED_TIER_TTL_SECONDS and cached[0] in order:
+        order.remove(cached[0])
+        order.insert(0, cached[0])
+    for tier in order:
+        result = app.acquire_token_silent(SCOPE_TIERS[tier], account=acc)
+        if result and "access_token" in result:
+            _GRANTED_TIER_CACHE[key] = (tier, now)
+            return result, tier
+    _GRANTED_TIER_CACHE.pop(key, None)
+    return None, None
+
+
+def _granted_tier_for_account(app: msal.PublicClientApplication, acc: Dict[str, Any]) -> Optional[str]:
+    """Return the widest tier ``acc`` can obtain silently (None = needs sign-in)."""
+    _, tier = _acquire_silent_by_tier(app, acc)
+    return tier
+
+
+def _login_scopes_from_argv() -> List[str]:
+    """CLI ``--login`` scope selection: ``--admin`` → all, ``--standard`` → tiers 0+1, else tier 0."""
+    if "--admin" in sys.argv or bool(os.environ.get("M365_REQUEST_ADMIN_SCOPES")):
+        return ALL_SCOPES
+    if "--standard" in sys.argv:
+        return STANDARD_SCOPES
+    return LOGIN_SCOPES
+
+
 def _get_access_token(account: Optional[str] = None) -> str:
     # 1. Try MSAL token cache with silent refresh first (single source of truth)
     app = _get_msal_app()
@@ -334,15 +490,7 @@ def _get_access_token(account: Optional[str] = None) -> str:
                 target_accounts = matched
 
         for acc in target_accounts:
-            # Try the full scope superset first: if a tenant admin has
-            # already granted org-wide consent (m365_generate_admin_consent_url),
-            # this silently succeeds with zero extra prompts for every user
-            # in that tenant. Otherwise fall back to the base (non-admin)
-            # scopes so mail/calendar/chat/files keep working even when
-            # nobody has admin rights.
-            result = app.acquire_token_silent(ALL_SCOPES, account=acc)
-            if not result or "access_token" not in result:
-                result = app.acquire_token_silent(BASE_SCOPES, account=acc)
+            result, _tier = _acquire_silent_by_tier(app, acc)
             if result and "access_token" in result:
                 _save_cache(app)
                 return result["access_token"]
@@ -354,8 +502,7 @@ def _get_access_token(account: Optional[str] = None) -> str:
 
     # 2. Check if running in interactive --login CLI mode
     if "--login" in sys.argv:
-        request_admin_scopes = "--admin" in sys.argv or bool(os.environ.get("M365_REQUEST_ADMIN_SCOPES"))
-        login_scopes = ALL_SCOPES if request_admin_scopes else BASE_SCOPES
+        login_scopes = _login_scopes_from_argv()
         print("\n[M365 OAuth] Initiating interactive sign-in...", file=sys.stderr)
         try:
             result = app.acquire_token_interactive(scopes=login_scopes, port=8400)
@@ -374,17 +521,41 @@ def _get_access_token(account: Optional[str] = None) -> str:
                 _save_cache(app)
                 print("[M365 OAuth] Device code sign-in successful! Token cached.", file=sys.stderr)
                 return result["access_token"]
+            classified = _classify_auth_error(result)
+            print(f"[M365 OAuth] Sign-in failed: {classified.message}", file=sys.stderr)
+            if classified.admin_consent_required:
+                print(f"[M365 OAuth] Tenant admin consent URL: {_build_admin_consent_url()}", file=sys.stderr)
 
     # 3. Running inside stdio MCP without cached token -> Return clear actionable error rather than blocking stdio!
     raise RuntimeError(
         "M365 authentication required. Call the m365_initiate_login tool "
-        "(then m365_complete_login with the returned device code) to sign "
-        "in interactively, or tell the user to open Hermes: Einstellungen "
-        "-> Anbieter -> Konten -> 'Microsoft 365 (OAuth)' -> Connect, and "
-        "follow the printed device-code instructions there. Tenant admins "
-        "who also want directory search / SharePoint tools can pass "
-        "request_admin_scopes=True to m365_initiate_login."
+        "(then m365_complete_login with the returned flow_data) to sign in "
+        "interactively, or tell the user to open Hermes: Settings -> Providers "
+        "-> Accounts -> 'Microsoft 365 (OAuth)' -> Connect, and follow the "
+        "device-code instructions there. The default sign-in requests only "
+        "self-consentable scopes; Teams chat, presence, shared mailboxes and "
+        "To Do need a one-time tenant-admin consent "
+        "(m365_generate_admin_consent_url)."
     )
+
+
+def _consent_hint_for(endpoint: str) -> str:
+    """Explain a Graph 403 in terms of the consent tier the endpoint needs."""
+    tier = _tier_for_endpoint(endpoint)
+    if tier == "admin":
+        return (
+            " (needs the admin tier: directory-wide read / SharePoint. Only a tenant "
+            "administrator can sign in with scope_tier='admin' via m365_initiate_login, "
+            "or grant it org-wide once: " + _build_admin_consent_url() + ")"
+        )
+    if tier == "standard":
+        return (
+            " (needs org-wide admin consent for Teams chat / presence / online meetings / "
+            "shared mailboxes / To Do. Ask a tenant administrator to open this URL once; "
+            "afterwards every user gets these permissions silently, no re-login needed: "
+            + _build_admin_consent_url() + ")"
+        )
+    return " (the signed-in account lacks a permission for this call; sign in again via m365_initiate_login)"
 
 
 def _graph_request(
@@ -422,10 +593,7 @@ def _graph_request(
         if response.is_error:
             hint = ""
             if response.status_code == 403 or "Authorization_RequestDenied" in response.text:
-                hint = (
-                    " (this typically means the signed-in account is missing an admin-consented "
-                    "scope -- see m365_initiate_login's request_admin_scopes option)"
-                )
+                hint = _consent_hint_for(effective_endpoint)
             aadsts_hint = _translate_aadsts_error(response.text)
             raise RuntimeError(f"MS Graph API Error [{response.status_code}]: {response.text}{hint}{aadsts_hint}")
         return response.json()
@@ -757,61 +925,70 @@ def m365_list_accounts() -> str:
 @mcp.tool()
 def m365_generate_admin_consent_url(
     redirect_uri: str = "http://localhost:8400",
+    use_default_scope: bool = False,
 ) -> Dict[str, Any]:
-    """Generate an Admin Consent URL for tenant administrators to grant organization-wide permissions for the configured App Registration."""
-    client_id = (
-        os.environ.get("M365_CLIENT_ID")
-        or os.environ.get("OUTLOOK_CLIENT_ID")
-        or os.environ.get("TEAMS_CLIENT_ID")
-    )
-    tenant_id = (
-        os.environ.get("M365_TENANT_ID")
-        or os.environ.get("OUTLOOK_TENANT_ID")
-        or os.environ.get("TEAMS_TENANT_ID")
-        or "common"
-    )
+    """Generate the tenant-onboarding (admin consent) URL for the Microsoft 365 app.
 
-    if not client_id:
-        return {
-            "error": "M365_CLIENT_ID environment variable is not set. Please set M365_CLIENT_ID and M365_TENANT_ID first."
-        }
+    A tenant administrator opens the URL once and approves; afterwards every user
+    of that organization can sign in with the default scopes and silently receives
+    the org-consent tier (Teams chat, presence, online meetings, shared mailboxes,
+    To Do) without re-authenticating. Works with the built-in IAMDS multi-tenant
+    app — M365_CLIENT_ID is optional.
 
-    import urllib.parse
-    scopes_str = " ".join(SCOPES)
-    consent_url = (
-        f"https://login.microsoftonline.com/{tenant_id}/v2.0/adminconsent"
-        f"?client_id={client_id}"
-        f"&scope={urllib.parse.quote(scopes_str)}"
-        f"&redirect_uri={urllib.parse.quote(redirect_uri)}"
+    Args:
+        redirect_uri: Must be registered on the app registration. After consent
+            the browser lands there with `admin_consent=True&tenant=<id>`; a
+            "connection refused" page at that point is expected and harmless.
+        use_default_scope: Request `https://graph.microsoft.com/.default`
+            (exactly the permissions declared on the app registration) instead
+            of the explicit scope list.
+    """
+    client_id = _resolve_client_id()
+    tenant_id = _resolve_tenant_id()
+    consent_url = _build_admin_consent_url(
+        client_id=client_id,
+        tenant_id=tenant_id,
+        scopes=ALL_SCOPES,
+        redirect_uri=redirect_uri,
+        use_default_scope=use_default_scope,
     )
-
     return {
         "success": True,
         "client_id": client_id,
         "tenant_id": tenant_id,
+        "scopes": ["https://graph.microsoft.com/.default"] if use_default_scope else list(ALL_SCOPES),
         "admin_consent_url": consent_url,
         "instructions": (
-            "Open this URL in a browser as a Tenant Administrator (Global Admin / App Admin) "
-            "to grant permissions for all users in the tenant with a single click:\n\n"
+            "Send this URL to a tenant administrator (Global Administrator, Application "
+            "Administrator or Cloud Application Administrator). They open it, sign in and "
+            "click Accept once for the whole organization. The redirect afterwards may show "
+            "a 'connection refused' page — that is expected. No user has to sign in again: "
+            "the next Microsoft 365 call picks up the new permissions automatically.\n\n"
             f"{consent_url}"
         ),
     }
 
 
 @mcp.tool()
-def m365_initiate_login(request_admin_scopes: bool = False) -> Dict[str, Any]:
-    """Initiate interactive Microsoft 365 OAuth sign-in flow directly via Device Code Flow or Browser Link from Hermes.
+def m365_initiate_login(request_admin_scopes: bool = False, scope_tier: Optional[str] = None) -> Dict[str, Any]:
+    """Start the Microsoft 365 sign-in (device code flow) from Hermes.
 
     Args:
-        request_admin_scopes: Most users should leave this False -- it requests
-            only the scopes every tenant member can consent to themselves
-            (mail, calendar, chat, files, contacts). Set True only when the
-            signed-in user is a tenant admin and wants directory-wide user
-            search / SharePoint tools too; Microsoft will show an admin-consent
-            prompt for those extra scopes during sign-in.
+        scope_tier: Which permission set to request. Default "self" requests only
+            scopes every tenant member can consent to themselves (mail, calendar,
+            contacts, files) — this is the right choice for everyone, including
+            admins, because org-level permissions arrive silently after a one-time
+            tenant admin consent (m365_generate_admin_consent_url). "standard" adds
+            Teams chat / presence / online meetings / shared mailboxes / To Do and
+            shows "Need admin approval" to non-admins. "admin" adds directory-wide
+            user search and SharePoint; only tenant administrators can complete it.
+        request_admin_scopes: Legacy alias for scope_tier="admin".
     """
+    tier = (scope_tier or "").strip().lower() or ("admin" if request_admin_scopes else "self")
+    if tier not in SCOPE_TIERS:
+        return {"error": f"Unknown scope_tier '{scope_tier}'. Use one of: self, standard, admin."}
     app = _get_msal_app()
-    scopes = ALL_SCOPES if request_admin_scopes else BASE_SCOPES
+    scopes = SCOPE_TIERS[tier]
     flow = app.initiate_device_flow(scopes=scopes)
     if "user_code" in flow:
         return {
@@ -822,7 +999,8 @@ def m365_initiate_login(request_admin_scopes: bool = False) -> Dict[str, Any]:
             # wrong value to m365_complete_login. Drop after one release.
             "device_code": flow["user_code"],
             "verification_url": flow["verification_uri"],
-            "requested_admin_scopes": request_admin_scopes,
+            "requested_tier": tier,
+            "requested_admin_scopes": tier == "admin",
             "message": (
                 f"Please open {flow['verification_uri']} in your browser and enter the code: "
                 f"**{flow['user_code']}**\n"
@@ -832,30 +1010,65 @@ def m365_initiate_login(request_admin_scopes: bool = False) -> Dict[str, Any]:
             ),
             "flow_data": flow,
         }
-    return {"error": "Failed to initiate device flow", "details": flow}
+    classified = _classify_auth_error(flow)
+    return {"error": f"Failed to initiate device flow: {classified.message}", **classified.to_dict(), "details": flow}
 
 
 @mcp.tool()
 def m365_complete_login(flow_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Complete the Microsoft 365 OAuth sign-in flow after the user entered the code in browser.
+    """Complete the Microsoft 365 sign-in after the user entered the code in the browser.
 
     Args:
         flow_data: The `flow_data` object returned by `m365_initiate_login`,
             passed back unchanged. This is the whole MSAL device-flow dict, not
             the short code shown to the user.
+
+    On success the result reports `granted_tier` (self | standard | admin). If it
+    is "self", Teams chat / presence / shared mailboxes / To Do still need a
+    one-time tenant-admin consent — `admin_consent_hint` carries the URL to hand
+    to an administrator. Users never have to sign in again after that consent.
     """
     app = _get_msal_app()
     result = app.acquire_token_by_device_flow(flow_data)
     if "access_token" in result:
         _save_cache(app)
-        return {
+        username = result.get("id_token_claims", {}).get("preferred_username")
+        granted_tier: Optional[str] = None
+        try:
+            accounts = app.get_accounts(username=username) if username else app.get_accounts()
+            if accounts:
+                granted_tier = _granted_tier_for_account(app, accounts[0])
+        except Exception:
+            granted_tier = None
+        payload: Dict[str, Any] = {
             "success": True,
             "message": "Sign-in successful! Token cached in ~/.hermes/m365_token_cache.bin",
-            "account": result.get("id_token_claims", {}).get("preferred_username"),
+            "account": username,
+            "granted_tier": granted_tier,
         }
-    err_text = str(result)
-    hint = _translate_aadsts_error(err_text)
-    return {"error": f"Sign-in incomplete or failed.{hint}", "details": result}
+        if granted_tier in (None, "self"):
+            payload["admin_consent_hint"] = {
+                "message": (
+                    "Mail, calendar, contacts and files work now. Teams chat, presence, online "
+                    "meetings, shared mailboxes and To Do need a one-time tenant-admin consent; "
+                    "share this URL with an administrator. No re-login is needed afterwards."
+                ),
+                "admin_consent_url": _build_admin_consent_url(),
+            }
+        return payload
+    classified = _classify_auth_error(result)
+    payload = {
+        "error": f"Sign-in incomplete or failed: {classified.message}",
+        **classified.to_dict(),
+        "details": result,
+    }
+    if classified.admin_consent_required:
+        payload["admin_consent_url"] = _build_admin_consent_url()
+        payload["next_step"] = (
+            "Ask a tenant administrator to open admin_consent_url once, then run "
+            "m365_initiate_login again (default scope_tier)."
+        )
+    return payload
 
 
 @mcp.tool()
@@ -872,10 +1085,9 @@ def m365_get_user_profile(account: Optional[str] = None) -> Dict[str, Any]:
 def m365_check_admin_status() -> Dict[str, Any]:
     """Check if the authenticated M365 user has Tenant/Directory Admin permissions.
 
-    Requires the admin-only scopes (see m365_initiate_login's
-    request_admin_scopes) -- if the current sign-in only has the base
-    scopes, this returns a hint to re-login with elevated scopes instead
-    of a raw Graph permission error.
+    Requires the admin tier (m365_initiate_login(scope_tier="admin")) -- if the
+    current sign-in has a lower tier, this returns a hint instead of a raw
+    Graph permission error.
     """
     try:
         member_of = _graph_request("GET", "/me/memberOf")
@@ -884,8 +1096,9 @@ def m365_check_admin_status() -> Dict[str, Any]:
             return {
                 "error": "Checking admin status requires elevated (admin) scopes.",
                 "recommendation": (
-                    "Call m365_initiate_login(request_admin_scopes=True) and re-consent "
-                    "(only meaningful if this account actually has tenant admin rights)."
+                    "Call m365_initiate_login(scope_tier='admin') and re-consent "
+                    "(only meaningful if this account actually has tenant admin rights). "
+                    "Legacy: request_admin_scopes=True."
                 ),
             }
         raise
@@ -1574,9 +1787,11 @@ def m365_download_drive_file(
 def m365_search_users(query: str, top: int = 10) -> Dict[str, Any]:
     """Search tenant user directory by display name, email, or userPrincipalName.
 
-    Requires admin-consented scopes (default sign-in doesn't request them) --
-    if this fails, call m365_initiate_login(request_admin_scopes=True) first
-    (only meaningful if the signed-in account has tenant admin rights).
+    Requires the admin tier (default sign-in doesn't request it) -- if this
+    fails, a tenant administrator can either sign in with
+    m365_initiate_login(scope_tier="admin") or grant the tier org-wide via
+    m365_generate_admin_consent_url. For Teams recipients prefer the chat
+    membership lookup, which works for every user.
     """
     clean_q = query.replace("'", "''")
     filter_expr = f"startswith(displayName,'{clean_q}') or startswith(mail,'{clean_q}') or startswith(userPrincipalName,'{clean_q}')"

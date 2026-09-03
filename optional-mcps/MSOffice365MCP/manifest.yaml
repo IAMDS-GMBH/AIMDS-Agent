@@ -25,42 +25,41 @@ auth:
   provider: microsoft
   env_var: M365_ACCESS_TOKEN
   notes: >-
-    ⚠️ WICHTIGER HINWEIS: Microsoft 365 erfordert den Abschluss des OAuth Device Flows vor der ersten Nutzung!
-    Beide Felder unten sind OPTIONAL — standardmäßig leer lassen für die Standard-Multi-Tenant App
-    (Client ID 41c29967-8ee6-4fac-b484-e87460272bda, Tenant "organizations").
-    
-    Authentifizierung einrichten:
-    - Primär / Empfohlen (App & Dashboard): Unter **Einstellungen → Connected Accounts (OAuth)** den Eintrag **Microsoft 365 (OAuth)** verbinden und den angezeigten Code unter https://microsoft.com/devicelogin bestätigen.
-    - Chat & Agent: Alternativ im Chat das Tool `m365_initiate_login` aufrufen.
-    - CLI: Bei interaktiver Installation startet der Login automatisch, bzw. per `hermes auth add microsoft`.
-    
-    Erst nach erfolgreichem Login können die M365-Tools (Outlook Mail, Kalender, Teams, OneDrive) auf Daten zugreifen.
-  # Mirrors server.py's BASE_SCOPES (non-admin default) so any device-code
-  # login initiated outside of m365_initiate_login (e.g. the dashboard's
-  # "Microsoft 365 (OAuth)" button, or `hermes mcp install MSOffice365MCP`)
-  # requests the same permissions the MCP's tools actually need, instead of
-  # falling back to a bare "User.Read". Admin-only scopes are intentionally
-  # excluded here — those are only requested via
-  # m365_initiate_login(request_admin_scopes=True).
+    Microsoft 365 requires a one-time OAuth device-code sign-in before first use.
+    Both fields below are OPTIONAL. Leave them blank to use the built-in IAMDS
+    multi-tenant app (client ID 41c29967-8ee6-4fac-b484-e87460272bda, tenant "organizations").
+
+    Sign in (any tenant member, no admin needed):
+    - App & Dashboard (recommended): Settings -> Providers -> Accounts -> "Microsoft 365 (OAuth)" -> Connect, then confirm the code at https://microsoft.com/devicelogin.
+    - Chat: call the m365_initiate_login tool.
+    - CLI: `hermes mcp install MSOffice365MCP` starts the sign-in automatically in an interactive terminal.
+
+    The default sign-in requests only permissions every user can approve themselves (mail, calendar,
+    contacts, files). Teams chat, presence, online meetings, shared mailboxes and To Do need a
+    one-time approval by a tenant administrator: open "Grant for organization" on the Microsoft 365
+    card (or call m365_generate_admin_consent_url) and hand the link to an admin. Nobody has to sign
+    in again afterwards.
+  # Self-consent tier (AIS-286) — mirrors hermes_cli.m365_auth.M365_LOGIN_SCOPES
+  # and server.py's LOGIN_SCOPES; a test pins the three lists to each other.
+  # Every login entry point (dashboard button, `hermes mcp install`, chat tool)
+  # requests exactly this, so a non-admin never sees "Need admin approval".
+  # Org-consent scopes (Chat.ReadWrite, Presence.Read, OnlineMeetings.Read,
+  # Tasks.ReadWrite, *.Shared) arrive silently after tenant-admin consent.
   scopes:
     - User.Read
     - Mail.ReadWrite
     - Mail.Send
     - Calendars.ReadWrite
-    - Chat.ReadWrite
-    - Files.ReadWrite.All
     - Contacts.ReadWrite
-    - Presence.Read
-    - OnlineMeetings.Read
-    - Tasks.ReadWrite
+    - Files.ReadWrite.All
   env:
     - name: M365_CLIENT_ID
       prompt: "Microsoft Entra App Client ID (optional; leave blank to use default multi-tenant app)"
       required: false
       secret: false
     - name: M365_TENANT_ID
-      prompt: "Microsoft Entra Tenant ID (default: common)"
-      default: "common"
+      prompt: "Microsoft Entra Tenant ID (optional; default: organizations)"
+      default: "organizations"
       required: false
       secret: false
 
@@ -116,18 +115,21 @@ post_install: |
       Microsoft OAuth device-code login just now (enter the printed code at the
       printed URL to finish sign-in).
     - If M365_CLIENT_ID is provided, Hermes connects to your tenant's Entra App Registration.
-    - Otherwise, Hermes connects via the default multi-tenant Microsoft app
+    - Otherwise, Hermes connects via the built-in IAMDS multi-tenant app
       (Client ID 41c29967-8ee6-4fac-b484-e87460272bda) — no registration needed in your tenant.
-    - Default sign-in requests only non-admin scopes (mail, calendar, chat, files, contacts).
-      Tenant admins who also want directory-wide user search / SharePoint tools should call
-      m365_initiate_login(request_admin_scopes=True) instead of setting M365_CLIENT_ID.
+    - The default sign-in requests only self-consentable scopes (mail, calendar, contacts, files).
+      Teams chat, presence, online meetings, shared mailboxes and To Do need a one-time
+      tenant-admin consent: m365_generate_admin_consent_url (or "Grant for organization" on the
+      Microsoft 365 card in Settings) gives you the link for an administrator. No re-login needed.
+    - Tenant admins who also want directory-wide user search / SharePoint tools can call
+      m365_initiate_login(scope_tier="admin").
     - Didn't sign in during install (non-interactive install, or skipped)? Use the in-chat
       m365_initiate_login / m365_complete_login tools any time afterwards.
     - Token cache is automatically stored in ~/.hermes/m365_token_cache.bin.
 
   Supported Services:
-    - User Directory (m365_search_users, m365_get_user_profile) — directory-wide search needs admin scopes.
+    - User Directory (m365_search_users, m365_get_user_profile) — directory-wide search needs the admin tier.
     - Outlook Mail & Contacts (m365_send_email, m365_list_emails, m365_get_email, m365_list_contacts) — m365_send_email accepts local file paths via `attachments` (inline, ~3 MB limit).
     - Outlook Calendar (m365_list_events, m365_create_event)
-    - Teams (m365_list_chats, m365_get_chat_members, m365_get_or_create_direct_chat, m365_send_chat_message) — m365_send_chat_message accepts local file paths via `attachments` (auto-uploaded to OneDrive and linked as a file card).
-    - OneDrive & SharePoint (m365_list_drive_files, m365_search_drive_files, m365_get_drive_file, m365_list_sharepoint_sites, m365_list_sharepoint_drives, m365_list_sharepoint_files, m365_search_sharepoint_files) — SharePoint needs admin scopes.
+    - Teams (m365_list_chats, m365_get_chat_members, m365_get_or_create_direct_chat, m365_send_chat_message) — needs the org-consent tier; m365_send_chat_message accepts local file paths via `attachments` (auto-uploaded to OneDrive and linked as a file card).
+    - OneDrive & SharePoint (m365_list_drive_files, m365_search_drive_files, m365_get_drive_file, m365_list_sharepoint_sites, m365_list_sharepoint_drives, m365_list_sharepoint_files, m365_search_sharepoint_files) — SharePoint needs the admin tier.

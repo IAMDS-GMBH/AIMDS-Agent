@@ -88,10 +88,25 @@ export interface OAuthSubmitResponse {
 }
 
 export interface OAuthPollResponse {
+  /** Consent failures carry the tenant-admin consent URL (AIS-286). */
+  action_url?: null | string
+  error_category?: null | string
+  error_code?: null | string
   error_message?: null | string
   expires_at?: null | number
   session_id: string
   status: 'approved' | 'denied' | 'error' | 'expired' | 'pending'
+}
+
+export interface MicrosoftAdminConsentResponse {
+  client_id: string
+  granted_tier: 'admin' | 'self' | 'standard' | null
+  org_consent_scopes: string[]
+  org_consented: boolean
+  scopes: string[]
+  self_consent_scopes: string[]
+  tenant_id: string
+  url: string
 }
 
 export interface EnvVarInfo {
