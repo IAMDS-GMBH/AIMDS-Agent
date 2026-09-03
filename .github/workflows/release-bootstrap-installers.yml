@@ -508,11 +508,13 @@ jobs:
 
     steps:
       # main is protected by a branch ruleset (PRs required). The default
-      # GITHUB_TOKEN cannot bypass it, so the version-bump commit below is
-      # pushed with the IAMDS GitHub App token — the same app nix-lockfile-fix
-      # uses — which is listed as a bypass actor on the ruleset.
+      # GITHUB_TOKEN cannot bypass it, so the version-bump commit below must
+      # be pushed with a GitHub App token whose app is a bypass actor on the
+      # ruleset (secrets APP_ID / APP_PRIVATE_KEY). Until that app exists the
+      # step is skipped gracefully and the push fails with the ruleset error.
       - name: Generate GitHub App token
         id: app-token
+        continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.APP_ID }}
@@ -523,7 +525,7 @@ jobs:
         with:
           ref: refs/heads/main
           fetch-depth: 0
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ steps.app-token.outputs.token || github.token }}
 
       - name: Resolve release tag
         id: tag

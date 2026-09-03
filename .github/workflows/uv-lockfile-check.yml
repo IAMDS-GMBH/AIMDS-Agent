@@ -71,12 +71,14 @@ jobs:
     timeout-minutes: 5
     steps:
       # main is protected by a branch ruleset (PRs required); an auto-refresh
-      # commit on main must be pushed with the IAMDS GitHub App token (bypass
-      # actor on the ruleset). Same-repo PR branches are not protected, but
-      # using the app token there too keeps one code path.
+      # commit on main must be pushed with a GitHub App token whose app is a
+      # bypass actor on the ruleset (secrets APP_ID / APP_PRIVATE_KEY). Falls
+      # back to GITHUB_TOKEN when the app is not configured (PR branches are
+      # not protected, so the fallback still works there).
       - name: Generate GitHub App token
         id: app-token
         if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.APP_ID }}
