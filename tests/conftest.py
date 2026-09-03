@@ -21,6 +21,15 @@ test runner at ``scripts/run_tests.sh``.
 
 import asyncio
 import os
+
+# Never pip-install lazy features from inside the test run (AIS-286): module
+# imports such as agent.bedrock_adapter call tools.lazy_deps.ensure() at import
+# time, and in CI (where boto3 is not part of the synced extras) that turned
+# into a real network install that blew the 30 s per-file budget. With the
+# flag set, ensure() raises FeatureUnavailable immediately; tests that cover
+# the install path (tests/tools/test_lazy_deps.py) delete the variable
+# themselves.
+os.environ.setdefault("HERMES_DISABLE_LAZY_INSTALLS", "1")
 import sys
 from pathlib import Path
 

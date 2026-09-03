@@ -116,6 +116,8 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+          # No lazy pip installs from import-time ensure() calls (boto3 etc.)
+          HERMES_DISABLE_LAZY_INSTALLS: "1"
 
       - name: Upload per-slice durations
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -219,6 +221,7 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+          HERMES_DISABLE_LAZY_INSTALLS: "1"
 
   # Single aggregate status for branch rulesets: require "Tests passed"
   # instead of six matrix contexts + e2e. Runs always() so a failed or
