@@ -77,7 +77,11 @@ jobs:
         # fails if the lock is out of sync with pyproject.toml), giving a
         # reproducible env. It also creates .venv itself, so no separate
         # `uv venv` step is needed.
-        run: uv sync --locked --python 3.11 --extra all --extra dev
+        # `--extra bedrock`: agent.bedrock_adapter calls lazy_deps.ensure() at
+        # import time; without boto3 in the venv every test process that
+        # imports it races a real pip install, which blew the 30 s per-file
+        # budget in CI (AIS-286). Installing the extra up front makes that a no-op.
+        run: uv sync --locked --python 3.11 --extra all --extra dev --extra bedrock
 
       - name: Minimize uv cache
         # Optimized for CI: prunes pre-built wheels that are cheap to
@@ -116,8 +120,6 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
-          # No lazy pip installs from import-time ensure() calls (boto3 etc.)
-          HERMES_DISABLE_LAZY_INSTALLS: "1"
 
       - name: Upload per-slice durations
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -201,7 +203,11 @@ jobs:
         # fails if the lock is out of sync with pyproject.toml), giving a
         # reproducible env. It also creates .venv itself, so no separate
         # `uv venv` step is needed.
-        run: uv sync --locked --python 3.11 --extra all --extra dev
+        # `--extra bedrock`: agent.bedrock_adapter calls lazy_deps.ensure() at
+        # import time; without boto3 in the venv every test process that
+        # imports it races a real pip install, which blew the 30 s per-file
+        # budget in CI (AIS-286). Installing the extra up front makes that a no-op.
+        run: uv sync --locked --python 3.11 --extra all --extra dev --extra bedrock
 
       - name: Minimize uv cache
         # Optimized for CI: prunes pre-built wheels that are cheap to
@@ -221,7 +227,6 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
-          HERMES_DISABLE_LAZY_INSTALLS: "1"
 
   # Single aggregate status for branch rulesets: require "Tests passed"
   # instead of six matrix contexts + e2e. Runs always() so a failed or
