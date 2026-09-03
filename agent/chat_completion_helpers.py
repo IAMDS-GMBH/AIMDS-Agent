@@ -238,6 +238,18 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 )
                 result["response"] = request_client.chat.completions.create(**api_kwargs)
         except Exception as e:
+            # A transport-level failure (connection reset, DNS, TLS, pool
+            # corruption) taints the pooled request client: evict it so the
+            # retry gets a fresh client instead of the same wedged pool.
+            try:
+                from openai import APIConnectionError as _APIConnectionError
+            except Exception:  # pragma: no cover - openai is a core dependency
+                _APIConnectionError = ()
+            if isinstance(e, _APIConnectionError):
+                try:
+                    agent._evict_cached_request_client(reason="connection_error")
+                except Exception:
+                    pass
             # If the request was cancelled by the main thread's interrupt
             # handler, the transport error is the expected consequence of our
             # own force-close, NOT a network bug. Swallow it instead of

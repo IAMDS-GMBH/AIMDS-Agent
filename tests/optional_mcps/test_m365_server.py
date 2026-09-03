@@ -3,6 +3,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
 
+pytest.importorskip("msal")  # server.py imports msal at module level
+
 server_path = Path(__file__).parent.parent.parent / "optional-mcps" / "MSOffice365MCP" / "server.py"
 spec = importlib.util.spec_from_file_location("m365_server", server_path)
 server = importlib.util.module_from_spec(spec)

@@ -3593,9 +3593,41 @@ class AIAgent:
                 self._cached_request_kwargs = request_kwargs
             return client
 
+    # Close reasons that mark the *normal* end of a healthy request. The
+    # pooled request client (``_cached_request_client``) survives these so
+    # its connection pool stays warm. Every other reason (stale-call kill,
+    # interrupt abort, retry cleanup, connection error) means the pool may be
+    # wedged: evict the client from the cache and really close it, otherwise
+    # the next request silently reuses a dead socket (regression from the
+    # pooling change in 6a77429a5, pinned by
+    # tests/run_agent/test_openai_client_lifecycle.py).
+    _POOLED_REQUEST_CLOSE_REASONS = frozenset({"request_complete", "stream_request_complete"})
+
+    def _evict_cached_request_client(self, client: Any = None, *, reason: str) -> bool:
+        """Drop ``client`` (default: the pooled one) from the request-client cache.
+
+        Returns True when a cached client was evicted. Does not close it —
+        the caller decides (owner thread closes, stranger thread only aborts).
+        """
+        cached = getattr(self, "_cached_request_client", None)
+        if cached is None or (client is not None and client is not cached):
+            return False
+        self._cached_request_client = None
+        self._cached_request_kwargs = None
+        logger.info(
+            "OpenAI request client evicted from pool (%s) %s",
+            reason,
+            self._client_log_context(),
+        )
+        return True
+
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
-        if client is getattr(self, "client", None) or client is getattr(self, "_cached_request_client", None):
+        if client is None or client is getattr(self, "client", None):
             return
+        if client is getattr(self, "_cached_request_client", None):
+            if reason in self._POOLED_REQUEST_CLOSE_REASONS:
+                return  # healthy request finished: keep the pooled client alive
+            self._evict_cached_request_client(client, reason=reason)
         self._close_openai_client(client, reason=reason, shared=False)
 
     def _abort_request_openai_client(self, client: Any, *, reason: str) -> None:
@@ -3614,6 +3646,11 @@ class AIAgent:
         """
         if client is None:
             return
+        # A client whose sockets we are tearing down must never be handed out
+        # again: evict it from the request-client pool so the owning thread's
+        # deferred close really closes it and the next request gets a fresh
+        # client (see _close_request_openai_client).
+        self._evict_cached_request_client(client, reason=reason)
         try:
             shutdown_count = self._force_close_tcp_sockets(client)
             logger.info(

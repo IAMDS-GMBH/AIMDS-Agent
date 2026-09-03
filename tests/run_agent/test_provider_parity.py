@@ -484,7 +484,11 @@ class TestBuildApiKwargsCustomEndpoint:
 
         assert kwargs["tools"][0]["function"]["name"] == "web_search"
         assert "input" not in kwargs
-        assert kwargs.get("extra_body", {}) == {}
+        # extra_body may only carry the LiteLLM prompt-cache session affinity
+        # (metadata.session_id, AIS-275/AIS-279) — never Codex-only fields.
+        extra_body = kwargs.get("extra_body", {})
+        assert set(extra_body) <= {"metadata"}
+        assert set(extra_body.get("metadata", {})) <= {"session_id"}
 
         assistant_msg = kwargs["messages"][1]
         tool_call = assistant_msg["tool_calls"][0]

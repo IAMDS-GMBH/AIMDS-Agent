@@ -114,8 +114,31 @@ def _seed_v2_workspace(root: Path) -> None:
     (root / ".workspace-template-version").write_text("v2\n", encoding="utf-8")
     import subprocess
 
+    # HEAD ships template v3, so "an unedited v2 copy" has to come from git
+    # history: pick the newest blob whose hash is recorded as a v2 hash in
+    # .previous-versions.json (that is exactly what upgrade_workspace matches).
+    import hashlib
+    import json
+
+    previous = json.loads((TEMPLATE / ".previous-versions.json").read_text(encoding="utf-8"))
     for rel in ("AGENTS.md", "HARNESS.md", "_conventions.md", "projects/_hub.md", "_templates/note.md"):
-        blob = subprocess.run(["git", "show", f"HEAD:installer/workspace-template/{rel}"], capture_output=True, cwd=_REPO_ROOT).stdout
+        wanted = set((previous.get(rel) or {}).values())
+        blob = b""
+        if wanted:
+            commits = subprocess.run(
+                ["git", "log", "--format=%H", "--", f"installer/workspace-template/{rel}"],
+                capture_output=True, text=True, cwd=_REPO_ROOT,
+            ).stdout.split()
+            for commit in commits:
+                candidate = subprocess.run(
+                    ["git", "show", f"{commit}:installer/workspace-template/{rel}"],
+                    capture_output=True, cwd=_REPO_ROOT,
+                ).stdout
+                if candidate and hashlib.md5(candidate).hexdigest() in wanted:
+                    blob = candidate
+                    break
+        if not blob:
+            blob = subprocess.run(["git", "show", f"HEAD:installer/workspace-template/{rel}"], capture_output=True, cwd=_REPO_ROOT).stdout
         if not blob:
             blob = (TEMPLATE / rel).read_bytes()
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
