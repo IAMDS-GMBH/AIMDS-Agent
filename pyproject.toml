@@ -231,6 +231,19 @@ youtube = [
   # at first invocation with ModuleNotFoundError (issue #22243).
   "youtube-transcript-api==1.2.4",
 ]
+# Office document tooling for the `office` toolset (tools/office_tools.py) and
+# the word/excel/powerpoint skills. Exact pins per repo policy (AIS-139); the
+# installers (`hermes update`, install.sh) backfill via `.[office]` and the
+# Docker image gets it through `[all]`. LibreOffice / pandoc stay optional
+# system binaries — the tools degrade with an explicit hint when absent.
+office = [
+  "python-docx==1.2.0",
+  "openpyxl==3.1.5",
+  "python-pptx==1.0.2",
+  "markitdown[docx,pptx,xlsx]==0.1.7",
+  "pandas==3.0.5",
+  "defusedxml==0.7.1",
+]
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
 # starlette==1.0.1 pinned for CVE-2026-48710 (BadHost) — fastapi pulls Starlette
 # transitively and pre-1.0.1 is the vulnerable range. See the mcp extra above.
@@ -269,6 +282,7 @@ all = [
   "aimds-agent[google]",
   "aimds-agent[web]",
   "aimds-agent[youtube]",
+  "aimds-agent[office]",
 ]
 
 [project.scripts]

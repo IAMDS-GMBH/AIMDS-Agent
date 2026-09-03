@@ -7171,13 +7171,15 @@ def _backfill_default_skill_dependencies(
     if venv_python is None:
         return
 
+    # Word/Excel/PowerPoint libs are pinned in pyproject.toml's ``office``
+    # extra (AIS-139); install the extra as a unit instead of loose specs so
+    # the venv matches uv.lock. PDF/image helpers below stay loose specs.
+    office_extra_imports = ("docx", "pptx", "markitdown", "openpyxl", "pandas")
     deps: list[tuple[str, str, str]] = [
-        ("docx", "python-docx>=1,<2", "Word (.docx)"),
-        ("pptx", "python-pptx>=1,<2", "PowerPoint (.pptx)"),
-        ("markitdown", "markitdown[pptx]>=0.1,<1", "Office text extraction"),
+        (mod, f"-e {PROJECT_ROOT}[office]", "Office documents (.docx/.xlsx/.pptx)")
+        for mod in office_extra_imports
+    ] + [
         ("PIL", "Pillow>=10,<12", "PowerPoint thumbnails"),
-        ("openpyxl", "openpyxl>=3,<4", "Excel workbook processing"),
-        ("pandas", "pandas>=2,<3", "Spreadsheet/tabular conversion"),
         ("pypdf", "pypdf>=5,<6", "PDF merge/split/manipulation"),
         ("fitz", "pymupdf>=1.24,<2", "PDF metadata/inspection"),
         ("fpdf", "fpdf2>=2.8,<3", "Word/PDF text rendering fallback"),
@@ -7204,14 +7206,27 @@ def _backfill_default_skill_dependencies(
     if not missing:
         return
 
+    # Collapse the per-import office rows into one `.[office]` install.
+    seen_specs: set[str] = set()
+    deduped: list[tuple[str, str, str]] = []
+    for mod, spec, label in missing:
+        if spec in seen_specs:
+            continue
+        seen_specs.add(spec)
+        deduped.append((mod, spec, label))
+    missing = deduped
+
     print()
     print(f"→ Backfilling {len(missing)} default skill dependency(s)...")
     scripts_dir = _venv_scripts_dir() if _is_windows() else None
     for _mod, spec, label in missing:
         print(f"  + {label}: {spec}")
+        # Editable project extras must keep the `-e` flag as its own argv
+        # element (paths may contain spaces), everything else is one spec.
+        install_args = ["install", "-e", spec[3:]] if spec.startswith("-e ") else ["install", spec]
         try:
             _run_quarantined_install(
-                install_cmd_prefix + ["install", spec],
+                install_cmd_prefix + install_args,
                 env=env,
                 scripts_dir=scripts_dir,
             )

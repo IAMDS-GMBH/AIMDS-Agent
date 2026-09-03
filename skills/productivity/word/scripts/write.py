@@ -54,29 +54,106 @@ def from_markdown(src, dst):
     print(f"Created {dst} (pandoc not found; used plain fallback).")
 
 
+def _replace_in_paragraph(para, old: str, new: str) -> int:
+    """Replace ``old`` with ``new`` inside one paragraph, spanning run boundaries.
+
+    Word splits text into runs at every formatting/spell-check/edit boundary,
+    so a naive per-run replace silently misses matches like ``Ol|d Text``.
+    We locate matches on the joined paragraph text, then rewrite only the runs
+    a match touches: the first run keeps its formatting and receives the
+    replacement, intermediate runs are emptied, the last run keeps its tail.
+    Runs outside any match are left untouched. Returns the number of matches.
+    """
+    runs = list(para.runs)
+    if not runs or not old:
+        return 0
+    texts = [r.text for r in runs]
+    full = "".join(texts)
+    if old not in full:
+        return 0
+
+    positions = []
+    i = full.find(old)
+    while i != -1:
+        positions.append(i)
+        i = full.find(old, i + len(old))
+
+    bounds = []
+    offset = 0
+    for t in texts:
+        bounds.append((offset, offset + len(t)))
+        offset += len(t)
+
+    def _run_at(pos: int, *, end: bool) -> int:
+        for idx, (start, stop) in enumerate(bounds):
+            if start == stop:
+                continue
+            if end:
+                if start < pos <= stop:
+                    return idx
+            elif start <= pos < stop:
+                return idx
+        return len(bounds) - 1
+
+    # Process from the last match backwards so earlier offsets stay valid.
+    for pos in reversed(positions):
+        match_end = pos + len(old)
+        first = _run_at(pos, end=False)
+        last = _run_at(match_end, end=True)
+        a = pos - bounds[first][0]
+        b = match_end - bounds[last][0]
+        if first == last:
+            texts[first] = texts[first][:a] + new + texts[first][b:]
+        else:
+            texts[first] = texts[first][:a] + new
+            for mid in range(first + 1, last):
+                texts[mid] = ""
+            texts[last] = texts[last][b:]
+
+    for run, text in zip(runs, texts):
+        if run.text != text:
+            run.text = text
+    return len(positions)
+
+
+def _iter_paragraphs(doc):
+    """Yield every paragraph in body, tables (nested), headers and footers."""
+
+    def _from_tables(tables):
+        for table in tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    yield from cell.paragraphs
+                    yield from _from_tables(cell.tables)
+
+    yield from doc.paragraphs
+    yield from _from_tables(doc.tables)
+    for section in doc.sections:
+        for part in (section.header, section.footer):
+            if part is None:
+                continue
+            yield from part.paragraphs
+            yield from _from_tables(part.tables)
+
+
 def find_replace(old, new, path):
+    import json
+
     from docx import Document
 
     doc = Document(path)
     count = 0
+    paragraphs_changed = 0
+    for para in _iter_paragraphs(doc):
+        n = _replace_in_paragraph(para, old, new)
+        if n:
+            count += n
+            paragraphs_changed += 1
 
-    def replace_in_para(para):
-        nonlocal count
-        for run in para.runs:
-            if old in run.text:
-                run.text = run.text.replace(old, new)
-                count += 1
-
-    for para in doc.paragraphs:
-        replace_in_para(para)
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for para in cell.paragraphs:
-                    replace_in_para(para)
-
-    doc.save(path)
-    print(f"Replaced {count} occurrence(s) of '{old}' → '{new}' in {path}")
+    if count:
+        doc.save(path)
+    print(f"Replaced {count} occurrence(s) of {old!r} -> {new!r} in {path}")
+    print(json.dumps({"replaced": count, "paragraphs_changed": paragraphs_changed, "file": str(path)}))
 
 
 def append_paragraph(text, path):
@@ -100,6 +177,7 @@ def merge_docs(paths, out):
             merged.element.body.append(copy.deepcopy(element))
     merged.save(out)
     print(f"Merged {len(paths)} documents → {out}")
+    print("Note: body XML is appended verbatim; styles/numbering are taken from the first document.")
 
 
 if __name__ == "__main__":

@@ -19,7 +19,10 @@ from pathlib import Path
 
 import defusedxml.minidom
 
-from validators import DOCXSchemaValidator, PPTXSchemaValidator, RedliningValidator
+try:  # schema validators are not shipped with this skill; packing works without them
+    from validators import DOCXSchemaValidator, PPTXSchemaValidator, RedliningValidator
+except ImportError:  # pragma: no cover - depends on optional module
+    DOCXSchemaValidator = PPTXSchemaValidator = RedliningValidator = None
 
 def pack(
     input_directory: str,
@@ -74,6 +77,10 @@ def _run_validation(
 ) -> tuple[bool, str | None]:
     output_lines = []
     validators = []
+
+    if DOCXSchemaValidator is None or PPTXSchemaValidator is None:
+        print("Note: schema validators not available; packing without validation.", file=sys.stderr)
+        return True, None
 
     if suffix == ".docx":
         author = "Claude"

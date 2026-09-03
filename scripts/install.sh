@@ -1483,7 +1483,7 @@ try:
     specs = data["project"]["optional-dependencies"]["all"]
     extras = []
     for s in specs:
-        m = re.search(r"hermes-agent\[([\w-]+)\]", s)
+        m = re.search(r"(?:aimds|hermes)-agent\[([\w-]+)\]", s)
         if m:
             extras.append(m.group(1))
     print(",".join(extras))
@@ -1617,13 +1617,25 @@ ensure_office_document_dependencies() {
         installer_cmd="\"$python_exe\" -m pip install"
     fi
 
+    # Word/Excel/PowerPoint libs are pinned in pyproject.toml's [office]
+    # extra (AIS-139): install the extra once if any import is missing.
+    local office_missing=false
+    for import_name in docx pptx markitdown openpyxl pandas; do
+        if ! "$python_exe" -c "import ${import_name}" >/dev/null 2>&1; then
+            office_missing=true
+            break
+        fi
+    done
+    if [ "$office_missing" = true ]; then
+        missing=true
+        log_info "Installing office document dependencies: .[office]"
+        if ! (cd "$INSTALL_DIR" && eval "$installer_cmd -e \".[office]\""); then
+            log_warn "Failed to install .[office]. Word/Excel/PowerPoint tools may be unavailable until installed manually."
+        fi
+    fi
+
     for entry in \
-        "docx|python-docx>=1,<2|Word (.docx)" \
-        "pptx|python-pptx>=1,<2|PowerPoint (.pptx)" \
-        "markitdown|markitdown[pptx]>=0.1,<1|Office text extraction" \
         "PIL|Pillow>=10,<12|PowerPoint thumbnails" \
-        "openpyxl|openpyxl>=3,<4|Excel workbook processing" \
-        "pandas|pandas>=2,<3|Spreadsheet/tabular conversion" \
         "pypdf|pypdf>=5,<6|PDF merge/split/manipulation" \
         "fitz|pymupdf>=1.24,<2|PDF metadata/inspection" \
         "fpdf|fpdf2>=2.8,<3|Word/PDF text rendering fallback" \

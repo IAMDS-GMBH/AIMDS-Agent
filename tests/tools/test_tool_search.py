@@ -1043,6 +1043,62 @@ class TestDynamicMCPKeywordIndexing:
             # tool in this catalog the calendar tool still wins.
             assert results[0].name == "m365_get_events"
 
+    def test_office_file_tool_synonyms_beat_m365(self):
+        """'excel' / 'pptx' / 'docx' must surface the local office tools, not
+        only the M365 MCP server (AIS-139)."""
+        from tools.tool_search import build_catalog, search_catalog
+
+        tool_defs = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "office_excel",
+                    "description": "Read, create, edit, format and export Excel (.xlsx) / CSV files.",
+                    "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "office_powerpoint",
+                    "description": "Read, create and edit PowerPoint (.pptx) presentations / slide decks.",
+                    "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "office_word",
+                    "description": "Read, create, edit and convert Word (.docx) documents.",
+                    "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "m365_list_mail",
+                    "description": "List Outlook mail messages via Microsoft 365",
+                    "parameters": {},
+                },
+            },
+        ]
+        catalog = build_catalog(tool_defs)
+
+        expectations = {
+            "excel": "office_excel",
+            "tabelle": "office_excel",
+            "xlsx": "office_excel",
+            "pptx": "office_powerpoint",
+            "präsentation": "office_powerpoint",
+            "folien": "office_powerpoint",
+            "docx": "office_word",
+            "word": "office_word",
+        }
+        for query, expected in expectations.items():
+            results = search_catalog(catalog, query, limit=3)
+            assert results, f"no results for {query!r}"
+            assert results[0].name == expected, f"{query!r} -> {[r.name for r in results]}"
+
     def test_dynamic_skill_keywords_expansion(self, monkeypatch):
         from tools.tool_search import _get_dynamic_skill_keywords_map, build_catalog, search_catalog
 
