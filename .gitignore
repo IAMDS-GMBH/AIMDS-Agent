@@ -50,6 +50,7 @@ privvy*
 images/
 __pycache__/
 hermes_agent.egg-info/
+aimds_agent.egg-info/
 wandb/
 testlogs
 

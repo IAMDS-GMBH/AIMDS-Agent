@@ -4,12 +4,15 @@
 
 When using an existing presentation as a template:
 
+0. **Prefer `scripts/deck.py`** (`create --template`, `add-slide`, `replace`) — it edits the .pptx
+   directly with python-pptx. Use the unpack/pack workflow below only for changes it cannot express.
+
 1. **Analyze existing slides**:
    ```bash
-   python scripts/thumbnail.py template.pptx
-   python -m markitdown template.pptx
+   python scripts/deck.py read template.pptx
+   python scripts/deck.py layouts template.pptx
    ```
-   Review `thumbnails.jpg` to see layouts, and markitdown output to see placeholder text.
+   Review layouts and placeholder text before mapping content.
 
 2. **Plan slide mapping**: For each content section, choose a template slide.
 
@@ -47,11 +50,11 @@ When using an existing presentation as a template:
 
 | Script | Purpose |
 |--------|---------|
-| `unpack.py` | Extract and pretty-print PPTX |
-| `add_slide.py` | Duplicate slide or create from layout |
-| `clean.py` | Remove orphaned files |
-| `pack.py` | Repack with validation |
-| `thumbnail.py` | Create visual grid of slides |
+| `deck.py` | Direct python-pptx editing (read, layouts, create, add/delete slide, replace, to-pdf) |
+| `office/unpack.py` | Extract and pretty-print PPTX |
+| `add_slide.py` | Duplicate slide or create from layout (unpacked dir) |
+| `clean.py` | Remove orphaned files (unpacked dir) |
+| `office/pack.py` | Repack (schema validation runs only if the optional validators module is present) |
 
 ### unpack.py
 
@@ -84,17 +87,9 @@ Removes slides not in `<p:sldIdLst>`, unreferenced media, orphaned rels.
 python scripts/office/pack.py unpacked/ output.pptx --original input.pptx
 ```
 
-Validates, repairs, condenses XML, re-encodes smart quotes.
-
-### thumbnail.py
-
-```bash
-python scripts/thumbnail.py input.pptx [output_prefix] [--cols N]
-```
-
-Creates `thumbnails.jpg` with slide filenames as labels. Default 3 columns, max 12 per grid.
-
-**Use for template analysis only** (choosing layouts). For visual QA, use `soffice` + `pdftoppm` to create full-resolution individual slide images—see SKILL.md.
+Condenses XML and zips the directory back into a valid .pptx. Schema validation/auto-repair
+only runs when the optional `validators` module is present; otherwise packing proceeds with a note.
+For visual QA, use `deck.py to-pdf` + `pdftoppm` to create individual slide images—see SKILL.md.
 
 ---
 

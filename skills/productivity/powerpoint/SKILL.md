@@ -15,32 +15,52 @@ Use this skill any time a .pptx file is involved in any way — as input, output
 
 | Task | Guide |
 |------|-------|
-| Read/analyze content | `python -m markitdown presentation.pptx` |
-| Edit or create from template | Read [editing.md](editing.md) |
-| Create from scratch | Read [pptxgenjs.md](pptxgenjs.md) |
+| Read/analyze content | `python scripts/deck.py read presentation.pptx` (or `--markdown`) |
+| Create / add / delete / replace slides | `scripts/deck.py` (python-pptx, direct) — see below |
+| Deep XML edits on a template | Read [editing.md](editing.md) (unpack → edit → clean → pack) |
+| Create from scratch (Node) | Read [pptxgenjs.md](pptxgenjs.md) |
 
 ---
 
 ## Reading Content
 
 ```bash
-# Text extraction
-python -m markitdown presentation.pptx
+python scripts/deck.py read presentation.pptx            # slide titles, text, notes
+python scripts/deck.py read presentation.pptx --json     # structured
+python scripts/deck.py read presentation.pptx --markdown # via markitdown
+python scripts/deck.py layouts presentation.pptx         # available layouts (index + placeholders)
 
-# Visual overview
-python scripts/thumbnail.py presentation.pptx
-
-# Raw XML
+# Raw XML (only when python-pptx cannot express the edit)
 python scripts/office/unpack.py presentation.pptx unpacked/
 ```
 
 ---
 
-## Editing Workflow
+## Direct Editing with deck.py (default path)
+
+```bash
+python scripts/deck.py create out.pptx --title "Q3 Review" --subtitle "Ops" \
+  --slides-json '[{"title":"Highlights","bullets":["Revenue","SLA",{"text":"detail","level":1}],"notes":"speaker notes"}]' \
+  [--template corporate.pptx]            # reuse masters/layouts of an existing deck
+python scripts/deck.py add-slide out.pptx --title "Risks" --bullets-json '["a","b"]' --layout "Title and Content" --index 2
+python scripts/deck.py delete-slide out.pptx --index 3
+python scripts/deck.py replace out.pptx --find "Q2" --replace "Q3"   # slides, tables, notes; spans runs
+python scripts/deck.py to-pdf out.pptx                                # LibreOffice
+```
+
+Inside Hermes prefer the `office_powerpoint` tool (same script with workspace
+path resolution, timeout and sensitive-path guard): actions `read_text`,
+`list_layouts`, `create` (`slides[]`, markdown `text` or `source_path`,
+optional `template`), `add_slide`, `delete_slide`, `find_replace`, `to_pdf`.
+Content always comes from you — there are no canned report generators.
+
+---
+
+## Template XML Workflow (advanced)
 
 **Read [editing.md](editing.md) for full details.**
 
-1. Analyze template with `thumbnail.py`
+1. Analyze the template with `deck.py read` / `deck.py layouts`
 2. Unpack → manipulate slides → edit content → clean → pack
 
 ---
@@ -214,7 +234,7 @@ Report ALL issues found, including minor ones.
 Convert presentations to individual slide images for visual inspection:
 
 ```bash
-python scripts/office/soffice.py --headless --convert-to pdf output.pptx
+python scripts/deck.py to-pdf output.pptx      # LibreOffice (soffice) must be installed
 pdftoppm -jpeg -r 150 output.pdf slide
 ```
 
@@ -230,8 +250,7 @@ pdftoppm -jpeg -r 150 -f N -l N output.pdf slide-fixed
 
 ## Dependencies
 
-- `pip install "markitdown[pptx]"` - text extraction
-- `pip install Pillow` - thumbnail grids
-- `npm install -g pptxgenjs` - creating from scratch
-- LibreOffice (`soffice`) - PDF conversion (auto-configured for sandboxed environments via `scripts/office/soffice.py`)
+- `uv pip install -e ".[office]"` - python-pptx, markitdown[pptx], defusedxml (pinned; installed by `hermes update`)
+- `npm install -g pptxgenjs` - creating from scratch (optional)
+- LibreOffice (`soffice`) - PDF conversion (`deck.py to-pdf`)
 - Poppler (`pdftoppm`) - PDF to images

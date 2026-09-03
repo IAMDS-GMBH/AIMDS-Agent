@@ -387,7 +387,10 @@ from hermes_text_vector import build_vector as _shared_build_vector
 from hermes_text_vector import compute_idf as _shared_compute_idf
 from hermes_text_vector import cosine as _shared_cosine
 
-_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+# Unicode-aware: German umlauts must stay inside a token, otherwise
+# "präsentation" tokenizes to ["pr", "sentation"] and every synonym key
+# with an umlaut ("überstunden", "gedächtnis", …) is dead (AIS-139).
+_TOKEN_RE = re.compile(r"[^\W_]+")
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 
@@ -693,7 +696,33 @@ _GENERIC_SEARCH_TERMS = frozenset({
 })
 
 _GERMAN_SYNONYMS: Dict[str, List[str]] = {
-    "office": ["m365", "msoffice365", "msoffice365mcp", "outlook", "calendar", "event", "email", "teams", "sharepoint", "onedrive"],
+    # Local office file tools (office_word / office_excel / office_powerpoint,
+    # toolset "office") — without these a query like "excel" or "pptx" only
+    # matched the M365 MCP server and the file tools stayed invisible (AIS-139).
+    # Deliberately without "office": that token is in all three tool names
+    # and would neutralise the synonym-name boost in search_catalog.
+    "word": ["word", "docx", "document"],
+    "docx": ["word", "docx", "document"],
+    "dokument": ["word", "docx", "document"],
+    "dokumente": ["word", "docx", "document"],
+    "textdokument": ["word", "docx", "document"],
+    "excel": ["excel", "xlsx", "spreadsheet", "csv", "workbook"],
+    "xlsx": ["excel", "xlsx", "spreadsheet", "workbook"],
+    "spreadsheet": ["excel", "xlsx", "spreadsheet", "workbook"],
+    "workbook": ["excel", "xlsx", "spreadsheet", "workbook"],
+    "tabelle": ["excel", "xlsx", "spreadsheet", "table"],
+    "tabellen": ["excel", "xlsx", "spreadsheet", "table"],
+    "tabellenkalkulation": ["excel", "xlsx", "spreadsheet"],
+    "powerpoint": ["powerpoint", "pptx", "presentation", "slides", "deck"],
+    "pptx": ["powerpoint", "pptx", "presentation", "slides", "deck"],
+    "presentation": ["powerpoint", "pptx", "presentation", "slides", "deck"],
+    "präsentation": ["powerpoint", "pptx", "presentation", "slides", "deck"],
+    "praesentation": ["powerpoint", "pptx", "presentation", "slides", "deck"],
+    "folien": ["powerpoint", "pptx", "presentation", "slides", "deck"],
+    "folie": ["powerpoint", "pptx", "presentation", "slides", "deck"],
+    "slides": ["powerpoint", "pptx", "presentation", "slides", "deck"],
+    "deck": ["powerpoint", "pptx", "presentation", "slides", "deck"],
+    "office": ["m365", "msoffice365", "msoffice365mcp", "outlook", "calendar", "event", "email", "teams", "sharepoint", "onedrive", "word", "excel", "powerpoint", "docx", "xlsx", "pptx"],
     "msoffice": ["m365", "msoffice365", "msoffice365mcp", "outlook", "calendar", "event", "email", "teams", "sharepoint", "onedrive"],
     "m365": ["m365", "msoffice365", "msoffice365mcp", "outlook", "calendar", "event", "email", "teams", "sharepoint", "onedrive"],
     "office365": ["m365", "msoffice365", "msoffice365mcp", "outlook", "calendar", "event", "email", "teams", "sharepoint", "onedrive"],
@@ -901,11 +930,15 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
     # included; those then dominated BM25 across every long-description tool
     # and buried the one tool whose name the query contained.
     expanded_tokens = set(query_tokens)
+    # Curated static synonyms are tracked separately: unlike the scraped
+    # dynamic maps they may name a tool outright (see name boost below).
+    static_expansions: set[str] = set()
     dynamic_mcp = _get_dynamic_mcp_keywords_map()
     dynamic_skills = _get_dynamic_skill_keywords_map()
     for qt in query_tokens:
         if qt in _GERMAN_SYNONYMS:
             expanded_tokens.update(_GERMAN_SYNONYMS[qt])
+            static_expansions.update(_GERMAN_SYNONYMS[qt])
         expanded_tokens.update(_bounded_expansions(dynamic_mcp.get(qt)))
         expanded_tokens.update(_bounded_expansions(dynamic_skills.get(qt)))
     expanded_query_tokens = list(expanded_tokens)[:MAX_EXPANDED_QUERY_TOKENS]
@@ -990,6 +1023,19 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
             boost += 10.0
 
         boost += len(matched_name_tokens) * 5.0
+
+        # A *curated* synonym expansion that is contained in the tool name is
+        # as good as the user typing that name: "folien" → powerpoint →
+        # office_powerpoint. Without this the 0.5-weighted BM25 credit for
+        # expansions loses to trigram noise of a few hundredths on an
+        # unrelated tool (AIS-139). Only static _GERMAN_SYNONYMS qualify —
+        # the scraped dynamic maps would re-create the "worklog boosts every
+        # Jira/GitHub tool" regression — and only the name counts, not the
+        # description blob.
+        for q in static_expansions - original_tokens:
+            if len(q) >= 4 and q not in _GENERIC_SEARCH_TERMS and q in clean_name:
+                boost += 10.0
+                break
 
         # Source / Server match boost: if query mentions the MCP server or source alias (e.g. tempo, atlassian, github)
         for qt in query_tokens:
