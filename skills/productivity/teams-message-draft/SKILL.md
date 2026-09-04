@@ -1,6 +1,9 @@
 ---
 name: teams-message-draft
 description: Send or draft a Microsoft Teams chat message to a person or group without guessing the chat, in the register the user actually uses with that person. Trigger on "send X to Y via Teams", "message Y on Teams", "draft a Teams message", "what did Y write today", "summarize the Teams chat with Y" — and the German phrasings "schick/sende/schreib … via Teams", "Teams-Nachricht an …", "Teams-Nachricht schreiben", "was hat … heute geschrieben", "Teams-Chat mit … zusammenfassen".
+metadata:
+  hermes:
+    requires_toolsets: [MSOffice365MCP]
 ---
 
 # Teams message: resolve, match the register, send what was approved

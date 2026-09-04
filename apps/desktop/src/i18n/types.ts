@@ -551,6 +551,8 @@ export interface Translations {
       catalogModalTitle: (name: string) => string
       catalogModalDesc: string
       catalogSecretsNotice: string
+      catalogInstallFailedTitle: string
+      catalogInstallFailedMessage: (name: string, detail: string) => string
       catalogInstallSuccessTitle: string
       catalogInstallSuccessMessage: (name: string) => string
       catalogInstancePickerLabel: string

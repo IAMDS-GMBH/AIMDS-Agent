@@ -1385,10 +1385,18 @@ class TestBootstrapInstallDirExpansion:
         adapted = mcp_catalog._adapt_bootstrap_command("python3 -m venv .venv")
         assert adapted == r'"C:\Python311\python.exe" -m venv .venv'
 
+        # cmd.exe cannot run `.venv/Scripts/pip` (forward slashes in the
+        # program position) and pip.exe shims break when the dir moves, so
+        # pip is routed through the venv's python.exe (AIS-286).
         adapted_pip = mcp_catalog._adapt_bootstrap_command(
             ".venv/bin/pip install -r requirements.txt"
         )
-        assert adapted_pip == ".venv/Scripts/pip install -r requirements.txt"
+        assert adapted_pip == r'".venv\Scripts\python.exe" -m pip install -r requirements.txt'
+        adapted_py = mcp_catalog._adapt_bootstrap_command(
+            r"C:\Users\t\mcp-installs\X/.venv/bin/python server.py"
+        )
+        assert adapted_py == r'"C:\Users\t\mcp-installs\X\.venv\Scripts\python.exe" server.py'
+        assert mcp_catalog._adapt_bootstrap_command(".venv/bin/uvicorn app:app") == r'".venv\Scripts\uvicorn.exe" app:app'
 
     def test_adapt_bootstrap_command_noop_on_non_windows(self, monkeypatch):
         """.venv/bin/... paths are left untouched on non-Windows, but a bare
@@ -1730,3 +1738,148 @@ class TestRefreshStaleInstalls:
 
         assert result["checked"] == []
         assert result["updated"] == []
+
+
+class TestWindowsInstallRobustness:
+    """AIS-286 / SUP-20260903-101450: catalog installs on a customer's Windows
+    box must not depend on git, must not flash console windows, and must
+    report failures instead of a false success."""
+
+    def test_run_bootstrap_hides_console_windows_on_windows(self, monkeypatch, tmp_path):
+        from hermes_cli import mcp_catalog
+
+        seen = {}
+
+        class _Proc:
+            returncode = 0
+
+        def fake_run(cmd, **kwargs):
+            seen.update(kwargs)
+            return _Proc()
+
+        monkeypatch.setattr(mcp_catalog.subprocess, "run", fake_run)
+        monkeypatch.setattr(mcp_catalog, "windows_hide_flags", lambda: 0x08000000)
+        mcp_catalog._run_bootstrap(tmp_path, ["echo hi"])
+        assert seen["creationflags"] == 0x08000000
+        assert seen["shell"] is True
+
+    def test_run_bootstrap_no_creationflags_on_posix(self, monkeypatch, tmp_path):
+        from hermes_cli import mcp_catalog
+
+        seen = {}
+
+        class _Proc:
+            returncode = 0
+
+        monkeypatch.setattr(mcp_catalog.subprocess, "run", lambda cmd, **kw: seen.update(kw) or _Proc())
+        monkeypatch.setattr(mcp_catalog, "windows_hide_flags", lambda: 0)
+        mcp_catalog._run_bootstrap(tmp_path, ["echo hi"])
+        assert "creationflags" not in seen
+
+    def test_github_archive_url(self):
+        from hermes_cli.mcp_catalog import _github_archive_url
+
+        assert _github_archive_url("https://github.com/IAMDS-GMBH/AIMDS-Agent.git", "main") == "https://codeload.github.com/IAMDS-GMBH/AIMDS-Agent/zip/main"
+        assert _github_archive_url("https://github.com/org/repo/", "v1.2.3") == "https://codeload.github.com/org/repo/zip/v1.2.3"
+        assert _github_archive_url("https://gitlab.com/org/repo.git", "main") is None
+        assert _github_archive_url("https://github.com/org/repo.git", "") is None
+
+    def _zip_bytes(self, top="AIMDS-Agent-main"):
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr(f"{top}/optional-mcps/MSOffice365MCP/server.py", "print('hi')\n")
+            zf.writestr(f"{top}/optional-mcps/MSOffice365MCP/requirements.txt", "msal==1.37.0\n")
+        return buf.getvalue()
+
+    def test_git_missing_falls_back_to_github_archive(self, catalog_dir, monkeypatch, tmp_path):
+        """Without git on PATH a GitHub-hosted entry is installed from the
+        codeload zip archive; bootstrap still runs in the extracted dir."""
+        body = _basic_manifest(
+            install={
+                "type": "git",
+                "url": "https://github.com/IAMDS-GMBH/AIMDS-Agent.git",
+                "ref": "main",
+                "bootstrap": ["echo bootstrap"],
+            },
+            transport={"type": "stdio", "command": "${INSTALL_DIR}/.venv/bin/python", "args": []},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(mcp_catalog.shutil, "which", lambda x: None)
+        monkeypatch.setattr(mcp_catalog, "_install_root", lambda: tmp_path / "mcp-installs")
+
+        class _Resp:
+            def __init__(self, data):
+                self._data = data
+
+            def read(self):
+                return self._data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        import urllib.request
+
+        requested = {}
+
+        def fake_urlopen(req, timeout=None):
+            requested["url"] = req.full_url
+            return _Resp(self._zip_bytes())
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        bootstrap_calls = []
+        monkeypatch.setattr(mcp_catalog, "_run_bootstrap", lambda cwd, cmds: bootstrap_calls.append((cwd, list(cmds))))
+
+        dest = mcp_catalog._do_git_install(mcp_catalog.get_entry("demo"))
+        assert requested["url"] == "https://codeload.github.com/IAMDS-GMBH/AIMDS-Agent/zip/main"
+        assert dest == tmp_path / "mcp-installs" / "demo"
+        assert (dest / "optional-mcps" / "MSOffice365MCP" / "server.py").read_text() == "print('hi')\n"
+        assert bootstrap_calls == [(dest, ["echo bootstrap"])]
+        assert mcp_catalog.installed_commit(dest) is None
+
+    def test_git_missing_non_github_source_is_actionable(self, catalog_dir, monkeypatch, tmp_path):
+        body = _basic_manifest(
+            install={"type": "git", "url": "https://gitlab.example.com/x/y.git", "ref": "main", "bootstrap": []},
+            transport={"type": "stdio", "command": "${INSTALL_DIR}/run.sh", "args": []},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(mcp_catalog.shutil, "which", lambda x: None)
+        monkeypatch.setattr(mcp_catalog, "_install_root", lambda: tmp_path / "mcp-installs")
+        with pytest.raises(mcp_catalog.CatalogError) as exc:
+            mcp_catalog._do_git_install(mcp_catalog.get_entry("demo"))
+        assert "git-scm.com" in str(exc.value)
+
+    def test_archive_zip_slip_rejected(self, tmp_path, monkeypatch):
+        import io
+        import urllib.request
+        import zipfile
+
+        from hermes_cli import mcp_catalog
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("../../evil.txt", "x")
+
+        class _Resp:
+            def read(self):
+                return buf.getvalue()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _Resp())
+        with pytest.raises(mcp_catalog.CatalogError):
+            mcp_catalog._download_archive_install("https://codeload.github.com/o/r/zip/main", tmp_path / "dest")
+        assert not (tmp_path / "dest").exists()

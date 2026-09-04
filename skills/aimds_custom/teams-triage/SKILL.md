@@ -1,6 +1,9 @@
 ---
 name: teams-triage
 description: Triage Microsoft Teams DMs, mentions and channel activity, extract tasks, and prepare short reply drafts in the user's own register. Trigger on "triage Teams", "what's new in Teams", "anything urgent in Teams", "who pinged me" — and German "Teams durchsehen", "was gibt es Neues in Teams", "wer hat mich angeschrieben", "Teams-Triage".
+metadata:
+  hermes:
+    requires_toolsets: [MSOffice365MCP]
 ---
 
 # Teams triage & activity monitor
