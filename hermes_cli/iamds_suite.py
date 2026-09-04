@@ -24,9 +24,11 @@ foreign key and 401s at runtime.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -307,6 +309,194 @@ def probe_suite_endpoint(base_url: str, api_key: str, *, timeout: float = 5.0) -
         return int(exc.code), str(exc.reason or "")
     except Exception as exc:
         return None, f"{type(exc).__name__}: {exc}"
+
+
+# --------------------------------------------------------------------------- ntfy (AIS-232)
+
+NTFY_PRIVATE_TOPIC_PREFIX = "private-"
+_NTFY_CACHE_TTL_SECONDS = 24 * 3600
+_NTFY_TOPIC_SAFE_RE = re.compile(r"[^A-Za-z0-9_\-]")
+
+
+def suite_root_url(base_url: str) -> str:
+    """``https://host/litellm/v1`` → ``https://host`` (service root, no trailing slash)."""
+    base = _norm_url(base_url)
+    if not base:
+        return ""
+    for suffix in ("/litellm/v1", "/litellm/mcp", "/litellm", "/v1"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    return base.rstrip("/")
+
+
+def suite_ntfy_url(base_url: str) -> str:
+    """The Suite's ntfy endpoint: ``<service root>/ntfy``."""
+    root = suite_root_url(base_url)
+    return f"{root}/ntfy" if root else ""
+
+
+def litellm_key_info_url(base_url: str) -> str:
+    root = suite_root_url(base_url)
+    return f"{root}/litellm/key/info" if root else ""
+
+
+def primary_suite_provider(config: Optional[dict] = None) -> Optional[str]:
+    """The AIMDS-Suite environment Hermes currently runs on.
+
+    ``model.provider`` when it is a Suite slug; otherwise the first Suite
+    environment (prod → staging → dev → localdev) with a configured URL and a
+    usable key. ``None`` when no Suite environment is set up.
+    """
+    cfg = _load_config_safe(config)
+    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+    active = canonical_suite_provider(model_cfg.get("provider"))
+    if active:
+        ep = resolve_suite_endpoint(active, config=cfg)
+        if ep.api_key:
+            return active
+    for provider_id in SUITE_ENVIRONMENTS:
+        ep = resolve_suite_endpoint(provider_id, config=cfg)
+        if ep.configured and ep.api_key:
+            return provider_id
+    return active
+
+
+def fetch_suite_key_info(base_url: str, api_key: str, *, timeout: float = 5.0) -> Dict[str, Any]:
+    """``GET <root>/litellm/key/info`` with the VirtualKey → the ``info`` object (``{}`` on failure)."""
+    url = litellm_key_info_url(base_url)
+    if not url or not api_key:
+        return {}
+    request = urllib.request.Request(
+        url, headers={"Accept": "application/json", "Authorization": f"Bearer {api_key}", "User-Agent": "hermes-agent/iamds-suite-ntfy"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8") or "{}")
+    except Exception:
+        return {}
+    info = payload.get("info") if isinstance(payload, dict) else None
+    return info if isinstance(info, dict) else (payload if isinstance(payload, dict) else {})
+
+
+def ntfy_private_topic(user_id: str) -> str:
+    uid = str(user_id or "").strip()
+    if not uid:
+        return ""
+    return NTFY_PRIVATE_TOPIC_PREFIX + _NTFY_TOPIC_SAFE_RE.sub("_", uid)
+
+
+@dataclass
+class SuiteNtfy:
+    provider_id: str
+    server_url: str
+    token: str
+    user_id: str = ""
+    topic: str = ""
+    #: topics the key is allowed to use, when the Suite publishes them in key metadata
+    topics: List[str] = field(default_factory=list)
+    #: "key_info" | "cache" | "no_user_id"
+    user_source: str = ""
+
+    def to_dict(self, *, redact: bool = True) -> Dict[str, Any]:
+        data = asdict(self)
+        if redact:
+            data["token"] = _truncate(self.token)
+        return data
+
+
+def _ntfy_cache_path() -> Path:
+    from hermes_cli.config import get_hermes_home
+
+    return Path(get_hermes_home()) / "state" / "iamds_suite_ntfy.json"
+
+
+def _key_fingerprint(api_key: str) -> str:
+    return hashlib.sha256(str(api_key or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _read_ntfy_cache(provider_id: str, api_key: str) -> Optional[Dict[str, Any]]:
+    try:
+        data = json.loads(_ntfy_cache_path().read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    entry = data.get(provider_id) if isinstance(data, dict) else None
+    if not isinstance(entry, dict) or entry.get("key_fingerprint") != _key_fingerprint(api_key):
+        return None
+    if time.time() - float(entry.get("cached_at") or 0) > _NTFY_CACHE_TTL_SECONDS:
+        return None
+    return entry
+
+
+def _write_ntfy_cache(provider_id: str, api_key: str, user_id: str, topics: List[str]) -> None:
+    path = _ntfy_cache_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        if not isinstance(data, dict):
+            data = {}
+        data[provider_id] = {"key_fingerprint": _key_fingerprint(api_key), "user_id": user_id, "topics": list(topics), "cached_at": time.time()}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _topics_from_key_info(info: Dict[str, Any]) -> List[str]:
+    meta = info.get("metadata") if isinstance(info.get("metadata"), dict) else {}
+    for key in ("ntfy_topics", "topics", "allowed_topics"):
+        raw = meta.get(key) if isinstance(meta, dict) else None
+        if raw is None:
+            raw = info.get(key)
+        if isinstance(raw, list):
+            return [str(t) for t in raw if str(t).strip()]
+        if isinstance(raw, str) and raw.strip():
+            return [t.strip() for t in raw.split(",") if t.strip()]
+    return []
+
+
+def resolve_suite_ntfy(
+    provider: Optional[str] = None,
+    *,
+    config: Optional[dict] = None,
+    use_cache: bool = True,
+    timeout: float = 5.0,
+) -> Optional[SuiteNtfy]:
+    """Zero-touch ntfy settings for the Suite: server ``<root>/ntfy``, the
+    VirtualKey as Bearer token, the private topic ``private-<user_id>``.
+
+    ``user_id`` comes from LiteLLM ``/key/info`` (cached 24 h per key
+    fingerprint under ``state/iamds_suite_ntfy.json``). Returns ``None``
+    when no Suite provider with a key is configured; ``topic`` is empty when
+    the key info lookup fails — server and token still allow publishing to
+    explicitly named topics.
+    """
+    cfg = _load_config_safe(config)
+    provider_id = canonical_suite_provider(provider) if provider else primary_suite_provider(cfg)
+    if not provider_id:
+        return None
+    ep = resolve_suite_endpoint(provider_id, config=cfg)
+    if not ep.api_key or not ep.base_url:
+        return None
+    result = SuiteNtfy(provider_id=provider_id, server_url=suite_ntfy_url(ep.base_url), token=ep.api_key)
+    cached = _read_ntfy_cache(provider_id, ep.api_key) if use_cache else None
+    if cached and cached.get("user_id"):
+        result.user_id = str(cached["user_id"])
+        result.topics = [str(t) for t in (cached.get("topics") or [])]
+        result.user_source = "cache"
+    else:
+        info = fetch_suite_key_info(ep.base_url, ep.api_key, timeout=timeout)
+        user_id = str(info.get("user_id") or info.get("user") or "").strip()
+        if not user_id and isinstance(info.get("metadata"), dict):
+            user_id = str(info["metadata"].get("user_id") or "").strip()
+        result.user_id = user_id
+        result.topics = _topics_from_key_info(info) if info else []
+        result.user_source = "key_info" if user_id else "no_user_id"
+        if user_id:
+            _write_ntfy_cache(provider_id, ep.api_key, user_id, result.topics)
+    result.topic = ntfy_private_topic(result.user_id)
+    return result
 
 
 # --------------------------------------------------------------------------- runtime auth-failure flag

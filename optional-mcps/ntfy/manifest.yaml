@@ -3,7 +3,7 @@ manifest_version: 1
 
 name: NtfyMCP
 disabled: false
-description: ntfy pub/sub messaging integration for push notifications, Cron topic polling, and Inter-Agent communication.
+description: ntfy pub/sub messaging integration for push notifications, Cron topic polling, and Inter-Agent communication. On the AIMDS-Suite it configures itself (server <suite>/ntfy, VirtualKey auth, private topic) — leave the prompts empty.
 source: https://github.com/IAMDS-GMBH/hermes-agent/tree/main/optional-mcps/ntfy
 
 transport:
@@ -24,16 +24,15 @@ auth:
   type: api_key
   env:
     - name: NTFY_SERVER_URL
-      prompt: "ntfy Server URL (default: https://ntfy.sh)"
-      default: "https://ntfy.sh"
+      prompt: "ntfy Server URL (leave empty on the AIMDS-Suite: <suite>/ntfy is used; otherwise e.g. https://ntfy.sh)"
       required: false
       secret: false
     - name: NTFY_AUTH_TOKEN
-      prompt: "ntfy Bearer Auth Token (optional)"
+      prompt: "ntfy Bearer Auth Token (leave empty on the AIMDS-Suite: the LiteLLM VirtualKey is used)"
       required: false
       secret: true
     - name: NTFY_DEFAULT_TOPIC
-      prompt: "ntfy Default Topic Name (optional)"
+      prompt: "ntfy Default Topic Name (leave empty on the AIMDS-Suite: private-<user_id> is used)"
       required: false
       secret: false
 
@@ -45,6 +44,12 @@ tools:
 
 post_install: |
   ntfy MCP (ntfy) has been installed into your catalog.
+
+  AIMDS-Suite: with an active Suite provider the server URL (<suite>/ntfy), the
+  Bearer token (LiteLLM VirtualKey) and the default topic (private-<user_id>)
+  are injected automatically — nothing to configure. The Suite's LiteLLM MCP
+  gateway additionally exposes ntfy_send_notification / ntfy_list_topics /
+  ntfy_get_messages through AIMDSSuiteMCP when enabled on the Suite.
 
   Supported Features:
     - Push Notifications (ntfy_publish_message with priority, tags, titles, click URLs)

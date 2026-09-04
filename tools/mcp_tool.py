@@ -1642,7 +1642,7 @@ class MCPServerTask:
 
         command = config.get("command")
         args = config.get("args", [])
-        user_env = config.get("env")
+        user_env = _inject_suite_ntfy_env(self.name, config.get("env"))
 
         if not command:
             raise ValueError(f"MCP server '{self.name}' has no 'command' in config")
@@ -3291,6 +3291,43 @@ def _format_bearer_token(value: str) -> str:
     if token[:7].lower() == "bearer ":
         return token
     return f"Bearer {token}"
+
+
+_NTFY_MCP_NAMES = frozenset({"ntfymcp", "ntfy", "ntfy-mcp", "ntfy_mcp"})
+
+
+def _inject_suite_ntfy_env(server_name: str, user_env: Optional[dict]) -> Optional[dict]:
+    """Zero-touch env for the catalog ntfy MCP (AIS-232).
+
+    The stdio server only sees the safe baseline env plus ``mcp_servers.<name>.env``.
+    When the entry is the ntfy MCP and no ``NTFY_SERVER_URL`` is configured,
+    derive server, token and default topic from the active AIMDS-Suite
+    provider (``<root>/ntfy``, the VirtualKey, ``private-<user_id>``).
+    Explicit values always win; a missing Suite leaves the env untouched.
+    """
+    if str(server_name or "").strip().lower() not in _NTFY_MCP_NAMES:
+        return user_env
+    env = dict(user_env or {})
+    if str(env.get("NTFY_SERVER_URL") or "").strip():
+        return user_env
+    try:
+        from hermes_cli.iamds_suite import resolve_suite_ntfy
+
+        resolved = resolve_suite_ntfy()
+    except Exception as exc:
+        logger.debug("ntfy MCP: suite auto-config unavailable: %s", exc)
+        return user_env
+    if resolved is None or not resolved.server_url or not resolved.token:
+        return user_env
+    env["NTFY_SERVER_URL"] = resolved.server_url
+    env.setdefault("NTFY_AUTH_TOKEN", resolved.token)
+    if resolved.topic and not str(env.get("NTFY_DEFAULT_TOPIC") or "").strip():
+        env["NTFY_DEFAULT_TOPIC"] = resolved.topic
+    logger.info(
+        "MCP server '%s': ntfy zero-touch config from AIMDS-Suite provider %s (server=%s, topic=%s)",
+        server_name, resolved.provider_id, resolved.server_url, resolved.topic or "-",
+    )
+    return env
 
 
 def _build_iamds_mcp_url(provider_base_url: str) -> str:

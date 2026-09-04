@@ -251,3 +251,98 @@ def test_apply_reauth_skips_mcp_without_credentials(isolated_home, monkeypatch):
     result = suite.apply_reauth("aimds-suite-staging")
     assert result["steps"]["mcp_reloaded"] is False
     assert result["steps"]["pool_reset"] == 0
+
+
+# --------------------------------------------------------------------------- ntfy (AIS-232)
+
+import io as _io
+import json as _json
+from unittest.mock import patch as _patch
+
+
+def test_suite_ntfy_urls():
+    assert suite.suite_root_url("https://dev.suite.iamds.com/litellm/v1/") == "https://dev.suite.iamds.com"
+    assert suite.suite_root_url("https://suite.iamds.com/litellm/mcp") == "https://suite.iamds.com"
+    assert suite.suite_root_url("http://localhost:8000/v1") == "http://localhost:8000"
+    assert suite.suite_ntfy_url("https://suite.iamds.com/litellm/v1") == "https://suite.iamds.com/ntfy"
+    assert suite.litellm_key_info_url("https://suite.iamds.com/litellm/v1") == "https://suite.iamds.com/litellm/key/info"
+    assert suite.suite_ntfy_url("") == "" and suite.litellm_key_info_url("") == ""
+    assert suite.ntfy_private_topic("a1b2") == "private-a1b2"
+    assert suite.ntfy_private_topic("john.doe@iamds.com") == "private-john_doe_iamds_com"
+    assert suite.ntfy_private_topic("") == ""
+
+
+class TestPrimarySuiteProvider:
+    def test_model_provider_wins_when_it_has_a_key(self, isolated_home, monkeypatch):
+        monkeypatch.setenv("IAMDS_LITELLM_DEV_API_KEY", "sk-dev-key-1234")
+        monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "sk-prod-key-1234")
+        cfg = {"model": {"provider": "aimds-suite-dev"}, "providers": {"aimds-suite-dev": {"base_url": "https://dev.suite.iamds.com/litellm/v1"}}}
+        assert suite.primary_suite_provider(cfg) == "aimds-suite-dev"
+
+    def test_falls_back_to_first_configured_env_with_key(self, isolated_home, monkeypatch):
+        monkeypatch.setenv("IAMDS_LITELLM_STAGING_BASE_URL", "https://staging.suite.iamds.com/litellm/v1")
+        monkeypatch.setenv("IAMDS_LITELLM_STAGING_API_KEY", "sk-staging-key-1234")
+        cfg = {"model": {"provider": "openrouter"}}
+        assert suite.primary_suite_provider(cfg) == "aimds-suite-staging"
+
+    def test_none_without_any_suite_key(self, isolated_home):
+        assert suite.primary_suite_provider({"model": {"provider": "openrouter"}}) is None
+
+
+class TestResolveSuiteNtfy:
+    def _urlopen(self, payload, calls):
+        class _Resp(_io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake(request, timeout=0):
+            calls.append(request.full_url)
+            assert request.get_header("Authorization") == "Bearer sk-dev-key-1234"
+            return _Resp(_json.dumps(payload).encode("utf-8"))
+        return fake
+
+    def test_resolves_server_token_and_private_topic_and_caches(self, isolated_home, monkeypatch):
+        monkeypatch.setenv("IAMDS_LITELLM_DEV_BASE_URL", "https://dev.suite.iamds.com/litellm/v1")
+        monkeypatch.setenv("IAMDS_LITELLM_DEV_API_KEY", "sk-dev-key-1234")
+        cfg = {"model": {"provider": "aimds-suite-dev"}}
+        calls = []
+        payload = {"key": "sk-…", "info": {"user_id": "u-42", "metadata": {"ntfy_topics": ["general/*", "alerts/*"]}}}
+        with _patch.object(suite.urllib.request, "urlopen", side_effect=self._urlopen(payload, calls)):
+            first = suite.resolve_suite_ntfy(config=cfg)
+            second = suite.resolve_suite_ntfy(config=cfg)
+        assert first.server_url == "https://dev.suite.iamds.com/ntfy"
+        assert first.token == "sk-dev-key-1234" and first.user_id == "u-42" and first.topic == "private-u-42"
+        assert first.topics == ["general/*", "alerts/*"] and first.user_source == "key_info"
+        assert calls == ["https://dev.suite.iamds.com/litellm/key/info"]  # second call came from the cache
+        assert second.user_source == "cache" and second.topic == "private-u-42"
+        redacted = first.to_dict()["token"]
+        assert redacted != first.token and "sk-dev-key-1234" not in redacted
+        assert (suite._ntfy_cache_path()).exists()
+
+    def test_key_info_failure_leaves_topic_empty(self, isolated_home, monkeypatch):
+        monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "sk-prod-key-1234")
+        monkeypatch.setenv("IAMDS_LITELLM_BASE_URL", "https://suite.iamds.com/litellm/v1")
+        with _patch.object(suite.urllib.request, "urlopen", side_effect=OSError("down")):
+            res = suite.resolve_suite_ntfy(config={"model": {"provider": "aimds-suite-prod"}})
+        assert res.server_url == "https://suite.iamds.com/ntfy" and res.token == "sk-prod-key-1234"
+        assert res.topic == "" and res.user_source == "no_user_id"
+
+    def test_none_without_suite(self, isolated_home):
+        assert suite.resolve_suite_ntfy(config={"model": {"provider": "openai"}}) is None
+
+    def test_cache_is_bound_to_the_key(self, isolated_home, monkeypatch):
+        monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "sk-prod-key-1234")
+        monkeypatch.setenv("IAMDS_LITELLM_BASE_URL", "https://suite.iamds.com/litellm/v1")
+        cfg = {"model": {"provider": "aimds-suite-prod"}}
+        calls = []
+        with _patch.object(suite.urllib.request, "urlopen", side_effect=self._urlopen({"info": {"user_id": "u-1"}}, calls)):
+            suite.resolve_suite_ntfy(config=cfg)
+        monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "sk-dev-key-1234")  # re-auth → new key → cache miss
+        with _patch.object(suite.urllib.request, "urlopen", side_effect=self._urlopen({"info": {"user_id": "u-2"}}, calls)):
+            res = suite.resolve_suite_ntfy(config=cfg)
+        assert res.user_id == "u-2" and len(calls) == 2
