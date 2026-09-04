@@ -172,11 +172,14 @@ def test_m365_search_users():
 
 
 def test_m365_get_chat_members():
-    mock_res = {"value": [{"id": "mem-1", "displayName": "Gonzalo"}]}
+    mock_res = {"value": [{"id": "mem-1", "displayName": "Gonzalo", "email": "g@example.com"}]}
     with patch.object(server, "_graph_request", return_value=mock_res) as mock_req:
         res = server.m365_get_chat_members("chat-123")
-        assert res["value"][0]["id"] == "mem-1"
+        assert res["members"][0] == {"displayName": "Gonzalo", "email": "g@example.com", "user_id": "mem-1"}
+        assert res["count"] == 1
         mock_req.assert_called_once_with("GET", "/me/chats/chat-123/members")
+    with patch.object(server, "_graph_request", return_value=mock_res):
+        assert server.m365_get_chat_members("chat-123", raw=True)["value"][0]["id"] == "mem-1"
 
 
 def test_m365_get_or_create_direct_chat():
@@ -184,7 +187,7 @@ def test_m365_get_or_create_direct_chat():
     search_res = {"value": [{"id": "gonzalo-id-123"}]}
     chat_created = {"id": "19:direct-chat-id"}
 
-    def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None):
+    def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, **kwargs):
         if endpoint == "/me":
             return me_res
         if endpoint == "/users":
@@ -192,12 +195,16 @@ def test_m365_get_or_create_direct_chat():
         if endpoint == "/chats":
             assert json_data["chatType"] == "oneOnOne"
             assert len(json_data["members"]) == 2
+            assert json_data["members"][1]["user@odata.bind"].endswith("/users/gonzalo-id-123")
             return chat_created
         return {}
 
+    server._MY_IDENTITY_CACHE.clear()
     with patch.object(server, "_graph_request", side_effect=side_effect):
         res = server.m365_get_or_create_direct_chat("gonzalo@example.com")
         assert res["id"] == "19:direct-chat-id"
+        assert res["existing"] is False
+    server._MY_IDENTITY_CACHE.clear()
 
 
 def test_m365_sharepoint_tools():
@@ -332,8 +339,9 @@ def test_upload_file_to_onedrive_chunked_for_large_files(tmp_path):
 def test_m365_activity_feed_and_channel_tools():
     with patch.object(server, "_graph_request", return_value={"value": [{"id": "msg-123"}]}) as mock_req:
         res = server.m365_list_chat_messages("chat-1")
-        assert res["value"][0]["id"] == "msg-123"
+        assert res["messages"][0]["id"] == "msg-123"
         mock_req.assert_called_with("GET", "/me/chats/chat-1/messages", params={"$top": 10})
+        assert server.m365_list_chat_messages("chat-1", raw=True)["value"][0]["id"] == "msg-123"
 
     with patch.object(server, "_graph_request", return_value={"value": [{"id": "team-1"}]}) as mock_req:
         res = server.m365_list_joined_teams()
@@ -869,3 +877,302 @@ class TestConsentTiers:
             res = server.m365_complete_login({"user_code": "X"})
         assert res["category"] == "declined"
         assert "admin_consent_url" not in res
+
+
+# --------------------------------------------------------------------------- AIS-286 Teams smart-send
+
+ME = {"id": "me-1", "displayName": "Johannes Huchler", "userPrincipalName": "johannes@example.com"}
+
+
+def _chat(cid, ctype, members, topic=None, preview_from=None, preview="", updated="2026-09-03T08:00:00Z"):
+    return {
+        "id": cid,
+        "chatType": ctype,
+        "topic": topic,
+        "lastUpdatedDateTime": updated,
+        "members": [{"userId": m[0], "displayName": m[1], "email": m[2]} for m in members],
+        "lastMessagePreview": {
+            "body": {"content": preview, "contentType": "html"},
+            "from": {"user": {"displayName": preview_from or ""}},
+            "createdDateTime": updated,
+        } if preview else None,
+    }
+
+
+CHATS = [
+    _chat("c-fischi", "oneOnOne", [("me-1", "Johannes Huchler", "johannes@example.com"), ("u-2", "Martin Fischerauer", "martin.fischerauer@example.com")], preview_from="Martin Fischerauer", preview="<p>passt, <b>danke</b></p>"),
+    _chat("c-martin2", "oneOnOne", [("me-1", "Johannes Huchler", "johannes@example.com"), ("u-3", "Martin Berger", "martin.berger@example.com")]),
+    _chat("c-group", "group", [("me-1", "Johannes Huchler", "johannes@example.com"), ("u-2", "Martin Fischerauer", "martin.fischerauer@example.com"), ("u-4", "Anna Schmidt", "anna@example.com")], topic="Projekt Hermes Rollout"),
+    _chat("c-anna", "oneOnOne", [("me-1", "Johannes Huchler", "johannes@example.com"), ("u-4", "Anna Schmidt", "anna@example.com")]),
+]
+
+
+def _teams_graph(chats=CHATS, messages=None, sent=None):
+    sent = sent if sent is not None else []
+
+    def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, account=None, **kwargs):
+        if endpoint == "/me":
+            return ME
+        if endpoint == "/me/chats":
+            return {"value": chats}
+        if endpoint.endswith("/messages") and method == "POST":
+            sent.append((endpoint, json_data))
+            return {"id": "msg-new"}
+        if endpoint.endswith("/messages"):
+            return {"value": messages or []}
+        if endpoint == "/users":
+            raise RuntimeError("MS Graph API Error [403]: Authorization_RequestDenied")
+        return {"value": []}
+
+    return side_effect, sent
+
+
+class TestFindChat:
+    def setup_method(self):
+        server._MY_IDENTITY_CACHE.clear()
+
+    def test_exact_email_is_unique(self):
+        with patch.object(server, "_graph_request", side_effect=_teams_graph()[0]):
+            res = server.m365_find_chat("martin.fischerauer@example.com")
+        assert res["resolution"] == "unique"
+        assert res["chat_id"] == "c-fischi"
+        assert res["candidates"][0]["match_reason"].startswith("exact email")
+        top = res["candidates"][0]
+        assert top["members"][1] == {"displayName": "Martin Fischerauer", "email": "martin.fischerauer@example.com", "user_id": "u-2"}
+        assert top["last_message"]["preview"] == "passt, danke"  # HTML stripped
+        assert "lastMessagePreview" not in top
+
+    def test_full_name_prefers_direct_chat_over_group(self):
+        with patch.object(server, "_graph_request", side_effect=_teams_graph()[0]):
+            res = server.m365_find_chat("Martin Fischerauer")
+        assert res["resolution"] == "unique"
+        assert res["chat_id"] == "c-fischi"
+        assert [c["chat_id"] for c in res["candidates"][:2]] == ["c-fischi", "c-group"]
+
+    def test_first_name_with_two_people_is_ambiguous(self):
+        with patch.object(server, "_graph_request", side_effect=_teams_graph()[0]):
+            res = server.m365_find_chat("Martin")
+        assert res["resolution"] == "ambiguous"
+        assert "chat_id" not in res
+        assert {c["chat_id"] for c in res["candidates"][:2]} == {"c-fischi", "c-martin2"}
+        assert "ask" in res["next_step"].lower()
+
+    def test_nickname_prefix_matches_surname(self):
+        with patch.object(server, "_graph_request", side_effect=_teams_graph()[0]):
+            res = server.m365_find_chat("Fischi")
+        assert res["resolution"] == "unique"
+        assert res["chat_id"] == "c-fischi"
+
+    def test_group_topic(self):
+        with patch.object(server, "_graph_request", side_effect=_teams_graph()[0]):
+            res = server.m365_find_chat("Hermes Rollout", prefer="group")
+        assert res["resolution"] == "unique"
+        assert res["chat_id"] == "c-group"
+
+    def test_no_match_gives_direct_chat_hint_for_email(self):
+        with patch.object(server, "_graph_request", side_effect=_teams_graph()[0]):
+            res = server.m365_find_chat("nobody@example.com")
+        assert res["resolution"] == "none"
+        assert res["direct_chat_hint"]["tool"] == "m365_get_or_create_direct_chat"
+        assert "direct_chat_hint" not in server.m365_find_chat.__wrapped__("x") if hasattr(server.m365_find_chat, "__wrapped__") else True
+
+    def test_empty_query_rejected(self):
+        assert "error" in server.m365_find_chat("  ")
+
+
+class TestSendChatMessageSmart:
+    def setup_method(self):
+        server._MY_IDENTITY_CACHE.clear()
+
+    def test_to_unique_sends_markdown_as_html_and_reports_recipient(self):
+        side_effect, sent = _teams_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_send_chat_message(to="Fischi", content="Hi Martin,\n\nam **09./10.09** baue ich Überstunden ab:\n- Di frei\n- Mi ab 12")
+        assert res["sent"] is True
+        assert res["chat_id"] == "c-fischi"
+        assert res["recipient"]["members"][0]["displayName"] == "Martin Fischerauer"
+        assert res["chat_type"] == "oneOnOne"
+        assert sent[0][0] == "/me/chats/c-fischi/messages"
+        html = sent[0][1]["body"]["content"]
+        assert sent[0][1]["body"]["contentType"] == "html"
+        assert html == "<p>Hi Martin,</p><p>am <strong>09./10.09</strong> baue ich Überstunden ab:</p><ul><li>Di frei</li><li>Mi ab 12</li></ul>"
+        assert res["rendered_html"] == html
+        assert "**" not in res["plain_text"] and "Di frei" in res["plain_text"]
+        assert res["message_id"] == "msg-new"
+
+    def test_to_ambiguous_does_not_send(self):
+        side_effect, sent = _teams_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_send_chat_message(to="Martin", content="hi")
+        assert res["sent"] is False
+        assert res["resolution"] == "ambiguous"
+        assert "ambiguous" in res["error"]
+        assert sent == []
+
+    def test_to_unknown_does_not_send(self):
+        side_effect, sent = _teams_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_send_chat_message(to="Zaphod", content="hi")
+        assert res["sent"] is False and res["resolution"] == "none" and sent == []
+
+    def test_dry_run_never_sends(self):
+        side_effect, sent = _teams_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_send_chat_message(to="martin.fischerauer@example.com", content="*kurz*", dry_run=True)
+        assert res["dry_run"] is True and res["sent"] is False
+        assert res["rendered_html"] == "<p><em>kurz</em></p>"
+        assert res["recipient"]["chat_id"] == "c-fischi"
+        assert sent == []
+
+    def test_missing_chat_id_and_to_raises(self):
+        with pytest.raises(ValueError):
+            server.m365_send_chat_message(content="hi")
+
+    def test_existing_html_passes_through_and_text_mode_is_verbatim(self):
+        with patch.object(server, "_graph_request", return_value={"id": "m"}) as mock_req:
+            server.m365_send_chat_message("chat-1", "<p>Hallo <b>Welt</b></p>")
+            assert mock_req.call_args.kwargs["json_data"]["body"]["content"] == "<p>Hallo <b>Welt</b></p>"
+        with patch.object(server, "_graph_request", return_value={"id": "m"}) as mock_req:
+            res = server.m365_send_chat_message("chat-1", "**raw**", content_type="text")
+            assert mock_req.call_args.kwargs["json_data"]["body"] == {"contentType": "text", "content": "**raw**"}
+            assert res["rendered_html"] is None
+
+
+class TestMarkdownToTeamsHtml:
+    def test_blocks_and_inline(self):
+        md = "# Update\n\nHallo **Team**, kurzer *Stand*:\n\n1. erledigt\n2. offen\n\n> Zitat\n\nLink: [Doku](https://ex.ample/d) und `code` <3"
+        html = server._markdown_to_teams_html(md)
+        assert html == (
+            "<p><strong>Update</strong></p><p>Hallo <strong>Team</strong>, kurzer <em>Stand</em>:</p>"
+            "<ol><li>erledigt</li><li>offen</li></ol><blockquote>Zitat</blockquote>"
+            '<p>Link: <a href="https://ex.ample/d">Doku</a> und <code>code</code> &lt;3</p>'
+        )
+
+    def test_line_breaks_inside_paragraph_and_escaping(self):
+        assert server._markdown_to_teams_html("a\nb\n\nc & d") == "<p>a<br>b</p><p>c &amp; d</p>"
+        assert server._markdown_to_teams_html("") == ""
+        assert server._markdown_to_teams_html("<ul><li>x</li></ul>") == "<ul><li>x</li></ul>"
+
+    def test_html_to_text(self):
+        assert server._html_to_text("<p>Hi <b>x</b></p><ul><li>a</li><li>b</li></ul>&nbsp;") == "Hi x\n• a\n• b"
+
+
+class TestCompactRecords:
+    def test_list_chats_compact_and_raw(self):
+        side_effect, _ = _teams_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_list_chats(top=5)
+            assert res["count"] == 4
+            assert set(res["chats"][0]) == {"chat_id", "chat_type", "topic", "members", "last_message", "updated_at", "web_url"}
+            raw = server.m365_list_chats(top=5, raw=True)
+            assert raw["value"][0]["id"] == "c-fischi"
+
+    def test_list_chat_messages_compact_strips_html_and_system_events(self):
+        messages = [
+            {"id": "m1", "messageType": "message", "createdDateTime": "2026-09-03T08:00:00Z", "from": {"user": {"id": "u-2", "displayName": "Martin"}}, "body": {"contentType": "html", "content": "<p>Hallo <b>du</b></p>"}},
+            {"id": "m2", "messageType": "systemEventMessage", "body": {"contentType": "html", "content": "<systemEventMessage/>"}},
+        ]
+        side_effect, _ = _teams_graph(messages=messages)
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_list_chat_messages("c-fischi", top=5)
+        assert res["count"] == 1
+        assert res["messages"][0]["from"] == "Martin" and res["messages"][0]["text"] == "Hallo du"
+        assert res["messages"][0]["from_user_id"] == "u-2"
+
+
+class TestDirectChatWithoutDirectory:
+    def setup_method(self):
+        server._MY_IDENTITY_CACHE.clear()
+
+    def test_existing_direct_chat_is_returned_not_created(self):
+        side_effect, sent = _teams_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect) as mock_req:
+            res = server.m365_get_or_create_direct_chat("Martin Fischerauer")
+        assert res["id"] == "c-fischi" and res["existing"] is True
+        assert all(c.args[1] != "/chats" for c in mock_req.call_args_list)
+
+    def test_ambiguous_name_asks_instead_of_creating(self):
+        side_effect, _ = _teams_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_get_or_create_direct_chat("Martin")
+        assert "error" in res and len(res["candidates"]) >= 2
+
+    def test_unknown_email_without_directory_binds_upn_directly(self):
+        created = {}
+
+        def side_effect(method, endpoint, json_data=None, params=None, **kwargs):
+            if endpoint == "/me":
+                return ME
+            if endpoint == "/me/chats":
+                return {"value": []}
+            if endpoint.startswith("/users"):
+                raise RuntimeError("MS Graph API Error [403]: Authorization_RequestDenied")
+            if endpoint == "/chats":
+                created.update(json_data)
+                return {"id": "19:new"}
+            return {"value": []}
+
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_get_or_create_direct_chat("new.person@example.com")
+        assert res["id"] == "19:new"
+        assert created["members"][1]["user@odata.bind"].endswith("/users/new.person@example.com")
+
+    def test_unknown_name_without_directory_returns_actionable_error(self):
+        def side_effect(method, endpoint, json_data=None, params=None, **kwargs):
+            if endpoint == "/me":
+                return ME
+            if endpoint.startswith("/users"):
+                raise RuntimeError("403")
+            return {"value": []}
+
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_get_or_create_direct_chat("Zaphod Beeblebrox")
+        assert "email" in res["error"]
+
+
+class TestChatStyle:
+    def setup_method(self):
+        server._MY_IDENTITY_CACHE.clear()
+
+    def _messages(self, mine, theirs=("Alles klar, danke!",)):
+        out = []
+        for i, t in enumerate(mine):
+            out.append({"id": f"me{i}", "messageType": "message", "createdDateTime": "2026-09-01T08:00:00Z", "from": {"user": {"id": "me-1", "displayName": "Johannes Huchler"}}, "body": {"contentType": "text", "content": t}})
+        for i, t in enumerate(theirs):
+            out.append({"id": f"th{i}", "messageType": "message", "createdDateTime": "2026-09-01T09:00:00Z", "from": {"user": {"id": "u-2", "displayName": "Martin"}}, "body": {"contentType": "html", "content": f"<p>{t}</p>"}})
+        return out
+
+    def test_profile_from_own_messages_casual(self):
+        mine = ["Hi Martin, bist du am Mi da? VG", "Danke dir! 👍", "Moin, ich bin morgen im Homeoffice, melde mich dann. VG"]
+        side_effect, _ = _teams_graph(messages=self._messages(mine))
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_get_chat_style(to="Fischi")
+        prof = res["profile"]
+        assert res["source_messages"] == 3 and res["their_messages_seen"] == 1
+        assert prof["language"] == "de" and prof["address"] == "du" and prof["formality"] == "casual"
+        assert prof["sign_off"] == "vg" and prof["emoji"] == "sometimes"
+        assert prof["typical_length_words"] <= 12
+        assert len(res["examples"]) == 3 and res["recipient"]["chat_type"] == "oneOnOne"
+        assert "Teams style with" in res["how_to_use"]
+
+    def test_profile_formal_sie(self):
+        mine = ["Sehr geehrter Herr Müller,\n\nkönnten Sie mir bitte die Unterlagen bis Freitag zusenden? Ich benötige sie für den Bericht.\n\nViele Grüße\nJohannes Huchler"] * 3
+        side_effect, _ = _teams_graph(messages=self._messages(mine))
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_get_chat_style(chat_id="c-fischi")
+        prof = res["profile"]
+        assert prof["address"] == "Sie" and prof["formality"] == "formal"
+        assert prof["greeting"] == "sehr geehrter" and prof["sign_off"].startswith("viele gr")
+
+    def test_no_history_returns_teams_defaults(self):
+        side_effect, _ = _teams_graph(messages=self._messages([]))
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_get_chat_style(chat_id="c-fischi")
+        assert res["profile"] is None and res["source_messages"] == 0
+        assert res["defaults"]["sign_off"] == "none" and res["defaults"]["signature"] is False and res["defaults"]["attribution"] is False
+
+    def test_ambiguous_recipient(self):
+        side_effect, _ = _teams_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_get_chat_style(to="Martin")
+        assert res["error"] == "recipient ambiguous" and len(res["candidates"]) >= 2
