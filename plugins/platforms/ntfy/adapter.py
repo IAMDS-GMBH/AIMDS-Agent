@@ -37,6 +37,12 @@ config.yaml ``extra``):
     NTFY_HOME_CHANNEL          Default topic for cron / notification delivery
     NTFY_HOME_CHANNEL_NAME     Human label for the home channel
 
+Zero-touch on the AIMDS-Suite (AIS-232): when none of the above is set and
+Hermes runs on an AIMDS-Suite provider, the adapter derives everything from
+the Suite: server ``<suite root>/ntfy``, token = the LiteLLM VirtualKey,
+topic = ``private-<user_id>`` (user id from LiteLLM ``/key/info``). Explicit
+env vars / config always win; ``NTFY_AUTO_SUITE=0`` disables the fallback.
+
 Identity model: ntfy has no native authenticated user identity. The
 ``title`` field is publisher-controlled and is NOT used for
 authorization. Each topic is treated as a single trusted channel —
@@ -122,30 +128,89 @@ def _truncate_body(message: str, *, context: str) -> bytes:
     return message[:MAX_MESSAGE_LENGTH].encode("utf-8")
 
 
+_SUITE_AUTO_CACHE: Dict[str, Any] = {"at": 0.0, "value": None}
+_SUITE_AUTO_TTL_SECONDS = 300.0
+_suite_auto_logged = False
+
+
+def _suite_auto_enabled() -> bool:
+    return os.getenv("NTFY_AUTO_SUITE", "").strip().lower() not in ("0", "false", "no", "off")
+
+
+def suite_auto_config(*, force: bool = False) -> Optional[Dict[str, Any]]:
+    """ntfy settings derived from the active AIMDS-Suite provider, or ``None``.
+
+    ``{"server", "token", "topic", "publish_topic", "provider", "user_id",
+    "topics", "source": "aimds-suite"}``. Cached for five minutes — the
+    gateway asks several times per startup. ``topic`` is empty when the
+    key-info lookup could not determine the user id; the adapter then has a
+    server and a token but nothing to subscribe to.
+    """
+    global _suite_auto_logged
+    if not _suite_auto_enabled():
+        return None
+    now = time.monotonic()
+    if not force and _SUITE_AUTO_CACHE["value"] is not None and now - float(_SUITE_AUTO_CACHE["at"]) < _SUITE_AUTO_TTL_SECONDS:
+        return _SUITE_AUTO_CACHE["value"] or None
+    value: Optional[Dict[str, Any]] = None
+    try:
+        from hermes_cli.iamds_suite import resolve_suite_ntfy
+
+        resolved = resolve_suite_ntfy()
+        if resolved is not None and resolved.server_url and resolved.token:
+            value = {
+                "server": resolved.server_url,
+                "token": resolved.token,
+                "topic": resolved.topic,
+                "publish_topic": resolved.topic,
+                "provider": resolved.provider_id,
+                "user_id": resolved.user_id,
+                "topics": list(resolved.topics),
+                "source": "aimds-suite",
+            }
+    except Exception as exc:
+        logger.debug("[ntfy] suite auto-config unavailable: %s", exc)
+        value = None
+    _SUITE_AUTO_CACHE["at"] = now
+    _SUITE_AUTO_CACHE["value"] = value or {}
+    if value and not _suite_auto_logged:
+        _suite_auto_logged = True
+        logger.info(
+            "[ntfy] zero-touch config from AIMDS-Suite provider %s: server=%s topic=%s",
+            value["provider"], value["server"], value["topic"] or "(no user id — set NTFY_TOPIC)",
+        )
+    return value
+
+
+def _auto_topic() -> str:
+    auto = suite_auto_config()
+    return str((auto or {}).get("topic") or "")
+
+
 def check_requirements() -> bool:
     """Check whether the ntfy adapter is installable and minimally configured.
 
     Reads ``NTFY_TOPIC`` directly to avoid the cost of a full
     ``load_gateway_config()`` (which also writes to ``os.environ``) on
-    every pre-flight check.
+    every pre-flight check; falls back to the AIMDS-Suite zero-touch config.
     """
     if not HTTPX_AVAILABLE:
         return False
     topic = os.getenv("NTFY_TOPIC", "").strip()
-    return bool(topic)
+    return bool(topic or _auto_topic())
 
 
 def validate_config(config) -> bool:
     """Validate that the configured ntfy platform has a topic set."""
     extra = getattr(config, "extra", {}) or {}
-    topic = extra.get("topic") or os.getenv("NTFY_TOPIC", "")
+    topic = extra.get("topic") or os.getenv("NTFY_TOPIC", "") or _auto_topic()
     return bool(topic)
 
 
 def is_connected(config) -> bool:
-    """Check whether ntfy is configured (env or config.yaml)."""
+    """Check whether ntfy is configured (env, config.yaml or Suite zero-touch)."""
     extra = getattr(config, "extra", {}) or {}
-    topic = os.getenv("NTFY_TOPIC") or extra.get("topic", "")
+    topic = os.getenv("NTFY_TOPIC") or extra.get("topic", "") or _auto_topic()
     return bool(topic)
 
 
@@ -163,17 +228,23 @@ class NtfyAdapter(BasePlatformAdapter):
         super().__init__(config=config, platform=platform)
 
         extra = config.extra or {}
+        explicit_topic = extra.get("topic") or os.getenv("NTFY_TOPIC", "")
+        # Zero-touch (AIS-232): only when nothing explicit names a topic.
+        auto = suite_auto_config() if not explicit_topic else None
         self._server: str = (
             extra.get("server")
-            or os.getenv("NTFY_SERVER_URL", DEFAULT_SERVER)
+            or os.getenv("NTFY_SERVER_URL", "")
+            or (auto or {}).get("server")
+            or DEFAULT_SERVER
         ).rstrip("/")
-        self._topic: str = extra.get("topic") or os.getenv("NTFY_TOPIC", "")
+        self._topic: str = explicit_topic or (auto or {}).get("topic", "")
         self._publish_topic: str = (
             extra.get("publish_topic")
             or os.getenv("NTFY_PUBLISH_TOPIC", "")
             or self._topic
         )
-        self._token: str = extra.get("token") or os.getenv("NTFY_TOKEN", "")
+        self._token: str = extra.get("token") or os.getenv("NTFY_TOKEN", "") or (auto or {}).get("token", "")
+        self._config_source: str = "aimds-suite" if auto and self._topic else "explicit"
 
         self._stream_task: Optional[asyncio.Task] = None
         self._http_client: Optional["httpx.AsyncClient"] = None
@@ -463,16 +534,23 @@ def _env_enablement() -> dict | None:
     ``PlatformConfig`` rather than being merged into ``extra``.
     """
     topic = os.getenv("NTFY_TOPIC", "").strip()
+    auto = None
+    if not topic:
+        auto = suite_auto_config()
+        topic = str((auto or {}).get("topic") or "")
     if not topic:
         return None
     seed: dict = {
         "topic": topic,
-        "server": os.getenv("NTFY_SERVER_URL", DEFAULT_SERVER).rstrip("/"),
+        "server": (os.getenv("NTFY_SERVER_URL", "").strip() or (auto or {}).get("server") or DEFAULT_SERVER).rstrip("/"),
     }
+    if auto:
+        seed["source"] = "aimds-suite"
+        seed["provider"] = auto.get("provider", "")
     publish_topic = os.getenv("NTFY_PUBLISH_TOPIC", "").strip()
     if publish_topic:
         seed["publish_topic"] = publish_topic
-    token = os.getenv("NTFY_TOKEN", "").strip()
+    token = os.getenv("NTFY_TOKEN", "").strip() or str((auto or {}).get("token") or "")
     if token:
         seed["token"] = token
     markdown = os.getenv("NTFY_MARKDOWN", "").strip().lower()
@@ -512,21 +590,25 @@ async def _standalone_send(
         return {"error": "ntfy standalone send: httpx not installed"}
 
     extra = getattr(pconfig, "extra", {}) or {}
+    explicit_topic = extra.get("topic") or os.getenv("NTFY_TOPIC", "").strip()
+    auto = suite_auto_config() if not explicit_topic else None
     server = (
         extra.get("server")
-        or os.getenv("NTFY_SERVER_URL", DEFAULT_SERVER)
+        or os.getenv("NTFY_SERVER_URL", "").strip()
+        or (auto or {}).get("server")
+        or DEFAULT_SERVER
     ).rstrip("/")
     publish_topic = (
         chat_id
         or extra.get("publish_topic")
         or os.getenv("NTFY_PUBLISH_TOPIC", "").strip()
-        or extra.get("topic")
-        or os.getenv("NTFY_TOPIC", "").strip()
+        or explicit_topic
+        or (auto or {}).get("topic", "")
     )
     if not publish_topic:
         return {"error": "ntfy standalone send: NTFY_TOPIC not configured"}
 
-    token = extra.get("token") or os.getenv("NTFY_TOKEN", "")
+    token = extra.get("token") or os.getenv("NTFY_TOKEN", "") or (auto or {}).get("token", "")
     markdown_env = os.getenv("NTFY_MARKDOWN", "").strip().lower()
     markdown_enabled = bool(extra.get("markdown")) or markdown_env in ("1", "true", "yes")
 
