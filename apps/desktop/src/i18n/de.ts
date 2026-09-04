@@ -1154,13 +1154,6 @@ export const de
       error: 'Fehler',
       completed: 'abgeschlossen'
     },
-    deliveryLabels: {
-      local: 'Dieser Desktop',
-      telegram: 'Telegram',
-      discord: 'Discord',
-      slack: 'Slack',
-      email: 'E-Mail'
-    },
     scheduleLabels: {
       daily: 'Täglich',
       weekdays: 'Wochentags',
@@ -1241,7 +1234,6 @@ export const de
     promptLabel: 'Prompt',
     promptPlaceholder: 'Meine ungelesenen Slack-Threads zusammenfassen und mir die Top 5 mailen...',
     frequencyLabel: 'Häufigkeit',
-    deliverLabel: 'An diesen Desktop zustellen',
     customScheduleLabel: 'Benutzerdefinierter Zeitplan',
     customPlaceholder: '0 9 * * * oder wochentags um 9:00',
     customHint: 'Cron-Ausdruck oder Ausdrücke wie „jede Stunde" oder „wochentags um 9:00".',

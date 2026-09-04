@@ -1032,7 +1032,6 @@ class CLICommandsMixin:
         def _parse_flags(tokens):
             opts = {
                 "name": None,
-                "deliver": None,
                 "repeat": None,
                 "skills": [],
                 "add_skills": [],
@@ -1050,7 +1049,9 @@ class CLICommandsMixin:
                     opts["name"] = tokens[i + 1]
                     i += 2
                 elif token == "--deliver" and i + 1 < len(tokens):
-                    opts["deliver"] = tokens[i + 1]
+                    # Desktop build: delivery is fixed to this desktop; the
+                    # flag is accepted for old muscle memory but ignored.
+                    print("(._.) --deliver is ignored: cron results are delivered to this desktop only")
                     i += 2
                 elif token == "--repeat" and i + 1 < len(tokens):
                     try:
@@ -1169,7 +1170,6 @@ class CLICommandsMixin:
                 schedule=schedule,
                 prompt=prompt or None,
                 name=opts["name"],
-                deliver=opts["deliver"],
                 repeat=opts["repeat"],
                 skills=skills or None,
             )
@@ -1215,7 +1215,6 @@ class CLICommandsMixin:
                 schedule=opts["schedule"],
                 prompt=opts["prompt"],
                 name=opts["name"],
-                deliver=opts["deliver"],
                 repeat=opts["repeat"],
                 skills=final_skills,
             )

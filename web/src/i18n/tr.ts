@@ -262,7 +262,6 @@ export const tr: Translations = {
       monthlyAt: "Her ayın {day} günü {time}",
       onceAt: "{time} bir kez",
     },
-    deliverTo: "Şuraya teslim et",
     scheduledJobs: "Zamanlanmış Görevler",
     noJobs: "Yapılandırılmış cron görevi yok. Yukarıdan bir tane oluşturun.",
     last: "Son",
@@ -270,13 +269,6 @@ export const tr: Translations = {
     pause: "Duraklat",
     resume: "Devam ettir",
     triggerNow: "Şimdi tetikle",
-    delivery: {
-      local: "Yerel",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
-      email: "Email",
-    },
   },
 
   profiles: {

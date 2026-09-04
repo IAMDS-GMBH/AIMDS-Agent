@@ -227,7 +227,7 @@ def _build_job(spec: dict[str, Any], jobs: list[dict[str, Any]]) -> dict[str, An
         "skill": skill,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule_text),
-        "deliver": spec.get("deliver") or "local",
+        "deliver": "local",  # desktop build: delivery is fixed to local (AIS-145)
         "origin": {
             "source": _SOURCE,
             "seed_key": seed_key,

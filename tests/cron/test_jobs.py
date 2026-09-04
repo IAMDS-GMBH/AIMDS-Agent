@@ -257,16 +257,47 @@ class TestJobCRUD:
         job = create_job(prompt="Recurring", schedule="every 1h")
         assert job["repeat"]["times"] is None
 
-    def test_default_delivery_origin(self, tmp_cron_dir):
+    def test_delivery_is_local_even_with_origin(self, tmp_cron_dir):
+        """Desktop build (AIS-145): origin is provenance only, never a target."""
         job = create_job(
             prompt="Test", schedule="30m",
             origin={"platform": "telegram", "chat_id": "123"},
         )
-        assert job["deliver"] == "origin"
+        assert job["deliver"] == "local"
+        assert job["origin"] == {"platform": "telegram", "chat_id": "123"}
 
     def test_default_delivery_local_no_origin(self, tmp_cron_dir):
         job = create_job(prompt="Test", schedule="30m")
         assert job["deliver"] == "local"
+
+    def test_explicit_deliver_argument_is_ignored(self, tmp_cron_dir):
+        for value in ("telegram", "origin", "all", "telegram:-1001:42", ["telegram", "discord"]):
+            job = create_job(prompt="Test", schedule="30m", deliver=value)
+            assert job["deliver"] == "local", value
+
+    def test_legacy_external_deliver_is_read_as_local(self, tmp_cron_dir):
+        """A job persisted before AIS-145 with deliver="telegram" must load as
+        local so no consumer (scheduler, dashboard, tool) delivers externally."""
+        import json
+        from cron import jobs as jobs_mod
+
+        job = create_job(prompt="Test", schedule="30m")
+        data = json.loads(jobs_mod.JOBS_FILE.read_text())
+        for j in data["jobs"]:
+            if j["id"] == job["id"]:
+                j["deliver"] = "telegram"
+                j["origin"] = {"platform": "telegram", "chat_id": "123"}
+        jobs_mod.JOBS_FILE.write_text(json.dumps(data))
+
+        loaded = [j for j in load_jobs() if j["id"] == job["id"]][0]
+        assert loaded["deliver"] == "local"
+        assert get_job(job["id"])["deliver"] == "local"
+
+        updated = update_job(job["id"], {"deliver": "discord", "name": "renamed"})
+        assert updated["deliver"] == "local"
+        stored = [j for j in json.loads(jobs_mod.JOBS_FILE.read_text())["jobs"] if j["id"] == job["id"]][0]
+        assert stored["deliver"] == "local"
+        assert stored["name"] == "renamed"
 
 
 class TestUpdateJob:

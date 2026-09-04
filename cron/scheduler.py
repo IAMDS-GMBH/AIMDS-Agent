@@ -1922,14 +1922,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except UnicodeDecodeError:
             load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="latin-1")
 
-        delivery_target = _resolve_delivery_target(job)
-        if delivery_target:
-            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(delivery_target["platform"])
-            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"].set(str(delivery_target["chat_id"]))
-            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(
-                ""
-                if delivery_target.get("thread_id") is None
-                else str(delivery_target["thread_id"])
+        # Desktop build (AIS-145): cron output stays on this desktop. The
+        # HERMES_CRON_AUTO_DELIVER_* vars (the agent's send_message auto-route
+        # to a chat) are intentionally never populated — they were the second
+        # path by which a legacy deliver="telegram" job could still reach an
+        # external platform after the scheduler's own delivery was disabled.
+        if _normalize_deliver_value(job.get("deliver")) != "local":
+            logger.info(
+                "Job '%s': deliver=%r ignored — cron delivery is fixed to local on the desktop build",
+                job_id, job.get("deliver"),
             )
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
