@@ -1,6 +1,6 @@
 ---
 name: teams-message-draft
-description: Send or draft a Microsoft Teams chat message to a person or group without guessing the chat, in the register the user actually uses with that person. Trigger on "send X to Y via Teams", "message Y on Teams", "draft a Teams message", "what did Y write today", "summarize the Teams chat with Y" — and the German phrasings "schick/sende/schreib … via Teams", "Teams-Nachricht an …", "Teams-Nachricht schreiben", "was hat … heute geschrieben", "Teams-Chat mit … zusammenfassen".
+description: Send or draft a Microsoft Teams chat message to a person or group without guessing the chat, in the register the user actually uses with that person, and fetch files shared in a chat into the Vault. Trigger on "send X to Y via Teams", "message Y on Teams", "draft a Teams message", "what did Y write today", "summarize the Teams chat with Y", "get the document from the Teams chat", a pasted teams.microsoft.com link — and the German phrasings "schick/sende/schreib … via Teams", "Teams-Nachricht an …", "was hat … heute geschrieben", "Teams-Chat mit … zusammenfassen", "Dokument/Datei/Anhang aus dem Teams-Chat laden".
 metadata:
   hermes:
     requires_toolsets: [MSOffice365MCP]
@@ -49,6 +49,18 @@ correction rounds for one short message.
 2. `m365_list_chat_messages(chat_id=..., top=20)` returns compact `{from, at, text}` records
    already stripped of HTML. Filter by sender and date; do not load whole histories.
 3. Summarize in one line per request, decision or question. Quote at most short fragments.
+
+## Workflow: "get the document/file from <chat or Teams link>"
+
+1. A pasted Teams link (`https://teams.microsoft.com/l/chat/…` or `/l/message/…`) is a valid
+   `chat_id` for every chat tool. Never ask the user to extract the id.
+2. Call `m365_download_chat_files(chat_id=<link or id> | to=<name>, last=5)`. It scans the last
+   messages for shared files, downloads them into the Vault
+   (`documents/m365_attachments/<chat>/`) and returns `saved_path`, sender and time per file.
+   Use `include_images=true` for pasted screenshots, raise `last` if the file is older.
+3. Continue with the local files (read, summarize, convert) and name the saved paths. If
+   `count` is 0, use `m365_list_chat_messages` to show which message carries the file and ask
+   which one is meant — do not claim the file is inaccessible.
 
 ## Guardrails
 

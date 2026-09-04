@@ -143,6 +143,15 @@ no letter salutation, no closing formula, no signature, no attribution line, no
 implementation detail. `m365_list_chats`, `m365_list_chat_messages` and
 `m365_get_chat_members` return compact records by default (`raw=true` for Graph objects).
 
+A pasted Teams deep link (`https://teams.microsoft.com/l/chat/<chatId>/0?…` or
+`/l/message/<chatId>/<messageId>?…`) is accepted wherever a chat id is expected
+(`chat_id`, `to`, `query`). `m365_download_chat_files(chat_id=<link>|to=<name>, last=5,
+include_images=false)` scans the last messages for shared files, downloads them into the
+Vault under `documents/m365_attachments/<chat>/` and returns the saved paths with sender and
+time. Catalog installs also pick up new manifest `default_enabled` tools automatically: the
+runtime unions `mcp_servers.<name>.tools.include` with the manifest defaults, and a reinstall
+adds them to the prior selection (AIS-288).
+
 ## Related
 
 - The Messaging *Outlook* connector (`tools/microsoft_graph_auth.py`) is a **different**

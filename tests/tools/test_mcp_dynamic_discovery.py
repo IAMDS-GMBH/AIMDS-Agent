@@ -163,3 +163,54 @@ class TestDeregister:
     def test_noop_for_unknown_tool(self):
         reg = ToolRegistry()
         reg.deregister("nonexistent")  # Should not raise
+
+
+class TestCatalogDefaultToolsUnion:
+    """AIS-288: a catalog server's tools.include is unioned with the manifest's
+    current default_enabled so tools added later reach existing installs."""
+
+    @pytest.fixture
+    def mock_registry(self):
+        return ToolRegistry()
+
+    def test_missing_default_tools_are_registered(self, mock_registry, monkeypatch):
+        from tools import mcp_tool as mt
+
+        monkeypatch.setattr(mt, "_catalog_default_tools", lambda name: {"old_tool", "new_default_tool"} if name == "DemoMCP" else set())
+        server = MCPServerTask("DemoMCP")
+        server._tools = [_make_mcp_tool("old_tool", "d"), _make_mcp_tool("new_default_tool", "d"), _make_mcp_tool("extra_tool", "d")]
+        server.session = MagicMock()
+        with patch("tools.registry.registry", mock_registry):
+            registered = _register_server_tools("DemoMCP", server, {"tools": {"include": ["old_tool"]}})
+        assert "mcp_DemoMCP_old_tool" in registered
+        assert "mcp_DemoMCP_new_default_tool" in registered  # added by the union
+        assert "mcp_DemoMCP_extra_tool" not in registered  # user's include still governs non-defaults
+
+    def test_empty_include_means_all_and_is_untouched(self, mock_registry, monkeypatch):
+        from tools import mcp_tool as mt
+
+        monkeypatch.setattr(mt, "_catalog_default_tools", lambda name: {"a"})
+        server = MCPServerTask("DemoMCP")
+        server._tools = [_make_mcp_tool("a", "d"), _make_mcp_tool("b", "d")]
+        server.session = MagicMock()
+        with patch("tools.registry.registry", mock_registry):
+            registered = _register_server_tools("DemoMCP", server, {})
+        assert set(registered) >= {"mcp_DemoMCP_a", "mcp_DemoMCP_b"}
+
+    def test_non_catalog_server_unchanged(self, mock_registry):
+        server = MCPServerTask("my_custom")
+        server._tools = [_make_mcp_tool("a", "d"), _make_mcp_tool("b", "d")]
+        server.session = MagicMock()
+        with patch("tools.registry.registry", mock_registry):
+            registered = _register_server_tools("my_custom", server, {"tools": {"include": ["a"]}})
+        assert "mcp_my_custom_a" in registered
+        assert "mcp_my_custom_b" not in registered
+
+    def test_real_catalog_lookup_for_m365(self):
+        from tools.mcp_tool import _catalog_default_tools, _merge_catalog_default_tools
+
+        defaults = _catalog_default_tools("MSOffice365MCP")
+        assert "m365_download_teams_message_attachment" in defaults
+        merged = _merge_catalog_default_tools("MSOffice365MCP", {"m365_send_email"})
+        assert "m365_download_chat_files" in merged and "m365_send_email" in merged
+        assert _catalog_default_tools("definitely-not-a-catalog-entry") == set()

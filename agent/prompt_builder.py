@@ -2077,6 +2077,7 @@ def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str
     find_tool = _resolve_m365_tool_name(names, "m365_find_chat")
     style_tool = _resolve_m365_tool_name(names, "m365_get_chat_style")
     direct_tool = _resolve_m365_tool_name(names, "m365_get_or_create_direct_chat")
+    files_tool = _resolve_m365_tool_name(names, "m365_download_chat_files")
     memory_tool = _resolve_memory_save_tool_name(names)
 
     resolve_line = (
@@ -2120,6 +2121,15 @@ def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str
         "arrives. Do not hand-write HTML unless the user asked for specific markup.\n"
         "Confirm from the tool result (`recipient`, `plain_text`), not from assumption. If `sent` is "
         "false, say why (ambiguous / not found) and resolve again."
+        + (
+            f"\nLinks and files: a pasted Teams link (https://teams.microsoft.com/l/chat/… or /l/message/…) "
+            f"is a valid `chat_id` for every chat tool — never ask the user to extract the id. For \"the "
+            f"document/file from the chat\" call `{files_tool}(chat_id=<link or id> | to=<name>, last=5)`; it "
+            "downloads the shared files into the Vault and returns `saved_path` per file — work with those "
+            "paths, do not describe the file from the chat preview."
+            if files_tool
+            else ""
+        )
     )
 
 

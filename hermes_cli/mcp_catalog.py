@@ -966,6 +966,15 @@ def _apply_tool_selection(
             ``entry.name`` when omitted.
     """
     server_name = server_name or entry.name
+    # Reinstall keeps the user's prior selection but never below the manifest's
+    # current defaults — otherwise tools added to ``default_enabled`` after the
+    # first install would stay hidden forever (AIS-288). Runtime applies the
+    # same union in tools.mcp_tool for installs that are not reinstalled.
+    if prior_selection is not None and entry.tools.default_enabled:
+        missing = [t for t in entry.tools.default_enabled if t not in prior_selection]
+        if missing:
+            print(color(f"  Adding {len(missing)} new default tool(s) from the manifest: {', '.join(missing)}", Colors.DIM))
+            prior_selection = list(prior_selection) + missing
     import sys as _sys
     if not _sys.stdin.isatty():
         if prior_selection is not None:

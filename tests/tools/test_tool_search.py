@@ -1065,6 +1065,24 @@ class TestDynamicMCPKeywordIndexing:
             assert names[0] in ("mcp_MSOffice365MCP_m365_send_chat_message", "mcp_MSOffice365MCP_m365_find_chat"), (query, names)
             assert names.index("mcp_MSOffice365MCP_m365_send_chat_message") < names.index("mcp_MSOffice365MCP_m365_send_email"), (query, names)
 
+    def test_german_attachment_words_surface_chat_file_download(self):
+        """'lade den Anhang aus dem Teams-Chat' → m365_download_chat_files (AIS-288)."""
+        from tools.tool_search import build_catalog, search_catalog
+
+        def _tool(name, desc):
+            return {"type": "function", "function": {"name": name, "description": desc, "parameters": {}}}
+
+        tool_defs = [
+            _tool("mcp_MSOffice365MCP_m365_download_chat_files", "Find the files shared in a Teams chat and download them into the Vault"),
+            _tool("mcp_MSOffice365MCP_m365_send_chat_message", "Send a Microsoft Teams chat message to a person or chat"),
+            _tool("mcp_MSOffice365MCP_m365_list_emails", "List emails from Outlook"),
+            _tool("terminal", "Run a shell command"),
+        ]
+        catalog = build_catalog(tool_defs)
+        for query in ("lade den anhang aus dem teams chat herunter", "datei aus teams chat downloaden"):
+            names = [r.name for r in search_catalog(catalog, query, limit=3)]
+            assert names and names[0] == "mcp_MSOffice365MCP_m365_download_chat_files", (query, names)
+
     def test_office_file_tool_synonyms_beat_m365(self):
         """'excel' / 'pptx' / 'docx' must surface the local office tools, not
         only the M365 MCP server (AIS-139)."""

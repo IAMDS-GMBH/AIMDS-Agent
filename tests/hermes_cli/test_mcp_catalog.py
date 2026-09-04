@@ -1103,10 +1103,37 @@ class TestToolSelection:
         cfg["mcp_servers"]["demo"]["tools"]["include"] = ["beta", "gamma"]
         save_config(cfg)
 
-        # Reinstall (non-TTY honors prior_selection over manifest default)
+        # Reinstall (non-TTY honors prior_selection over manifest default) —
+        # but never below the manifest's current defaults (AIS-288): "alpha"
+        # is a default the user's stale include list lacks, so it is added.
         install_entry(_entry("demo"), enable=True)
         server = load_config()["mcp_servers"]["demo"]
-        assert server["tools"]["include"] == ["beta", "gamma"], server
+        assert server["tools"]["include"] == ["beta", "gamma", "alpha"], server
+
+    def test_reinstall_adds_new_manifest_defaults_to_prior_selection(
+        self, catalog_dir, monkeypatch
+    ):
+        """A default tool added to the manifest after the first install must
+        show up on reinstall without the user re-selecting anything."""
+        body = _basic_manifest(tools={"default_enabled": ["alpha"]})
+        _write_manifest(catalog_dir, "demo", body)
+
+        import hermes_cli.mcp_catalog as mc
+        monkeypatch.setattr(mc, "_probe_tools", lambda name: self._make_probed("alpha", "beta"))
+        import sys as _sys
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        install_entry(_entry("demo"), enable=True)
+        assert load_config()["mcp_servers"]["demo"]["tools"]["include"] == ["alpha"]
+
+        # Manifest grows a new default tool.
+        body["tools"] = {"default_enabled": ["alpha", "beta"]}
+        _write_manifest(catalog_dir, "demo", body)
+        mc._CATALOG_CACHE.clear() if hasattr(mc, "_CATALOG_CACHE") else None
+        install_entry(_entry("demo"), enable=True)
+        assert load_config()["mcp_servers"]["demo"]["tools"]["include"] == ["alpha", "beta"]
 
     def test_manifest_invalid_default_enabled_rejected(self, catalog_dir):
         body = _basic_manifest()
