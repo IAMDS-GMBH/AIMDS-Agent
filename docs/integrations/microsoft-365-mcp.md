@@ -156,6 +156,38 @@ manifest `default_enabled` tools automatically: the
 runtime unions `mcp_servers.<name>.tools.include` with the manifest defaults, and a reinstall
 adds them to the prior selection (AIS-288).
 
+`m365_download_drive_file(file_id)` also takes a SharePoint/OneDrive URL (a file's webUrl, a
+sharing link, or the `contentUrl` of a chat attachment) and resolves it through the Graph
+shares API; the default target is `documents/m365_downloads/` in the Vault. A Teams attachment
+id is not a drive item id. In Hermes a Teams link or SharePoint URL in the user's message loads
+the matching tools before the first model call (`agent/deferred_tools.autoload_for_message`),
+and the Teams guidance block is built from the reachable tools even while they are deferred
+behind `tool_search` (AIS-289). MCP results are shaped before the model sees them — see
+`mcp_results` in `cli-config.yaml.example`.
+
+### Local index, contacts, signature and per-contact style (AIS-289)
+
+The server keeps a small SQLite index under `HERMES_HOME/state/m365_index.sqlite` (FTS5 when
+available; `M365_INDEX_DISABLED=1` turns it off, `M365_INDEX_PATH` relocates it). It stores
+metadata and 300-character snippets only — chats (members, topic, last preview), chat messages
+(sender, time, snippet, file names), mails (from/to, subject, snippet, attachment names) and
+contacts (email, Teams user id, 1:1 chat id, learned aliases, style profiles). The list/find
+tools fill it as a side effect; `m365_index_refresh(scope=all|chats|mail|contacts, days, max_items)`
+fills it explicitly. `m365_index_search(query, kind)` answers vague references ("the chat about
+the move plan", "the mail from Martin about the offer") with ids and a `next` hint;
+`m365_find_contact(query)` resolves names, nicknames and aliases without directory rights.
+Aliases are learned when a nickname resolves a chat (`m365_find_chat("Fischi")`) and from the
+greeting names the user writes in mail.
+
+`m365_get_my_signature(sample)` detects the user's closing and signature block as the trailing
+lines most sent mails share (quoted history removed) and returns `closing`, `signature_lines`,
+`signature_html`, `coverage` and `confidence`; the agent saves it once as the memory note
+"Outlook: email signature". `m365_get_mail_style(to)` derives the register the user actually
+uses with one correspondent (greeting line and name, du/Sie, closing, length, language, how the
+person addresses the user) from sent and received mail with the signature stripped, stores it
+on the contact and is meant to be persisted as "Mail style with <Name>"; `m365_get_chat_style`
+does the same for Teams and stores its profile on the contact too.
+
 ## Related
 
 - The Messaging *Outlook* connector (`tools/microsoft_graph_auth.py`) is a **different**

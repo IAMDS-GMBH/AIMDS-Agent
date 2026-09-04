@@ -1630,6 +1630,23 @@ DEFAULT_CONFIG = {
         "mcp_records_per_tool_max_rows": 6000,
     },
 
+    # Shaping of MCP tool results before they reach the model (AIS-289):
+    # noise keys and empty values are dropped, item lists and long strings
+    # are capped, keys are sorted so an identical answer is a byte-identical
+    # tool result (prompt-cache prefix). Full rows stay in mcp_records.
+    # per_server keys are server names (mcp_servers.<name>), per_tool keys
+    # are registered tool names or bare suffixes; both accept the same
+    # knobs (enabled, max_items, max_string_chars, max_depth, drop_keys).
+    "mcp_results": {
+        "enabled": True,
+        "max_items": 25,
+        "max_string_chars": 1200,
+        "max_depth": 6,
+        "drop_keys": ["@odata.*", "etag", "changeKey", "@removed"],
+        "per_server": {},
+        "per_tool": {},
+    },
+
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {

@@ -1206,6 +1206,10 @@ def m365_list_emails(
         for msg in res["value"]:
             if isinstance(msg, dict):
                 _enrich_timestamps(msg)
+        try:
+            _index_record_mails(res["value"], folder=folder_segment, me=_my_identity_cached(account))
+        except Exception:
+            pass
     return res
 
 
@@ -1230,6 +1234,10 @@ def m365_get_email(message_id: str, account: Optional[str] = None) -> Dict[str, 
                 ]
             except Exception as e:
                 msg["attachments_summary_error"] = str(e)
+        try:
+            _index_record_mails([msg], me=_my_identity_cached(account))
+        except Exception:
+            pass
     return msg
 
 
@@ -1902,6 +1910,10 @@ def _fetch_my_chats(top: int = 50, pages: int = 2, account: Optional[str] = None
                 c["members"] = members_res.get("value", []) if isinstance(members_res, dict) else []
             except Exception:
                 c["members"] = []
+    try:
+        _index_record_chats(chats, me=_my_identity_cached(account))
+    except Exception:
+        pass
     return chats
 
 
@@ -1996,9 +2008,18 @@ def _resolve_teams_recipient(query: str, prefer: str = "any", top: int = 25, acc
         prefer_norm = "any"
     me = _my_identity(account=account)
     chats = _fetch_my_chats(top=50, pages=2, account=account)
+    # A learned alias ("Fischi" → Michael Fischerauer) scores as the full name.
+    alias_hit: Optional[Dict[str, Any]] = None
+    scoring_query = query
+    try:
+        alias_hit = _index_alias_lookup(query)
+        if alias_hit and (alias_hit.get("email") or alias_hit.get("display_name")):
+            scoring_query = alias_hit.get("email") or alias_hit.get("display_name")
+    except Exception:
+        alias_hit = None
     scored: List[Tuple[int, str, str, Dict[str, Any]]] = []
     for chat in chats:
-        score, reason, key = _score_chat_candidate(chat, query, me, prefer_norm)
+        score, reason, key = _score_chat_candidate(chat, scoring_query, me, prefer_norm)
         if score > 0:
             scored.append((score, reason, key, chat))
     # Highest score first; on ties the most recently active chat wins.
@@ -2036,9 +2057,34 @@ def _resolve_teams_recipient(query: str, prefer: str = "any", top: int = 25, acc
         "candidates": candidates,
         "chats_scanned": len(chats),
     }
+    if alias_hit:
+        result["alias_used"] = {"query": query, "resolved_as": scoring_query}
     if resolution == "unique":
         result["chat_id"] = candidates[0]["chat_id"]
         result["next_step"] = "Send with m365_send_chat_message(chat_id=...) or pass the same `to` and let it resolve."
+        # Learn the nickname: a query that resolved but is not part of the
+        # member's name/email becomes an alias of that contact.
+        try:
+            top = candidates[0]
+            others = [m for m in (top.get("members") or []) if not _is_me_contact(m.get("email"), m.get("user_id"), me)]
+            if len(others) == 1 and not alias_hit:
+                member = others[0]
+                q_norm = _norm_name(query)
+                haystack = f"{_norm_name(member.get('displayName'))} {str(member.get('email') or '').lower()}"
+                conn = _index_conn()
+                if conn is not None:
+                    try:
+                        with conn:
+                            _index_record_contact(
+                                conn, email=member.get("email"), user_id=member.get("user_id"),
+                                display_name=member.get("displayName"), source="teams",
+                                chat_id_1on1=top["chat_id"] if top.get("chat_type") == "oneOnOne" else None,
+                                alias=query if q_norm and "@" not in q_norm and q_norm not in haystack else None,
+                            )
+                    finally:
+                        conn.close()
+        except Exception:
+            pass
     elif resolution == "ambiguous":
         result["next_step"] = (
             "Several chats match. Show the candidates (members, topic, last message) to the user and "
@@ -2396,16 +2442,44 @@ def m365_get_drive_file(file_id: str) -> Dict[str, Any]:
     return res
 
 
+def _share_token(url: str) -> str:
+    """Encode a sharing/web URL for the Graph shares API (``/shares/u!<token>``)."""
+    b64 = base64.urlsafe_b64encode(url.encode("utf-8")).decode("utf-8").rstrip("=")
+    return f"u!{b64}"
+
+
 @mcp.tool()
 def m365_download_drive_file(
     file_id: str,
     save_path: Optional[str] = None,
     account: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Download a file from OneDrive or SharePoint to the local file system."""
-    meta = _graph_request("GET", f"/me/drive/items/{file_id}", account=account)
-    name = meta.get("name") or f"drive_file_{file_id}"
-    content_bytes = _graph_download_bytes(f"/me/drive/items/{file_id}/content", account=account)
+    """Download a file from OneDrive or SharePoint into the Vault (documents/m365_downloads/).
+
+    ``file_id`` is a drive item id OR a SharePoint/OneDrive URL (a file's
+    webUrl, a sharing link, or the contentUrl of a Teams chat attachment) —
+    URLs are resolved through the Graph shares API, so files in another
+    person's OneDrive work as long as they were shared with you. A Teams
+    attachment id is neither. For the files posted in a Teams chat prefer
+    ``m365_download_chat_files``. Returns ``saved_path``.
+    """
+    ident = (file_id or "").strip()
+    if not ident:
+        return {"error": "file_id is required: a drive item id or a SharePoint/OneDrive URL"}
+    is_url = ident.lower().startswith(("http://", "https://"))
+    if is_url:
+        base = f"/shares/{_share_token(ident)}/driveItem"
+        source = "url"
+    else:
+        base = f"/me/drive/items/{ident}"
+        source = "item_id"
+    meta = _graph_request("GET", base, account=account)
+    if isinstance(meta, dict) and meta.get("error"):
+        return meta
+    name = (meta.get("name") if isinstance(meta, dict) else None) or (
+        _re.sub(r"[?#].*$", "", ident).rsplit("/", 1)[-1] if is_url else f"drive_file_{ident}"
+    )
+    content_bytes = _graph_download_bytes(f"{base}/content", account=account)
 
     if not save_path:
         out_file = _resolve_save_path(None, name, subfolder="documents/m365_downloads")
@@ -2416,7 +2490,8 @@ def m365_download_drive_file(
     out_file.write_bytes(content_bytes)
     return {
         "success": True,
-        "file_id": file_id,
+        "file_id": (meta.get("id") if isinstance(meta, dict) else None) or ident,
+        "source": source,
         "name": name,
         "size_bytes": len(content_bytes),
         "saved_path": str(out_file),
@@ -2556,7 +2631,13 @@ def m365_list_contacts(top: int = 20, search: Optional[str] = None) -> Dict[str,
     params = {"$top": min(top, 50)}
     if search:
         params["$search"] = f'"{search}"'
-    return _graph_request("GET", "/me/contacts", params=params)
+    res = _graph_request("GET", "/me/contacts", params=params)
+    if isinstance(res, dict) and isinstance(res.get("value"), list):
+        try:
+            _index_record_graph_contacts(res["value"], source="contacts")
+        except Exception:
+            pass
+    return res
 
 
 @mcp.tool()
@@ -2628,6 +2709,10 @@ def m365_list_chat_messages(chat_id: str, top: int = 10, raw: bool = False) -> D
     res = _graph_request("GET", f"/me/chats/{chat_id}/messages", params=params)
     if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
         res["value"] = [_enrich_teams_message(msg, chat_id=chat_id) for msg in res["value"]]
+        try:
+            _index_record_chat_messages(chat_id, res["value"])
+        except Exception:
+            pass
     if raw or not isinstance(res, dict):
         return res
     messages = [_compact_message(m) for m in (res.get("value") or []) if isinstance(m, dict)]
@@ -2776,8 +2861,13 @@ def m365_get_chat_style(
     me = _my_identity(account=account)
     res = _graph_request("GET", f"/me/chats/{target}/messages", params={"$top": min(max(int(sample), 1), 50)}, account=account)
     raw_messages = (res.get("value") or []) if isinstance(res, dict) else []
+    try:
+        _index_record_chat_messages(target, raw_messages)
+    except Exception:
+        pass
     mine: List[str] = []
     theirs = 0
+    other_sender: Dict[str, str] = {}
     for msg in raw_messages:
         if not isinstance(msg, dict) or (msg.get("messageType") or "message") != "message":
             continue
@@ -2792,12 +2882,32 @@ def m365_get_chat_style(
             mine.append(compact["text"])
         else:
             theirs += 1
+            if not other_sender and user.get("id"):
+                other_sender = {"user_id": str(user.get("id")), "displayName": str(user.get("displayName") or "")}
     style = _derive_chat_style(mine)
     style["chat_id"] = target
     style["their_messages_seen"] = theirs
     style["examples"] = [_truncate(t, 200) for t in mine[:3]]
     if recipient:
         style["recipient"] = {k: recipient.get(k) for k in ("chat_type", "topic", "members", "match_reason")}
+    # Remember the register on the contact (m365_find_contact) — 1:1 chats only.
+    try:
+        others = [m for m in ((recipient or {}).get("members") or []) if not _is_me_contact(m.get("email"), m.get("user_id"), me)]
+        target_member = others[0] if len(others) == 1 else (other_sender if other_sender and (recipient or {}).get("chat_type", "oneOnOne") == "oneOnOne" else None)
+        if target_member and style.get("profile"):
+            conn = _index_conn()
+            if conn is not None:
+                try:
+                    with conn:
+                        _index_record_contact(
+                            conn, email=target_member.get("email"), user_id=target_member.get("user_id"),
+                            display_name=target_member.get("displayName"), source="teams", chat_id_1on1=target,
+                            style_teams=style["profile"], interaction=False,
+                        )
+                finally:
+                    conn.close()
+    except Exception:
+        pass
     style["how_to_use"] = (
         "Draft in this register. If profile is null, use defaults. Persist the profile as a person "
         "memory note titled 'Teams style with <Name>' (tag teams-style) so it is not re-derived."
@@ -3017,7 +3127,7 @@ def m365_download_chat_files(
     save_dir: Optional[str] = None,
     account: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Find the files shared in a Teams chat and download them into the Vault.
+    """Download the files shared in a Teams chat (chat link, chat id or person) into the Vault.
 
     Scans the last ``last`` messages of the chat for file attachments (Word,
     PDF, Excel, … shared via OneDrive/SharePoint) and, optionally, inline
@@ -3544,6 +3654,1128 @@ def m365_create_todo_task(
 def m365_get_mailbox_settings() -> Dict[str, Any]:
     """Get Outlook mailbox settings including Out-Of-Office / Automatic Reply status, working hours, and language."""
     return _graph_request("GET", "/me/mailboxSettings")
+
+
+
+# ---------------------------------------------------------------------------
+# Local M365 index (AIS-289): chats, chat messages, mails and contacts as
+# metadata + short snippets, filled as a side effect of the tools above and by
+# an explicit refresh, searchable for vague requests ("the chat about the
+# move plan", "the mail from X about Y"). SQLite with FTS5 when available,
+# under HERMES_HOME/state/m365_index.sqlite. Nothing here may break a tool
+# call: every entry point swallows its own errors.
+# ---------------------------------------------------------------------------
+import datetime as _dt
+import sqlite3 as _sqlite3
+
+_INDEX_SNIPPET_CHARS = 300
+_INDEX_MAX_ALIASES = 8
+_INDEX_SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS contacts (
+        key TEXT PRIMARY KEY,
+        email TEXT,
+        user_id TEXT,
+        display_name TEXT,
+        first_name TEXT,
+        last_name TEXT,
+        aliases TEXT NOT NULL DEFAULT '[]',
+        sources TEXT NOT NULL DEFAULT '[]',
+        chat_id_1on1 TEXT,
+        interactions INTEGER NOT NULL DEFAULT 0,
+        last_seen TEXT,
+        style_teams TEXT,
+        style_mail TEXT,
+        updated_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS chats (
+        chat_id TEXT PRIMARY KEY,
+        chat_type TEXT,
+        topic TEXT,
+        members TEXT NOT NULL DEFAULT '[]',
+        last_from TEXT,
+        last_at TEXT,
+        preview TEXT,
+        web_url TEXT,
+        updated_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS chat_messages (
+        message_id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        from_name TEXT,
+        from_id TEXT,
+        at TEXT,
+        snippet TEXT,
+        has_files INTEGER NOT NULL DEFAULT 0,
+        file_names TEXT NOT NULL DEFAULT '[]',
+        updated_at TEXT NOT NULL
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_chat_messages_chat ON chat_messages(chat_id, at)""",
+    """CREATE TABLE IF NOT EXISTS mails (
+        message_id TEXT PRIMARY KEY,
+        folder TEXT,
+        from_name TEXT,
+        from_email TEXT,
+        to_emails TEXT NOT NULL DEFAULT '[]',
+        subject TEXT,
+        received_at TEXT,
+        snippet TEXT,
+        has_attachments INTEGER NOT NULL DEFAULT 0,
+        attachment_names TEXT NOT NULL DEFAULT '[]',
+        conversation_id TEXT,
+        web_link TEXT,
+        updated_at TEXT NOT NULL
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_mails_from ON mails(from_email, received_at)""",
+    """CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+)
+_INDEX_FTS_SCHEMA = (
+    "CREATE VIRTUAL TABLE IF NOT EXISTS index_fts USING fts5("
+    "kind UNINDEXED, ref_id UNINDEXED, title, body, tokenize='unicode61 remove_diacritics 2')"
+)
+_INDEX_FTS_STATE: Dict[str, Optional[bool]] = {"available": None}
+
+
+def _index_enabled() -> bool:
+    return str(os.environ.get("M365_INDEX_DISABLED", "")).strip().lower() not in ("1", "true", "yes", "on")
+
+
+def _index_path() -> Path:
+    override = os.environ.get("M365_INDEX_PATH")
+    if override:
+        return Path(override).expanduser()
+    hermes_home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    return Path(hermes_home) / "state" / "m365_index.sqlite"
+
+
+def _index_now() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _index_conn() -> Optional["_sqlite3.Connection"]:
+    """Open (and initialise) the index; None when disabled or unusable."""
+    if not _index_enabled():
+        return None
+    try:
+        path = _index_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = _sqlite3.connect(str(path), timeout=5)
+        conn.row_factory = _sqlite3.Row
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except _sqlite3.DatabaseError:
+            pass
+        for stmt in _INDEX_SCHEMA:
+            conn.execute(stmt)
+        if _INDEX_FTS_STATE["available"] is None:
+            try:
+                conn.execute(_INDEX_FTS_SCHEMA)
+                _INDEX_FTS_STATE["available"] = True
+            except _sqlite3.DatabaseError:
+                _INDEX_FTS_STATE["available"] = False
+        elif _INDEX_FTS_STATE["available"]:
+            conn.execute(_INDEX_FTS_SCHEMA)
+        conn.commit()
+        return conn
+    except Exception:
+        return None
+
+
+def _index_fts_upsert(conn, kind: str, ref_id: str, title: str, body: str) -> None:
+    if not _INDEX_FTS_STATE.get("available"):
+        return
+    conn.execute("DELETE FROM index_fts WHERE kind = ? AND ref_id = ?", (kind, ref_id))
+    conn.execute(
+        "INSERT INTO index_fts (kind, ref_id, title, body) VALUES (?, ?, ?, ?)",
+        (kind, ref_id, title or "", body or ""),
+    )
+
+
+def _index_json(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return "[]"
+
+
+def _index_loads(value: Any, default: Any) -> Any:
+    try:
+        out = json.loads(value) if value else default
+        return out if out is not None else default
+    except Exception:
+        return default
+
+
+def _contact_key(email: Optional[str], user_id: Optional[str]) -> str:
+    email_norm = str(email or "").strip().lower()
+    if email_norm and "@" in email_norm:
+        return email_norm
+    uid = str(user_id or "").strip().lower()
+    return f"id:{uid}" if uid else ""
+
+
+def _split_name(display_name: str) -> Tuple[str, str]:
+    parts = [p for p in _re.split(r"\s+", str(display_name or "").strip()) if p]
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return parts[0], ""
+    if "," in parts[0]:  # "Huchler, Johannes"
+        return parts[-1].strip(", "), parts[0].strip(", ")
+    return parts[0], parts[-1]
+
+
+def _my_identity_cached(account: Optional[str] = None) -> Optional[Dict[str, str]]:
+    """The signed-in identity if already known — hooks must not add Graph calls."""
+    cached = _MY_IDENTITY_CACHE.get((account or "").strip().lower())
+    return cached[0] if cached else None
+
+
+def _is_me_contact(email: Optional[str], user_id: Optional[str], me: Optional[Dict[str, str]]) -> bool:
+    if not me:
+        return False
+    if user_id and str(user_id).lower() == str(me.get("id") or "").lower():
+        return True
+    if email and str(email).lower() == str(me.get("upn") or "").lower():
+        return True
+    return False
+
+
+def _index_record_contact(
+    conn,
+    *,
+    email: Optional[str] = None,
+    user_id: Optional[str] = None,
+    display_name: Optional[str] = None,
+    source: str = "",
+    chat_id_1on1: Optional[str] = None,
+    alias: Optional[str] = None,
+    seen_at: Optional[str] = None,
+    style_teams: Optional[Dict[str, Any]] = None,
+    style_mail: Optional[Dict[str, Any]] = None,
+    interaction: bool = True,
+) -> Optional[str]:
+    key = _contact_key(email, user_id)
+    if not key:
+        return None
+    now = _index_now()
+    row = conn.execute("SELECT * FROM contacts WHERE key = ?", (key,)).fetchone()
+    aliases = _index_loads(row["aliases"], []) if row else []
+    sources = _index_loads(row["sources"], []) if row else []
+    name = str(display_name or (row["display_name"] if row else "") or "").strip()
+    first, last = _split_name(name)
+    if alias:
+        alias_norm = str(alias).strip()
+        if alias_norm and alias_norm.lower() not in {a.lower() for a in aliases} and alias_norm.lower() not in (first.lower(), name.lower()):
+            aliases = (aliases + [alias_norm])[-_INDEX_MAX_ALIASES:]
+    if source and source not in sources:
+        sources.append(source)
+    values = {
+        "key": key,
+        "email": str(email or (row["email"] if row else "") or "").strip().lower() or None,
+        "user_id": str(user_id or (row["user_id"] if row else "") or "").strip() or None,
+        "display_name": name or None,
+        "first_name": first or None,
+        "last_name": last or None,
+        "aliases": _index_json(aliases),
+        "sources": _index_json(sources),
+        "chat_id_1on1": chat_id_1on1 or (row["chat_id_1on1"] if row else None),
+        "interactions": (int(row["interactions"]) if row else 0) + (1 if interaction else 0),
+        "last_seen": max(str(seen_at or ""), str(row["last_seen"] or "")) if row else (seen_at or None),
+        "style_teams": _index_json(style_teams) if style_teams is not None else (row["style_teams"] if row else None),
+        "style_mail": _index_json(style_mail) if style_mail is not None else (row["style_mail"] if row else None),
+        "updated_at": now,
+    }
+    conn.execute(
+        """INSERT INTO contacts (key, email, user_id, display_name, first_name, last_name, aliases, sources,
+               chat_id_1on1, interactions, last_seen, style_teams, style_mail, updated_at)
+           VALUES (:key, :email, :user_id, :display_name, :first_name, :last_name, :aliases, :sources,
+               :chat_id_1on1, :interactions, :last_seen, :style_teams, :style_mail, :updated_at)
+           ON CONFLICT(key) DO UPDATE SET
+               email = COALESCE(excluded.email, contacts.email),
+               user_id = COALESCE(excluded.user_id, contacts.user_id),
+               display_name = COALESCE(excluded.display_name, contacts.display_name),
+               first_name = COALESCE(excluded.first_name, contacts.first_name),
+               last_name = COALESCE(excluded.last_name, contacts.last_name),
+               aliases = excluded.aliases, sources = excluded.sources,
+               chat_id_1on1 = COALESCE(excluded.chat_id_1on1, contacts.chat_id_1on1),
+               interactions = excluded.interactions,
+               last_seen = COALESCE(excluded.last_seen, contacts.last_seen),
+               style_teams = COALESCE(excluded.style_teams, contacts.style_teams),
+               style_mail = COALESCE(excluded.style_mail, contacts.style_mail),
+               updated_at = excluded.updated_at""",
+        values,
+    )
+    _index_fts_upsert(conn, "contact", key, name, " ".join(filter(None, [values["email"] or "", first, last, " ".join(aliases)])))
+    return key
+
+
+def _index_record_chats(chats: List[Dict[str, Any]], me: Optional[Dict[str, str]] = None) -> int:
+    """Chats (members, topic, last preview) + their members as contacts."""
+    conn = _index_conn()
+    if conn is None:
+        return 0
+    count = 0
+    try:
+        with conn:
+            for chat in chats or []:
+                compact = _compact_chat(chat)
+                chat_id = compact.get("chat_id")
+                if not chat_id:
+                    continue
+                members = compact.get("members") or []
+                last = compact.get("last_message") or {}
+                member_names = ", ".join(m.get("displayName") or m.get("email") or "" for m in members)
+                conn.execute(
+                    """INSERT INTO chats (chat_id, chat_type, topic, members, last_from, last_at, preview, web_url, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(chat_id) DO UPDATE SET chat_type = excluded.chat_type, topic = excluded.topic,
+                           members = excluded.members, last_from = excluded.last_from, last_at = excluded.last_at,
+                           preview = excluded.preview, web_url = excluded.web_url, updated_at = excluded.updated_at""",
+                    (
+                        chat_id, compact.get("chat_type") or "", compact.get("topic") or "",
+                        _index_json([{"displayName": m.get("displayName"), "email": m.get("email"), "user_id": m.get("user_id")} for m in members]),
+                        last.get("from") or "", str(chat.get("lastUpdatedDateTime") or ""), _truncate(last.get("preview") or "", _INDEX_SNIPPET_CHARS),
+                        compact.get("web_url") or "", _index_now(),
+                    ),
+                )
+                _index_fts_upsert(conn, "chat", chat_id, compact.get("topic") or member_names, f"{member_names} {last.get('preview') or ''}")
+                others = [m for m in members if not _is_me_contact(m.get("email"), m.get("user_id"), me)]
+                for m in others:
+                    _index_record_contact(
+                        conn, email=m.get("email"), user_id=m.get("user_id"), display_name=m.get("displayName"),
+                        source="teams", chat_id_1on1=chat_id if compact.get("chat_type") == "oneOnOne" and len(others) == 1 else None,
+                        seen_at=str(chat.get("lastUpdatedDateTime") or ""), interaction=False,
+                    )
+                count += 1
+    except Exception:
+        return count
+    finally:
+        conn.close()
+    return count
+
+
+def _index_record_chat_messages(chat_id: str, raw_messages: List[Dict[str, Any]]) -> int:
+    conn = _index_conn()
+    if conn is None or not chat_id:
+        return 0
+    count = 0
+    try:
+        with conn:
+            for msg in raw_messages or []:
+                if not isinstance(msg, dict) or (msg.get("messageType") or "message") != "message":
+                    continue
+                compact = _compact_message(msg)
+                mid = compact.get("id")
+                if not mid:
+                    continue
+                files = [a.get("name") for a in (msg.get("attachments_summary") or []) if isinstance(a, dict) and a.get("name")]
+                if not files:
+                    files = [a.get("name") for a in (msg.get("attachments") or []) if isinstance(a, dict) and a.get("name")]
+                snippet = _truncate(compact.get("text") or "", _INDEX_SNIPPET_CHARS)
+                conn.execute(
+                    """INSERT INTO chat_messages (message_id, chat_id, from_name, from_id, at, snippet, has_files, file_names, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(message_id) DO UPDATE SET snippet = excluded.snippet, has_files = excluded.has_files,
+                           file_names = excluded.file_names, updated_at = excluded.updated_at""",
+                    (mid, chat_id, compact.get("from") or "", compact.get("from_user_id") or "", str(msg.get("createdDateTime") or ""),
+                     snippet, 1 if files else 0, _index_json(files), _index_now()),
+                )
+                _index_fts_upsert(conn, "chat_message", mid, compact.get("from") or "", f"{snippet} {' '.join(files)}")
+                count += 1
+    except Exception:
+        return count
+    finally:
+        conn.close()
+    return count
+
+
+def _mail_address(entry: Any) -> Tuple[str, str]:
+    if not isinstance(entry, dict):
+        return "", ""
+    ea = entry.get("emailAddress") or entry
+    return str(ea.get("name") or ""), str(ea.get("address") or "").lower()
+
+
+def _index_record_mails(messages: List[Dict[str, Any]], folder: str = "", me: Optional[Dict[str, str]] = None) -> int:
+    conn = _index_conn()
+    if conn is None:
+        return 0
+    count = 0
+    try:
+        with conn:
+            for msg in messages or []:
+                if not isinstance(msg, dict) or not msg.get("id"):
+                    continue
+                from_name, from_email = _mail_address(msg.get("from") or msg.get("sender"))
+                tos = [_mail_address(r) for r in (msg.get("toRecipients") or []) if isinstance(r, dict)]
+                subject = str(msg.get("subject") or "")
+                preview = msg.get("bodyPreview")
+                if not preview and isinstance(msg.get("body"), dict):
+                    preview = _html_to_text(msg["body"].get("content"))
+                snippet = _truncate(str(preview or "").strip(), _INDEX_SNIPPET_CHARS)
+                att_names = [a.get("name") for a in (msg.get("attachments_summary") or []) if isinstance(a, dict) and a.get("name")]
+                received = str(msg.get("receivedDateTime") or msg.get("sentDateTime") or "")
+                conn.execute(
+                    """INSERT INTO mails (message_id, folder, from_name, from_email, to_emails, subject, received_at, snippet,
+                           has_attachments, attachment_names, conversation_id, web_link, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(message_id) DO UPDATE SET folder = COALESCE(NULLIF(excluded.folder, ''), mails.folder),
+                           snippet = CASE WHEN length(excluded.snippet) > length(mails.snippet) THEN excluded.snippet ELSE mails.snippet END,
+                           has_attachments = excluded.has_attachments,
+                           attachment_names = CASE WHEN excluded.attachment_names != '[]' THEN excluded.attachment_names ELSE mails.attachment_names END,
+                           updated_at = excluded.updated_at""",
+                    (msg["id"], folder or "", from_name, from_email, _index_json([{"name": n, "address": a} for n, a in tos]), subject,
+                     received, snippet, 1 if msg.get("hasAttachments") or att_names else 0, _index_json(att_names),
+                     str(msg.get("conversationId") or ""), str(msg.get("webLink") or ""), _index_now()),
+                )
+                _index_fts_upsert(conn, "mail", msg["id"], subject, f"{from_name} {from_email} {' '.join(n or a for n, a in tos)} {snippet} {' '.join(att_names)}")
+                for name, addr in ([(from_name, from_email)] + tos):
+                    if addr and not _is_me_contact(addr, None, me):
+                        _index_record_contact(conn, email=addr, display_name=name, source="mail", seen_at=received)
+                count += 1
+    except Exception:
+        return count
+    finally:
+        conn.close()
+    return count
+
+
+def _index_record_graph_contacts(entries: List[Dict[str, Any]], source: str = "contacts") -> int:
+    conn = _index_conn()
+    if conn is None:
+        return 0
+    count = 0
+    try:
+        with conn:
+            for c in entries or []:
+                if not isinstance(c, dict):
+                    continue
+                emails = [e.get("address") for e in (c.get("emailAddresses") or []) if isinstance(e, dict) and e.get("address")]
+                email = emails[0] if emails else (c.get("mail") or c.get("userPrincipalName"))
+                name = c.get("displayName") or " ".join(filter(None, [c.get("givenName"), c.get("surname")]))
+                if not email and not c.get("id"):
+                    continue
+                key = _index_record_contact(
+                    conn, email=email, user_id=c.get("id") if not emails else None, display_name=name,
+                    source=source, alias=c.get("nickName"), interaction=False,
+                )
+                if key:
+                    count += 1
+    except Exception:
+        return count
+    finally:
+        conn.close()
+    return count
+
+
+def _index_get_setting(key: str) -> Optional[Any]:
+    conn = _index_conn()
+    if conn is None:
+        return None
+    try:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return _index_loads(row["value"], None) if row else None
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
+def _index_set_setting(key: str, value: Any) -> None:
+    conn = _index_conn()
+    if conn is None:
+        return
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                (key, _index_json(value), _index_now()),
+            )
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+def _contact_row_to_dict(row) -> Dict[str, Any]:
+    return {
+        "key": row["key"],
+        "email": row["email"] or "",
+        "user_id": row["user_id"] or "",
+        "display_name": row["display_name"] or "",
+        "first_name": row["first_name"] or "",
+        "last_name": row["last_name"] or "",
+        "aliases": _index_loads(row["aliases"], []),
+        "sources": _index_loads(row["sources"], []),
+        "chat_id_1on1": row["chat_id_1on1"] or "",
+        "interactions": int(row["interactions"] or 0),
+        "last_seen": row["last_seen"] or "",
+        "style_teams": _index_loads(row["style_teams"], None),
+        "style_mail": _index_loads(row["style_mail"], None),
+    }
+
+
+def _index_find_contacts(query: str, limit: int = 5) -> List[Dict[str, Any]]:
+    """Contacts by exact email, alias, name or prefix — no Graph call."""
+    q = _norm_name(query)
+    if not q:
+        return []
+    conn = _index_conn()
+    if conn is None:
+        return []
+    try:
+        rows = conn.execute("SELECT * FROM contacts").fetchall()
+    except Exception:
+        return []
+    finally:
+        conn.close()
+    scored: List[Tuple[int, Dict[str, Any]]] = []
+    q_tokens = q.split()
+    for row in rows:
+        c = _contact_row_to_dict(row)
+        email = (c["email"] or "").lower()
+        name = _norm_name(c["display_name"])
+        first, last = _norm_name(c["first_name"]), _norm_name(c["last_name"])
+        aliases = [_norm_name(a) for a in c["aliases"]]
+        score = 0
+        if q == email:
+            score = 100
+        elif q == name:
+            score = 90
+        elif q in aliases:
+            score = 85
+        elif email and q == email.split("@")[0]:
+            score = 80
+        elif len(q_tokens) >= 2 and all(t in name.split() for t in q_tokens):
+            score = 75
+        elif q == first or q == last:
+            score = 60
+        elif any(a.startswith(q) for a in aliases) or (first and first.startswith(q) and len(q) >= 3) or (last and last.startswith(q) and len(q) >= 3):
+            score = 45
+        elif q in name or q in email:
+            score = 30
+        if score:
+            scored.append((score * 1000 + c["interactions"], c))
+    scored.sort(key=lambda item: -item[0])
+    out = []
+    for s, c in scored[: max(1, limit)]:
+        c["score"] = s // 1000
+        out.append(c)
+    return out
+
+
+def _index_alias_lookup(query: str) -> Optional[Dict[str, Any]]:
+    """A contact whose learned alias/nickname equals the query."""
+    q = _norm_name(query)
+    if not q:
+        return None
+    for c in _index_find_contacts(q, limit=3):
+        if c.get("score", 0) >= 85 and q in [_norm_name(a) for a in c.get("aliases", [])]:
+            return c
+    return None
+
+
+def _fts_query(text: str) -> str:
+    tokens = [t for t in _re.findall(r"[\wäöüÄÖÜß@.\-]+", text or "") if len(t) >= 2]
+    tokens = [t.strip(".-") for t in tokens]
+    tokens = [t for t in tokens if t and t.lower() not in _DE_STOPWORDS | _EN_STOPWORDS]
+    if not tokens:
+        return ""
+    return " OR ".join('"' + t.replace('"', "") + '"*' for t in tokens[:12])
+
+
+def _index_search(query: str, kind: str = "any", limit: int = 10) -> List[Dict[str, Any]]:
+    conn = _index_conn()
+    if conn is None:
+        return []
+    kinds = {"any": None, "chat": "chat", "chats": "chat", "chat_message": "chat_message", "message": "chat_message",
+             "messages": "chat_message", "mail": "mail", "mails": "mail", "email": "mail", "contact": "contact", "contacts": "contact"}
+    kind_filter = kinds.get((kind or "any").strip().lower(), None)
+    hits: List[Tuple[float, str, str]] = []
+    try:
+        if _INDEX_FTS_STATE.get("available"):
+            match = _fts_query(query)
+            if match:
+                sql = "SELECT kind, ref_id, bm25(index_fts) AS score FROM index_fts WHERE index_fts MATCH ?"
+                args: List[Any] = [match]
+                if kind_filter:
+                    sql += " AND kind = ?"
+                    args.append(kind_filter)
+                sql += " ORDER BY score LIMIT ?"
+                args.append(max(1, int(limit)) * 2)
+                hits = [(float(r["score"]), r["kind"], r["ref_id"]) for r in conn.execute(sql, args).fetchall()]
+        if not hits:
+            like = f"%{query.strip()}%"
+            tables = {
+                "chat": "SELECT 'chat' AS kind, chat_id AS ref_id FROM chats WHERE topic LIKE ? OR members LIKE ? OR preview LIKE ?",
+                "chat_message": "SELECT 'chat_message', message_id FROM chat_messages WHERE snippet LIKE ? OR from_name LIKE ? OR file_names LIKE ?",
+                "mail": "SELECT 'mail', message_id FROM mails WHERE subject LIKE ? OR snippet LIKE ? OR from_name LIKE ?",
+                "contact": "SELECT 'contact', key FROM contacts WHERE display_name LIKE ? OR email LIKE ? OR aliases LIKE ?",
+            }
+            for k, sql in tables.items():
+                if kind_filter and k != kind_filter:
+                    continue
+                for r in conn.execute(sql + " LIMIT ?", (like, like, like, max(1, int(limit)))).fetchall():
+                    hits.append((0.0, r[0], r[1]))
+        out: List[Dict[str, Any]] = []
+        seen = set()
+        for score, k, ref in hits:
+            if (k, ref) in seen:
+                continue
+            seen.add((k, ref))
+            record = _index_hit_record(conn, k, ref)
+            if record:
+                record["score"] = round(-score, 3) if score else 0.0
+                out.append(record)
+            if len(out) >= max(1, int(limit)):
+                break
+        return out
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def _index_hit_record(conn, kind: str, ref_id: str) -> Optional[Dict[str, Any]]:
+    if kind == "chat":
+        r = conn.execute("SELECT * FROM chats WHERE chat_id = ?", (ref_id,)).fetchone()
+        if not r:
+            return None
+        return {"kind": "chat", "chat_id": r["chat_id"], "chat_type": r["chat_type"], "topic": r["topic"],
+                "members": [m.get("displayName") or m.get("email") for m in _index_loads(r["members"], [])],
+                "last_from": r["last_from"], "last_at": r["last_at"], "preview": r["preview"],
+                "next": "m365_list_chat_messages(chat_id) / m365_download_chat_files(chat_id) / m365_send_chat_message(chat_id)"}
+    if kind == "chat_message":
+        r = conn.execute("SELECT * FROM chat_messages WHERE message_id = ?", (ref_id,)).fetchone()
+        if not r:
+            return None
+        return {"kind": "chat_message", "chat_id": r["chat_id"], "message_id": r["message_id"], "from": r["from_name"],
+                "at": r["at"], "snippet": r["snippet"], "file_names": _index_loads(r["file_names"], []),
+                "next": "m365_download_chat_files(chat_id) for the files, m365_list_chat_messages(chat_id) for context"}
+    if kind == "mail":
+        r = conn.execute("SELECT * FROM mails WHERE message_id = ?", (ref_id,)).fetchone()
+        if not r:
+            return None
+        return {"kind": "mail", "message_id": r["message_id"], "folder": r["folder"], "from": r["from_name"] or r["from_email"],
+                "from_email": r["from_email"], "to": [t.get("address") for t in _index_loads(r["to_emails"], [])],
+                "subject": r["subject"], "received_at": r["received_at"], "snippet": r["snippet"],
+                "has_attachments": bool(r["has_attachments"]), "attachment_names": _index_loads(r["attachment_names"], []),
+                "next": "m365_get_email(message_id) / m365_download_email_attachments(message_id)"}
+    if kind == "contact":
+        r = conn.execute("SELECT * FROM contacts WHERE key = ?", (ref_id,)).fetchone()
+        if not r:
+            return None
+        c = _contact_row_to_dict(r)
+        c["kind"] = "contact"
+        c["next"] = "m365_send_chat_message(to=email) / m365_send_email(to=[email]); styles: m365_get_chat_style / m365_get_mail_style"
+        return c
+    return None
+
+
+def _index_counts() -> Dict[str, int]:
+    conn = _index_conn()
+    if conn is None:
+        return {}
+    try:
+        return {t: int(conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]) for t in ("chats", "chat_messages", "mails", "contacts")}
+    except Exception:
+        return {}
+    finally:
+        conn.close()
+
+
+@mcp.tool()
+def m365_index_search(query: str, kind: str = "any", limit: int = 10) -> Dict[str, Any]:
+    """Search the local index of Teams chats, chat messages, mails and contacts for a vague reference.
+
+    Use it when the user refers to something without an id or exact name —
+    "the chat about the move plan", "the mail from Martin about the offer",
+    "the person we call Fischi". The index holds metadata and short snippets
+    only (no full bodies) and is filled automatically by the list/find tools
+    and by m365_index_refresh. Every hit carries the ids and a `next` hint for
+    the tool that continues (read messages, download files, open the mail).
+
+    Args:
+        query: Free text — names, topics, subjects, file names, words from a message.
+        kind: "any" (default), "chat", "chat_message", "mail" or "contact".
+        limit: Max hits (capped at 50).
+    """
+    q = (query or "").strip()
+    if not q:
+        return {"error": "query is required", "index": _index_counts()}
+    hits = _index_search(q, kind=kind, limit=max(1, min(int(limit), 50)))
+    counts = _index_counts()
+    out: Dict[str, Any] = {"query": q, "kind": kind or "any", "count": len(hits), "hits": hits, "index": counts}
+    if not hits:
+        out["hint"] = (
+            "Nothing indexed matches. Run m365_index_refresh(scope='all') once to fill the index from the "
+            "last weeks, or use the live tools (m365_find_chat, m365_list_emails(search=...))."
+            if sum(counts.values()) < 20
+            else "No match in the index; try other words, or the live tools (m365_find_chat, m365_list_emails(search=...))."
+        )
+    return out
+
+
+@mcp.tool()
+def m365_index_refresh(
+    scope: str = "all",
+    days: int = 30,
+    max_items: int = 200,
+    account: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Fill or refresh the local index: recent chats + their last messages, recent mail (inbox + sent), contacts.
+
+    Metadata and 300-char snippets only, bounded by `days` and `max_items`
+    per source; safe to run repeatedly (upserts). Contacts are learned from
+    chat members, mail correspondents and the Outlook contact folder.
+
+    Args:
+        scope: "all" (default), "chats", "mail" or "contacts".
+        days: Look-back window for mail (1–365).
+        max_items: Cap per source (mail per folder, chat messages overall; ≤ 1000).
+        account: Optional M365 account username, email, or ID.
+    """
+    scope_norm = (scope or "all").strip().lower()
+    days = max(1, min(int(days), 365))
+    max_items = max(10, min(int(max_items), 1000))
+    if not _index_enabled():
+        return {"error": "The local index is disabled (M365_INDEX_DISABLED)."}
+    me = _my_identity(account=account)
+    result: Dict[str, Any] = {"scope": scope_norm, "days": days, "indexed": {}, "errors": []}
+    if scope_norm in ("all", "chats", "teams"):
+        try:
+            chats = _fetch_my_chats(top=50, pages=2, account=account)
+            result["indexed"]["chats"] = _index_record_chats(chats, me=me)
+            msg_total = 0
+            per_chat = 10
+            for chat in chats[: max(1, min(len(chats), max_items // per_chat))]:
+                cid = chat.get("id")
+                if not cid:
+                    continue
+                try:
+                    res = _graph_request("GET", f"/me/chats/{cid}/messages", params={"$top": per_chat}, account=account)
+                    msg_total += _index_record_chat_messages(cid, (res.get("value") or []) if isinstance(res, dict) else [])
+                except Exception as exc:
+                    result["errors"].append(f"chat {cid}: {exc}")
+                if msg_total >= max_items:
+                    break
+            result["indexed"]["chat_messages"] = msg_total
+        except Exception as exc:
+            result["errors"].append(f"chats: {exc}")
+    if scope_norm in ("all", "mail", "mails", "email"):
+        since = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for folder in ("inbox", "sentitems"):
+            total = 0
+            try:
+                params = {
+                    "$top": 50,
+                    "$select": "id,subject,from,toRecipients,receivedDateTime,sentDateTime,bodyPreview,hasAttachments,conversationId,webLink",
+                    "$filter": f"receivedDateTime ge {since}",
+                    "$orderby": "receivedDateTime desc",
+                }
+                res = _graph_request("GET", f"/me/mailFolders/{folder}/messages", params=params, account=account)
+                while isinstance(res, dict):
+                    batch = [m for m in (res.get("value") or []) if isinstance(m, dict)]
+                    total += _index_record_mails(batch, folder=folder, me=me)
+                    next_link = res.get("@odata.nextLink")
+                    if not next_link or total >= max_items:
+                        break
+                    res = _graph_request("GET", next_link, account=account)
+            except Exception as exc:
+                result["errors"].append(f"mail {folder}: {exc}")
+            result["indexed"][f"mail_{folder}"] = total
+    if scope_norm in ("all", "contacts", "people"):
+        total = 0
+        try:
+            res = _graph_request("GET", "/me/contacts", params={"$top": 100, "$select": "id,displayName,givenName,surname,nickName,emailAddresses"}, account=account)
+            pages = 0
+            while isinstance(res, dict) and pages < 5:
+                total += _index_record_graph_contacts([c for c in (res.get("value") or []) if isinstance(c, dict)], source="contacts")
+                next_link = res.get("@odata.nextLink")
+                pages += 1
+                if not next_link or total >= max_items:
+                    break
+                res = _graph_request("GET", next_link, account=account)
+        except Exception as exc:
+            result["errors"].append(f"contacts: {exc}")
+        result["indexed"]["contacts_folder"] = total
+    result["index"] = _index_counts()
+    result["how_to_use"] = "Search with m365_index_search(query, kind); resolve people with m365_find_contact(query)."
+    return result
+
+
+@mcp.tool()
+def m365_find_contact(query: str, limit: int = 5) -> Dict[str, Any]:
+    """Resolve a person from the local contact index: name, nickname/alias, email or prefix — no directory rights needed.
+
+    Returns email, Teams user id, the 1:1 chat id when known, the sources the
+    person was seen in (teams / mail / contacts) and the learned Teams and
+    mail style profiles. Aliases are learned automatically: a nickname that
+    resolved a chat (m365_find_chat "Fischi" → Fischerauer) and the first
+    name the user writes in mail greetings are stored on the contact.
+
+    Args:
+        query: Name, nickname, email or email prefix.
+        limit: Max candidates (≤ 20).
+    """
+    q = (query or "").strip()
+    if not q:
+        return {"error": "query is required"}
+    candidates = _index_find_contacts(q, limit=max(1, min(int(limit), 20)))
+    if not candidates:
+        resolution = "none"
+    elif len(candidates) == 1 or candidates[0]["score"] >= 85 or candidates[0]["score"] - candidates[1]["score"] >= 30:
+        resolution = "unique"
+    else:
+        resolution = "ambiguous"
+    out: Dict[str, Any] = {"query": q, "resolution": resolution, "candidates": candidates, "index": _index_counts()}
+    if resolution == "unique":
+        out["contact"] = candidates[0]
+    elif resolution == "none":
+        out["hint"] = "Not in the local index yet — try m365_find_chat(query) or m365_index_refresh(scope='contacts')."
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Own signature and per-contact mail style (AIS-289)
+# ---------------------------------------------------------------------------
+
+_QUOTE_HEADER_RE = _re.compile(
+    r"^(von:|from:|gesendet:|sent:|-----\s*(urspr(ü|ue)ngliche nachricht|original message)|am .{3,60} schrieb .*:?$|on .{3,80} wrote:?$|"
+    r"_{5,}|>\s)",
+    _re.IGNORECASE,
+)
+_CLOSING_LINE_RE = _re.compile(
+    r"^((viele|liebe|beste|sch(ö|oe)ne|herzliche|freundliche|sonnige)\s+gr(ü|ue)(ß|ss)e|mit (freundlichen|besten|herzlichen) gr(ü|ue)(ß|ss)en|"
+    r"vg|lg|bg|mfg|gru(ß|ss)|gr(ü|ue)(ß|ss)e|best regards|kind regards|warm regards|regards|best|cheers|thanks|thank you|many thanks|danke( dir| euch| ihnen)?( und )?( viele gr(ü|ue)(ß|ss)e)?)"
+    r"[\s!.,]*$",
+    _re.IGNORECASE,
+)
+_MAIL_GREETING_RE = _re.compile(
+    r"^(hi|hey|hallo|hello|moin moin|moin|servus|guten morgen|guten tag|guten abend|liebe|lieber|sehr geehrte|sehr geehrter|dear)"
+    r"\s*(herr|frau|mr\.?|mrs\.?|ms\.?|dr\.?)?\s*([A-ZÄÖÜ][\wäöüß\-]+)?",
+    _re.IGNORECASE,
+)
+_MAIL_REGISTER_DEFAULTS = {
+    "language": "match the recipient's language",
+    "greeting": "Hallo <first name>,",
+    "address": "du for colleagues, Sie for unknown external contacts",
+    "closing": "Viele Grüße",
+    "signature": "append the user's saved signature (m365_get_my_signature)",
+    "formality": "neutral",
+    "notes": "Mirror the register the user actually uses with this person; when nothing is known, stay short and neutral.",
+}
+
+
+def _strip_quoted_history(text: str) -> str:
+    """Cut a mail body at the first quoted-history marker (Von:/From:/On … wrote:)."""
+    lines = (text or "").split("\n")
+    kept: List[str] = []
+    for ln in lines:
+        s = ln.strip()
+        if s and _QUOTE_HEADER_RE.match(s):
+            break
+        kept.append(ln)
+    return "\n".join(kept).strip()
+
+
+def _mail_body_text(msg: Dict[str, Any]) -> str:
+    body = msg.get("body") if isinstance(msg, dict) else None
+    if isinstance(body, dict) and body.get("content"):
+        content = body.get("content")
+        text = _html_to_text(content) if str(body.get("contentType") or "html").lower() == "html" else str(content)
+    else:
+        text = str((msg or {}).get("bodyPreview") or "")
+    return _strip_quoted_history(text)
+
+
+def _tail_lines(text: str, max_lines: int = 12) -> List[str]:
+    lines = [ln.strip() for ln in (text or "").split("\n")]
+    lines = [ln for ln in lines if ln]
+    return lines[-max_lines:]
+
+
+def _norm_line(line: str) -> str:
+    return _re.sub(r"\s+", " ", (line or "").strip().lower())
+
+
+def _common_trailing_block(texts: List[str], min_share: float = 0.6, max_lines: int = 12) -> Tuple[List[str], float]:
+    """Longest trailing line sequence shared by ≥ ``min_share`` of the texts.
+
+    Returns ``(lines, share)`` using the original casing of the most recent
+    occurrence. Empty when nothing repeats — a signature is what the user
+    appends to *most* mails, not a phrase that appeared once.
+    """
+    tails = [_tail_lines(t, max_lines) for t in texts if t and t.strip()]
+    tails = [t for t in tails if t]
+    if len(tails) < 2:
+        return [], 0.0
+    best: List[str] = []
+    best_share = 0.0
+    for k in range(1, max_lines + 1):
+        counts: Dict[Tuple[str, ...], int] = {}
+        originals: Dict[Tuple[str, ...], List[str]] = {}
+        for tail in tails:
+            if len(tail) < k:
+                continue
+            suffix = tail[-k:]
+            key = tuple(_norm_line(ln) for ln in suffix)
+            counts[key] = counts.get(key, 0) + 1
+            originals.setdefault(key, suffix)
+        if not counts:
+            break
+        key, n = max(counts.items(), key=lambda kv: kv[1])
+        share = n / len(tails)
+        if share >= min_share:
+            best, best_share = list(originals[key]), share
+        else:
+            break
+    return best, best_share
+
+
+def _split_closing(lines: List[str]) -> Tuple[str, List[str]]:
+    """Separate the closing formula ("Viele Grüße") from the signature block."""
+    if not lines:
+        return "", []
+    for i, ln in enumerate(lines[:2]):
+        if _CLOSING_LINE_RE.match(ln.strip()):
+            return ln.strip(), lines[i + 1:]
+    return "", list(lines)
+
+
+def _strip_signature(text: str, signature_lines: List[str], closing: str = "") -> str:
+    """Remove the trailing signature (and closing) block from one mail text."""
+    if not text:
+        return ""
+    lines = [ln.rstrip() for ln in text.split("\n")]
+    norm_sig = [_norm_line(ln) for ln in signature_lines if ln.strip()]
+    if norm_sig:
+        non_empty = [(i, _norm_line(ln)) for i, ln in enumerate(lines) if ln.strip()]
+        k = len(norm_sig)
+        if len(non_empty) >= k and [n for _, n in non_empty[-k:]] == norm_sig:
+            cut = non_empty[-k][0]
+            lines = lines[:cut]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if closing and lines and _norm_line(lines[-1]) == _norm_line(closing):
+        lines.pop()
+    return "\n".join(lines).strip()
+
+
+@mcp.tool()
+def m365_get_my_signature(sample: int = 12, account: Optional[str] = None) -> Dict[str, Any]:
+    """Detect the user's own email signature and closing from recent sent mail (deterministic, no guessing).
+
+    Reads the last `sample` sent messages, drops quoted history, and returns
+    the trailing block that most of them share: `closing` (e.g. "Viele
+    Grüße"), `signature_lines` / `signature_text` / `signature_html`,
+    `coverage` (share of mails carrying it) and `confidence`. The result is
+    also stored locally so m365_get_mail_style can strip it when it analyses
+    the user's writing. Save it once as a memory note ("Outlook: email
+    signature") and append it to new mails — m365_send_email does not add it
+    automatically.
+
+    Args:
+        sample: How many recent sent mails to inspect (3–50).
+        account: Optional M365 account username, email, or ID.
+    """
+    sample = max(3, min(int(sample), 50))
+    params = {"$top": sample, "$select": "id,subject,body,bodyPreview,toRecipients,sentDateTime,receivedDateTime,conversationId"}
+    res = _graph_request("GET", "/me/mailFolders/sentitems/messages", params=params, account=account)
+    if isinstance(res, dict) and res.get("error"):
+        return res
+    msgs = [m for m in ((res or {}).get("value") or []) if isinstance(m, dict)]
+    texts = [_mail_body_text(m) for m in msgs]
+    texts = [t for t in texts if t]
+    block, share = _common_trailing_block(texts, min_share=0.6, max_lines=12)
+    closing, sig_lines = _split_closing(block)
+    confidence = "high" if share >= 0.8 and (sig_lines or closing) else ("medium" if share >= 0.6 and (sig_lines or closing) else "low")
+    out: Dict[str, Any] = {
+        "sampled_mails": len(texts),
+        "coverage": round(share, 2),
+        "confidence": confidence,
+        "closing": closing,
+        "signature_lines": sig_lines,
+        "signature_text": "\n".join(sig_lines),
+        "signature_html": "<p>" + "<br>".join(_html.escape(ln) for ln in sig_lines) + "</p>" if sig_lines else "",
+    }
+    if sig_lines or closing:
+        _index_set_setting("my_signature", {"closing": closing, "lines": sig_lines, "coverage": round(share, 2), "detected_at": _index_now()})
+        out["how_to_use"] = (
+            "Save as a memory note titled 'Outlook: email signature' (closing + signature_text). When composing a "
+            "new mail: body, blank line, closing, signature_html. Do not add it to Teams messages."
+        )
+    else:
+        out["how_to_use"] = (
+            "No repeated trailing block found in the sampled sent mails (mixed or no signature). Ask the user once "
+            "for their preferred signature and save it as 'Outlook: email signature'."
+        )
+    return out
+
+
+def _derive_mail_style(my_texts: List[str], their_texts: List[str]) -> Dict[str, Any]:
+    """Style profile for mail: chat metrics plus greeting name, closing line and how *they* address the user."""
+    base = _derive_chat_style(my_texts)
+    profile = base.get("profile") or {}
+    greeting_names: Dict[str, int] = {}
+    greeting_forms: Dict[str, int] = {}
+    closings: Dict[str, int] = {}
+    for text in my_texts:
+        lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+        if not lines:
+            continue
+        m = _MAIL_GREETING_RE.match(lines[0])
+        if m:
+            form = m.group(1).lower()
+            greeting_forms[form] = greeting_forms.get(form, 0) + 1
+            if m.group(3):
+                name = m.group(3).strip(" ,!")
+                greeting_names[name] = greeting_names.get(name, 0) + 1
+        for ln in lines[-3:]:
+            if _CLOSING_LINE_RE.match(ln):
+                key = ln.strip(" ,!.")
+                closings[key] = closings.get(key, 0) + 1
+                break
+    their_du = sum(len(_DU_RE.findall(t)) for t in their_texts)
+    their_sie = sum(len(_SIE_RE.findall(t)) for t in their_texts)
+    their_greeting = ""
+    for text in their_texts:
+        first = next((ln.strip() for ln in text.split("\n") if ln.strip()), "")
+        m = _MAIL_GREETING_RE.match(first)
+        if m:
+            their_greeting = first.split(",")[0][:60]
+            break
+    n = max(1, len(my_texts))
+    greeting_name = max(greeting_names, key=greeting_names.get) if greeting_names else ""
+    greeting_form = max(greeting_forms, key=greeting_forms.get) if greeting_forms else ""
+    closing = max(closings, key=closings.get) if closings else ""
+    if profile:
+        profile = dict(profile)
+        profile["greeting_form"] = greeting_form or profile.get("greeting", "none")
+        profile["greeting_name"] = greeting_name
+        profile["greeting_line"] = (f"{greeting_form.capitalize()} {greeting_name}," if greeting_form and greeting_name else (greeting_form.capitalize() + "," if greeting_form else ""))
+        profile["closing"] = closing
+        profile["closing_frequency"] = round((closings.get(closing, 0) / n) if closing else 0.0, 2)
+        profile.pop("signature", None)
+        profile["their_address"] = "Sie" if their_sie > their_du and their_sie >= 2 else ("du" if their_du > 0 else "unknown")
+        profile["their_greeting"] = their_greeting
+    return {
+        "source_messages": len(my_texts),
+        "their_messages_seen": len(their_texts),
+        "profile": profile or None,
+        "defaults": dict(_MAIL_REGISTER_DEFAULTS),
+    }
+
+
+@mcp.tool()
+def m365_get_mail_style(
+    to: str,
+    sample: int = 15,
+    account: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Derive how the user actually writes *email* to a specific person (greeting, du/Sie, closing, length, language).
+
+    Reads the user's recent sent mails to that person and their mails to the
+    user, strips quoted history and the user's own signature, and returns a
+    compact profile plus up to three examples. The greeting name the user
+    uses ("Hi Fischi") is learned as an alias of the contact, and the
+    profile is stored on the contact (m365_find_contact). Save it as a
+    memory `person` note ("Mail style with <Name>") and draft in that
+    register; with no history use `defaults`.
+
+    Args:
+        to: Email address, name, or nickname of the correspondent.
+        sample: Max sent / received mails to inspect each (3–30).
+        account: Optional M365 account username, email, or ID.
+    """
+    sample = max(3, min(int(sample), 30))
+    query = (to or "").strip()
+    if not query:
+        return {"error": "to is required (email, name or nickname)"}
+    email = query.lower() if "@" in query else ""
+    contact: Optional[Dict[str, Any]] = None
+    if not email:
+        found = _index_find_contacts(query, limit=3)
+        with_mail = [c for c in found if c.get("email")]
+        if with_mail and (len(with_mail) == 1 or with_mail[0]["score"] >= 85 or with_mail[0]["score"] - with_mail[1]["score"] >= 30):
+            contact = with_mail[0]
+            email = contact["email"]
+        elif len(with_mail) > 1:
+            return {"error": "recipient ambiguous", "resolution": "ambiguous", "candidates": with_mail}
+    if not email:
+        # Fall back to the live mailbox: who did the user write to under that name?
+        res = _graph_request("GET", "/me/mailFolders/sentitems/messages", params={"$search": f'"to:{query}"', "$top": 25, "$select": "id,toRecipients"}, account=account)
+        seen: Dict[str, Tuple[str, int]] = {}
+        q_norm = _norm_name(query)
+        for m in ((res or {}).get("value") or []) if isinstance(res, dict) else []:
+            for r in m.get("toRecipients") or []:
+                name, addr = _mail_address(r)
+                if addr and (q_norm in _norm_name(name) or q_norm in addr):
+                    seen[addr] = (name, seen.get(addr, ("", 0))[1] + 1)
+        if len(seen) == 1:
+            email = next(iter(seen))
+        elif len(seen) > 1:
+            return {"error": "recipient ambiguous", "resolution": "ambiguous",
+                    "candidates": [{"email": a, "display_name": n, "mails": c} for a, (n, c) in sorted(seen.items(), key=lambda kv: -kv[1][1])]}
+        else:
+            return {"error": f"No mail correspondent matches {query!r}", "resolution": "none",
+                    "hint": "Pass the email address, or run m365_index_refresh(scope='mail') and retry."}
+    select = "id,subject,body,bodyPreview,from,toRecipients,sentDateTime,receivedDateTime"
+    sent = _graph_request("GET", "/me/mailFolders/sentitems/messages", params={"$search": f'"to:{email}"', "$top": sample, "$select": select}, account=account)
+    mine_msgs = [m for m in ((sent or {}).get("value") or []) if isinstance(m, dict)
+                 and any(_mail_address(r)[1] == email for r in (m.get("toRecipients") or []))] if isinstance(sent, dict) else []
+    try:
+        received = _graph_request("GET", "/me/messages", params={"$search": f'"from:{email}"', "$top": sample, "$select": select}, account=account)
+        their_msgs = [m for m in ((received or {}).get("value") or []) if isinstance(m, dict) and _mail_address(m.get("from"))[1] == email] if isinstance(received, dict) else []
+    except Exception:
+        their_msgs = []
+    my_texts = [_mail_body_text(m) for m in mine_msgs]
+    my_texts = [t for t in my_texts if t]
+    signature = _index_get_setting("my_signature") or {}
+    sig_lines = list(signature.get("lines") or [])
+    closing_saved = str(signature.get("closing") or "")
+    if not sig_lines and len(my_texts) >= 2:
+        block, _share = _common_trailing_block(my_texts, min_share=0.6)
+        closing_guess, sig_lines = _split_closing(block)
+        closing_saved = closing_saved or closing_guess
+    # The closing stays in the text (it is part of the style); only the signature block goes.
+    my_texts_clean = [_strip_signature(t, sig_lines) for t in my_texts]
+    my_texts_clean = [t for t in my_texts_clean if t]
+    their_texts = [t for t in (_mail_body_text(m) for m in their_msgs) if t]
+    style = _derive_mail_style(my_texts_clean, their_texts)
+    display_name = ""
+    for m in mine_msgs:
+        for r in m.get("toRecipients") or []:
+            name, addr = _mail_address(r)
+            if addr == email and name:
+                display_name = name
+                break
+        if display_name:
+            break
+    if not display_name and their_msgs:
+        display_name = _mail_address(their_msgs[0].get("from"))[0]
+    style["recipient"] = {"email": email, "display_name": display_name or (contact or {}).get("display_name", "")}
+    style["examples"] = [_truncate(t, 240) for t in my_texts_clean[:3]]
+    if closing_saved and style.get("profile") and not style["profile"].get("closing"):
+        style["profile"]["closing"] = closing_saved
+    profile = style.get("profile")
+    conn = _index_conn()
+    if conn is not None:
+        try:
+            with conn:
+                alias = (profile or {}).get("greeting_name") or None
+                _index_record_contact(conn, email=email, display_name=display_name or None, source="mail",
+                                      alias=alias, style_mail=profile, interaction=False)
+        except Exception:
+            pass
+        finally:
+            conn.close()
+    style["how_to_use"] = (
+        "Draft mail to this person in this register (greeting_line, address, closing, typical length); append the "
+        "saved signature after the closing. If profile is null, use defaults. Persist as a person memory note "
+        "'Mail style with <Name>' (tag mail-style)."
+    )
+    return style
 
 
 if __name__ == "__main__":

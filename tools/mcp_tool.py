@@ -3696,6 +3696,25 @@ def _clean_mcp_args(server: "MCPServerTask", tool_name: str, args: dict) -> dict
     return clean
 
 
+def _structured_duplicates_text(text_result: str, structured: Any) -> bool:
+    """True when ``structuredContent`` carries the same data as the text block.
+
+    FastMCP wraps a dict/list return as ``content=[json.dumps(value)]`` plus
+    ``structuredContent=value``; scalar/list returns arrive as
+    ``structuredContent={"result": value}``. Either way the text is redundant.
+    """
+    try:
+        parsed = json.loads(text_result)
+    except (TypeError, ValueError):
+        return False
+    if parsed == structured:
+        return True
+    if isinstance(structured, dict) and set(structured.keys()) == {"result"}:
+        inner = structured.get("result")
+        return parsed == inner or text_result == inner
+    return False
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, provider: Optional[str] = None):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -3797,6 +3816,13 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, pr
             structured = getattr(result, "structuredContent", None)
             if structured is not None:
                 if text_result:
+                    # FastMCP serialises a dict return value twice: the text
+                    # block is json.dumps(value) and structuredContent is the
+                    # value itself (or {"result": value} for non-object
+                    # returns). Sending both doubled the tokens of every
+                    # M365/Tempo call (AIS-289) — emit the object once.
+                    if _structured_duplicates_text(text_result, structured):
+                        return json.dumps({"result": structured}, ensure_ascii=False)
                     return json.dumps(
                         {
                             "result": text_result,

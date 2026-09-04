@@ -70,6 +70,15 @@ correction rounds for one short message.
    The file is uploaded to OneDrive and linked as a file card; never paste file contents as text.
 3. Confirm recipient and file name from the result.
 
+## Workflow: "the chat about <topic>" / "the person we call <nickname>"
+1. Call `m365_index_search(query=<words>, kind=chat|chat_message|contact)` first — the local
+   index holds chats, messages, mails and contacts as metadata and snippets, filled by the
+   list/find tools; every hit carries the ids and a `next` hint. Empty index →
+   `m365_index_refresh(scope='all')` once.
+2. `m365_find_contact(query)` resolves names, nicknames and learned aliases (a nickname that
+   resolved a chat, the greeting name from mail) to email, Teams user id and 1:1 chat id.
+3. Continue with the resolved `chat_id` in the workflows above.
+
 ## Guardrails
 
 - Recipient identity always comes from `m365_find_chat` / the `recipient` field of the send

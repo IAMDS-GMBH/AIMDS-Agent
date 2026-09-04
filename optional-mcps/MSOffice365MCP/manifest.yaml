@@ -110,6 +110,11 @@ tools:
     - m365_list_todo_tasks
     - m365_create_todo_task
     - m365_get_mailbox_settings
+    - m365_get_my_signature
+    - m365_get_mail_style
+    - m365_index_search
+    - m365_index_refresh
+    - m365_find_contact
 
 post_install: |
   Microsoft 365 MCP (m365) has been installed into your catalog.

@@ -372,9 +372,18 @@ def build_data_handling_guidance(valid_tool_names: "set[str] | None" = None) -> 
     if has_sql:
         rungs.append(
             "Large or structured tool results are auto-ingested into SQLite `mcp_records` "
-            "(~/.hermes/state.db). Aggregate, sum, group and compare with the `sql` tool "
-            "(SUM/COUNT/ROUND/GROUP BY, CTEs) instead of mental arithmetic — and fetch in "
-            "bounded slices (month by month) rather than one call for everything."
+            "(~/.hermes/state.db; columns id, tool_name, tool_use_id, reference_key, timestamp, "
+            "user_id, duration_seconds, category, comment, raw_data — raw_data is the full JSON "
+            "row). A tool result ending in `[ingested N rows → mcp_records …]` or carrying a "
+            "`_shaped` block is a bounded view: the complete rows are in the table — "
+            "`SELECT raw_data FROM mcp_records WHERE tool_use_id = '<id>'` — do not re-fetch, "
+            "parse the JSON by hand, or read a persisted-output file back. Aggregate, sum, group "
+            "and compare with the `sql` tool (SUM/COUNT/ROUND/GROUP BY, CTEs, e.g. "
+            "`SELECT reference_key, ROUND(SUM(duration_seconds)/3600.0, 2) AS hours FROM "
+            "mcp_records WHERE tool_name = '...' GROUP BY reference_key`) instead of mental "
+            "arithmetic; scope personal worklog/ticket queries to the active user "
+            "(`WHERE user_id LIKE '%...%'`) and fetch in bounded slices (month by month) rather "
+            "than one call for everything."
         )
     else:
         rungs.append(
@@ -1961,6 +1970,42 @@ def build_outlook_signature_guidance(valid_tool_names: "set[str] | None" = None)
     list_emails = mail_tools.get("list_emails") or mail_tools.get("search_emails")
     sent_hint = mail_tools.get("sent_folder_hint", "folder='sent'")
     chat_tool = mail_tools.get("send_chat_message")
+    signature_tool = _resolve_m365_tool_name(names, "m365_get_my_signature")
+    mail_style_tool = _resolve_m365_tool_name(names, "m365_get_mail_style")
+    contact_tool = _resolve_m365_tool_name(names, "m365_find_contact")
+    # AIS-289: the MCP derives signature and per-contact register
+    # deterministically from sent mail; the model no longer eyeballs mails.
+    signature_step = (
+        f"If none exists, call `{signature_tool}()` — it returns `closing`, `signature_lines`/`signature_html` "
+        "and `coverage` from the user's own sent mail — and save closing + signature via "
+        f"`{tool_name}` (schema `notes`, title 'Outlook: email signature'). With `confidence: low` ask the "
+        "user once instead of guessing."
+        if signature_tool
+        else
+        f"If none exists, call `{list_emails}` with {sent_hint} on a few recent messages "
+        "yourself — do not ask the user to describe their own style, just look it up — infer the "
+        "signature/closing the user actually uses, and save it via "
+        f"`{tool_name}` (schema `notes`, e.g. title 'Outlook: email signature')."
+    )
+    tone_step = (
+        f"Before writing to a specific person, look for a memory `person` note 'Mail style with <Name>'; if "
+        f"none exists call `{mail_style_tool}(to=<name or email>)` — it returns greeting_line, du/Sie, closing, "
+        "typical length, language and how the person addresses the user — and save the profile on that "
+        f"person's memory entry via `{tool_name}` (schema `person`, tag mail-style). Mirror it: never assume "
+        "the same greeting/register for every recipient."
+        + (f" `{contact_tool}(query)` resolves names, nicknames and aliases to an email without directory rights."
+           if contact_tool else "")
+        if mail_style_tool
+        else
+        "Per-contact tone (casual vs. formal): NEVER assume the same greeting/register for every "
+        "recipient. Before writing to or replying to a specific person, check the existing thread "
+        "(when replying) and/or that person's prior sent/received messages for the tone actually "
+        "used with them — first-name/casual vs. formal 'Sehr geehrte(r) ...' — and mirror it. Once "
+        "inferred for a contact, persist it on that person's memory entry "
+        f"(schema `person`, e.g. `hints.tone = \"casual\"` or `\"formal\"`) via `{tool_name}` so it "
+        "doesn't need to be re-derived every time; only re-infer it when no prior thread/history "
+        "exists yet for that contact."
+    )
     teams_note = (
         f" Teams messages (`{chat_tool}`) are different: pass the Markdown you showed the user as "
         "`content` — the tool renders it to the HTML Teams displays, so do not hand-write HTML "
@@ -1978,20 +2023,10 @@ def build_outlook_signature_guidance(valid_tool_names: "set[str] | None" = None)
         f"not optional polish. Before your FIRST `{write_email}` call for a new email "
         "(not a reply — replies already show the existing thread) in a session, you MUST first "
         "check memory for a previously saved note about the user's own email signature/closing. "
-        f"If none exists, call `{list_emails}` with {sent_hint} on a few recent messages "
-        "yourself — do not ask the user to describe their own style, just look it up — infer the "
-        "signature/closing the user actually uses, and save it via "
-        f"`{tool_name}` (schema `notes`, e.g. title 'Outlook: email signature'). Only draft the "
+        f"{signature_step} Only draft the "
         "email after this lookup/save step. From then on in later sessions, reuse the saved note "
         "automatically — do not ask the user for their signature or re-derive it every time.\n"
-        "Per-contact tone (casual vs. formal): NEVER assume the same greeting/register for every "
-        "recipient. Before writing to or replying to a specific person, check the existing thread "
-        "(when replying) and/or that person's prior sent/received messages for the tone actually "
-        "used with them — first-name/casual vs. formal 'Sehr geehrte(r) ...' — and mirror it. Once "
-        "inferred for a contact, persist it on that person's memory entry "
-        f"(schema `person`, e.g. `hints.tone = \"casual\"` or `\"formal\"`) via `{tool_name}` so it "
-        "doesn't need to be re-derived every time; only re-infer it when no prior thread/history "
-        "exists yet for that contact."
+        f"Per-contact tone (casual vs. formal): {tone_step}"
     )
 
 
@@ -2080,7 +2115,31 @@ def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str
     files_tool = _resolve_m365_tool_name(names, "m365_download_chat_files")
     mail_files_tool = _resolve_m365_tool_name(names, "m365_download_email_attachments")
     mail_tool = _resolve_m365_tool_name(names, "m365_send_email")
+    drive_tool = _resolve_m365_tool_name(names, "m365_download_drive_file")
+    index_tool = _resolve_m365_tool_name(names, "m365_index_search")
+    contact_tool = _resolve_m365_tool_name(names, "m365_find_contact")
     memory_tool = _resolve_memory_save_tool_name(names)
+    index_line = (
+        f"\nVague references: when the user points at a chat, message, mail or person without an id or exact "
+        f"name (\"the chat about the move plan\", \"the mail from Martin about the offer\", \"Fischi\"), call "
+        f"`{index_tool}(query=<words>, kind=chat|chat_message|mail|contact|any)` first — it searches the local "
+        "index of metadata and snippets that the list/find tools fill as a side effect, and every hit carries "
+        "the ids plus a `next` hint. An empty index is filled once with `m365_index_refresh(scope='all')`."
+        + (f" `{contact_tool}(query)` resolves names, nicknames and learned aliases to email, Teams user id and "
+           "1:1 chat id without directory rights; nicknames that resolved a chat and greeting names from mail "
+           "are learned automatically." if contact_tool else "")
+        if index_tool
+        else ""
+    )
+    # With the bridge active these tools are usually deferred: name the
+    # loading path so the model does not go looking for substitutes.
+    deferred_line = (
+        " These tools may be deferred behind `tool_search`: load one with `tool_describe(<name>)` or "
+        "call it directly via `tool_call(<name>, {...})` — do not substitute drive, SharePoint or "
+        "terminal tools for them."
+        if "tool_search" in names
+        else ""
+    )
 
     resolve_line = (
         f"Resolve the recipient with `{find_tool}(query=<name|nickname|email|topic>)` or simply pass "
@@ -2128,7 +2187,10 @@ def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str
             f"is a valid `chat_id` for every chat tool — never ask the user to extract the id. For \"the "
             f"document/file from the chat\" call `{files_tool}(chat_id=<link or id> | to=<name>, last=5)`; it "
             "downloads the shared files into the Vault and returns `saved_path` per file — work with those "
-            "paths, do not describe the file from the chat preview."
+            "paths, do not describe the file from the chat preview. A SharePoint/OneDrive URL seen in a chat "
+            "message is NOT a drive item id and never an attachment id"
+            + (f"; if you only have such a URL, pass it as `file_id` to `{drive_tool}`" if drive_tool else "")
+            + "; never fetch it with curl or a script."
             + (
                 f" For the attachments of an email use `{mail_files_tool}(message_id=…)` the same way."
                 if mail_files_tool
@@ -2141,6 +2203,8 @@ def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str
             if files_tool
             else ""
         )
+        + index_line
+        + deferred_line
     )
 
 

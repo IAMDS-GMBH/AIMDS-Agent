@@ -1065,6 +1065,36 @@ class TestDynamicMCPKeywordIndexing:
             assert names[0] in ("mcp_MSOffice365MCP_m365_send_chat_message", "mcp_MSOffice365MCP_m365_find_chat"), (query, names)
             assert names.index("mcp_MSOffice365MCP_m365_send_chat_message") < names.index("mcp_MSOffice365MCP_m365_send_email"), (query, names)
 
+    def test_english_chat_file_queries_prefer_chat_download_over_drive(self):
+        """AIS-289: 'teams chat file download' / 'download file from teams chat
+        link' must rank the chat-files tool ahead of the OneDrive download."""
+        from tools.tool_search import build_catalog, search_catalog
+
+        def _tool(name, desc):
+            return {"type": "function", "function": {"name": name, "description": desc, "parameters": {}}}
+
+        tool_defs = [
+            _tool("mcp_MSOffice365MCP_m365_download_chat_files", "Download the files shared in a Teams chat (chat link, chat id or person) into the Vault."),
+            _tool("mcp_MSOffice365MCP_m365_download_drive_file", "Download a file from OneDrive or SharePoint into the Vault (documents/m365_downloads/)."),
+            _tool("mcp_MSOffice365MCP_m365_download_teams_message_attachment", "Download a specific attachment of a Teams message."),
+            _tool("mcp_MSOffice365MCP_m365_list_teams_message_attachments", "List the attachments of a Teams chat message."),
+            _tool("mcp_MSOffice365MCP_m365_list_chat_messages", "List recent messages of a Teams chat as compact records."),
+            _tool("mcp_MSOffice365MCP_m365_search_drive_files", "Search files in OneDrive by keyword."),
+            _tool("mcp_MSOffice365MCP_m365_list_drive_files", "List files and folders in OneDrive."),
+            _tool("terminal", "Run a shell command"),
+        ]
+        catalog = build_catalog(tool_defs)
+        for query in (
+            "teams chat file download",
+            "download file from teams chat link",
+            "Dokument aus Teams Chat herunterladen",
+            "Kannst du das Dokument aus dem Chat https://teams.microsoft.com/l/chat/19:abc@thread.v2/conversations herunterladen",
+        ):
+            names = [r.name for r in search_catalog(catalog, query, limit=5)]
+            assert names[0] == "mcp_MSOffice365MCP_m365_download_chat_files", (query, names)
+        drive = [r.name for r in search_catalog(catalog, "OneDrive SharePoint list files search find", limit=3)]
+        assert drive[0] in ("mcp_MSOffice365MCP_m365_search_drive_files", "mcp_MSOffice365MCP_m365_list_drive_files"), drive
+
     def test_german_attachment_words_surface_chat_file_download(self):
         """'lade den Anhang aus dem Teams-Chat' → m365_download_chat_files (AIS-288)."""
         from tools.tool_search import build_catalog, search_catalog

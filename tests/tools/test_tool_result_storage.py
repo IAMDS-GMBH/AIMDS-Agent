@@ -568,7 +568,7 @@ class TestPerToolThresholds:
             threshold=1000,
         )
 
-        assert "Auto-ingested 100 records into SQLite table 'mcp_records'" in result
+        assert "[ingested 100 rows → mcp_records" in result and "tool_use_id='call_no_env'" in result
         assert "Note on jira_get_worklog" in result
         assert "Tempo sync bot" in result
         assert "TempoMCP" in result
@@ -582,15 +582,17 @@ class TestPerToolThresholds:
         from tools.tool_result_storage import _build_ingest_hint
 
         hint = _build_ingest_hint("jira_search", 10)
-        assert "Auto-ingested 10 records" in hint
+        assert "[ingested 10 rows → mcp_records" in hint
         assert "Note on jira_get_worklog" not in hint
 
     def test_ingest_hint_names_sql_without_prohibitions(self):
         from tools.tool_result_storage import _build_ingest_hint
 
         hint = _build_ingest_hint("jira_search", 10)
-        assert "`sql` tool" in hint
-        assert "SELECT" in hint
+        assert "`sql`" in hint
+        # AIS-289: schema, example query and file-read rule live in the static
+        # system prompt now — the per-result hint is one stable line.
+        assert "SELECT" not in hint and len(hint) < 200
         assert "DO NOT" not in hint
         assert "ALWAYS" not in hint
         assert "CRITICAL" not in hint
@@ -599,7 +601,7 @@ class TestPerToolThresholds:
         from tools.tool_result_storage import _build_ingest_hint
 
         hint = _build_ingest_hint("jira_search", 10, sql_available=False)
-        assert "Auto-ingested 10 records" in hint
+        assert "[ingested 10 rows → mcp_records" in hint
         assert "not in this session" in hint
         assert "SELECT" not in hint
 
@@ -659,7 +661,7 @@ class TestIngestedThreshold:
         result = maybe_persist_tool_result(
             content=content, tool_name="mcp_TimeMCP_getWorklogs", tool_use_id="tc_ing_big", env=None,
         )
-        assert result != content and "Auto-ingested" in result
+        assert result != content and "[ingested 120 rows" in result
         assert len(result) < len(content)
 
     def test_non_ingestible_payload_keeps_the_default_threshold(self):
@@ -675,4 +677,44 @@ class TestIngestedThreshold:
         result = maybe_persist_tool_result(
             content=content, tool_name="mcp_TimeMCP_getWorklogs", tool_use_id="tc_ing_small", env=None,
         )
-        assert result.startswith(content) and "Auto-ingested" in result
+        assert "[ingested 10 rows" in result
+        # AIS-289: the inline payload is shaped (sorted keys, compact) but complete
+        import json as _json
+        shaped = _json.loads(result.split("\n\n[ingested")[0])
+        assert len(shaped) == 10 and shaped[0]["key"] == "PROJ-1"
+
+
+class TestShapingOrder:
+    """AIS-289: ingest sees the full payload, the model sees the shaped one."""
+
+    def test_full_rows_ingested_but_inline_list_is_capped(self):
+        import json
+        import sqlite3
+        from hermes_cli.config import get_hermes_home
+
+        payload = json.dumps({
+            "@odata.context": "x",
+            "value": [{"id": f"r{i}", "key": "PROJ-2", "timeSpentSeconds": 60, "comment": "c"} for i in range(40)],
+        })
+        result = maybe_persist_tool_result(
+            content=payload, tool_name="mcp_TimeMCP_getWorklogs", tool_use_id="tc_shape_40", env=None,
+        )
+        body = json.loads(result.split("\n\n[ingested")[0])
+        assert "@odata.context" not in body
+        assert len(body["value"]) == 25 and body["_shaped"]["total"] == 40
+        assert "tool_use_id='tc_shape_40'" in body["_shaped"]["full_rows"]
+        conn = sqlite3.connect(str(get_hermes_home() / "state.db"))
+        assert conn.execute("SELECT COUNT(*) FROM mcp_records WHERE tool_use_id='tc_shape_40'").fetchone()[0] == 40
+
+    def test_shaping_is_deterministic_across_calls(self):
+        import json
+
+        payload = json.dumps({"value": [{"b": 1, "a": None, "c": ""}, {"a": 2, "b": 1}]})
+        one = maybe_persist_tool_result(content=payload, tool_name="mcp_X_list", tool_use_id="tc_det", env=None)
+        two = maybe_persist_tool_result(content=payload, tool_name="mcp_X_list", tool_use_id="tc_det", env=None)
+        assert one == two
+        assert one.split("\n\n[ingested")[0] == '{"value":[{"b":1},{"a":2,"b":1}]}'
+
+    def test_non_mcp_tool_result_is_not_shaped(self):
+        content = '{"@odata.context": "x", "value": []}'
+        assert maybe_persist_tool_result(content=content, tool_name="terminal", tool_use_id="tc_term", env=None) == content
