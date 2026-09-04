@@ -1582,6 +1582,392 @@ def m365_create_event(
     return _graph_request("POST", endpoint, json_data=payload)
 
 
+
+# ─── Teams: compact records, recipient resolution, Markdown → HTML ──────────
+#
+# Why (AIS-286, session 20260903_095740): asked to "send X to Fischi via
+# Teams" the agent looked for a chat id in memory, tried the wrong tool and
+# finally asked the user for the chat URL — m365_list_chats was never
+# called, the raw Graph objects were too noisy to reason about, the message
+# went out as plain text with Markdown asterisks, and the register was a
+# formal letter. Everything below exists so the model does not have to guess.
+
+import html as _html
+import re as _re
+
+_MY_IDENTITY_CACHE: Dict[str, Any] = {}
+_MY_IDENTITY_TTL_SECONDS = 600.0
+_TEAMS_PREVIEW_CHARS = 160
+_TEAMS_MESSAGE_TEXT_CHARS = 600
+
+
+def _html_to_text(value: Any) -> str:
+    """Strip HTML to readable text (block tags → newlines, entities decoded)."""
+    if not value:
+        return ""
+    text = str(value)
+    text = _re.sub(r"<\s*br\s*/?>", "\n", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"</\s*(p|div|li|h[1-6]|tr)\s*>", "\n", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"<li\b[^>]*>", "• ", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"<[^>]+>", "", text)
+    text = _html.unescape(text)
+    text = text.replace(" ", " ")
+    text = _re.sub(r"[ \t]+", " ", text)
+    text = _re.sub(r"\n\s*\n+", "\n\n", text)
+    return text.strip()
+
+
+def _truncate(text: str, limit: int) -> str:
+    text = text or ""
+    return text if len(text) <= limit else text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _compact_member(member: Any) -> Dict[str, Any]:
+    if not isinstance(member, dict):
+        return {}
+    email = member.get("email") or member.get("userPrincipalName") or member.get("mail") or ""
+    return {
+        "displayName": member.get("displayName") or "",
+        "email": email,
+        "user_id": member.get("userId") or member.get("id") or "",
+    }
+
+
+def _compact_chat(chat: Any) -> Dict[str, Any]:
+    """Reduce a Graph chat object to what a model needs to pick a recipient."""
+    if not isinstance(chat, dict):
+        return {}
+    members = [_compact_member(m) for m in (chat.get("members") or []) if isinstance(m, dict)]
+    preview = chat.get("lastMessagePreview") or {}
+    last_message: Optional[Dict[str, Any]] = None
+    if isinstance(preview, dict) and preview:
+        body = preview.get("body") or {}
+        sender = ((preview.get("from") or {}).get("user") or {}).get("displayName") or ""
+        if not sender and (preview.get("from") or {}).get("application"):
+            sender = ((preview.get("from") or {}).get("application") or {}).get("displayName") or "app"
+        last_message = {
+            "from": sender,
+            "preview": _truncate(_html_to_text(body.get("content") if isinstance(body, dict) else ""), _TEAMS_PREVIEW_CHARS),
+            "at": _format_timestamp_local(preview.get("createdDateTime")) or preview.get("createdDateTime") or "",
+        }
+    return {
+        "chat_id": chat.get("id") or "",
+        "chat_type": chat.get("chatType") or "",
+        "topic": chat.get("topic") or "",
+        "members": [m for m in members if m.get("displayName") or m.get("email")],
+        "last_message": last_message,
+        "updated_at": _format_timestamp_local(chat.get("lastUpdatedDateTime")) or chat.get("lastUpdatedDateTime") or "",
+        "web_url": chat.get("webUrl") or "",
+    }
+
+
+def _compact_message(msg: Any) -> Dict[str, Any]:
+    """Reduce a Graph chatMessage to sender, local time and readable text."""
+    if not isinstance(msg, dict):
+        return {}
+    body = msg.get("body") or {}
+    frm = msg.get("from") or {}
+    user = frm.get("user") or {}
+    application = frm.get("application") or {}
+    sender = user.get("displayName") or application.get("displayName") or ""
+    content = body.get("content") if isinstance(body, dict) else ""
+    content_type = (body.get("contentType") if isinstance(body, dict) else "") or "text"
+    text = _html_to_text(content) if str(content_type).lower() == "html" else str(content or "").strip()
+    out: Dict[str, Any] = {
+        "id": msg.get("id") or "",
+        "from": sender,
+        "from_user_id": user.get("id") or "",
+        "at": _format_timestamp_local(msg.get("createdDateTime")) or msg.get("createdDateTime") or "",
+        "text": _truncate(text, _TEAMS_MESSAGE_TEXT_CHARS),
+        "message_type": msg.get("messageType") or "message",
+    }
+    if msg.get("has_attachments") or msg.get("attachments_summary"):
+        out["has_attachments"] = True
+        out["attachments_summary"] = msg.get("attachments_summary") or []
+    if msg.get("replyToId"):
+        out["reply_to_id"] = msg.get("replyToId")
+    return out
+
+
+def _looks_like_html(text: str) -> bool:
+    return bool(_re.search(r"<(p|div|br|ul|ol|li|h[1-6]|b|strong|i|em|a|table|code|pre)\b", text or "", _re.IGNORECASE))
+
+
+def _md_inline_to_html(text: str) -> str:
+    """Inline Markdown → HTML (escaped first, so user text never becomes markup)."""
+    esc = _html.escape(text, quote=False)
+    esc = _re.sub(r"`([^`]+)`", r"<code>\1</code>", esc)
+    esc = _re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r'<a href="\2">\1</a>', esc)
+    esc = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", esc)
+    esc = _re.sub(r"__(.+?)__", r"<strong>\1</strong>", esc)
+    esc = _re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", r"<em>\1</em>", esc)
+    esc = _re.sub(r"(?<![\w_])_(?!\s)(.+?)(?<!\s)_(?![\w_])", r"<em>\1</em>", esc)
+    esc = _re.sub(r"~~(.+?)~~", r"<s>\1</s>", esc)
+    return esc
+
+
+def _markdown_to_teams_html(text: str) -> str:
+    """Render the Markdown a model writes in chat into the HTML Teams renders.
+
+    Supports paragraphs, line breaks, bold/italic/strike/inline code, links,
+    bullet and numbered lists, headings (as bold paragraphs) and quotes.
+    Already-HTML input is returned unchanged so hand-written markup keeps
+    working.
+    """
+    if not text:
+        return ""
+    if _looks_like_html(text):
+        return text
+    lines = text.replace("\r\n", "\n").split("\n")
+    out: List[str] = []
+    para: List[str] = []
+    list_tag: Optional[str] = None
+
+    def flush_para() -> None:
+        if para:
+            out.append("<p>" + "<br>".join(_md_inline_to_html(ln) for ln in para) + "</p>")
+            para.clear()
+
+    def close_list() -> None:
+        nonlocal list_tag
+        if list_tag:
+            out.append(f"</{list_tag}>")
+            list_tag = None
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            flush_para()
+            close_list()
+            continue
+        bullet = _re.match(r"^[-*•]\s+(.*)$", stripped)
+        numbered = _re.match(r"^\d+[.)]\s+(.*)$", stripped)
+        heading = _re.match(r"^#{1,6}\s+(.*)$", stripped)
+        quote = _re.match(r"^>\s?(.*)$", stripped)
+        if bullet or numbered:
+            flush_para()
+            tag = "ul" if bullet else "ol"
+            if list_tag != tag:
+                close_list()
+                out.append(f"<{tag}>")
+                list_tag = tag
+            out.append(f"<li>{_md_inline_to_html((bullet or numbered).group(1))}</li>")
+            continue
+        close_list()
+        if heading:
+            flush_para()
+            out.append(f"<p><strong>{_md_inline_to_html(heading.group(1))}</strong></p>")
+            continue
+        if quote:
+            flush_para()
+            out.append(f"<blockquote>{_md_inline_to_html(quote.group(1))}</blockquote>")
+            continue
+        para.append(stripped)
+    flush_para()
+    close_list()
+    return "".join(out)
+
+
+def _my_identity(account: Optional[str] = None) -> Dict[str, str]:
+    """Return {id, upn, displayName} of the signed-in user (cached 10 min)."""
+    key = (account or "").strip().lower()
+    cached = _MY_IDENTITY_CACHE.get(key)
+    if cached and time.monotonic() - cached[1] < _MY_IDENTITY_TTL_SECONDS:
+        return cached[0]
+    me = _graph_request("GET", "/me", params={"$select": "id,displayName,mail,userPrincipalName"}, account=account)
+    ident = {
+        "id": str((me or {}).get("id") or ""),
+        "upn": str((me or {}).get("userPrincipalName") or (me or {}).get("mail") or ""),
+        "displayName": str((me or {}).get("displayName") or ""),
+    }
+    _MY_IDENTITY_CACHE[key] = (ident, time.monotonic())
+    return ident
+
+
+def _fetch_my_chats(top: int = 50, pages: int = 2, account: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Fetch the user's recent chats with members + last message (≤ ``pages`` pages)."""
+    params: Dict[str, Any] = {"$top": min(max(int(top), 1), 50), "$expand": "members,lastMessagePreview"}
+    chats: List[Dict[str, Any]] = []
+    try:
+        res = _graph_request("GET", "/me/chats", params=params, account=account)
+    except Exception:
+        res = _graph_request("GET", "/me/chats", params={"$top": params["$top"]}, account=account)
+    for _ in range(max(1, pages)):
+        if not isinstance(res, dict):
+            break
+        chats.extend(c for c in (res.get("value") or []) if isinstance(c, dict))
+        next_link = res.get("@odata.nextLink")
+        if not next_link or len(chats) >= params["$top"] * pages:
+            break
+        try:
+            res = _graph_request("GET", next_link, account=account)
+        except Exception:
+            break
+    for c in chats:
+        if not c.get("members"):
+            try:
+                members_res = _graph_request("GET", f"/me/chats/{c.get('id')}/members", account=account)
+                c["members"] = members_res.get("value", []) if isinstance(members_res, dict) else []
+            except Exception:
+                c["members"] = []
+    return chats
+
+
+def _norm_name(value: Any) -> str:
+    text = _html.unescape(str(value or "")).lower().strip()
+    text = text.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+    return _re.sub(r"[^a-z0-9@._\- ]+", " ", text).strip()
+
+
+def _score_chat_candidate(chat: Dict[str, Any], query: str, me: Dict[str, str], prefer: str) -> Tuple[int, str, str]:
+    """Score how well ``chat`` matches a recipient/topic query.
+
+    Returns ``(score, reason, match_key)``; ``match_key`` identifies *who or
+    what* matched (a member's email/name or the topic) so that the same
+    person appearing in a 1:1 chat and in a group chat does not count as an
+    ambiguous match.
+    """
+    q = _norm_name(query)
+    if not q:
+        return 0, "", ""
+    q_tokens = [t for t in q.replace(",", " ").split() if t]
+    my_id = (me.get("id") or "").lower()
+    my_upn = _norm_name(me.get("upn"))
+    others = []
+    for m in chat.get("members") or []:
+        if not isinstance(m, dict):
+            continue
+        uid = str(m.get("userId") or m.get("id") or "").lower()
+        email = _norm_name(m.get("email") or m.get("userPrincipalName") or m.get("mail"))
+        if (my_id and uid == my_id) or (my_upn and email == my_upn):
+            continue
+        others.append((_norm_name(m.get("displayName")), email))
+    chat_type = str(chat.get("chatType") or "").lower()
+    topic = _norm_name(chat.get("topic"))
+    best = 0
+    reason = ""
+    match_key = ""
+    # Nickname stem: "Fischi" → "fisch", "Andi" → "and", "Tommy" → "tomm".
+    nick_stem = q[:-1] if len(q_tokens) == 1 and len(q) >= 4 and q[-1] in "iy" else ""
+    if nick_stem.endswith("ie"):
+        nick_stem = nick_stem[:-1]
+    for name, email in others:
+        name_tokens = name.split()
+        if "@" in q and email and q == email:
+            score, why = 100, f"exact email {email}"
+        elif name and q == name:
+            score, why = 90, f"full name {name}"
+        elif email and q == email.split("@")[0]:
+            score, why = 85, f"mail alias {email}"
+        elif len(q_tokens) >= 2 and all(any(nt.startswith(t) for nt in name_tokens) for t in q_tokens):
+            score, why = 80, f"first+last name {name}"
+        elif len(q_tokens) == 1 and name_tokens and any(nt == q for nt in name_tokens):
+            score, why = 60, f"name token {name}"
+        elif len(q_tokens) == 1 and any(nt.startswith(q) for nt in name_tokens) and len(q) >= 3:
+            score, why = 45, f"name prefix {name}"
+        elif nick_stem and any(nt.startswith(nick_stem) for nt in name_tokens):
+            score, why = 42, f"nickname of {name}"
+        elif len(q_tokens) == 1 and len(q) >= 4 and any(q in nt for nt in name_tokens):
+            score, why = 35, f"name contains {name}"
+        else:
+            continue
+        if chat_type == "oneonone":
+            score += 8
+        if score > best:
+            best, reason, match_key = score, why, f"person:{email or name}"
+    if topic:
+        if q == topic:
+            t_score, t_why = 88, f"topic {chat.get('topic')}"
+        elif all(t in topic for t in q_tokens):
+            t_score, t_why = 70, f"topic contains {chat.get('topic')}"
+        elif any(len(t) >= 4 and t in topic for t in q_tokens):
+            t_score, t_why = 40, f"topic partially {chat.get('topic')}"
+        else:
+            t_score, t_why = 0, ""
+        if t_score > best:
+            best, reason, match_key = t_score, t_why, f"topic:{topic}"
+    preview = chat.get("lastMessagePreview") or {}
+    sender = _norm_name(((preview.get("from") or {}).get("user") or {}).get("displayName")) if isinstance(preview, dict) else ""
+    if best == 0 and sender and q in sender:
+        best, reason, match_key = 30, f"last sender {sender}", f"person:{sender}"
+    if best and prefer in ("oneonone", "group") and chat_type != prefer:
+        best -= 15
+    return best, reason, match_key
+
+
+def _resolve_teams_recipient(query: str, prefer: str = "any", top: int = 25, account: Optional[str] = None) -> Dict[str, Any]:
+    """Rank the user's chats for ``query`` and decide unique | ambiguous | none."""
+    prefer_norm = (prefer or "any").strip().lower().replace("_", "").replace("-", "")
+    if prefer_norm in ("1:1", "11", "direct", "dm", "oneonone"):
+        prefer_norm = "oneonone"
+    elif prefer_norm not in ("group", "any"):
+        prefer_norm = "any"
+    me = _my_identity(account=account)
+    chats = _fetch_my_chats(top=50, pages=2, account=account)
+    scored: List[Tuple[int, str, str, Dict[str, Any]]] = []
+    for chat in chats:
+        score, reason, key = _score_chat_candidate(chat, query, me, prefer_norm)
+        if score > 0:
+            scored.append((score, reason, key, chat))
+    # Highest score first; on ties the most recently active chat wins.
+    scored.sort(key=lambda item: str(item[3].get("lastUpdatedDateTime") or ""), reverse=True)
+    scored.sort(key=lambda item: -item[0])
+    candidates = []
+    keys: List[str] = []
+    for score, reason, key, chat in scored[: max(1, min(int(top), 50))]:
+        compact = _compact_chat(chat)
+        compact["score"] = score
+        compact["match_reason"] = reason
+        candidates.append(compact)
+        keys.append(key)
+    if not candidates:
+        resolution = "none"
+    else:
+        top_score, top_key = candidates[0]["score"], keys[0]
+        # A competitor is a *different* person/topic scoring close to the top.
+        # The same person in a 1:1 chat and in a group chat is not ambiguous —
+        # the 1:1 chat wins (it carries the +8 direct-chat boost).
+        competitors = [
+            c for c, k in zip(candidates[1:], keys[1:])
+            if k != top_key and c["score"] >= top_score - 15
+        ]
+        if top_score >= 40 and not competitors:
+            resolution = "unique"
+        elif top_score >= 80 and not competitors:
+            resolution = "unique"
+        else:
+            resolution = "ambiguous"
+    result: Dict[str, Any] = {
+        "query": query,
+        "prefer": prefer_norm,
+        "resolution": resolution,
+        "candidates": candidates,
+        "chats_scanned": len(chats),
+    }
+    if resolution == "unique":
+        result["chat_id"] = candidates[0]["chat_id"]
+        result["next_step"] = "Send with m365_send_chat_message(chat_id=...) or pass the same `to` and let it resolve."
+    elif resolution == "ambiguous":
+        result["next_step"] = (
+            "Several chats match. Show the candidates (members, topic, last message) to the user and "
+            "ask which one, or refine the query with a full name / email / topic."
+        )
+    else:
+        result["next_step"] = "No existing chat matches."
+        if "@" in query or len(query.split()) >= 2:
+            result["direct_chat_hint"] = {
+                "tool": "m365_get_or_create_direct_chat",
+                "user_id_or_upn": query,
+                "note": "Start a new 1:1 chat with this person (resolved via existing chats first, then the directory).",
+            }
+    return result
+
+
+def _clean_query_text(value: Optional[str]) -> str:
+    return str(value or "").strip()
+
+
 @mcp.tool()
 def m365_list_chats(
     top: int = 10,
@@ -1589,15 +1975,20 @@ def m365_list_chats(
     search_query: Optional[str] = None,
     chat_type: Optional[str] = None,
     account: Optional[str] = None,
+    raw: bool = False,
 ) -> Dict[str, Any]:
-    """List recent Microsoft Teams chats (1:1 direct chats, group chats, or meeting chats) with member details and optional search filtering.
+    """List recent Microsoft Teams chats (1:1, group, meeting) in a compact form.
+
+    To find the chat for a person or topic, prefer `m365_find_chat` (ranked,
+    with a unique/ambiguous verdict). This tool is for browsing recent chats.
 
     Args:
         top: Max number of recent chats to inspect or return (capped at 50).
-        expand_members: 'True' (default) expands participant details (displayName, email, userPrincipalName) for each chat.
-        search_query: Optional search filter to match against member names, email addresses, chat topic/title, or message content.
+        expand_members: 'True' (default) includes participants (displayName, email).
+        search_query: Optional substring filter on member names, emails, topic or last message.
         chat_type: Optional filter by chat type ('oneOnOne', 'group', or 'meeting').
         account: Optional M365 account username, email, or ID.
+        raw: Return the unmodified Graph objects instead of compact records.
     """
     params = {"$top": min(top, 50)}
     if expand_members:
@@ -1663,50 +2054,131 @@ def m365_list_chats(
                 _enrich_timestamps(c)
         res["value"] = chats
         res["count"] = len(chats)
-    return res
+    if raw or not isinstance(res, dict):
+        return res
+    return {"count": len(chats), "chats": [_compact_chat(c) for c in chats if isinstance(c, dict)]}
+
+
+@mcp.tool()
+def m365_find_chat(
+    query: str,
+    prefer: str = "any",
+    top: int = 25,
+    account: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Find the Teams chat for a person, nickname, email or group topic — no directory rights needed.
+
+    Ranks the signed-in user's recent chats by member names / emails / topic
+    (exact email > full name > first+last name > single name token > topic)
+    and returns a verdict:
+
+    - `resolution: "unique"`  → `chat_id` is safe to use.
+    - `resolution: "ambiguous"` → show `candidates` (members, topic, last message)
+      to the user and ask; never pick one silently.
+    - `resolution: "none"` → `direct_chat_hint` says how to start a 1:1 chat when
+      the query is an email or full name.
+
+    Args:
+        query: Person name, nickname, email address or group-chat topic.
+        prefer: "oneOnOne" (direct chats), "group", or "any" (default).
+        top: Max candidates to return (capped at 50).
+        account: Optional M365 account username, email, or ID.
+    """
+    query_clean = _clean_query_text(query)
+    if not query_clean:
+        return {"error": "query is required (person name, email or chat topic)."}
+    return _resolve_teams_recipient(query_clean, prefer=prefer, top=top, account=account)
 
 
 @mcp.tool()
 def m365_send_chat_message(
-    chat_id: str,
+    chat_id: Optional[str] = None,
     content: Optional[str] = None,
     content_type: str = "html",
     message: Optional[str] = None,
     body: Optional[str] = None,
     text: Optional[str] = None,
     attachments: Optional[List[str]] = None,
+    to: Optional[str] = None,
+    dry_run: bool = False,
+    account: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Send a message to a Microsoft Teams chat.
+    """Send a Microsoft Teams chat message to a person or chat.
+
+    Recipient: pass `to` (name, nickname, email or group topic) and the tool
+    resolves the chat via `m365_find_chat`; it sends only when the match is
+    unique and otherwise returns the candidates without sending. Never reuse a
+    chat_id from memory or an earlier session — resolve it fresh with `to`.
+
+    Formatting: write `content` as the same Markdown you showed the user
+    (bold, lists, links, paragraphs). It is rendered to the HTML Teams
+    displays, so what was approved in chat is what arrives. Hand-written HTML
+    is passed through unchanged. The result carries `rendered_html` and
+    `plain_text` so you can confirm exactly what was sent.
 
     Args:
-        chat_id: The Teams chat ID.
-        content: Message content (text or HTML).
-        content_type: 'html' (default) or 'text'. When 'html', Teams renders rich text, line breaks, and paragraphs.
-        message: Alias for content (accepted so a wrong first guess still succeeds).
-        body: Alias for content (accepted so a wrong first guess still succeeds).
-        text: Alias for content (accepted so a wrong first guess still succeeds).
-        attachments: Optional local file paths to attach. Each file is uploaded to
-            the signed-in user's OneDrive (folder 'HermesAttachments') and linked
-            into the chat message as a file card, same as Teams' own "Attach" button.
-            Forces content_type to HTML regardless of what was requested.
+        chat_id: Teams chat id. Optional when `to` is given.
+        content: Message text (Markdown or HTML).
+        content_type: 'html' (default, Markdown is rendered) or 'text' (sent verbatim).
+        message: Alias for content.
+        body: Alias for content.
+        text: Alias for content.
+        attachments: Optional local file paths; uploaded to OneDrive and linked as file cards (forces HTML).
+        to: Recipient name / email / group topic; resolved to a chat before sending.
+        dry_run: Resolve the recipient and render the message but do not send.
+        account: Optional M365 account username, email, or ID.
     """
     resolved_content = content if content is not None else (message if message is not None else (body if body is not None else text))
     if resolved_content is None:
         raise ValueError("m365_send_chat_message requires the message text via 'content' (or its aliases: message/body/text).")
 
+    recipient: Optional[Dict[str, Any]] = None
+    chat_type = ""
+    resolution: Optional[Dict[str, Any]] = None
+    target_chat_id = (chat_id or "").strip()
+    to_clean = _clean_query_text(to)
+    if not target_chat_id:
+        if not to_clean:
+            raise ValueError("m365_send_chat_message needs either 'to' (name / email / topic) or 'chat_id'.")
+        resolution = _resolve_teams_recipient(to_clean, prefer="any", top=5, account=account)
+        if resolution["resolution"] != "unique":
+            return {
+                "sent": False,
+                "error": (
+                    "recipient ambiguous — ask the user which chat is meant"
+                    if resolution["resolution"] == "ambiguous"
+                    else "recipient not found among your Teams chats"
+                ),
+                "to": to_clean,
+                **resolution,
+            }
+        target_chat_id = resolution["chat_id"]
+    if resolution is not None:
+        top_candidate = resolution["candidates"][0]
+        chat_type = top_candidate.get("chat_type") or ""
+        me = _my_identity(account=account)
+        others = [
+            m for m in top_candidate.get("members") or []
+            if (m.get("user_id") or "").lower() != (me.get("id") or "").lower()
+            and _norm_name(m.get("email")) != _norm_name(me.get("upn"))
+        ]
+        recipient = {
+            "chat_id": target_chat_id,
+            "chat_type": chat_type,
+            "topic": top_candidate.get("topic") or "",
+            "members": others or top_candidate.get("members") or [],
+            "match_reason": top_candidate.get("match_reason") or "",
+        }
+
     norm_attachments = _normalize_attachment_list(attachments)
-    ct = "html" if norm_attachments else content_type.lower()
-    final_content = resolved_content
+    ct = "html" if norm_attachments else (content_type or "html").lower()
     if ct == "html":
-        import re
-        if not re.search(r"<(p|div|br|ul|ol|li|h[1-6])\b", resolved_content, re.IGNORECASE):
-            paragraphs = resolved_content.split("\n\n")
-            formatted_p = []
-            for p in paragraphs:
-                p_clean = p.strip().replace("\n", "<br/>")
-                if p_clean:
-                    formatted_p.append(f"<p>{p_clean}</p>")
-            final_content = "".join(formatted_p) if formatted_p else resolved_content
+        final_content = _markdown_to_teams_html(resolved_content)
+        if not final_content:
+            final_content = resolved_content
+    else:
+        final_content = resolved_content
+    plain_text = _html_to_text(final_content) if ct == "html" else resolved_content
 
     payload: Dict[str, Any] = {
         "body": {
@@ -1714,11 +2186,30 @@ def m365_send_chat_message(
             "content": final_content,
         }
     }
+    result: Dict[str, Any] = {
+        "chat_id": target_chat_id,
+        "content_type": payload["body"]["contentType"],
+        "rendered_html": final_content if ct == "html" else None,
+        "plain_text": plain_text,
+    }
+    if recipient:
+        result["recipient"] = recipient
+        result["chat_type"] = chat_type
+    if dry_run:
+        result["sent"] = False
+        result["dry_run"] = True
+        result["attachments"] = norm_attachments
+        return result
     if norm_attachments:
         attachment_payload, attachment_tags = _build_teams_attachments(norm_attachments)
         payload["attachments"] = attachment_payload
         payload["body"]["content"] = final_content + attachment_tags
-    return _graph_request("POST", f"/me/chats/{chat_id}/messages", json_data=payload)
+    graph_res = _graph_request("POST", f"/me/chats/{target_chat_id}/messages", json_data=payload, account=account)
+    if isinstance(graph_res, dict):
+        result.update({k: v for k, v in graph_res.items() if k not in result})
+        result["message_id"] = graph_res.get("id")
+    result["sent"] = True
+    return result
 
 
 @mcp.tool()
@@ -1813,31 +2304,79 @@ def m365_search_users(query: str, top: int = 10) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def m365_get_chat_members(chat_id: str) -> Dict[str, Any]:
-    """Get the members (participants) of a Microsoft Teams chat."""
-    return _graph_request("GET", f"/me/chats/{chat_id}/members")
+def m365_get_chat_members(chat_id: str, raw: bool = False) -> Dict[str, Any]:
+    """Get the members (participants) of a Microsoft Teams chat as {displayName, email, user_id}."""
+    res = _graph_request("GET", f"/me/chats/{chat_id}/members")
+    if raw or not isinstance(res, dict):
+        return res
+    members = [_compact_member(m) for m in (res.get("value") or []) if isinstance(m, dict)]
+    return {"chat_id": chat_id, "count": len(members), "members": members}
 
 
 @mcp.tool()
 def m365_get_or_create_direct_chat(user_id_or_upn: str) -> Dict[str, Any]:
-    """Get or create a 1:1 Teams direct chat with a tenant user by Graph user ID, email/UPN, or first/last name.
+    """Get or create a 1:1 Teams chat with a person by name, email/UPN or Graph user id.
 
-    Looking up another user by email/UPN/name uses directory search (m365_search_users).
-    If directory search is restricted, pass the other user's Graph user ID or full email address directly.
+    Resolution order (works without directory rights): an existing 1:1 chat
+    whose member matches → directory search (admin tier, skipped when
+    forbidden) → the email/UPN itself. Returns the existing chat when one is
+    found instead of creating a duplicate.
     """
-    me_profile = _graph_request("GET", "/me")
-    my_id = me_profile.get("id")
+    ident = _clean_query_text(user_id_or_upn)
+    if not ident:
+        return {"error": "user_id_or_upn is required (name, email/UPN or Graph user id)."}
+    me = _my_identity()
+    my_id = me.get("id")
 
-    other_user = user_id_or_upn
-    search_res = m365_search_users(user_id_or_upn, top=1)
-    users = search_res.get("value", []) if isinstance(search_res, dict) else []
-    if users:
-        other_user = users[0].get("id")
-    elif "@" in user_id_or_upn:
-        # Fallback: get user directly by UPN
-        user_by_upn = _graph_request("GET", f"/users/{user_id_or_upn}")
-        if isinstance(user_by_upn, dict) and "id" in user_by_upn:
-            other_user = user_by_upn["id"]
+    # 1. Existing 1:1 chat with that person (no directory permission needed).
+    try:
+        resolution = _resolve_teams_recipient(ident, prefer="oneOnOne", top=3)
+    except Exception:
+        resolution = {"resolution": "none", "candidates": []}
+    if resolution.get("resolution") == "unique" and resolution["candidates"][0].get("chat_type", "").lower() == "oneonone":
+        found = resolution["candidates"][0]
+        return {"id": found["chat_id"], "chatType": "oneOnOne", "existing": True, "members": found.get("members", []), "match_reason": found.get("match_reason", "")}
+    if resolution.get("resolution") == "ambiguous":
+        return {
+            "error": "several existing chats match — ask the user which person is meant",
+            "candidates": resolution.get("candidates", []),
+        }
+    other_user: Optional[str] = None
+    if resolution.get("resolution") == "unique":
+        # Group chat matched: take the member id from it when it is a single other person.
+        others = [m for m in resolution["candidates"][0].get("members", []) if (m.get("user_id") or "").lower() != (my_id or "").lower()]
+        if len(others) == 1 and others[0].get("user_id"):
+            other_user = others[0]["user_id"]
+
+    # 2. Directory search (admin tier) — optional.
+    if not other_user:
+        try:
+            search_res = m365_search_users(ident, top=1)
+            users = search_res.get("value", []) if isinstance(search_res, dict) else []
+            if users:
+                other_user = users[0].get("id")
+        except Exception:
+            users = []
+    # 3. Direct lookup / raw UPN.
+    if not other_user and "@" in ident:
+        try:
+            user_by_upn = _graph_request("GET", f"/users/{ident}")
+            if isinstance(user_by_upn, dict) and "id" in user_by_upn:
+                other_user = user_by_upn["id"]
+        except Exception:
+            pass
+        if not other_user:
+            other_user = ident
+    if not other_user:
+        if _re.fullmatch(r"[0-9a-fA-F-]{32,36}", ident):
+            other_user = ident
+        else:
+            return {
+                "error": (
+                    f"Could not resolve '{ident}': no existing chat with that person and no directory "
+                    "access. Ask for the person's email address (or start the chat once in Teams)."
+                ),
+            }
 
     payload = {
         "chatType": "oneOnOne",
@@ -1854,7 +2393,10 @@ def m365_get_or_create_direct_chat(user_id_or_upn: str) -> Dict[str, Any]:
             },
         ],
     }
-    return _graph_request("POST", "/chats", json_data=payload)
+    created = _graph_request("POST", "/chats", json_data=payload)
+    if isinstance(created, dict):
+        created.setdefault("existing", False)
+    return created
 
 
 @mcp.tool()
@@ -1922,13 +2464,191 @@ def m365_search_sharepoint_files(site_id: str, query: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def m365_list_chat_messages(chat_id: str, top: int = 10) -> Dict[str, Any]:
-    """List recent messages in a specific Microsoft Teams chat (1:1 or group chat)."""
+def m365_list_chat_messages(chat_id: str, top: int = 10, raw: bool = False) -> Dict[str, Any]:
+    """List recent messages of a Teams chat as compact records {from, at, text, has_attachments}.
+
+    Args:
+        chat_id: The chat id (from m365_find_chat / m365_list_chats).
+        top: Number of most recent messages (capped at 50).
+        raw: Return the unmodified Graph objects (with attachments_summary) instead.
+    """
     params = {"$top": min(top, 50)}
     res = _graph_request("GET", f"/me/chats/{chat_id}/messages", params=params)
     if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
         res["value"] = [_enrich_teams_message(msg, chat_id=chat_id) for msg in res["value"]]
-    return res
+    if raw or not isinstance(res, dict):
+        return res
+    messages = [_compact_message(m) for m in (res.get("value") or []) if isinstance(m, dict)]
+    messages = [m for m in messages if m.get("message_type", "message") == "message"]
+    return {"chat_id": chat_id, "count": len(messages), "messages": messages}
+
+
+_GREETING_RE = _re.compile(
+    r"^(hi|hey|hallo|hello|moin moin|moin|servus|gr(ü|ue)(ß|ss) dich|gr(ü|ue)(ß|ss) gott|guten morgen|guten tag|good morning|"
+    r"liebe[r]?|sehr geehrte[r]?|dear|na)\b",
+    _re.IGNORECASE,
+)
+_SIGNOFF_RE = _re.compile(
+    r"(?:^|[\s,.!])(vg|lg|bg|mfg|viele gr(ü|ue)(ß|ss)e|liebe gr(ü|ue)(ß|ss)e|beste gr(ü|ue)(ß|ss)e|sch(ö|oe)ne gr(ü|ue)(ß|ss)e|gru(ß|ss)|gr(ü|ue)(ß|ss)e|"
+    r"danke( dir| euch| ihnen)?|merci|thanks|thx|cheers|best regards|kind regards|regards|best|bis (gleich|sp(ä|ae)ter|morgen|dann)|ciao|tsch(ü|ue)ss)"
+    r"[\s!.,:)]*(?:[\wäöüÄÖÜß\-]+[\s!.,)]*){0,3}$",
+    _re.IGNORECASE,
+)
+_EMOJI_RE = _re.compile("[\U0001F300-\U0001FAFF\u2600-\u27BF\U0001F1E6-\U0001F1FF]")
+_DU_RE = _re.compile(r"\b(du|dir|dich|dein|deine|deinen|deinem|deiner|euch|ihr)\b", _re.IGNORECASE)
+_SIE_RE = _re.compile(r"\b(Sie|Ihnen|Ihr|Ihre|Ihrer|Ihrem|Ihren)\b")
+_DE_STOPWORDS = {"und", "nicht", "ich", "das", "die", "der", "ist", "wir", "mit", "auch", "noch", "mal", "bitte", "danke", "kann", "wenn", "dann", "für", "fuer", "habe", "hab"}
+_EN_STOPWORDS = {"the", "and", "you", "for", "with", "that", "this", "please", "thanks", "can", "will", "have", "just", "let", "know"}
+
+_TEAMS_REGISTER_DEFAULTS = {
+    "language": "match the user's request",
+    "greeting": "none or a short first-name greeting",
+    "address": "du",
+    "sign_off": "none",
+    "signature": False,
+    "attribution": False,
+    "typical_length_words": 25,
+    "emoji": "rare",
+    "formality": "casual",
+    "tech_details": False,
+    "notes": (
+        "Teams is chat, not mail: no letter salutation, no closing formula, no signature, no "
+        "implementation details, no claims about data or access the recipient cannot see."
+    ),
+}
+
+
+def _derive_chat_style(my_messages: List[str]) -> Dict[str, Any]:
+    """Derive a compact style profile from the user's own messages in a chat."""
+    if not my_messages:
+        return {"source_messages": 0, "defaults": dict(_TEAMS_REGISTER_DEFAULTS), "profile": None, "examples": []}
+    greetings: Dict[str, int] = {}
+    signoffs: Dict[str, int] = {}
+    du_hits = sie_hits = 0
+    emoji_msgs = 0
+    exclamations = 0
+    de_score = en_score = 0
+    lengths: List[int] = []
+    for text in my_messages:
+        lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+        if not lines:
+            continue
+        first, last = lines[0], lines[-1]
+        m = _GREETING_RE.match(first)
+        if m:
+            greetings[m.group(1).lower()] = greetings.get(m.group(1).lower(), 0) + 1
+        tail = " ".join(lines[-2:])[-80:] if len(lines) > 1 else last[-60:]
+        sm = _SIGNOFF_RE.search(tail)
+        if sm and (len(lines) > 1 or len(last.split()) > 3):
+            key = sm.group(1).lower()
+            signoffs[key] = signoffs.get(key, 0) + 1
+        du_hits += len(_DU_RE.findall(text))
+        sie_hits += len(_SIE_RE.findall(text))
+        if _EMOJI_RE.search(text):
+            emoji_msgs += 1
+        exclamations += text.count("!")
+        words = _re.findall(r"[\wäöüÄÖÜß']+", text)
+        lengths.append(len(words))
+        lowered = {w.lower() for w in words}
+        de_score += len(lowered & _DE_STOPWORDS)
+        en_score += len(lowered & _EN_STOPWORDS)
+    n = max(1, len(my_messages))
+    avg_len = round(sum(lengths) / max(1, len(lengths)))
+    greeting = max(greetings, key=greetings.get) if greetings else "none"
+    greeting_ratio = (greetings.get(greeting, 0) / n) if greetings else 0.0
+    sign_off = max(signoffs, key=signoffs.get) if signoffs else "none"
+    signoff_ratio = (signoffs.get(sign_off, 0) / n) if signoffs else 0.0
+    if sie_hits > du_hits and sie_hits >= 2:
+        address = "Sie"
+    elif du_hits > 0:
+        address = "du"
+    else:
+        address = "unknown"
+    language = "de" if de_score >= en_score and de_score > 0 else ("en" if en_score > 0 else "unknown")
+    emoji_ratio = emoji_msgs / n
+    formality = "formal" if address == "Sie" or (greeting_ratio > 0.6 and signoff_ratio > 0.6 and avg_len > 60) else ("casual" if address == "du" or emoji_ratio > 0.2 or avg_len < 30 else "neutral")
+    return {
+        "source_messages": len(my_messages),
+        "profile": {
+            "language": language,
+            "greeting": greeting if greeting_ratio >= 0.4 else "none",
+            "greeting_frequency": round(greeting_ratio, 2),
+            "address": address,
+            "sign_off": sign_off if signoff_ratio >= 0.4 else "none",
+            "sign_off_frequency": round(signoff_ratio, 2),
+            "signature": False,
+            "typical_length_words": avg_len,
+            "emoji": "often" if emoji_ratio > 0.4 else ("sometimes" if emoji_ratio > 0.1 else "rare"),
+            "exclamation_per_message": round(exclamations / n, 2),
+            "formality": formality,
+        },
+        "defaults": dict(_TEAMS_REGISTER_DEFAULTS),
+    }
+
+
+@mcp.tool()
+def m365_get_chat_style(
+    chat_id: Optional[str] = None,
+    to: Optional[str] = None,
+    sample: int = 30,
+    account: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Derive how the user actually writes in a specific Teams chat (per-recipient "flavour").
+
+    Reads the user's own recent messages in that chat and returns a compact
+    style profile: language, greeting, du/Sie, sign-off, typical length, emoji
+    use, formality, plus up to three short examples. With no history it returns
+    the Teams register defaults (short, no letter salutation, no closing
+    formula, no signature, no technical details). Save the profile as a
+    `person` memory note ("Teams style with <Name>") and reuse it next time.
+
+    Args:
+        chat_id: Chat id; or pass `to` (name / email / topic) to resolve it.
+        to: Recipient to resolve when chat_id is not known.
+        sample: How many recent messages to inspect (capped at 50).
+        account: Optional M365 account username, email, or ID.
+    """
+    target = (chat_id or "").strip()
+    recipient: Optional[Dict[str, Any]] = None
+    if not target:
+        to_clean = _clean_query_text(to)
+        if not to_clean:
+            return {"error": "Pass chat_id or to (name / email / topic)."}
+        resolution = _resolve_teams_recipient(to_clean, prefer="any", top=5, account=account)
+        if resolution["resolution"] != "unique":
+            return {"error": f"recipient {resolution['resolution']}", **resolution}
+        target = resolution["chat_id"]
+        recipient = resolution["candidates"][0]
+    me = _my_identity(account=account)
+    res = _graph_request("GET", f"/me/chats/{target}/messages", params={"$top": min(max(int(sample), 1), 50)}, account=account)
+    raw_messages = (res.get("value") or []) if isinstance(res, dict) else []
+    mine: List[str] = []
+    theirs = 0
+    for msg in raw_messages:
+        if not isinstance(msg, dict) or (msg.get("messageType") or "message") != "message":
+            continue
+        user = (msg.get("from") or {}).get("user") or {}
+        compact = _compact_message(msg)
+        if not compact.get("text"):
+            continue
+        is_me = (str(user.get("id") or "").lower() == (me.get("id") or "").lower()) or (
+            not user.get("id") and _norm_name(user.get("displayName")) == _norm_name(me.get("displayName"))
+        )
+        if is_me:
+            mine.append(compact["text"])
+        else:
+            theirs += 1
+    style = _derive_chat_style(mine)
+    style["chat_id"] = target
+    style["their_messages_seen"] = theirs
+    style["examples"] = [_truncate(t, 200) for t in mine[:3]]
+    if recipient:
+        style["recipient"] = {k: recipient.get(k) for k in ("chat_type", "topic", "members", "match_reason")}
+    style["how_to_use"] = (
+        "Draft in this register. If profile is null, use defaults. Persist the profile as a person "
+        "memory note titled 'Teams style with <Name>' (tag teams-style) so it is not re-derived."
+    )
+    return style
 
 
 @mcp.tool()

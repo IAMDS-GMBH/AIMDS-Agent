@@ -646,6 +646,8 @@ export const de
       catalogModalTitle: (name: string) => `${name} konfigurieren`,
       catalogModalDesc: 'Gib die erforderlichen Secrets oder Tokens ein, um diese MCP-Integration zu aktivieren.',
       catalogSecretsNotice: 'Secrets werden sicher in deiner .env-Konfiguration gespeichert.',
+      catalogInstallFailedTitle: 'MCP-Installation fehlgeschlagen',
+      catalogInstallFailedMessage: (name: string, detail: string) => `${name} konnte nicht installiert werden.${detail ? ` Letzte Ausgabe: ${detail}` : ''}`,
       catalogInstallSuccessTitle: 'MCP installiert',
       catalogInstallSuccessMessage: (name: string) => `${name} wurde zu deiner MCP-Konfiguration hinzugefügt.`,
       catalogInstancePickerLabel: 'Instanz',

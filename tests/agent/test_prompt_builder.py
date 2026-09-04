@@ -27,6 +27,7 @@ from agent.prompt_builder import (
     build_outlook_signature_guidance,
     build_outlook_contact_profiling_guidance,
     build_ai_attribution_guidance,
+    build_teams_send_guidance,
     build_jira_guidance,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
@@ -1720,3 +1721,45 @@ def test_memory_prompt_teaches_active_contexts_hygiene():
     assert "active_contexts" in text
     assert "`always`" in text  # tag global rules before filtering
     assert "user confirms" in text
+
+
+class TestBuildTeamsSendGuidance:
+    """build_teams_send_guidance() (AIS-286): only with the m365 Teams send
+    tool; tells the model to resolve recipients with the tool, never send on
+    ambiguous, and pass the approved Markdown through."""
+
+    NAMES = {
+        "mcp_MSOffice365MCP_m365_send_chat_message",
+        "mcp_MSOffice365MCP_m365_find_chat",
+        "mcp_MSOffice365MCP_m365_get_chat_style",
+        "mcp_MSOffice365MCP_m365_get_or_create_direct_chat",
+        "memory_save",
+    }
+
+    def test_empty_without_teams_send_tool(self):
+        assert build_teams_send_guidance({"outlook_write_email", "memory_save"}) == ""
+        assert build_teams_send_guidance({"mcp_MSOffice365MCP_m365_send_email"}) == ""
+        assert build_teams_send_guidance(None) == ""
+
+    def test_full_guidance(self):
+        text = build_teams_send_guidance(self.NAMES)
+        assert text.startswith("# Teams: send to a person without guessing")
+        for name in self.NAMES:
+            assert name in text
+        assert "ambiguous" in text and "chat URL" in text
+        assert "Teams style with <Name>" in text
+        assert "Markdown" in text and "renders it to the HTML" in text
+        assert "no signature, no attribution line" in text
+
+    def test_send_tool_only(self):
+        text = build_teams_send_guidance({"mcp_MSOffice365MCP_m365_send_chat_message"})
+        assert text and "to=<name" in text
+        assert "m365_find_chat" not in text and "Teams style" not in text
+
+    def test_signature_and_attribution_treat_teams_as_chat(self):
+        names = {"mcp_MSOffice365MCP_m365_send_email", "mcp_MSOffice365MCP_m365_send_chat_message", "memory_save"}
+        sig = build_outlook_signature_guidance(names)
+        assert "do not add the email signature" in sig
+        att = build_ai_attribution_guidance(names)
+        assert "NO attribution line" in att
+        assert "very end of the message" not in att

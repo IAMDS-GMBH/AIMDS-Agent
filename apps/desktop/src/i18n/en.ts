@@ -645,6 +645,8 @@ export const en: Translations = {
       catalogModalTitle: (name: string) => `Configure ${name}`,
       catalogModalDesc: 'Enter the required secrets or tokens to activate this MCP integration.',
       catalogSecretsNotice: 'Secrets will be stored securely in your .env configuration.',
+      catalogInstallFailedTitle: 'MCP installation failed',
+      catalogInstallFailedMessage: (name: string, detail: string) => `${name} could not be installed.${detail ? ` Last output: ${detail}` : ''}`,
       catalogInstallSuccessTitle: 'MCP Installed',
       catalogInstallSuccessMessage: (name: string) => `${name} has been added to your MCP configuration.`,
       catalogInstancePickerLabel: 'Instance',

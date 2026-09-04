@@ -1961,17 +1961,19 @@ def build_outlook_signature_guidance(valid_tool_names: "set[str] | None" = None)
     list_emails = mail_tools.get("list_emails") or mail_tools.get("search_emails")
     sent_hint = mail_tools.get("sent_folder_hint", "folder='sent'")
     chat_tool = mail_tools.get("send_chat_message")
-    html_scope = (
-        f"emails (`{write_email}`) and Teams messages (`{chat_tool}`)"
+    teams_note = (
+        f" Teams messages (`{chat_tool}`) are different: pass the Markdown you showed the user as "
+        "`content` — the tool renders it to the HTML Teams displays, so do not hand-write HTML "
+        "there and do not add the email signature."
         if chat_tool
-        else f"emails (`{write_email}`)"
+        else ""
     )
 
     return (
         "# Outlook/M365: HTML formatting, signature & per-contact tone\n"
-        f"Always compose {html_scope} as HTML, never plain text — this is what makes "
+        f"Always compose emails (`{write_email}`) as HTML, never plain text — this is what makes "
         "paragraphs, line breaks, and the signature/attribution below render correctly instead "
-        "of collapsing into one unreadable block.\n"
+        f"of collapsing into one unreadable block.{teams_note}\n"
         "Global signature (derive once, reuse silently): this is a MANDATORY prerequisite step, "
         f"not optional polish. Before your FIRST `{write_email}` call for a new email "
         "(not a reply — replies already show the existing thread) in a session, you MUST first "
@@ -2032,11 +2034,18 @@ def build_ai_attribution_guidance(valid_tool_names: "set[str] | None" = None) ->
     scope_bits = [b for b in (f"emails (`{write_email}`)" if write_email else None,
                               f"Teams messages (`{chat_tool}`)" if chat_tool else None) if b]
     scope = " and ".join(scope_bits)
+    teams_rule = (
+        f" For Teams messages (`{chat_tool}`) the default is NO attribution line — Teams is chat, "
+        "not mail; add it only when the saved style profile for that person shows the user does, "
+        "or the user asked for it."
+        if chat_tool
+        else ""
+    )
 
     return (
         "# AI attribution footer\n"
         f"Append a short attribution line to {scope} you compose: for emails, on its own line "
-        f"right after the signature/closing; for Teams messages, at the very end of the message. "
+        f"right after the signature/closing.{teams_rule} "
         f"Default format: '(Erstellt von {default_name})' (translate/adapt naturally to the "
         "conversation's language). Before your first such message in a session, check memory "
         "(schema `notes`) for a previously saved custom name or format for this — the user may "
@@ -2045,6 +2054,72 @@ def build_ai_attribution_guidance(valid_tool_names: "set[str] | None" = None) ->
         f"instruction (a new name, a different phrasing, or to omit it), persist it immediately "
         f"via `{tool_name}` (schema `notes`, e.g. title 'Assistant: attribution preference') so "
         "it's remembered in later sessions without asking again."
+    )
+
+
+def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str:
+    """Instruct the model how to send a Teams message to a *person* without
+    guessing: resolve the chat with the tool (never from memory), never send
+    on an ambiguous match, draft in the recipient's register, pass the approved
+    Markdown as content, and confirm the recipient from the tool result.
+
+    Written against a real session (2026-09-03) in which the assistant looked
+    for a chat id in memory, tried the wrong tool, asked the user for the chat
+    URL, drafted a formal letter and sent plain text with Markdown asterisks.
+
+    Only injected when the MSOffice365MCP ``m365_send_chat_message`` tool is
+    present (the legacy ``outlook_*`` family has no Teams tool).
+    """
+    names = set(valid_tool_names or set())
+    send_tool = _resolve_m365_tool_name(names, "m365_send_chat_message")
+    if not send_tool:
+        return ""
+    find_tool = _resolve_m365_tool_name(names, "m365_find_chat")
+    style_tool = _resolve_m365_tool_name(names, "m365_get_chat_style")
+    direct_tool = _resolve_m365_tool_name(names, "m365_get_or_create_direct_chat")
+    memory_tool = _resolve_memory_save_tool_name(names)
+
+    resolve_line = (
+        f"Resolve the recipient with `{find_tool}(query=<name|nickname|email|topic>)` or simply pass "
+        f"`to=<name>` to `{send_tool}` — it resolves the chat itself."
+        if find_tool
+        else f"Pass `to=<name|nickname|email|topic>` to `{send_tool}` — it resolves the chat itself."
+    )
+    none_line = (
+        f" If the result is `none` and you have an email or full name, use `{direct_tool}`; otherwise "
+        "ask for the person's full name or email."
+        if direct_tool
+        else " If the result is `none`, ask for the person's full name or email."
+    )
+    style_line = ""
+    if style_tool:
+        memory_bit = (
+            f" Look for a memory `person` note titled 'Teams style with <Name>' first; if none exists, "
+            f"call `{style_tool}(to=<name>)` and save the returned profile there via `{memory_tool}` "
+            "so it is not re-derived next time."
+            if memory_tool
+            else f" Call `{style_tool}(to=<name>)` first."
+        )
+        style_line = (
+            f"Register: match how the user actually writes to this person.{memory_bit} Without history "
+            "use the Teams defaults: short, first-name or no greeting, 'du' unless the profile says 'Sie', "
+            "no closing formula, no signature, no attribution line, no technical detail about how you got "
+            "the information, and nothing the recipient cannot verify.\n"
+        )
+    return (
+        "# Teams: send to a person without guessing\n"
+        f"When asked to send something to a person or group via Teams: {resolve_line} Never take a "
+        "chat_id from memory, an earlier session or a guess, never call the joined-teams/channel tools "
+        "to find a person, and never ask the user for a chat URL or id. If the resolution is "
+        f"`ambiguous`, show the candidates (members, topic, last message) and ask which one — do not "
+        f"pick silently.{none_line}\n"
+        f"{style_line}"
+        "Draft: show the exact message in the chat as normal Markdown (bold, lists, links; no code "
+        "block) in the recipient's language, wait for approval, then send the identical Markdown as "
+        f"`content` — `{send_tool}` renders it to the HTML Teams displays, so the preview equals what "
+        "arrives. Do not hand-write HTML unless the user asked for specific markup.\n"
+        "Confirm from the tool result (`recipient`, `plain_text`), not from assumption. If `sent` is "
+        "false, say why (ambiguous / not found) and resolve again."
     )
 
 

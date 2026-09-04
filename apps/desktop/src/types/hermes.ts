@@ -741,6 +741,9 @@ export interface McpCatalogInstallResponse {
   // the request's instance_name for multi-instance entries, otherwise the
   // catalog name.
   name?: string
+  /** Set when the install runs as a detached `hermes mcp install` action (git-bootstrap entries). */
+  action?: string
+  background?: boolean
 }
 
 export interface McpServersResponse {

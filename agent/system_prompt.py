@@ -203,6 +203,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if ai_attribution_guidance:
         stable_parts.append(ai_attribution_guidance)
 
+    teams_send_guidance = _r.build_teams_send_guidance(agent.valid_tool_names)
+    if teams_send_guidance:
+        stable_parts.append(teams_send_guidance)
+
     jira_guidance = _r.build_jira_guidance(agent.valid_tool_names)
     if jira_guidance:
         stable_parts.append(jira_guidance)

@@ -400,6 +400,14 @@ def _tokenize(text: str) -> List[str]:
     return [t.lower() for t in _TOKEN_RE.findall(text)]
 
 
+def _mcp_name_group(name: str) -> str:
+    """``mcp_<Server>_<tool>`` → ``mcp_<server>`` (empty for native tools)."""
+    parts = str(name or "").split("_")
+    if len(parts) >= 3 and parts[0].lower() == "mcp":
+        return f"mcp_{parts[1].lower()}"
+    return ""
+
+
 def _split_words(text: str) -> str:
     """Break a tool/source identifier into space-separated words for BM25.
 
@@ -695,6 +703,28 @@ _GENERIC_SEARCH_TERMS = frozenset({
     "create", "update", "delete", "tool", "mcp"
 })
 
+# Action verbs the user types → the verb a tool *name* carries. A typed verb
+# is as strong a signal as a typed name token ("schick … an Martin" means the
+# send tool, not the tool that merely lists Teams). Applied as a name boost in
+# search_catalog (AIS-286).
+_ACTION_VERB_SYNONYMS: Dict[str, Tuple[str, ...]] = {
+    "schick": ("send",),
+    "schicke": ("send",),
+    "schicken": ("send",),
+    "sende": ("send",),
+    "senden": ("send",),
+    "verschicke": ("send",),
+    "verschicken": ("send",),
+    "schreib": ("send", "write", "create"),
+    "schreibe": ("send", "write", "create"),
+    "schreiben": ("send", "write", "create"),
+    "antworte": ("reply", "send"),
+    "antworten": ("reply", "send"),
+    "send": ("send",),
+    "write": ("send", "write"),
+    "reply": ("reply", "send"),
+}
+
 _GERMAN_SYNONYMS: Dict[str, List[str]] = {
     # Local office file tools (office_word / office_excel / office_powerpoint,
     # toolset "office") — without these a query like "excel" or "pptx" only
@@ -728,7 +758,7 @@ _GERMAN_SYNONYMS: Dict[str, List[str]] = {
     "office365": ["m365", "msoffice365", "msoffice365mcp", "outlook", "calendar", "event", "email", "teams", "sharepoint", "onedrive"],
     "microsoft": ["m365", "msoffice365", "msoffice365mcp", "outlook", "calendar", "event", "email", "teams", "sharepoint", "onedrive"],
     "sharepoint": ["m365", "msoffice365", "msoffice365mcp", "sharepoint", "drive", "file", "sites"],
-    "teams": ["m365", "msoffice365", "msoffice365mcp", "teams", "chat", "channel", "message", "gruppenchat"],
+    "teams": ["m365", "msoffice365", "msoffice365mcp", "teams", "chat", "channel", "message", "gruppenchat", "find", "recipient", "send"],
     "onedrive": ["m365", "msoffice365", "msoffice365mcp", "onedrive", "drive", "file"],
     "outlook": ["m365", "msoffice365", "msoffice365mcp", "outlook", "mail", "email", "calendar", "event"],
     "kalender": ["m365", "msoffice365", "msoffice365mcp", "outlook", "calendar", "event"],
@@ -737,6 +767,25 @@ _GERMAN_SYNONYMS: Dict[str, List[str]] = {
     "mail": ["m365", "msoffice365", "msoffice365mcp", "outlook", "email", "mail"],
     "chat": ["m365", "msoffice365", "msoffice365mcp", "teams", "chat", "message"],
     "chats": ["m365", "msoffice365", "msoffice365mcp", "teams", "chat", "message"],
+    # Send verbs (AIS-286): "schick das an Martin via Teams" must surface the
+    # Teams send/find tools, not only the mail tools. German keys on purpose —
+    # they match user input, not tool text.
+    "schick": ["send", "message", "chat", "teams", "find", "recipient"],
+    "schicke": ["send", "message", "chat", "teams", "find", "recipient"],
+    "schicken": ["send", "message", "chat", "teams", "find", "recipient"],
+    "sende": ["send", "message", "chat", "teams", "find", "recipient"],
+    "senden": ["send", "message", "chat", "teams", "find", "recipient"],
+    "schreib": ["send", "message", "chat", "teams", "draft"],
+    "schreibe": ["send", "message", "chat", "teams", "draft"],
+    "schreiben": ["send", "message", "chat", "teams", "draft"],
+    "verschicke": ["send", "message", "chat", "teams", "email"],
+    "verschicken": ["send", "message", "chat", "teams", "email"],
+    "antworte": ["send", "message", "chat", "teams", "email", "reply"],
+    "antworten": ["send", "message", "chat", "teams", "email", "reply"],
+    "empfänger": ["recipient", "find", "chat", "teams", "email", "contact"],
+    "empfaenger": ["recipient", "find", "chat", "teams", "email", "contact"],
+    "stil": ["style", "tone", "chat", "teams", "person"],
+    "tonfall": ["style", "tone", "chat", "teams", "person"],
     "gruppenchat": ["m365", "msoffice365", "msoffice365mcp", "teams", "chat", "group"],
     "gruppenchats": ["m365", "msoffice365", "msoffice365mcp", "teams", "chat", "group"],
     "notiz": ["memory", "note", "save", "read"],
@@ -958,6 +1007,16 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
             doc_freq[t] = doc_freq.get(t, 0) + 1
     n_docs = len(catalog)
 
+    # MCP tools of one server share a name prefix ("mcp_<Server>_"); used to
+    # ignore synonym expansions that every tool of that server carries.
+    group_members: Dict[str, List[str]] = {}
+    for e in catalog:
+        g = _mcp_name_group(e.name)
+        if g:
+            group_members.setdefault(g, []).append(e.name.lower().replace("_", "").replace("-", ""))
+    group_sizes = {g: len(v) for g, v in group_members.items()}
+    group_name_hits: Dict[Tuple[str, str], int] = {}
+
     k1 = 1.5
     b = 0.75
     scored: List[Tuple[float, CatalogEntry]] = []
@@ -1024,6 +1083,15 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
 
         boost += len(matched_name_tokens) * 5.0
 
+        # Typed action verb matching a verb in the tool name ("schick" → send):
+        # weighted like two typed name tokens so the send tool beats a tool
+        # that only lists the same noun ("teams") — AIS-286.
+        for qt in query_tokens:
+            verbs = _ACTION_VERB_SYNONYMS.get(qt)
+            if verbs and any(v in entry._name_tokens for v in verbs):
+                boost += 15.0
+                break
+
         # A *curated* synonym expansion that is contained in the tool name is
         # as good as the user typing that name: "folien" → powerpoint →
         # office_powerpoint. Without this the 0.5-weighted BM25 credit for
@@ -1032,9 +1100,32 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
         # the scraped dynamic maps would re-create the "worklog boosts every
         # Jira/GitHub tool" regression — and only the name counts, not the
         # description blob.
-        for q in static_expansions - original_tokens:
-            if len(q) >= 4 and q not in _GENERIC_SEARCH_TERMS and q in clean_name:
-                boost += 10.0
+        # Up to two distinct expansions count ("teams" → chat + message), so
+        # the tool whose name carries the noun *and* the verb wins over one
+        # that only shares the verb (send_chat_message vs send_email, AIS-286).
+        expansion_hits = 0
+        clean_server = str(entry.source_name or "").lower().replace("_", "").replace("-", "")
+        entry_group = _mcp_name_group(entry.name)
+        group_size = group_sizes.get(entry_group, 1) if entry_group else 1
+        # Rarest (most discriminating) expansion first.
+        for q in sorted(static_expansions - original_tokens, key=lambda t: (doc_freq.get(t, 0), -len(t))):
+            if len(q) < 4 or q in _GENERIC_SEARCH_TERMS or q not in clean_name:
+                continue
+            # Server-name expansions ("msoffice365mcp", "m365") sit in every
+            # tool of that server and would use up both slots without telling
+            # the tools apart — only tool-name words count here.
+            if q in entry._server_tokens or (clean_server and q in clean_server):
+                continue
+            if entry_group and group_size >= 3:
+                shared = group_name_hits.setdefault(
+                    (entry_group, q),
+                    sum(1 for other in group_members[entry_group] if q in other),
+                )
+                if shared / group_size > 0.6:
+                    continue
+            boost += 10.0
+            expansion_hits += 1
+            if expansion_hits >= 2:
                 break
 
         # Source / Server match boost: if query mentions the MCP server or source alias (e.g. tempo, atlassian, github)

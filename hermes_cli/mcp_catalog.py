@@ -26,6 +26,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+from hermes_cli._subprocess_compat import windows_hide_flags
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -411,8 +412,34 @@ def _adapt_bootstrap_command(cmd: str) -> str:
         r"(?<![\w./-])python3(?![\w.-])", lambda _match: replacement, cmd
     )
     if sys.platform == "win32":
-        adapted = adapted.replace(_VENV_BIN_UNIX, _VENV_BIN_WINDOWS)
+        adapted = _adapt_venv_bootstrap_for_windows(adapted)
     return adapted
+
+
+def _adapt_venv_bootstrap_for_windows(cmd: str) -> str:
+    """Rewrite ``.venv/bin/<exe>`` invocations so ``cmd.exe`` can run them.
+
+    Bootstrap commands run through the shell. On Windows that is ``cmd.exe``,
+    which does not accept forward slashes in the *program* position
+    (``.venv/Scripts/pip`` fails with "'.venv' is not recognized"), and venv
+    launchers need their ``.exe`` suffix. ``pip`` is additionally routed
+    through ``python.exe -m pip`` — the ``pip.exe`` shim embeds the venv's
+    absolute path and breaks when the install dir is later moved (AIS-286,
+    SUP-20260903-101450).
+    """
+    def _rewrite(match: "re.Match[str]") -> str:
+        prefix, exe = match.group(1), match.group(2)
+        base = (prefix + _VENV_BIN_WINDOWS).replace("/", "\\")
+        if exe in ("pip", "pip3"):
+            return f'"{base}python.exe" -m pip'
+        if exe in ("python", "python3"):
+            return f'"{base}python.exe"'
+        exe_name = exe if exe.lower().endswith(".exe") else f"{exe}.exe"
+        return f'"{base}{exe_name}"'
+
+    # ``prefix`` = whatever precedes ``.venv/bin/`` in the same token (an
+    # absolute install dir or nothing); ``exe`` = the launcher name.
+    return re.sub(r'"?([^\s"]*?)\.venv/bin/([A-Za-z0-9_.-]+)"?', _rewrite, cmd)
 
 
 def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
@@ -432,11 +459,20 @@ def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
         expanded = cmd.replace(_INSTALL_DIR_VAR, str(cwd))
         expanded = _adapt_bootstrap_command(expanded)
         print(color(f"  $ {expanded}", Colors.DIM))
-        proc = subprocess.run(expanded, cwd=str(cwd), shell=True)
+        proc = subprocess.run(expanded, cwd=str(cwd), shell=True, **_hidden_window_kwargs())
         if proc.returncode != 0:
             raise CatalogError(
                 f"bootstrap step failed (exit {proc.returncode}): {expanded}"
             )
+
+
+def _hidden_window_kwargs() -> Dict[str, Any]:
+    """``creationflags`` that stop each install subprocess from flashing a
+    console window on Windows (the dashboard runs ``hermes mcp install`` as a
+    detached child, so every ``git``/``pip`` call would otherwise pop up its
+    own window for a moment). No-op elsewhere."""
+    flags = windows_hide_flags()
+    return {"creationflags": flags} if flags else {}
 
 
 def _do_git_install(entry: CatalogEntry) -> Path:
@@ -447,14 +483,30 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     dest = _install_root() / entry.name
 
     git = shutil.which("git")
-    if not git:
-        raise CatalogError("git is required to install this MCP but was not found on PATH")
 
     if dest.exists():
         # Fresh checkout each install — manifest version is the source of truth,
         # so wipe + re-clone for determinism.
         print(color(f"  Removing existing install at {dest}", Colors.DIM))
         shutil.rmtree(dest)
+
+    if not git:
+        # Typical on a customer's Windows machine: no Git for Windows. GitHub
+        # serves every branch/tag/SHA as a zip archive, which is all a catalog
+        # install needs (no history is required; ``installed_commit`` simply
+        # reports None). Non-GitHub sources still need git.
+        archive_url = _github_archive_url(install.url, install.ref)
+        if not archive_url:
+            raise CatalogError(
+                "git is required to install this MCP but was not found on PATH "
+                f"(and {install.url} offers no archive download). Install Git "
+                "(https://git-scm.com/downloads) and retry."
+            )
+        print(color(f"  git not found — downloading {archive_url} → {dest}", Colors.CYAN))
+        _download_archive_install(archive_url, dest)
+        if install.bootstrap:
+            _run_bootstrap(dest, install.bootstrap)
+        return dest
 
     print(color(f"  Cloning {install.url} ({install.ref}) → {dest}", Colors.CYAN))
 
@@ -467,6 +519,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     if not is_sha_ref:
         proc = subprocess.run(
             [git, "clone", "--depth", "1", "--branch", install.ref, install.url, str(dest)],
+            **_hidden_window_kwargs(),
         )
         if proc.returncode == 0:
             pass
@@ -478,16 +531,62 @@ def _do_git_install(entry: CatalogEntry) -> Path:
             is_sha_ref = True  # treat the same as a SHA ref from here
 
     if is_sha_ref:
-        proc = subprocess.run([git, "clone", install.url, str(dest)])
+        proc = subprocess.run([git, "clone", install.url, str(dest)], **_hidden_window_kwargs())
         if proc.returncode != 0:
             raise CatalogError(f"git clone failed for {install.url}")
-        proc = subprocess.run([git, "-C", str(dest), "checkout", install.ref])
+        proc = subprocess.run([git, "-C", str(dest), "checkout", install.ref], **_hidden_window_kwargs())
         if proc.returncode != 0:
             raise CatalogError(f"git checkout {install.ref} failed")
 
     if install.bootstrap:
         _run_bootstrap(dest, install.bootstrap)
 
+    return dest
+
+
+def _github_archive_url(repo_url: str, ref: str) -> Optional[str]:
+    """``https://github.com/<org>/<repo>(.git)`` + ref → codeload zip URL, else None."""
+    m = re.match(r"^https?://(?:www\.)?github\.com/([^/\s]+)/([^/\s]+?)(?:\.git)?/?$", (repo_url or "").strip())
+    if not m or not ref:
+        return None
+    org, repo = m.group(1), m.group(2)
+    return f"https://codeload.github.com/{org}/{repo}/zip/{ref}"
+
+
+def _download_archive_install(archive_url: str, dest: Path, *, timeout: int = 180) -> Path:
+    """Download a repository zip archive and unpack it to ``dest``.
+
+    GitHub archives contain a single top-level ``<repo>-<ref>/`` folder; that
+    folder becomes ``dest`` so the layout matches a ``git clone``.
+    """
+    import io
+    import tempfile
+    import urllib.request
+    import zipfile
+
+    req = urllib.request.Request(archive_url, headers={"User-Agent": "hermes-mcp-catalog"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - https codeload URL built above
+            data = resp.read()
+    except Exception as exc:
+        raise CatalogError(f"archive download failed for {archive_url}: {exc}") from exc
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise CatalogError(f"archive download for {archive_url} is not a zip file") from exc
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="hermes-mcp-archive-", dir=str(dest.parent)) as tmp:
+        tmp_path = Path(tmp)
+        for member in archive.infolist():
+            # Zip-slip guard: every entry must stay inside the temp dir.
+            target = (tmp_path / member.filename).resolve()
+            if tmp_path.resolve() not in target.parents and target != tmp_path.resolve():
+                raise CatalogError(f"archive entry escapes extraction dir: {member.filename}")
+        archive.extractall(tmp_path)
+        entries = [p for p in tmp_path.iterdir() if p.name != "__MACOSX"]
+        source = entries[0] if len(entries) == 1 and entries[0].is_dir() else tmp_path
+        shutil.move(str(source), str(dest))
     return dest
 
 

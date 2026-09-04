@@ -81,6 +81,8 @@ tools:
     - m365_list_events
     - m365_create_event
     - m365_list_chats
+    - m365_find_chat
+    - m365_get_chat_style
     - m365_get_chat_members
     - m365_get_or_create_direct_chat
     - m365_send_chat_message
@@ -131,5 +133,5 @@ post_install: |
     - User Directory (m365_search_users, m365_get_user_profile) — directory-wide search needs the admin tier.
     - Outlook Mail & Contacts (m365_send_email, m365_list_emails, m365_get_email, m365_list_contacts) — m365_send_email accepts local file paths via `attachments` (inline, ~3 MB limit).
     - Outlook Calendar (m365_list_events, m365_create_event)
-    - Teams (m365_list_chats, m365_get_chat_members, m365_get_or_create_direct_chat, m365_send_chat_message) — needs the org-consent tier; m365_send_chat_message accepts local file paths via `attachments` (auto-uploaded to OneDrive and linked as a file card).
+    - Teams (m365_find_chat, m365_send_chat_message(to=...), m365_get_chat_style, m365_list_chats, m365_get_chat_members, m365_get_or_create_direct_chat) — needs the org-consent tier; m365_send_chat_message resolves the recipient by name/email, renders Markdown to Teams HTML and accepts local file paths via `attachments` (auto-uploaded to OneDrive and linked as a file card).
     - OneDrive & SharePoint (m365_list_drive_files, m365_search_drive_files, m365_get_drive_file, m365_list_sharepoint_sites, m365_list_sharepoint_drives, m365_list_sharepoint_files, m365_search_sharepoint_files) — SharePoint needs the admin tier.

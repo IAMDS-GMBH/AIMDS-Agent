@@ -1043,6 +1043,28 @@ class TestDynamicMCPKeywordIndexing:
             # tool in this catalog the calendar tool still wins.
             assert results[0].name == "m365_get_events"
 
+    def test_german_send_verbs_surface_teams_send_tools(self):
+        """'schick ... via teams' must rank the Teams send/find tools ahead of
+        the mail tools (AIS-286)."""
+        from tools.tool_search import build_catalog, search_catalog
+
+        def _tool(name, desc):
+            return {"type": "function", "function": {"name": name, "description": desc, "parameters": {}}}
+
+        tool_defs = [
+            _tool("mcp_MSOffice365MCP_m365_send_chat_message", "Send a Microsoft Teams chat message to a person or chat; resolves the recipient by name"),
+            _tool("mcp_MSOffice365MCP_m365_find_chat", "Find the Teams chat for a person, nickname, email or group topic"),
+            _tool("mcp_MSOffice365MCP_m365_send_email", "Send an email using Outlook Mail"),
+            _tool("mcp_MSOffice365MCP_m365_list_joined_teams", "List all Microsoft Teams that the current user is a member of"),
+            _tool("terminal", "Run a shell command"),
+        ]
+        catalog = build_catalog(tool_defs)
+        for query in ("schick nachricht via teams", "sende an Martin über Teams", "schreib Martin in Teams"):
+            names = [r.name for r in search_catalog(catalog, query, limit=4)]
+            assert names, query
+            assert names[0] in ("mcp_MSOffice365MCP_m365_send_chat_message", "mcp_MSOffice365MCP_m365_find_chat"), (query, names)
+            assert names.index("mcp_MSOffice365MCP_m365_send_chat_message") < names.index("mcp_MSOffice365MCP_m365_send_email"), (query, names)
+
     def test_office_file_tool_synonyms_beat_m365(self):
         """'excel' / 'pptx' / 'docx' must surface the local office tools, not
         only the M365 MCP server (AIS-139)."""

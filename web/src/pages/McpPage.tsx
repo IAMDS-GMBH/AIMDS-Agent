@@ -234,8 +234,28 @@ export default function McpPage() {
       setInstallingName(entry.name);
       try {
         const res = await api.installMcpCatalogEntry(entry.name, envMap, true);
-        if (res.background) {
+        if (res.background && res.action) {
+          // Git-bootstrap installs run as a detached `hermes mcp install`;
+          // wait for the action and judge by its exit code instead of
+          // reporting success before anything happened (AIS-286).
           showToast("Installing in background…", "success");
+          let last: Awaited<ReturnType<typeof api.getActionStatus>> | null = null;
+          for (let attempt = 0; attempt < 240; attempt += 1) {
+            await new Promise((resolve) => window.setTimeout(resolve, 1500));
+            try {
+              last = await api.getActionStatus(res.action, 60);
+            } catch {
+              continue;
+            }
+            if (!last.running) break;
+          }
+          const tail = (last?.lines ?? []).map((l) => l.trim()).filter(Boolean).slice(-3).join(" · ");
+          if (!last || last.running || last.exit_code !== 0) {
+            showToast(`Failed to install "${truncateText(entry.name, 30)}"${tail ? `: ${tail}` : ""}`, "error");
+            await Promise.all([loadServers(), loadCatalog()]);
+            return;
+          }
+          showToast(`Installed: "${truncateText(entry.name, 30)}"`, "success");
         } else {
           showToast(`Installed: "${truncateText(entry.name, 30)}"`, "success");
         }

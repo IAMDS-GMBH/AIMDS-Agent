@@ -123,6 +123,26 @@ plain-English message; the dashboard poll endpoint exposes it as `error_code`,
 | `authorization_declined`, `access_denied` | declined | The user cancelled or a policy denied the sign-in. |
 | `invalid_grant` | expired | Cached session no longer valid (password change, revoked). Sign in again. |
 
+## Teams: sending to a person without guessing
+
+`m365_send_chat_message(to=<name | nickname | email | topic>, content=<Markdown>)` resolves
+the chat through `m365_find_chat`, which ranks the signed-in user's own chats by member
+email / name / nickname stem / group topic (no directory permission needed). It sends only
+on a `unique` resolution; `ambiguous` returns the candidates and the agent has to ask;
+`none` points to `m365_get_or_create_direct_chat`, which itself prefers an existing 1:1
+chat and only falls back to the directory (admin tier) or the raw UPN. Markdown in
+`content` is rendered to the HTML Teams displays, so the preview shown in chat equals the
+message that arrives; `rendered_html` and `plain_text` in the result let the agent confirm
+what went out. `dry_run=true` resolves and renders without sending.
+
+`m365_get_chat_style(to=…)` derives the register the user actually uses with that person
+(language, du/Sie, greeting, sign-off, length, emoji, formality) from their own recent
+messages in the chat; the agent stores it as a `person` memory note ("Teams style with
+<Name>") and drafts in that register. Without history the Teams defaults apply: short,
+no letter salutation, no closing formula, no signature, no attribution line, no
+implementation detail. `m365_list_chats`, `m365_list_chat_messages` and
+`m365_get_chat_members` return compact records by default (`raw=true` for Graph objects).
+
 ## Related
 
 - The Messaging *Outlook* connector (`tools/microsoft_graph_auth.py`) is a **different**

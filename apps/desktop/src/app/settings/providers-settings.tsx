@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import {
   completeAimdsSuiteReauth,
   disconnectOAuthProvider,
+  getActionStatus,
   getAimdsSuiteStatus,
   getHermesConfigRecord,
   getMcpCatalog,
@@ -30,7 +31,7 @@ import { AlertCircle, Check, ChevronRight, ExternalLink, KeyRound, Loader2, Shie
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding'
-import type { AimdsSuiteEnvStatus, EnvVarInfo, HermesConfigRecord, McpCatalogEntry, MicrosoftAdminConsentResponse, OAuthProvider } from '@/types/hermes'
+import type { ActionStatusResponse, AimdsSuiteEnvStatus, EnvVarInfo, HermesConfigRecord, McpCatalogEntry, MicrosoftAdminConsentResponse, OAuthProvider } from '@/types/hermes'
 
 import { ProviderKeyRows } from './credential-key-ui'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
@@ -792,6 +793,36 @@ export function OAuthAccountsPanel() {
   )
 }
 
+// Poll a background `hermes mcp install` action (see /api/mcp/catalog/install)
+// until it exits. Returns the exit verdict plus the last meaningful log lines
+// so a failure can be shown instead of a false "installed".
+async function waitForInstallAction(action: string): Promise<{ detail: string; ok: boolean }> {
+  let last: ActionStatusResponse | null = null
+
+  for (let attempt = 0; attempt < 240; attempt += 1) {
+    await new Promise(resolve => window.setTimeout(resolve, 1500))
+
+    try {
+      last = await getActionStatus(action, 60)
+    } catch {
+      continue
+    }
+
+    if (!last.running) {
+      break
+    }
+  }
+
+  const lines = (last?.lines ?? []).map(line => line.trim()).filter(Boolean)
+  const detail = lines.slice(-3).join(' · ')
+
+  if (!last || last.running) {
+    return { ok: false, detail: detail || 'timeout' }
+  }
+
+  return { ok: last.exit_code === 0, detail }
+}
+
 // Sentinel for the multi-instance install dialog's instance picker,
 // meaning "create a new named instance" rather than editing one of the
 // entry's already-installed instances (see McpCatalogEntry.instances).
@@ -916,6 +947,26 @@ function McpCatalogSection({
         secrets: secretInputs,
         ...(installModalEntry.multi_instance ? { instance_name: resolvedInstanceName } : {})
       })
+
+      // Git-bootstrap entries (e.g. MSOffice365MCP) run as a detached
+      // `hermes mcp install` action; the request returns before anything is
+      // installed. Poll the action until it exits and judge by its exit
+      // code — previously the UI reported "installed" immediately, even when
+      // the clone or pip step had failed (SUP-20260903-101450, Windows).
+      if (result.ok && result.background && result.action) {
+        const outcome = await waitForInstallAction(result.action)
+
+        if (!outcome.ok) {
+          notify({
+            kind: 'error',
+            message: m.catalogInstallFailedMessage(installModalEntry.name, outcome.detail),
+            title: m.catalogInstallFailedTitle
+          })
+          await loadCatalogAndConfig()
+
+          return
+        }
+      }
 
       if (result.ok) {
         notify({
