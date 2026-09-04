@@ -1446,3 +1446,231 @@ class TestDownloadDriveFileByUrl:
         with patch.object(server, "_graph_request", return_value={"error": "MS Graph API Error [404]: itemNotFound"}):
             res = server.m365_download_drive_file(self.URL)
         assert "error" in res
+
+
+# ---------------------------------------------------------------------------
+# AIS-289: local index, contacts, own signature, per-contact mail style
+# ---------------------------------------------------------------------------
+
+
+def _mail(mid, frm, to, subject, body_html, received="2026-09-01T08:00:00Z", has_att=False):
+    return {
+        "id": mid,
+        "subject": subject,
+        "from": {"emailAddress": {"name": frm[0], "address": frm[1]}},
+        "toRecipients": [{"emailAddress": {"name": n, "address": a}} for n, a in to],
+        "receivedDateTime": received,
+        "sentDateTime": received,
+        "bodyPreview": server._html_to_text(body_html)[:255],
+        "body": {"contentType": "html", "content": body_html},
+        "hasAttachments": has_att,
+    }
+
+
+class TestLocalIndex:
+    def setup_method(self):
+        server._MY_IDENTITY_CACHE.clear()
+        server._INDEX_FTS_STATE["available"] = None
+
+    def test_list_emails_fills_index_and_search_finds_the_mail(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        mails = {"value": [
+            _mail("m1", ("Martin Fischerauer", "martin.fischerauer@example.com"), [("Johannes", "johannes@example.com")],
+                  "Angebot Wikisana QS24", "<p>Hallo Johannes,</p><p>anbei der Umzugsplan als Entwurf.</p>", has_att=True),
+            _mail("m2", ("Tobias Hehl", "tobias.hehl@example.com"), [("Johannes", "johannes@example.com")],
+                  "Release Notes", "<p>Moin, die Notes sind fertig.</p>"),
+        ]}
+        with patch.object(server, "_graph_request", return_value=mails):
+            server.m365_list_emails(top=10)
+        assert (tmp_path / "state" / "m365_index.sqlite").exists()
+        res = server.m365_index_search("umzugsplan angebot")
+        assert res["count"] >= 1 and res["hits"][0]["kind"] == "mail" and res["hits"][0]["message_id"] == "m1"
+        assert res["hits"][0]["has_attachments"] is True and "m365_get_email" in res["hits"][0]["next"]
+        only_contacts = server.m365_index_search("fischerauer", kind="contact")
+        assert only_contacts["hits"] and only_contacts["hits"][0]["email"] == "martin.fischerauer@example.com"
+        assert res["index"]["mails"] == 2 and res["index"]["contacts"] >= 2
+
+    def test_index_search_falls_back_to_like_without_fts(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        server._INDEX_FTS_STATE["available"] = False
+        with patch.object(server, "_graph_request", return_value={"value": [
+            _mail("m9", ("A B", "a@example.com"), [("J", "j@example.com")], "Budgetplanung 2027", "<p>Zahlen im Anhang</p>")]}):
+            server.m365_list_emails(top=5)
+        res = server.m365_index_search("Budgetplanung", kind="mail")
+        assert res["count"] == 1 and res["hits"][0]["subject"] == "Budgetplanung 2027"
+
+    def test_chats_and_messages_are_indexed_via_find_chat_and_list_messages(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        messages = [
+            {"id": "1001", "messageType": "message", "createdDateTime": "2026-09-03T11:55:24Z",
+             "from": {"user": {"id": "u-2", "displayName": "Martin Fischerauer"}},
+             "body": {"contentType": "html", "content": "<p>Hier der Umzugsplan Entwurf 4</p>"},
+             "attachments": [{"id": "a1", "name": "2026-09-03-wikisana-qs24-umzugsplan-entwurf_4.docx", "contentType": "reference"}]},
+        ]
+        side_effect, _ = _teams_graph(messages=messages)
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            found = server.m365_find_chat("Fischerauer")
+            server.m365_list_chat_messages(found["chat_id"], top=5)
+        hit = server.m365_index_search("umzugsplan entwurf", kind="chat_message")
+        assert hit["count"] == 1 and hit["hits"][0]["chat_id"] == "c-fischi"
+        assert hit["hits"][0]["file_names"] == ["2026-09-03-wikisana-qs24-umzugsplan-entwurf_4.docx"]
+        chats = server.m365_index_search("Fischerauer", kind="chat")
+        assert any(h["chat_id"] == "c-fischi" for h in chats["hits"])
+        contact = server.m365_find_contact("martin.fischerauer@example.com")
+        assert contact["resolution"] == "unique" and contact["contact"]["chat_id_1on1"] == "c-fischi"
+        assert "teams" in contact["contact"]["sources"]
+
+    def test_nickname_that_resolved_a_chat_becomes_an_alias(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        side_effect, _ = _teams_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_find_chat("Fischi")
+            assert res["resolution"] == "unique"
+            again = server.m365_find_chat("Fischi")
+        contact = server.m365_find_contact("Fischi")
+        assert contact["resolution"] == "unique"
+        assert "Fischi" in contact["contact"]["aliases"]
+        assert again["alias_used"]["query"] == "Fischi" and "fischerauer" in again["alias_used"]["resolved_as"].lower()
+
+    def test_index_disabled_env_is_a_noop(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("M365_INDEX_DISABLED", "1")
+        with patch.object(server, "_graph_request", return_value={"value": [
+            _mail("m1", ("A", "a@example.com"), [("J", "j@example.com")], "S", "<p>b</p>")]}):
+            server.m365_list_emails()
+        assert not (tmp_path / "state" / "m365_index.sqlite").exists()
+        assert server.m365_index_search("S")["count"] == 0
+        assert "disabled" in server.m365_index_refresh()["error"]
+
+    def test_index_refresh_pulls_chats_mail_and_contacts(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        calls = []
+
+        def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, account=None, **kw):
+            calls.append((endpoint, params))
+            if endpoint == "/me":
+                return ME
+            if endpoint == "/me/chats":
+                return {"value": CHATS}
+            if endpoint.startswith("/me/chats/") and endpoint.endswith("/messages"):
+                return {"value": [{"id": "5", "messageType": "message", "createdDateTime": "2026-09-02T08:00:00Z",
+                                   "from": {"user": {"id": "u-2", "displayName": "Martin"}}, "body": {"contentType": "text", "content": "Plan steht"}}]}
+            if endpoint.startswith("/me/mailFolders/inbox/messages"):
+                assert params["$filter"].startswith("receivedDateTime ge ")
+                return {"value": [_mail("i1", ("X Y", "x@example.com"), [("J", "johannes@example.com")], "Inbox one", "<p>hi</p>")]}
+            if endpoint.startswith("/me/mailFolders/sentitems/messages"):
+                return {"value": [_mail("s1", ("Johannes", "johannes@example.com"), [("X Y", "x@example.com")], "Re: Inbox one", "<p>ok</p>")]}
+            if endpoint == "/me/contacts":
+                return {"value": [{"id": "c1", "displayName": "Gonzalo Perez", "givenName": "Gonzalo", "surname": "Perez", "nickName": "Gonzo",
+                                   "emailAddresses": [{"address": "gonzalo@example.com"}]}]}
+            return {"value": []}
+
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_index_refresh(scope="all", days=14, max_items=50)
+        assert res["errors"] == []
+        assert res["indexed"]["chats"] == len(CHATS) and res["indexed"]["chat_messages"] >= 1
+        assert res["indexed"]["mail_inbox"] == 1 and res["indexed"]["mail_sentitems"] == 1
+        assert res["indexed"]["contacts_folder"] == 1
+        gonzo = server.m365_find_contact("Gonzo")
+        assert gonzo["resolution"] == "unique" and gonzo["contact"]["email"] == "gonzalo@example.com"
+        # the user's own address never becomes a contact
+        assert server.m365_find_contact("johannes@example.com")["resolution"] == "none"
+
+
+class TestSignatureDetection:
+    SIG = "<p>Viele Grüße</p><p>Johannes Huchler<br>IAMDS GmbH · Head of Something<br>+49 123 456</p>"
+
+    def _sent(self, bodies):
+        return {"value": [_mail(f"s{i}", ("Johannes", "johannes@example.com"), [("X", "x@example.com")], f"Subj {i}", b) for i, b in enumerate(bodies)]}
+
+    def test_common_trailing_block_and_closing(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        bodies = [
+            "<p>Hallo Martin,</p><p>passt so.</p>" + self.SIG,
+            "<p>Hi Tobias,</p><p>bitte prüfen.</p>" + self.SIG + "<p>Von: Tobias Hehl<br>Gesendet: gestern</p><p>alter Text</p>",
+            "<p>Moin,</p><p>danke!</p>" + self.SIG,
+            "<p>Kurze Antwort ohne alles</p>",
+        ]
+        with patch.object(server, "_graph_request", return_value=self._sent(bodies)):
+            res = server.m365_get_my_signature(sample=10)
+        assert res["closing"] == "Viele Grüße"
+        assert res["signature_lines"] == ["Johannes Huchler", "IAMDS GmbH · Head of Something", "+49 123 456"]
+        assert res["coverage"] == 0.75 and res["confidence"] == "medium"
+        assert res["signature_html"].startswith("<p>Johannes Huchler<br>")
+        assert "Outlook: email signature" in res["how_to_use"]
+        assert server._index_get_setting("my_signature")["lines"][0] == "Johannes Huchler"
+
+    def test_no_repeated_block_means_low_confidence(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        bodies = ["<p>eins</p>", "<p>zwei zwei</p>", "<p>drei drei drei</p>"]
+        with patch.object(server, "_graph_request", return_value=self._sent(bodies)):
+            res = server.m365_get_my_signature(sample=5)
+        assert res["confidence"] == "low" and res["signature_lines"] == [] and res["closing"] == ""
+        assert "Ask the user once" in res["how_to_use"]
+
+    def test_helpers_strip_history_and_signature(self):
+        text = "Hallo,\n\nkurz.\n\nViele Grüße\nJohannes Huchler\nIAMDS GmbH\n\nVon: X\nGesendet: Y\nalt"
+        cut = server._strip_quoted_history(text)
+        assert cut.endswith("IAMDS GmbH")
+        assert server._strip_signature(cut, ["Johannes Huchler", "IAMDS GmbH"]) == "Hallo,\n\nkurz.\n\nViele Grüße"
+        block, share = server._common_trailing_block(["a\nVG\nJ", "b\nVG\nJ", "c\nLG\nJ"], min_share=0.6)
+        assert block == ["VG", "J"] and share == 2 / 3
+        assert server._split_closing(["Viele Grüße", "Johannes"]) == ("Viele Grüße", ["Johannes"])
+
+
+class TestMailStyle:
+    SIG = "<p>Viele Grüße</p><p>Johannes Huchler<br>IAMDS GmbH</p>"
+
+    def _graph(self, sent_bodies, received_bodies=()):
+        def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, account=None, **kw):
+            if endpoint == "/me":
+                return ME
+            if endpoint == "/me/mailFolders/sentitems/messages":
+                assert params["$search"] == '"to:martin.fischerauer@example.com"'
+                return {"value": [_mail(f"s{i}", ("Johannes", "johannes@example.com"), [("Martin Fischerauer", "martin.fischerauer@example.com")], f"Re: Thema {i}", b)
+                                  for i, b in enumerate(sent_bodies)]}
+            if endpoint == "/me/messages":
+                assert params["$search"] == '"from:martin.fischerauer@example.com"'
+                return {"value": [_mail(f"r{i}", ("Martin Fischerauer", "martin.fischerauer@example.com"), [("Johannes", "johannes@example.com")], f"Thema {i}", b)
+                                  for i, b in enumerate(received_bodies)]}
+            return {"value": []}
+        return side_effect
+
+    def test_profile_from_sent_mail_with_signature_stripped(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        sent = [
+            "<p>Hi Fischi,</p><p>kannst du mir den Plan bis Freitag schicken? Danke dir.</p>" + self.SIG,
+            "<p>Hi Fischi,</p><p>passt, dann machen wir das so.</p>" + self.SIG,
+            "<p>Hi Fischi,</p><p>ich bin morgen im Homeoffice, melde mich.</p>" + self.SIG + "<p>Von: Martin<br>Gesendet: gestern</p><p>alt</p>",
+        ]
+        received = ["<p>Hi Johannes,</p><p>klar, schicke ich dir heute.</p><p>VG Martin</p>"]
+        with patch.object(server, "_graph_request", side_effect=self._graph(sent, received)):
+            res = server.m365_get_mail_style(to="martin.fischerauer@example.com")
+        prof = res["profile"]
+        assert res["source_messages"] == 3 and res["their_messages_seen"] == 1
+        assert prof["greeting_form"] == "hi" and prof["greeting_name"] == "Fischi" and prof["greeting_line"] == "Hi Fischi,"
+        assert prof["address"] == "du" and prof["closing"] == "Viele Grüße" and prof["language"] == "de"
+        assert prof["their_address"] == "du" and prof["their_greeting"].startswith("Hi Johannes")
+        assert all("IAMDS GmbH" not in ex for ex in res["examples"])
+        assert res["recipient"] == {"email": "martin.fischerauer@example.com", "display_name": "Martin Fischerauer"}
+        # learned on the contact: alias + mail style
+        contact = server.m365_find_contact("Fischi")
+        assert contact["resolution"] == "unique"
+        assert contact["contact"]["style_mail"]["greeting_line"] == "Hi Fischi,"
+
+    def test_name_resolves_via_contact_index_and_no_history_returns_defaults(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        conn = server._index_conn()
+        with conn:
+            server._index_record_contact(conn, email="martin.fischerauer@example.com", display_name="Martin Fischerauer", source="teams")
+        conn.close()
+        with patch.object(server, "_graph_request", side_effect=self._graph([], [])):
+            res = server.m365_get_mail_style(to="Martin Fischerauer")
+        assert res["profile"] is None and res["defaults"]["closing"] == "Viele Grüße"
+        assert res["recipient"]["email"] == "martin.fischerauer@example.com"
+
+    def test_unknown_name_without_mail_history_is_none(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with patch.object(server, "_graph_request", return_value={"value": []}):
+            res = server.m365_get_mail_style(to="Niemand")
+        assert res["resolution"] == "none" and "m365_index_refresh" in res["hint"]
