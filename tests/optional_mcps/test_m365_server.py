@@ -1674,3 +1674,93 @@ class TestMailStyle:
         with patch.object(server, "_graph_request", return_value={"value": []}):
             res = server.m365_get_mail_style(to="Niemand")
         assert res["resolution"] == "none" and "m365_index_refresh" in res["hint"]
+
+
+# ---------------------------------------------------------------------------
+# AIS-231: no hard delete, audited mail writes
+# ---------------------------------------------------------------------------
+
+
+class TestMailTrashSafetyAndAudit:
+    def setup_method(self):
+        server._MY_IDENTITY_CACHE.clear()
+        server._INDEX_FTS_STATE["available"] = None
+
+    def _graph(self, calls, folders=None):
+        folders = folders if folders is not None else [{"id": "FOLDER-PROJ", "displayName": "Projekte"}]
+
+        def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, account=None, **kw):
+            calls.append((method, endpoint, json_data, params))
+            if endpoint == "/me/messages/m1" and method == "GET":
+                return {"id": "m1", "subject": "Angebot", "from": {"emailAddress": {"name": "Martin", "address": "martin@example.com"}},
+                        "receivedDateTime": "2026-09-01T08:00:00Z", "parentFolderId": "INBOXID"}
+            if endpoint.startswith("/me/mailFolders") and method == "GET":
+                wanted = (params or {}).get("$filter", "")
+                return {"value": [f for f in folders if f["displayName"] in wanted]}
+            if endpoint.endswith("/move") and method == "POST":
+                return {"id": "m1-moved", "subject": "Angebot"}
+            if endpoint == "/me/sendMail":
+                return {}
+            return {"value": []}
+        return side_effect
+
+    def test_trash_moves_to_deleted_items_and_is_audited(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        calls = []
+        with patch.object(server, "_graph_request", side_effect=self._graph(calls)):
+            res = server.m365_trash_email("m1")
+        assert res["success"] and res["action"] == "trash" and res["destination"] == "deleteditems"
+        assert res["new_message_id"] == "m1-moved" and "Hard delete" in res["note"]
+        move = [c for c in calls if c[0] == "POST"][0]
+        assert move[1] == "/me/messages/m1/move" and move[2] == {"destinationId": "deleteditems"}
+        log = server.m365_get_audit_log()
+        assert log["count"] == 1
+        entry = log["entries"][0]
+        assert entry["action"] == "trash" and entry["tool"] == "m365_trash_email" and entry["target_id"] == "m1"
+        assert entry["subject"] == "Angebot" and entry["counterpart"] == "martin@example.com" and entry["result"] == "ok"
+        assert entry["details"]["destination"] == "deleteditems" and entry["details"]["new_message_id"] == "m1-moved"
+
+    def test_delete_is_an_alias_for_trash(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        calls = []
+        with patch.object(server, "_graph_request", side_effect=self._graph(calls)):
+            res = server.m365_delete_email("m1")
+        assert res["action"] == "trash" and "disabled" in res["note"]
+        assert not any("DELETE" == c[0] for c in calls)
+        assert server.m365_get_audit_log(action="trash")["entries"][0]["tool"] == "m365_delete_email"
+
+    def test_move_resolves_well_known_and_display_names(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        calls = []
+        with patch.object(server, "_graph_request", side_effect=self._graph(calls)):
+            a = server.m365_move_email("m1", "Archiv")
+            b = server.m365_move_email("m1", "Projekte")
+            c = server.m365_move_email("m1", "Unbekannt")
+        assert a["destination"] == "archive"
+        assert b["destination"] == "Projekte"
+        assert [x[2] for x in calls if x[0] == "POST"] == [{"destinationId": "archive"}, {"destinationId": "FOLDER-PROJ"}]
+        assert "No mail folder named 'Unbekannt'" in c["error"]
+        log = server.m365_get_audit_log(action="move")
+        assert log["count"] == 3 and log["entries"][0]["result"] == "error"
+
+    def test_send_is_audited_including_failures(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with patch.object(server, "_graph_request", return_value={}):
+            server.m365_send_email(to=["a@example.com"], subject="Hallo", body="Text")
+        with patch.object(server, "_graph_request", side_effect=RuntimeError("MS Graph API Error [403]")):
+            with pytest.raises(RuntimeError):
+                server.m365_send_email(to=["b@example.com"], subject="Fail", body="Text")
+        log = server.m365_get_audit_log(action="send")
+        assert [e["result"] for e in log["entries"]] == ["error", "ok"]
+        assert log["entries"][1]["counterpart"] == "a@example.com" and log["entries"][1]["subject"] == "Hallo"
+        assert "403" in log["entries"][0]["error"]
+
+    def test_audit_log_filters_and_limit(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for i in range(5):
+            server._audit_log("m365_move_email", "move", target_id=f"m{i}")
+        server._audit_log("m365_send_email", "send", subject="x")
+        assert server.m365_get_audit_log(limit=2)["count"] == 2
+        assert server.m365_get_audit_log(action="send")["count"] == 1
+        assert server.m365_get_audit_log(since="2999-01-01T00:00:00+00:00")["count"] == 0
+        assert "delete" not in [t for t in ("m365_hard_delete_email",) if hasattr(server, t)]

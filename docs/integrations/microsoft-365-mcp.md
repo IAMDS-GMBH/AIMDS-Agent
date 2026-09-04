@@ -188,6 +188,18 @@ person addresses the user) from sent and received mail with the signature stripp
 on the contact and is meant to be persisted as "Mail style with <Name>"; `m365_get_chat_style`
 does the same for Teams and stores its profile on the contact too.
 
+### Mailbox safety and audit trail (AIS-231)
+
+There is no hard delete: `m365_trash_email(message_id)` and `m365_delete_email(message_id)` both
+move the mail to Deleted Items (recoverable), `m365_move_email(message_id, destination_folder)`
+takes a well-known name (`inbox`, `archive`, `junkemail`, `deleteditems`), a folder display name or
+a folder id. `m365_send_email`, the move and the trash tools write an audit row themselves
+(time, tool, action, message id, subject, counterpart, result) into the local index database;
+`m365_get_audit_log(limit, action, since)` shows it. The IMAP/SMTP catalog entry (`E-MailMCP`)
+has the same contract: `email_move_message`, `email_trash_message` / `email_delete_message`
+(Trash folder via `EMAIL_TRASH_FOLDER`, the `\Trash` special-use flag or a well-known name) and
+`email_get_audit_log`, logged to `HERMES_HOME/state/email_audit.sqlite`.
+
 ## Related
 
 - The Messaging *Outlook* connector (`tools/microsoft_graph_auth.py`) is a **different**
