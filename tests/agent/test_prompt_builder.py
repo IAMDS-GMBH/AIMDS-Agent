@@ -1854,3 +1854,31 @@ class TestSignatureAndStyleToolsInGuidance:
         assert "mcp_MSOffice365MCP_m365_index_search(query=<words>" in with_index
         assert "m365_index_refresh(scope='all')" in with_index
         assert "mcp_MSOffice365MCP_m365_find_contact(query)" in with_index and "nicknames" in with_index
+
+
+class TestMailSafetyGuidance:
+    """AIS-231: no hard delete, audited writes — only with a mail MCP that has the trash/move tools."""
+
+    def test_empty_without_trash_or_move_tools(self):
+        from agent.prompt_builder import build_mail_safety_guidance
+
+        assert build_mail_safety_guidance({"mcp_MSOffice365MCP_m365_send_email", "terminal"}) == ""
+        assert build_mail_safety_guidance(None) == ""
+
+    def test_m365_family(self):
+        from agent.prompt_builder import build_mail_safety_guidance
+
+        names = {"mcp_MSOffice365MCP_m365_trash_email", "mcp_MSOffice365MCP_m365_move_email", "mcp_MSOffice365MCP_m365_get_audit_log"}
+        text = build_mail_safety_guidance(names)
+        assert text.startswith("# Mailbox safety: no hard delete, audited writes")
+        assert "`mcp_MSOffice365MCP_m365_trash_email(message_id)`" in text
+        assert "mcp_MSOffice365MCP_m365_move_email(message_id, destination_folder)" in text
+        assert "mcp_MSOffice365MCP_m365_get_audit_log(limit, action)" in text
+        assert "IMAP" not in text and "never need to log them" in text
+
+    def test_imap_family(self):
+        from agent.prompt_builder import build_mail_safety_guidance
+
+        text = build_mail_safety_guidance({"mcp_EMailMCP_email_trash_message", "mcp_EMailMCP_email_get_audit_log"})
+        assert "IMAP mailbox" in text and "mcp_EMailMCP_email_trash_message(message_id, folder)" in text
+        assert "Outlook/M365" not in text

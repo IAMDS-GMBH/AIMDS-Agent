@@ -1176,7 +1176,16 @@ def m365_send_email(
         "message": message,
         "saveToSentItems": save_to_sent_items,
     }
-    return _graph_request("POST", "/me/sendMail", json_data=payload, account=account)
+    try:
+        res = _graph_request("POST", "/me/sendMail", json_data=payload, account=account)
+    except Exception as exc:
+        _audit_log("m365_send_email", "send", subject=subject, counterpart=", ".join(to), details={"attachments": norm_attachments or []}, result="error", error=str(exc))
+        raise
+    failed = isinstance(res, dict) and bool(res.get("error"))
+    _audit_log("m365_send_email", "send", subject=subject, counterpart=", ".join(to),
+               details={"attachments": norm_attachments or [], "html": bool(is_html), "save_to_sent_items": bool(save_to_sent_items)},
+               result="error" if failed else "ok", error=str(res.get("error")) if failed else None)
+    return res
 
 
 @mcp.tool()
@@ -3727,6 +3736,19 @@ _INDEX_SCHEMA = (
     )""",
     """CREATE INDEX IF NOT EXISTS idx_mails_from ON mails(from_email, received_at)""",
     """CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        action TEXT NOT NULL,
+        target_id TEXT,
+        subject TEXT,
+        counterpart TEXT,
+        details TEXT NOT NULL DEFAULT '{}',
+        result TEXT NOT NULL,
+        error TEXT
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at)""",
 )
 _INDEX_FTS_SCHEMA = (
     "CREATE VIRTUAL TABLE IF NOT EXISTS index_fts USING fts5("
@@ -4776,6 +4798,220 @@ def m365_get_mail_style(
         "'Mail style with <Name>' (tag mail-style)."
     )
     return style
+
+
+
+# ---------------------------------------------------------------------------
+# Mailbox safety and audit trail (AIS-231): no hard delete, moves and sends
+# are logged by the tool handlers themselves — the model cannot skip it.
+# ---------------------------------------------------------------------------
+
+_WELL_KNOWN_MAIL_FOLDERS = {
+    "inbox": "inbox", "posteingang": "inbox",
+    "archive": "archive", "archiv": "archive",
+    "deleteditems": "deleteditems", "deleted items": "deleteditems", "deleted": "deleteditems",
+    "trash": "deleteditems", "papierkorb": "deleteditems", "gelöschte elemente": "deleteditems",
+    "geloeschte elemente": "deleteditems", "bin": "deleteditems",
+    "junkemail": "junkemail", "junk": "junkemail", "spam": "junkemail",
+    "drafts": "drafts", "entwürfe": "drafts", "entwuerfe": "drafts",
+    "sentitems": "sentitems", "sent": "sentitems", "gesendete elemente": "sentitems",
+    "outbox": "outbox", "clutter": "clutter",
+}
+
+
+def _audit_log(
+    tool: str,
+    action: str,
+    *,
+    target_id: Optional[str] = None,
+    subject: Optional[str] = None,
+    counterpart: Optional[str] = None,
+    details: Optional[Dict[str, Any]] = None,
+    result: str = "ok",
+    error: Optional[str] = None,
+) -> None:
+    """Append one audit row. Never raises; the index DB hosts the table."""
+    conn = _index_conn()
+    if conn is None:
+        return
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO audit_log (at, tool, action, target_id, subject, counterpart, details, result, error) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (_index_now(), tool, action, target_id or "", _truncate(str(subject or ""), 200), _truncate(str(counterpart or ""), 300),
+                 _index_json(details or {}), result, _truncate(str(error or ""), 500) or None),
+            )
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+def _audit_entries(limit: int = 20, action: Optional[str] = None, since: Optional[str] = None) -> List[Dict[str, Any]]:
+    conn = _index_conn()
+    if conn is None:
+        return []
+    try:
+        sql = "SELECT * FROM audit_log"
+        clauses: List[str] = []
+        args: List[Any] = []
+        if action:
+            clauses.append("action = ?")
+            args.append(action)
+        if since:
+            clauses.append("at >= ?")
+            args.append(since)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY id DESC LIMIT ?"
+        args.append(max(1, min(int(limit), 200)))
+        rows = conn.execute(sql, args).fetchall()
+        return [
+            {
+                "id": r["id"], "at": r["at"], "tool": r["tool"], "action": r["action"], "target_id": r["target_id"],
+                "subject": r["subject"], "counterpart": r["counterpart"], "details": _index_loads(r["details"], {}),
+                "result": r["result"], "error": r["error"],
+            }
+            for r in rows
+        ]
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def _resolve_mail_folder_id(destination: str, account: Optional[str] = None) -> Tuple[str, str]:
+    """Well-known name, display name or folder id → (destinationId, label)."""
+    raw = (destination or "").strip()
+    if not raw:
+        raise ValueError("destination_folder is required")
+    key = raw.lower().strip("/")
+    if key in _WELL_KNOWN_MAIL_FOLDERS:
+        wk = _WELL_KNOWN_MAIL_FOLDERS[key]
+        return wk, wk
+    # A Graph folder id is long and base64-ish; anything with spaces or short is a display name.
+    if len(raw) > 40 and " " not in raw:
+        return raw, raw
+    safe = raw.replace("'", "''")
+    res = _graph_request("GET", "/me/mailFolders", params={"$filter": f"displayName eq '{safe}'", "$select": "id,displayName"}, account=account)
+    matches = [f for f in ((res or {}).get("value") or []) if isinstance(f, dict)] if isinstance(res, dict) else []
+    if not matches:
+        # one level of child folders under the well-known roots
+        for root in ("inbox", "archive"):
+            try:
+                sub = _graph_request("GET", f"/me/mailFolders/{root}/childFolders", params={"$filter": f"displayName eq '{safe}'", "$select": "id,displayName"}, account=account)
+                matches = [f for f in ((sub or {}).get("value") or []) if isinstance(f, dict)] if isinstance(sub, dict) else []
+            except Exception:
+                matches = []
+            if matches:
+                break
+    if len(matches) == 1:
+        return str(matches[0].get("id")), str(matches[0].get("displayName") or raw)
+    if not matches:
+        raise ValueError(f"No mail folder named {raw!r}; use a well-known name (inbox, archive, deleteditems, junkemail) or a folder id.")
+    raise ValueError(f"{len(matches)} folders named {raw!r}; pass the folder id.")
+
+
+def _mail_summary(message_id: str, account: Optional[str] = None) -> Dict[str, str]:
+    try:
+        msg = _graph_request("GET", f"/me/messages/{message_id}", params={"$select": "id,subject,from,receivedDateTime,parentFolderId"}, account=account)
+    except Exception:
+        return {}
+    if not isinstance(msg, dict) or msg.get("error"):
+        return {}
+    name, addr = _mail_address(msg.get("from"))
+    return {"subject": str(msg.get("subject") or ""), "from": addr or name, "received_at": str(msg.get("receivedDateTime") or ""), "parent_folder_id": str(msg.get("parentFolderId") or "")}
+
+
+def _move_mail(tool: str, action: str, message_id: str, destination: str, account: Optional[str]) -> Dict[str, Any]:
+    mid = (message_id or "").strip()
+    if not mid:
+        return {"error": "message_id is required"}
+    summary = _mail_summary(mid, account=account)
+    try:
+        dest_id, dest_label = _resolve_mail_folder_id(destination, account=account)
+    except ValueError as exc:
+        _audit_log(tool, action, target_id=mid, subject=summary.get("subject"), counterpart=summary.get("from"),
+                   details={"destination": destination}, result="error", error=str(exc))
+        return {"error": str(exc)}
+    try:
+        res = _graph_request("POST", f"/me/messages/{mid}/move", json_data={"destinationId": dest_id}, account=account)
+    except Exception as exc:
+        _audit_log(tool, action, target_id=mid, subject=summary.get("subject"), counterpart=summary.get("from"),
+                   details={"destination": dest_label}, result="error", error=str(exc))
+        raise
+    if isinstance(res, dict) and res.get("error"):
+        _audit_log(tool, action, target_id=mid, subject=summary.get("subject"), counterpart=summary.get("from"),
+                   details={"destination": dest_label}, result="error", error=str(res.get("error")))
+        return res
+    new_id = str((res or {}).get("id") or mid) if isinstance(res, dict) else mid
+    _audit_log(tool, action, target_id=mid, subject=summary.get("subject"), counterpart=summary.get("from"),
+               details={"destination": dest_label, "new_message_id": new_id, "from_folder_id": summary.get("parent_folder_id", "")})
+    out = {
+        "success": True,
+        "action": action,
+        "message_id": mid,
+        "new_message_id": new_id,
+        "destination": dest_label,
+        "subject": summary.get("subject", ""),
+        "from": summary.get("from", ""),
+        "audited": True,
+    }
+    if action == "trash":
+        out["note"] = "Moved to Deleted Items (soft delete). Hard delete is not available through this MCP; the user can purge it in Outlook."
+    return out
+
+
+@mcp.tool()
+def m365_move_email(message_id: str, destination_folder: str, account: Optional[str] = None) -> Dict[str, Any]:
+    """Move an email to another folder (well-known name, folder display name or folder id). Logged in the audit trail.
+
+    Args:
+        message_id: The message id (from m365_list_emails / m365_index_search).
+        destination_folder: "inbox", "archive", "junkemail", "deleteditems", a folder's
+            display name (e.g. "Projekte/2026" is NOT supported — pass the leaf name or id) or a folder id.
+        account: Optional M365 account username, email, or ID.
+    """
+    return _move_mail("m365_move_email", "move", message_id, destination_folder, account)
+
+
+@mcp.tool()
+def m365_trash_email(message_id: str, account: Optional[str] = None) -> Dict[str, Any]:
+    """Move an email to Deleted Items (soft delete). This MCP never hard-deletes mail; every trash action is logged.
+
+    Args:
+        message_id: The message id.
+        account: Optional M365 account username, email, or ID.
+    """
+    return _move_mail("m365_trash_email", "trash", message_id, "deleteditems", account)
+
+
+@mcp.tool()
+def m365_delete_email(message_id: str, account: Optional[str] = None) -> Dict[str, Any]:
+    """Delete = move to Deleted Items. Hard delete is disabled by policy (AIS-231); identical to m365_trash_email and logged.
+
+    Args:
+        message_id: The message id.
+        account: Optional M365 account username, email, or ID.
+    """
+    out = _move_mail("m365_delete_email", "trash", message_id, "deleteditems", account)
+    if isinstance(out, dict) and out.get("success"):
+        out["note"] = "Hard delete is disabled: the mail was moved to Deleted Items instead and the action was logged."
+    return out
+
+
+@mcp.tool()
+def m365_get_audit_log(limit: int = 20, action: Optional[str] = None, since: Optional[str] = None) -> Dict[str, Any]:
+    """Show the audit trail of mailbox write actions this MCP performed (send, move, trash) — logged by the tools themselves.
+
+    Args:
+        limit: Max entries, newest first (≤ 200).
+        action: Optional filter: "send", "move" or "trash".
+        since: Optional ISO timestamp (UTC), e.g. "2026-09-01T00:00:00+00:00".
+    """
+    entries = _audit_entries(limit=limit, action=(action or "").strip().lower() or None, since=(since or "").strip() or None)
+    return {"count": len(entries), "entries": entries, "log": str(_index_path()), "note": "Hard delete is not available; 'trash' means Deleted Items."}
 
 
 if __name__ == "__main__":

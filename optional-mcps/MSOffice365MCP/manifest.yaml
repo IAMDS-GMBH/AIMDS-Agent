@@ -115,6 +115,10 @@ tools:
     - m365_index_search
     - m365_index_refresh
     - m365_find_contact
+    - m365_move_email
+    - m365_trash_email
+    - m365_delete_email
+    - m365_get_audit_log
 
 post_install: |
   Microsoft 365 MCP (m365) has been installed into your catalog.

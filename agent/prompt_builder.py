@@ -2208,6 +2208,47 @@ def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str
     )
 
 
+def build_mail_safety_guidance(valid_tool_names: "set[str] | None" = None) -> str:
+    """Mailbox safety (AIS-231): there is no hard delete — "delete" means the
+    trash/Deleted Items move — and every send/move/trash is logged by the MCP
+    itself; the audit tool shows it. Injected when a mail MCP with the
+    move/trash tools is present (MSOffice365MCP ``m365_*`` or the IMAP
+    ``email_*`` family)."""
+    names = set(valid_tool_names or set())
+    m365_trash = _resolve_m365_tool_name(names, "m365_trash_email")
+    m365_move = _resolve_m365_tool_name(names, "m365_move_email")
+    m365_audit = _resolve_m365_tool_name(names, "m365_get_audit_log")
+    imap_trash = _resolve_m365_tool_name(names, "email_trash_message")
+    imap_move = _resolve_m365_tool_name(names, "email_move_message")
+    imap_audit = _resolve_m365_tool_name(names, "email_get_audit_log")
+    lines = []
+    if m365_trash or m365_move:
+        lines.append(
+            "Outlook/M365: "
+            + (f"move mail with `{m365_move}(message_id, destination_folder)`; " if m365_move else "")
+            + (f"\"delete\" always means `{m365_trash}(message_id)` (Deleted Items, recoverable) — " if m365_trash else "")
+            + "hard delete is not available and must not be attempted via other means"
+            + (f"; `{m365_audit}(limit, action)` shows what was sent, moved or trashed." if m365_audit else ".")
+        )
+    if imap_trash or imap_move:
+        lines.append(
+            "IMAP mailbox: "
+            + (f"move mail with `{imap_move}(message_id, destination_folder, folder)`; " if imap_move else "")
+            + (f"\"delete\" always means `{imap_trash}(message_id, folder)` (Trash folder, recoverable) — " if imap_trash else "")
+            + "hard delete is not available"
+            + (f"; `{imap_audit}(limit, action)` shows what was sent, moved or trashed." if imap_audit else ".")
+        )
+    if not lines:
+        return ""
+    return (
+        "# Mailbox safety: no hard delete, audited writes\n"
+        + " ".join(lines)
+        + " Sends, moves and trash actions are logged by the tool itself — you never need to log them; "
+        "when the user asks what happened to a mail, read the audit log instead of guessing. Before "
+        "trashing or moving more than a handful of mails, list them and confirm once."
+    )
+
+
 def build_outlook_contact_profiling_guidance(valid_tool_names: "set[str] | None" = None) -> str:
     """Instruct the model to offer a one-time, opt-in backfill that builds
     memory ``person`` profiles for frequent correspondents, driven by actual

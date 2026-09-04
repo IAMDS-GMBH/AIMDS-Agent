@@ -73,6 +73,10 @@ tools:
     - email_fetch_inbox
     - email_search_messages
     - email_send_message
+    - email_move_message
+    - email_trash_message
+    - email_delete_message
+    - email_get_audit_log
     - email_test_connection
 
 post_install: |
@@ -81,4 +85,6 @@ post_install: |
   Supported Features:
     - IMAP Mailbox Reading & Search (SSL/TLS, STARTTLS, Plain)
     - SMTP Mail Sending (SSL/TLS, STARTTLS, Plain, HTML & Plain text)
+    - Move / trash (soft delete — no hard delete) with a local audit log
+      (email_get_audit_log; set EMAIL_TRASH_FOLDER if the Trash folder is not detected)
     - Connection diagnostics (email_test_connection)

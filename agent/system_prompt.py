@@ -202,6 +202,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if outlook_signature_guidance:
         stable_parts.append(outlook_signature_guidance)
 
+    mail_safety_guidance = _r.build_mail_safety_guidance(_guidance_names)
+    if mail_safety_guidance:
+        stable_parts.append(mail_safety_guidance)
+
     outlook_contact_profiling_guidance = _r.build_outlook_contact_profiling_guidance(
         _guidance_names
     )
