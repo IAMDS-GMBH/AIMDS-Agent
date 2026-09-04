@@ -262,7 +262,6 @@ export const af: Translations = {
       monthlyAt: "Maandeliks op die {day} om {time}",
       onceAt: "Een keer op {time}",
     },
-    deliverTo: "Lewer aan",
     scheduledJobs: "Geskeduleerde Take",
     noJobs: "Geen cron-take gekonfigureer nie. Skep een hierbo.",
     last: "Laaste",
@@ -270,13 +269,6 @@ export const af: Translations = {
     pause: "Pouse",
     resume: "Hervat",
     triggerNow: "Voer nou uit",
-    delivery: {
-      local: "Plaaslik",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
-      email: "Email",
-    },
   },
 
   profiles: {

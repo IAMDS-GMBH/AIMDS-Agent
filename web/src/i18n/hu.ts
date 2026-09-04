@@ -262,7 +262,6 @@ export const hu: Translations = {
       monthlyAt: "Havonta {day} {time}-kor",
       onceAt: "Egyszer {time}-kor",
     },
-    deliverTo: "Kézbesítés ide",
     scheduledJobs: "Ütemezett feladatok",
     noJobs: "Nincs beállított cron-feladat. Hozzon létre egyet fent.",
     last: "Utolsó",
@@ -270,13 +269,6 @@ export const hu: Translations = {
     pause: "Szüneteltetés",
     resume: "Folytatás",
     triggerNow: "Indítás most",
-    delivery: {
-      local: "Helyi",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
-      email: "Email",
-    },
   },
 
   profiles: {

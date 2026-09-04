@@ -205,6 +205,13 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
         state = "scheduled" if normalized.get("enabled", True) else "paused"
     normalized["state"] = state
 
+    # Desktop build (AIS-145): cron results are delivered to this desktop
+    # only. Jobs created before the change (or hand-edited) may still carry
+    # deliver="telegram" / "origin" / "all"; coerce on read so the scheduler,
+    # the dashboard and the cronjob tool never see — or act on — an external
+    # target. Storage is left untouched; the next update_job() rewrites it.
+    normalized["deliver"] = "local"
+
     return normalized
 
 
@@ -475,6 +482,25 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 # Job CRUD Operations
 # =============================================================================
 
+def _coerce_local_delivery(jobs: List[Any]) -> List[Any]:
+    """Desktop build (AIS-145): every loaded job delivers to this desktop only.
+
+    Applied at the single load boundary so the scheduler tick, the dashboard,
+    the cronjob tool and ``update_job`` all see ``deliver="local"`` — a job
+    persisted before the change with ``"telegram"`` / ``"origin"`` / ``"all"``
+    is read as local and rewritten as local on its next save.
+    """
+    for job in jobs:
+        if isinstance(job, dict) and job.get("deliver") != "local":
+            if job.get("deliver") not in (None, ""):
+                logger.info(
+                    "Cron job %s: stored deliver=%r ignored — delivery is fixed to local",
+                    job.get("id", "?"), job.get("deliver"),
+                )
+            job["deliver"] = "local"
+    return jobs
+
+
 def load_jobs() -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
     ensure_dirs()
@@ -509,14 +535,14 @@ def load_jobs() -> List[Dict[str, Any]]:
             # Hit control-character corruption — rewrite with proper escaping.
             save_jobs(jobs)
             logger.warning("Auto-repaired jobs.json (had invalid control characters)")
-        return jobs
+        return _coerce_local_delivery(jobs)
     if isinstance(data, list):
         # Bare array — likely saved/edited outside save_jobs(). Wrap it back
         # into the expected {"jobs": [...]} structure.
         if data:
             save_jobs(data)
             logger.warning("Auto-repaired jobs.json (bare list wrapped as dict)")
-        return data
+        return _coerce_local_delivery(data)
 
     raise RuntimeError(
         f"Cron database corrupted: expected {{'jobs': [...]}}, got {type(data).__name__}"
@@ -602,8 +628,8 @@ def create_job(
         schedule: Schedule string (see parse_schedule)
         name: Optional friendly name
         repeat: How many times to run (None = forever, 1 = once)
-        deliver: Where to deliver output ("origin", "local", "telegram", etc.)
-        origin: Source info where job was created (for "origin" delivery)
+        deliver: Ignored — desktop build delivers to this desktop only (always "local").
+        origin: Source info where job was created (provenance only)
         skill: Optional legacy single skill name to load before running the prompt
         skills: Optional ordered list of skills to load before running the prompt
         model: Optional per-job model override
@@ -650,9 +676,12 @@ def create_job(
     if parsed_schedule["kind"] == "once" and repeat is None:
         repeat = 1
 
-    # Default delivery to origin if available, otherwise local
-    if deliver is None:
-        deliver = "origin" if origin else "local"
+    # Desktop build (AIS-145): delivery is always local. ``deliver`` is kept
+    # in the signature for API compatibility but ignored; ``origin`` is still
+    # recorded as provenance and no longer used as a delivery target.
+    if deliver not in (None, "local"):
+        logger.info("create_job: ignoring deliver=%r — cron delivery is fixed to local", deliver)
+    deliver = "local"
 
     job_id = uuid.uuid4().hex[:12]
     now = _hermes_now().isoformat()
@@ -811,6 +840,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["workdir"] = None
             else:
                 updates["workdir"] = _normalize_workdir(_wd)
+
+        # Desktop build (AIS-145): delivery cannot be changed away from local.
+        if "deliver" in updates and updates["deliver"] != "local":
+            logger.info("update_job: ignoring deliver=%r for job %s — delivery is fixed to local", updates["deliver"], job_id)
+        updates = {**updates, "deliver": "local"} if "deliver" in updates else updates
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates

@@ -1400,7 +1400,7 @@ class TestRunJobSessionPersistence:
         assert call_args[0][1] is False  # success should be False
         assert "empty" in call_args[0][2].lower()  # error should mention empty
 
-    def test_run_job_sets_auto_delivery_env_from_dotenv_home_channel(self, tmp_path, monkeypatch):
+    def test_run_job_never_sets_auto_delivery_env_desktop_only(self, tmp_path, monkeypatch):
         job = {
             "id": "test-job",
             "name": "test",
@@ -1445,9 +1445,11 @@ class TestRunJobSessionPersistence:
         assert error is None
         assert final_response == "ok"
         assert "ok" in output
+        # Desktop build (AIS-145): even a legacy deliver="telegram" job with a
+        # configured home channel gets no auto-delivery route for the agent.
         assert seen == {
-            "platform": "telegram",
-            "chat_id": "-2002",
+            "platform": None,
+            "chat_id": None,
             "thread_id": None,
         }
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM") is None
@@ -1501,7 +1503,7 @@ class TestRunJobSessionPersistence:
             "session_start_bootstrap_contract_enabled": False,
         }
 
-    def test_run_job_clears_stale_auto_delivery_thread_id_between_jobs(self, tmp_path, monkeypatch):
+    def test_run_job_ignores_explicit_platform_targets_desktop_only(self, tmp_path, monkeypatch):
         jobs = [
             {
                 "id": "threaded-job",
@@ -1558,17 +1560,11 @@ class TestRunJobSessionPersistence:
                 assert final_response == "ok"
                 assert "ok" in output
 
+        # Desktop build (AIS-145): explicit platform:chat[:thread] targets are
+        # ignored too — nothing leaks between jobs because nothing is set.
         assert seen == [
-            {
-                "platform": "telegram",
-                "chat_id": "-1001",
-                "thread_id": "42",
-            },
-            {
-                "platform": "telegram",
-                "chat_id": "-2002",
-                "thread_id": None,
-            },
+            {"platform": None, "chat_id": None, "thread_id": None},
+            {"platform": None, "chat_id": None, "thread_id": None},
         ]
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM") is None
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID") is None

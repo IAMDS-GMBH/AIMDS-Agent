@@ -1153,13 +1153,6 @@ export const en: Translations = {
       error: 'error',
       completed: 'completed'
     },
-    deliveryLabels: {
-      local: 'This desktop',
-      telegram: 'Telegram',
-      discord: 'Discord',
-      slack: 'Slack',
-      email: 'Email'
-    },
     scheduleLabels: {
       daily: 'Daily',
       weekdays: 'Weekdays',
@@ -1240,7 +1233,6 @@ export const en: Translations = {
     promptLabel: 'Prompt',
     promptPlaceholder: 'Summarize my unread Slack threads and email me the top 5...',
     frequencyLabel: 'Frequency',
-    deliverLabel: 'Deliver to this desktop',
     customScheduleLabel: 'Custom schedule',
     customPlaceholder: '0 9 * * * or weekdays at 9am',
     customHint: 'Cron expression, or phrases like "every hour" or "weekdays at 9am".',
