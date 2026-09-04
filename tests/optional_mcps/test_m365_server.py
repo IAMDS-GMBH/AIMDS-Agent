@@ -1402,3 +1402,47 @@ class TestDownloadEmailAttachments:
 
         manifest = yaml.safe_load((server_path.parent / "manifest.yaml").read_text(encoding="utf-8"))
         assert "m365_download_email_attachments" in manifest["tools"]["default_enabled"]
+
+
+class TestDownloadDriveFileByUrl:
+    """AIS-289: `m365_download_drive_file` takes a SharePoint/OneDrive URL and
+    resolves it through the shares API — the agent had only the contentUrl of
+    a chat attachment and got a 404 from the item-id path."""
+
+    URL = "https://iamds-my.sharepoint.com/personal/m_f_iamds_com/Documents/Microsoft%20Teams-Chatdateien/plan_4.docx"
+
+    def test_url_goes_through_shares_api(self, tmp_path, monkeypatch):
+        vault = tmp_path / "vault"; vault.mkdir()
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(vault))
+        calls = []
+
+        def fake_request(method, endpoint, **kw):
+            calls.append(endpoint)
+            assert endpoint.startswith("/shares/u!") and endpoint.endswith("/driveItem")
+            return {"id": "01ITEM", "name": "plan_4.docx", "size": 6}
+
+        def fake_download(endpoint, account=None):
+            calls.append(endpoint)
+            assert endpoint.startswith("/shares/u!") and endpoint.endswith("/driveItem/content")
+            return b"%DOCX%"
+
+        with patch.object(server, "_graph_request", side_effect=fake_request), \
+             patch.object(server, "_graph_download_bytes", side_effect=fake_download):
+            res = server.m365_download_drive_file(self.URL)
+        assert res["success"] is True and res["source"] == "url" and res["file_id"] == "01ITEM"
+        assert Path(res["saved_path"]).read_bytes() == b"%DOCX%"
+        assert Path(res["saved_path"]).parent == vault / "documents" / "m365_downloads"
+        assert len(calls) == 2
+
+    def test_item_id_path_unchanged(self, tmp_path):
+        with patch.object(server, "_graph_request", return_value={"id": "01ITEM", "name": "a.pdf"}) as req, \
+             patch.object(server, "_graph_download_bytes", return_value=b"%PDF") as dl:
+            res = server.m365_download_drive_file("01ITEM", save_path=str(tmp_path / "a.pdf"))
+        assert req.call_args[0][1] == "/me/drive/items/01ITEM"
+        assert dl.call_args[0][0] == "/me/drive/items/01ITEM/content"
+        assert res["source"] == "item_id" and (tmp_path / "a.pdf").read_bytes() == b"%PDF"
+
+    def test_graph_error_is_returned_not_raised(self):
+        with patch.object(server, "_graph_request", return_value={"error": "MS Graph API Error [404]: itemNotFound"}):
+            res = server.m365_download_drive_file(self.URL)
+        assert "error" in res

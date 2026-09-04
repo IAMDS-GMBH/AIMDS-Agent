@@ -185,29 +185,38 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             if local_fallback:
                 stable_parts.append(local_fallback)
 
-    outlook_memory_guidance = _r.build_outlook_memory_guidance(agent.valid_tool_names)
+    # Integration guidance is gated on the tools the session can *reach*, not
+    # only on the ones currently in the schema: with tool_search active every
+    # MCP tool is deferred and ``valid_tool_names`` holds just the core tools,
+    # which silently dropped the Teams/Outlook/Jira blocks from every such
+    # session (AIS-289). Core-tool checks above stay on valid_tool_names.
+    from agent.deferred_tools import guidance_tool_names
+
+    _guidance_names = guidance_tool_names(agent)
+
+    outlook_memory_guidance = _r.build_outlook_memory_guidance(_guidance_names)
     if outlook_memory_guidance:
         stable_parts.append(outlook_memory_guidance)
 
-    outlook_signature_guidance = _r.build_outlook_signature_guidance(agent.valid_tool_names)
+    outlook_signature_guidance = _r.build_outlook_signature_guidance(_guidance_names)
     if outlook_signature_guidance:
         stable_parts.append(outlook_signature_guidance)
 
     outlook_contact_profiling_guidance = _r.build_outlook_contact_profiling_guidance(
-        agent.valid_tool_names
+        _guidance_names
     )
     if outlook_contact_profiling_guidance:
         stable_parts.append(outlook_contact_profiling_guidance)
 
-    ai_attribution_guidance = _r.build_ai_attribution_guidance(agent.valid_tool_names)
+    ai_attribution_guidance = _r.build_ai_attribution_guidance(_guidance_names)
     if ai_attribution_guidance:
         stable_parts.append(ai_attribution_guidance)
 
-    teams_send_guidance = _r.build_teams_send_guidance(agent.valid_tool_names)
+    teams_send_guidance = _r.build_teams_send_guidance(_guidance_names)
     if teams_send_guidance:
         stable_parts.append(teams_send_guidance)
 
-    jira_guidance = _r.build_jira_guidance(agent.valid_tool_names)
+    jira_guidance = _r.build_jira_guidance(_guidance_names)
     if jira_guidance:
         stable_parts.append(jira_guidance)
     # Tool-use enforcement: tells the model to actually call tools instead
@@ -256,10 +265,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
     if has_skills_tools:
+        # Skill index filters (requires_tools / requires_toolsets) see the
+        # reachable set too — otherwise every skill that needs an MCP tool
+        # disappears from the index as soon as that tool is deferred.
         avail_toolsets = {
             toolset
             for toolset in (
-                _r.get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names
+                _r.get_toolset_for_tool(tool_name) for tool_name in _guidance_names
             )
             if toolset
         }
@@ -275,7 +287,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             _hidden_cats = frozenset()
         skills_prompt = _r.build_skills_system_prompt(
-            available_tools=agent.valid_tool_names,
+            available_tools=_guidance_names,
             available_toolsets=avail_toolsets,
             hidden_categories=_hidden_cats or None,
         )

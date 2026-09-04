@@ -1945,6 +1945,16 @@ def run_conversation(
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
+    # A Teams / SharePoint link in the message loads the tools that handle it
+    # (deferred behind tool_search) before the first API call — deterministic
+    # instead of hoping the model searches for them (AIS-289).
+    try:
+        from agent.deferred_tools import autoload_for_message
+
+        autoload_for_message(agent, original_user_message)
+    except Exception as _autoload_exc:
+        logger.debug("message-link autoload skipped: %s", _autoload_exc)
+
     _enforce_initial_memory_context_call(
         agent,
         messages=messages,

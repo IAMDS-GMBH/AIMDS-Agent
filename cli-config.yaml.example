@@ -412,6 +412,30 @@ prompt_caching:
   cache_ttl: "5m" # use "1h" for long sessions with pauses between turns
 
 # =============================================================================
+# MCP result shaping
+# =============================================================================
+# JSON results of MCP data tools are shaped before the model sees them: noise
+# keys (@odata.*, etag, ...) and empty values are dropped, item lists are
+# capped to max_items (the full rows are in SQLite mcp_records — the result
+# carries a `_shaped` block that says how to query them), long strings inside
+# those lists are capped to max_string_chars, keys are sorted so an identical
+# answer is a byte-identical tool result (prompt-cache prefix). A single
+# object's long field (an email body) is never cut. Memory, skill, knowledge
+# base, web and resource tools are not shaped.
+#
+# mcp_results:
+#   enabled: true
+#   max_items: 25
+#   max_string_chars: 1200
+#   max_depth: 6
+#   drop_keys: ["@odata.*", "etag", "changeKey", "@removed"]
+#   per_server:
+#     MSOffice365MCP: { max_items: 40 }
+#   per_tool:
+#     mcp_TempoMCP_retrieveWorklogs: { max_items: 60 }
+#     m365_list_chat_messages: { enabled: false }   # bare suffixes work too
+
+# =============================================================================
 # Auxiliary Models (Advanced — Experimental)
 # =============================================================================
 # Hermes uses lightweight "auxiliary" models for side tasks: image analysis,

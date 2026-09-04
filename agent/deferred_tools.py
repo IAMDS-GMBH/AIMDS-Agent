@@ -39,7 +39,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("agent.deferred_tools")
 
@@ -331,6 +332,87 @@ def apply_tool_definitions(agent, new_defs: Optional[List[Dict[str, Any]]]) -> N
         setattr(agent, _LOADED_GEN_ATTR, _registry_generation())
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Prompt guidance: which tools does this session *reach*, loaded or deferred?
+# ---------------------------------------------------------------------------
+
+
+def guidance_tool_names(agent) -> set:
+    """Tool names the system-prompt guidance builders should consider.
+
+    ``agent.valid_tool_names`` holds only the tools currently in the schema —
+    with the bridge active that is the ~20 core tools, every MCP tool is
+    deferred. Guidance gated on that set (Teams send, Outlook memory and
+    signature, Jira, the skill index's ``requires_tools``) silently vanished
+    from every tool_search session (AIS-289, session 20260904_090002_142f89:
+    a 37k-char prompt without a single ``m365_`` name). Returns the visible
+    names plus every deferrable tool in the session's toolset scope; falls
+    back to the visible names when the bridge is off or the scope lookup
+    fails.
+    """
+    visible = set(_valid_names(agent))
+    try:
+        if not tool_search_active(agent):
+            return visible
+        return visible | set(scoped_deferrable_names(agent))
+    except Exception as exc:
+        logger.debug("guidance_tool_names fell back to visible tools: %s", exc)
+        return visible
+
+
+# ---------------------------------------------------------------------------
+# Message hook: a link in the user's message → load the tools that handle it
+# ---------------------------------------------------------------------------
+
+# (compiled pattern, tool suffixes to load). Suffixes resolve against the
+# registry (``_resolve_tool_entry`` accepts bare MCP tool names), so the rule
+# is independent of the server prefix and a no-op when the server is not
+# installed. Deterministic on purpose: the model no longer has to *find*
+# ``m365_download_chat_files`` behind a pasted Teams link.
+_MESSAGE_AUTOLOAD_RULES: Tuple[Tuple["re.Pattern[str]", Tuple[str, ...]], ...] = (
+    (
+        re.compile(r"teams\.microsoft\.com/l/(?:chat|message)/", re.IGNORECASE),
+        (
+            "m365_find_chat",
+            "m365_download_chat_files",
+            "m365_list_chat_messages",
+            "m365_send_chat_message",
+        ),
+    ),
+    (
+        re.compile(r"(?:\.sharepoint\.com/|1drv\.ms/|onedrive\.live\.com/)", re.IGNORECASE),
+        ("m365_download_drive_file",),
+    ),
+)
+
+
+def autoload_for_message(agent, text: str) -> List[str]:
+    """Load the deferred tools that a link in ``text`` calls for.
+
+    Returns the names newly loaded by this call (tools that were already
+    callable are not reported). No-op without an active bridge, without a
+    matching link, or when the tools are not registered in this session.
+    """
+    if not text or not isinstance(text, str) or not tool_search_active(agent):
+        return []
+    before = set(_valid_names(agent))
+    loaded: List[str] = []
+    for pattern, suffixes in _MESSAGE_AUTOLOAD_RULES:
+        if not pattern.search(text):
+            continue
+        for suffix in suffixes:
+            try:
+                name = load_deferred_tool(agent, suffix, reason="message_link", enforce_cap=True)
+            except Exception as exc:
+                logger.debug("message-link autoload of %s failed: %s", suffix, exc)
+                continue
+            if name and name not in before and name not in loaded:
+                loaded.append(name)
+    if loaded:
+        logger.info("[AIS-289] autoloaded %s for message link", ", ".join(loaded))
+    return loaded
 
 
 # ---------------------------------------------------------------------------

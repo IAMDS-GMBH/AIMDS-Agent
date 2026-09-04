@@ -2396,16 +2396,44 @@ def m365_get_drive_file(file_id: str) -> Dict[str, Any]:
     return res
 
 
+def _share_token(url: str) -> str:
+    """Encode a sharing/web URL for the Graph shares API (``/shares/u!<token>``)."""
+    b64 = base64.urlsafe_b64encode(url.encode("utf-8")).decode("utf-8").rstrip("=")
+    return f"u!{b64}"
+
+
 @mcp.tool()
 def m365_download_drive_file(
     file_id: str,
     save_path: Optional[str] = None,
     account: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Download a file from OneDrive or SharePoint to the local file system."""
-    meta = _graph_request("GET", f"/me/drive/items/{file_id}", account=account)
-    name = meta.get("name") or f"drive_file_{file_id}"
-    content_bytes = _graph_download_bytes(f"/me/drive/items/{file_id}/content", account=account)
+    """Download a file from OneDrive or SharePoint into the Vault (documents/m365_downloads/).
+
+    ``file_id`` is a drive item id OR a SharePoint/OneDrive URL (a file's
+    webUrl, a sharing link, or the contentUrl of a Teams chat attachment) —
+    URLs are resolved through the Graph shares API, so files in another
+    person's OneDrive work as long as they were shared with you. A Teams
+    attachment id is neither. For the files posted in a Teams chat prefer
+    ``m365_download_chat_files``. Returns ``saved_path``.
+    """
+    ident = (file_id or "").strip()
+    if not ident:
+        return {"error": "file_id is required: a drive item id or a SharePoint/OneDrive URL"}
+    is_url = ident.lower().startswith(("http://", "https://"))
+    if is_url:
+        base = f"/shares/{_share_token(ident)}/driveItem"
+        source = "url"
+    else:
+        base = f"/me/drive/items/{ident}"
+        source = "item_id"
+    meta = _graph_request("GET", base, account=account)
+    if isinstance(meta, dict) and meta.get("error"):
+        return meta
+    name = (meta.get("name") if isinstance(meta, dict) else None) or (
+        _re.sub(r"[?#].*$", "", ident).rsplit("/", 1)[-1] if is_url else f"drive_file_{ident}"
+    )
+    content_bytes = _graph_download_bytes(f"{base}/content", account=account)
 
     if not save_path:
         out_file = _resolve_save_path(None, name, subfolder="documents/m365_downloads")
@@ -2416,7 +2444,8 @@ def m365_download_drive_file(
     out_file.write_bytes(content_bytes)
     return {
         "success": True,
-        "file_id": file_id,
+        "file_id": (meta.get("id") if isinstance(meta, dict) else None) or ident,
+        "source": source,
         "name": name,
         "size_bytes": len(content_bytes),
         "saved_path": str(out_file),
@@ -3017,7 +3046,7 @@ def m365_download_chat_files(
     save_dir: Optional[str] = None,
     account: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Find the files shared in a Teams chat and download them into the Vault.
+    """Download the files shared in a Teams chat (chat link, chat id or person) into the Vault.
 
     Scans the last ``last`` messages of the chat for file attachments (Word,
     PDF, Excel, … shared via OneDrive/SharePoint) and, optionally, inline

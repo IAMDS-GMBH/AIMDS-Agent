@@ -156,6 +156,15 @@ manifest `default_enabled` tools automatically: the
 runtime unions `mcp_servers.<name>.tools.include` with the manifest defaults, and a reinstall
 adds them to the prior selection (AIS-288).
 
+`m365_download_drive_file(file_id)` also takes a SharePoint/OneDrive URL (a file's webUrl, a
+sharing link, or the `contentUrl` of a chat attachment) and resolves it through the Graph
+shares API; the default target is `documents/m365_downloads/` in the Vault. A Teams attachment
+id is not a drive item id. In Hermes a Teams link or SharePoint URL in the user's message loads
+the matching tools before the first model call (`agent/deferred_tools.autoload_for_message`),
+and the Teams guidance block is built from the reachable tools even while they are deferred
+behind `tool_search` (AIS-289). MCP results are shaped before the model sees them — see
+`mcp_results` in `cli-config.yaml.example`.
+
 ## Related
 
 - The Messaging *Outlook* connector (`tools/microsoft_graph_auth.py`) is a **different**

@@ -237,3 +237,39 @@ class TestChoicesAreClickableAndPlansComeFirst:
         stable = _stable_prompt(agent)
         assert "the plan IS the deliverable" in stable
         assert "start executing only after the user picks one" in stable
+
+
+class TestGuidanceSeesDeferredTools:
+    """AIS-289: with tool_search active the Teams/M365 guidance must still be
+    built from the deferred MCP tools — session 20260904_090002_142f89 had a
+    37k-char prompt without a single m365_ name."""
+
+    M365 = {
+        "mcp_MSOffice365MCP_m365_send_chat_message",
+        "mcp_MSOffice365MCP_m365_find_chat",
+        "mcp_MSOffice365MCP_m365_download_chat_files",
+    }
+
+    def test_teams_block_present_when_tools_are_deferred(self):
+        agent = _make_agent(
+            valid_tool_names={"tool_search", "tool_call", "tool_describe", "terminal"},
+            platform="cli",
+        )
+        with patch("agent.deferred_tools.scoped_deferrable_names", return_value=frozenset(self.M365)):
+            stable = _stable_prompt(agent)
+        assert "# Teams: send to a person without guessing" in stable
+        assert "mcp_MSOffice365MCP_m365_download_chat_files" in stable
+        assert "tool_describe" in stable
+
+    def test_no_teams_block_without_bridge_and_without_tools(self):
+        agent = _make_agent(valid_tool_names={"terminal"}, platform="cli")
+        with patch("agent.deferred_tools.scoped_deferrable_names", return_value=frozenset(self.M365)) as spy:
+            stable = _stable_prompt(agent)
+        assert "# Teams: send to a person" not in stable
+        spy.assert_not_called()
+
+    def test_scope_failure_falls_back_to_visible_tools(self):
+        agent = _make_agent(valid_tool_names={"tool_search", "terminal"}, platform="cli")
+        with patch("agent.deferred_tools.scoped_deferrable_names", side_effect=RuntimeError("no registry")):
+            stable = _stable_prompt(agent)
+        assert "# Teams: send to a person" not in stable

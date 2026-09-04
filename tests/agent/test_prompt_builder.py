@@ -1772,6 +1772,26 @@ class TestBuildTeamsSendGuidance:
         assert "mcp_MSOffice365MCP_m365_download_email_attachments" in text
         assert "mcp_MSOffice365MCP_m365_send_email" in text and "(email)" in text
 
+    def test_deferred_loading_sentence_only_with_tool_search(self):
+        """AIS-289: with the bridge active the Teams tools are deferred; the
+        guidance names the loading path instead of letting the model hunt
+        for substitutes."""
+        names = self.NAMES | {"mcp_MSOffice365MCP_m365_download_chat_files"}
+        without = build_teams_send_guidance(names)
+        assert "tool_describe" not in without and "may be deferred" not in without
+        with_bridge = build_teams_send_guidance(names | {"tool_search", "tool_call", "tool_describe"})
+        assert "may be deferred behind `tool_search`" in with_bridge
+        assert "tool_describe(<name>)" in with_bridge and "tool_call(<name>" in with_bridge
+        assert "do not substitute drive, SharePoint or terminal tools" in with_bridge
+
+    def test_sharepoint_url_is_not_an_item_id(self):
+        base = self.NAMES | {"mcp_MSOffice365MCP_m365_download_chat_files"}
+        text = build_teams_send_guidance(base)
+        assert "NOT a drive item id" in text and "never fetch it with curl" in text
+        assert "m365_download_drive_file" not in text
+        with_drive = build_teams_send_guidance(base | {"mcp_MSOffice365MCP_m365_download_drive_file"})
+        assert "pass it as `file_id` to `mcp_MSOffice365MCP_m365_download_drive_file`" in with_drive
+
     def test_signature_and_attribution_treat_teams_as_chat(self):
         names = {"mcp_MSOffice365MCP_m365_send_email", "mcp_MSOffice365MCP_m365_send_chat_message", "memory_save"}
         sig = build_outlook_signature_guidance(names)
@@ -1779,3 +1799,23 @@ class TestBuildTeamsSendGuidance:
         att = build_ai_attribution_guidance(names)
         assert "NO attribution line" in att
         assert "very end of the message" not in att
+
+
+class TestDataHandlingMcpRecordsInstructions:
+    """AIS-289: the mcp_records how-to lives once in the static prompt, not
+    in a 600-char hint on every tool result."""
+
+    def test_sql_rung_explains_shaped_results_and_rows_query(self):
+        from agent.prompt_builder import build_data_handling_guidance
+
+        text = build_data_handling_guidance({"sql", "terminal"})
+        assert "tool_use_id" in text and "raw_data" in text
+        assert "`_shaped` block" in text
+        assert "SELECT raw_data FROM mcp_records WHERE tool_use_id" in text
+        assert "read a persisted-output file back" in text
+
+    def test_without_sql_no_query_text(self):
+        from agent.prompt_builder import build_data_handling_guidance
+
+        text = build_data_handling_guidance({"terminal"})
+        assert "SELECT raw_data" not in text and "not in this session" in text

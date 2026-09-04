@@ -744,6 +744,10 @@ _GERMAN_SYNONYMS: Dict[str, List[str]] = {
     "word": ["word", "docx", "document"],
     "docx": ["word", "docx", "document"],
     "dokument": ["word", "docx", "document"],
+    # No stemming in the tokenizer: "file" must reach `download_chat_files`
+    # and "files" must reach `download_drive_file` (AIS-289).
+    "file": ["file", "files"],
+    "files": ["files", "file"],
     "dokumente": ["word", "docx", "document"],
     "textdokument": ["word", "docx", "document"],
     "excel": ["excel", "xlsx", "spreadsheet", "csv", "workbook"],

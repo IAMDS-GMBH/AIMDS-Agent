@@ -372,9 +372,18 @@ def build_data_handling_guidance(valid_tool_names: "set[str] | None" = None) -> 
     if has_sql:
         rungs.append(
             "Large or structured tool results are auto-ingested into SQLite `mcp_records` "
-            "(~/.hermes/state.db). Aggregate, sum, group and compare with the `sql` tool "
-            "(SUM/COUNT/ROUND/GROUP BY, CTEs) instead of mental arithmetic — and fetch in "
-            "bounded slices (month by month) rather than one call for everything."
+            "(~/.hermes/state.db; columns id, tool_name, tool_use_id, reference_key, timestamp, "
+            "user_id, duration_seconds, category, comment, raw_data — raw_data is the full JSON "
+            "row). A tool result ending in `[ingested N rows → mcp_records …]` or carrying a "
+            "`_shaped` block is a bounded view: the complete rows are in the table — "
+            "`SELECT raw_data FROM mcp_records WHERE tool_use_id = '<id>'` — do not re-fetch, "
+            "parse the JSON by hand, or read a persisted-output file back. Aggregate, sum, group "
+            "and compare with the `sql` tool (SUM/COUNT/ROUND/GROUP BY, CTEs, e.g. "
+            "`SELECT reference_key, ROUND(SUM(duration_seconds)/3600.0, 2) AS hours FROM "
+            "mcp_records WHERE tool_name = '...' GROUP BY reference_key`) instead of mental "
+            "arithmetic; scope personal worklog/ticket queries to the active user "
+            "(`WHERE user_id LIKE '%...%'`) and fetch in bounded slices (month by month) rather "
+            "than one call for everything."
         )
     else:
         rungs.append(
@@ -2080,7 +2089,17 @@ def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str
     files_tool = _resolve_m365_tool_name(names, "m365_download_chat_files")
     mail_files_tool = _resolve_m365_tool_name(names, "m365_download_email_attachments")
     mail_tool = _resolve_m365_tool_name(names, "m365_send_email")
+    drive_tool = _resolve_m365_tool_name(names, "m365_download_drive_file")
     memory_tool = _resolve_memory_save_tool_name(names)
+    # With the bridge active these tools are usually deferred: name the
+    # loading path so the model does not go looking for substitutes.
+    deferred_line = (
+        " These tools may be deferred behind `tool_search`: load one with `tool_describe(<name>)` or "
+        "call it directly via `tool_call(<name>, {...})` — do not substitute drive, SharePoint or "
+        "terminal tools for them."
+        if "tool_search" in names
+        else ""
+    )
 
     resolve_line = (
         f"Resolve the recipient with `{find_tool}(query=<name|nickname|email|topic>)` or simply pass "
@@ -2128,7 +2147,10 @@ def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str
             f"is a valid `chat_id` for every chat tool — never ask the user to extract the id. For \"the "
             f"document/file from the chat\" call `{files_tool}(chat_id=<link or id> | to=<name>, last=5)`; it "
             "downloads the shared files into the Vault and returns `saved_path` per file — work with those "
-            "paths, do not describe the file from the chat preview."
+            "paths, do not describe the file from the chat preview. A SharePoint/OneDrive URL seen in a chat "
+            "message is NOT a drive item id and never an attachment id"
+            + (f"; if you only have such a URL, pass it as `file_id` to `{drive_tool}`" if drive_tool else "")
+            + "; never fetch it with curl or a script."
             + (
                 f" For the attachments of an email use `{mail_files_tool}(message_id=…)` the same way."
                 if mail_files_tool
@@ -2141,6 +2163,7 @@ def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str
             if files_tool
             else ""
         )
+        + deferred_line
     )
 
 

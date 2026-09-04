@@ -141,3 +141,45 @@ class TestStructuredContentPreservation:
         raw = handler({})
         data = json.loads(raw)
         assert data["result"] == payload
+
+
+class TestFastMcpDuplicateIsCollapsed:
+    """AIS-289: FastMCP serialises a dict return twice (text block =
+    json.dumps(value), structuredContent = value). The handler must emit the
+    object once — it doubled the tokens of every M365/Tempo call."""
+
+    def test_identical_text_and_structured_emit_object_once(self, _patch_mcp_server):
+        session = _patch_mcp_server
+        payload = {"@odata.count": 1, "value": [{"id": "1", "name": "a.docx"}]}
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock(json.dumps(payload, indent=2))],
+                structuredContent=payload,
+            )
+        )
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert data == {"result": payload}
+
+    def test_scalar_return_wrapped_in_result_is_collapsed(self, _patch_mcp_server):
+        session = _patch_mcp_server
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock("42")],
+                structuredContent={"result": 42},
+            )
+        )
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        assert json.loads(handler({})) == {"result": {"result": 42}}
+
+    def test_different_text_and_structured_are_kept(self, _patch_mcp_server):
+        session = _patch_mcp_server
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock('{"a": 1}')],
+                structuredContent={"a": 2},
+            )
+        )
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert data["result"] == '{"a": 1}' and data["structuredContent"] == {"a": 2}
