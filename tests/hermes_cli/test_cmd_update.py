@@ -841,3 +841,64 @@ termux = ["rich>=14"]
 
     assert hm._load_installable_optional_extras(group="all") == ["mcp"]
     assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
+
+
+# ---------------------------------------------------------------------------
+# Release channels (AIS-292): stable follows vX.Y.Z, preview also candidates
+# ---------------------------------------------------------------------------
+
+
+def _tags_side_effect(tags, checked_out):
+    def side_effect(cmd, **kwargs):
+        joined = " ".join(str(c) for c in cmd)
+        if "rev-parse" in joined and "--abbrev-ref" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="HEAD\n", stderr="")
+        if joined.endswith("tag --list"):
+            return subprocess.CompletedProcess(cmd, 0, stdout="\n".join(tags) + "\n", stderr="")
+        if "checkout" in joined:
+            checked_out.append(cmd[-1])
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if "rev-list" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="3\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    return side_effect
+
+
+@pytest.mark.parametrize("channel,expected", [
+    ("stable", "v0.7.4"),
+    ("tags", "v0.7.4"),
+    ("preview", "v0.7.5-rc.2"),
+])
+def test_update_tag_channels_check_out_the_channel_tag(channel, expected, monkeypatch, capsys):
+    tags = ["v0.7.3", "v0.7.4", "v0.7.5-rc.1", "v0.7.5-rc.2", "junk"]
+    checked_out = []
+    monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda *a, **k: "git", raising=False)
+    with patch("hermes_cli.main.detect_install_method", return_value="git", create=True), \
+         patch("subprocess.run", side_effect=_tags_side_effect(tags, checked_out)), \
+         patch("hermes_cli.main._stash_local_changes_if_needed", return_value=None), \
+         patch("hermes_cli.main._sync_canonical_soul_after_update", return_value=None), \
+         patch("hermes_cli.main._discard_lockfile_churn", return_value=None), \
+         patch("hermes_cli.main._get_origin_url", return_value="https://github.com/IAMDS-GMBH/AIMDS-Agent.git"), \
+         patch("hermes_cli.main._is_fork", return_value=False), \
+         patch("hermes_cli.main._pre_update_syntax_snapshot", return_value=None, create=True):
+        try:
+            cmd_update(SimpleNamespace(branch=channel, check=False, yes=True))
+        except SystemExit:
+            pass
+    out = capsys.readouterr().out
+    assert f"Latest {'stable' if channel == 'tags' else channel} release: {expected}" in out
+    assert checked_out and checked_out[-1] == expected
+
+
+def test_update_check_reports_channel_tag(monkeypatch, capsys):
+    from hermes_cli.main import _cmd_update_check
+    tags = ["v0.7.4", "v0.7.5-rc.1"]
+    with patch("hermes_cli.config.detect_install_method", return_value="git"), \
+         patch("subprocess.run", side_effect=_tags_side_effect(tags, [])):
+        try:
+            _cmd_update_check("preview")
+        except SystemExit:
+            pass
+    out = capsys.readouterr().out
+    assert "Latest preview release: v0.7.5-rc.1" in out
+    assert "behind refs/tags/v0.7.5-rc.1" in out

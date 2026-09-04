@@ -51,13 +51,39 @@ def _get_version_from_git() -> str | None:
     return None
 
 
+def _get_exact_release_tag_version() -> str | None:
+    """Version of the release tag HEAD sits on, for source checkouts.
+
+    Releases are tags (AIS-292): a checkout updated to ``v0.7.5`` must report
+    ``0.7.5`` even though ``pyproject.toml`` on ``main`` still carries the
+    previous version. Only an *exact* tag on HEAD counts — a dev checkout a
+    few commits past a tag keeps the package version.
+    """
+    try:
+        root = Path(__file__).resolve().parent.parent
+        if not (root / ".git").exists():
+            return None
+        result = subprocess.run(
+            ["git", "describe", "--tags", "--exact-match", "HEAD"],
+            cwd=root, capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode != 0:
+            return None
+        tag = result.stdout.strip()
+        if tag.startswith("v") and tag[1:2].isdigit():
+            return tag[1:]
+    except Exception:
+        pass
+    return None
+
+
 try:
     from importlib.metadata import metadata as _pkg_metadata, PackageNotFoundError as _PNF
     try:
         _meta = _pkg_metadata("aimds-agent")
     except Exception:
         _meta = _pkg_metadata("hermes-agent")
-    __version__ = _meta["Version"] or "0.0.0"
+    __version__ = _get_exact_release_tag_version() or _meta["Version"] or "0.0.0"
     __release_date__ = _meta.get("X-Release-Date") or "unknown"
 except Exception:
     # Fallback for editable installs or environments where metadata isn't available.

@@ -39,6 +39,13 @@ const {
   isOfficialSshRemote
 } = require('./update-remote.cjs')
 const {
+  isTagChannel,
+  normalizeChannel,
+  parseLsRemoteTags,
+  selectReleaseTag,
+  versionFromTag
+} = require('./update-channels.cjs')
+const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
   modeRemovesAgent,
@@ -310,7 +317,9 @@ const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 // Branch we track for self-update. The GUI work has merged to main, so this
 // tracks main. User can also override at runtime via
 // hermesDesktop.updates.setBranch().
-const DEFAULT_UPDATE_BRANCH = 'main'
+// Installed clients follow stable release tags (AIS-292); developers pick
+// `main` in Settings → Updates. `tags` is the legacy alias for `stable`.
+const DEFAULT_UPDATE_BRANCH = 'stable'
 // desktop.log lives under HERMES_HOME/logs/ so it sits next to agent.log,
 // errors.log, gateway.log produced by hermes_logging.setup_logging — one log
 // directory per user, regardless of which UI surface produced the line.
@@ -1371,8 +1380,8 @@ function emitUpdateProgress(payload) {
 // "ref absent" (exit 2), never on a transient network error, so a flaky
 // connection can't strand a user on the wrong branch.
 async function resolveHealedBranch(updateRoot, branch) {
-  if (!branch || branch === 'main' || branch === 'tags' || branch === 'stable') {
-    return branch || 'main'
+  if (!branch || branch === 'main' || isTagChannel(branch)) {
+    return normalizeChannel(branch || DEFAULT_UPDATE_BRANCH)
   }
 
   const originUrl = await getOriginUrl(updateRoot)
@@ -1405,18 +1414,24 @@ async function checkUpdates() {
   }
 
   branch = await resolveHealedBranch(updateRoot, branch)
-  const isTagsChannel = branch === 'tags' || branch === 'stable'
+  const isTagsChannel = isTagChannel(branch)
   const originUrl = await getOriginUrl(updateRoot)
 
   if (isTagsChannel) {
+    // Release channels (AIS-292): `stable` follows vX.Y.Z only, `preview`
+    // also the vX.Y.Z-rc.N candidates. The target is picked by semver, not
+    // by ls-remote's sort order (which ranks v1.0.0-rc.1 above v1.0.0).
     const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
     const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
 
-    if (!isOfficialSshRemote(originUrl)) {
-      await runGit(['fetch', '--quiet', '--tags', 'origin'], { cwd: updateRoot })
+    // Fetch tags so the local checkout can count and list the commits up to
+    // the target — that is what feeds the changelog in the updates overlay.
+    const fetchTags = await runGit(['fetch', '--quiet', '--tags', remote], { cwd: updateRoot })
+    if (fetchTags.code !== 0) {
+      rememberLog(`[updates] git fetch --tags failed: ${firstLine(fetchTags.stderr)}`)
     }
 
-    const lsTags = await runGit(['ls-remote', '--tags', '--sort=-v:refname', remote], { cwd: updateRoot })
+    const lsTags = await runGit(['ls-remote', '--tags', remote], { cwd: updateRoot })
     if (lsTags.code !== 0 || !lsTags.stdout.trim()) {
       return {
         supported: true,
@@ -1428,21 +1443,19 @@ async function checkUpdates() {
       }
     }
 
-    const lines = lsTags.stdout.split('\n').map(l => l.trim()).filter(Boolean)
-    const validTagLine = lines.find(l => !l.endsWith('^{}'))
-    if (!validTagLine) {
+    const remoteTags = parseLsRemoteTags(lsTags.stdout)
+    const tagName = selectReleaseTag(Object.keys(remoteTags), branch)
+    if (!tagName) {
       return {
         supported: true,
         branch,
         error: 'no-tags-found',
-        message: 'No valid git tags found on remote.',
+        message: `No ${branch} release tag found on remote.`,
         hermesRoot: updateRoot,
         fetchedAt: Date.now()
       }
     }
-
-    const [targetSha, tagRef] = validTagLine.split(/\s+/)
-    const tagName = tagRef ? tagRef.replace(/^refs\/tags\//, '') : ''
+    const targetSha = remoteTags[tagName]
 
     const [currentSha, dirtyStr, currentBranch] = await Promise.all([
       git(['rev-parse', 'HEAD']),
@@ -1450,15 +1463,29 @@ async function checkUpdates() {
       git(['rev-parse', '--abbrev-ref', 'HEAD'])
     ])
 
+    let behind = currentSha && currentSha === targetSha ? 0 : 1
+    let commits = []
+    if (behind && fetchTags.code === 0) {
+      const count = await runGit(['rev-list', `HEAD..${targetSha}`, '--count'], { cwd: updateRoot })
+      const parsed = Number.parseInt((count.stdout || '').trim(), 10)
+      if (count.code === 0 && Number.isFinite(parsed)) {
+        // 0 commits ahead but a different sha means HEAD is *past* the tag
+        // (developer checkout) — still report the tag as the target.
+        behind = parsed > 0 ? parsed : 1
+        commits = parsed > 0 ? await readCommitLog(updateRoot, targetSha) : []
+      }
+    }
+
     return {
       supported: true,
       branch,
       currentBranch,
-      behind: currentSha && currentSha === targetSha ? 0 : 1,
+      behind,
       currentSha,
       targetSha,
       targetTag: tagName,
-      commits: [],
+      targetVersion: versionFromTag(tagName),
+      commits,
       dirty: dirtyStr.length > 0,
       hermesRoot: updateRoot,
       fetchedAt: Date.now()
@@ -1488,7 +1515,7 @@ async function checkUpdates() {
   ])
 
   const behind = Number.parseInt(countStr, 10) || 0
-  const commits = behind > 0 ? await readCommitLog(updateRoot, branch) : []
+  const commits = behind > 0 ? await readCommitLog(updateRoot, `origin/${branch}`) : []
 
   const updateResult = {
     supported: true,
@@ -1508,11 +1535,14 @@ async function checkUpdates() {
   return updateResult
 }
 
-async function readCommitLog(cwd, branch) {
+// `target` is any git ref or sha the checkout can resolve locally
+// (origin/<branch>, a fetched tag's commit) — the changelog is the commits
+// between HEAD and that target.
+async function readCommitLog(cwd, target) {
   const SEP = '\x1f'
   const REC = '\x1e'
   const { stdout } = await runGit(
-    ['log', `HEAD..origin/${branch}`, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', '40'],
+    ['log', `HEAD..${target}`, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', '40'],
     { cwd }
   )
 
@@ -6676,9 +6706,27 @@ function resolveVersionFromPyproject(root) {
 //  1) pyproject.toml version (always a literal — authoritative for this fork)
 //     + ahead-commit count from git describe against that exact tag
 //  2) Electron app package version
+// Releases are tags (AIS-292): a checkout sitting exactly on vX.Y.Z reports
+// that version even though pyproject.toml on main still carries the previous
+// one. Only an exact match counts; dev checkouts keep pyproject + ahead count.
+function resolveExactReleaseTagVersion(root) {
+  try {
+    const described = execFileSync(resolveGitBinary(), ['describe', '--tags', '--exact-match', 'HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim()
+    return /^v\d+\.\d+\.\d+(-rc\.\d+)?$/.test(described) ? described.slice(1) : null
+  } catch {
+    return null
+  }
+}
+
 function resolveHermesVersion() {
   try {
     const root = resolveUpdateRoot()
+    const exact = resolveExactReleaseTagVersion(root)
+    if (exact) return exact
     const base = resolveVersionFromPyproject(root)
     if (base) {
       const ahead = resolveAheadCountFromGit(root, base)

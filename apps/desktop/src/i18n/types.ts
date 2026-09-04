@@ -303,6 +303,7 @@ export interface Translations {
       updateChannelTitle: string
       updateChannelDesc: string
       updateChannelStable: string
+      updateChannelPreview: string
       updateChannelMain: string
       filePickerRootTitle: string
       filePickerRootDesc: string
