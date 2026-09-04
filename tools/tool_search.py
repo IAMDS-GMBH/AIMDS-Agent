@@ -723,6 +723,16 @@ _ACTION_VERB_SYNONYMS: Dict[str, Tuple[str, ...]] = {
     "send": ("send",),
     "write": ("send", "write"),
     "reply": ("reply", "send"),
+    # Fetching files: "lade den Anhang aus dem Teams-Chat herunter" (AIS-288).
+    "lade": ("download", "get", "fetch"),
+    "laden": ("download", "get", "fetch"),
+    "herunterladen": ("download",),
+    "runterladen": ("download",),
+    "downloaden": ("download",),
+    "download": ("download",),
+    "hol": ("download", "get", "fetch"),
+    "hole": ("download", "get", "fetch"),
+    "holen": ("download", "get", "fetch"),
 }
 
 _GERMAN_SYNONYMS: Dict[str, List[str]] = {
@@ -785,6 +795,15 @@ _GERMAN_SYNONYMS: Dict[str, List[str]] = {
     "empfänger": ["recipient", "find", "chat", "teams", "email", "contact"],
     "empfaenger": ["recipient", "find", "chat", "teams", "email", "contact"],
     "stil": ["style", "tone", "chat", "teams", "person"],
+    # Files from chats / mails (AIS-288): "lade den Anhang aus dem Teams-Chat".
+    "anhang": ["attachment", "download", "file", "chat", "teams", "email"],
+    "anhänge": ["attachment", "download", "file", "chat", "teams", "email"],
+    "anhaenge": ["attachment", "download", "file", "chat", "teams", "email"],
+    "herunterladen": ["download", "attachment", "file", "drive", "chat"],
+    "runterladen": ["download", "attachment", "file", "drive", "chat"],
+    "download": ["download", "attachment", "file", "drive", "chat"],
+    "datei": ["file", "attachment", "download", "drive"],
+    "dateien": ["file", "attachment", "download", "drive"],
     "tonfall": ["style", "tone", "chat", "teams", "person"],
     "gruppenchat": ["m365", "msoffice365", "msoffice365mcp", "teams", "chat", "group"],
     "gruppenchats": ["m365", "msoffice365", "msoffice365mcp", "teams", "chat", "group"],

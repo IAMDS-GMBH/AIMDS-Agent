@@ -4917,6 +4917,48 @@ def _existing_tool_names() -> List[str]:
     return names
 
 
+def _catalog_default_tools(server_name: str) -> Set[str]:
+    """Manifest ``tools.default_enabled`` for a catalog-installed server, else empty.
+
+    Cheap and fail-safe: the catalog is parsed from the shipped manifests; any
+    error (no catalog, name is a custom server) yields an empty set.
+    """
+    try:
+        from hermes_cli.mcp_catalog import get_entry
+
+        entry = get_entry(server_name)
+    except Exception:
+        return set()
+    if entry is None or not entry.tools or not entry.tools.default_enabled:
+        return set()
+    return {str(t) for t in entry.tools.default_enabled if str(t).strip()}
+
+
+def _merge_catalog_default_tools(server_name: str, include_set: Set[str]) -> Set[str]:
+    """Keep catalog installs current: ``tools.include`` ∪ manifest ``default_enabled``.
+
+    ``mcp_servers.<name>.tools.include`` is written once at install time and
+    carried over verbatim on reinstall, so tools added to a manifest's
+    ``default_enabled`` later (e.g. the Teams attachment download tools) never
+    reached existing installs — the agent simply did not have them
+    (AIS-288 / SUP-20260904-071240). Curated defaults are therefore always
+    registered; a user's include list still governs every non-default tool.
+    An empty include list means "all tools" and is left alone.
+    """
+    if not include_set:
+        return include_set
+    defaults = _catalog_default_tools(server_name)
+    if not defaults:
+        return include_set
+    missing = {t for t in defaults if _normalized_tool_filter_key(t) not in {_normalized_tool_filter_key(i) for i in include_set}}
+    if missing:
+        logger.info(
+            "MCP server '%s': enabling %d manifest default tool(s) missing from tools.include: %s",
+            server_name, len(missing), ", ".join(sorted(missing)),
+        )
+    return set(include_set) | missing
+
+
 def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> List[str]:
     """Register tools from an already-connected server into the registry.
 
@@ -4949,6 +4991,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     exclude_set = _normalize_name_filter(
         tools_filter.get("exclude"), f"mcp_servers.{name}.tools.exclude"
     )
+    include_set = _merge_catalog_default_tools(name, include_set)
 
     safe_server_name = sanitize_mcp_name_component(name)
 

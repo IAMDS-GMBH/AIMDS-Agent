@@ -1176,3 +1176,229 @@ class TestChatStyle:
         with patch.object(server, "_graph_request", side_effect=side_effect):
             res = server.m365_get_chat_style(to="Martin")
         assert res["error"] == "recipient ambiguous" and len(res["candidates"]) >= 2
+
+
+# --------------------------------------------------------------------------- AIS-288 Teams links + chat files
+
+CHAT_LINK = "https://teams.microsoft.com/l/chat/19%3A6bd3df1234%40thread.v2/0?context=%7B%22contextType%22%3A%22chat%22%7D"
+MSG_LINK = "https://teams.microsoft.com/l/message/19%3A6bd3df1234%40thread.v2/1725000000002?tenantId=t&context=c"
+
+
+class TestTeamsLinks:
+    def test_parse_chat_and_message_links(self):
+        assert server._parse_teams_link(CHAT_LINK) == {"chat_id": "19:6bd3df1234@thread.v2", "message_id": None, "kind": "chat"}
+        assert server._parse_teams_link(MSG_LINK) == {"chat_id": "19:6bd3df1234@thread.v2", "message_id": "1725000000002", "kind": "message"}
+        assert server._parse_teams_link("Fischi") is None
+        assert server._parse_teams_link("") is None
+        assert server._coerce_chat_ref(CHAT_LINK) == "19:6bd3df1234@thread.v2"
+        assert server._coerce_chat_ref(" 19:abc@thread.v2 ") == "19:abc@thread.v2"
+        assert server._coerce_chat_ref(None) is None
+
+    def test_find_chat_with_link_is_unique_without_ranking(self):
+        server._MY_IDENTITY_CACHE.clear()
+        calls = []
+
+        def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, account=None, **kw):
+            calls.append(endpoint)
+            if endpoint == "/me/chats/19:6bd3df1234@thread.v2":
+                return _chat("19:6bd3df1234@thread.v2", "oneOnOne", [("me-1", "Johannes Huchler", "johannes@example.com"), ("u-2", "Martin Fischerauer", "m@example.com")])
+            return {"value": []}
+
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_find_chat(MSG_LINK)
+        assert res["resolution"] == "unique" and res["chat_id"] == "19:6bd3df1234@thread.v2"
+        assert res["message_id"] == "1725000000002"
+        assert res["candidates"][0]["match_reason"] == "teams link"
+        assert "/me/chats" not in calls  # no scan of all chats
+
+    def test_list_chat_messages_and_style_accept_links(self):
+        with patch.object(server, "_graph_request", return_value={"value": []}) as mock_req:
+            server.m365_list_chat_messages(CHAT_LINK, top=3)
+            assert mock_req.call_args.args[1] == "/me/chats/19:6bd3df1234@thread.v2/messages"
+        with patch.object(server, "_graph_request", return_value={"value": []}) as mock_req:
+            server.m365_list_teams_message_attachments(message_id="m1", chat_id=CHAT_LINK)
+            assert mock_req.call_args_list[0].args[1] == "/me/chats/19:6bd3df1234@thread.v2/messages/m1"
+
+    def test_send_chat_message_accepts_link_as_to(self):
+        with patch.object(server, "_graph_request", return_value={"id": "msg"}) as mock_req:
+            res = server.m365_send_chat_message(to=CHAT_LINK, content="hi")
+        assert res["sent"] is True and res["chat_id"] == "19:6bd3df1234@thread.v2"
+        assert mock_req.call_args.args[1] == "/me/chats/19:6bd3df1234@thread.v2/messages"
+
+
+class TestDownloadChatFiles:
+    CHAT = "19:6bd3df1234@thread.v2"
+
+    def _messages(self):
+        return [
+            {"id": "1725000000003", "messageType": "message", "createdDateTime": "2026-09-04T07:00:00Z",
+             "from": {"user": {"id": "u-2", "displayName": "Martin"}}, "body": {"contentType": "text", "content": "danke"}},
+            {"id": "1725000000002", "messageType": "message", "createdDateTime": "2026-09-04T06:59:00Z",
+             "from": {"user": {"id": "u-2", "displayName": "Martin"}},
+             "body": {"contentType": "html", "content": "<p>anbei</p><attachment id=\"a1\"></attachment>"},
+             "attachments": [{"id": "a1", "name": "Angebot.docx", "contentType": "reference", "contentUrl": "https://iamds.sharepoint.com/sites/x/Angebot.docx"}]},
+            {"id": "1725000000001", "messageType": "message", "createdDateTime": "2026-09-04T06:58:00Z",
+             "from": {"user": {"id": "me-1", "displayName": "Johannes Huchler"}},
+             "body": {"contentType": "html", "content": '<p>screenshot</p><img src="https://graph.microsoft.com/v1.0/chats/x/messages/y/hostedContents/hc1/$value">'}},
+            {"id": "1725000000000", "messageType": "systemEventMessage", "body": {"contentType": "html", "content": "<systemEventMessage/>"}},
+        ]
+
+    def _graph(self, messages):
+        def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, account=None, **kw):
+            if endpoint == "/me":
+                return ME
+            if endpoint == f"/me/chats/{self.CHAT}/messages":
+                return {"value": messages}
+            if endpoint == f"/me/chats/{self.CHAT}":
+                return _chat(self.CHAT, "oneOnOne", [("me-1", "Johannes Huchler", "johannes@example.com"), ("u-2", "Martin Fischerauer", "martin.fischerauer@example.com")])
+            if endpoint == "/me/chats":
+                return {"value": CHATS}
+            return {"value": []}
+        return side_effect
+
+    def test_downloads_files_from_recent_messages_into_vault(self, tmp_path, monkeypatch):
+        server._MY_IDENTITY_CACHE.clear()
+        vault = tmp_path / "vault"; vault.mkdir()
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(vault))
+        downloads = []
+
+        def fake_download(url, account=None):
+            downloads.append(url)
+            if "/shares/" in url:
+                return b"%DOCX%"
+            if "hostedContents/hc1" in url:
+                return b"\x89PNG"
+            raise RuntimeError("unexpected")
+
+        with patch.object(server, "_graph_request", side_effect=self._graph(self._messages())), \
+             patch.object(server, "_graph_download_bytes", side_effect=fake_download):
+            res = server.m365_download_chat_files(chat_id=CHAT_LINK, last=5)
+        assert res["chat_id"] == self.CHAT and res["messages_scanned"] == 3
+        assert res["count"] == 1 and res["errors"] == []
+        f = res["files"][0]
+        assert f["name"] == "Angebot.docx" and f["from"] == "Martin" and f["message_id"] == "1725000000002"
+        assert Path(f["saved_path"]).read_bytes() == b"%DOCX%"
+        assert Path(f["saved_path"]).parent == vault / "documents" / "m365_attachments" / "Martin_Fischerauer"
+        assert all("/shares/u!" in u for u in downloads)  # images skipped by default
+
+    def test_include_images_and_duplicate_names(self, tmp_path, monkeypatch):
+        server._MY_IDENTITY_CACHE.clear()
+        vault = tmp_path / "vault"; vault.mkdir()
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(vault))
+        (vault / "documents" / "m365_attachments" / "Martin_Fischerauer").mkdir(parents=True)
+        (vault / "documents" / "m365_attachments" / "Martin_Fischerauer" / "Angebot.docx").write_bytes(b"old")
+
+        def fake_download(url, account=None):
+            return b"\x89PNG" if "hostedContents" in url else b"%DOCX%"
+
+        with patch.object(server, "_graph_request", side_effect=self._graph(self._messages())), \
+             patch.object(server, "_graph_download_bytes", side_effect=fake_download):
+            res = server.m365_download_chat_files(chat_id=self.CHAT, last=5, include_images=True)
+        names = sorted(f["name"] for f in res["files"])
+        assert names == ["Angebot.docx", "inline_image_hc1.png"]
+        docx = next(f for f in res["files"] if f["name"] == "Angebot.docx")
+        assert docx["saved_path"].endswith("Angebot (2).docx")  # existing file kept
+
+    def test_message_link_restricts_to_that_message(self, tmp_path, monkeypatch):
+        server._MY_IDENTITY_CACHE.clear()
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(tmp_path))
+        with patch.object(server, "_graph_request", side_effect=self._graph(self._messages())), \
+             patch.object(server, "_graph_download_bytes", return_value=b"x"):
+            res = server.m365_download_chat_files(chat_id=MSG_LINK, last=10)
+        assert res["messages_scanned"] == 1 and res["count"] == 1
+
+    def test_resolves_recipient_by_name_and_reports_hint_when_empty(self, tmp_path, monkeypatch):
+        server._MY_IDENTITY_CACHE.clear()
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(tmp_path))
+        messages = [m for m in self._messages() if m["id"] == "1725000000003"]
+
+        def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, account=None, **kw):
+            if endpoint == "/me":
+                return ME
+            if endpoint == "/me/chats":
+                return {"value": CHATS}
+            if endpoint == "/me/chats/c-fischi/messages":
+                return {"value": messages}
+            return {"value": []}
+
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_download_chat_files(to="Fischi", last=5)
+        assert res["chat_id"] == "c-fischi" and res["count"] == 0
+        assert res["recipient"]["chat_type"] == "oneOnOne"
+        assert "include_images" in res["hint"]
+
+    def test_download_failure_is_reported_not_raised(self, tmp_path, monkeypatch):
+        server._MY_IDENTITY_CACHE.clear()
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(tmp_path))
+        with patch.object(server, "_graph_request", side_effect=self._graph(self._messages())), \
+             patch.object(server, "_graph_download_bytes", side_effect=RuntimeError("403")):
+            res = server.m365_download_chat_files(chat_id=self.CHAT, last=5)
+        assert res["count"] == 0 and res["errors"][0]["name"] == "Angebot.docx"
+
+    def test_requires_chat_or_recipient(self):
+        assert "error" in server.m365_download_chat_files()
+
+    def test_manifest_enables_new_tool(self):
+        import yaml
+
+        manifest = yaml.safe_load((server_path.parent / "manifest.yaml").read_text(encoding="utf-8"))
+        assert "m365_download_chat_files" in manifest["tools"]["default_enabled"]
+        assert "m365_download_teams_message_attachment" in manifest["tools"]["default_enabled"]
+
+
+class TestDownloadEmailAttachments:
+    def _graph(self, attachments):
+        def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, account=None, **kw):
+            if endpoint == "/me/messages/msg-1":
+                return {"subject": "Angebot: LBBW / TP3", "from": {"emailAddress": {"name": "Martin"}}, "receivedDateTime": "2026-09-04T07:00:00Z"}
+            if endpoint == "/me/messages/msg-1/attachments":
+                return {"value": attachments}
+            return {}
+        return side_effect
+
+    def test_saves_all_file_attachments_into_vault(self, tmp_path, monkeypatch):
+        import base64
+
+        vault = tmp_path / "vault"; vault.mkdir()
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(vault))
+        atts = [
+            {"@odata.type": "#microsoft.graph.fileAttachment", "id": "a1", "name": "Angebot.pdf", "contentType": "application/pdf", "contentBytes": base64.b64encode(b"%PDF").decode()},
+            {"@odata.type": "#microsoft.graph.fileAttachment", "id": "a2", "name": "logo.png", "contentType": "image/png", "isInline": True, "contentBytes": base64.b64encode(b"png").decode()},
+            {"@odata.type": "#microsoft.graph.fileAttachment", "id": "a3", "name": "big.xlsx", "contentType": "application/x"},
+            {"@odata.type": "#microsoft.graph.itemAttachment", "id": "a4", "name": "Fwd: alt"},
+        ]
+        with patch.object(server, "_graph_request", side_effect=self._graph(atts)), \
+             patch.object(server, "_graph_download_bytes", return_value=b"XLSX") as dl:
+            res = server.m365_download_email_attachments("msg-1")
+        assert res["subject"].startswith("Angebot") and res["from"] == "Martin"
+        assert [f["name"] for f in res["files"]] == ["Angebot.pdf", "big.xlsx"]
+        assert res["skipped"] == 2 and res["errors"] == []
+        assert Path(res["files"][0]["saved_path"]).read_bytes() == b"%PDF"
+        assert Path(res["files"][0]["saved_path"]).parent == vault / "documents" / "m365_attachments" / "mail" / "Angebot_LBBW_TP3"
+        assert dl.call_args.args[0] == "/me/messages/msg-1/attachments/a3/$value"
+
+    def test_include_inline_and_error_reporting(self, tmp_path, monkeypatch):
+        import base64
+
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(tmp_path))
+        atts = [
+            {"@odata.type": "#microsoft.graph.fileAttachment", "id": "a2", "name": "logo.png", "isInline": True, "contentBytes": base64.b64encode(b"png").decode()},
+            {"@odata.type": "#microsoft.graph.fileAttachment", "id": "a3", "name": "broken.bin"},
+        ]
+        with patch.object(server, "_graph_request", side_effect=self._graph(atts)), \
+             patch.object(server, "_graph_download_bytes", side_effect=RuntimeError("404")):
+            res = server.m365_download_email_attachments("msg-1", include_inline=True)
+        assert [f["name"] for f in res["files"]] == ["logo.png"]
+        assert res["errors"][0]["name"] == "broken.bin"
+
+    def test_no_files_gives_hint(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(tmp_path))
+        with patch.object(server, "_graph_request", side_effect=self._graph([])):
+            res = server.m365_download_email_attachments("msg-1")
+        assert res["count"] == 0 and "include_inline" in res["hint"]
+
+    def test_manifest_enables_tool(self):
+        import yaml
+
+        manifest = yaml.safe_load((server_path.parent / "manifest.yaml").read_text(encoding="utf-8"))
+        assert "m365_download_email_attachments" in manifest["tools"]["default_enabled"]

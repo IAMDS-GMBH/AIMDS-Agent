@@ -1285,6 +1285,97 @@ def m365_download_email_attachment(
 
 
 @mcp.tool()
+def m365_download_email_attachments(
+    message_id: str,
+    save_dir: Optional[str] = None,
+    include_inline: bool = False,
+    account: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Download all file attachments of an Outlook email into the Vault in one call.
+
+    Saves every file attachment of the message under
+    ``documents/m365_attachments/mail/<subject>/`` (or ``save_dir``) and returns the
+    saved paths — use this when the user asks for "the attachment(s) of that mail".
+    Inline images (signature logos) are skipped unless ``include_inline`` is set.
+
+    Args:
+        message_id: Outlook message id (from m365_list_emails / m365_get_email).
+        save_dir: Optional local directory; defaults to the Vault.
+        include_inline: Also save inline images embedded in the mail body.
+        account: Optional M365 account username, email, or ID.
+    """
+    meta = _graph_request("GET", f"/me/messages/{message_id}", params={"$select": "subject,from,receivedDateTime,hasAttachments"}, account=account)
+    subject = str((meta or {}).get("subject") or "mail")
+    sender = (((meta or {}).get("from") or {}).get("emailAddress") or {}).get("name") or ""
+    received = _format_timestamp_local((meta or {}).get("receivedDateTime")) or ""
+    listing = _graph_request("GET", f"/me/messages/{message_id}/attachments", account=account)
+    files: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+    skipped = 0
+    subfolder = f"documents/m365_attachments/mail/{_slugify_path_component(subject, fallback='mail')}"
+    for att in (listing.get("value") or []) if isinstance(listing, dict) else []:
+        if not isinstance(att, dict):
+            continue
+        att_type = str(att.get("@odata.type") or "").replace("#microsoft.graph.", "")
+        name = att.get("name") or f"attachment_{att.get('id', '')[:8]}"
+        if att.get("isInline") and not include_inline:
+            skipped += 1
+            continue
+        if att_type == "itemAttachment":
+            # Attached mail items are not files; report, don't fail.
+            skipped += 1
+            continue
+        try:
+            if att.get("contentBytes"):
+                data = base64.b64decode(att["contentBytes"])
+            elif att_type == "referenceAttachment" and att.get("sourceUrl"):
+                data = _download_file_reference(att["sourceUrl"], name)
+                if data is None:
+                    raise RuntimeError("reference attachment could not be fetched via shares API")
+            else:
+                data = _graph_download_bytes(f"/me/messages/{message_id}/attachments/{att.get('id')}/$value", account=account)
+        except Exception as exc:
+            errors.append({"attachment_id": att.get("id"), "name": name, "error": str(exc)[:200]})
+            continue
+        if save_dir:
+            out_dir = Path(save_dir).expanduser().resolve()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_file = out_dir / name
+        else:
+            out_file = _resolve_save_path(None, name, subfolder=subfolder)
+        if out_file.exists():
+            stem, suffix = out_file.stem, out_file.suffix
+            counter = 2
+            while out_file.exists():
+                out_file = out_file.with_name(f"{stem} ({counter}){suffix}")
+                counter += 1
+        out_file.write_bytes(data)
+        files.append({
+            "name": name,
+            "saved_path": str(out_file),
+            "size_bytes": len(data),
+            "content_type": att.get("contentType") or "",
+            "attachment_id": att.get("id"),
+        })
+    result: Dict[str, Any] = {
+        "message_id": message_id,
+        "subject": subject,
+        "from": sender,
+        "received_at": received,
+        "files": files,
+        "count": len(files),
+        "skipped": skipped,
+        "errors": errors,
+    }
+    if not files:
+        result["hint"] = (
+            "No file attachments saved. Inline images and attached mail items are skipped by default "
+            "(include_inline=True for images); check m365_list_email_attachments for what the mail carries."
+        )
+    return result
+
+
+@mcp.tool()
 def m365_list_calendars(top: int = 20) -> Dict[str, Any]:
     """List all available Outlook calendars (personal, shared, calendar groups, and M365 group/team calendars like URLAUB and OFFICEZEITEN)."""
     calendars = []
@@ -1968,6 +2059,48 @@ def _clean_query_text(value: Optional[str]) -> str:
     return str(value or "").strip()
 
 
+_TEAMS_LINK_RE = _re.compile(
+    r"https?://teams\.(?:microsoft|cloud\.microsoft)\.com/l/(chat|message)/([^/?#\s]+)(?:/([^/?#\s]+))?",
+    _re.IGNORECASE,
+)
+
+
+def _parse_teams_link(text: Optional[str]) -> Optional[Dict[str, Optional[str]]]:
+    """Extract chat_id (and message_id) from a Teams deep link.
+
+    Handles ``https://teams.microsoft.com/l/chat/<chatId>/0?...`` and
+    ``https://teams.microsoft.com/l/message/<chatId>/<messageId>?...``; the
+    chat id is URL-encoded in links (``19%3A...%40thread.v2``). Returns None
+    when ``text`` is not a Teams link.
+    """
+    if not text:
+        return None
+    m = _TEAMS_LINK_RE.search(str(text))
+    if not m:
+        return None
+    from urllib.parse import unquote
+
+    kind, chat_id, tail = m.group(1).lower(), unquote(m.group(2)), m.group(3)
+    message_id = unquote(tail) if (kind == "message" and tail) else None
+    return {"chat_id": chat_id, "message_id": message_id, "kind": kind}
+
+
+def _coerce_chat_ref(value: Optional[str]) -> Optional[str]:
+    """Accept a raw chat id or a Teams deep link wherever a chat id is expected."""
+    text = _clean_query_text(value)
+    if not text:
+        return None
+    parsed = _parse_teams_link(text)
+    return parsed["chat_id"] if parsed else text
+
+
+def _slugify_path_component(value: str, fallback: str = "chat") -> str:
+    text = _html.unescape(str(value or "")).strip()
+    text = _re.sub(r"[^\w\-. ]+", "_", text, flags=_re.UNICODE)
+    text = _re.sub(r"[\s_]+", "_", text).strip(" ._")
+    return (text[:60].rstrip(" ._") or fallback)
+
+
 @mcp.tool()
 def m365_list_chats(
     top: int = 10,
@@ -2087,6 +2220,22 @@ def m365_find_chat(
     query_clean = _clean_query_text(query)
     if not query_clean:
         return {"error": "query is required (person name, email or chat topic)."}
+    linked = _parse_teams_link(query_clean)
+    if linked:
+        # A pasted Teams link already names the chat — no ranking needed.
+        chat_id = linked["chat_id"]
+        try:
+            raw = _graph_request("GET", f"/me/chats/{chat_id}", params={"$expand": "members"}, account=account)
+        except Exception as exc:
+            return {"query": query_clean, "resolution": "none", "candidates": [], "error": f"chat from link not accessible: {exc}"}
+        compact = _compact_chat(raw if isinstance(raw, dict) else {"id": chat_id})
+        compact["chat_id"] = compact.get("chat_id") or chat_id
+        compact["score"] = 100
+        compact["match_reason"] = "teams link"
+        result = {"query": query_clean, "prefer": "any", "resolution": "unique", "candidates": [compact], "chat_id": chat_id, "chats_scanned": 0}
+        if linked.get("message_id"):
+            result["message_id"] = linked["message_id"]
+        return result
     return _resolve_teams_recipient(query_clean, prefer=prefer, top=top, account=account)
 
 
@@ -2123,7 +2272,7 @@ def m365_send_chat_message(
         message: Alias for content.
         body: Alias for content.
         text: Alias for content.
-        attachments: Optional local file paths; uploaded to OneDrive and linked as file cards (forces HTML).
+        attachments: Local file paths (absolute, or relative to the Vault / workspace) — e.g. a path returned by m365_download_chat_files or m365_download_email_attachments. Uploaded to OneDrive and linked as file cards (forces HTML).
         to: Recipient name / email / group topic; resolved to a chat before sending.
         dry_run: Resolve the recipient and render the message but do not send.
         account: Optional M365 account username, email, or ID.
@@ -2135,8 +2284,10 @@ def m365_send_chat_message(
     recipient: Optional[Dict[str, Any]] = None
     chat_type = ""
     resolution: Optional[Dict[str, Any]] = None
-    target_chat_id = (chat_id or "").strip()
+    target_chat_id = _coerce_chat_ref(chat_id) or ""
     to_clean = _clean_query_text(to)
+    if not target_chat_id and to_clean and _parse_teams_link(to_clean):
+        target_chat_id = _coerce_chat_ref(to_clean) or ""
     if not target_chat_id:
         if not to_clean:
             raise ValueError("m365_send_chat_message needs either 'to' (name / email / topic) or 'chat_id'.")
@@ -2468,10 +2619,11 @@ def m365_list_chat_messages(chat_id: str, top: int = 10, raw: bool = False) -> D
     """List recent messages of a Teams chat as compact records {from, at, text, has_attachments}.
 
     Args:
-        chat_id: The chat id (from m365_find_chat / m365_list_chats).
+        chat_id: The chat id (from m365_find_chat / m365_list_chats) or a Teams chat link.
         top: Number of most recent messages (capped at 50).
         raw: Return the unmodified Graph objects (with attachments_summary) instead.
     """
+    chat_id = _coerce_chat_ref(chat_id) or chat_id
     params = {"$top": min(top, 50)}
     res = _graph_request("GET", f"/me/chats/{chat_id}/messages", params=params)
     if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
@@ -2608,8 +2760,10 @@ def m365_get_chat_style(
         sample: How many recent messages to inspect (capped at 50).
         account: Optional M365 account username, email, or ID.
     """
-    target = (chat_id or "").strip()
+    target = _coerce_chat_ref(chat_id) or ""
     recipient: Optional[Dict[str, Any]] = None
+    if not target and _parse_teams_link(_clean_query_text(to)):
+        target = _coerce_chat_ref(to) or ""
     if not target:
         to_clean = _clean_query_text(to)
         if not to_clean:
@@ -2691,6 +2845,7 @@ def m365_list_teams_message_attachments(
         team_id: The Team ID (required if querying a channel message).
         channel_id: The Channel ID (required if querying a channel message).
     """
+    chat_id = _coerce_chat_ref(chat_id)
     if not chat_id and not (team_id and channel_id):
         raise ValueError("Either chat_id OR both team_id and channel_id must be provided.")
 
@@ -2767,6 +2922,7 @@ def m365_download_teams_message_attachment(
         content_url: Direct SharePoint / OneDrive content URL from the attachment object.
         save_path: Optional local destination path. Defaults to Vault or ./attachments/<filename>.
     """
+    chat_id = _coerce_chat_ref(chat_id)
     if not chat_id and not (team_id and channel_id):
         raise ValueError("Either chat_id OR both team_id and channel_id must be provided.")
 
@@ -2834,6 +2990,153 @@ def m365_download_teams_message_attachment(
         "saved_path": str(out_file),
         "size_bytes": len(content_bytes),
     }
+
+
+def _download_file_reference(content_url: str, filename: str) -> Optional[bytes]:
+    """Download a Teams file reference (SharePoint/OneDrive URL) via the shares API."""
+    if not content_url:
+        return None
+    b64_url = base64.urlsafe_b64encode(content_url.encode("utf-8")).decode("utf-8").rstrip("=")
+    try:
+        return _graph_download_bytes(f"/shares/u!{b64_url}/driveItem/content")
+    except Exception:
+        if filename:
+            try:
+                return _graph_download_bytes(f"/me/drive/root:/Microsoft Teams Chat Files/{filename}:/content")
+            except Exception:
+                return None
+    return None
+
+
+@mcp.tool()
+def m365_download_chat_files(
+    chat_id: Optional[str] = None,
+    to: Optional[str] = None,
+    last: int = 5,
+    include_images: bool = False,
+    save_dir: Optional[str] = None,
+    account: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Find the files shared in a Teams chat and download them into the Vault.
+
+    Scans the last ``last`` messages of the chat for file attachments (Word,
+    PDF, Excel, … shared via OneDrive/SharePoint) and, optionally, inline
+    images, downloads each into ``documents/m365_attachments/<chat>/`` of the
+    Vault (or ``save_dir``) and returns the saved paths together with sender
+    and time. Use this when the user asks for "the document from the chat" —
+    pass the pasted Teams link as ``chat_id`` or the person/topic as ``to``.
+
+    Args:
+        chat_id: Chat id or a Teams chat/message link (https://teams.microsoft.com/l/chat/... or /l/message/...).
+        to: Person name, nickname, email or group topic when no id/link is at hand.
+        last: How many recent messages to scan (1-50, default 5).
+        include_images: Also download inline images (screenshots pasted into the chat).
+        save_dir: Optional local directory; defaults to the Vault.
+        account: Optional M365 account username, email, or ID.
+    """
+    linked = _parse_teams_link(_clean_query_text(chat_id)) or _parse_teams_link(_clean_query_text(to))
+    target = _coerce_chat_ref(chat_id) or ""
+    recipient: Optional[Dict[str, Any]] = None
+    if not target and _parse_teams_link(_clean_query_text(to)):
+        target = _coerce_chat_ref(to) or ""
+    if not target:
+        to_clean = _clean_query_text(to)
+        if not to_clean:
+            return {"error": "Pass chat_id (id or Teams link) or to (name / email / topic)."}
+        resolution = _resolve_teams_recipient(to_clean, prefer="any", top=5, account=account)
+        if resolution["resolution"] != "unique":
+            return {"error": f"recipient {resolution['resolution']}", **resolution}
+        target = resolution["chat_id"]
+        recipient = resolution["candidates"][0]
+
+    top = min(max(int(last or 5), 1), 50)
+    res = _graph_request("GET", f"/me/chats/{target}/messages", params={"$top": top}, account=account)
+    raw_messages = [m for m in ((res.get("value") or []) if isinstance(res, dict) else []) if isinstance(m, dict)]
+    only_message_id = linked.get("message_id") if linked else None
+
+    # Folder name: group topic or the other person's name.
+    folder_label = ""
+    try:
+        chat_meta = recipient or _compact_chat(_graph_request("GET", f"/me/chats/{target}", params={"$expand": "members"}, account=account))
+        me = _my_identity(account=account)
+        others = [m.get("displayName") for m in chat_meta.get("members", []) if m.get("displayName") and _norm_name(m.get("email")) != _norm_name(me.get("upn"))]
+        folder_label = chat_meta.get("topic") or ", ".join(others[:2])
+    except Exception:
+        folder_label = ""
+    subfolder = f"documents/m365_attachments/{_slugify_path_component(folder_label, fallback=target[:24])}"
+
+    scanned = 0
+    files: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+    for msg in raw_messages:
+        if (msg.get("messageType") or "message") != "message":
+            continue
+        if only_message_id and str(msg.get("id")) != str(only_message_id):
+            continue
+        scanned += 1
+        enriched = _enrich_teams_message(dict(msg), chat_id=target)
+        compact = _compact_message(enriched)
+        for att in enriched.get("attachments_summary") or []:
+            att_type = att.get("type")
+            name = att.get("name") or "attachment"
+            if att_type == "hosted_content":
+                if not include_images:
+                    continue
+                hc_id = att.get("hosted_content_id") or att.get("id")
+                try:
+                    data = _graph_download_bytes(f"/me/chats/{target}/messages/{msg.get('id')}/hostedContents/{hc_id}/$value", account=account)
+                except Exception as exc:
+                    errors.append({"message_id": msg.get("id"), "name": name, "error": str(exc)[:200]})
+                    continue
+            elif att_type in ("file_reference", "attachment"):
+                content_type = str(att.get("contentType") or "")
+                if att.get("contentUrl") is None and "reference" not in content_type:
+                    continue  # adaptive cards, message references etc.
+                data = _download_file_reference(att.get("contentUrl") or "", name)
+                if data is None:
+                    errors.append({"message_id": msg.get("id"), "name": name, "error": "download failed (shares API and Teams Chat Files folder)"})
+                    continue
+            else:
+                continue
+            if save_dir:
+                out_dir = Path(save_dir).expanduser().resolve()
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out_file = out_dir / name
+            else:
+                out_file = _resolve_save_path(None, name, subfolder=subfolder)
+            if out_file.exists():
+                stem, suffix = out_file.stem, out_file.suffix
+                counter = 2
+                while out_file.exists():
+                    out_file = out_file.with_name(f"{stem} ({counter}){suffix}")
+                    counter += 1
+            out_file.write_bytes(data)
+            files.append({
+                "name": name,
+                "saved_path": str(out_file),
+                "size_bytes": len(data),
+                "content_type": att.get("contentType") or "",
+                "from": compact.get("from") or "",
+                "at": compact.get("at") or "",
+                "message_id": msg.get("id"),
+                "source_url": att.get("contentUrl") or "",
+            })
+
+    result: Dict[str, Any] = {
+        "chat_id": target,
+        "messages_scanned": scanned,
+        "files": files,
+        "count": len(files),
+        "errors": errors,
+    }
+    if recipient:
+        result["recipient"] = {k: recipient.get(k) for k in ("chat_type", "topic", "members")}
+    if not files:
+        result["hint"] = (
+            "No downloadable files in the scanned messages. Increase `last`, set include_images=True "
+            "for pasted screenshots, or use m365_list_chat_messages to see which message carries the file."
+        )
+    return result
 
 
 @mcp.tool()
