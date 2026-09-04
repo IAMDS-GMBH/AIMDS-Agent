@@ -2078,6 +2078,8 @@ def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str
     style_tool = _resolve_m365_tool_name(names, "m365_get_chat_style")
     direct_tool = _resolve_m365_tool_name(names, "m365_get_or_create_direct_chat")
     files_tool = _resolve_m365_tool_name(names, "m365_download_chat_files")
+    mail_files_tool = _resolve_m365_tool_name(names, "m365_download_email_attachments")
+    mail_tool = _resolve_m365_tool_name(names, "m365_send_email")
     memory_tool = _resolve_memory_save_tool_name(names)
 
     resolve_line = (
@@ -2127,6 +2129,15 @@ def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str
             f"document/file from the chat\" call `{files_tool}(chat_id=<link or id> | to=<name>, last=5)`; it "
             "downloads the shared files into the Vault and returns `saved_path` per file — work with those "
             "paths, do not describe the file from the chat preview."
+            + (
+                f" For the attachments of an email use `{mail_files_tool}(message_id=…)` the same way."
+                if mail_files_tool
+                else ""
+            )
+            + f" To SEND a file, pass its path in `attachments=[…]` of `{send_tool}`"
+            + (f" (Teams) or `{mail_tool}` (email)" if mail_tool else "")
+            + " — Vault-relative paths and paths returned by the download tools are accepted; the file is "
+            "uploaded and linked, never pasted as text."
             if files_tool
             else ""
         )

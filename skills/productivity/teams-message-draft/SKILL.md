@@ -62,6 +62,14 @@ correction rounds for one short message.
    `count` is 0, use `m365_list_chat_messages` to show which message carries the file and ask
    which one is meant — do not claim the file is inaccessible.
 
+## Workflow: "send <file> to <person> via Teams"
+
+1. Resolve the recipient as above (`to=<name>`).
+2. Call `m365_send_chat_message(to=<name>, content=<short Markdown note>, attachments=[<path>])`.
+   Paths may be absolute, relative to the Vault, or the `saved_path` of a previous download.
+   The file is uploaded to OneDrive and linked as a file card; never paste file contents as text.
+3. Confirm recipient and file name from the result.
+
 ## Guardrails
 
 - Recipient identity always comes from `m365_find_chat` / the `recipient` field of the send

@@ -148,7 +148,11 @@ A pasted Teams deep link (`https://teams.microsoft.com/l/chat/<chatId>/0?…` or
 (`chat_id`, `to`, `query`). `m365_download_chat_files(chat_id=<link>|to=<name>, last=5,
 include_images=false)` scans the last messages for shared files, downloads them into the
 Vault under `documents/m365_attachments/<chat>/` and returns the saved paths with sender and
-time. Catalog installs also pick up new manifest `default_enabled` tools automatically: the
+time. `m365_download_email_attachments(message_id)` does the same for all file attachments of a
+mail (`documents/m365_attachments/mail/<subject>/`). Sending works the other way round: pass
+Vault-relative or absolute paths in `attachments=[…]` of `m365_send_chat_message` (OneDrive
+upload + file card) or `m365_send_email` (inline, ≤ 3 MB). Catalog installs also pick up new
+manifest `default_enabled` tools automatically: the
 runtime unions `mcp_servers.<name>.tools.include` with the manifest defaults, and a reinstall
 adds them to the prior selection (AIS-288).
 

@@ -1344,3 +1344,61 @@ class TestDownloadChatFiles:
         manifest = yaml.safe_load((server_path.parent / "manifest.yaml").read_text(encoding="utf-8"))
         assert "m365_download_chat_files" in manifest["tools"]["default_enabled"]
         assert "m365_download_teams_message_attachment" in manifest["tools"]["default_enabled"]
+
+
+class TestDownloadEmailAttachments:
+    def _graph(self, attachments):
+        def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, account=None, **kw):
+            if endpoint == "/me/messages/msg-1":
+                return {"subject": "Angebot: LBBW / TP3", "from": {"emailAddress": {"name": "Martin"}}, "receivedDateTime": "2026-09-04T07:00:00Z"}
+            if endpoint == "/me/messages/msg-1/attachments":
+                return {"value": attachments}
+            return {}
+        return side_effect
+
+    def test_saves_all_file_attachments_into_vault(self, tmp_path, monkeypatch):
+        import base64
+
+        vault = tmp_path / "vault"; vault.mkdir()
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(vault))
+        atts = [
+            {"@odata.type": "#microsoft.graph.fileAttachment", "id": "a1", "name": "Angebot.pdf", "contentType": "application/pdf", "contentBytes": base64.b64encode(b"%PDF").decode()},
+            {"@odata.type": "#microsoft.graph.fileAttachment", "id": "a2", "name": "logo.png", "contentType": "image/png", "isInline": True, "contentBytes": base64.b64encode(b"png").decode()},
+            {"@odata.type": "#microsoft.graph.fileAttachment", "id": "a3", "name": "big.xlsx", "contentType": "application/x"},
+            {"@odata.type": "#microsoft.graph.itemAttachment", "id": "a4", "name": "Fwd: alt"},
+        ]
+        with patch.object(server, "_graph_request", side_effect=self._graph(atts)), \
+             patch.object(server, "_graph_download_bytes", return_value=b"XLSX") as dl:
+            res = server.m365_download_email_attachments("msg-1")
+        assert res["subject"].startswith("Angebot") and res["from"] == "Martin"
+        assert [f["name"] for f in res["files"]] == ["Angebot.pdf", "big.xlsx"]
+        assert res["skipped"] == 2 and res["errors"] == []
+        assert Path(res["files"][0]["saved_path"]).read_bytes() == b"%PDF"
+        assert Path(res["files"][0]["saved_path"]).parent == vault / "documents" / "m365_attachments" / "mail" / "Angebot_LBBW_TP3"
+        assert dl.call_args.args[0] == "/me/messages/msg-1/attachments/a3/$value"
+
+    def test_include_inline_and_error_reporting(self, tmp_path, monkeypatch):
+        import base64
+
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(tmp_path))
+        atts = [
+            {"@odata.type": "#microsoft.graph.fileAttachment", "id": "a2", "name": "logo.png", "isInline": True, "contentBytes": base64.b64encode(b"png").decode()},
+            {"@odata.type": "#microsoft.graph.fileAttachment", "id": "a3", "name": "broken.bin"},
+        ]
+        with patch.object(server, "_graph_request", side_effect=self._graph(atts)), \
+             patch.object(server, "_graph_download_bytes", side_effect=RuntimeError("404")):
+            res = server.m365_download_email_attachments("msg-1", include_inline=True)
+        assert [f["name"] for f in res["files"]] == ["logo.png"]
+        assert res["errors"][0]["name"] == "broken.bin"
+
+    def test_no_files_gives_hint(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(tmp_path))
+        with patch.object(server, "_graph_request", side_effect=self._graph([])):
+            res = server.m365_download_email_attachments("msg-1")
+        assert res["count"] == 0 and "include_inline" in res["hint"]
+
+    def test_manifest_enables_tool(self):
+        import yaml
+
+        manifest = yaml.safe_load((server_path.parent / "manifest.yaml").read_text(encoding="utf-8"))
+        assert "m365_download_email_attachments" in manifest["tools"]["default_enabled"]

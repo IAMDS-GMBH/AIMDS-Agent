@@ -1761,6 +1761,16 @@ class TestBuildTeamsSendGuidance:
         text = build_teams_send_guidance(self.NAMES | {"mcp_MSOffice365MCP_m365_download_chat_files"})
         assert "teams.microsoft.com/l/chat" in text
         assert "mcp_MSOffice365MCP_m365_download_chat_files" in text and "saved_path" in text
+        assert "attachments=[" in text and "m365_download_email_attachments" not in text
+
+    def test_mail_attachments_and_sending_files(self):
+        text = build_teams_send_guidance(self.NAMES | {
+            "mcp_MSOffice365MCP_m365_download_chat_files",
+            "mcp_MSOffice365MCP_m365_download_email_attachments",
+            "mcp_MSOffice365MCP_m365_send_email",
+        })
+        assert "mcp_MSOffice365MCP_m365_download_email_attachments" in text
+        assert "mcp_MSOffice365MCP_m365_send_email" in text and "(email)" in text
 
     def test_signature_and_attribution_treat_teams_as_chat(self):
         names = {"mcp_MSOffice365MCP_m365_send_email", "mcp_MSOffice365MCP_m365_send_chat_message", "memory_save"}

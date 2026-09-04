@@ -76,6 +76,7 @@ tools:
     - m365_get_email
     - m365_list_email_attachments
     - m365_download_email_attachment
+    - m365_download_email_attachments
     - m365_list_calendars
     - m365_get_events
     - m365_list_events

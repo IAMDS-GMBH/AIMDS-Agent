@@ -1285,6 +1285,97 @@ def m365_download_email_attachment(
 
 
 @mcp.tool()
+def m365_download_email_attachments(
+    message_id: str,
+    save_dir: Optional[str] = None,
+    include_inline: bool = False,
+    account: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Download all file attachments of an Outlook email into the Vault in one call.
+
+    Saves every file attachment of the message under
+    ``documents/m365_attachments/mail/<subject>/`` (or ``save_dir``) and returns the
+    saved paths — use this when the user asks for "the attachment(s) of that mail".
+    Inline images (signature logos) are skipped unless ``include_inline`` is set.
+
+    Args:
+        message_id: Outlook message id (from m365_list_emails / m365_get_email).
+        save_dir: Optional local directory; defaults to the Vault.
+        include_inline: Also save inline images embedded in the mail body.
+        account: Optional M365 account username, email, or ID.
+    """
+    meta = _graph_request("GET", f"/me/messages/{message_id}", params={"$select": "subject,from,receivedDateTime,hasAttachments"}, account=account)
+    subject = str((meta or {}).get("subject") or "mail")
+    sender = (((meta or {}).get("from") or {}).get("emailAddress") or {}).get("name") or ""
+    received = _format_timestamp_local((meta or {}).get("receivedDateTime")) or ""
+    listing = _graph_request("GET", f"/me/messages/{message_id}/attachments", account=account)
+    files: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+    skipped = 0
+    subfolder = f"documents/m365_attachments/mail/{_slugify_path_component(subject, fallback='mail')}"
+    for att in (listing.get("value") or []) if isinstance(listing, dict) else []:
+        if not isinstance(att, dict):
+            continue
+        att_type = str(att.get("@odata.type") or "").replace("#microsoft.graph.", "")
+        name = att.get("name") or f"attachment_{att.get('id', '')[:8]}"
+        if att.get("isInline") and not include_inline:
+            skipped += 1
+            continue
+        if att_type == "itemAttachment":
+            # Attached mail items are not files; report, don't fail.
+            skipped += 1
+            continue
+        try:
+            if att.get("contentBytes"):
+                data = base64.b64decode(att["contentBytes"])
+            elif att_type == "referenceAttachment" and att.get("sourceUrl"):
+                data = _download_file_reference(att["sourceUrl"], name)
+                if data is None:
+                    raise RuntimeError("reference attachment could not be fetched via shares API")
+            else:
+                data = _graph_download_bytes(f"/me/messages/{message_id}/attachments/{att.get('id')}/$value", account=account)
+        except Exception as exc:
+            errors.append({"attachment_id": att.get("id"), "name": name, "error": str(exc)[:200]})
+            continue
+        if save_dir:
+            out_dir = Path(save_dir).expanduser().resolve()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_file = out_dir / name
+        else:
+            out_file = _resolve_save_path(None, name, subfolder=subfolder)
+        if out_file.exists():
+            stem, suffix = out_file.stem, out_file.suffix
+            counter = 2
+            while out_file.exists():
+                out_file = out_file.with_name(f"{stem} ({counter}){suffix}")
+                counter += 1
+        out_file.write_bytes(data)
+        files.append({
+            "name": name,
+            "saved_path": str(out_file),
+            "size_bytes": len(data),
+            "content_type": att.get("contentType") or "",
+            "attachment_id": att.get("id"),
+        })
+    result: Dict[str, Any] = {
+        "message_id": message_id,
+        "subject": subject,
+        "from": sender,
+        "received_at": received,
+        "files": files,
+        "count": len(files),
+        "skipped": skipped,
+        "errors": errors,
+    }
+    if not files:
+        result["hint"] = (
+            "No file attachments saved. Inline images and attached mail items are skipped by default "
+            "(include_inline=True for images); check m365_list_email_attachments for what the mail carries."
+        )
+    return result
+
+
+@mcp.tool()
 def m365_list_calendars(top: int = 20) -> Dict[str, Any]:
     """List all available Outlook calendars (personal, shared, calendar groups, and M365 group/team calendars like URLAUB and OFFICEZEITEN)."""
     calendars = []
@@ -2005,9 +2096,9 @@ def _coerce_chat_ref(value: Optional[str]) -> Optional[str]:
 
 def _slugify_path_component(value: str, fallback: str = "chat") -> str:
     text = _html.unescape(str(value or "")).strip()
-    text = _re.sub(r"[^\w\-. ]+", "_", text, flags=_re.UNICODE).strip(" ._")
-    text = _re.sub(r"\s+", "_", text)
-    return (text[:60] or fallback)
+    text = _re.sub(r"[^\w\-. ]+", "_", text, flags=_re.UNICODE)
+    text = _re.sub(r"[\s_]+", "_", text).strip(" ._")
+    return (text[:60].rstrip(" ._") or fallback)
 
 
 @mcp.tool()
@@ -2181,7 +2272,7 @@ def m365_send_chat_message(
         message: Alias for content.
         body: Alias for content.
         text: Alias for content.
-        attachments: Optional local file paths; uploaded to OneDrive and linked as file cards (forces HTML).
+        attachments: Local file paths (absolute, or relative to the Vault / workspace) — e.g. a path returned by m365_download_chat_files or m365_download_email_attachments. Uploaded to OneDrive and linked as file cards (forces HTML).
         to: Recipient name / email / group topic; resolved to a chat before sending.
         dry_run: Resolve the recipient and render the message but do not send.
         account: Optional M365 account username, email, or ID.
