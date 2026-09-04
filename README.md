@@ -234,3 +234,7 @@ Hermes has two entry points: start the terminal UI with `hermes`, or run the gat
 MIT — see [LICENSE](LICENSE).
 
 Built by [Nous Research](https://nousresearch.com).
+
+## Releases
+
+Releases are git tags cut with `./createTag.sh` (candidate `vX.Y.Z-rc.N` from `main`, `promote stable` → `vX.Y.Z`); see [docs/RELEASE.md](docs/RELEASE.md). Update channels: `stable`, `preview`, `main`.

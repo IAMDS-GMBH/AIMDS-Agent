@@ -5691,8 +5691,25 @@ def _update_via_zip(args):
     # if the user asked for something else — exactly the silent-divergence
     # bug --branch was added to prevent. Refuse to proceed in that case
     # rather than lie.
+    from hermes_cli.release_channels import (
+        github_archive_url,
+        is_tag_channel,
+        latest_release_tag_via_api,
+    )
+
     branch = _resolve_update_branch(args)
-    if branch != "main":
+    archive_ref, archive_kind = branch, "heads"
+    if is_tag_channel(branch):
+        # Tag channels need no local git: the GitHub Releases API names the
+        # tag, GitHub serves its archive (AIS-292).
+        tag = latest_release_tag_via_api(branch)
+        if not tag:
+            print(f"✗ Could not resolve the latest {branch} release from GitHub.")
+            print("  Check the network connection or run `hermes update --branch main`.")
+            sys.exit(1)
+        print(f"  ✓ Latest {branch} release: {tag}")
+        archive_ref, archive_kind = tag, "tags"
+    elif branch != "main":
         print(
             f"✗ --branch={branch} is not supported on the Windows ZIP-fallback "
             "update path."
@@ -5704,14 +5721,12 @@ def _update_via_zip(args):
             f"--branch {branch}`, or update against main with `hermes update`."
         )
         sys.exit(1)
-    zip_url = (
-        f"https://github.com/IAMDS-GMBH/AIMDS-Agent/archive/refs/heads/{branch}.zip"
-    )
+    zip_url = github_archive_url(archive_ref, kind=archive_kind)
 
     print("→ Downloading latest version...")
     tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
     try:
-        zip_path = os.path.join(tmp_dir, f"hermes-agent-{branch}.zip")
+        zip_path = os.path.join(tmp_dir, f"hermes-agent-{archive_ref}.zip")
         urlretrieve(zip_url, zip_path)
 
         print("→ Extracting...")
@@ -5741,7 +5756,8 @@ def _update_via_zip(args):
                     )
             zf.extractall(tmp_dir)
 
-        # GitHub ZIPs extract to hermes-agent-<branch>/
+        # GitHub ZIPs extract to <repo>-<branch>/ or <repo>-<version>/ for a
+        # tag (AIMDS-Agent-0.7.5); the scan below finds either.
         extracted = os.path.join(tmp_dir, f"hermes-agent-{branch}")
         if not os.path.isdir(extracted):
             # Try to find it
@@ -7816,7 +7832,28 @@ def _resolve_update_branch(args) -> str:
     ``--branch`` (check path, git-update path, ZIP-fallback path) agrees on
     the same answer.
     """
-    return (getattr(args, "branch", None) or "main").strip() or "main"
+    from hermes_cli.release_channels import normalize_channel
+
+    return normalize_channel(getattr(args, "branch", None))
+
+
+def _select_channel_tag(git_cmd: list, channel: str) -> tuple[list, str]:
+    """``(all_tags, target_tag)`` for a tag channel after a tag fetch (AIS-292).
+
+    ``stable`` picks the highest ``vX.Y.Z``, ``preview`` the highest tag
+    including ``-rc.N`` candidates; ``target_tag`` is ``""`` when no release
+    tag exists.
+    """
+    from hermes_cli.release_channels import select_release_tag
+
+    tag_proc = subprocess.run(
+        git_cmd + ["tag", "--list"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    tags = [t.strip() for t in tag_proc.stdout.splitlines() if t.strip()]
+    return tags, (select_release_tag(tags, channel) or "")
 
 
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
@@ -7872,9 +7909,11 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     # Note: upstream/<branch> may not exist for non-main branches (a fork's
     # bb/gui has no upstream counterpart), so when the caller picks a
     # non-default branch we skip the upstream probe and use origin directly.
-    is_tags_channel = branch in ("tags", "stable")
+    from hermes_cli.release_channels import is_tag_channel
+
+    is_tags_channel = is_tag_channel(branch)
     if is_tags_channel:
-        print("→ Fetching tags from origin...")
+        print(f"→ Fetching tags from origin ({branch} channel)...")
         fetch_result = subprocess.run(
             git_cmd + ["fetch", "--force", "--tags", "origin"],
             cwd=PROJECT_ROOT,
@@ -7889,15 +7928,10 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
                 text=True,
             )
         upstream_exists = False
-        tag_proc = subprocess.run(
-            git_cmd + ["tag", "--list", "--sort=-v:refname"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-        )
-        tags = [t.strip() for t in tag_proc.stdout.splitlines() if t.strip()]
-        if tags:
-            compare_branch = f"refs/tags/{tags[0]}"
+        tags, target_tag = _select_channel_tag(git_cmd, branch)
+        if target_tag:
+            print(f"  ✓ Latest {branch} release: {target_tag}")
+            compare_branch = f"refs/tags/{target_tag}"
             if fetch_result.returncode != 0:
                 fetch_result = subprocess.CompletedProcess(args=fetch_result.args, returncode=0)
         else:
@@ -8571,10 +8605,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # minutes on a non-single-branch checkout. Fetch only what we update
         # against.
         branch = _resolve_update_branch(args)
-        is_tags_channel = branch in ("tags", "stable")
+        from hermes_cli.release_channels import is_tag_channel as _is_tag_channel
+
+        is_tags_channel = _is_tag_channel(branch)
 
         if is_tags_channel:
-            print("→ Fetching tags from origin...")
+            print(f"→ Fetching tags from origin ({branch} channel)...")
             fetch_result = subprocess.run(
                 git_cmd + ["fetch", "--force", "--tags", "origin"],
                 cwd=PROJECT_ROOT,
@@ -8589,16 +8625,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     text=True,
                 )
 
-            tag_proc = subprocess.run(
-                git_cmd + ["tag", "--list", "--sort=-v:refname"],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-            )
-            tags = [t.strip() for t in tag_proc.stdout.splitlines() if t.strip()]
-            if tags:
-                latest_tag = tags[0]
-                print(f"  ✓ Latest release tag: {latest_tag}")
+            tags, latest_tag = _select_channel_tag(git_cmd, branch)
+            if latest_tag:
+                print(f"  ✓ Latest {branch} release: {latest_tag}")
                 auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
                 checkout_result = subprocess.run(
                     git_cmd + ["checkout", latest_tag],
@@ -8617,6 +8646,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("⚠ Failed to fetch tags from origin, falling back to main branch...")
                 if stderr:
                     print(f"  {stderr.splitlines()[0]}")
+            elif tags and not latest_tag:
+                print(f"⚠ No release tag for the {branch} channel yet, falling back to main branch...")
             branch = "main"
 
         print("→ Fetching updates...")

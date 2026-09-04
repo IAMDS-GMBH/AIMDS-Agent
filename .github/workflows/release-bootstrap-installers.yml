@@ -34,6 +34,11 @@ on:
         required: false
         default: true
         type: boolean
+      prerelease:
+        description: "Mark the release as pre-release (set automatically for vX.Y.Z-rc.N candidate tags)"
+        required: false
+        default: false
+        type: boolean
       skip_signing:
         description: "Skip Apple and Windows code signing and notarization (useful when signing APIs are unreachable)"
         required: false
@@ -45,9 +50,14 @@ permissions:
   id-token: write
 
 jobs:
+  # Release model (AIS-292, docs/RELEASE.md): `./createTag.sh patch` pushes a
+  # candidate tag vX.Y.Z-rc.N on main HEAD → this job re-dispatches the build
+  # (pre-release). `./createTag.sh promote stable` pushes vX.Y.Z on the
+  # candidate's commit → promote-stable re-publishes the candidate's artifacts
+  # as the latest release without rebuilding.
   dispatch-from-tag:
-    name: Re-dispatch build from tag push
-    if: github.event_name == 'push'
+    name: Re-dispatch build from candidate tag push
+    if: github.event_name == 'push' && contains(github.ref_name, '-rc.')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -80,8 +90,8 @@ jobs:
           set -euo pipefail
           tag="${{ github.ref_name }}"
           version="${tag#v}"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Tag '$tag' is not a valid vX.Y.Z version tag"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then
+            echo "::error::Tag '$tag' is not a release candidate tag (vX.Y.Z-rc.N). Stable tags are promoted, not built — use ./createTag.sh."
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -96,7 +106,122 @@ jobs:
           gh workflow run release-bootstrap-installers.yml \
             --ref main \
             -f "version=$VERSION" \
-            -f create_release=true
+            -f create_release=true \
+            -f prerelease=true
+
+  promote-stable:
+    name: Promote candidate to stable release
+    if: github.event_name == 'push' && !contains(github.ref_name, '-rc.')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout (tags needed to resolve the candidate)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve stable version and matching candidate
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          version="${tag#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag '$tag' is neither a stable (vX.Y.Z) nor a candidate (vX.Y.Z-rc.N) release tag."
+            exit 1
+          fi
+          stable_sha="$(git rev-list -n 1 "refs/tags/$tag")"
+          # Highest candidate of this version that points at the same commit.
+          candidate=""
+          for cand in $(git tag -l "v${version}-rc.*" | sed -E 's/.*-rc\.([0-9]+)$/\1 &/' | sort -k1,1nr | awk '{print $2}'); do
+            if [[ "$(git rev-list -n 1 "refs/tags/$cand")" == "$stable_sha" ]]; then
+              candidate="$cand"
+              break
+            fi
+          done
+          if [[ -z "$candidate" ]]; then
+            echo "::error::No candidate tag v${version}-rc.N points at ${stable_sha:0:7}. Stable releases are promoted from a built candidate — run ./createTag.sh promote stable."
+            exit 1
+          fi
+          if ! gh release view "$candidate" >/dev/null 2>&1; then
+            echo "::error::Candidate release $candidate does not exist (build still running or failed?). Re-run after the candidate release is published."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$stable_sha" >> "$GITHUB_OUTPUT"
+          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+          echo "Promoting $candidate ($stable_sha) → $tag"
+
+      - name: Download candidate assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CANDIDATE: ${{ steps.resolve.outputs.candidate }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "$CANDIDATE" --dir dist --pattern '*'
+          ls -la dist
+          if [ -z "$(ls -A dist)" ]; then
+            echo "::error::Candidate release $CANDIDATE has no assets."
+            exit 1
+          fi
+
+      - name: Release notes since the previous stable release
+        id: notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+          CANDIDATE: ${{ steps.resolve.outputs.candidate }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/stable-notes.md"
+          prev="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -vx "$TAG" | sort -V | tail -1 || true)"
+          {
+            echo "Stable release $TAG — promoted from $CANDIDATE (same build, same commit ${SHA:0:7})."
+            echo
+            candidate_body="$(gh release view "$CANDIDATE" --json body --jq .body 2>/dev/null || true)"
+            if [ -n "$candidate_body" ]; then
+              echo "$candidate_body"
+              echo
+            fi
+            if [ -n "$prev" ]; then
+              echo "## Commits since $prev"
+              git log --no-merges --format='- %s (%h)' "${prev}..${SHA}" | head -200
+            fi
+          } > "$notes"
+          echo "file=$notes" >> "$GITHUB_OUTPUT"
+
+      - name: Create stable release with the candidate's assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+          NOTES: ${{ steps.notes.outputs.file }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --prerelease=false --latest --notes-file "$NOTES" --title "Bootstrap Installer $TAG"
+          else
+            gh release create "$TAG" --target "$SHA" --latest --title "Bootstrap Installer $TAG" --notes-file "$NOTES"
+          fi
+          shopt -s nullglob
+          files=(dist/*)
+          gh release upload "$TAG" "${files[@]}" --clobber
+          echo "Published $TAG as latest with ${#files[@]} asset(s)."
 
   build-installers:
     name: Build (${{ matrix.os }})
@@ -157,11 +282,13 @@ jobs:
             echo "installer_version=$clean" >> "$GITHUB_OUTPUT"
             echo "Using explicit version: $clean"
           else
-            current="$(awk -F'"' '/^version[[:space:]]*=[[:space:]]*"/ { print $2; exit }' pyproject.toml)"
-            if [[ ! "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "::error::Current pyproject version '$current' is not x.y.z"
-              exit 1
-            fi
+            # Tag model (AIS-292): the version comes from the pushed tag via
+            # dispatch-from-tag. Manual runs derive the next candidate from
+            # the highest stable tag so a dispatch without a version still
+            # produces a well-formed pre-release version.
+            git fetch --tags --quiet origin || true
+            current="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 | sed 's/^v//')"
+            current="${current:-0.0.0}"
             IFS='.' read -r major minor patch <<< "$current"
             bump="${INPUT_BUMP:-patch}"
             case "$bump" in
@@ -173,9 +300,11 @@ jobs:
                 exit 1
                 ;;
             esac
-            next="${major}.${minor}.${patch}"
+            base="${major}.${minor}.${patch}"
+            last_rc="$(git tag -l "v${base}-rc.*" | sed -E 's/.*-rc\.([0-9]+)$/\1/' | sort -n | tail -1)"
+            next="${base}-rc.$(( ${last_rc:-0} + 1 ))"
             echo "installer_version=$next" >> "$GITHUB_OUTPUT"
-            echo "Using bumped version ($bump): $current -> $next"
+            echo "Using next candidate version ($bump from highest stable v$current): $next"
           fi
 
       - name: Apply installer version override
@@ -524,15 +653,13 @@ jobs:
           if [ -n "${INPUT_VERSION:-}" ]; then
             clean="${INPUT_VERSION#v}"
             if [[ ! "$clean" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
-              echo "::error::Invalid version '${INPUT_VERSION}'. Use SemVer like 0.1.0 or v0.1.0"
+              echo "::error::Invalid version '${INPUT_VERSION}'. Use SemVer like 0.1.0, v0.1.0 or 0.1.0-rc.1"
               exit 1
             fi
           else
-            current="$(awk -F'"' '/^version[[:space:]]*=[[:space:]]*"/ { print $2; exit }' pyproject.toml)"
-            if [[ ! "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "::error::Current pyproject version '$current' is not x.y.z"
-              exit 1
-            fi
+            git fetch --tags --quiet origin || true
+            current="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 | sed 's/^v//')"
+            current="${current:-0.0.0}"
             IFS='.' read -r major minor patch <<< "$current"
             bump="${INPUT_BUMP:-patch}"
             case "$bump" in
@@ -544,40 +671,34 @@ jobs:
                 exit 1
                 ;;
             esac
-            clean="${major}.${minor}.${patch}"
+            base="${major}.${minor}.${patch}"
+            last_rc="$(git tag -l "v${base}-rc.*" | sed -E 's/.*-rc\.([0-9]+)$/\1/' | sort -n | tail -1)"
+            clean="${base}-rc.$(( ${last_rc:-0} + 1 ))"
           fi
           echo "version=$clean" >> "$GITHUB_OUTPUT"
           echo "tag=v$clean" >> "$GITHUB_OUTPUT"
 
-      # main is protected by a branch ruleset (pull requests only), so this
-      # job no longer pushes a version-bump commit. Release flow (AIS-285):
-      #   1. `python scripts/set_version.py <x.y.z>` on a branch, merge via PR
-      #   2. run this workflow with create_release=true (version = <x.y.z>)
-      # The job verifies that main already carries the version and only
-      # creates the tag + release from that commit.
-      - name: Verify version files on main
+      # Release model (AIS-292, docs/RELEASE.md): the tag is the version
+      # source. main is pull-request only and is NOT bumped per release; the
+      # build stamped the version into its own workspace. The release targets
+      # the tag's commit when the tag already exists (createTag.sh pushed it)
+      # and main HEAD otherwise (manual workflow_dispatch creates the tag).
+      - name: Resolve release target commit
         id: persist_version
         shell: bash
         env:
-          VERSION: ${{ steps.tag.outputs.version }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
-          python scripts/set_version.py "$VERSION"
-          echo "target_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          if git diff --quiet -- \
-            pyproject.toml \
-            hermes_cli/__init__.py \
-            apps/desktop/package.json \
-            apps/bootstrap-installer/package.json \
-            apps/bootstrap-installer/src-tauri/tauri.conf.json \
-            apps/bootstrap-installer/src-tauri/Cargo.toml \
-            acp_registry/agent.json; then
-            echo "Version files already at $VERSION"
-            exit 0
+          git fetch --tags --quiet origin || true
+          if git rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null; then
+            target="$(git rev-list -n 1 "refs/tags/$TAG")"
+            echo "Tag $TAG exists → releasing its commit $target"
+          else
+            target="$(git rev-parse HEAD)"
+            echo "Tag $TAG does not exist yet → releasing main HEAD $target (release creation tags it)"
           fi
-          git --no-pager diff --stat
-          echo "::error::main is not at version $VERSION. Merge a PR with \`python scripts/set_version.py $VERSION\` first (main accepts pull requests only), then re-run this workflow."
-          exit 1
+          echo "target_sha=$target" >> "$GITHUB_OUTPUT"
 
       - name: Ensure release exists
         env:
@@ -585,14 +706,17 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ steps.tag.outputs.tag }}
           TARGET_SHA: ${{ steps.persist_version.outputs.target_sha || github.sha }}
+          PRERELEASE: ${{ github.event.inputs.prerelease }}
         run: |
           set -euo pipefail
+          PRERELEASE_FLAG="--prerelease=false"
+          if [ "${PRERELEASE:-false}" = "true" ]; then PRERELEASE_FLAG="--prerelease"; fi
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; setting as prerelease..."
-            gh release edit "$TAG" --prerelease
+            echo "Release $TAG already exists; updating (prerelease=${PRERELEASE:-false})..."
+            gh release edit "$TAG" "$PRERELEASE_FLAG"
           else
             gh release create "$TAG" \
-              --prerelease \
+              "$PRERELEASE_FLAG" \
               --target "$TARGET_SHA" \
               --title "Bootstrap Installer $TAG" \
               --notes "Automated bootstrap installer release."
@@ -723,9 +847,14 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ steps.tag.outputs.tag }}
           NOTES_FILE: ${{ steps.ai_notes.outputs.notes_file }}
+          PRERELEASE: ${{ github.event.inputs.prerelease }}
         run: |
           set -euo pipefail
-          gh release edit "$TAG" --prerelease --notes-file "$NOTES_FILE"
+          if [ "${PRERELEASE:-false}" = "true" ]; then
+            gh release edit "$TAG" --prerelease --notes-file "$NOTES_FILE"
+          else
+            gh release edit "$TAG" --prerelease=false --notes-file "$NOTES_FILE"
+          fi
 
       - name: Download all installer artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

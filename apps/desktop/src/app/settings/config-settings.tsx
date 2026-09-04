@@ -413,7 +413,7 @@ export function ConfigSettings({
   const [schema, setSchema] = useState<Record<string, ConfigFieldSchema> | null>(null)
   const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
-  const [updateChannel, setUpdateChannel] = useState<'stable' | 'main'>('main')
+  const [updateChannel, setUpdateChannel] = useState<'stable' | 'preview' | 'main'>('stable')
 
   const [filePickerRoot, setFilePickerRoot] = useState<'userDir' | 'vault'>(() => {
     const saved = storedString(FILE_PICKER_ROOT_STORAGE_KEY)
@@ -430,7 +430,8 @@ export function ConfigSettings({
         .getBranch()
         .then(res => {
           if (res?.branch) {
-            setUpdateChannel(res.branch === 'tags' || res.branch === 'stable' ? 'stable' : 'main')
+            const b = res.branch
+            setUpdateChannel(b === 'tags' || b === 'stable' ? 'stable' : b === 'preview' ? 'preview' : 'main')
           }
         })
         .catch(() => {})
@@ -439,6 +440,7 @@ export function ConfigSettings({
 
   const updateChannelOptions = [
     { id: 'stable', label: a.updateChannelStable },
+    { id: 'preview', label: a.updateChannelPreview },
     { id: 'main', label: a.updateChannelMain }
   ] as const
 
@@ -620,8 +622,8 @@ export function ConfigSettings({
                   <SegmentedControl
                     onChange={id => {
                       triggerHaptic('selection')
-                      const branchName = id === 'stable' ? 'tags' : 'main'
-                      setUpdateChannel(id as 'stable' | 'main')
+                      const branchName = id === 'stable' ? 'stable' : id === 'preview' ? 'preview' : 'main'
+                      setUpdateChannel(id as 'stable' | 'preview' | 'main')
                       window.hermesDesktop?.updates?.setBranch?.(branchName).catch(() => {})
                       notify({ kind: 'info', title: c.restartNoticeTitle, message: c.restartNoticeDesc })
                     }}
