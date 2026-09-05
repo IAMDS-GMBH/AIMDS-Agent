@@ -1,7 +1,7 @@
 # Network Egress Isolation for Docker Deployments
 
-When running Hermes inside Docker, the default `network_mode: host` gives the
-agent process unrestricted outbound network access. This guide shows how to
+When running Hermes inside Docker with `network_mode: host`, the agent process
+has unrestricted outbound network access. This guide shows how to
 segment traffic so the agent core can only reach the services it needs, while
 blocking arbitrary outbound connections.
 
@@ -61,17 +61,15 @@ agent on the internal network.
 
 ## Compose Configuration
 
-Override the default `docker-compose.yml` with a
-`docker-compose.override.yml`:
+The repository ships only the `Dockerfile` (image built with `docker build .`).
+Write your own `docker-compose.yml` for deployment, for example:
 
 ```yaml
-# docker-compose.override.yml
+# docker-compose.yml
 # Network egress isolation for production deployments.
 #
 # Usage:
 #   HERMES_UID=$(id -u) HERMES_GID=$(id -g) docker compose up -d
-#
-# This overrides network_mode: host with isolated Docker networks.
 
 networks:
   internal:
@@ -82,7 +80,6 @@ networks:
 
 services:
   gateway:
-    network_mode: ""        # clear the host-mode default
     networks:
       - internal
       - egress              # needs outbound for Telegram, LLM APIs
@@ -90,7 +87,6 @@ services:
       - "127.0.0.1:9119:9119"   # dashboard proxy, localhost only
 
   dashboard:
-    network_mode: ""
     networks:
       - internal            # internal only, no egress needed
 ```
@@ -101,7 +97,7 @@ For tighter control, route all outbound traffic through an HTTP proxy with
 an explicit allowlist:
 
 ```yaml
-# docker-compose.override.yml (with egress proxy)
+# docker-compose.yml (with egress proxy)
 
 networks:
   internal:
@@ -112,7 +108,6 @@ networks:
 
 services:
   gateway:
-    network_mode: ""
     networks:
       - internal
       - egress
@@ -122,7 +117,6 @@ services:
       - NO_PROXY=hermes,hermes-dashboard,localhost
 
   dashboard:
-    network_mode: ""
     networks:
       - internal
 
@@ -192,4 +186,3 @@ docker compose exec gateway \
 
 - [SECURITY.md](../../SECURITY.md) — Hermes trust model and vulnerability reporting
 - [Terminal backends](../../README.md) — sandboxed execution targets
-- [docker-compose.yml](../../docker-compose.yml) — default compose configuration

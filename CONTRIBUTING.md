@@ -45,17 +45,12 @@ Bundled skills (in `skills/`) ship with every Hermes install. They should be **b
 
 If your skill is official and useful but not universally needed (e.g., a paid service integration, a heavyweight dependency), put it in **`optional-skills/`** — it ships with the repo but isn't activated by default. Users can discover it via `hermes skills browse` (labeled "official") and install it with `hermes skills install` (no third-party warning, built-in trust).
 
-If your skill is specialized, community-contributed, or niche, it's better suited for a **Skills Hub** — upload it to a skills registry and share it in the [Nous Research Discord](https://discord.gg/NousResearch). Users can install it with `hermes skills install`.
+If your skill is specialized, community-contributed, or niche, it's better suited for a **Skills Hub** — upload it to a skills registry and share it with the team. Users can install it with `hermes skills install`.
 
-## Bootstrap Installer Docs (Phase 6)
+## Bootstrap Installer Docs
 
-If your PR changes installer/bootstrap behavior, update the bootstrap doc set together:
-
-- `website/docs/getting-started/bootstrap-installer-quickstart.md`
-- `website/docs/getting-started/bootstrap-installer-troubleshooting.md`
-- `website/docs/getting-started/bootstrap-installer-migration.md`
-- `website/docs/developer-guide/bootstrap-installer-architecture.md`
-- `website/docs/reference/bootstrap-installer-environment-variables.md`
+If your PR changes installer/bootstrap behavior, update `docs/RELEASE.md`, the
+client guide under `docs/client-guide/`, and the README in `apps/bootstrap-installer/`.
 
 ---
 
@@ -131,7 +126,7 @@ hermes chat -q "Hello"
 ### Run tests
 
 ```bash
-# Preferred — matches CI (hermetic env, 4 xdist workers); see .agents/agents.md
+# Preferred — matches CI (hermetic env, per-file isolation); see .agents/agents.md
 scripts/run_tests.sh
 
 # Alternative (activate the venv first). The wrapper is still recommended
@@ -144,7 +139,7 @@ pytest tests/ -v
 ## Project Structure
 
 ```
-hermes-agent/
+AIMDS-Agent/
 ├── run_agent.py              # AIAgent class — core conversation loop, tool dispatch, session persistence
 ├── cli.py                    # HermesCLI class — interactive TUI, prompt_toolkit integration
 ├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
@@ -203,8 +198,10 @@ hermes-agent/
 │
 ├── skills/                   # Bundled skills (copied to ~/.hermes/skills/ on install)
 ├── optional-skills/          # Official optional skills (discoverable via hub, not activated by default)
+├── installer/                # Workspace template, hidden loadout skills, platform install scripts
+├── apps/                     # Desktop app (Electron) and bootstrap installer (Tauri)
 ├── tests/                    # Test suite
-├── website/                  # Documentation site (hermes-agent.nousresearch.com)
+├── docs/                     # Architecture (REPOSITORY_STRUCTURE.md), release flow, client guide
 │
 ├── cli-config.yaml.example   # Example configuration (copied to ~/.hermes/config.yaml)
 └── .agents/agents.md         # Development guide for AI coding assistants
@@ -919,7 +916,7 @@ test(tools): add unit tests for file_operations
 
 ## Reporting Issues
 
-- Use [GitHub Issues](https://github.com/NousResearch/hermes-agent/issues)
+- Use [GitHub Issues](https://github.com/IAMDS-GMBH/AIMDS-Agent/issues) or a Jira ticket in the AIS project
 - Include: OS, Python version, Hermes version (`hermes version`), full error traceback
 - Include steps to reproduce
 - Check existing issues before creating duplicates
