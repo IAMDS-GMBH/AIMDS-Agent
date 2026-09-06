@@ -44,3 +44,19 @@ def _fast_retry_backoff(monkeypatch):
         monkeypatch.setattr(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0)
     except ImportError:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _no_live_model_metadata_fetch(monkeypatch):
+    """Keep AIAgent construction hermetic: ``get_pricing_entry`` resolves
+    pricing for custom base URLs via ``fetch_endpoint_model_metadata``, which
+    issues a real ``GET <base_url>/models``. A stalled endpoint burns the whole
+    per-file timeout (seen in CI on ``test_provider_attribution_headers.py``).
+    """
+    try:
+        from agent import model_metadata, usage_pricing
+    except ImportError:
+        return
+
+    monkeypatch.setattr(model_metadata, "fetch_endpoint_model_metadata", lambda *a, **k: {})
+    monkeypatch.setattr(usage_pricing, "fetch_endpoint_model_metadata", lambda *a, **k: {})
