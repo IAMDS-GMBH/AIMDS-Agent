@@ -341,6 +341,20 @@ def litellm_key_info_url(base_url: str) -> str:
     return f"{root}/litellm/key/info" if root else ""
 
 
+def active_suite_provider(config: Optional[dict] = None) -> Optional[str]:
+    """``model.provider`` as a canonical Suite slug, or ``None`` if the active
+    model does not run on an AIMDS-Suite environment.
+
+    Unlike :func:`primary_suite_provider` this never falls back to another
+    environment: a document upload, like the chat completion itself, must use
+    the key and host of the environment the user selected for the model —
+    dev stays dev, staging stays staging.
+    """
+    cfg = _load_config_safe(config)
+    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+    return canonical_suite_provider(model_cfg.get("provider"))
+
+
 def primary_suite_provider(config: Optional[dict] = None) -> Optional[str]:
     """The AIMDS-Suite environment Hermes currently runs on.
 
@@ -792,6 +806,7 @@ DOCLING_DOWN = "docling_down"
 DOCLING_STORAGE_DOWN = "storage_down"
 DOCLING_TOOLS_MISSING = "tools_missing"
 DOCLING_ENDPOINT_UNAVAILABLE = "endpoint_unavailable"
+DOCLING_MCP_MISMATCH = "mcp_env_mismatch"
 
 #: Health-board slugs the document path depends on (go-orchestrator
 #: ``health-monitors.yaml``): docling-serve itself and go-mcp-customer,
@@ -808,6 +823,7 @@ class DoclingAvailability:
     reason: str = ""
     provider: str = ""
     base_url: str = ""
+    key_env: str = ""
     health_url: str = ""
     checked_at: str = ""
 
@@ -827,35 +843,52 @@ def docling_availability(
     config: Optional[dict] = None,
     tools_present: Optional[Callable[[], bool]] = None,
     health_fn: Optional[Callable[[str], tuple[Optional[Dict[str, Any]], Optional[int], str]]] = None,
+    mcp_status_fn: Optional[Callable[[str], Dict[str, Any]]] = None,
 ) -> DoclingAvailability:
     """Gate for the Suite document path (AIS-294).
 
-    Checks, in order: a Suite provider with a key is active → the public
-    ``/uptime/health`` answers → ``docling`` and ``customer-storage`` are up →
-    the storage tools are registered in this process (``tools_present``,
-    injected by the caller so this module stays free of tool imports).
-    Every negative answer names the first failed check so the caller can log
-    it once and fall back to local conversion.
+    Checks, in order: the active model runs on a Suite environment and that
+    environment has its own key (no cross-environment fallback — a dev model
+    never uploads with the prod key) → the AIMDSSuiteMCP entry points at the
+    same host → the public ``/uptime/health`` answers → ``docling`` and
+    ``customer-storage`` are up → the storage tools are registered in this
+    process (``tools_present``, injected by the caller so this module stays
+    free of tool imports). Every negative answer names the first failed check
+    so the caller can log it once and fall back to local conversion.
     """
     checked_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    slug = provider or primary_suite_provider(config)
+    slug = canonical_suite_provider(provider) if provider else active_suite_provider(config)
     if not slug:
-        return DoclingAvailability(DOCLING_NOT_CONFIGURED, "no AIMDS-Suite provider with a key", checked_at=checked_at)
+        return DoclingAvailability(
+            DOCLING_NOT_CONFIGURED, "active model provider is not an AIMDS-Suite environment", checked_at=checked_at
+        )
     ep = resolve_suite_endpoint(slug, config=config, allow_default=True)
     result = DoclingAvailability(
-        DOCLING_NOT_CONFIGURED, "", provider=ep.provider_id, base_url=ep.base_url,
+        DOCLING_NOT_CONFIGURED, "", provider=ep.provider_id, base_url=ep.base_url, key_env=ep.key_env,
         health_url=suite_health_url(ep.base_url), checked_at=checked_at,
     )
     if not ep.base_url:
         result.reason = "url_missing"
         return result
     if not _usable_secret(ep.api_key):
-        result.state, result.reason = DOCLING_NEEDS_REAUTH, "key_missing"
+        result.state, result.reason = DOCLING_NEEDS_REAUTH, f"key_missing ({ep.key_env})"
+        return result
+    if ep.env_mismatch:
+        result.state, result.reason = DOCLING_NEEDS_REAUTH, "env_mismatch"
         return result
     failure = suite_auth_failures().get(ep.provider_id)
     if failure:
         result.state = DOCLING_NEEDS_REAUTH
         result.reason = f"runtime_{failure.get('http_status') or 401}"
+        return result
+
+    # The storage tools are called through the AIMDSSuiteMCP session, so its
+    # gateway must be the same environment the upload key belongs to —
+    # otherwise the ingest would land in another environment's catalog.
+    mcp = (mcp_status_fn or _mcp_status_for)(ep.base_url)
+    if mcp.get("url_matches") is False:
+        result.state = DOCLING_MCP_MISMATCH
+        result.reason = f"AIMDSSuiteMCP url {mcp.get('url') or '?'} does not belong to {ep.provider_id} ({ep.base_url})"
         return result
 
     fetch = health_fn or fetch_suite_health

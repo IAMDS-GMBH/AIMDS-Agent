@@ -399,7 +399,12 @@ def _convert_via_suite(resolved: Path, stat: os.stat_result, config: Optional[di
     if stat.st_size > max_bytes:
         raise _SuiteUnavailable("too_large", f"{stat.st_size} bytes exceeds the Suite limit of {max_bytes}")
 
+    # Same environment as the active model: the gate resolved ``gate.provider``
+    # from ``model.provider`` — its key (``gate.key_env``) signs the upload.
     ep = resolve_suite_endpoint(gate.provider, config=config, allow_default=True)
+    if not ep.api_key:
+        raise _SuiteUnavailable("needs_reauth", f"key_missing ({ep.key_env})")
+    logger.info("[AIS-294] converting %s via Suite Docling (%s, %s)", resolved.name, ep.provider_id, ep.base_url)
     upload_id = _upload_file(upload_url, resolved, ep.api_key, ep.provider_id)
 
     _call_suite_tool(_SUITE_INGEST_TOOL, {"upload_id": upload_id})

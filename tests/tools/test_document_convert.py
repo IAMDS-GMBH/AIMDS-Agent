@@ -47,6 +47,10 @@ def isolated(tmp_path, monkeypatch):
     except Exception:
         pass
     monkeypatch.setattr(suite, "_flag_path", lambda: home / "state" / "iamds_suite_auth.json")
+    monkeypatch.setattr(
+        suite, "_mcp_status_for",
+        lambda base_url: {"name": "AIMDSSuiteMCP", "url": "", "url_matches": None, "connected": None},
+    )
     suite.clear_suite_health_cache()
     dc.reset_suite_cooldown()
     yield
@@ -54,9 +58,37 @@ def isolated(tmp_path, monkeypatch):
     dc.reset_suite_cooldown()
 
 
-def _prod_key(monkeypatch):
+def _select_model_provider(provider: str) -> None:
+    """Write ``model.provider`` into the isolated HERMES_HOME config.yaml."""
+    import os
+    from pathlib import Path as _P
+
+    home = _P(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(f"model:\n  provider: {provider}\n  default: AIMDS-Suite-Auto\n", encoding="utf-8")
+    try:
+        from hermes_cli.config import invalidate_env_cache
+
+        invalidate_env_cache()
+    except Exception:
+        pass
+
+
+def _prod_key(monkeypatch, *, select_model: bool = True):
     monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "sk-test-key-0123456789")
     monkeypatch.setenv("IAMDS_LITELLM_BASE_URL", "https://suite.example.test/litellm/v1")
+    if select_model:
+        _select_model_provider("aimds-suite-prod")
+    try:
+        from hermes_cli.config import invalidate_env_cache
+
+        invalidate_env_cache()
+    except Exception:
+        pass
+
+
+def _dev_key(monkeypatch):
+    monkeypatch.setenv("IAMDS_LITELLM_DEV_API_KEY", "sk-dev-key-9876543210")
+    monkeypatch.setenv("IAMDS_LITELLM_DEV_BASE_URL", "https://dev.suite.example.test/litellm/v1")
     try:
         from hermes_cli.config import invalidate_env_cache
 
@@ -143,6 +175,47 @@ class TestDoclingAvailability:
         gate = suite.docling_availability(health_fn=lambda url: (HEALTH_UP, 200, ""), tools_present=lambda: True)
         assert gate.state == suite.DOCLING_AVAILABLE and gate.available
         assert gate.to_dict()["available"] is True
+
+    def test_uses_the_active_model_environment_not_prod(self, monkeypatch):
+        """dev model → dev key + dev health URL, even though a prod key exists."""
+        _prod_key(monkeypatch, select_model=False)
+        _dev_key(monkeypatch)
+        _select_model_provider("aimds-suite-dev")
+        seen = []
+        gate = suite.docling_availability(
+            health_fn=lambda base: (seen.append(base), (HEALTH_UP, 200, ""))[1], tools_present=lambda: True
+        )
+        assert gate.available
+        assert gate.provider == "aimds-suite-dev" and gate.key_env == "IAMDS_LITELLM_DEV_API_KEY"
+        assert gate.health_url == "https://dev.suite.example.test/uptime/health"
+        assert seen == ["https://dev.suite.example.test/litellm/v1"]
+
+    def test_no_cross_environment_key_fallback(self, monkeypatch):
+        """dev model without a dev key → needs_reauth, never the prod key."""
+        _prod_key(monkeypatch, select_model=False)
+        monkeypatch.setenv("IAMDS_LITELLM_DEV_BASE_URL", "https://dev.suite.example.test/litellm/v1")
+        _select_model_provider("aimds-suite-dev")
+        gate = suite.docling_availability(health_fn=lambda base: (HEALTH_UP, 200, ""), tools_present=lambda: True)
+        assert gate.state == suite.DOCLING_NEEDS_REAUTH
+        assert gate.reason == "key_missing (IAMDS_LITELLM_DEV_API_KEY)"
+        assert gate.provider == "aimds-suite-dev"
+
+    def test_non_suite_model_provider_is_not_configured(self, monkeypatch):
+        _prod_key(monkeypatch, select_model=False)
+        _select_model_provider("openai")
+        gate = suite.docling_availability(health_fn=lambda base: (HEALTH_UP, 200, ""), tools_present=lambda: True)
+        assert gate.state == suite.DOCLING_NOT_CONFIGURED
+        assert "not an AIMDS-Suite environment" in gate.reason
+
+    def test_mcp_pointing_at_another_environment_blocks(self, monkeypatch):
+        _prod_key(monkeypatch)
+        gate = suite.docling_availability(
+            health_fn=lambda base: (HEALTH_UP, 200, ""),
+            tools_present=lambda: True,
+            mcp_status_fn=lambda base: {"url": "https://staging.suite.example.test/litellm/mcp/", "url_matches": False},
+        )
+        assert gate.state == suite.DOCLING_MCP_MISMATCH
+        assert "staging.suite.example.test" in gate.reason and "aimds-suite-prod" in gate.reason
 
     def test_runtime_auth_failure_blocks(self, monkeypatch):
         _prod_key(monkeypatch)
@@ -259,6 +332,24 @@ class TestSuiteBackend:
         # cached on second call — no further tool calls
         again = dc.convert_document(src)
         assert again.cached and again.backend == dc.BACKEND_SUITE and len(calls) == 3
+
+    def test_full_flow_signs_with_the_active_environment_key(self, monkeypatch, tmp_path):
+        _prod_key(monkeypatch, select_model=False)
+        _dev_key(monkeypatch)
+        _select_model_provider("aimds-suite-dev")
+        monkeypatch.setattr(suite, "fetch_suite_health", lambda base, **kw: (HEALTH_UP, 200, ""))
+        _install_suite_tools(monkeypatch)
+        posted = {}
+        import httpx
+
+        monkeypatch.setattr(
+            httpx, "post",
+            lambda url, files=None, headers=None, timeout=None, follow_redirects=None: (
+                posted.update(headers=headers), _Response(200, {"upload_id": "dev1"}))[1],
+        )
+        result = dc.convert_document(_docx(tmp_path / "plan.docx"))
+        assert result.backend == dc.BACKEND_SUITE
+        assert posted["headers"]["Authorization"] == "Bearer sk-dev-key-9876543210"
 
     def test_upload_404_sets_cooldown_and_falls_back(self, monkeypatch, tmp_path):
         _prod_key(monkeypatch)
