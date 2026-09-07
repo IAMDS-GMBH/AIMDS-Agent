@@ -799,7 +799,11 @@ export function OAuthAccountsPanel() {
 async function waitForInstallAction(action: string): Promise<{ detail: string; ok: boolean }> {
   let last: ActionStatusResponse | null = null
 
-  for (let attempt = 0; attempt < 240; attempt += 1) {
+  // 600 × 1.5 s = 15 min. A git-less Windows install downloads the ~40 MB
+  // repository archive, unpacks ~4,500 files under Defender, creates a venv
+  // and pip-installs the server's requirements — the previous 6 min reported
+  // "timeout" as a failure while the install was still running (AIS-303).
+  for (let attempt = 0; attempt < 600; attempt += 1) {
     await new Promise(resolve => window.setTimeout(resolve, 1500))
 
     try {

@@ -1910,3 +1910,74 @@ class TestWindowsInstallRobustness:
         with pytest.raises(mcp_catalog.CatalogError):
             mcp_catalog._download_archive_install("https://codeload.github.com/o/r/zip/main", tmp_path / "dest")
         assert not (tmp_path / "dest").exists()
+
+
+class TestRmtreeForce:
+    """AIS-303: a previous git clone's read-only pack files make plain
+    ``shutil.rmtree`` die with PermissionError on Windows."""
+
+    @staticmethod
+    def _windows_like_rmtree(root, onerror=None, **_):
+        """Emulate Windows: unlinking a read-only file raises PermissionError."""
+        import os
+        import stat as _stat
+        import sys as _sys
+
+        for dirpath, dirnames, filenames in os.walk(root, topdown=False):
+            for name in filenames:
+                target = os.path.join(dirpath, name)
+                try:
+                    if not os.stat(target).st_mode & _stat.S_IWRITE:
+                        raise PermissionError(13, "Access is denied", target)
+                    os.unlink(target)
+                except OSError:
+                    onerror(os.unlink, target, _sys.exc_info())
+            for name in dirnames:
+                os.rmdir(os.path.join(dirpath, name))
+        os.rmdir(root)
+
+    def test_removes_read_only_files(self, tmp_path, monkeypatch):
+        import os
+        import stat as _stat
+        from hermes_cli import mcp_catalog
+
+        clone = tmp_path / "MSOffice365MCP"
+        pack = clone / ".git" / "objects" / "pack"
+        pack.mkdir(parents=True)
+        (pack / "pack-abc.idx").write_bytes(b"idx")
+        os.chmod(pack / "pack-abc.idx", _stat.S_IREAD)
+        (clone / "server.py").write_text("print('hi')\n")
+
+        monkeypatch.setattr(mcp_catalog.shutil, "rmtree", self._windows_like_rmtree)
+        mcp_catalog._rmtree_force(clone)
+        assert not clone.exists()
+
+    def test_other_errors_are_reraised(self, tmp_path, monkeypatch):
+        from hermes_cli import mcp_catalog
+
+        def _rmtree(root, onerror=None, **_):
+            try:
+                raise FileNotFoundError(2, "gone", str(root))
+            except OSError:
+                import sys as _sys
+
+                onerror(None, str(root), _sys.exc_info())
+
+        monkeypatch.setattr(mcp_catalog.shutil, "rmtree", _rmtree)
+        with pytest.raises(FileNotFoundError):
+            mcp_catalog._rmtree_force(tmp_path / "x")
+
+    def test_install_by_name_reports_unexpected_errors(self, catalog_dir, monkeypatch, capsys):
+        """Non-CatalogError failures end with a readable line for the action log."""
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+        from hermes_cli import mcp_picker
+
+        def _boom(entry, enable=True):
+            raise PermissionError(13, "Access is denied", "C:\\x\\.git\\objects\\pack\\p.idx")
+
+        monkeypatch.setattr(mcp_picker, "install_entry", _boom)
+        rc = mcp_picker.install_by_name("demo")
+        out = capsys.readouterr()
+        assert rc == 1
+        assert "install failed: PermissionError" in out.out
+        assert "Traceback" in out.err or "Traceback" in out.out
