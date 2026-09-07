@@ -729,7 +729,7 @@ export function DesktopController() {
 
       const action = success
         ? {
-            label: translateNow('common.open') || 'Öffnen',
+            label: translateNow('common.open'),
             onClick: () => {
               void (async () => {
                 try {

@@ -89,6 +89,7 @@ export const de
     free: 'Kostenlos',
     loading: 'Lade…',
     notSet: 'Nicht gesetzt',
+    open: 'Öffnen',
     refresh: 'Aktualisieren',
     remove: 'Entfernen',
     replace: 'Ersetzen',

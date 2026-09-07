@@ -49,5 +49,25 @@ export function translateNow(key: string, ...args: unknown[]): string {
     }
   }
 
+  warnMissingKey(key)
+
   return key
+}
+
+const warnedMissingKeys = new Set<string>()
+
+// A miss returns the raw key so the UI never renders empty — which also
+// means a `|| 'fallback'` at the call site never fires and a typo ships
+// silently (AIS-295: the cron toast showed "common.open"). Surface each
+// missing key once in dev builds so it is caught before release.
+function warnMissingKey(key: string) {
+  if (warnedMissingKeys.has(key)) {
+    return
+  }
+
+  warnedMissingKeys.add(key)
+
+  if (import.meta.env.DEV) {
+    console.warn(`[i18n] missing translation key: ${key}`)
+  }
 }

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { TRANSLATIONS } from './catalog'
 import { setRuntimeI18nLocale, translateNow } from './runtime'
@@ -42,5 +42,23 @@ describe('desktop i18n runtime translator', () => {
     setRuntimeI18nLocale('en')
 
     expect(translateNow('missing.path')).toBe('missing.path')
+  })
+})
+
+describe('common.open (AIS-295)', () => {
+  it('resolves in both shipped locales', () => {
+    setRuntimeI18nLocale('de')
+    expect(translateNow('common.open')).toBe('Öffnen')
+    setRuntimeI18nLocale('en')
+    expect(translateNow('common.open')).toBe('Open')
+  })
+
+  it('warns once per missing key in dev builds', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    setRuntimeI18nLocale('en')
+    translateNow('missing.once')
+    translateNow('missing.once')
+    expect(warn.mock.calls.filter(([msg]) => String(msg).includes('missing.once'))).toHaveLength(1)
+    warn.mockRestore()
   })
 })
