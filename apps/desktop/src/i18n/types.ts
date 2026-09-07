@@ -103,6 +103,7 @@ export interface Translations {
     free: string
     loading: string
     notSet: string
+    open: string
     refresh: string
     remove: string
     replace: string

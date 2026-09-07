@@ -88,6 +88,7 @@ export const en: Translations = {
     free: 'Free',
     loading: 'Loading…',
     notSet: 'Not set',
+    open: 'Open',
     refresh: 'Refresh',
     remove: 'Remove',
     replace: 'Replace',
