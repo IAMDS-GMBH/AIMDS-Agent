@@ -1761,6 +1761,9 @@ class TestBuildTeamsSendGuidance:
         text = build_teams_send_guidance(self.NAMES | {"mcp_MSOffice365MCP_m365_download_chat_files"})
         assert "teams.microsoft.com/l/chat" in text
         assert "mcp_MSOffice365MCP_m365_download_chat_files" in text and "saved_path" in text
+        # AIS-294: the next step after a download is named, not left to the model
+        assert "`read_file(saved_path)`" in text and "as Markdown" in text
+        assert "never parse a document with terminal commands" in text
         assert "attachments=[" in text and "m365_download_email_attachments" not in text
 
     def test_mail_attachments_and_sending_files(self):

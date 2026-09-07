@@ -2187,7 +2187,10 @@ def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str
             f"is a valid `chat_id` for every chat tool — never ask the user to extract the id. For \"the "
             f"document/file from the chat\" call `{files_tool}(chat_id=<link or id> | to=<name>, last=5)`; it "
             "downloads the shared files into the Vault and returns `saved_path` per file — work with those "
-            "paths, do not describe the file from the chat preview. A SharePoint/OneDrive URL seen in a chat "
+            "paths, do not describe the file from the chat preview. To read a downloaded document call "
+            "`read_file(saved_path)`: Office files (docx/xlsx/pptx) and PDFs come back as Markdown "
+            "(converted by the AIMDS-Suite Docling when reachable, locally otherwise) — never parse a "
+            "document with terminal commands. A SharePoint/OneDrive URL seen in a chat "
             "message is NOT a drive item id and never an attachment id"
             + (f"; if you only have such a URL, pass it as `file_id` to `{drive_tool}`" if drive_tool else "")
             + "; never fetch it with curl or a script."

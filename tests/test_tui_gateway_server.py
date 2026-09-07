@@ -780,7 +780,9 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
         config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
     )
 
-    assert server._load_enabled_toolsets() == ["memory"]
+    # ``office`` rides along: hermes-cli includes it (AIS-294) and
+    # _get_platform_tools recovers non-configurable platform toolsets.
+    assert server._load_enabled_toolsets() == ["memory", "office"]
     err = capsys.readouterr().err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
@@ -801,7 +803,7 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
         config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
     )
 
-    assert server._load_enabled_toolsets() == ["memory"]
+    assert server._load_enabled_toolsets() == ["memory", "office"]
     assert "using configured CLI toolsets" in capsys.readouterr().err
 
 
