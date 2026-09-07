@@ -43,6 +43,16 @@ def _loopback_hostname(host: str) -> bool:
     return h in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 
 
+def _is_suite_provider(provider: str) -> bool:
+    """True for aimds-suite-* (and legacy iamds-litellm*) providers (AIS-286)."""
+    try:
+        from hermes_cli.iamds_suite import is_suite_provider
+
+        return bool(is_suite_provider(provider))
+    except Exception:
+        return False
+
+
 def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider: str) -> bool:
     """Decide whether ``model.base_url`` may back bare ``custom`` runtime resolution.
 
@@ -376,7 +386,12 @@ def _resolve_runtime_from_pool_entry(
         # fell back to the hardcoded default).  Env var overrides win (#6039).
         pconfig = PROVIDER_REGISTRY.get(provider)
         pool_url_is_default = pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/")
-        if configured_provider == provider and pool_url_is_default:
+        # AIMDS-Suite providers are excluded: ``providers.<slug>.base_url`` is
+        # their single source of truth (AIS-286) and the prod URL *equals* the
+        # registry default, so the "fell back to the default" heuristic would
+        # let a stale legacy ``model.base_url`` (staging) hijack the prod
+        # provider on every new session (SUP-20260907-111120, AIS-298).
+        if configured_provider == provider and pool_url_is_default and not _is_suite_provider(provider):
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
             if cfg_base_url:
                 base_url = cfg_base_url
@@ -1660,9 +1675,12 @@ def resolve_runtime_provider(
         # matches this provider — mirrors the Anthropic path above.  Without
         # this, users who set model.base_url to e.g. api.minimaxi.com/anthropic
         # (China endpoint) still get the hardcoded api.minimax.io default (#6039).
+        # AIMDS-Suite providers never take ``model.base_url``: their host comes
+        # from ``providers.<slug>.base_url`` via the credential resolver
+        # (AIS-286); a stale legacy value would steer prod to staging (AIS-298).
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = ""
-        if cfg_provider == provider:
+        if cfg_provider == provider and not _is_suite_provider(provider):
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
         api_mode = "chat_completions"

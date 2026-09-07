@@ -47,6 +47,11 @@ const {
   versionFromTag
 } = require('./update-channels.cjs')
 const {
+  isKeycloakCallbackUrl,
+  resolveSuiteRootDomain,
+  shouldIgnoreLoginLoadFailure
+} = require('./suite-auth.cjs')
+const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
   modeRemovesAgent,
@@ -4164,13 +4169,7 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
       return
     }
 
-    let rootDomain = baseUrl.trim().replace(/\/+$/, '')
-    for (const suffix of ['/litellm/v1', '/litellm', '/auth']) {
-      if (rootDomain.endsWith(suffix)) {
-        rootDomain = rootDomain.slice(0, -suffix.length).replace(/\/+$/, '')
-      }
-    }
-
+    const rootDomain = resolveSuiteRootDomain(baseUrl)
     const authBaseUrl = `${rootDomain}/auth`
     const effectiveRealm = (realm || 'aimds').trim()
     const effectiveRedirectUri = (redirectUri || 'hermes://callback').trim()
@@ -4189,6 +4188,10 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
     const authUrl = `${authBaseUrl}/realms/${effectiveRealm}/protocol/openid-connect/auth?${authParams}`
 
     let settled = false
+    // Set the moment the callback redirect is intercepted: from then on the
+    // page is expected to "fail" to load (we cancelled its navigation) and the
+    // outcome is decided by the token exchange, not by loadURL().
+    let redirectHandled = false
     let win = null
 
     const finish = (err, result) => {
@@ -4221,9 +4224,12 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
       if (!settled) finish(new Error('Login window closed before authentication completed.'))
     })
 
-    // Intercept Keycloak's redirect to the callback URI before Open-WebUI loads it.
+    // Intercept Keycloak's redirect to the callback URI (an unregistered custom
+    // scheme) and do the code exchange ourselves. With a live SSO cookie this
+    // fires during the *initial* load (AIS-298) — see suite-auth.cjs.
     const handleRedirect = (event, url) => {
-      if (!url.startsWith(effectiveRedirectUri)) return
+      if (!isKeycloakCallbackUrl(url, effectiveRedirectUri)) return
+      redirectHandled = true
       event.preventDefault()
 
       let parsed
@@ -4263,8 +4269,19 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
 
     win.webContents.on('will-navigate', handleRedirect)
     win.webContents.on('will-redirect', handleRedirect)
+    win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame) return
+      rememberLog(
+        `[keycloak] did-fail-load ${errorDescription} (${errorCode}) for ${validatedURL}` +
+        (redirectHandled ? ' — callback redirect intercepted, waiting for token exchange' : '')
+      )
+    })
 
     win.loadURL(authUrl).catch(error => {
+      if (shouldIgnoreLoginLoadFailure({ settled, redirectHandled })) {
+        rememberLog(`[keycloak] ignoring loadURL rejection after intercepted callback: ${error?.message || error}`)
+        return
+      }
       finish(error instanceof Error ? error : new Error(String(error)))
     })
   })
