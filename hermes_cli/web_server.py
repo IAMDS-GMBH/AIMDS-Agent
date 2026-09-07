@@ -561,6 +561,16 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         ),
         "options": ["stash", "discard"],
     },
+    "updates.channel": {
+        "type": "select",
+        "description": (
+            "Update channel for `hermes update` without --branch. 'stable' follows "
+            "released versions (vX.Y.Z tags), 'preview' also release candidates, "
+            "'main' the developer branch. 'auto' = stable on an installed (detached) "
+            "checkout, main on a developer branch checkout."
+        ),
+        "options": ["auto", "stable", "preview", "main"],
+    },
 }
 
 # Categories with fewer fields get merged into "general" to avoid tab sprawl.

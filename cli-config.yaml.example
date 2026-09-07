@@ -1232,6 +1232,18 @@ updates:
   #             installs where local source edits should not persist
   non_interactive_local_changes: "stash"
 
+  # Which channel a bare `hermes update` follows (`--branch` always wins).
+  # Releases are git tags: stable = vX.Y.Z, preview = also vX.Y.Z-rc.N
+  # candidates, main (or any branch name) = that branch.
+  #
+  #   auto    - stable on a detached checkout (installed clients sit on a
+  #             release tag), main on a named branch (developer checkouts)
+  #   stable | preview | main
+  #
+  # The desktop app writes this key when you change the update channel under
+  # Settings -> Advanced.
+  channel: "auto"
+
 
 # =============================================================================
 # Web Dashboard

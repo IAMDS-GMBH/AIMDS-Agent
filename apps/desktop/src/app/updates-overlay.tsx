@@ -225,6 +225,19 @@ export function IdleView({
     )
   }
 
+  // Tag channel, HEAD on a release tag *newer* than the channel's target
+  // (v0.7.5-rc.1 while stable is still v0.7.4): up to date — no install
+  // button, the older release is not an update (AIS-299).
+  if (behind === 0 && status.newerThanTarget && status.headTag && status.targetTag) {
+    return (
+      <CenteredStatus
+        body={u.newerReleaseBody(status.headTag, status.targetTag, status.branch ?? 'stable')}
+        icon={<CheckCircle2 className="size-7 text-emerald-600 dark:text-emerald-400" />}
+        title={u.allSetTitle}
+      />
+    )
+  }
+
   // Tag channel, HEAD past the release tag (dev/main checkout on stable or
   // preview). Nothing to *update*, but the channel's release is installable —
   // offer that explicitly instead of the phantom "+1 update" that looped in

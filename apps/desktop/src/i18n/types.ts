@@ -1193,6 +1193,7 @@ export interface Translations {
     offChannelTitle: (tag: string) => string
     offChannelBody: (count: number, tag: string, channel: string) => string
     switchToRelease: (tag: string) => string
+    newerReleaseBody: (headTag: string, targetTag: string, channel: string) => string
     manualTitle: string
     manualBody: string
     manualPickedUp: string
@@ -1374,6 +1375,7 @@ export interface Translations {
       commitsBehind: (count: number, branch: string) => string
       releaseAvailable: (tag: string) => string
       aheadOfRelease: (count: number, tag: string) => string
+      newerRelease: (headTag: string, targetTag: string, channel: string) => string
       desktopVersion: (version: string) => string
       backendVersion: (version: string) => string
       clientLabel: (version: string) => string
