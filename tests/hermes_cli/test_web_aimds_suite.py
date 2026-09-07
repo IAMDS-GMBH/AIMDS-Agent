@@ -114,3 +114,32 @@ def test_validate_suite_key_without_url_asks_for_configuration(suite_env, monkey
     assert resp.status_code == 200
     assert resp.json()["ok"] is False
     assert "base URL" in resp.json()["message"]
+
+
+# --------------------------------------------------------------------------- remote health (AIS-294)
+
+def test_remote_health_summary_lists_document_services():
+    from hermes_cli.web_server import _derive_remote_health_target, _summarize_remote_health
+
+    payload = {
+        "status": "degraded",
+        "checked_at": "2026-09-07T07:37:17Z",
+        "services": {"mcp": {"status": "healthy"}},
+        "details": [
+            {"name": "LiteLLM Gateway", "slug": "litellm", "status": "up", "tier": "core"},
+            {"name": "LangGraph API", "slug": "langgraph", "status": "up", "tier": "components"},
+            {"name": "Keycloak SSO", "slug": "keycloak", "status": "up", "tier": "components"},
+            {"name": "Docling Parser", "slug": "docling", "status": "down", "tier": "components"},
+            {"name": "Customer Storage", "slug": "customer-storage", "status": "up", "tier": "mcp"},
+        ],
+    }
+    summary = _summarize_remote_health(payload)
+    assert summary["severity"] == "healthy"  # optional services never change severity
+    optional = {row["slug"]: row for row in summary["optional_services"]}
+    assert optional["docling"] == {"name": "Docling Parser", "slug": "docling", "status": "down", "is_up": False}
+    assert optional["customer-storage"]["is_up"] is True
+
+    provider, url = _derive_remote_health_target(
+        {"model": {"provider": "openai", "base_url": "https://suite.example.test/litellm/v1"}}
+    )
+    assert (provider, url) == ("openai", "https://suite.example.test/uptime/health")

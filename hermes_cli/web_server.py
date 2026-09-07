@@ -949,6 +949,10 @@ _REMOTE_HEALTH_CRITICAL_NAMES = {
     "Keycloak SSO",
 }
 
+# Informational only (no severity impact): the services behind read_file's
+# Office/PDF → Markdown path (AIS-294). Down = documents convert locally.
+_REMOTE_HEALTH_OPTIONAL_SLUGS = ("docling", "customer-storage")
+
 
 def _is_service_up(status: Any) -> bool:
     return str(status or "").strip().lower() in {"healthy", "ok", "up"}
@@ -988,27 +992,21 @@ def _derive_remote_health_target(config: dict[str, Any]) -> tuple[str, str]:
     if not base_url:
         return provider, ""
 
-    if base_url.endswith("/litellm/v1"):
-        base_url = base_url[: -len("/litellm/v1")]
-    elif base_url.endswith("/litellm/mcp"):
-        base_url = base_url[: -len("/litellm/mcp")]
+    from hermes_cli.iamds_suite import suite_health_url
 
-    return provider, f"{base_url}/uptime/health"
+    return provider, suite_health_url(base_url)
 
 
 def _fetch_remote_health(url: str, timeout: float = 8.0) -> tuple[dict | None, int | None, str | None]:
-    """Blocking HTTP GET for the remote uptime health endpoint."""
-    req = urllib.request.Request(url, method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = json.loads(resp.read())
-            if not isinstance(body, dict):
-                return None, resp.status, "Health endpoint returned non-JSON object payload."
-            return body, resp.status, None
-    except urllib.error.HTTPError as exc:
-        return None, exc.code, f"Health endpoint returned HTTP {exc.code}."
-    except Exception:
-        return None, None, f"Could not reach {url}."
+    """Blocking HTTP GET for the remote uptime health endpoint.
+
+    Shares the fetcher with the document converter's Docling gate
+    (``hermes_cli.iamds_suite.fetch_health_json``, AIS-294).
+    """
+    from hermes_cli.iamds_suite import fetch_health_json
+
+    body, status, error = fetch_health_json(url, timeout=timeout)
+    return body, status, (error or None)
 
 
 def _summarize_remote_health(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1072,9 +1070,21 @@ def _summarize_remote_health(payload: dict[str, Any]) -> dict[str, Any]:
     services = payload.get("services")
     tier_summary = services if isinstance(services, dict) else {}
 
+    from hermes_cli.iamds_suite import suite_service_state
+
+    optional_services = []
+    for slug in _REMOTE_HEALTH_OPTIONAL_SLUGS:
+        state = suite_service_state(payload, slug)
+        name = next(
+            (str(i.get("name") or slug) for i in details if isinstance(i, dict) and i.get("slug") == slug),
+            slug,
+        )
+        optional_services.append({"name": name, "slug": slug, "status": state, "is_up": state == "up"})
+
     return {
         "checked_at": payload.get("checked_at"),
         "critical_services": critical_services,
+        "optional_services": optional_services,
         "overall_status": str(payload.get("status") or "unknown"),
         "severity": severity,
         "tier_summary": tier_summary,

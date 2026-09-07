@@ -690,6 +690,205 @@ def all_suite_statuses(*, probe: bool = False, config: Optional[dict] = None) ->
     }
 
 
+# --------------------------------------------------------------------------- health (AIS-294)
+
+#: Positive ``/uptime/health`` results are reused for this long; the board
+#: itself refreshes every few minutes, so anything shorter only adds requests.
+SUITE_HEALTH_CACHE_TTL_SECONDS = 300
+#: A failed fetch (network, 404 on a Suite without the board, 5xx) is cached
+#: for a shorter window so a recovering Suite is picked up quickly but a dead
+#: one does not cost a round trip per document read.
+SUITE_HEALTH_NEGATIVE_TTL_SECONDS = 60
+_HEALTH_UP_STATES = frozenset({"up", "healthy", "ok"})
+
+_health_lock = threading.Lock()
+_health_cache: Dict[str, tuple[float, Optional[Dict[str, Any]], Optional[int], str]] = {}
+
+
+def suite_health_url(base_url: str) -> str:
+    """The Suite's public health board JSON: ``<service root>/uptime/health``."""
+    root = suite_root_url(base_url)
+    return f"{root}/uptime/health" if root else ""
+
+
+def fetch_health_json(url: str, *, timeout: float = 5.0) -> tuple[Optional[Dict[str, Any]], Optional[int], str]:
+    """GET *url* and parse a JSON object. Returns ``(payload, http_status, error)``.
+
+    ``payload`` is ``None`` on any failure; ``http_status`` is ``None`` when the
+    request never got an HTTP answer (DNS, timeout, refused).
+    """
+    if not url:
+        return None, None, "no health url"
+    request = urllib.request.Request(
+        url, headers={"Accept": "application/json", "User-Agent": "hermes-agent/iamds-suite-health"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = int(response.status)
+            body = json.loads(response.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        return None, int(exc.code), f"Health endpoint returned HTTP {exc.code}."
+    except Exception as exc:  # network, timeout, JSON
+        return None, None, f"Could not reach {url}: {type(exc).__name__}: {exc}"
+    if not isinstance(body, dict):
+        return None, status, "Health endpoint returned non-JSON object payload."
+    return body, status, ""
+
+
+def fetch_suite_health(
+    base_url: str,
+    *,
+    timeout: float = 5.0,
+    use_cache: bool = True,
+) -> tuple[Optional[Dict[str, Any]], Optional[int], str]:
+    """Cached ``/uptime/health`` for the Suite behind *base_url*.
+
+    The cache is keyed by the health URL so prod/staging/dev never share an
+    entry. Use ``clear_suite_health_cache()`` to force a refresh.
+    """
+    url = suite_health_url(base_url)
+    if not url:
+        return None, None, "no base url"
+    now = time.monotonic()
+    if use_cache:
+        with _health_lock:
+            entry = _health_cache.get(url)
+        if entry and entry[0] > now:
+            return entry[1], entry[2], entry[3]
+    payload, status, error = fetch_health_json(url, timeout=timeout)
+    ttl = SUITE_HEALTH_CACHE_TTL_SECONDS if payload is not None else SUITE_HEALTH_NEGATIVE_TTL_SECONDS
+    with _health_lock:
+        _health_cache[url] = (now + ttl, payload, status, error)
+    return payload, status, error
+
+
+def clear_suite_health_cache() -> None:
+    with _health_lock:
+        _health_cache.clear()
+
+
+def suite_service_state(payload: Optional[Dict[str, Any]], slug: str) -> str:
+    """``up`` | ``down`` | ``missing`` for the monitor *slug* in a health payload."""
+    if not isinstance(payload, dict):
+        return "missing"
+    details = payload.get("details")
+    if not isinstance(details, list):
+        return "missing"
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("slug") or "").strip() != slug:
+            continue
+        status = str(item.get("status") or "").strip().lower()
+        return "up" if status in _HEALTH_UP_STATES else "down"
+    return "missing"
+
+
+DOCLING_AVAILABLE = "available"
+DOCLING_NOT_CONFIGURED = "not_configured"
+DOCLING_NEEDS_REAUTH = "needs_reauth"
+DOCLING_HEALTH_UNREACHABLE = "health_unreachable"
+DOCLING_DOWN = "docling_down"
+DOCLING_STORAGE_DOWN = "storage_down"
+DOCLING_TOOLS_MISSING = "tools_missing"
+DOCLING_ENDPOINT_UNAVAILABLE = "endpoint_unavailable"
+
+#: Health-board slugs the document path depends on (go-orchestrator
+#: ``health-monitors.yaml``): docling-serve itself and go-mcp-customer,
+#: which fronts it for clients (upload + ``storage_ingest_upload``).
+DOCLING_HEALTH_SLUG = "docling"
+CUSTOMER_STORAGE_HEALTH_SLUG = "customer-storage"
+
+
+@dataclass
+class DoclingAvailability:
+    """Whether Office/PDF conversion can go through the Suite right now."""
+
+    state: str
+    reason: str = ""
+    provider: str = ""
+    base_url: str = ""
+    health_url: str = ""
+    checked_at: str = ""
+
+    @property
+    def available(self) -> bool:
+        return self.state == DOCLING_AVAILABLE
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = asdict(self)
+        data["available"] = self.available
+        return data
+
+
+def docling_availability(
+    *,
+    provider: Optional[str] = None,
+    config: Optional[dict] = None,
+    tools_present: Optional[Callable[[], bool]] = None,
+    health_fn: Optional[Callable[[str], tuple[Optional[Dict[str, Any]], Optional[int], str]]] = None,
+) -> DoclingAvailability:
+    """Gate for the Suite document path (AIS-294).
+
+    Checks, in order: a Suite provider with a key is active → the public
+    ``/uptime/health`` answers → ``docling`` and ``customer-storage`` are up →
+    the storage tools are registered in this process (``tools_present``,
+    injected by the caller so this module stays free of tool imports).
+    Every negative answer names the first failed check so the caller can log
+    it once and fall back to local conversion.
+    """
+    checked_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    slug = provider or primary_suite_provider(config)
+    if not slug:
+        return DoclingAvailability(DOCLING_NOT_CONFIGURED, "no AIMDS-Suite provider with a key", checked_at=checked_at)
+    ep = resolve_suite_endpoint(slug, config=config, allow_default=True)
+    result = DoclingAvailability(
+        DOCLING_NOT_CONFIGURED, "", provider=ep.provider_id, base_url=ep.base_url,
+        health_url=suite_health_url(ep.base_url), checked_at=checked_at,
+    )
+    if not ep.base_url:
+        result.reason = "url_missing"
+        return result
+    if not _usable_secret(ep.api_key):
+        result.state, result.reason = DOCLING_NEEDS_REAUTH, "key_missing"
+        return result
+    failure = suite_auth_failures().get(ep.provider_id)
+    if failure:
+        result.state = DOCLING_NEEDS_REAUTH
+        result.reason = f"runtime_{failure.get('http_status') or 401}"
+        return result
+
+    fetch = health_fn or fetch_suite_health
+    payload, status, error = fetch(ep.base_url)
+    if payload is None:
+        result.state = DOCLING_HEALTH_UNREACHABLE
+        result.reason = error or (f"http_{status}" if status else "network")
+        return result
+
+    docling_state = suite_service_state(payload, DOCLING_HEALTH_SLUG)
+    if docling_state != "up":
+        result.state, result.reason = DOCLING_DOWN, f"{DOCLING_HEALTH_SLUG}_{docling_state}"
+        return result
+    storage_state = suite_service_state(payload, CUSTOMER_STORAGE_HEALTH_SLUG)
+    if storage_state != "up":
+        result.state, result.reason = DOCLING_STORAGE_DOWN, f"{CUSTOMER_STORAGE_HEALTH_SLUG}_{storage_state}"
+        return result
+
+    if tools_present is not None:
+        try:
+            present = bool(tools_present())
+        except Exception as exc:  # never let a registry hiccup masquerade as "available"
+            present = False
+            logger.debug("docling tools_present check failed: %s", exc)
+        if not present:
+            result.state = DOCLING_TOOLS_MISSING
+            result.reason = "storage tools not registered on AIMDSSuiteMCP (key lacks mcp_customer or allowlist)"
+            return result
+
+    result.state, result.reason = DOCLING_AVAILABLE, "ok"
+    return result
+
+
 # --------------------------------------------------------------------------- re-auth
 
 def apply_reauth(provider: str, *, reload_mcp: bool = True, refresh_sessions: bool = True) -> Dict[str, Any]:

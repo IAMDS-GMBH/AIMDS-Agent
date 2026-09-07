@@ -63,6 +63,9 @@ def test_upsert_aimds_defaults_creates_required_sections():
     include = out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["include"]
     assert "kb_search" in include
     assert "memory_context" in include
+    # AIS-294: go-mcp-customer document tools for read_file's Suite Docling path
+    for tool in ("storage_ingest_upload", "storage_get_document", "storage_search", "storage_meta"):
+        assert tool in include, tool
     assert out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["resources"] is False
     assert out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["prompts"] is False
 

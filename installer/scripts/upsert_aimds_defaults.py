@@ -147,6 +147,13 @@ _AIMDS_TOOL_INCLUDE_RAW = [
     "skill",
     "web_search",
     "web_fetch",
+    # go-mcp-customer document store: read_file's Suite Docling path needs
+    # ingest + get_document in-process (AIS-294); search/meta let the model
+    # find what it ingested. Present only when the key has mcp_customer.
+    "storage_ingest_upload",
+    "storage_get_document",
+    "storage_search",
+    "storage_meta",
 ]
 
 _AIMDS_TOOL_INCLUDE_LEGACY = (
