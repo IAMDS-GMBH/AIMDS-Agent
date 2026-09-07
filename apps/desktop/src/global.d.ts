@@ -226,6 +226,15 @@ export interface DesktopUpdateStatus {
   message?: string
   error?: string
   behind?: number
+  /** Tag channels (stable/preview): commits HEAD is *past* the channel's
+   *  release tag. Non-zero with `offChannel` means a dev/main checkout on a
+   *  release channel — the overlay offers "switch to the release", never a
+   *  phantom "+1 update" (AIS-297). */
+  aheadOfTarget?: number
+  offChannel?: boolean
+  /** Tag channels: the release tag (`v0.7.4`) / version (`0.7.4`) targeted. */
+  targetTag?: string
+  targetVersion?: string
   currentSha?: string
   targetSha?: string
   commits?: DesktopUpdateCommit[]

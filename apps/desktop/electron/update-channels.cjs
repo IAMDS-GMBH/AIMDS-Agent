@@ -89,6 +89,41 @@ function parseLsRemoteTags(stdout) {
   return out
 }
 
+/**
+ * Decide what a tag-channel check (stable/preview) reports, from the raw
+ * git facts. Pure so the loop from SUP-20260907-101225 (AIS-297) stays
+ * covered by a unit test:
+ *
+ *   - HEAD on the target tag              → up to date (behind 0)
+ *   - target tag reachable ahead of HEAD  → behind N, changelog available
+ *   - HEAD *past* the tag (dev / main checkout on a release channel)
+ *                                         → offChannel, aheadOfTarget N,
+ *                                            behind 0 — a "switch to the
+ *                                            release" offer, never a phantom
+ *                                            "+1 update"
+ *   - target not resolvable locally       → error 'fetch-failed' — the tag
+ *     (fetch failed, no counts)              fetch must succeed before any
+ *                                            offer is made
+ *
+ * `behindCount` / `aheadCount` are the `git rev-list` counts HEAD..tag and
+ * tag..HEAD, or null when git could not resolve the tag.
+ */
+function resolveTagChannelStatus({ currentSha, targetSha, behindCount, aheadCount }) {
+  const behind = Number.isFinite(behindCount) ? Math.max(0, behindCount) : null
+  const ahead = Number.isFinite(aheadCount) ? Math.max(0, aheadCount) : null
+  if (currentSha && targetSha && currentSha === targetSha) {
+    return { behind: 0, aheadOfTarget: 0, offChannel: false }
+  }
+  if (behind === null) {
+    return { behind: 0, aheadOfTarget: 0, offChannel: false, error: 'fetch-failed' }
+  }
+  if (behind > 0) {
+    return { behind, aheadOfTarget: ahead || 0, offChannel: false }
+  }
+  // Same or unrelated history with nothing to pull: HEAD is past the tag.
+  return { behind: 0, aheadOfTarget: ahead || 0, offChannel: true }
+}
+
 function versionFromTag(tag) {
   const value = String(tag || '').trim()
   return value.startsWith('v') ? value.slice(1) : value
@@ -102,6 +137,7 @@ module.exports = {
   normalizeChannel,
   parseLsRemoteTags,
   parseReleaseTag,
+  resolveTagChannelStatus,
   selectReleaseTag,
   versionFromTag
 }

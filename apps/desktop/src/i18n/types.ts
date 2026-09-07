@@ -1190,6 +1190,9 @@ export interface Translations {
     updateNow: string
     maybeLater: string
     moreChanges: (count: number) => string
+    offChannelTitle: (tag: string) => string
+    offChannelBody: (count: number, tag: string, channel: string) => string
+    switchToRelease: (tag: string) => string
     manualTitle: string
     manualBody: string
     manualPickedUp: string
@@ -1369,6 +1372,8 @@ export interface Translations {
       update: string
       updateInProgress: string
       commitsBehind: (count: number, branch: string) => string
+      releaseAvailable: (tag: string) => string
+      aheadOfRelease: (count: number, tag: string) => string
       desktopVersion: (version: string) => string
       backendVersion: (version: string) => string
       clientLabel: (version: string) => string

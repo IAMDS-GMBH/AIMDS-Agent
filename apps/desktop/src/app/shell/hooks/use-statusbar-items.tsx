@@ -267,19 +267,27 @@ export function useStatusbarItems({
     const applying = updateApply.applying || updateApply.stage === 'restart'
     const remote = connection?.mode === 'remote'
 
+    // Tag channel with HEAD *past* the release tag (dev/main checkout on
+    // stable/preview): a "release available" hint, not an update count — the
+    // version pill already carries its own `+N` ahead suffix (AIS-297).
+    const targetTag = updateStatus?.targetTag ?? null
+    const offChannel = !applying && behind === 0 && updateStatus?.offChannel === true && !!targetTag
+
     const version = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
     const base = remote ? copy.clientLabel(appVersion ?? sha ?? copy.unknown) : version
-    const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
 
     const label = applying
       ? `${base} · ${updateApply.stage === 'restart' ? copy.restart : copy.update}`
       : !applying && behind > 0
         ? `${base} · ✨ Update (+${behind})`
-        : base
+        : offChannel
+          ? `${base} · ${copy.releaseAvailable(targetTag)}`
+          : base
 
     const tooltip = [
       applying ? updateApply.message || copy.updateInProgress : null,
       !applying && behind > 0 && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
+      offChannel && copy.aheadOfRelease(updateStatus?.aheadOfTarget ?? 0, targetTag),
       appVersion && copy.desktopVersion(appVersion),
       sha && copy.commit(sha),
       updateStatus?.branch && copy.branch(updateStatus.branch)
@@ -289,15 +297,17 @@ export function useStatusbarItems({
 
     return {
       className:
-        !applying && behind > 0
+        (!applying && behind > 0) || offChannel
           ? 'rounded-full bg-primary/15 text-primary hover:bg-primary/25 border border-primary/30 px-2.5 py-0.5 font-medium transition-colors'
           : undefined,
-      detail: appVersion && sha && !applying && !remote && behind === 0 ? sha : undefined,
+      detail: appVersion && sha && !applying && !remote && behind === 0 && !offChannel ? sha : undefined,
       hidden: !appVersion && !sha,
       icon: applying ? (
         <Loader2 className="size-3 animate-spin" />
       ) : !applying && behind > 0 ? (
         <Sparkles className="size-3 text-primary animate-pulse" />
+      ) : offChannel ? (
+        <Sparkles className="size-3 text-primary" />
       ) : (
         <Hash className="size-3" />
       ),
@@ -314,9 +324,12 @@ export function useStatusbarItems({
     updateApply.applying,
     updateApply.message,
     updateApply.stage,
+    updateStatus?.aheadOfTarget,
     updateStatus?.behind,
     updateStatus?.branch,
-    updateStatus?.currentSha
+    updateStatus?.currentSha,
+    updateStatus?.offChannel,
+    updateStatus?.targetTag
   ])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {

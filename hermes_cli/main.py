@@ -7856,6 +7856,25 @@ def _select_channel_tag(git_cmd: list, channel: str) -> tuple[list, str]:
     return tags, (select_release_tag(tags, channel) or "")
 
 
+def _head_is_at_tag(git_cmd: list, tag: str) -> bool:
+    """True iff HEAD is the commit ``tag`` points at (annotated tags peeled)."""
+    head = subprocess.run(
+        git_cmd + ["rev-parse", "HEAD"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    target = subprocess.run(
+        git_cmd + ["rev-parse", f"{tag}^{{commit}}"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    head_sha = head.stdout.strip()
+    target_sha = target.stdout.strip()
+    return bool(head_sha) and head.returncode == 0 and target.returncode == 0 and head_sha == target_sha
+
+
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     """Implement ``hermes update --check``: fetch and report without installing.
 
@@ -8004,6 +8023,23 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         check=True,
     )
     behind = int(rev_result.stdout.strip())
+
+    if behind == 0 and is_tags_channel and compare_branch != "HEAD":
+        # Tag channel: distinguish "on the release" from "past the release"
+        # (a main/dev checkout on stable) — the latter is not up to date with
+        # the channel, it is ahead of it (AIS-297).
+        ahead_result = subprocess.run(
+            git_cmd + ["rev-list", f"{compare_branch}..HEAD", "--count"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        ahead = int(ahead_result.stdout.strip() or 0) if ahead_result.returncode == 0 else 0
+        if ahead > 0:
+            commits_word = "commit" if ahead == 1 else "commits"
+            print(f"⚕ Development checkout: {ahead} {commits_word} ahead of {compare_branch}.")
+            print(f"  Run 'hermes update --branch {branch}' to switch to the release, or use --branch main.")
+            return
 
     if behind == 0:
         print("✓ Already up to date.")
@@ -8628,6 +8664,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
             tags, latest_tag = _select_channel_tag(git_cmd, branch)
             if latest_tag:
                 print(f"  ✓ Latest {branch} release: {latest_tag}")
+                if _head_is_at_tag(git_cmd, latest_tag):
+                    # Already on the release — nothing to check out. Keep the
+                    # update-scoped policy repairs idempotent, like the branch
+                    # path does when there are no new commits.
+                    _invalidate_update_cache()
+                    _apply_aimds_defaults_after_update()
+                    _seed_aimds_default_cron_after_update()
+                    _sync_canonical_soul_after_update()
+                    print("✓ Already up to date!")
+                    return
                 auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
                 checkout_result = subprocess.run(
                     git_cmd + ["checkout", latest_tag],
@@ -8636,18 +8682,40 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     text=True,
                 )
                 if checkout_result.returncode == 0:
+                    _invalidate_update_cache()
                     print("✓ Code updated to latest release tag!")
                     _sync_canonical_soul_after_update()
                     return
-                print(f"⚠ Could not checkout tag '{latest_tag}', falling back to main branch...")
+                # Never fall back to main here: the caller asked for a release
+                # channel, and silently pulling main instead reports success
+                # while leaving HEAD past the tag — the desktop then offers the
+                # same release again on every check (SUP-20260907-101225,
+                # AIS-297). Fail loudly so the desktop shows the real error.
+                print(f"✗ Could not check out release tag '{latest_tag}'.")
+                stderr = checkout_result.stderr.strip()
+                if stderr:
+                    print(f"  {stderr.splitlines()[0]}")
+                if auto_stash_ref is not None:
+                    _restore_stashed_changes(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        auto_stash_ref,
+                        prompt_user=False,
+                        input_fn=gw_input_fn,
+                    )
+                print(f"  Retry `hermes update --branch {branch}`, or switch the update channel to main.")
+                sys.exit(1)
 
             if fetch_result.returncode != 0 and not tags:
                 stderr = fetch_result.stderr.strip()
-                print("⚠ Failed to fetch tags from origin, falling back to main branch...")
+                print("✗ Failed to fetch release tags from origin.")
                 if stderr:
                     print(f"  {stderr.splitlines()[0]}")
-            elif tags and not latest_tag:
-                print(f"⚠ No release tag for the {branch} channel yet, falling back to main branch...")
+                print(f"  Check your connection and retry `hermes update --branch {branch}`.")
+                sys.exit(1)
+            # Tags exist but none for this channel yet (e.g. preview before the
+            # first candidate): the only sensible target is main. Say so.
+            print(f"⚠ No release tag for the {branch} channel yet, falling back to main branch...")
             branch = "main"
 
         print("→ Fetching updates...")
