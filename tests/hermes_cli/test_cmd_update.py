@@ -902,3 +902,107 @@ def test_update_check_reports_channel_tag(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Latest preview release: v0.7.5-rc.1" in out
     assert "behind refs/tags/v0.7.5-rc.1" in out
+
+
+# ---------------------------------------------------------------------------
+# AIS-297 / SUP-20260907-101225: a tag channel must never silently fall back
+# to main — that left HEAD past the release and the desktop offering the same
+# "+1 update" on every check.
+# ---------------------------------------------------------------------------
+
+
+def _tag_channel_side_effect(tags, *, head_sha="headsha", tag_sha="tagsha", checkout_rc=0, fetch_rc=0, calls=None):
+    calls = calls if calls is not None else []
+
+    def side_effect(cmd, **kwargs):
+        joined = " ".join(str(c) for c in cmd)
+        calls.append(joined)
+        if "rev-parse" in joined and "--abbrev-ref" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="HEAD\n", stderr="")
+        if joined.endswith("rev-parse HEAD"):
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{head_sha}\n", stderr="")
+        if "rev-parse" in joined and "^{commit}" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{tag_sha}\n", stderr="")
+        if joined.endswith("tag --list"):
+            return subprocess.CompletedProcess(cmd, 0, stdout="\n".join(tags) + "\n", stderr="")
+        if " fetch " in f" {joined} ":
+            return subprocess.CompletedProcess(cmd, fetch_rc, stdout="", stderr="fatal: could not fetch\n" if fetch_rc else "")
+        if "checkout" in joined:
+            return subprocess.CompletedProcess(cmd, checkout_rc, stdout="", stderr="error: pathspec did not match\n" if checkout_rc else "")
+        if "rev-list" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    return side_effect
+
+
+def _run_tag_channel_update(side_effect, channel="stable"):
+    with patch("hermes_cli.main.detect_install_method", return_value="git", create=True), \
+         patch("subprocess.run", side_effect=side_effect), \
+         patch("hermes_cli.main._stash_local_changes_if_needed", return_value=None), \
+         patch("hermes_cli.main._sync_canonical_soul_after_update", return_value=None), \
+         patch("hermes_cli.main._apply_aimds_defaults_after_update", return_value=None, create=True), \
+         patch("hermes_cli.main._seed_aimds_default_cron_after_update", return_value=None, create=True), \
+         patch("hermes_cli.main._invalidate_update_cache", return_value=None), \
+         patch("hermes_cli.main._discard_lockfile_churn", return_value=None), \
+         patch("hermes_cli.main._get_origin_url", return_value="https://github.com/IAMDS-GMBH/AIMDS-Agent.git"), \
+         patch("hermes_cli.main._is_fork", return_value=False), \
+         patch("hermes_cli.main._pre_update_syntax_snapshot", return_value=None, create=True):
+        try:
+            cmd_update(SimpleNamespace(branch=channel, check=False, yes=True))
+        except SystemExit as exc:
+            return exc.code
+    return None
+
+
+def test_update_stable_refuses_main_fallback_when_tag_checkout_fails(capsys):
+    calls = []
+    code = _run_tag_channel_update(_tag_channel_side_effect(["v0.7.4"], checkout_rc=1, calls=calls))
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "Could not check out release tag 'v0.7.4'" in out
+    assert "falling back to main" not in out
+    assert not any("fetch origin main" in c for c in calls)
+    assert not any("pull" in c for c in calls)
+
+
+def test_update_stable_refuses_main_fallback_when_tag_fetch_fails_and_no_local_tags(capsys):
+    calls = []
+    code = _run_tag_channel_update(_tag_channel_side_effect([], fetch_rc=1, calls=calls))
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "Failed to fetch release tags" in out
+    assert not any("fetch origin main" in c for c in calls)
+    assert not any("checkout" in c for c in calls)
+
+
+def test_update_stable_already_on_release_tag_is_a_noop(capsys):
+    calls = []
+    code = _run_tag_channel_update(_tag_channel_side_effect(["v0.7.4"], head_sha="same", tag_sha="same", calls=calls))
+    out = capsys.readouterr().out
+    assert code is None
+    assert "Already up to date" in out
+    assert not any("checkout" in c for c in calls)
+
+
+def test_update_check_stable_reports_ahead_of_release(capsys):
+    from hermes_cli.main import _cmd_update_check
+
+    def side_effect(cmd, **kwargs):
+        joined = " ".join(str(c) for c in cmd)
+        if joined.endswith("tag --list"):
+            return subprocess.CompletedProcess(cmd, 0, stdout="v0.7.4\n", stderr="")
+        if "rev-list" in joined and "HEAD..refs/tags/v0.7.4" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+        if "rev-list" in joined and "refs/tags/v0.7.4..HEAD" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="92\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("hermes_cli.config.detect_install_method", return_value="git"), \
+         patch("subprocess.run", side_effect=side_effect):
+        try:
+            _cmd_update_check("stable")
+        except SystemExit:
+            pass
+    out = capsys.readouterr().out
+    assert "92 commits ahead of refs/tags/v0.7.4" in out
+    assert "Already up to date" not in out

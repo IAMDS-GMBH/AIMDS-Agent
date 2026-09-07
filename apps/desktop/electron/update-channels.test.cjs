@@ -9,6 +9,7 @@ const {
   normalizeChannel,
   parseLsRemoteTags,
   parseReleaseTag,
+  resolveTagChannelStatus,
   selectReleaseTag,
   versionFromTag
 } = require('./update-channels.cjs')
@@ -49,4 +50,43 @@ test('parseLsRemoteTags prefers the peeled commit of annotated tags', () => {
   ].join('\n'))
   assert.deepEqual(out, { 'v0.7.4': 'bbbb', 'v0.7.5-rc.1': 'cccc' })
   assert.equal(versionFromTag('v0.7.5-rc.1'), '0.7.5-rc.1')
+})
+
+// AIS-297 / SUP-20260907-101225: the tag-channel check must never turn a
+// checkout that is *past* the release (or one whose tag fetch failed) into a
+// permanent "+1 update".
+
+test('resolveTagChannelStatus: HEAD on the release tag is up to date', () => {
+  assert.deepEqual(
+    resolveTagChannelStatus({ currentSha: 'aaa', targetSha: 'aaa', behindCount: 0, aheadCount: 0 }),
+    { behind: 0, aheadOfTarget: 0, offChannel: false }
+  )
+  // Sha equality wins even when the counts could not be computed.
+  assert.deepEqual(
+    resolveTagChannelStatus({ currentSha: 'aaa', targetSha: 'aaa', behindCount: null, aheadCount: null }),
+    { behind: 0, aheadOfTarget: 0, offChannel: false }
+  )
+})
+
+test('resolveTagChannelStatus: release ahead of HEAD is a real update with a count', () => {
+  assert.deepEqual(
+    resolveTagChannelStatus({ currentSha: 'aaa', targetSha: 'bbb', behindCount: 7, aheadCount: 0 }),
+    { behind: 7, aheadOfTarget: 0, offChannel: false }
+  )
+})
+
+test('resolveTagChannelStatus: HEAD past the release is off-channel, not "+1"', () => {
+  // main checkout 92 commits after v0.7.4 on the stable channel — the exact
+  // state from the support case.
+  assert.deepEqual(
+    resolveTagChannelStatus({ currentSha: 'da25225', targetSha: '3ea1f3c', behindCount: 0, aheadCount: 92 }),
+    { behind: 0, aheadOfTarget: 92, offChannel: true }
+  )
+})
+
+test('resolveTagChannelStatus: unresolvable target (tag fetch failed) is an error, not an update', () => {
+  const status = resolveTagChannelStatus({ currentSha: 'da25225', targetSha: '3ea1f3c', behindCount: null, aheadCount: null })
+  assert.equal(status.error, 'fetch-failed')
+  assert.equal(status.behind, 0)
+  assert.equal(status.offChannel, false)
 })

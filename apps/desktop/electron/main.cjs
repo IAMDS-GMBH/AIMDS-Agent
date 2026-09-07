@@ -42,6 +42,7 @@ const {
   isTagChannel,
   normalizeChannel,
   parseLsRemoteTags,
+  resolveTagChannelStatus,
   selectReleaseTag,
   versionFromTag
 } = require('./update-channels.cjs')
@@ -1399,6 +1400,17 @@ async function resolveHealedBranch(updateRoot, branch) {
   return 'main'
 }
 
+// The branch/channel every apply path hands to `hermes update`. Always the
+// configured update channel (self-healed), never `git rev-parse --abbrev-ref
+// HEAD`: on a release-tag checkout that is the literal "HEAD", which used to
+// drop `--branch` and let `hermes update` default to main — one half of the
+// stable ⇄ main oscillation in SUP-20260907-101225 (AIS-297). The check ran
+// against the channel, so the apply must too.
+async function resolveApplyBranch(updateRoot) {
+  const { branch: configuredBranch } = readDesktopUpdateConfig()
+  return resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
+}
+
 async function checkUpdates() {
   const updateRoot = resolveUpdateRoot()
   let { branch } = readDesktopUpdateConfig()
@@ -1424,13 +1436,8 @@ async function checkUpdates() {
     const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
     const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
 
-    // Fetch tags so the local checkout can count and list the commits up to
-    // the target — that is what feeds the changelog in the updates overlay.
-    const fetchTags = await runGit(['fetch', '--quiet', '--tags', remote], { cwd: updateRoot })
-    if (fetchTags.code !== 0) {
-      rememberLog(`[updates] git fetch --tags failed: ${firstLine(fetchTags.stderr)}`)
-    }
-
+    // The target is whatever the remote publishes (ls-remote), never a local
+    // tag that may be stale or missing.
     const lsTags = await runGit(['ls-remote', '--tags', remote], { cwd: updateRoot })
     if (lsTags.code !== 0 || !lsTags.stdout.trim()) {
       return {
@@ -1457,30 +1464,71 @@ async function checkUpdates() {
     }
     const targetSha = remoteTags[tagName]
 
+    // Fetch the target tag so the local checkout can count and list the
+    // commits up to it — that feeds the changelog in the updates overlay and,
+    // more importantly, decides whether there is anything to install at all.
+    // `--force` so a re-pointed candidate tag can't wedge the fetch forever;
+    // a failed bulk tag fetch falls back to fetching just the target ref.
+    let fetchTags = await runGit(['fetch', '--quiet', '--force', '--tags', remote], { cwd: updateRoot })
+    if (fetchTags.code !== 0) {
+      rememberLog(`[updates] git fetch --tags failed (exit ${fetchTags.code}): ${(fetchTags.stderr || '').trim() || '<no stderr>'}`)
+      fetchTags = await runGit(
+        ['fetch', '--quiet', '--force', remote, `+refs/tags/${tagName}:refs/tags/${tagName}`],
+        { cwd: updateRoot }
+      )
+      if (fetchTags.code !== 0) {
+        rememberLog(`[updates] git fetch ${tagName} failed (exit ${fetchTags.code}): ${(fetchTags.stderr || '').trim() || '<no stderr>'}`)
+      }
+    }
+
     const [currentSha, dirtyStr, currentBranch] = await Promise.all([
       git(['rev-parse', 'HEAD']),
       git(['status', '--porcelain']),
       git(['rev-parse', '--abbrev-ref', 'HEAD'])
     ])
 
-    let behind = currentSha && currentSha === targetSha ? 0 : 1
-    let commits = []
-    if (behind && fetchTags.code === 0) {
-      const count = await runGit(['rev-list', `HEAD..${targetSha}`, '--count'], { cwd: updateRoot })
-      const parsed = Number.parseInt((count.stdout || '').trim(), 10)
-      if (count.code === 0 && Number.isFinite(parsed)) {
-        // 0 commits ahead but a different sha means HEAD is *past* the tag
-        // (developer checkout) — still report the tag as the target.
-        behind = parsed > 0 ? parsed : 1
-        commits = parsed > 0 ? await readCommitLog(updateRoot, targetSha) : []
+    // Both directions: HEAD..tag is what an update would pull, tag..HEAD tells
+    // a dev/main checkout that it is *past* the release (SUP-20260907-101225:
+    // that state used to be reported as a permanent, empty "+1 update").
+    const parseCount = result => {
+      const parsed = Number.parseInt((result.stdout || '').trim(), 10)
+      return result.code === 0 && Number.isFinite(parsed) ? parsed : null
+    }
+    const [behindResult, aheadResult] = await Promise.all([
+      runGit(['rev-list', `HEAD..${targetSha}`, '--count'], { cwd: updateRoot }),
+      runGit(['rev-list', `${targetSha}..HEAD`, '--count'], { cwd: updateRoot })
+    ])
+    const status = resolveTagChannelStatus({
+      currentSha,
+      targetSha,
+      behindCount: parseCount(behindResult),
+      aheadCount: parseCount(aheadResult)
+    })
+
+    if (status.error) {
+      return {
+        supported: true,
+        branch,
+        currentBranch,
+        currentSha,
+        targetTag: tagName,
+        targetVersion: versionFromTag(tagName),
+        error: status.error,
+        message: `Could not fetch release tag ${tagName}: ${firstLine(fetchTags.stderr) || `git exited with ${fetchTags.code}`}`,
+        hermesRoot: updateRoot,
+        fetchedAt: Date.now()
       }
     }
 
-    return {
+    const commits = status.behind > 0 ? await readCommitLog(updateRoot, targetSha) : []
+
+    const updateResult = {
       supported: true,
       branch,
       currentBranch,
-      behind,
+      behind: status.behind,
+      aheadOfTarget: status.aheadOfTarget,
+      offChannel: status.offChannel,
       currentSha,
       targetSha,
       targetTag: tagName,
@@ -1490,6 +1538,10 @@ async function checkUpdates() {
       hermesRoot: updateRoot,
       fetchedAt: Date.now()
     }
+
+    void sendClientTelemetry(updateResult)
+
+    return updateResult
   }
 
   const fetchRemote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
@@ -1746,22 +1798,18 @@ async function applyUpdates(opts = {}) {
       // `hermes desktop`, never the Tauri installer that self-copies
       // hermes-setup.exe into HERMES_HOME). They DO have a working `hermes`
       // on PATH / in the venv, so the correct path is the one-liner in their
-      // native medium. We show the EXACT command, branch-pinned to the
-      // checkout they're on — bare `hermes update` defaults to main and would
-      // silently switch a bb/gui (or any non-main) install off-branch. Mirror
-      // the GUI button's contract: append --branch <current> for non-main
-      // checkouts, keep it bare for main so the card stays clean.
+      // native medium. We show the EXACT command, pinned to the configured
+      // update channel — bare `hermes update` defaults to main and would
+      // silently switch a stable/preview (or any non-main) install off-channel.
+      // Mirror the GUI button's contract: append --branch <channel> for
+      // non-main channels, keep it bare for main so the card stays clean.
       const updateRoot = resolveUpdateRoot()
       let command = 'hermes update'
       try {
-        const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
-        const current = (head.stdout || '').trim()
-        if (head.code === 0 && current && current !== 'HEAD') {
-          const branch = await resolveHealedBranch(updateRoot, current)
-          if (branch !== 'main') command = `hermes update --branch ${branch}`
-        }
+        const branch = await resolveApplyBranch(updateRoot)
+        if (branch !== 'main') command = `hermes update --branch ${branch}`
       } catch {
-        // Best-effort: fall back to bare `hermes update` if branch detection fails.
+        // Best-effort: fall back to bare `hermes update` if channel resolution fails.
       }
       rememberLog(`[updates] no staged updater; surfacing manual \`${command}\` for CLI install at ${updateRoot}`)
       emitUpdateProgress({ stage: 'manual', message: command, percent: null })
@@ -1772,8 +1820,7 @@ async function applyUpdates(opts = {}) {
     repairMacUpdaterHelper(updater)
 
     const updateRoot = resolveUpdateRoot()
-    const { branch: configuredBranch } = readDesktopUpdateConfig()
-    const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
+    const branch = await resolveApplyBranch(updateRoot)
     const updaterArgs = ['--update', '--branch', branch]
     const targetApp = IS_MAC ? runningAppBundle() : null
     if (targetApp) {
@@ -1913,15 +1960,12 @@ async function applyUpdatesPosixInApp() {
     env.HERMES_DESKTOP_CHILD_PID = desktopChildPids.join(',')
   }
 
-  // Branch-pin so a non-main checkout doesn't get switched to main (and self-heal
-  // to main when the pinned branch no longer exists on origin).
+  // Pin to the configured channel so a stable/preview (or any non-main)
+  // install doesn't get switched to main; the channel self-heals to main when
+  // a pinned branch no longer exists on origin.
   let branchArgs = []
   try {
-    const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
-    const current = (head.stdout || '').trim()
-    if (head.code === 0 && current && current !== 'HEAD') {
-      branchArgs = ['--branch', await resolveHealedBranch(updateRoot, current)]
-    }
+    branchArgs = ['--branch', await resolveApplyBranch(updateRoot)]
   } catch {
     // best effort
   }

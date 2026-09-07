@@ -225,6 +225,32 @@ export function IdleView({
     )
   }
 
+  // Tag channel, HEAD past the release tag (dev/main checkout on stable or
+  // preview). Nothing to *update*, but the channel's release is installable —
+  // offer that explicitly instead of the phantom "+1 update" that looped in
+  // SUP-20260907-101225 (AIS-297).
+  if (behind === 0 && status.offChannel && status.targetTag) {
+    const tag = status.targetTag
+
+    return (
+      <CenteredStatus
+        action={
+          <div className="flex items-center gap-2">
+            <Button onClick={onInstall} size="sm">
+              {u.switchToRelease(tag)}
+            </Button>
+            <Button onClick={onLater} size="sm" variant="outline">
+              {u.maybeLater}
+            </Button>
+          </div>
+        }
+        body={u.offChannelBody(status.aheadOfTarget ?? 0, tag, status.branch ?? 'stable')}
+        icon={<AlertCircle className="size-6 text-muted-foreground" />}
+        title={u.offChannelTitle(tag)}
+      />
+    )
+  }
+
   if (behind === 0) {
     return (
       <CenteredStatus
