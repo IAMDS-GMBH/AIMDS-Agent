@@ -27,6 +27,7 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.cli_output import prompt_yes_no
 from hermes_cli.curses_ui import curses_single_select
 from hermes_cli.mcp_catalog import (
+    _stdin_interactive,
     CatalogEntry,
     CatalogError,
     catalog_diagnostics,
@@ -278,7 +279,7 @@ def run_picker() -> None:
     Loops until the user hits ESC/q. After each action the picker re-renders
     so the user can manage several entries in one session.
     """
-    if not sys.stdin.isatty():
+    if not _stdin_interactive():
         # Non-interactive shell: degrade to the text dump rather than failing.
         _print_rows_text(_build_rows())
         return

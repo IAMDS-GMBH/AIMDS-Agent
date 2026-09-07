@@ -1981,3 +1981,386 @@ class TestRmtreeForce:
         assert rc == 1
         assert "install failed: PermissionError" in out.out
         assert "Traceback" in out.err or "Traceback" in out.out
+
+
+# ---------------------------------------------------------------------------
+# AIS-304: non-interactive detection, ensure-enabled instead of re-install,
+# safe replacement of an existing install
+# ---------------------------------------------------------------------------
+
+
+class TestStdinInteractive:
+    @pytest.mark.parametrize("flag", ["1", "true", "YES", " True "])
+    def test_env_flag_forces_non_interactive_even_on_a_tty(self, monkeypatch, flag):
+        """The dashboard spawns `hermes mcp install` with stdin=DEVNULL and
+        HERMES_NONINTERACTIVE=1; on Windows the NUL device still reports
+        isatty() == True, so the env flag must win."""
+        import sys as _sys
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setenv("HERMES_NONINTERACTIVE", flag)
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        assert mcp_catalog._stdin_interactive() is False
+
+    @pytest.mark.parametrize("flag", [None, "", "0", "false"])
+    def test_without_flag_isatty_decides(self, monkeypatch, flag):
+        import sys as _sys
+        from hermes_cli import mcp_catalog
+
+        if flag is None:
+            monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
+        else:
+            monkeypatch.setenv("HERMES_NONINTERACTIVE", flag)
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        assert mcp_catalog._stdin_interactive() is True
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
+        assert mcp_catalog._stdin_interactive() is False
+
+
+class TestEnsureM365Enabled:
+    """After a Microsoft sign-in the MCP must be *enabled*, never re-cloned:
+    the old full re-install wiped the directory the running server executed
+    from (half-deleted venv on Windows, SUP-20260907-145059)."""
+
+    def _installed(self, enabled):
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["mcp_servers"] = {
+            "MSOffice365MCP": {"command": "/x/.venv/bin/python", "args": ["server.py"], "enabled": enabled}
+        }
+        save_config(cfg)
+
+    def test_installed_but_disabled_is_enabled_without_reinstall(self, catalog_dir, monkeypatch):
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import load_config
+
+        self._installed(False)
+
+        def _boom(*a, **kw):
+            raise AssertionError("install_entry must not run for an installed entry")
+
+        monkeypatch.setattr(mcp_catalog, "install_entry", _boom)
+        monkeypatch.setattr(mcp_catalog, "_do_git_install", _boom)
+
+        assert mcp_catalog.ensure_m365_toolset_enabled() == (True, None)
+        assert load_config()["mcp_servers"]["MSOffice365MCP"]["enabled"] is True
+        # The transport block survives untouched.
+        assert load_config()["mcp_servers"]["MSOffice365MCP"]["command"] == "/x/.venv/bin/python"
+
+    def test_installed_and_enabled_is_a_noop(self, catalog_dir, monkeypatch):
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import get_config_path
+
+        self._installed(True)
+        before = get_config_path().read_bytes()
+
+        def _boom(*a, **kw):
+            raise AssertionError("no install for an installed entry")
+
+        monkeypatch.setattr(mcp_catalog, "install_entry", _boom)
+        assert mcp_catalog.ensure_m365_toolset_enabled() == (False, None)
+        assert get_config_path().read_bytes() == before
+
+    def test_not_installed_runs_the_install(self, catalog_dir, monkeypatch):
+        from hermes_cli import mcp_catalog
+
+        _write_manifest(catalog_dir, "MSOffice365MCP", _basic_manifest(name="MSOffice365MCP"))
+        calls = []
+        monkeypatch.setattr(
+            mcp_catalog, "install_entry", lambda entry, **kw: calls.append((entry.name, kw))
+        )
+
+        assert mcp_catalog.ensure_m365_toolset_enabled() == (True, None)
+        assert calls == [("MSOffice365MCP", {"enable": True, "skip_auth_prompt": True})]
+
+    def test_missing_catalog_entry_reports_error(self, catalog_dir):
+        from hermes_cli import mcp_catalog
+
+        changed, error = mcp_catalog.ensure_m365_toolset_enabled()
+        assert changed is False
+        assert "MSOffice365MCP" in error
+
+    def test_legacy_names_alias_the_new_function(self):
+        from hermes_cli import mcp_catalog
+
+        assert mcp_catalog._enable_m365_toolset_for_cli is mcp_catalog.ensure_m365_toolset_enabled
+        assert mcp_catalog._enable_outlook_toolset_for_cli is mcp_catalog.ensure_m365_toolset_enabled
+
+
+class TestInstallNonInteractive:
+    def _microsoft_manifest(self, **overrides):
+        return _basic_manifest(
+            auth={
+                "type": "oauth",
+                "provider": "microsoft",
+                "env_var": "M365_ACCESS_TOKEN",
+                "env": [],
+            },
+            **overrides,
+        )
+
+    def test_device_code_login_does_not_nest_a_second_install(self, catalog_dir, monkeypatch):
+        """A successful CLI device-code login used to call the ensure/enable
+        helper from *inside* install_entry, re-running the whole install."""
+        _write_manifest(catalog_dir, "demo", self._microsoft_manifest())
+
+        import sys as _sys
+        msal = pytest.importorskip("msal")
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import get_env_value
+
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
+
+        class FakeApp:
+            def __init__(self, *a, **kw):
+                pass
+
+            def initiate_device_flow(self, scopes=None):
+                return {"user_code": "ABCD-1234", "verification_uri": "https://microsoft.com/devicelogin"}
+
+            def acquire_token_by_device_flow(self, flow):
+                return {"access_token": "fake-msal-token"}
+
+        monkeypatch.setattr(msal, "PublicClientApplication", FakeApp)
+
+        def _nested(*a, **kw):
+            raise AssertionError("ensure_m365_toolset_enabled must not run inside install_entry")
+
+        monkeypatch.setattr(mcp_catalog, "ensure_m365_toolset_enabled", _nested)
+        monkeypatch.setattr(mcp_catalog, "_enable_m365_toolset_for_cli", _nested)
+
+        mcp_catalog.install_entry(_entry("demo"), enable=True)
+
+        assert get_env_value("M365_ACCESS_TOKEN") == "fake-msal-token"
+        assert mcp_catalog.is_enabled("demo")
+
+    def test_noninteractive_env_skips_device_flow_and_checklist(self, catalog_dir, monkeypatch, capsys):
+        """HERMES_NONINTERACTIVE=1 with a (Windows NUL) tty stdin: no device
+        code prompt, no checklist; the manifest defaults are applied."""
+        _write_manifest(
+            catalog_dir, "demo",
+            self._microsoft_manifest(tools={"default_enabled": ["m365_list_emails"]}),
+        )
+
+        import sys as _sys
+        msal = pytest.importorskip("msal")
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        monkeypatch.setenv("HERMES_NONINTERACTIVE", "1")
+
+        class ExplodingApp:
+            def __init__(self, *a, **kw):
+                raise AssertionError("device-code flow must not start non-interactively")
+
+        monkeypatch.setattr(msal, "PublicClientApplication", ExplodingApp)
+        monkeypatch.setattr(
+            mcp_catalog, "_probe_tools",
+            lambda name: [("m365_list_emails", "List"), ("m365_send_email", "Send")],
+        )
+        import hermes_cli.curses_ui as curses_ui
+
+        def _no_checklist(*a, **kw):
+            raise AssertionError("checklist must not render non-interactively")
+
+        monkeypatch.setattr(curses_ui, "curses_checklist", _no_checklist)
+
+        mcp_catalog.install_entry(_entry("demo"), enable=True)
+
+        out = capsys.readouterr().out
+        assert "Complete via OAuth/Settings in UI" in out
+        assert "enter code" not in out
+        servers = mcp_catalog.installed_servers()
+        assert servers["demo"]["tools"]["include"] == ["m365_list_emails"]
+
+
+class TestGitInstallSafeReplace:
+    """`_do_git_install` must set an existing install aside before touching
+    it, and put it back when the new one fails (AIS-304)."""
+
+    def _git_entry(self, catalog_dir):
+        body = _basic_manifest(
+            install={"type": "git", "url": "https://example.com/x.git", "ref": "main", "bootstrap": []},
+            transport={"type": "stdio", "command": "${INSTALL_DIR}/run.sh", "args": []},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        return _entry("demo")
+
+    @pytest.fixture
+    def install_root(self, tmp_path, monkeypatch):
+        from hermes_cli import mcp_catalog
+
+        root = tmp_path / "mcp-installs"
+        root.mkdir()
+        monkeypatch.setattr(mcp_catalog, "_install_root", lambda: root)
+        monkeypatch.setattr(mcp_catalog.shutil, "which", lambda x: "/usr/bin/git")
+        return root
+
+    def test_existing_install_is_set_aside_before_clone(self, catalog_dir, monkeypatch, install_root):
+        from hermes_cli import mcp_catalog
+
+        entry = self._git_entry(catalog_dir)
+        dest = install_root / "demo"
+        dest.mkdir()
+        (dest / "marker").write_text("old")
+        seen = {}
+
+        class _Proc:
+            returncode = 0
+
+        def fake_run(argv, *a, **kw):
+            if "clone" in argv:
+                seen["dest_at_clone"] = dest.exists()
+                seen["old_dirs"] = [p.name for p in install_root.glob("demo.old-*")]
+                dest.mkdir()
+                (dest / "marker").write_text("new")
+            return _Proc()
+
+        monkeypatch.setattr(mcp_catalog.subprocess, "run", fake_run)
+
+        assert mcp_catalog._do_git_install(entry) == dest
+        assert seen["dest_at_clone"] is False
+        assert len(seen["old_dirs"]) == 1
+        assert (dest / "marker").read_text() == "new"
+        assert list(install_root.glob("demo.old-*")) == []
+
+    def test_rename_failure_keeps_install_and_raises(self, catalog_dir, monkeypatch, install_root):
+        """Windows: the directory is in use by the running server -> the
+        rename fails and *nothing* may be deleted."""
+        from hermes_cli import mcp_catalog
+
+        entry = self._git_entry(catalog_dir)
+        dest = install_root / "demo"
+        venv = dest / ".venv" / "Lib" / "site-packages"
+        venv.mkdir(parents=True)
+        (venv / "cacert.pem").write_text("ca")
+
+        def locked_rename(src, dst):
+            raise PermissionError(32, "The process cannot access the file", str(src))
+
+        monkeypatch.setattr(mcp_catalog.os, "rename", locked_rename)
+
+        def _no_run(*a, **kw):
+            raise AssertionError("clone must not start when the old install cannot be set aside")
+
+        monkeypatch.setattr(mcp_catalog.subprocess, "run", _no_run)
+
+        with pytest.raises(mcp_catalog.CatalogError) as exc:
+            mcp_catalog._do_git_install(entry)
+        assert "in use" in str(exc.value)
+        assert "demo" in str(exc.value)
+        assert (venv / "cacert.pem").read_text() == "ca"
+
+    def test_clone_failure_restores_previous_install(self, catalog_dir, monkeypatch, install_root):
+        from hermes_cli import mcp_catalog
+
+        entry = self._git_entry(catalog_dir)
+        dest = install_root / "demo"
+        dest.mkdir()
+        (dest / "marker").write_text("old")
+
+        class _Proc:
+            returncode = 1
+
+        monkeypatch.setattr(mcp_catalog.subprocess, "run", lambda *a, **kw: _Proc())
+
+        with pytest.raises(mcp_catalog.CatalogError):
+            mcp_catalog._do_git_install(entry)
+        assert (dest / "marker").read_text() == "old"
+        assert list(install_root.glob("demo.old-*")) == []
+
+    def test_stale_old_dirs_are_swept(self, catalog_dir, monkeypatch, install_root):
+        from hermes_cli import mcp_catalog
+
+        entry = self._git_entry(catalog_dir)
+        dest = install_root / "demo"
+        stale = install_root / "demo.old-1700000000-1"
+        stale.mkdir()
+        (stale / "x").write_text("x")
+
+        class _Proc:
+            returncode = 0
+
+        def fake_run(argv, *a, **kw):
+            if "clone" in argv:
+                dest.mkdir()
+            return _Proc()
+
+        monkeypatch.setattr(mcp_catalog.subprocess, "run", fake_run)
+        mcp_catalog._do_git_install(entry)
+        assert not stale.exists()
+
+    def test_old_dir_removal_failure_is_not_fatal(self, catalog_dir, monkeypatch, install_root, capsys):
+        from hermes_cli import mcp_catalog
+
+        entry = self._git_entry(catalog_dir)
+        dest = install_root / "demo"
+        dest.mkdir()
+        (dest / "marker").write_text("old")
+
+        class _Proc:
+            returncode = 0
+
+        def fake_run(argv, *a, **kw):
+            if "clone" in argv:
+                dest.mkdir()
+                (dest / "marker").write_text("new")
+            return _Proc()
+
+        monkeypatch.setattr(mcp_catalog.subprocess, "run", fake_run)
+        real_rmtree = mcp_catalog._rmtree_force
+
+        def flaky_rmtree(path):
+            if ".old-" in path.name:
+                raise PermissionError(5, "Access is denied", str(path))
+            real_rmtree(path)
+
+        monkeypatch.setattr(mcp_catalog, "_rmtree_force", flaky_rmtree)
+
+        assert mcp_catalog._do_git_install(entry) == dest
+        assert (dest / "marker").read_text() == "new"
+        assert "could not remove previous install" in capsys.readouterr().out
+
+    def test_archive_install_replaces_existing_dir(self, catalog_dir, monkeypatch, install_root):
+        """Same guarantees on the git-less (codeload zip) path."""
+        import io
+        import urllib.request
+        import zipfile
+
+        from hermes_cli import mcp_catalog
+
+        body = _basic_manifest(
+            install={"type": "git", "url": "https://github.com/org/repo.git", "ref": "main", "bootstrap": []},
+            transport={"type": "stdio", "command": "${INSTALL_DIR}/run.sh", "args": []},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        entry = _entry("demo")
+        monkeypatch.setattr(mcp_catalog.shutil, "which", lambda x: None)
+        dest = install_root / "demo"
+        dest.mkdir()
+        (dest / "marker").write_text("old")
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("repo-main/marker", "new")
+
+        class _Resp:
+            def __init__(self, data):
+                self._data = data
+
+            def read(self):
+                return self._data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _Resp(buf.getvalue()))
+
+        assert mcp_catalog._do_git_install(entry) == dest
+        assert (dest / "marker").read_text() == "new"
+        assert list(install_root.glob("demo.old-*")) == []
