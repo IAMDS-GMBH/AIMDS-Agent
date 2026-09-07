@@ -14,7 +14,9 @@ def test_normalize_channel_aliases_and_branches():
     assert rc.normalize_channel("Stable") == "stable"
     assert rc.normalize_channel("preview") == "preview"
     assert rc.normalize_channel("bb/gui") == "bb/gui"
+    assert rc.normalize_channel("Auto") == "auto"  # config sentinel, not a branch (AIS-299)
     assert rc.is_tag_channel("tags") and rc.is_tag_channel("preview") and not rc.is_tag_channel("main")
+    assert not rc.is_tag_channel("auto")
 
 
 def test_parse_and_sort_release_tags():
@@ -36,6 +38,33 @@ def test_select_release_tag_per_channel():
     assert rc.select_release_tag(tags, "main") is None
     assert rc.select_release_tag(["junk"], "stable") is None
     assert rc.select_release_tag([], "preview") is None
+
+
+def test_head_release_tag_and_newer_comparison():
+    assert rc.compare_release_tags("v0.7.5-rc.1", "v0.7.4") > 0
+    assert rc.compare_release_tags("v0.7.5-rc.1", "v0.7.5") < 0
+    assert rc.compare_release_tags("v0.7.5", "v0.7.5") == 0
+    assert rc.head_release_tag(["nightly-1", "v0.7.5-rc.1"]) == "v0.7.5-rc.1"
+    assert rc.head_release_tag(["v0.7.5-rc.2", "v0.7.5"]) == "v0.7.5"  # promoted commit carries both
+    assert rc.head_release_tag(["nightly-1"]) is None and rc.head_release_tag([]) is None
+    assert rc.release_tag_is_newer("v0.7.5-rc.1", "v0.7.4") is True
+    assert rc.release_tag_is_newer("v0.7.5-rc.1", "v0.7.5-rc.2") is False
+    assert rc.release_tag_is_newer("v0.7.5", "v0.7.5") is False
+    assert rc.release_tag_is_newer(None, "v0.7.4") is False
+    assert rc.release_tag_is_newer("junk", "v0.7.4") is False
+
+
+def test_resolve_head_vs_target_states():
+    # SUP-20260907 (AIS-299): HEAD on v0.7.5-rc.1, stable channel targets v0.7.4 — no downgrade.
+    assert rc.resolve_head_vs_target(head_sha="rc1", target_sha="stable4", head_tags=["v0.7.5-rc.1"], target_tag="v0.7.4") == "newer"
+    # preview channel: rc.2 exists → a real update, decided by rev-list.
+    assert rc.resolve_head_vs_target(head_sha="rc1", target_sha="rc2", head_tags=["v0.7.5-rc.1"], target_tag="v0.7.5-rc.2") == "other"
+    # promoted on the same commit → sha equality wins for both channels.
+    assert rc.resolve_head_vs_target(head_sha="same", target_sha="same", head_tags=["v0.7.5-rc.2", "v0.7.5"], target_tag="v0.7.5") == "at-target"
+    # untagged main checkout past the release → caller keeps the AIS-297 rules.
+    assert rc.resolve_head_vs_target(head_sha="dev", target_sha="stable4", head_tags=[], target_tag="v0.7.4") == "other"
+    assert rc.resolve_head_vs_target(head_sha="dev", target_sha="stable4", head_tags=["nightly-1"], target_tag="v0.7.4") == "other"
+    assert rc.resolve_head_vs_target(head_sha="", target_sha="", head_tags=[], target_tag="v0.7.4") == "other"
 
 
 def test_version_helpers_and_archive_url():

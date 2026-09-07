@@ -911,7 +911,7 @@ def test_update_check_reports_channel_tag(monkeypatch, capsys):
 # ---------------------------------------------------------------------------
 
 
-def _tag_channel_side_effect(tags, *, head_sha="headsha", tag_sha="tagsha", checkout_rc=0, fetch_rc=0, calls=None):
+def _tag_channel_side_effect(tags, *, head_sha="headsha", tag_sha="tagsha", checkout_rc=0, fetch_rc=0, calls=None, head_tags=()):
     calls = calls if calls is not None else []
 
     def side_effect(cmd, **kwargs):
@@ -925,6 +925,8 @@ def _tag_channel_side_effect(tags, *, head_sha="headsha", tag_sha="tagsha", chec
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{tag_sha}\n", stderr="")
         if joined.endswith("tag --list"):
             return subprocess.CompletedProcess(cmd, 0, stdout="\n".join(tags) + "\n", stderr="")
+        if joined.endswith("tag --points-at HEAD"):
+            return subprocess.CompletedProcess(cmd, 0, stdout="".join(f"{t}\n" for t in head_tags), stderr="")
         if " fetch " in f" {joined} ":
             return subprocess.CompletedProcess(cmd, fetch_rc, stdout="", stderr="fatal: could not fetch\n" if fetch_rc else "")
         if "checkout" in joined:
@@ -1006,3 +1008,196 @@ def test_update_check_stable_reports_ahead_of_release(capsys):
     out = capsys.readouterr().out
     assert "92 commits ahead of refs/tags/v0.7.4" in out
     assert "Already up to date" not in out
+
+
+# ---------------------------------------------------------------------------
+# AIS-299: a checkout on a release tag *newer* than the channel's target
+# (v0.7.5-rc.1 while stable is still v0.7.4) is up to date — never a
+# downgrade; and a tag checkout runs the same post-update pipeline as a pull.
+# ---------------------------------------------------------------------------
+
+
+def test_update_stable_head_on_newer_candidate_is_up_to_date(capsys):
+    calls = []
+    code = _run_tag_channel_update(
+        _tag_channel_side_effect(["v0.7.4", "v0.7.5-rc.1"], head_sha="rc1", tag_sha="stable4",
+                                 head_tags=["v0.7.5-rc.1"], calls=calls)
+    )
+    out = capsys.readouterr().out
+    assert code is None
+    assert "On v0.7.5-rc.1, newer than stable v0.7.4" in out
+    assert not any("checkout" in c for c in calls)
+    assert not any("pull" in c for c in calls)
+
+
+def test_update_preview_head_on_older_candidate_checks_out_the_newer_one(capsys):
+    calls = []
+    with patch("hermes_cli.main._clear_bytecode_cache", return_value=0), \
+         patch("hermes_cli.main._install_python_dependencies_with_optional_fallback", return_value=None), \
+         patch("hermes_cli.main._refresh_active_lazy_features", return_value=None), \
+         patch("hermes_cli.main._update_node_dependencies", return_value=None), \
+         patch("hermes_cli.main._build_web_ui", return_value=True), \
+         patch("hermes_cli.main._create_pre_update_snapshot", return_value=None), \
+         patch("hermes_cli.main._guard_new_code_or_rollback", return_value=None):
+        code = _run_tag_channel_update(
+            _tag_channel_side_effect(["v0.7.5-rc.1", "v0.7.5-rc.2"], head_sha="rc1", tag_sha="rc2",
+                                     head_tags=["v0.7.5-rc.1"], calls=calls),
+            channel="preview",
+        )
+    out = capsys.readouterr().out
+    assert code is None
+    assert any(c.endswith("checkout v0.7.5-rc.2") for c in calls), calls
+    assert "Code updated to v0.7.5-rc.2" in out
+
+
+def test_update_tag_checkout_runs_shared_post_update_pipeline(capsys):
+    calls = []
+    with patch("hermes_cli.main._clear_bytecode_cache", return_value=0) as clear_pyc, \
+         patch("hermes_cli.main._install_python_dependencies_with_optional_fallback", return_value=None) as deps, \
+         patch("hermes_cli.main._refresh_active_lazy_features", return_value=None) as lazy, \
+         patch("hermes_cli.main._update_node_dependencies", return_value=None) as node, \
+         patch("hermes_cli.main._build_web_ui", return_value=True) as web, \
+         patch("hermes_cli.main._create_pre_update_snapshot", return_value="snap-1") as snap, \
+         patch("hermes_cli.main._guard_new_code_or_rollback", return_value=None) as guard, \
+         patch("hermes_cli.main._write_update_incomplete_marker", return_value=None) as mark, \
+         patch("hermes_cli.main._clear_update_incomplete_marker", return_value=None) as unmark:
+        code = _run_tag_channel_update(_tag_channel_side_effect(["v0.7.4"], calls=calls))
+    out = capsys.readouterr().out
+    assert code is None
+    assert any(c.endswith("checkout v0.7.4") for c in calls), calls
+    for mocked in (clear_pyc, deps, lazy, node, web, snap, guard, mark, unmark):
+        assert mocked.call_count == 1, mocked
+    assert guard.call_args.args[1] == "headsha"  # rollback target = pre-checkout HEAD
+    assert "Code updated to v0.7.4" in out
+    assert "Update complete" in out
+    assert not any("pull" in c for c in calls)
+
+
+def test_update_tag_checkout_syntax_guard_rolls_back(capsys):
+    calls = []
+    with patch("hermes_cli.main._validate_critical_files_syntax", return_value=(False, "hermes_cli/config.py", "SyntaxError: bad")), \
+         patch("hermes_cli.main._create_pre_update_snapshot", return_value=None), \
+         patch("hermes_cli.main._install_python_dependencies_with_optional_fallback", return_value=None) as deps:
+        code = _run_tag_channel_update(_tag_channel_side_effect(["v0.7.4"], calls=calls))
+    out = capsys.readouterr().out
+    assert code == 1
+    assert any(c.endswith("checkout v0.7.4") for c in calls)
+    assert any("reset --hard headsha" in c for c in calls), calls
+    assert "Rolling back to headsha" in out
+    deps.assert_not_called()
+
+
+def test_update_tag_checkout_restores_autostash(capsys):
+    calls = []
+    with patch("hermes_cli.main._clear_bytecode_cache", return_value=0), \
+         patch("hermes_cli.main._install_python_dependencies_with_optional_fallback", return_value=None), \
+         patch("hermes_cli.main._refresh_active_lazy_features", return_value=None), \
+         patch("hermes_cli.main._update_node_dependencies", return_value=None), \
+         patch("hermes_cli.main._build_web_ui", return_value=True), \
+         patch("hermes_cli.main._create_pre_update_snapshot", return_value=None), \
+         patch("hermes_cli.main._guard_new_code_or_rollback", return_value=None), \
+         patch("hermes_cli.main._restore_stashed_changes", return_value=None) as restore, \
+         patch("hermes_cli.main.detect_install_method", return_value="git", create=True), \
+         patch("subprocess.run", side_effect=_tag_channel_side_effect(["v0.7.4"], calls=calls)), \
+         patch("hermes_cli.main._stash_local_changes_if_needed", return_value="stash@{0}"), \
+         patch("hermes_cli.main._sync_canonical_soul_after_update", return_value=None), \
+         patch("hermes_cli.main._discard_lockfile_churn", return_value=None), \
+         patch("hermes_cli.main._get_origin_url", return_value="https://github.com/IAMDS-GMBH/AIMDS-Agent.git"), \
+         patch("hermes_cli.main._is_fork", return_value=False):
+        try:
+            cmd_update(SimpleNamespace(branch="stable", check=False, yes=True))
+        except SystemExit as exc:
+            assert exc.code is None
+    restore.assert_called_once()
+    assert restore.call_args.args[2] == "stash@{0}"
+    assert restore.call_args.kwargs.get("prompt_user") is False  # --yes → no prompt
+
+
+def test_update_check_head_on_newer_candidate_reports_nothing_to_do(capsys):
+    from hermes_cli.main import _cmd_update_check
+
+    def side_effect(cmd, **kwargs):
+        joined = " ".join(str(c) for c in cmd)
+        if joined.endswith("tag --list"):
+            return subprocess.CompletedProcess(cmd, 0, stdout="v0.7.4\nv0.7.5-rc.1\n", stderr="")
+        if joined.endswith("tag --points-at HEAD"):
+            return subprocess.CompletedProcess(cmd, 0, stdout="v0.7.5-rc.1\n", stderr="")
+        if joined.endswith("rev-parse HEAD"):
+            return subprocess.CompletedProcess(cmd, 0, stdout="rc1\n", stderr="")
+        if "rev-parse" in joined and "^{commit}" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="stable4\n", stderr="")
+        if "rev-list" in joined and "HEAD..refs/tags/v0.7.4" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+        if "rev-list" in joined and "refs/tags/v0.7.4..HEAD" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="94\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("hermes_cli.config.detect_install_method", return_value="git"), \
+         patch("subprocess.run", side_effect=side_effect):
+        try:
+            _cmd_update_check("stable")
+        except SystemExit:
+            pass
+    out = capsys.readouterr().out
+    assert "On v0.7.5-rc.1, newer than stable v0.7.4" in out
+    assert "Development checkout" not in out
+    assert "Already up to date" not in out
+
+
+def test_update_check_no_tag_for_channel_says_so(capsys):
+    from hermes_cli.main import _cmd_update_check
+
+    with patch("hermes_cli.config.detect_install_method", return_value="git"), \
+         patch("subprocess.run", side_effect=_tags_side_effect(["junk"], [])):
+        try:
+            _cmd_update_check("preview")
+        except SystemExit:
+            pass
+    out = capsys.readouterr().out
+    assert "No release tag for the preview channel yet" in out
+    assert "Already up to date" not in out
+
+
+class TestResolveUpdateBranchDefault:
+    """AIS-299: --branch > updates.channel > auto (stable when detached, main on a branch)."""
+
+    @staticmethod
+    def _resolve(branch, *, channel="auto", abbrev="main", git_rc=0, config_raises=False):
+        from hermes_cli.main import _resolve_update_branch
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, git_rc, stdout=f"{abbrev}\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        def load_config():
+            if config_raises:
+                raise RuntimeError("boom")
+            return {"updates": {"channel": channel}}
+
+        with patch("subprocess.run", side_effect=side_effect), \
+             patch("hermes_cli.config.load_config", side_effect=load_config):
+            return _resolve_update_branch(SimpleNamespace(branch=branch))
+
+    def test_auto_detached_head_is_stable(self):
+        assert self._resolve(None, abbrev="HEAD") == "stable"
+
+    def test_auto_named_branch_stays_main(self):
+        assert self._resolve(None, abbrev="main") == "main"
+        assert self._resolve(None, abbrev="fix/stoicneko") == "main"
+
+    def test_auto_without_git_is_main(self):
+        assert self._resolve(None, abbrev="", git_rc=128) == "main"
+
+    def test_configured_channel_wins_over_branch_state(self):
+        assert self._resolve(None, channel="preview", abbrev="main") == "preview"
+        assert self._resolve(None, channel="tags", abbrev="main") == "stable"
+
+    def test_flag_wins_over_config(self):
+        assert self._resolve("main", channel="stable", abbrev="HEAD") == "main"
+        assert self._resolve("  ", channel="stable", abbrev="HEAD") == "stable"  # blank flag → config
+
+    def test_config_failure_never_crashes(self):
+        assert self._resolve(None, config_raises=True, abbrev="HEAD") == "stable"
+        assert self._resolve(None, config_raises=True, abbrev="main") == "main"

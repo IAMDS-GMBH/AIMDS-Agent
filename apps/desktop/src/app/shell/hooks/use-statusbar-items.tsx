@@ -272,6 +272,10 @@ export function useStatusbarItems({
     // version pill already carries its own `+N` ahead suffix (AIS-297).
     const targetTag = updateStatus?.targetTag ?? null
     const offChannel = !applying && behind === 0 && updateStatus?.offChannel === true && !!targetTag
+    // HEAD on a release tag newer than the channel (rc on stable): plain
+    // version pill, tooltip explains why the channel shows nothing (AIS-299).
+    const headTag = updateStatus?.headTag ?? null
+    const newerThanTarget = !applying && behind === 0 && updateStatus?.newerThanTarget === true && !!headTag && !!targetTag
 
     const version = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
     const base = remote ? copy.clientLabel(appVersion ?? sha ?? copy.unknown) : version
@@ -288,6 +292,7 @@ export function useStatusbarItems({
       applying ? updateApply.message || copy.updateInProgress : null,
       !applying && behind > 0 && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
       offChannel && copy.aheadOfRelease(updateStatus?.aheadOfTarget ?? 0, targetTag),
+      newerThanTarget && copy.newerRelease(headTag, targetTag, updateStatus?.branch ?? 'stable'),
       appVersion && copy.desktopVersion(appVersion),
       sha && copy.commit(sha),
       updateStatus?.branch && copy.branch(updateStatus.branch)
@@ -328,6 +333,8 @@ export function useStatusbarItems({
     updateStatus?.behind,
     updateStatus?.branch,
     updateStatus?.currentSha,
+    updateStatus?.headTag,
+    updateStatus?.newerThanTarget,
     updateStatus?.offChannel,
     updateStatus?.targetTag
   ])

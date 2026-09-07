@@ -237,4 +237,4 @@ Built by [Nous Research](https://nousresearch.com).
 
 ## Releases
 
-Releases are git tags cut with `./createTag.sh` (candidate `vX.Y.Z-rc.N` from `main`, `promote stable` → `vX.Y.Z`); see [docs/RELEASE.md](docs/RELEASE.md). Update channels: `stable`, `preview`, `main`.
+Releases are git tags cut with `./createTag.sh` (candidate `vX.Y.Z-rc.N` from `main`, `promote stable` → `vX.Y.Z`); see [docs/RELEASE.md](docs/RELEASE.md). Update channels: `stable` (default for installed clients), `preview`, `main` — chosen in Settings → Advanced, via `hermes update --branch <channel>`, or the `updates.channel` config key.

@@ -2916,6 +2916,16 @@ DEFAULT_CONFIG = {
         #               ignored paths — node_modules, venv, build outputs —
         #               are never touched.
         "non_interactive_local_changes": "stash",
+        # Which update channel a bare ``hermes update`` follows (AIS-299).
+        # ``--branch`` always wins. Releases are git tags: ``stable`` follows
+        # vX.Y.Z, ``preview`` also the vX.Y.Z-rc.N candidates, ``main`` (or
+        # any branch name) follows that branch.
+        #   "auto"   — stable on a detached checkout (installed clients sit
+        #              on a release tag), main on a named branch (developer
+        #              checkouts keep following main).
+        # The desktop app writes the chosen channel here when you change it
+        # under Settings → Advanced → Update channel.
+        "channel": "auto",
     },
 
     # Language Server Protocol — semantic diagnostics from real

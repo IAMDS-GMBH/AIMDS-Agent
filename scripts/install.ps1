@@ -92,6 +92,9 @@ try {
 # Configuration
 # ============================================================================
 
+# Whether the caller pinned -Branch explicitly (AIS-299): without it (and
+# without -Tag/-Commit) the repository stage installs the latest stable tag.
+$BranchExplicit = $PSBoundParameters.ContainsKey('Branch')
 $RepoUrlSsh = "git@github.com:IAMDS-GMBH/AIMDS-Agent.git"
 $RepoUrlHttps = "https://github.com/IAMDS-GMBH/AIMDS-Agent.git"
 $PythonVersion = "3.11"
@@ -1348,6 +1351,39 @@ function Install-Repository {
     }
 
     $didUpdate = $false
+
+    # Stable channel default (AIS-299): without -Branch/-Tag/-Commit, install
+    # the highest vX.Y.Z release tag so the client sits on a detached release
+    # checkout -- what `hermes update` (updates.channel: auto -> stable) and
+    # the desktop's default channel expect. An existing checkout on a named
+    # branch keeps following that branch (developer machines).
+    if (-not $BranchExplicit -and -not $Tag -and -not $Commit) {
+        $currentBranch = ""
+        if (Test-Path "$InstallDir\.git") {
+            Push-Location $InstallDir
+            try {
+                $currentBranch = @(& git -c windows.appendAtomically=false rev-parse --abbrev-ref HEAD 2>$null) | Select-Object -First 1
+            } catch {} finally { Pop-Location }
+        }
+        if ($currentBranch -and $currentBranch -ne "HEAD") {
+            Write-Info "Existing checkout follows branch '$currentBranch'; keeping it (pass -Branch to change)."
+            $script:Branch = $currentBranch
+        } else {
+            $stableTag = ""
+            try {
+                $refs = @(& git ls-remote --tags --refs $RepoUrlHttps 'v*' 2>$null)
+                $stableTag = @($refs | ForEach-Object { (($_ -split "\s+")[-1]) -replace '^refs/tags/', '' } |
+                    Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
+                    Sort-Object { [version]($_.Substring(1)) }) | Select-Object -Last 1
+            } catch {}
+            if ($stableTag) {
+                Write-Info "Stable channel: installing release $stableTag"
+                $script:Tag = "$stableTag"
+            } else {
+                Write-Warn "Could not resolve the latest stable release tag; installing branch $Branch instead."
+            }
+        }
+    }
 
     if (Test-Path $InstallDir) {
         # Test-Path "$InstallDir\.git" returns True when .git is a file OR a
