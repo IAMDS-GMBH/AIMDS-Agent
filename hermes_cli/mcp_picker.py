@@ -492,4 +492,14 @@ def install_by_name(identifier: str) -> int:
     except CatalogError as exc:
         print(color(f"  ✗ install failed: {exc}", Colors.RED))
         return 1
+    except Exception as exc:  # noqa: BLE001 - the action log is the only trace
+        # Anything else (PermissionError on a locked dir, a download that
+        # broke mid-stream, ...) used to escape as a bare traceback. The
+        # desktop shows the last lines of the action log, so end with one
+        # readable line naming the failure (AIS-303).
+        import traceback
+
+        traceback.print_exc()
+        print(color(f"  ✗ install failed: {type(exc).__name__}: {exc}", Colors.RED))
+        return 1
     return 0

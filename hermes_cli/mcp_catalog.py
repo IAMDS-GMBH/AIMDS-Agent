@@ -23,8 +23,10 @@ See references/mcp-catalog.md (this repo's skill) for the manifest schema.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import stat
 import subprocess
 from hermes_cli._subprocess_compat import windows_hide_flags
 import sys
@@ -475,6 +477,31 @@ def _hidden_window_kwargs() -> Dict[str, Any]:
     return {"creationflags": flags} if flags else {}
 
 
+def _rmtree_force(path: Path) -> None:
+    """``shutil.rmtree`` that also removes read-only files.
+
+    A git clone marks its pack files read-only, which makes ``os.unlink``
+    fail on Windows with ``PermissionError: [WinError 5]`` — so wiping a
+    previous ``~/.hermes/mcp-installs/<name>`` before a re-install (or on
+    uninstall) died there instead of reaching the actual install (AIS-303).
+    Clearing the read-only bit and retrying is the standard remedy; any other
+    error is re-raised unchanged.
+    """
+
+    def _on_error(func, target, exc_info):
+        exc = exc_info[1]
+        if isinstance(exc, PermissionError):
+            try:
+                os.chmod(target, stat.S_IWRITE | stat.S_IREAD)
+                func(target)
+                return
+            except OSError:
+                pass
+        raise exc
+
+    shutil.rmtree(path, onerror=_on_error)
+
+
 def _do_git_install(entry: CatalogEntry) -> Path:
     """Clone the entry's repo into ``~/.hermes/mcp-installs/<name>`` and run
     bootstrap commands. Returns the install directory."""
@@ -488,7 +515,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
         # Fresh checkout each install — manifest version is the source of truth,
         # so wipe + re-clone for determinism.
         print(color(f"  Removing existing install at {dest}", Colors.DIM))
-        shutil.rmtree(dest)
+        _rmtree_force(dest)
 
     if not git:
         # Typical on a customer's Windows machine: no Git for Windows. GitHub
@@ -527,7 +554,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
             # Branch/tag form failed (unlikely for valid manifests; possible if
             # the ref was deleted upstream). Fall through to the full-clone path.
             if dest.exists():
-                shutil.rmtree(dest)
+                _rmtree_force(dest)
             is_sha_ref = True  # treat the same as a SHA ref from here
 
     if is_sha_ref:
@@ -1323,7 +1350,7 @@ def uninstall_entry(name: str, *, purge_install_dir: bool = True) -> bool:
     if purge_install_dir:
         clone = _install_root() / name
         if clone.exists():
-            shutil.rmtree(clone)
+            _rmtree_force(clone)
             removed = True
 
     return removed
