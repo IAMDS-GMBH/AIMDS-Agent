@@ -8,7 +8,8 @@
  *
  * Channels: `stable` (alias `tags`) follows only vX.Y.Z; `preview` follows
  * the highest tag including candidates; `main` (or any branch name) follows
- * the branch.
+ * the branch. `auto` is the `updates.channel` config sentinel (AIS-299):
+ * stable on a detached (release-tag) checkout, main on a named branch.
  */
 
 const STABLE_TAG_RE = /^v(\d+)\.(\d+)\.(\d+)$/
@@ -21,7 +22,7 @@ function normalizeChannel(name) {
   if (!value) return 'main'
   const lowered = value.toLowerCase()
   if (CHANNEL_ALIASES[lowered]) return CHANNEL_ALIASES[lowered]
-  if (lowered === 'stable' || lowered === 'preview' || lowered === 'main') return lowered
+  if (lowered === 'stable' || lowered === 'preview' || lowered === 'main' || lowered === 'auto') return lowered
   return value
 }
 
@@ -72,6 +73,27 @@ function selectReleaseTag(tags, channel) {
 }
 
 /**
+ * The highest *release* tag among the tags pointing at HEAD (`git tag
+ * --points-at HEAD`), or '' — non-release tags are ignored; a promoted commit
+ * carrying both vX.Y.Z-rc.N and vX.Y.Z reports the stable tag.
+ */
+function headReleaseTag(tags) {
+  let best = ''
+  for (const raw of tags || []) {
+    const tag = String(raw || '').trim()
+    if (!parseReleaseTag(tag)) continue
+    if (!best || compareReleaseTags(tag, best) > 0) best = tag
+  }
+  return best
+}
+
+/** True iff `candidate` is a release tag sorting strictly above `target`. */
+function releaseTagIsNewer(candidate, target) {
+  if (!candidate || !parseReleaseTag(candidate) || !parseReleaseTag(target)) return false
+  return compareReleaseTags(candidate, target) > 0
+}
+
+/**
  * Parse `git ls-remote --tags` output into `{ tagName: sha }`, preferring the
  * peeled commit (`refs/tags/v1^{}`) of annotated tags over the tag object.
  */
@@ -95,6 +117,10 @@ function parseLsRemoteTags(stdout) {
  * covered by a unit test:
  *
  *   - HEAD on the target tag              → up to date (behind 0)
+ *   - HEAD on a release tag *newer* than  → newerThanTarget, behind 0, no
+ *     the target (v0.7.5-rc.1 on stable     offer at all: the channel simply
+ *     while v0.7.4 is the latest stable)     has nothing newer yet (AIS-299,
+ *                                            SUP-20260907 — never a downgrade)
  *   - target tag reachable ahead of HEAD  → behind N, changelog available
  *   - HEAD *past* the tag (dev / main checkout on a release channel)
  *                                         → offChannel, aheadOfTarget N,
@@ -106,13 +132,18 @@ function parseLsRemoteTags(stdout) {
  *                                            offer is made
  *
  * `behindCount` / `aheadCount` are the `git rev-list` counts HEAD..tag and
- * tag..HEAD, or null when git could not resolve the tag.
+ * tag..HEAD, or null when git could not resolve the tag. `headTags` are the
+ * tags pointing at HEAD, `targetTag` the channel's selected tag.
  */
-function resolveTagChannelStatus({ currentSha, targetSha, behindCount, aheadCount }) {
+function resolveTagChannelStatus({ currentSha, targetSha, behindCount, aheadCount, headTags, targetTag }) {
   const behind = Number.isFinite(behindCount) ? Math.max(0, behindCount) : null
   const ahead = Number.isFinite(aheadCount) ? Math.max(0, aheadCount) : null
   if (currentSha && targetSha && currentSha === targetSha) {
     return { behind: 0, aheadOfTarget: 0, offChannel: false }
+  }
+  const headTag = headReleaseTag(headTags)
+  if (targetTag && releaseTagIsNewer(headTag, targetTag)) {
+    return { behind: 0, aheadOfTarget: ahead || 0, offChannel: false, newerThanTarget: true, headTag }
   }
   if (behind === null) {
     return { behind: 0, aheadOfTarget: 0, offChannel: false, error: 'fetch-failed' }
@@ -132,11 +163,13 @@ function versionFromTag(tag) {
 module.exports = {
   TAG_CHANNELS,
   compareReleaseTags,
+  headReleaseTag,
   isStableTag,
   isTagChannel,
   normalizeChannel,
   parseLsRemoteTags,
   parseReleaseTag,
+  releaseTagIsNewer,
   resolveTagChannelStatus,
   selectReleaseTag,
   versionFromTag

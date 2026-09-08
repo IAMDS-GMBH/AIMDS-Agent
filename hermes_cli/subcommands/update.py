@@ -55,10 +55,12 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         default=None,
         metavar="NAME",
         help=(
-            "Update against this branch instead of the default (main). "
-            "If the local checkout is on a different branch, hermes will "
-            "switch to the requested branch first (auto-stashing any "
-            "uncommitted changes)."
+            "Update channel or branch: 'stable' (vX.Y.Z release tags), "
+            "'preview' (also vX.Y.Z-rc.N candidates), 'main' or any branch "
+            "name. Default: the 'updates.channel' config key ('auto' = stable "
+            "on an installed checkout, main on a developer branch). If the "
+            "local checkout is on a different branch, hermes switches first "
+            "(auto-stashing any uncommitted changes)."
         ),
     )
     update_parser.add_argument(

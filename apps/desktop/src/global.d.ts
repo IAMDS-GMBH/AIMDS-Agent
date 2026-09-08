@@ -232,6 +232,11 @@ export interface DesktopUpdateStatus {
    *  phantom "+1 update" (AIS-297). */
   aheadOfTarget?: number
   offChannel?: boolean
+  /** Tag channels: HEAD sits on a release tag (`headTag`, e.g. `v0.7.5-rc.1`)
+   *  that is *newer* than the channel's target — up to date, no offer, never
+   *  a downgrade (AIS-299). */
+  newerThanTarget?: boolean
+  headTag?: string
   /** Tag channels: the release tag (`v0.7.4`) / version (`0.7.4`) targeted. */
   targetTag?: string
   targetVersion?: string

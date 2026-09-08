@@ -561,6 +561,16 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         ),
         "options": ["stash", "discard"],
     },
+    "updates.channel": {
+        "type": "select",
+        "description": (
+            "Update channel for `hermes update` without --branch. 'stable' follows "
+            "released versions (vX.Y.Z tags), 'preview' also release candidates, "
+            "'main' the developer branch. 'auto' = stable on an installed (detached) "
+            "checkout, main on a developer branch checkout."
+        ),
+        "options": ["auto", "stable", "preview", "main"],
+    },
 }
 
 # Categories with fewer fields get merged into "general" to avoid tab sprawl.
@@ -2039,6 +2049,51 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     return proc
 
 
+_M365_MCP_NAME = "MSOffice365MCP"
+
+
+def _auto_enable_m365_toolset() -> Tuple[bool, Optional[str]]:
+    """After a successful Microsoft sign-in, make MSOffice365MCP usable.
+
+    Installed → only flip ``enabled`` (cheap, config-only) and reconnect so
+    the running server sees the change. Not installed → start the same
+    detached ``hermes mcp install`` action the catalog UI uses instead of
+    cloning inline on the request thread. Never re-installs an existing
+    entry: doing so wiped the directory the live server ran from (AIS-304).
+    Safe to call from a worker thread; async callers wrap it in
+    ``asyncio.to_thread``. Returns ``(changed, error)``.
+    """
+    from hermes_cli import mcp_catalog
+
+    try:
+        if not mcp_catalog.is_installed(_M365_MCP_NAME):
+            running = _ACTION_PROCS.get("mcp-install")
+            if running is not None and running.poll() is None:
+                _log.info(
+                    "%s install action already running (pid %s); not starting another",
+                    _M365_MCP_NAME, running.pid,
+                )
+                return False, None
+            _spawn_hermes_action(
+                _profile_cli_args(None) + ["mcp", "install", _M365_MCP_NAME],
+                "mcp-install",
+            )
+            _log.info("%s not installed yet; started the background install action", _M365_MCP_NAME)
+            return True, None
+
+        changed, error = mcp_catalog.ensure_m365_toolset_enabled()
+        if changed:
+            try:
+                from tools.mcp_tool import reconnect_mcp_server
+
+                reconnect_mcp_server(_M365_MCP_NAME)
+            except Exception:
+                _log.debug("%s reconnect after enable failed", _M365_MCP_NAME, exc_info=True)
+        return changed, error
+    except Exception as exc:
+        return False, str(exc)
+
+
 def _tail_lines(path: Path, n: int) -> List[str]:
     """Return the last ``n`` lines of ``path``.  Reads the whole file — fine
     for our small per-action logs.  Binary-decoded with ``errors='replace'``
@@ -2536,13 +2591,17 @@ async def get_action_status(name: str, lines: int = 200):
             # the new server's tools stay unavailable until Hermes is fully
             # restarted. Trigger discovery here, exactly once, the moment
             # this poll first observes the subprocess finished successfully.
-            if name == "mcp-install" and exit_code == 0:
+            # Discovery runs for a failed install too: a re-install first
+            # disconnects the live server (AIS-304) and a failed clone
+            # restores the previous install, which must come back online.
+            if name == "mcp-install":
                 try:
                     from tools.mcp_tool import discover_mcp_tools
                     await asyncio.to_thread(discover_mcp_tools)
                 except Exception:
                     _log.debug("Post-install MCP tool discovery failed", exc_info=True)
-                _restart_gateway_if_running()
+                if exit_code == 0:
+                    _restart_gateway_if_running()
 
     return {
         "name": name,
@@ -4971,9 +5030,7 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
                     _write_platform_enabled(platform_id, True)
             if platform_id == "outlook":
                 try:
-                    from hermes_cli.mcp_catalog import _enable_m365_toolset_for_cli
-
-                    changed, toolset_error = _enable_m365_toolset_for_cli()
+                    changed, toolset_error = await asyncio.to_thread(_auto_enable_m365_toolset)
                     if toolset_error:
                         _log.warning(
                             "Outlook credentials saved but auto-enable of outlook toolset failed: %s",
@@ -5134,9 +5191,9 @@ async def outlook_authenticate_start(body: OutlookAuthStart):
                 toolset_enabled = False
                 toolset_enable_error = None
                 try:
-                    from hermes_cli.mcp_catalog import _enable_m365_toolset_for_cli
-
-                    toolset_enabled, toolset_enable_error = _enable_m365_toolset_for_cli()
+                    toolset_enabled, toolset_enable_error = await asyncio.to_thread(
+                        _auto_enable_m365_toolset
+                    )
                 except Exception as exc:
                     toolset_enable_error = str(exc)
                 if toolset_enable_error:
@@ -6920,11 +6977,13 @@ def _microsoft_device_code_worker(session_id: str, app_obj: Any, flow: Dict[str,
         from hermes_cli.m365_auth import save_msal_cache
         save_msal_cache(app_obj)
         save_env_value("M365_ACCESS_TOKEN", token)
-        try:
-            from hermes_cli.mcp_catalog import _enable_m365_toolset_for_cli
-            _enable_m365_toolset_for_cli()
-        except Exception as exc:
-            _log.warning("oauth/device: failed to auto-enable MSOffice365MCP after login: %s", exc)
+        changed, toolset_error = _auto_enable_m365_toolset()
+        if toolset_error:
+            _log.warning(
+                "oauth/device: failed to auto-enable MSOffice365MCP after login: %s", toolset_error
+            )
+        elif changed:
+            _log.info("oauth/device: MSOffice365MCP enabled after login (session=%s)", session_id)
         with _oauth_sessions_lock:
             sess["status"] = "approved"
         _log.info("oauth/device: microsoft login completed (session=%s)", session_id)
@@ -8519,6 +8578,17 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     # action path so the request returns immediately and the UI can tail logs.
     # The -p subprocess rebinds HERMES_HOME-derived paths in the child.
     if entry.install is not None:
+        if mcp_catalog.is_installed(instance_name):
+            # Re-install of a live stdio server: the action wipes the clone
+            # the server runs from. Drop the connection first so its process
+            # exits and the directory can be replaced (AIS-304); the status
+            # poll re-discovers the server once the action finished.
+            try:
+                from tools.mcp_tool import disconnect_mcp_server
+
+                await asyncio.to_thread(disconnect_mcp_server, instance_name)
+            except Exception:
+                _log.debug("Pre-reinstall disconnect of '%s' failed", instance_name, exc_info=True)
         try:
             proc = _spawn_hermes_action(
                 _profile_cli_args(effective_profile) + ["mcp", "install", name],

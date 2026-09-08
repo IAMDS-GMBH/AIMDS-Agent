@@ -1509,6 +1509,8 @@ export const de
     offChannelBody: (count, tag, channel) =>
       `Diese Installation ist ein Entwicklungsstand und liegt ${count} Commit${count === 1 ? '' : 's'} vor dem Release ${tag}. Der Update-Kanal „${channel}" folgt nur Releases – wechsle auf ${tag} oder stelle den Kanal in den Einstellungen auf „main".`,
     switchToRelease: tag => `Auf ${tag} wechseln`,
+    newerReleaseBody: (headTag, targetTag, channel) =>
+      `Diese Installation steht auf ${headTag} und ist neuer als das aktuelle Release ${targetTag} des Kanals „${channel}". Der Kanal zieht nach, sobald eine neuere Version freigegeben ist – es gibt nichts zu installieren.`,
     manualTitle: 'Update über Terminal durchführen',
     manualBody: 'Hermes wurde über die Befehlszeile installiert, daher laufen Updates dort ebenfalls. In das Terminal einfügen:',
     manualPickedUp: 'Hermes nimmt die neue Version beim nächsten Start auf.',
@@ -1718,6 +1720,7 @@ export const de
       commitsBehind: (count, branch) => `${count} Commit${count === 1 ? '' : 's'} hinter ${branch}`,
       releaseAvailable: tag => `Release ${tag} verfügbar`,
       aheadOfRelease: (count, tag) => `Entwicklungsstand: ${count} Commit${count === 1 ? '' : 's'} vor ${tag}`,
+      newerRelease: (headTag, targetTag, channel) => `${headTag} ist neuer als das ${channel}-Release ${targetTag}`,
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `Backend v${version}`,
       clientLabel: version => `Client v${version}`,

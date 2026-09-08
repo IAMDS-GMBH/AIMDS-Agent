@@ -2916,16 +2916,23 @@ DEFAULT_CONFIG = {
         #               ignored paths — node_modules, venv, build outputs —
         #               are never touched.
         "non_interactive_local_changes": "stash",
+
         # Trusted GitHub repository (``owner/repo``) that a Suite-published
         # source archive must declare in its update manifest.  Empty means
         # "derive it from this checkout's git ``origin`` remote"; if origin
         # can't be read or points at a fork, the Suite feed is skipped
         # entirely and ``hermes update`` uses the normal git path.
         "source_repository": "",
-        # Which Suite update channel this install follows.  A manifest whose
-        # ``channel`` differs is rejected.  One of: prod, staging,
-        # main-branch, tag-based.
-        "channel": "prod",
+        # Which update channel a bare ``hermes update`` follows (AIS-299).
+        # ``--branch`` always wins. Releases are git tags: ``stable`` follows
+        # vX.Y.Z, ``preview`` also the vX.Y.Z-rc.N candidates, ``main`` (or
+        # any branch name) follows that branch.
+        #   "auto"   — stable on a detached checkout (installed clients sit
+        #              on a release tag), main on a named branch (developer
+        #              checkouts keep following main).
+        # The desktop app writes the chosen channel here when you change it
+        # under Settings → Advanced → Update channel.
+        "channel": "auto",
     },
 
     # Language Server Protocol — semantic diagnostics from real

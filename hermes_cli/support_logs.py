@@ -185,6 +185,24 @@ def run_send_telemetry(args: Any) -> int:
     return 0 if res.get("ok") else 1
 
 
+def _bundle_log_names(log_dir: Path) -> list[str]:
+    """Log files worth shipping in a support bundle, in a stable order.
+
+    Besides the fixed set, every ``action-*.log`` is included: the desktop
+    runs catalog MCP installs, updates, doctor etc. as detached
+    ``hermes <subcommand>`` actions whose only output lands there (AIS-303 —
+    a Windows MSOffice365MCP install failure arrived with no trace of the
+    install anywhere in the bundle).
+    """
+    names = list(_LOG_FILES)
+    try:
+        extra = sorted(p.name for p in log_dir.glob("action-*.log") if p.is_file())
+    except OSError:
+        extra = []
+    names.extend(n for n in extra if n not in names)
+    return names
+
+
 def _read_last_lines(path: Path, count: int) -> list[str]:
     if count <= 0:
         return []
@@ -251,7 +269,7 @@ def _collect_payload(
     files: dict[str, str | bytes] = {}
     included_files: list[dict[str, Any]] = []
 
-    for filename in _LOG_FILES:
+    for filename in _bundle_log_names(log_dir):
         path = log_dir / filename
         if not path.exists() or not path.is_file():
             continue

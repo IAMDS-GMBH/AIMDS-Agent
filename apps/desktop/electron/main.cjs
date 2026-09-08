@@ -47,6 +47,11 @@ const {
   versionFromTag
 } = require('./update-channels.cjs')
 const {
+  isKeycloakCallbackUrl,
+  resolveSuiteRootDomain,
+  shouldIgnoreLoginLoadFailure
+} = require('./suite-auth.cjs')
+const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
   modeRemovesAgent,
@@ -315,11 +320,11 @@ const DESKTOP_PROFILE_CONFIG_PATH = path.join(app.getPath('userData'), 'active-p
 // Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never hand the backend a
 // value its profile resolver would reject and exit on.
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
-// Branch we track for self-update. The GUI work has merged to main, so this
-// tracks main. User can also override at runtime via
-// hermesDesktop.updates.setBranch().
-// Installed clients follow stable release tags (AIS-292); developers pick
-// `main` in Settings → Updates. `tags` is the legacy alias for `stable`.
+// Update channel for self-update. Installed clients follow stable release
+// tags (AIS-292); developers pick `main` in Settings → Advanced. `tags` is the
+// legacy alias for `stable`. Persisted in updates.json and mirrored into
+// `updates.channel` in ~/.hermes/config.yaml so a bare `hermes update` in a
+// terminal follows the same channel (AIS-299).
 const DEFAULT_UPDATE_BRANCH = 'stable'
 // desktop.log lives under HERMES_HOME/logs/ so it sits next to agent.log,
 // errors.log, gateway.log produced by hermes_logging.setup_logging — one log
@@ -1298,13 +1303,60 @@ function recentHermesLog() {
 
 // ─── Self-update (git-pull against the running backend's hermes root) ──────
 
+// `updates.channel` from ~/.hermes/config.yaml without a YAML parser (same
+// approach as resolveTerminalCwdFromConfig). '' when unset; `auto` is the
+// CLI's "stable when detached, main on a branch" sentinel and maps to the
+// desktop default here.
+function resolveUpdateChannelFromConfig() {
+  try {
+    const raw = fs.readFileSync(path.join(HERMES_HOME, 'config.yaml'), 'utf8').replace(/\r\n/g, '\n')
+    const block = raw.match(/^updates\s*:\s*\n((?:[ \t]+.+\n?)*)/m)
+    if (!block) return ''
+    const line = block[1].match(/^[ \t]+channel\s*:\s*(.+)$/m)
+    if (!line) return ''
+    const value = line[1].replace(/\s+#.*$/, '').trim().replace(/^['"]|['"]$/g, '')
+    return value && value !== 'auto' ? value : ''
+  } catch {
+    return ''
+  }
+}
+
 function readDesktopUpdateConfig() {
   try {
     const parsed = JSON.parse(fs.readFileSync(DESKTOP_UPDATE_CONFIG_PATH, 'utf8'))
     const branch = typeof parsed?.branch === 'string' ? parsed.branch.trim() : ''
-    return { branch: branch || DEFAULT_UPDATE_BRANCH }
+    if (branch) return { branch }
   } catch {
-    return { branch: DEFAULT_UPDATE_BRANCH }
+    // No updates.json yet (fresh install, CLI-only install) — fall through.
+  }
+  return { branch: resolveUpdateChannelFromConfig() || DEFAULT_UPDATE_BRANCH }
+}
+
+// Mirror the chosen channel into `updates.channel` so `hermes update` without
+// --branch follows it too (AIS-299). Best effort: the desktop's own
+// updates.json stays authoritative for the GUI.
+function persistUpdateChannelToHermesConfig(branch) {
+  const updateRoot = resolveUpdateRoot()
+  const venvHermes = IS_WINDOWS
+    ? path.join(updateRoot, 'venv', 'Scripts', 'hermes.exe')
+    : path.join(updateRoot, 'venv', 'bin', 'hermes')
+  const hermes = fileExists(venvHermes) ? venvHermes : findOnPath('hermes')
+  if (!hermes) {
+    rememberLog('[updates] no hermes CLI found; updates.channel not mirrored into config.yaml')
+    return
+  }
+  try {
+    const child = spawn(hermes, ['config', 'set', 'updates.channel', branch], hiddenWindowsChildOptions({
+      cwd: updateRoot,
+      env: { ...process.env, HERMES_HOME },
+      stdio: 'ignore'
+    }))
+    child.once('error', error => rememberLog(`[updates] config set updates.channel failed: ${error?.message || error}`))
+    child.once('exit', code => {
+      if (code !== 0) rememberLog(`[updates] config set updates.channel exited with ${code}`)
+    })
+  } catch (error) {
+    rememberLog(`[updates] config set updates.channel failed: ${error?.message || error}`)
   }
 }
 
@@ -1481,11 +1533,16 @@ async function checkUpdates() {
       }
     }
 
-    const [currentSha, dirtyStr, currentBranch] = await Promise.all([
+    const [currentSha, dirtyStr, currentBranch, headTagsRaw] = await Promise.all([
       git(['rev-parse', 'HEAD']),
       git(['status', '--porcelain']),
-      git(['rev-parse', '--abbrev-ref', 'HEAD'])
+      git(['rev-parse', '--abbrev-ref', 'HEAD']),
+      git(['tag', '--points-at', 'HEAD'])
     ])
+    // Release tags on HEAD: a checkout on v0.7.5-rc.1 while stable is still
+    // v0.7.4 is *newer* than its channel, not a dev checkout — never offer
+    // the older release as an "update" (AIS-299, SUP-20260907).
+    const headTags = headTagsRaw.split('\n').map(line => line.trim()).filter(Boolean)
 
     // Both directions: HEAD..tag is what an update would pull, tag..HEAD tells
     // a dev/main checkout that it is *past* the release (SUP-20260907-101225:
@@ -1502,7 +1559,9 @@ async function checkUpdates() {
       currentSha,
       targetSha,
       behindCount: parseCount(behindResult),
-      aheadCount: parseCount(aheadResult)
+      aheadCount: parseCount(aheadResult),
+      headTags,
+      targetTag: tagName
     })
 
     if (status.error) {
@@ -1529,6 +1588,8 @@ async function checkUpdates() {
       behind: status.behind,
       aheadOfTarget: status.aheadOfTarget,
       offChannel: status.offChannel,
+      newerThanTarget: status.newerThanTarget === true,
+      headTag: status.headTag || undefined,
       currentSha,
       targetSha,
       targetTag: tagName,
@@ -4164,13 +4225,7 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
       return
     }
 
-    let rootDomain = baseUrl.trim().replace(/\/+$/, '')
-    for (const suffix of ['/litellm/v1', '/litellm', '/auth']) {
-      if (rootDomain.endsWith(suffix)) {
-        rootDomain = rootDomain.slice(0, -suffix.length).replace(/\/+$/, '')
-      }
-    }
-
+    const rootDomain = resolveSuiteRootDomain(baseUrl)
     const authBaseUrl = `${rootDomain}/auth`
     const effectiveRealm = (realm || 'aimds').trim()
     const effectiveRedirectUri = (redirectUri || 'hermes://callback').trim()
@@ -4189,6 +4244,10 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
     const authUrl = `${authBaseUrl}/realms/${effectiveRealm}/protocol/openid-connect/auth?${authParams}`
 
     let settled = false
+    // Set the moment the callback redirect is intercepted: from then on the
+    // page is expected to "fail" to load (we cancelled its navigation) and the
+    // outcome is decided by the token exchange, not by loadURL().
+    let redirectHandled = false
     let win = null
 
     const finish = (err, result) => {
@@ -4221,9 +4280,12 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
       if (!settled) finish(new Error('Login window closed before authentication completed.'))
     })
 
-    // Intercept Keycloak's redirect to the callback URI before Open-WebUI loads it.
+    // Intercept Keycloak's redirect to the callback URI (an unregistered custom
+    // scheme) and do the code exchange ourselves. With a live SSO cookie this
+    // fires during the *initial* load (AIS-298) — see suite-auth.cjs.
     const handleRedirect = (event, url) => {
-      if (!url.startsWith(effectiveRedirectUri)) return
+      if (!isKeycloakCallbackUrl(url, effectiveRedirectUri)) return
+      redirectHandled = true
       event.preventDefault()
 
       let parsed
@@ -4263,8 +4325,19 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
 
     win.webContents.on('will-navigate', handleRedirect)
     win.webContents.on('will-redirect', handleRedirect)
+    win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame) return
+      rememberLog(
+        `[keycloak] did-fail-load ${errorDescription} (${errorCode}) for ${validatedURL}` +
+        (redirectHandled ? ' — callback redirect intercepted, waiting for token exchange' : '')
+      )
+    })
 
     win.loadURL(authUrl).catch(error => {
+      if (shouldIgnoreLoginLoadFailure({ settled, redirectHandled })) {
+        rememberLog(`[keycloak] ignoring loadURL rejection after intercepted callback: ${error?.message || error}`)
+        return
+      }
       finish(error instanceof Error ? error : new Error(String(error)))
     })
   })
@@ -6380,7 +6453,11 @@ async function sendClientTelemetry(updateInfo = null) {
     let commitsBehindMain = 0
 
     if (updateInfo) {
-      if (updateInfo.currentBranch) channel = updateInfo.currentBranch
+      // A release-tag checkout reports the literal "HEAD" — keep the
+      // configured channel then, and always for tag channels (AIS-299).
+      if (updateInfo.currentBranch && updateInfo.currentBranch !== 'HEAD' && !isTagChannel(branch)) {
+        channel = updateInfo.currentBranch
+      }
       if (updateInfo.currentSha) patchLevel = updateInfo.currentSha.slice(0, 10)
       if (typeof updateInfo.behind === 'number') commitsBehindMain = updateInfo.behind
     } else {
@@ -6709,6 +6786,7 @@ ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig(
 ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   const branch = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
   writeDesktopUpdateConfig({ branch })
+  persistUpdateChannelToHermesConfig(branch)
   return { branch }
 })
 

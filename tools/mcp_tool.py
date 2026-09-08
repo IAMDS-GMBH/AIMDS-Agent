@@ -5304,6 +5304,50 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     return _existing_tool_names()
 
 
+def disconnect_mcp_server(name: str) -> bool:
+    """Shut down one connected MCP server and drop it from the registry.
+
+    Used before a catalog re-install of a stdio server: the install wipes
+    ``~/.hermes/mcp-installs/<name>`` and on Windows that fails (or, worse,
+    half-succeeds) while the server's ``python.exe`` is still running from
+    it (AIS-304). After the install, ``discover_mcp_tools()`` reconnects
+    the server because it is no longer in ``_servers``. Returns ``True``
+    when a connection existed.
+    """
+    if not _MCP_AVAILABLE:
+        return False
+
+    with _lock:
+        existing = _servers.pop(name, None)
+
+    if existing is None:
+        return False
+
+    async def _do_shutdown():
+        try:
+            await existing.shutdown()
+        except Exception:
+            logger.debug("Error shutting down MCP server '%s' for disconnect", name, exc_info=True)
+
+    with _lock:
+        loop = _mcp_loop
+    if loop is not None and loop.is_running():
+        from agent.async_utils import safe_schedule_threadsafe
+
+        fut = safe_schedule_threadsafe(
+            _do_shutdown(),
+            loop,
+            logger=logger,
+            log_message=f"MCP disconnect: shutdown of '{name}' failed to schedule",
+        )
+        if fut is not None:
+            try:
+                fut.result(timeout=10)
+            except Exception as exc:
+                logger.debug("MCP disconnect: shutdown of '%s' errored: %s", name, exc)
+    return True
+
+
 def reconnect_mcp_server(name: str) -> List[str]:
     """Force a live reconnect of a single already-configured MCP server.
 
@@ -5325,33 +5369,7 @@ def reconnect_mcp_server(name: str) -> List[str]:
     if not _MCP_AVAILABLE:
         return []
 
-    with _lock:
-        existing = _servers.pop(name, None)
-
-    if existing is not None:
-
-        async def _do_shutdown():
-            try:
-                await existing.shutdown()
-            except Exception:
-                logger.debug("Error shutting down MCP server '%s' for reconnect", name, exc_info=True)
-
-        with _lock:
-            loop = _mcp_loop
-        if loop is not None and loop.is_running():
-            from agent.async_utils import safe_schedule_threadsafe
-
-            fut = safe_schedule_threadsafe(
-                _do_shutdown(),
-                loop,
-                logger=logger,
-                log_message=f"MCP reconnect: shutdown of '{name}' failed to schedule",
-            )
-            if fut is not None:
-                try:
-                    fut.result(timeout=10)
-                except Exception as exc:
-                    logger.debug("MCP reconnect: shutdown of '%s' errored: %s", name, exc)
+    disconnect_mcp_server(name)
 
     servers = _load_mcp_config()
     cfg = servers.get(name)

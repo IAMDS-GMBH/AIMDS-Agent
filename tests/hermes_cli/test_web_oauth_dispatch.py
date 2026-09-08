@@ -893,3 +893,132 @@ def test_microsoft_admin_consent_url_endpoint(monkeypatch, tmp_path):
     assert data["org_consented"] is True
     assert "Chat.ReadWrite" in data["org_consent_scopes"]
     assert "Chat.ReadWrite" not in data["self_consent_scopes"]
+
+
+# ---------------------------------------------------------------------------
+# AIS-304: a Microsoft sign-in must never re-install a live MSOffice365MCP
+# ---------------------------------------------------------------------------
+
+
+class _FakeProc:
+    def __init__(self, pid=777, running=False):
+        self.pid = pid
+        self._running = running
+
+    def poll(self):
+        return None if self._running else 0
+
+
+def test_auto_enable_installed_enables_and_reconnects_without_spawning(monkeypatch):
+    from hermes_cli import mcp_catalog
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setattr(mcp_catalog, "is_installed", lambda name: True)
+    ensure_calls = []
+    monkeypatch.setattr(
+        mcp_catalog, "ensure_m365_toolset_enabled", lambda: ensure_calls.append(1) or (True, None)
+    )
+    reconnects = []
+    monkeypatch.setattr("tools.mcp_tool.reconnect_mcp_server", lambda name: reconnects.append(name) or [])
+
+    def _no_spawn(*a, **kw):
+        raise AssertionError("must not spawn an install for an installed entry")
+
+    monkeypatch.setattr(ws, "_spawn_hermes_action", _no_spawn)
+
+    assert ws._auto_enable_m365_toolset() == (True, None)
+    assert ensure_calls == [1]
+    assert reconnects == ["MSOffice365MCP"]
+
+
+def test_auto_enable_installed_and_enabled_does_not_reconnect(monkeypatch):
+    from hermes_cli import mcp_catalog
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setattr(mcp_catalog, "is_installed", lambda name: True)
+    monkeypatch.setattr(mcp_catalog, "ensure_m365_toolset_enabled", lambda: (False, None))
+
+    def _no_reconnect(name):
+        raise AssertionError("nothing changed -> no reconnect")
+
+    monkeypatch.setattr("tools.mcp_tool.reconnect_mcp_server", _no_reconnect)
+    assert ws._auto_enable_m365_toolset() == (False, None)
+
+
+def test_auto_enable_not_installed_spawns_background_install(monkeypatch):
+    from hermes_cli import mcp_catalog
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setattr(mcp_catalog, "is_installed", lambda name: False)
+
+    def _inline(*a, **kw):
+        raise AssertionError("inline install_entry must not run on the request path")
+
+    monkeypatch.setattr(mcp_catalog, "install_entry", _inline)
+    ws._ACTION_PROCS.pop("mcp-install", None)
+    spawned = []
+    monkeypatch.setattr(ws, "_spawn_hermes_action", lambda sub, name: spawned.append((sub, name)) or _FakeProc())
+
+    assert ws._auto_enable_m365_toolset() == (True, None)
+    assert spawned == [(["mcp", "install", "MSOffice365MCP"], "mcp-install")]
+
+
+def test_auto_enable_does_not_start_a_second_install_action(monkeypatch):
+    from hermes_cli import mcp_catalog
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setattr(mcp_catalog, "is_installed", lambda name: False)
+    ws._ACTION_PROCS["mcp-install"] = _FakeProc(running=True)
+    try:
+        def _no_spawn(*a, **kw):
+            raise AssertionError("install action already running")
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", _no_spawn)
+        assert ws._auto_enable_m365_toolset() == (False, None)
+    finally:
+        ws._ACTION_PROCS.pop("mcp-install", None)
+
+
+def test_microsoft_device_code_worker_toolset_error_keeps_login_approved(monkeypatch, tmp_path, caplog):
+    """The enable step must neither block nor hide: login stays approved and
+    the error is logged (it used to be swallowed silently)."""
+    import logging
+
+    from hermes_cli import web_server as ws
+    from hermes_cli.config import get_env_value
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(ws, "_auto_enable_m365_toolset", lambda: (False, "boom"))
+
+    sid, _ = ws._new_oauth_session("microsoft", "device_code")
+    try:
+        with caplog.at_level(logging.WARNING, logger=ws._log.name):
+            ws._microsoft_device_code_worker(sid, _FakeMsalApp(), {"user_code": "MSFT-1234"})
+        assert ws._oauth_sessions[sid]["status"] == "approved"
+        assert get_env_value("M365_ACCESS_TOKEN") == "fake-msal-dashboard-token"
+        assert any("boom" in rec.getMessage() for rec in caplog.records)
+    finally:
+        ws._oauth_sessions.pop(sid, None)
+
+
+def test_microsoft_device_code_worker_never_reinstalls_installed_mcp(monkeypatch, tmp_path):
+    from hermes_cli import mcp_catalog
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_catalog, "is_installed", lambda name: True)
+    monkeypatch.setattr(mcp_catalog, "ensure_m365_toolset_enabled", lambda: (False, None))
+
+    def _no_install(*a, **kw):
+        raise AssertionError("install must not run after login for an installed entry")
+
+    monkeypatch.setattr(mcp_catalog, "install_entry", _no_install)
+    monkeypatch.setattr(mcp_catalog, "_do_git_install", _no_install)
+    monkeypatch.setattr(ws, "_spawn_hermes_action", _no_install)
+
+    sid, _ = ws._new_oauth_session("microsoft", "device_code")
+    try:
+        ws._microsoft_device_code_worker(sid, _FakeMsalApp(), {"user_code": "MSFT-1234"})
+        assert ws._oauth_sessions[sid]["status"] == "approved"
+    finally:
+        ws._oauth_sessions.pop(sid, None)
