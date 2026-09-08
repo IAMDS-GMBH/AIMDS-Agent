@@ -68,6 +68,21 @@ def _ra():
     return run_agent
 
 
+# Surfaces where a human types, pauses, and comes back: the moving message
+# breakpoints outlive the 5-minute tier often enough that "1h" is cheaper.
+INTERACTIVE_CACHE_SURFACES = frozenset({"cli", "tui", "acp", "desktop"})
+
+
+def default_message_cache_ttl(platform: Optional[str]) -> str:
+    """Default Anthropic TTL for the message-tier cache breakpoints.
+
+    ``"1h"`` on interactive surfaces (cli/tui/acp/desktop), ``"5m"`` elsewhere.
+    ``prompt_caching.message_ttl`` in config.yaml overrides either.
+    """
+    surface = (platform or "").strip().lower()
+    return "1h" if surface in INTERACTIVE_CACHE_SURFACES else "5m"
+
+
 def _build_codex_gpt55_autoraise_notice(autoraise: Dict[str, float]) -> str:
     """Build the one-time notice shown when Codex gpt-5.5 raises compaction.
 
@@ -502,8 +517,15 @@ def init_agent(
     # sessions with >5-minute pauses between turns (#14971).
     # `cache_ttl` is the PREFIX tier (tools + system prompt, written once per
     # session); `message_ttl` covers the moving conversation breakpoints.
+    #
+    # `message_ttl` defaults to "1h" on interactive surfaces (AIS-309): in a
+    # 14-day sample of desktop sessions 19% of calls followed a >5-minute
+    # pause and re-wrote the whole message tier (16-21K tokens at 1.25x).
+    # With Δ≈3.5K new tokens per call the 2x tier breaks even at p≈0.1, so
+    # 1h is the cheaper default for cli/tui/acp; one-shot surfaces (cron,
+    # api-server, messengers) keep 5m. Explicit config always wins.
     agent._cache_ttl = "5m"
-    agent._message_cache_ttl = "5m"
+    agent._message_cache_ttl = default_message_cache_ttl(agent.platform)
     try:
         from hermes_cli.config import load_config as _load_pc_cfg
 
@@ -511,7 +533,7 @@ def init_agent(
         _ttl = _pc_cfg.get("cache_ttl", "5m")
         if _ttl in {"5m", "1h"}:
             agent._cache_ttl = _ttl
-        _mttl = _pc_cfg.get("message_ttl", "5m")
+        _mttl = _pc_cfg.get("message_ttl")
         if _mttl in {"5m", "1h"}:
             agent._message_cache_ttl = _mttl
     except Exception:
@@ -951,6 +973,22 @@ def init_agent(
         else:
             print(f"🔄 Fallback chain ({len(agent._fallback_chain)} providers): " +
                   " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
+
+    # Operating posture (general / coding / developer) — resolved ONCE per
+    # session and shared by the prompt builder and the conversation loop
+    # (identity variant, integration-guidance gate, skill pruning, compact
+    # session-start memory call). Immutable; never re-resolved mid-session
+    # (prompt-cache invariant). See agent/coding_context.py (AIS-309).
+    try:
+        from agent.coding_context import resolve_runtime_mode
+        from agent.runtime_cwd import resolve_context_cwd
+
+        agent.runtime_mode = resolve_runtime_mode(
+            platform=agent.platform, cwd=resolve_context_cwd(), model=agent.model
+        )
+    except Exception as _rm_exc:
+        logger.debug("runtime mode resolution failed; posture consumers fall back: %s", _rm_exc)
+        agent.runtime_mode = None
 
     # Get available tools with filtering
     agent.tools = _ra().get_tool_definitions(
@@ -1677,6 +1715,7 @@ def init_agent(
     agent.session_output_tokens = 0
     agent.session_cache_read_tokens = 0
     agent.session_cache_write_tokens = 0
+    agent.session_large_cache_writes = 0
     agent.session_reasoning_tokens = 0
     agent.session_estimated_cost_usd = 0.0
     agent.session_cost_status = "unknown"
