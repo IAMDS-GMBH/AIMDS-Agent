@@ -8473,6 +8473,136 @@ def _cmd_update_pip(args):
     print("✓ Update complete! Restart hermes to use the new version.")
 
 
+def _install_python_dependencies_after_update():
+    """Reinstall Python dependencies into the source install's venv.
+
+    Shared by the git update path and the Suite-feed update path so both
+    apply the same install profile, Termux handling, and interrupted-install
+    breadcrumb semantics.
+    """
+    # Drop the interrupted-install breadcrumb BEFORE touching the venv. If
+    # the install is killed mid-flight (Ctrl-C, terminal close, WSL OOM),
+    # the marker survives and the next ``hermes`` launch finishes the
+    # install via ``_recover_from_interrupted_install``. Cleared only after
+    # the install + core-dependency verification completes below.
+    _write_update_incomplete_marker()
+    print("→ Updating Python dependencies...")
+    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
+
+    # Keep managed uv current — runs `uv self update` if we already have one.
+    update_managed_uv()
+
+    uv_bin = ensure_uv()
+
+    pip_cmd = [sys.executable, "-m", "pip"]
+    if not uv_bin:
+        uv_bin = _ensure_uv_for_termux(pip_cmd)
+    install_group = "all"
+    uv_env = None
+
+    if uv_bin:
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        if _is_termux_env(uv_env):
+            uv_env.pop("PYTHONPATH", None)
+            uv_env.pop("PYTHONHOME", None)
+            install_group = "termux-all"
+            print("  → Termux detected: using uv + curated termux-all optional profile...")
+        if _is_termux_env(uv_env) and _is_android_python():
+            print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
+            _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
+        _install_python_dependencies_with_optional_fallback(
+            [uv_bin, "pip"], env=uv_env, group=install_group
+        )
+    else:
+        # Use sys.executable to explicitly call the venv's pip module,
+        # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
+        # Some environments lose pip inside the venv; bootstrap it back with
+        # ensurepip before trying the editable install.
+        pip_cmd = [sys.executable, "-m", "pip"]
+        try:
+            subprocess.run(
+                pip_cmd + ["--version"],
+                cwd=PROJECT_ROOT,
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError:
+            subprocess.run(
+                [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                cwd=PROJECT_ROOT,
+                check=True,
+            )
+        if _is_termux_env():
+            install_group = "termux-all"
+            print("  → Termux detected: using curated termux-all optional profile...")
+        if _is_termux_env() and _is_android_python():
+            print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
+            _install_psutil_android_compat(pip_cmd)
+        _install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
+
+    # Core Python deps installed AND verified (the fallback helper runs
+    # _verify_core_dependencies_installed). Clear the interrupted-install
+    # breadcrumb now — the remaining steps (lazy refresh, node deps, web
+    # UI, desktop rebuild) are non-core and can't brick the venv.
+    _clear_update_incomplete_marker()
+
+    _backfill_default_skill_dependencies(
+        [uv_bin, "pip"] if uv_bin else pip_cmd,
+        env=uv_env if uv_bin else None,
+    )
+
+    _refresh_active_lazy_features()
+
+
+def _try_suite_update(origin_url) -> bool:
+    """Apply a Suite-published source update if one is available and trusted.
+
+    Returns True only when the installation was updated. Every other outcome
+    — no feed, unreachable, malformed, untrusted, wrong channel, not newer,
+    bad checksum — returns False with the source tree untouched so the caller
+    proceeds with the normal git update path.
+    """
+    try:
+        from hermes_cli import __version__ as _current_version
+        from hermes_cli import suite_update
+        from hermes_cli.config import detect_install_method, load_config
+
+        if detect_install_method(PROJECT_ROOT) != "git":
+            return False
+
+        feed = suite_update.check_suite_update(
+            load_config(), origin_url, _current_version
+        )
+        if feed is None:
+            logger.debug("No applicable Suite update feed; using git update path")
+            return False
+
+        print(f"→ Suite update feed offers {feed.version} ({feed.target_ref})")
+        try:
+            replaced = suite_update.apply_suite_update(feed, PROJECT_ROOT)
+        except suite_update.SuiteFeedError as exc:
+            print(f"⚠ Suite update skipped: {exc}")
+            print("  → Falling back to the git update path...")
+            return False
+        print(f"✓ Applied Suite update {feed.version} ({replaced} items)")
+    except Exception as exc:
+        logger.debug("Suite update path failed, falling back to git: %s", exc)
+        print(f"⚠ Suite update skipped: {exc}")
+        return False
+
+    _invalidate_update_cache()
+    removed = _clear_bytecode_cache(PROJECT_ROOT)
+    if removed:
+        print(
+            f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
+        )
+    _install_python_dependencies_after_update()
+    _update_node_dependencies()
+    _build_web_ui(PROJECT_ROOT / "web")
+    print("✓ Code updated!")
+    return True
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
@@ -8626,6 +8756,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print("⚠ Updating from fork:")
         print(f"  {origin_url}")
         print()
+
+    # A configured Suite deployment can publish the exact source revision its
+    # fleet should run; prefer it over whatever origin/<branch> happens to be
+    # at right now. Falls through to git on any problem.
+    if _try_suite_update(origin_url):
+        return
 
     if use_zip_update:
         # ZIP-based update for Windows when git is broken
@@ -8993,78 +9129,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
-        #
-        # Drop the interrupted-install breadcrumb BEFORE touching the venv. If
-        # the install is killed mid-flight (Ctrl-C, terminal close, WSL OOM),
-        # the marker survives and the next ``hermes`` launch finishes the
-        # install via ``_recover_from_interrupted_install``. Cleared only after
-        # the install + core-dependency verification completes below.
-        _write_update_incomplete_marker()
-        print("→ Updating Python dependencies...")
-        from hermes_cli.managed_uv import ensure_uv, update_managed_uv
-
-        # Keep managed uv current — runs `uv self update` if we already have one.
-        update_managed_uv()
-
-        uv_bin = ensure_uv()
-
-        pip_cmd = [sys.executable, "-m", "pip"]
-        if not uv_bin:
-            uv_bin = _ensure_uv_for_termux(pip_cmd)
-        install_group = "all"
-
-        if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-            if _is_termux_env(uv_env):
-                uv_env.pop("PYTHONPATH", None)
-                uv_env.pop("PYTHONHOME", None)
-                install_group = "termux-all"
-                print("  → Termux detected: using uv + curated termux-all optional profile...")
-            if _is_termux_env(uv_env) and _is_android_python():
-                print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
-                _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
-            _install_python_dependencies_with_optional_fallback(
-                [uv_bin, "pip"], env=uv_env, group=install_group
-            )
-        else:
-            # Use sys.executable to explicitly call the venv's pip module,
-            # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
-            # Some environments lose pip inside the venv; bootstrap it back with
-            # ensurepip before trying the editable install.
-            pip_cmd = [sys.executable, "-m", "pip"]
-            try:
-                subprocess.run(
-                    pip_cmd + ["--version"],
-                    cwd=PROJECT_ROOT,
-                    check=True,
-                    capture_output=True,
-                )
-            except subprocess.CalledProcessError:
-                subprocess.run(
-                    [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                    cwd=PROJECT_ROOT,
-                    check=True,
-                )
-            if _is_termux_env():
-                install_group = "termux-all"
-                print("  → Termux detected: using curated termux-all optional profile...")
-            if _is_termux_env() and _is_android_python():
-                print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
-                _install_psutil_android_compat(pip_cmd)
-            _install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
-
-        # Core Python deps installed AND verified (the fallback helper runs
-        # _verify_core_dependencies_installed). Clear the interrupted-install
-        # breadcrumb now — the remaining steps (lazy refresh, node deps, web
-        # UI, desktop rebuild) are non-core and can't brick the venv.
-        _clear_update_incomplete_marker()
-
-        _backfill_default_skill_dependencies(
-            [uv_bin, "pip"] if uv_bin else pip_cmd,
-            env=uv_env if uv_bin else None,
-        )
-
-        _refresh_active_lazy_features()
+        _install_python_dependencies_after_update()
 
         _update_node_dependencies()
         _build_web_ui(PROJECT_ROOT / "web")

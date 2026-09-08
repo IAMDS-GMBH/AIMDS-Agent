@@ -2239,6 +2239,8 @@ async def check_hermes_update(force: bool = False):
                  {sha, summary, author, at}. Absent/empty otherwise. The
                  desktop's remote update overlay renders this as "what's
                  changed". Additive: existing consumers ignore it.
+        suite_version: version offered by the configured Suite update feed at
+                 the last check, or null when no trusted feed applies.
     """
     install_method = detect_install_method(PROJECT_ROOT)
     update_command = recommended_update_command_for_method(install_method)
@@ -2251,6 +2253,7 @@ async def check_hermes_update(force: bool = False):
         "can_apply": install_method in ("git", "pip"),
         "update_command": update_command,
         "message": None,
+        "suite_version": None,
     }
 
     if install_method == "docker":
@@ -2273,6 +2276,13 @@ async def check_hermes_update(force: bool = False):
     except Exception:
         _log.exception("Update check failed")
         behind = None
+
+    try:
+        from hermes_cli.banner import get_suite_update_version
+
+        payload["suite_version"] = get_suite_update_version()
+    except Exception:
+        _log.debug("Suite update version lookup failed", exc_info=True)
 
     payload["behind"] = behind
     if behind is None:

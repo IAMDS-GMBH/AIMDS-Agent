@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 from hermes_constants import get_hermes_home
+from hermes_cli.version_utils import version_tuple as _version_tuple
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 # rich and prompt_toolkit are imported lazily (inside the functions that use
@@ -115,7 +116,7 @@ def get_available_skills() -> Dict[str, List[str]]:
 # =========================================================================
 
 # Cache update check results for 6 hours to avoid repeated git fetches
-_UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
+_UPDATE_CHECK_CACHE_SECONDS = 24 * 3600
 
 # Sentinel returned when we know an update exists but can't count commits
 # (e.g. nix-built hermes — no local git history to count against).
@@ -221,17 +222,6 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     return None
 
 
-def _version_tuple(v: str) -> tuple[int, ...]:
-    """Parse '0.13.0' into (0, 13, 0) for comparison. Non-numeric segments become 0."""
-    parts = []
-    for segment in v.split("."):
-        try:
-            parts.append(int(segment))
-        except ValueError:
-            parts.append(0)
-    return tuple(parts)
-
-
 def _fetch_pypi_latest(package: str = "hermes-agent") -> Optional[str]:
     """Fetch the latest version of a package from PyPI. Returns None on failure."""
     try:
@@ -261,6 +251,49 @@ def check_via_pypi() -> Optional[int]:
         return 0
     except Exception:
         return 1 if latest != VERSION else 0
+
+
+def _check_via_suite_feed() -> Optional[str]:
+    """Return the version a configured Suite feed offers, or ``None``.
+
+    Read-only — one bounded HTTPS GET, no downloads and no writes. The Suite
+    host is resolved from config first so installs without a Suite provider
+    cost nothing, not even the git call to read ``origin``.
+    """
+    try:
+        from hermes_cli import suite_update
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+        if not suite_update.resolve_suite_host(config):
+            return None
+
+        origin_url = None
+        if not suite_update.resolve_trusted_repository(config, None):
+            repo_dir = _resolve_repo_dir()
+            if repo_dir is None:
+                return None
+            origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
+
+        feed = suite_update.check_suite_update(config, origin_url, VERSION)
+        return feed.version if feed else None
+    except Exception:
+        return None
+
+
+def get_suite_update_version() -> Optional[str]:
+    """Version offered by the Suite feed at the last check, or ``None``.
+
+    Reads only the cache written by :func:`check_for_updates`; never probes
+    the network itself.
+    """
+    try:
+        cache_file = get_hermes_home() / ".update_check"
+        cached = json.loads(cache_file.read_text())
+        value = cached.get("suite_version")
+        return value if isinstance(value, str) else None
+    except Exception:
+        return None
 
 
 def check_for_updates() -> Optional[int]:
@@ -329,9 +362,21 @@ def check_for_updates() -> Optional[int]:
         else:
             behind = _check_via_local_git(repo_dir)
 
+    # A Suite deployment's own feed outranks whatever origin/main is at, so
+    # surface it even when the git count says we're level with upstream.
+    suite_version = _check_via_suite_feed()
+    if suite_version is not None and not behind:
+        behind = UPDATE_AVAILABLE_NO_COUNT
+
     try:
         cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
+            json.dumps({
+                "ts": now,
+                "behind": behind,
+                "rev": embedded_rev,
+                "ver": VERSION,
+                "suite_version": suite_version,
+            })
         )
     except Exception:
         pass

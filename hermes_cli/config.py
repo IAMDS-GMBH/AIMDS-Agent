@@ -2916,6 +2916,16 @@ DEFAULT_CONFIG = {
         #               ignored paths — node_modules, venv, build outputs —
         #               are never touched.
         "non_interactive_local_changes": "stash",
+        # Trusted GitHub repository (``owner/repo``) that a Suite-published
+        # source archive must declare in its update manifest.  Empty means
+        # "derive it from this checkout's git ``origin`` remote"; if origin
+        # can't be read or points at a fork, the Suite feed is skipped
+        # entirely and ``hermes update`` uses the normal git path.
+        "source_repository": "",
+        # Which Suite update channel this install follows.  A manifest whose
+        # ``channel`` differs is rejected.  One of: prod, staging,
+        # main-branch, tag-based.
+        "channel": "prod",
     },
 
     # Language Server Protocol — semantic diagnostics from real

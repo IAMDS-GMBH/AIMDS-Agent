@@ -1,0 +1,5 @@
+[console_scripts]
+aimds-agent = run_agent:main
+hermes = hermes_cli.main:main
+hermes-acp = acp_adapter.entry:main
+hermes-agent = run_agent:main
