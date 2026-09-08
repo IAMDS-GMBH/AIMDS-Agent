@@ -27,7 +27,7 @@ class TestIsCodingContext:
     def test_off_never_activates(self, tmp_path):
         _git_init(tmp_path)
         cfg = {"agent": {"coding_context": "off"}}
-        assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is False
+        assert cc.is_coding_context(platform="tui", cwd=tmp_path, config=cfg) is False
 
     def test_on_forces_even_without_git(self, tmp_path):
         cfg = {"agent": {"coding_context": "on"}}
@@ -35,9 +35,9 @@ class TestIsCodingContext:
 
     def test_auto_requires_git_repo(self, tmp_path):
         cfg = {"agent": {"coding_context": "auto"}}
-        assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is False
+        assert cc.is_coding_context(platform="tui", cwd=tmp_path, config=cfg) is False
         _git_init(tmp_path)
-        assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is True
+        assert cc.is_coding_context(platform="tui", cwd=tmp_path, config=cfg) is True
 
     def test_auto_skips_messaging_surfaces(self, tmp_path):
         _git_init(tmp_path)
@@ -48,7 +48,7 @@ class TestIsCodingContext:
     def test_default_mode_is_auto(self, tmp_path):
         # Unknown/missing value normalizes to auto.
         _git_init(tmp_path)
-        assert cc.is_coding_context(platform="cli", cwd=tmp_path, config={}) is True
+        assert cc.is_coding_context(platform="tui", cwd=tmp_path, config={}) is True
 
 
 # ── toolset substitution ────────────────────────────────────────────────────
@@ -57,7 +57,7 @@ class TestCodingSelection:
     def test_selects_coding_under_focus(self, tmp_path):
         _git_init(tmp_path)
         cfg = {"agent": {"coding_context": "focus"}}
-        out = cc.coding_selection(platform="cli", cwd=tmp_path, config=cfg)
+        out = cc.coding_selection(platform="tui", cwd=tmp_path, config=cfg)
         assert out is not None
         assert out[0] == cc.CODING_TOOLSET
 
@@ -67,23 +67,23 @@ class TestCodingSelection:
         # (image-gen, spotify, …) survive entering a code workspace.
         _git_init(tmp_path)
         cfg = {"agent": {"coding_context": "auto"}}
-        assert cc.coding_selection(platform="cli", cwd=tmp_path, config=cfg) is None
+        assert cc.coding_selection(platform="tui", cwd=tmp_path, config=cfg) is None
         # …while the prompt posture is still active.
-        assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is True
+        assert cc.is_coding_context(platform="tui", cwd=tmp_path, config=cfg) is True
 
     def test_on_is_prompt_only(self, tmp_path):
         cfg = {"agent": {"coding_context": "on"}}
-        assert cc.coding_selection(platform="cli", cwd=tmp_path, config=cfg) is None
-        assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is True
+        assert cc.coding_selection(platform="tui", cwd=tmp_path, config=cfg) is None
+        assert cc.is_coding_context(platform="tui", cwd=tmp_path, config=cfg) is True
 
     def test_focus_requires_workspace(self, tmp_path):
         # focus inherits auto's detection gate — bare dir stays general.
         cfg = {"agent": {"coding_context": "focus"}}
-        assert cc.coding_selection(platform="cli", cwd=tmp_path, config=cfg) is None
+        assert cc.coding_selection(platform="tui", cwd=tmp_path, config=cfg) is None
 
     def test_none_when_inactive(self, tmp_path):
         cfg = {"agent": {"coding_context": "off"}}
-        assert cc.coding_selection(platform="cli", cwd=tmp_path, config=cfg) is None
+        assert cc.coding_selection(platform="tui", cwd=tmp_path, config=cfg) is None
 
     def test_coding_toolset_is_registered(self):
         from toolsets import resolve_toolset
@@ -184,11 +184,11 @@ class TestHomeDotfilesGuard:
         _git_init(home)
         monkeypatch.setattr(Path, "home", lambda: home)
         cfg = {"agent": {"coding_context": "auto"}}
-        assert cc.is_coding_context(platform="cli", cwd=home, config=cfg) is False
+        assert cc.is_coding_context(platform="tui", cwd=home, config=cfg) is False
         # …and a plain subdirectory of the dotfiles repo stays general too.
         docs = home / "Documents"
         docs.mkdir()
-        assert cc.is_coding_context(platform="cli", cwd=docs, config=cfg) is False
+        assert cc.is_coding_context(platform="tui", cwd=docs, config=cfg) is False
 
     def test_marker_at_home_is_not_a_project_signal(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
@@ -196,7 +196,7 @@ class TestHomeDotfilesGuard:
         (home / "Makefile").write_text("all:\n")
         monkeypatch.setattr(Path, "home", lambda: home)
         cfg = {"agent": {"coding_context": "auto"}}
-        assert cc.is_coding_context(platform="cli", cwd=home, config=cfg) is False
+        assert cc.is_coding_context(platform="tui", cwd=home, config=cfg) is False
 
     def test_real_project_under_dotfiles_home_still_detects(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
@@ -207,14 +207,14 @@ class TestHomeDotfilesGuard:
         proj.mkdir(parents=True)
         (proj / "package.json").write_text("{}")
         cfg = {"agent": {"coding_context": "auto"}}
-        assert cc.is_coding_context(platform="cli", cwd=proj, config=cfg) is True
+        assert cc.is_coding_context(platform="tui", cwd=proj, config=cfg) is True
 
     def test_on_mode_bypasses_the_guard(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
         home.mkdir()
         monkeypatch.setattr(Path, "home", lambda: home)
         cfg = {"agent": {"coding_context": "on"}}
-        assert cc.is_coding_context(platform="cli", cwd=home, config=cfg) is True
+        assert cc.is_coding_context(platform="tui", cwd=home, config=cfg) is True
 
 
 # ── prompt assembly integration ─────────────────────────────────────────────
@@ -245,13 +245,13 @@ class TestStatusParsing:
 class TestRuntimeMode:
     def test_resolves_coding_in_repo(self, tmp_path):
         _git_init(tmp_path)
-        mode = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={})
+        mode = cc.resolve_runtime_mode(platform="tui", cwd=tmp_path, config={})
         assert mode.is_coding is True
         assert mode.kind == "coding"
         assert mode.profile is cc.CODING_PROFILE
 
     def test_resolves_general_outside_workspace(self, tmp_path):
-        mode = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={})
+        mode = cc.resolve_runtime_mode(platform="tui", cwd=tmp_path, config={})
         assert mode.is_coding is False
         assert mode.kind == "general"
         # General posture pins no toolset and injects no blocks.
@@ -259,25 +259,25 @@ class TestRuntimeMode:
         assert mode.system_blocks() == []
 
     def test_is_frozen(self, tmp_path):
-        mode = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={})
+        mode = cc.resolve_runtime_mode(platform="tui", cwd=tmp_path, config={})
         with pytest.raises(Exception):
             mode.profile = cc.CODING_PROFILE  # type: ignore[misc]
 
     def test_system_blocks_include_brief_and_workspace(self, tmp_path):
         _git_init(tmp_path)
-        mode = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={"agent": {"coding_context": "on"}})
+        mode = cc.resolve_runtime_mode(platform="tui", cwd=tmp_path, config={"agent": {"coding_context": "on"}})
         blocks = mode.system_blocks()
         assert any("coding agent" in b for b in blocks)
         assert any("Workspace" in b for b in blocks)
 
     def test_toolset_selection_gated_on_focus(self, tmp_path):
         _git_init(tmp_path)
-        focus = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={"agent": {"coding_context": "focus"}})
+        focus = cc.resolve_runtime_mode(platform="tui", cwd=tmp_path, config={"agent": {"coding_context": "focus"}})
         sel = focus.toolset_selection()
         assert sel and sel[0] == cc.CODING_TOOLSET
         # auto/on resolve the coding profile but stay prompt-only.
         for raw in ("auto", "on"):
-            mode = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={"agent": {"coding_context": raw}})
+            mode = cc.resolve_runtime_mode(platform="tui", cwd=tmp_path, config={"agent": {"coding_context": raw}})
             assert mode.is_coding is True
             assert mode.toolset_selection() is None
 
@@ -305,7 +305,7 @@ class TestEditFormatSteering:
     def test_openai_family_gets_v4a_nudge(self, tmp_path):
         _git_init(tmp_path)
         mode = cc.resolve_runtime_mode(
-            platform="cli", cwd=tmp_path,
+            platform="tui", cwd=tmp_path,
             config={"agent": {"coding_context": "on"}}, model="openai/gpt-5.4",
         )
         brief = mode.system_blocks()[0]
@@ -316,7 +316,7 @@ class TestEditFormatSteering:
     def test_anthropic_family_gets_replace_nudge(self, tmp_path):
         _git_init(tmp_path)
         mode = cc.resolve_runtime_mode(
-            platform="cli", cwd=tmp_path,
+            platform="tui", cwd=tmp_path,
             config={"agent": {"coding_context": "on"}},
             model="anthropic/claude-opus-4.8",
         )
@@ -328,7 +328,7 @@ class TestEditFormatSteering:
         # No edit-format line appended — brief equals the bare profile guidance.
         _git_init(tmp_path)
         mode = cc.resolve_runtime_mode(
-            platform="cli", cwd=tmp_path,
+            platform="tui", cwd=tmp_path,
             config={"agent": {"coding_context": "on"}}, model="acme/foo-1",
         )
         assert mode.system_blocks()[0] == cc.CODING_AGENT_GUIDANCE
@@ -336,7 +336,7 @@ class TestEditFormatSteering:
     def test_no_model_keeps_neutral_brief(self, tmp_path):
         _git_init(tmp_path)
         mode = cc.resolve_runtime_mode(
-            platform="cli", cwd=tmp_path,
+            platform="tui", cwd=tmp_path,
             config={"agent": {"coding_context": "on"}},
         )
         assert mode.system_blocks()[0] == cc.CODING_AGENT_GUIDANCE
@@ -372,7 +372,7 @@ class TestProfiles:
         # Coding posture hides clearly-non-coding categories; coding-adjacent
         # ones stay visible (deny-list semantics).
         _git_init(tmp_path)
-        coding = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={})
+        coding = cc.resolve_runtime_mode(platform="tui", cwd=tmp_path, config={})
         hidden = coding.hidden_skill_categories()
         assert "social-media" in hidden and "smart-home" in hidden
         for kept in ("github", "devops", "software-development", "data-science", "note-taking"):
@@ -391,15 +391,87 @@ class TestDetection:
     def test_project_manifest_triggers_without_git(self, tmp_path, marker):
         (tmp_path / marker).write_text("x")
         cfg = {"agent": {"coding_context": "auto"}}
-        assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is True
+        assert cc.is_coding_context(platform="tui", cwd=tmp_path, config=cfg) is True
 
     def test_marker_in_parent_counts_from_subdir(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text("x")
         sub = tmp_path / "src" / "pkg"
         sub.mkdir(parents=True)
         cfg = {"agent": {"coding_context": "auto"}}
-        assert cc.is_coding_context(platform="cli", cwd=sub, config=cfg) is True
+        assert cc.is_coding_context(platform="tui", cwd=sub, config=cfg) is True
 
     def test_bare_dir_is_not_coding(self, tmp_path):
         cfg = {"agent": {"coding_context": "auto"}}
-        assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is False
+        assert cc.is_coding_context(platform="tui", cwd=tmp_path, config=cfg) is False
+
+
+# ── developer posture (terminal CLI = co-developer, AIS-309) ────────────────
+
+class TestDeveloperPosture:
+    def test_cli_resolves_developer_everywhere(self, tmp_path):
+        # A repo is not required: the CLI is the co-developer surface.
+        bare = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={})
+        assert bare.kind == "developer"
+        assert bare.is_developer is True
+        assert bare.is_coding is True
+        _git_init(tmp_path)
+        repo = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={})
+        assert repo.profile is cc.DEVELOPER_PROFILE
+
+    def test_desktop_and_editor_surfaces_keep_workspace_detection(self, tmp_path):
+        for surface in ("tui", "acp", "desktop"):
+            assert cc.resolve_runtime_mode(platform=surface, cwd=tmp_path, config={}).kind == "general"
+        _git_init(tmp_path)
+        for surface in ("tui", "acp", "desktop"):
+            assert cc.resolve_runtime_mode(platform=surface, cwd=tmp_path, config={}).kind == "coding"
+
+    def test_off_and_on_still_win(self, tmp_path):
+        assert cc.resolve_runtime_mode(
+            platform="cli", cwd=tmp_path, config={"agent": {"coding_context": "off"}}
+        ).kind == "general"
+        assert cc.resolve_runtime_mode(
+            platform="cli", cwd=tmp_path, config={"agent": {"coding_context": "on"}}
+        ).kind == "coding"
+
+    def test_developer_owns_the_toolset_under_auto(self, tmp_path):
+        mode = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={})
+        sel = mode.toolset_selection({})
+        assert sel and sel[0] == cc.CODING_TOOLSET
+        assert cc.coding_selection(platform="cli", cwd=tmp_path, config={}) is not None
+        # …the plain coding posture stays prompt-only.
+        _git_init(tmp_path)
+        assert cc.resolve_runtime_mode(platform="tui", cwd=tmp_path, config={}).toolset_selection({}) is None
+
+    def test_developer_profile_shape(self):
+        p = cc.DEVELOPER_PROFILE
+        assert p.toolset == cc.CODING_TOOLSET
+        assert p.identity_variant == "dev"
+        assert p.suppress_integration_guidance is True
+        assert p.collapse_toolset is True
+        assert cc.CODING_AGENT_GUIDANCE in p.guidance
+        assert p.memory_context_kwargs() == {"contexts": ["coding", "git", "agent"], "limit": 8}
+        # Coding profile is untouched by the new seams.
+        assert cc.CODING_PROFILE.identity_variant == ""
+        assert cc.CODING_PROFILE.suppress_integration_guidance is False
+        assert cc.CODING_PROFILE.collapse_toolset is False
+        assert cc.CODING_PROFILE.memory_context_kwargs() == {}
+        assert cc.get_profile("developer") is p
+
+    def test_developer_hides_knowledge_worker_skills(self, tmp_path):
+        hidden = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={}).hidden_skill_categories()
+        assert "aimds_custom" in hidden and "note-taking" in hidden
+        assert "email" in hidden  # the coding deny-list is inherited
+        for kept in ("github", "devops", "software-development", "data-science", "mcp", "security"):
+            assert kept not in hidden
+        _git_init(tmp_path)
+        coding_hidden = cc.resolve_runtime_mode(platform="tui", cwd=tmp_path, config={}).hidden_skill_categories()
+        assert "aimds_custom" not in coding_hidden
+
+    def test_developer_system_blocks_carry_brief_and_snapshot(self, tmp_path):
+        # Outside a repo the snapshot is simply absent — the brief still ships.
+        bare = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={}).system_blocks()
+        assert len(bare) == 1 and "Co-developer contract" in bare[0]
+        _git_init(tmp_path)
+        blocks = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={}).system_blocks()
+        assert any("Co-developer contract" in b for b in blocks)
+        assert any("Workspace" in b for b in blocks)

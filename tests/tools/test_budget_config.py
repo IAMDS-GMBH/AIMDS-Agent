@@ -13,6 +13,7 @@ import pytest
 
 from tools.budget_config import (
     DEFAULT_BUDGET,
+    DEFAULT_MEMORY_LISTING_RESULT_SIZE_CHARS,
     DEFAULT_PREVIEW_SIZE_CHARS,
     DEFAULT_RESULT_SIZE_CHARS,
     DEFAULT_TURN_BUDGET_CHARS,
@@ -181,3 +182,40 @@ class TestResolveThreshold:
         assert cfg.resolve_threshold("mcp_AtlassianMCP_jira_search") == 25_000
         assert cfg.resolve_threshold("atlassian-jira_search") == 25_000
         assert cfg.resolve_threshold("jira_get_issue") == 25_000
+
+
+# ---------------------------------------------------------------------------
+# Memory listing default (AIS-309)
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryListingThreshold:
+    """memory_search / memory_list results are prose the MCP shaper leaves
+    alone, so they get their own persistence threshold; reads stay whole."""
+
+    def test_constant(self):
+        assert DEFAULT_MEMORY_LISTING_RESULT_SIZE_CHARS == 12_000
+
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            "mcp_EnwicklerMemoryMCP_memory_search",
+            "mcp_AIMDSSuiteMCP_mcp_memory_memory_list",
+            "mcp_x_MEMORY_SEARCH",
+        ],
+    )
+    def test_listing_tools_use_listing_threshold(self, tool):
+        assert DEFAULT_BUDGET.resolve_threshold(tool) == DEFAULT_MEMORY_LISTING_RESULT_SIZE_CHARS
+
+    @pytest.mark.parametrize(
+        "tool",
+        ["mcp_EnwicklerMemoryMCP_memory_read", "mcp_AIMDSSuiteMCP_mcp_memory_memory_context", "memory_search_index"],
+    )
+    def test_reads_and_non_suffix_matches_keep_global_default(self, tool):
+        with patch("tools.registry.registry.get_max_result_size", side_effect=lambda name, default: default):
+            assert DEFAULT_BUDGET.resolve_threshold(tool) == DEFAULT_BUDGET.default_result_size
+
+    def test_override_and_jira_win_over_listing_default(self):
+        cfg = BudgetConfig(tool_overrides={"mcp_m_memory_list": 500})
+        assert cfg.resolve_threshold("mcp_m_memory_list") == 500
+        assert DEFAULT_BUDGET.resolve_threshold("mcp_jira_memory_list") == 25_000

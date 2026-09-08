@@ -2365,12 +2365,34 @@ def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE
     return head + marker + tail
 
 
-def load_soul_md() -> Optional[str]:
-    """Load SOUL.md from HERMES_HOME and return its content, or None.
+# Packaged identity variants (AIS-309). A posture may ask for a variant
+# (``developer`` → ``SOUL.dev.md``); resolution order is the user's own
+# ``HERMES_HOME/SOUL.<variant>.md``, then the loadout file shipped with the
+# repo, then plain ``SOUL.md``. No installer/sync step needed for variants.
+_LOADOUT_IDENTITY_DIR = (
+    Path(__file__).resolve().parent.parent / "installer" / "skills-hidden" / "aimds-loadout" / "identity"
+)
+
+
+def _soul_variant_candidates(variant: str) -> list[Path]:
+    home = get_hermes_home()
+    variant = (variant or "").strip().lower()
+    if not variant:
+        return [home / "SOUL.md"]
+    name = f"SOUL.{variant}.md"
+    return [home / name, _LOADOUT_IDENTITY_DIR / name, home / "SOUL.md"]
+
+
+def load_soul_md(variant: str = "") -> Optional[str]:
+    """Load the identity file from HERMES_HOME and return its content, or None.
 
     Used as the agent identity (slot #1 in the system prompt).  When this
     returns content, ``build_context_files_prompt`` should be called with
     ``skip_soul=True`` so SOUL.md isn't injected twice.
+
+    ``variant`` selects an alternate identity (``"dev"`` → ``SOUL.dev.md``):
+    the user's ``HERMES_HOME`` copy wins, then the packaged loadout file,
+    then ``SOUL.md`` as the fallback.
     """
     try:
         from hermes_cli.config import ensure_hermes_home
@@ -2378,19 +2400,20 @@ def load_soul_md() -> Optional[str]:
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
-    soul_path = get_hermes_home() / "SOUL.md"
-    if not soul_path.exists():
-        return None
-    try:
-        content = soul_path.read_text(encoding="utf-8").strip()
+    for soul_path in _soul_variant_candidates(variant):
+        if not soul_path.exists():
+            continue
+        try:
+            content = soul_path.read_text(encoding="utf-8").strip()
+        except Exception as e:
+            logger.debug("Could not read %s: %s", soul_path, e)
+            continue
         if not content:
-            return None
-        content = _scan_context_content(content, "SOUL.md")
-        content = _truncate_content(content, "SOUL.md")
+            continue
+        content = _scan_context_content(content, soul_path.name)
+        content = _truncate_content(content, soul_path.name)
         return content
-    except Exception as e:
-        logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
-        return None
+    return None
 
 
 def _load_hermes_md(cwd_path: Path) -> str:

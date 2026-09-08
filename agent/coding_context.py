@@ -45,6 +45,16 @@ Activation (config ``agent.coding_context``):
     ``coding`` set + enabled MCP servers. Explicit opt-in for a lean schema.
   * ``on`` — force the posture anywhere (incl. non-workspaces). Prompt-only.
   * ``off`` — disable entirely.
+
+Developer posture (AIS-309)
+---------------------------
+The terminal CLI (surface ``cli``) resolves to the ``developer`` profile under
+``auto``/``focus`` regardless of cwd: Hermes is the co-developer there, the
+desktop app (``tui``) stays the co-worker with the workspace-detected
+``coding`` posture above. ``developer`` = ``coding`` + owns the toolset
+(collapse under ``auto``), SOUL.dev.md identity, no M365/Jira integration
+prose, knowledge-worker skills out of the index, coding-scoped session memory.
+``off`` still disables it; ``on`` still forces plain ``coding`` everywhere.
 """
 
 from __future__ import annotations
@@ -197,6 +207,28 @@ CODING_AGENT_GUIDANCE = (
     "answer, not a preamble."
 )
 
+# Operating brief for the developer posture (terminal CLI). The coding brief
+# plus the co-developer contract: the repo's own instruction files rule, the
+# memory server is scoped to the project, and knowledge-worker automations
+# (mail, calendar, briefs) are out of scope for this surface.
+DEVELOPER_AGENT_GUIDANCE = (
+    CODING_AGENT_GUIDANCE
+    + "\n\n"
+    "Co-developer contract for this terminal session:\n"
+    "- Repo instruction files (AGENTS.md / CLAUDE.md / .cursorrules / "
+    "CONTRIBUTING.md) and the project's own test runner and lint config are "
+    "the source of truth for conventions — read them before proposing a "
+    "workflow of your own.\n"
+    "- Read narrowly: `search_files` to locate, then `read_file` with "
+    "`offset`/`limit` on the region you need. Never dump whole large files "
+    "into the conversation. Prefer `patch` (mode='replace') over rewriting a "
+    "file you only need to touch in one place.\n"
+    "- Memory is project-scoped here: record repo gotchas, decisions and "
+    "verified facts; skip personal-assistant material (mail, meetings, "
+    "briefings) — that belongs to the desktop co-worker session, not this "
+    "one."
+)
+
 
 # ── Context profiles (declarative posture definitions) ──────────────────────
 
@@ -225,6 +257,24 @@ class ContextProfile:
     model_hint: Optional[str] = None
     memory_policy: str = "default"
     hidden_skill_categories: tuple[str, ...] = ()
+    # Identity file variant: ``""`` → ``SOUL.md``; ``"dev"`` → ``SOUL.dev.md``
+    # (HERMES_HOME override → packaged loadout → SOUL.md fallback).
+    identity_variant: str = ""
+    # Drop the Outlook/Teams/Jira/mail-safety/AI-attribution integration
+    # blocks from the stable prompt tier (AIS-309: ~10 KB of knowledge-worker
+    # prose that a coding session never uses).
+    suppress_integration_guidance: bool = False
+    # Collapse to ``toolset`` (+ enabled MCP servers) even under ``auto`` —
+    # the posture owns the schema instead of the platform config.
+    collapse_toolset: bool = False
+    # Arguments for the forced session-start ``memory_context`` call, as a
+    # tuple of (key, value) pairs (frozen dataclass — no dict). Only keys the
+    # registered tool schema declares are sent; foreign memory servers keep
+    # the empty call.
+    memory_context_args: tuple[tuple[str, Any], ...] = ()
+
+    def memory_context_kwargs(self) -> dict[str, Any]:
+        return {k: (list(v) if isinstance(v, tuple) else v) for k, v in self.memory_context_args}
 
 
 # Skill categories that are clearly not part of a coding workflow. Hidden from
@@ -240,6 +290,14 @@ _NON_CODING_SKILL_CATEGORIES = (
 )
 
 
+# Skill categories hidden on top of the coding deny-list in the developer
+# posture: the AIMDS knowledge-worker loadout (email triage, meeting prep,
+# M365/Teams/SharePoint, digests, vault management) and note-taking. Still
+# reachable via skills_list/skill_view — discovery-only, like the rest.
+_NON_DEVELOPER_SKILL_CATEGORIES = _NON_CODING_SKILL_CATEGORIES + (
+    "aimds_custom", "note-taking",
+)
+
 GENERAL_PROFILE = ContextProfile(name="general")
 CODING_PROFILE = ContextProfile(
     name="coding",
@@ -249,11 +307,38 @@ CODING_PROFILE = ContextProfile(
     memory_policy="project",
     hidden_skill_categories=_NON_CODING_SKILL_CATEGORIES,
 )
+# The terminal CLI's default posture (AIS-309): Hermes as a co-developer. Same
+# brief and toolset as ``coding``, but it also owns the schema (collapse under
+# ``auto``), swaps the identity to SOUL.dev.md, drops the M365/Jira integration
+# prose and the knowledge-worker skill index, and asks the memory server for a
+# coding-scoped, bounded session context instead of the full briefing.
+DEVELOPER_PROFILE = ContextProfile(
+    name="developer",
+    toolset=CODING_TOOLSET,
+    guidance=DEVELOPER_AGENT_GUIDANCE,
+    model_hint="coding",
+    memory_policy="project",
+    hidden_skill_categories=_NON_DEVELOPER_SKILL_CATEGORIES,
+    identity_variant="dev",
+    suppress_integration_guidance=True,
+    collapse_toolset=True,
+    memory_context_args=(("contexts", ("coding", "git", "agent")), ("limit", 8)),
+)
 
 _PROFILES: dict[str, ContextProfile] = {
     GENERAL_PROFILE.name: GENERAL_PROFILE,
     CODING_PROFILE.name: CODING_PROFILE,
+    DEVELOPER_PROFILE.name: DEVELOPER_PROFILE,
 }
+
+# Profiles that count as "coding" for every consumer that only asks
+# ``is_coding`` (brief + workspace snapshot, skill pruning, delegation).
+_CODING_PROFILE_NAMES = frozenset({CODING_PROFILE.name, DEVELOPER_PROFILE.name})
+
+# The surface whose default posture is ``developer`` under ``auto``/``focus``.
+# Only the terminal CLI: the desktop app (``tui``) and editors (``acp``) keep
+# the workspace-detected ``coding`` posture; the desktop is the co-worker.
+DEVELOPER_SURFACES = frozenset({"cli"})
 
 
 def get_profile(name: str) -> ContextProfile:
@@ -351,7 +436,12 @@ def _detect_profile_name(mode: str, platform: str, cwd_str: str) -> str:
         return GENERAL_PROFILE.name
     if mode == "on":
         return CODING_PROFILE.name
-    if platform and platform.strip().lower() not in INTERACTIVE_CODING_PLATFORMS:
+    surface = (platform or "").strip().lower()
+    if surface in DEVELOPER_SURFACES:
+        # Terminal CLI = co-developer, everywhere (a repo is not required —
+        # the workspace snapshot is simply empty outside one).
+        return DEVELOPER_PROFILE.name
+    if platform and surface not in INTERACTIVE_CODING_PLATFORMS:
         return GENERAL_PROFILE.name
     cwd = Path(cwd_str)
     git_root = _git_root(cwd)
@@ -391,23 +481,29 @@ class RuntimeMode:
 
     @property
     def is_coding(self) -> bool:
-        return self.profile.name == CODING_PROFILE.name
+        return self.profile.name in _CODING_PROFILE_NAMES
+
+    @property
+    def is_developer(self) -> bool:
+        return self.profile.name == DEVELOPER_PROFILE.name
 
     def toolset_selection(self, config: Optional[dict[str, Any]] = None) -> Optional[list[str]]:
         """Toolset list for this posture, or ``None`` to keep the platform default.
 
-        Non-``None`` only under the opt-in ``focus`` mode. The default posture
-        is prompt-only: most strippable toolsets are off-by-default anyway, and
-        a user who explicitly enabled one (image-gen for frontend/game assets,
-        messaging for build notifications, …) keeps it while coding.
+        Non-``None`` under the opt-in ``focus`` mode, or when the profile
+        declares ``collapse_toolset`` (the developer posture owns its schema).
+        The plain coding posture is prompt-only: most strippable toolsets are
+        off-by-default anyway, and a user who explicitly enabled one (image-gen
+        for frontend/game assets, messaging for build notifications, …) keeps
+        it while coding.
 
         Callers apply this only when the user hasn't pinned an explicit
         selection (``--toolsets``, ``HERMES_TUI_TOOLSETS``, …); they never
         override a pin. Returns the profile's toolset plus enabled MCP servers.
         """
-        if self.config_mode != "focus":
-            return None
         if self.profile.toolset is None:
+            return None
+        if self.config_mode != "focus" and not self.profile.collapse_toolset:
             return None
         return [self.profile.toolset, *_enabled_mcp_servers(config)]
 

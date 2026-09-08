@@ -60,6 +60,7 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
+from agent.cache_insights import LARGE_CACHE_WRITE_TOKENS
 from agent.prompt_builder import _resolve_memory_context_tool_name, _resolve_memory_save_tool_name
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.retry_utils import jittered_backoff
@@ -247,6 +248,38 @@ def _enforce_personal_query_memory_context_call(
         )
 
 
+def _initial_memory_context_args(agent: Any, tool_name: str) -> Dict[str, Any]:
+    """Arguments for the forced session-start ``memory_context`` call.
+
+    The active posture may declare a compact briefing (developer posture:
+    ``contexts=[coding, git, agent]``, ``limit=8`` — AIS-309: the full
+    briefing averaged 13 KB per session and sat in the history for good).
+    Only keys the registered tool schema declares are sent, so a memory
+    server without those parameters still gets the plain ``{}`` call.
+    """
+    mode = getattr(agent, "runtime_mode", None)
+    profile = getattr(mode, "profile", None)
+    kwargs_fn = getattr(profile, "memory_context_kwargs", None)
+    wanted: Dict[str, Any] = {}
+    try:
+        wanted = dict(kwargs_fn()) if callable(kwargs_fn) else {}
+    except Exception:
+        wanted = {}
+    if not wanted:
+        return {}
+    try:
+        from tools.registry import registry
+
+        schema = registry.get_schema(tool_name) or {}
+    except Exception:
+        return {}
+    params = schema.get("parameters") or schema.get("input_schema") or {}
+    props = params.get("properties") if isinstance(params, dict) else None
+    if not isinstance(props, dict):
+        return {}
+    return {k: v for k, v in wanted.items() if k in props}
+
+
 def _enforce_initial_memory_context_call(
     agent: Any,
     *,
@@ -282,7 +315,7 @@ def _enforce_initial_memory_context_call(
             agent._initial_memory_context_enforced = True
             return
 
-    call_args: Dict[str, Any] = {}
+    call_args: Dict[str, Any] = _initial_memory_context_args(agent, tool_name)
 
     call_id = f"memory-context-init-{uuid.uuid4().hex[:12]}"
     assistant_tool_msg = {
@@ -3208,6 +3241,10 @@ def run_conversation(
                     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
                     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
                     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+                    # Large write = an expired/re-built cache tier being re-sent
+                    # (AIS-309: /usage surfaces the count).
+                    if canonical_usage.cache_write_tokens >= LARGE_CACHE_WRITE_TOKENS:
+                        agent.session_large_cache_writes = getattr(agent, "session_large_cache_writes", 0) + 1
 
                     # One api_calls row per request (served model, cache
                     # accounting, latency) — the session totals cannot show

@@ -641,6 +641,7 @@ class AIAgent:
         self.session_completion_tokens = 0
         self.session_cache_read_tokens = 0
         self.session_cache_write_tokens = 0
+        self.session_large_cache_writes = 0
         self.session_reasoning_tokens = 0
         self.session_api_calls = 0
         self.session_estimated_cost_usd = 0.0

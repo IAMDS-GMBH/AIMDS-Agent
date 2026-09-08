@@ -13,6 +13,43 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 
+# A single call writing this many cache tokens is a tier being re-sent
+# (expired message breakpoints or a rebuilt prefix), not normal turn growth.
+LARGE_CACHE_WRITE_TOKENS = 15_000
+
+
+def format_cache_economics(
+    input_tokens: int,
+    cache_read: int,
+    cache_write: int,
+    large_writes: int = 0,
+    prefix_ttl: str = "",
+    message_ttl: str = "",
+) -> str:
+    """One /usage line on cache economics, or "" when nothing was cached.
+
+    Hit ratio = read / (read + uncached input + write). Cost weight compares
+    what the write side costs (1.25x at 5m, 2x at 1h) with the read side
+    (0.1x) so a session with a small hit ratio but cheap writes is not
+    mis-read as expensive.
+    """
+    total = cache_read + input_tokens + cache_write
+    if total <= 0 or (cache_read + cache_write) <= 0:
+        return ""
+    hit = cache_read / total * 100.0
+    write_mult = 2.0 if str(message_ttl) == "1h" else 1.25
+    write_cost = cache_write * write_mult
+    read_cost = cache_read * 0.1
+    ratio = (write_cost / read_cost) if read_cost > 0 else float("inf")
+    ratio_txt = f"{ratio:.1f}x" if ratio != float("inf") else "n/a"
+    ttl_txt = f"{prefix_ttl or '?'}/{message_ttl or '?'}"
+    return (
+        f"  Cache hit / write cost:   {hit:>9.0f}%  "
+        f"(writes cost {ratio_txt} the reads, {large_writes} large re-write"
+        f"{'' if large_writes == 1 else 's'}, ttl {ttl_txt})"
+    )
+
+
 def _hit(read: int, inp: int, write: int) -> float:
     total = read + inp + write
     return (read / total * 100.0) if total > 0 else 0.0
