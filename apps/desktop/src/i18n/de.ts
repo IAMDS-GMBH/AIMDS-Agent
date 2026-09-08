@@ -375,6 +375,13 @@ export const de
       tipModeAuto: 'Auto (Endpoint)',
       tipModeBusiness: 'Business',
       tipModeNerd: 'Nerd / Team',
+      previewAutoOpen: {
+        label: 'Vorschau automatisch öffnen',
+        artifacts: 'Artefakte',
+        all: 'Alle Dateien',
+        never: 'Nie',
+        hint: 'Artefakte: nur Dokumente, Seiten und Bilder, die der Agent schreibt. Alle Dateien: jede Datei, die ein Tool anfasst. Nie: Vorschauen nur von Hand öffnen.'
+      },
       themeTitle: 'Theme',
       themeDesc: 'Nur Desktop-Paletten. Der gewählte Modus wird darüber angewendet.',
       themeProfileNote: profile => `Für das Profil „${profile}" gespeichert — jedes Profil hat sein eigenes Theme.`,
@@ -1242,7 +1249,27 @@ export const de
     optional: 'Optional',
     promptScheduleRequired: 'Prompt und Zeitplan sind erforderlich.',
     saveChanges: 'Änderungen speichern',
-    createAction: 'Cron erstellen'
+    createAction: 'Cron erstellen',
+    newOutput: 'Neu',
+    unseenCount: count => (count === 1 ? '1 neu' : `${count} neu`),
+    latestOutput: 'Letzte Ausgabe',
+    openLatestOutput: 'Ausgabe öffnen',
+    openOutputFailed: 'Cron-Ausgabe konnte nicht geöffnet werden',
+    brief: {
+      title: 'Briefing',
+      badgeNew: 'Neu',
+      finding: 'Erkenntnis',
+      next: 'Nächster Schritt',
+      openBrief: 'Briefing öffnen',
+      openRun: 'Ausführung öffnen',
+      noSummary: 'Noch keine Zusammenfassung — Briefing öffnen, um es zu lesen.'
+    },
+    notifications: {
+      completedTitle: name => `Cron-Job abgeschlossen: ${name}`,
+      failedTitle: name => `Cron-Job fehlgeschlagen: ${name}`,
+      completedBody: 'Klicken, um den Bericht zu öffnen.',
+      failedBody: 'Ausführung fehlgeschlagen.'
+    }
   },
 
   artifacts: {

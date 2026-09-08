@@ -306,6 +306,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onArchiveSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
   onManageCronJob: (jobId: string) => void
+  onOpenCronArtifact: (jobId: string, run?: SessionInfo) => void
   onTriggerCronJob: (jobId: string) => void
   onSessionMaintenance: (mode: SessionMaintenanceMode) => Promise<number>
 }
@@ -340,6 +341,7 @@ export function ChatSidebar({
   onArchiveSession,
   onNewSessionInWorkspace,
   onManageCronJob,
+  onOpenCronArtifact,
   onTriggerCronJob,
   onSessionMaintenance
 }: ChatSidebarProps) {
@@ -1097,6 +1099,7 @@ export function ChatSidebar({
                 jobs={cronJobs}
                 label={s.cronJobs}
                 onManageJob={onManageCronJob}
+                onOpenArtifact={onOpenCronArtifact}
                 onOpenRun={onResumeSession}
                 onToggle={() => setSidebarCronOpen(!cronOpen)}
                 onTriggerJob={onTriggerCronJob}

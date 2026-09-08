@@ -73,8 +73,35 @@ def register_global_completion_callback(callback):
         _global_completion_callbacks.append(callback)
 
 
-def _emit_completion_event(job_id: str, success: bool, error: Optional[str] = None):
-    """Emit completion event to all registered callbacks for this job."""
+def _call_completion_callback(callback, job_id: str, success: bool, error: Optional[str], extra: dict) -> None:
+    """Call ``callback`` with the extended payload, falling back to the 3-arg form."""
+    try:
+        callback(job_id, success, error, **extra)
+    except TypeError as exc:
+        if "unexpected keyword" not in str(exc) and "positional" not in str(exc):
+            raise
+        callback(job_id, success, error)
+
+
+def mark_job_seen(job_id: str, at: Optional[str] = None) -> Optional[dict]:
+    """Record that the user opened the job's latest output (AIS-305). Returns the job."""
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        for job in jobs:
+            if job["id"] == job_id:
+                job["last_seen_at"] = at or _hermes_now().isoformat()
+                save_jobs(jobs)
+                return job
+    return None
+
+
+def _emit_completion_event(job_id: str, success: bool, error: Optional[str] = None, **extra):
+    """Emit completion event to all registered callbacks for this job.
+
+    ``extra`` (job_name, profile, output_path, output_at, session_id) is passed
+    as keyword arguments to callbacks that accept them; legacy 3-arg callbacks
+    keep working.
+    """
     with _callbacks_lock:
         job_callbacks = _completion_callbacks.get(job_id, [])
         global_callbacks = list(_global_completion_callbacks)
@@ -82,7 +109,7 @@ def _emit_completion_event(job_id: str, success: bool, error: Optional[str] = No
     # Call job-specific callbacks
     for callback in job_callbacks:
         try:
-            callback(job_id, success, error)
+            _call_completion_callback(callback, job_id, success, error, extra)
         except Exception as e:
             logger.error(
                 "Error in cron completion callback for job '%s': %s",
@@ -92,7 +119,7 @@ def _emit_completion_event(job_id: str, success: bool, error: Optional[str] = No
     # Call global callbacks
     for callback in global_callbacks:
         try:
-            callback(job_id, success, error)
+            _call_completion_callback(callback, job_id, success, error, extra)
         except Exception as e:
             logger.error(
                 "Error in cron global completion callback for job '%s': %s",
@@ -955,7 +982,9 @@ def remove_job(job_id: str) -> bool:
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None, *,
+                 output_path: Optional[str] = None, session_id: Optional[str] = None,
+                 summary: Optional[dict] = None):
     """
     Mark a job as having been run.
     
@@ -977,6 +1006,16 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_delivery_error"] = delivery_error
                 # Clear any explicit manual-trigger marker once the run finished.
                 job["manual_triggered_at"] = None
+                # AIS-305: artifact + unread bookkeeping for the desktop.
+                if session_id:
+                    job["last_run_session_id"] = session_id
+                if success and output_path:
+                    job["last_output_path"] = str(output_path)
+                    job["last_output_at"] = now
+                    job["last_output_summary"] = summary if isinstance(summary, dict) else None
+                _evt_job_name = job.get("name") or job_id
+                _evt_output_path = job.get("last_output_path") if success and output_path else None
+                _evt_output_at = job.get("last_output_at") if success and output_path else None
                 
                 # Increment completed count
                 if job.get("repeat"):
@@ -1026,7 +1065,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 save_jobs(jobs)
                 
                 # Emit completion event to all registered listeners
-                _emit_completion_event(job_id, success, error)
+                _emit_completion_event(job_id, success, error, job_name=_evt_job_name, profile=None, output_path=_evt_output_path, output_at=_evt_output_at, session_id=session_id)
                 return
 
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)

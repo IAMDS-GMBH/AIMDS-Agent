@@ -219,7 +219,9 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
   const hoistedTodos = useMemo(() => todosFromMessageContent(content), [content])
 
   const previewTargets = useMemo(() => {
-    if (!messageText || !/(https?:\/\/|file:\/\/)/i.test(messageText)) {
+    // Preview markers are the only source of attachments; the cheap substring
+    // check keeps the regex off every ordinary message.
+    if (!messageText || !messageText.includes('#preview')) {
       return []
     }
 

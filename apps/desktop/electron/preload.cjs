@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   api: request => ipcRenderer.invoke('hermes:api', request),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
+  setUnreadBadge: count => ipcRenderer.invoke('hermes:setUnreadBadge', count),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
   readFileDataUrl: filePath => ipcRenderer.invoke('hermes:readFileDataUrl', filePath),
   readFileText: filePath => ipcRenderer.invoke('hermes:readFileText', filePath),
@@ -87,6 +88,11 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     const listener = () => callback()
     ipcRenderer.on('hermes:open-updates', listener)
     return () => ipcRenderer.removeListener('hermes:open-updates', listener)
+  },
+  onNotificationAction: callback => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('hermes:notification-action', listener)
+    return () => ipcRenderer.removeListener('hermes:notification-action', listener)
   },
   onWindowStateChanged: callback => {
     const listener = (_event, payload) => callback(payload)

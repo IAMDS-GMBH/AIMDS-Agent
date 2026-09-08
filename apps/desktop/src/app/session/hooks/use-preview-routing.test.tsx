@@ -131,7 +131,7 @@ describe('usePreviewRouting', () => {
 
     act(() =>
       handleEvent({
-        payload: { path: './dist/index.html' },
+        payload: { name: 'write_file', path: './dist/index.html' },
         session_id: 'session-1',
         type: 'tool.complete'
       })
