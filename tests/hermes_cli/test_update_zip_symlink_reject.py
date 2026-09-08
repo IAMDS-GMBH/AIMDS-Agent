@@ -1,4 +1,4 @@
-"""Regression: _update_via_zip must reject ZIP members with symlink mode.
+"""Regression: the source-archive fallback must reject ZIP members with symlink mode.
 
 A symlink member in a downloaded update ZIP would let an attacker who can
 serve / MITM the update mirror plant a symlink that extractall() then
@@ -27,8 +27,10 @@ def _build_zip_with_symlink_member(zip_path: str, link_name: str, target: str) -
 
 
 def _build_normal_zip(zip_path: str) -> None:
-    """Write a regular ZIP with a normal file member (no symlink)."""
+    """Write a regular ZIP with normal file members (no symlink)."""
     with zipfile.ZipFile(zip_path, "w") as zf:
+        for marker in ("pyproject.toml", "run_agent.py", "hermes_cli/main.py", "hermes_cli/config.py"):
+            zf.writestr(f"hermes-agent-main/{marker}", "# ok\n")
         zf.writestr("hermes-agent-main/README.md", "ok\n")
 
 
@@ -41,12 +43,14 @@ def test_update_via_zip_rejects_symlink_member(tmp_path, monkeypatch):
         target="/etc/passwd",
     )
 
-    from hermes_cli.main import _update_via_zip
+    from hermes_cli import main as hermes_main
 
     args = type("Args", (), {})()
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path / "install_dir")
+    (tmp_path / "install_dir").mkdir()
 
     # Patch urlretrieve to "download" our pre-built malicious ZIP into the
-    # _update_via_zip tempdir. Capture the tempdir so we can prove no
+    # fallback's tempdir. Capture the tempdir so we can prove no
     # extraction happened.
     captured = {}
     original_mkdtemp = tempfile.mkdtemp
@@ -63,18 +67,19 @@ def test_update_via_zip_rejects_symlink_member(tmp_path, monkeypatch):
         return dest, None
 
     with patch("tempfile.mkdtemp", side_effect=capturing_mkdtemp), \
-         patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve):
-        # _update_via_zip catches ValueError, prints the message, and exits 1.
-        # That's the contract: a malicious ZIP must fail the update, not
-        # silently materialize a symlink.
+         patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve), \
+         patch("hermes_cli.main._create_pre_update_snapshot", return_value=None):
+        # The fallback catches the archive error, prints the message, and
+        # exits 1. That's the contract: a malicious ZIP must fail the update,
+        # not silently materialize a symlink.
         with pytest.raises(SystemExit) as exc_info:
-            _update_via_zip(args)
+            hermes_main._update_via_legacy_archive(args, "main", gateway_mode=False, assume_yes=False)
         assert exc_info.value.code == 1
 
     # Belt: confirm extractall never produced the link.
     tmp_dir = captured.get("tmp_dir")
     if tmp_dir:
-        evil_path = os.path.join(tmp_dir, "hermes-agent-main", "evil-link")
+        evil_path = os.path.join(tmp_dir, "extracted", "hermes-agent-main", "evil-link")
         assert not os.path.lexists(evil_path), (
             "symlink member should never be materialized"
         )
@@ -109,18 +114,15 @@ def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
             dst.write(src.read())
         return dest, None
 
-    # Stub the post-extract pip/uv reinstall so we don't actually run pip.
-    # The function may sys.exit(1) when those commands fail; that's fine —
-    # we only care that ZIP validation + extraction completed without
+    # Stub the shared post-update pipeline so we don't actually run pip.
+    # We only care that ZIP validation + extraction completed without
     # raising "symlink member".
     with patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve), \
-         patch("subprocess.run") as fake_run, \
-         patch("subprocess.check_call"):
-        fake_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-        try:
-            hermes_main._update_via_zip(args)
-        except SystemExit:
-            pass
+         patch("hermes_cli.main._create_pre_update_snapshot", return_value=None), \
+         patch("hermes_cli.main._validate_critical_files_syntax", return_value=(True, None, None)), \
+         patch("hermes_cli.main._run_post_update_pipeline") as pipeline:
+        hermes_main._update_via_legacy_archive(args, "main", gateway_mode=False, assume_yes=False)
+    pipeline.assert_called_once()
 
     captured = capsys.readouterr()
     assert "symlink member" not in captured.out

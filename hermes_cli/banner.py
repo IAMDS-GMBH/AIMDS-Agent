@@ -13,7 +13,6 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 from hermes_constants import get_hermes_home
-from hermes_cli.version_utils import version_tuple as _version_tuple
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 # rich and prompt_toolkit are imported lazily (inside the functions that use
@@ -222,6 +221,21 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     return None
 
 
+def _version_tuple(v: str) -> tuple[int, ...]:
+    """Parse '0.13.0' into (0, 13, 0) for comparison. Non-numeric segments become 0.
+
+    PyPI versions only — release tags (``v0.7.5-rc.1``) are compared with
+    :func:`hermes_cli.release_channels.compare_release_tags`.
+    """
+    parts = []
+    for segment in v.split("."):
+        try:
+            parts.append(int(segment))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+
 def _fetch_pypi_latest(package: str = "hermes-agent") -> Optional[str]:
     """Fetch the latest version of a package from PyPI. Returns None on failure."""
     try:
@@ -253,45 +267,90 @@ def check_via_pypi() -> Optional[int]:
         return 1 if latest != VERSION else 0
 
 
-def _check_via_suite_feed() -> Optional[str]:
-    """Return the version a configured Suite feed offers, or ``None``.
+_RELEASE_INFO_KEYS = ("channel", "release_tag", "release_version", "release_build_id")
 
-    Read-only — one bounded HTTPS GET, no downloads and no writes. The Suite
-    host is resolved from config first so installs without a Suite provider
-    cost nothing, not even the git call to read ``origin``.
-    """
+
+def _release_check_channel(marker: Optional[dict]) -> str:
+    """Channel for the release-manifest check: ``updates.channel`` if it is a tag channel, else the marker's, else ``stable``."""
+    from hermes_cli.release_channels import CHANNEL_STABLE, is_tag_channel, normalize_channel
+
     try:
-        from hermes_cli import suite_update
         from hermes_cli.config import load_config_readonly
 
-        config = load_config_readonly()
-        if not suite_update.resolve_suite_host(config):
-            return None
-
-        origin_url = None
-        if not suite_update.resolve_trusted_repository(config, None):
-            repo_dir = _resolve_repo_dir()
-            if repo_dir is None:
-                return None
-            origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
-
-        feed = suite_update.check_suite_update(config, origin_url, VERSION)
-        return feed.version if feed else None
+        configured = (load_config_readonly() or {}).get("updates", {}).get("channel")
+        if is_tag_channel(configured):
+            return normalize_channel(configured)
     except Exception:
-        return None
+        pass
+    if marker and is_tag_channel(marker.get("channel")):
+        return normalize_channel(marker.get("channel"))
+    return CHANNEL_STABLE
 
 
-def get_suite_update_version() -> Optional[str]:
-    """Version offered by the Suite feed at the last check, or ``None``.
+def _check_via_release_manifest() -> tuple[Optional[int], dict]:
+    """Update check for a source-archive install (AIS-312): manifest vs marker, no git.
 
-    Reads only the cache written by :func:`check_for_updates`; never probes
-    the network itself.
+    Read-only — one or two bounded HTTPS GETs. Returns ``(behind, info)``:
+    ``behind`` is ``0`` (same commit / not newer), ``UPDATE_AVAILABLE_NO_COUNT``
+    (a newer release) or ``None`` (manifest unavailable — the caller may fall
+    back to the git/PyPI check). ``info`` carries the manifest fields for the
+    cache (all ``None`` when the check failed).
     """
+    info: dict = {key: None for key in _RELEASE_INFO_KEYS}
+    try:
+        from hermes_cli.release_marker import read_release_marker
+        from hermes_cli.release_update import (
+            FEED_NEWER,
+            ReleaseFeedError,
+            classify_feed,
+            fetch_release_feed,
+        )
+
+        marker = read_release_marker(_resolve_project_root())
+        channel = _release_check_channel(marker)
+        info["channel"] = channel
+        try:
+            feed = fetch_release_feed(channel)
+        except ReleaseFeedError as exc:
+            logger.debug("Release manifest check failed: %s", exc)
+            return None, info
+        info.update(
+            release_tag=feed.tag,
+            release_version=feed.version,
+            release_build_id=feed.build_id,
+        )
+        state = classify_feed(feed, marker=marker, current_version=VERSION)
+        return (UPDATE_AVAILABLE_NO_COUNT if state == FEED_NEWER else 0), info
+    except Exception as exc:
+        logger.debug("Release manifest check failed: %s", exc)
+        return None, info
+
+
+def _release_source_forced() -> bool:
+    """True when ``updates.source`` pins ``release`` (no fallback to git/PyPI)."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.release_channels import SOURCE_RELEASE, normalize_update_source
+
+        source = (load_config_readonly() or {}).get("updates", {}).get("source")
+        return normalize_update_source(source) == SOURCE_RELEASE
+    except Exception:
+        return False
+
+
+def _resolve_project_root() -> Path:
+    return Path(__file__).parent.parent.resolve()
+
+
+def get_release_update_info() -> Optional[dict]:
+    """Release fields (``channel``, ``release_tag``, ``release_version``, ``release_build_id``)
+    from the last :func:`check_for_updates` run, or ``None``. Never probes the network."""
     try:
         cache_file = get_hermes_home() / ".update_check"
         cached = json.loads(cache_file.read_text())
-        value = cached.get("suite_version")
-        return value if isinstance(value, str) else None
+        if not isinstance(cached, dict) or not cached.get("release_tag"):
+            return None
+        return {key: cached.get(key) for key in _RELEASE_INFO_KEYS}
     except Exception:
         return None
 
@@ -299,9 +358,13 @@ def get_suite_update_version() -> Optional[str]:
 def check_for_updates() -> Optional[int]:
     """Check whether a Hermes update is available.
 
-    Two paths: if ``HERMES_REVISION`` is set (nix builds embed it), compare
-    it to upstream main via ``git ls-remote``. Otherwise look for a local
-    git checkout and count commits behind ``origin/main``.
+    Three paths: a source-archive install (``.hermes-release.json``, AIS-312)
+    compares the public release manifest with its marker — no git. Otherwise,
+    if ``HERMES_REVISION`` is set (nix builds embed it), compare it to upstream
+    main via ``git ls-remote``; else look for a local git checkout and count
+    commits behind ``origin/main``. Should the release manifest be unavailable
+    and ``updates.source`` not pin ``release``, the git/PyPI path still runs
+    so an empty release mirror never hides an update.
 
     Returns the number of commits behind, ``UPDATE_AVAILABLE_NO_COUNT`` (-1)
     if behind but the count is unknown, ``0`` if up-to-date, or ``None`` if
@@ -323,9 +386,11 @@ def check_for_updates() -> Optional[int]:
     # mirror that here so the banner/TUI surfaces agree. Returning None makes
     # both the Rich banner (build_welcome_banner) and the Ink badge
     # (branding.tsx, guarded on `typeof === 'number' && > 0`) show nothing.
+    install_method = None
     try:
         from hermes_cli.config import detect_install_method
-        if detect_install_method() == "docker":
+        install_method = detect_install_method()
+        if install_method == "docker":
             return None
     except Exception:
         pass
@@ -348,25 +413,27 @@ def check_for_updates() -> Optional[int]:
     except Exception:
         pass
 
-    if embedded_rev:
-        behind = _check_via_rev(embedded_rev)
-    else:
-        # Prefer the running code's location over the profile-scoped path.
-        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
-        # Path(__file__) always resolves to the actual installed checkout.
-        repo_dir = Path(__file__).parent.parent.resolve()
-        if not (repo_dir / ".git").exists():
-            repo_dir = hermes_home / "hermes-agent"
-        if not (repo_dir / ".git").exists():
-            behind = check_via_pypi()
-        else:
-            behind = _check_via_local_git(repo_dir)
+    behind: Optional[int] = None
+    release_info: dict = {key: None for key in _RELEASE_INFO_KEYS}
+    checked_release = False
+    if install_method == "release":
+        behind, release_info = _check_via_release_manifest()
+        checked_release = behind is not None or _release_source_forced()
 
-    # A Suite deployment's own feed outranks whatever origin/main is at, so
-    # surface it even when the git count says we're level with upstream.
-    suite_version = _check_via_suite_feed()
-    if suite_version is not None and not behind:
-        behind = UPDATE_AVAILABLE_NO_COUNT
+    if not checked_release:
+        if embedded_rev:
+            behind = _check_via_rev(embedded_rev)
+        else:
+            # Prefer the running code's location over the profile-scoped path.
+            # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
+            # Path(__file__) always resolves to the actual installed checkout.
+            repo_dir = _resolve_project_root()
+            if not (repo_dir / ".git").exists():
+                repo_dir = hermes_home / "hermes-agent"
+            if not (repo_dir / ".git").exists():
+                behind = check_via_pypi()
+            else:
+                behind = _check_via_local_git(repo_dir)
 
     try:
         cache_file.write_text(
@@ -375,7 +442,7 @@ def check_for_updates() -> Optional[int]:
                 "behind": behind,
                 "rev": embedded_rev,
                 "ver": VERSION,
-                "suite_version": suite_version,
+                **release_info,
             })
         )
     except Exception:

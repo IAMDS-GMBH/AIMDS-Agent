@@ -62,8 +62,56 @@ the tag out **and then runs the same post-update pipeline as a branch pull**
 (dependencies, bytecode cache, skills sync, config migration, desktop rebuild
 check). A checkout sitting exactly on a release tag reports that version
 (`hermes --version`, Desktop, `/api/status`) even though `pyproject.toml` on
-`main` still carries the previous number. The Windows ZIP fallback resolves the
-channel's tag through the GitHub Releases API and downloads the tag archive.
+`main` still carries the previous number.
+
+### Update source: git or release archives (AIS-312)
+
+`hermes update` has two transports for the same target (channel + tag):
+
+- **git** — `origin` of the checkout (needs access to the source repository).
+- **release** — the verified `hermes-source-<ver>.zip` of the public release
+  repository (see below). Only `stable` and `preview`; the `main` channel is
+  git-only. The tree is swapped in with a rollback, the syntax of the critical
+  files is verified before the swap counts, and the same post-update pipeline
+  runs. `venv`, `node_modules`, `.git`, `.env`, `.worktrees` are never touched.
+
+Config key `updates.source` (`Settings → General → Update source`, CLI
+`--source`): `auto` (default), `git`, `release`. `auto` resolves per run:
+
+1. The install carries `.hermes-release.json` → release.
+2. No `.git` → release (a source tree) or the pip path.
+3. `.git` and `git ls-remote origin HEAD` answers → **git** (existing
+   installations keep behaving exactly as before; the release repository is
+   not contacted at all).
+4. `.git` but the origin does not answer → release.
+
+**No update deadlock:** in `auto` mode a release manifest that cannot be
+served (empty mirror, 404, network) is reported with a warning and the update
+continues on the previous path — git when `.git` exists, otherwise the source
+repository's tag archive (`archive/refs/tags/<tag>.zip`, the former Windows
+ZIP fallback). Only `updates.source: release` has no fallback and fails
+loudly. A failure *after* the archive download started (checksum, extraction,
+verification) is always fatal and leaves the tree unchanged; it is never
+retried through another transport. The same order applies to
+`hermes update --check`, the CLI banner and the desktop update check.
+
+Manifest resolution: `stable` reads the static
+`releases/latest/download/hermes-release.json` (no API call, not rate
+limited); `preview` lists the newest releases via the API, picks the highest
+tag (stable above its candidates) and reads that release's manifest asset.
+The manifest must match the release it came from, the channel, and the
+`hermes-source-<version>.zip` naming; `commit_sha`/`sha256` are validated
+before anything is downloaded.
+
+**Release marker** `<install>/.hermes-release.json` (`hermes-release-marker-v1`:
+channel, tag, version, commit_sha, sha256, build_id, applied_at) is written
+after every archive update and is the version identity of such an install:
+`hermes --version`, the desktop, `detect_install_method()` (→ `release`) and
+the update checks read it *before* git — after a tree swap `git describe`
+would still name the old tag (the phantom-update loop of AIS-297). A marker
+whose commit equals the manifest's is "up to date" even across an rc →
+stable promotion. The marker is removed again when git or the source-archive
+fallback update the tree.
 
 What a tag channel reports, by where HEAD sits (`hermes update --check`,
 desktop status bar / updates overlay):
@@ -93,8 +141,9 @@ This repository is going private. Clients cannot read releases of a private
 repository, so every release is mirrored into the public
 **`IAMDS-GMBH/AIMDS-Agent-Releases`** (README plus releases, no code, no
 issues). The mirror is the download source for installers, install scripts
-and the source package; the client updater and installer switch to it in
-AIS-218 (updater) and AIS-313 (installer), the cutover itself is AIS-314.
+and the source package; the client updater switched to it in AIS-312
+(`updates.source`, see above), the installer follows in AIS-313, the cutover
+itself is AIS-314.
 
 ### What the workflow publishes
 

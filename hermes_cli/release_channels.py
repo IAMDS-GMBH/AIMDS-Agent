@@ -19,7 +19,9 @@ Update channels map onto those tags:
   default on a named branch (developer checkouts stay on ``main``).
 
 Everything in here is pure: no git, no network — the callers hand in the tag
-names they fetched.
+names they fetched. The two GitHub API helpers at the bottom are the only
+exception; they are shared by the release-asset updater (AIS-312) and the
+legacy source-archive fallback.
 """
 
 from __future__ import annotations
@@ -41,6 +43,19 @@ _CHANNEL_ALIASES = {"tags": CHANNEL_STABLE, "release": CHANNEL_STABLE, "rc": CHA
 
 GITHUB_REPO = "IAMDS-GMBH/AIMDS-Agent"
 
+# Public mirror of every release (AIS-311): README + releases only. Clients
+# without access to GITHUB_REPO update from here (AIS-312).
+RELEASE_REPO = "IAMDS-GMBH/AIMDS-Agent-Releases"
+RELEASE_MANIFEST_ASSET = "hermes-release.json"
+
+# ``updates.source`` — where ``hermes update`` gets the code from (AIS-312).
+# NOT a channel: ``release`` here must never go through ``normalize_channel``
+# (which aliases the *channel* name ``release`` to ``stable``).
+SOURCE_AUTO = "auto"
+SOURCE_GIT = "git"
+SOURCE_RELEASE = "release"
+UPDATE_SOURCES = (SOURCE_AUTO, SOURCE_GIT, SOURCE_RELEASE)
+
 
 def normalize_channel(name: Optional[str]) -> str:
     """``tags`` → ``stable``; empty → ``main``; branch names pass through."""
@@ -55,6 +70,26 @@ def normalize_channel(name: Optional[str]) -> str:
 
 def is_tag_channel(name: Optional[str]) -> bool:
     return normalize_channel(name) in TAG_CHANNELS
+
+
+def normalize_update_source(name: Optional[str]) -> str:
+    """``updates.source`` value → ``auto`` | ``git`` | ``release`` (unknown → ``auto``)."""
+    value = str(name or "").strip().lower()
+    return value if value in UPDATE_SOURCES else SOURCE_AUTO
+
+
+def tag_fits_channel(tag: str, channel: str) -> bool:
+    """Whether a release tag may be offered on ``channel``.
+
+    ``stable`` accepts only ``vX.Y.Z``; ``preview`` accepts stable and
+    candidate tags. Branch channels (``main``) never fit a tag.
+    """
+    normalized = normalize_channel(channel)
+    if normalized == CHANNEL_STABLE:
+        return is_stable_tag(tag)
+    if normalized == CHANNEL_PREVIEW:
+        return parse_release_tag(tag) is not None
+    return False
 
 
 def parse_release_tag(tag: str) -> Optional[Tuple[int, int, int, Optional[int]]]:
@@ -189,31 +224,75 @@ def github_archive_url(ref: str, *, kind: str = "heads", repo: str = GITHUB_REPO
     return f"https://github.com/{repo}/archive/refs/{kind_norm}/{ref}.zip"
 
 
-def latest_release_tag_via_api(channel: str, *, timeout: float = 10.0, repo: str = GITHUB_REPO) -> Optional[str]:
-    """Resolve the channel's tag from the GitHub Releases API (no git needed).
+def release_download_url(tag: str, asset: str, *, repo: str = RELEASE_REPO) -> str:
+    """``https://github.com/<repo>/releases/download/<tag>/<asset>``."""
+    return f"https://github.com/{repo}/releases/download/{tag}/{asset}"
 
-    Used by the Windows ZIP fallback, which runs exactly when local git file
-    I/O is broken. ``stable`` → ``/releases/latest``; ``preview`` → highest
-    release tag among the newest releases including pre-releases.
+
+def latest_manifest_url(*, repo: str = RELEASE_REPO) -> str:
+    """Static URL of the latest *stable* release manifest.
+
+    GitHub redirects ``releases/latest/download/<asset>`` to the newest
+    non-draft, non-prerelease release — exactly the ``stable`` channel — and
+    it is not subject to the API rate limit.
+    """
+    return f"https://github.com/{repo}/releases/latest/download/{RELEASE_MANIFEST_ASSET}"
+
+
+def _github_api_headers() -> dict:
+    import os
+
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "hermes-agent/update"}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def fetch_release_via_api(channel: str, *, timeout: float = 10.0, repo: str = RELEASE_REPO) -> Optional[dict]:
+    """The GitHub release object (``tag_name``, ``assets`` …) the channel targets, or ``None``.
+
+    ``stable`` → ``/releases/latest`` (only if its tag is ``vX.Y.Z``);
+    ``preview`` → the highest release tag among the newest 30 non-draft
+    releases including pre-releases. Every failure collapses to ``None``.
     """
     normalized = normalize_channel(channel)
     if normalized not in TAG_CHANNELS:
         return None
-    headers = {"Accept": "application/vnd.github+json", "User-Agent": "hermes-agent/update"}
+    headers = _github_api_headers()
     try:
         if normalized == CHANNEL_STABLE:
             request = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases/latest", headers=headers)
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 data = json.loads(response.read().decode("utf-8") or "{}")
-            tag = str((data or {}).get("tag_name") or "")
-            return tag if is_stable_tag(tag) else None
+            if not isinstance(data, dict):
+                return None
+            tag = str(data.get("tag_name") or "")
+            return data if is_stable_tag(tag) else None
         request = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases?per_page=30", headers=headers)
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8") or "[]")
-        tags = [str(r.get("tag_name") or "") for r in (data or []) if isinstance(r, dict) and not r.get("draft")]
-        return select_release_tag(tags, CHANNEL_PREVIEW)
+        releases = [r for r in (data or []) if isinstance(r, dict) and not r.get("draft")]
+        best = select_release_tag([str(r.get("tag_name") or "") for r in releases], CHANNEL_PREVIEW)
+        if not best:
+            return None
+        return next((r for r in releases if str(r.get("tag_name") or "") == best), None)
     except Exception:
         return None
+
+
+def latest_release_tag_via_api(channel: str, *, timeout: float = 10.0, repo: str = GITHUB_REPO) -> Optional[str]:
+    """Resolve the channel's tag from the GitHub Releases API (no git needed).
+
+    Used by the legacy source-archive fallback (``_update_via_legacy_archive``),
+    which runs when neither git nor the public release repository can serve
+    the update; it therefore defaults to the *source* repository.
+    """
+    release = fetch_release_via_api(channel, timeout=timeout, repo=repo)
+    if not release:
+        return None
+    tag = str(release.get("tag_name") or "")
+    return tag or None
 
 
 __all__ = [
@@ -222,6 +301,12 @@ __all__ = [
     "CHANNEL_PREVIEW",
     "CHANNEL_STABLE",
     "GITHUB_REPO",
+    "RELEASE_MANIFEST_ASSET",
+    "RELEASE_REPO",
+    "SOURCE_AUTO",
+    "SOURCE_GIT",
+    "SOURCE_RELEASE",
+    "UPDATE_SOURCES",
     "HEAD_AT_TARGET",
     "HEAD_NEWER_RELEASE",
     "HEAD_OTHER",
@@ -229,18 +314,23 @@ __all__ = [
     "STABLE_TAG_RE",
     "TAG_CHANNELS",
     "compare_release_tags",
+    "fetch_release_via_api",
     "github_archive_url",
     "head_release_tag",
     "is_candidate_tag",
     "is_stable_tag",
     "is_tag_channel",
+    "latest_manifest_url",
     "latest_release_tag_via_api",
     "normalize_channel",
+    "normalize_update_source",
     "parse_release_tag",
+    "release_download_url",
     "release_sort_key",
     "release_tag_is_newer",
     "resolve_head_vs_target",
     "select_release_tag",
     "stable_version_of",
+    "tag_fits_channel",
     "version_from_tag",
 ]

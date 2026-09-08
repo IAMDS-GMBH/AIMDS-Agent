@@ -45,11 +45,17 @@ const {
   isOfficialSshRemote
 } = require('./update-remote.cjs')
 const {
+  RELEASE_MARKER_FILE,
   isTagChannel,
+  latestManifestUrl,
   normalizeChannel,
   parseLsRemoteTags,
+  readReleaseMarker,
+  resolveReleaseStatus,
   resolveTagChannelStatus,
+  selectReleaseFromApi,
   selectReleaseTag,
+  validateReleaseManifest,
   versionFromTag
 } = require('./update-channels.cjs')
 const {
@@ -1466,13 +1472,257 @@ async function resolveHealedBranch(updateRoot, branch) {
 // against the channel, so the apply must too.
 async function resolveApplyBranch(updateRoot) {
   const { branch: configuredBranch } = readDesktopUpdateConfig()
-  return resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
+  return resolveHealedBranch(updateRoot, effectiveUpdateChannel(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH))
+}
+
+// ---------------------------------------------------------------------------
+// Release archives (AIS-312). An install applied from a `hermes-source-<ver>.zip`
+// (public release repo, `hermes update`) carries `<root>/.hermes-release.json`.
+// Such an install has no usable git history: the version comes from the
+// marker, and the update check compares the marker with the channel's
+// `hermes-release.json` manifest instead of running git. Apply is unchanged —
+// `hermes update` (staged updater or in-app) reads the same marker and
+// downloads the archive itself.
+// ---------------------------------------------------------------------------
+
+const releaseLogOnce = new Set()
+
+function rememberLogOnce(key, message) {
+  if (releaseLogOnce.has(key)) return
+  releaseLogOnce.add(key)
+  rememberLog(message)
+}
+
+// `null` when no (valid) marker exists. A present-but-invalid marker is logged
+// once and otherwise treated like a missing one (same as hermes_cli), so a
+// corrupt file can never wedge the updater.
+function readReleaseMarkerForRoot(root) {
+  const marker = readReleaseMarker(root)
+  if (!marker && fileExists(path.join(root, RELEASE_MARKER_FILE))) {
+    rememberLogOnce(`marker-invalid:${root}`, `[updates] ${path.join(root, RELEASE_MARKER_FILE)} is not a valid release marker; treating the install as git-managed`)
+  }
+  return marker
+}
+
+// A release-managed install only knows release channels: `main` / `auto` (or
+// any branch name) has no meaning without git history, so it is coerced to
+// `stable`. Git installs keep their configured value untouched.
+function effectiveUpdateChannel(root, branch, marker = readReleaseMarkerForRoot(root)) {
+  if (!marker) return branch
+  const normalized = normalizeChannel(branch || DEFAULT_UPDATE_BRANCH)
+  if (isTagChannel(normalized)) return normalized
+  rememberLogOnce(`channel-coerced:${normalized}`, `[updates] release-managed install cannot follow "${normalized}"; using the stable channel`)
+  return 'stable'
+}
+
+const GITHUB_JSON_TIMEOUT_MS = 5000
+const GITHUB_JSON_MAX_BYTES = 4 * 1024 * 1024
+// Minimum interval between two network checks of the same URL. The renderer
+// re-checks on every window focus (plus every 30 min) — inside the window the
+// cached body is served, outside it a conditional (ETag) GET keeps the
+// unauthenticated GitHub API budget (60/h) untouched on 304.
+const GITHUB_JSON_MIN_RECHECK_MS = 10 * 60 * 1000
+// url -> { etag, body, fetchedAt }
+const gitHubJsonCache = new Map()
+
+function gitHubRequestHeaders(url, etag) {
+  const headers = {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': `hermes-desktop/${app.getVersion()}`
+  }
+  let host = ''
+  try {
+    host = new URL(url).hostname.toLowerCase()
+  } catch {
+    host = ''
+  }
+  if (host === 'api.github.com') headers['X-GitHub-Api-Version'] = '2022-11-28'
+  if (etag) headers['If-None-Match'] = etag
+  return headers
+}
+
+// One bounded GET through Electron's net stack (system proxy aware — Node's
+// fetch is not). Resolves `{ status, etag, body }`, or `{ status: 304, cached:
+// true }` when `etag` matched. Throws on timeout, non-2xx and on a GitHub
+// rate limit (`error.code === 'rate-limited'`).
+async function fetchGitHubJson(url, { timeoutMs = GITHUB_JSON_TIMEOUT_MS, etag } = {}) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await electronNet.fetch(url, {
+      method: 'GET',
+      headers: gitHubRequestHeaders(url, etag),
+      redirect: 'follow',
+      signal: controller.signal
+    })
+    if (response.status === 304) {
+      return { status: 304, cached: true, etag: etag || '', body: null }
+    }
+    if ((response.status === 403 || response.status === 429) && response.headers.get('x-ratelimit-remaining') === '0') {
+      const reset = Number.parseInt(response.headers.get('x-ratelimit-reset') || '', 10)
+      const error = new Error(
+        `GitHub API rate limit exhausted${Number.isFinite(reset) ? ` (resets ${new Date(reset * 1000).toISOString()})` : ''}`
+      )
+      error.code = 'rate-limited'
+      throw error
+    }
+    if (!response.ok) {
+      const error = new Error(`HTTP ${response.status} for ${url}`)
+      error.code = 'fetch-failed'
+      error.status = response.status
+      throw error
+    }
+    const text = await response.text()
+    if (text.length > GITHUB_JSON_MAX_BYTES) {
+      const error = new Error(`response from ${url} exceeds ${GITHUB_JSON_MAX_BYTES} bytes`)
+      error.code = 'fetch-failed'
+      throw error
+    }
+    let body
+    try {
+      body = JSON.parse(text)
+    } catch {
+      const error = new Error(`response from ${url} is not JSON`)
+      error.code = 'fetch-failed'
+      throw error
+    }
+    return { status: response.status, etag: response.headers.get('etag') || '', body }
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      const timeout = new Error(`request to ${url} timed out after ${timeoutMs} ms`)
+      timeout.code = 'fetch-failed'
+      throw timeout
+    }
+    if (!error.code) error.code = 'fetch-failed'
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function fetchGitHubJsonCached(url, options = {}) {
+  const now = Date.now()
+  const entry = gitHubJsonCache.get(url)
+  if (entry && now - entry.fetchedAt < GITHUB_JSON_MIN_RECHECK_MS) {
+    return entry.body
+  }
+  const result = await fetchGitHubJson(url, { ...options, etag: entry?.etag })
+  if (result.cached && entry) {
+    entry.fetchedAt = now
+    return entry.body
+  }
+  gitHubJsonCache.set(url, { etag: result.etag, body: result.body, fetchedAt: now })
+  return result.body
+}
+
+// The validated manifest the channel targets: `stable` via the static
+// `releases/latest/download/` URL (GitHub resolves the newest non-prerelease
+// itself, no API call), `preview` via the releases API (highest release tag,
+// candidates included). Throws with `code` 'fetch-failed' | 'rate-limited'.
+async function fetchReleaseManifest(channel) {
+  const normalized = normalizeChannel(channel)
+  let releaseTag = null
+  let manifestUrl
+  if (normalized === 'stable') {
+    manifestUrl = latestManifestUrl()
+  } else if (normalized === 'preview') {
+    const releases = await fetchGitHubJsonCached(`https://api.github.com/repos/IAMDS-GMBH/AIMDS-Agent-Releases/releases?per_page=30`)
+    const selected = selectReleaseFromApi(releases, normalized)
+    if (!selected) {
+      const error = new Error('no preview release with a hermes-release.json asset found')
+      error.code = 'fetch-failed'
+      throw error
+    }
+    releaseTag = selected.tag
+    manifestUrl = selected.manifestUrl
+  } else {
+    const error = new Error(`channel "${normalized}" is not a release channel`)
+    error.code = 'fetch-failed'
+    throw error
+  }
+  const json = await fetchGitHubJsonCached(manifestUrl)
+  const validated = validateReleaseManifest(json, { channel: normalized, releaseTag })
+  if (!validated.ok) {
+    gitHubJsonCache.delete(manifestUrl)
+    const error = new Error(`invalid release manifest at ${manifestUrl}: ${validated.error}`)
+    error.code = 'fetch-failed'
+    throw error
+  }
+  return validated.manifest
+}
+
+// Release-managed check: marker vs manifest, no git. Same status shape as the
+// git tag-channel path so the overlay / statusbar need no second code path.
+async function checkReleaseUpdates(root, marker, branch) {
+  const manifest = await fetchReleaseManifest(branch)
+  const status = resolveReleaseStatus({
+    markerTag: marker.tag,
+    markerCommit: marker.commitSha,
+    targetTag: manifest.tag,
+    targetCommit: manifest.commit_sha
+  })
+  return {
+    supported: true,
+    source: 'release',
+    branch,
+    currentBranch: 'HEAD',
+    behind: status.behind,
+    aheadOfTarget: 0,
+    offChannel: false,
+    newerThanTarget: status.newerThanTarget,
+    headTag: marker.tag,
+    currentSha: marker.commitSha,
+    targetSha: manifest.commit_sha,
+    targetTag: manifest.tag,
+    targetVersion: manifest.version,
+    releaseVersion: marker.version,
+    releaseBuildId: marker.buildId,
+    commits: [],
+    dirty: false,
+    hermesRoot: root,
+    fetchedAt: Date.now()
+  }
 }
 
 async function checkUpdates() {
   const updateRoot = resolveUpdateRoot()
   let { branch } = readDesktopUpdateConfig()
   const gitDir = path.join(updateRoot, '.git')
+
+  const marker = readReleaseMarkerForRoot(updateRoot)
+  if (marker) {
+    branch = effectiveUpdateChannel(updateRoot, branch, marker)
+    try {
+      const updateResult = await checkReleaseUpdates(updateRoot, marker, branch)
+      void sendClientTelemetry(updateResult)
+      return updateResult
+    } catch (error) {
+      const code = error?.code === 'rate-limited' ? 'rate-limited' : 'fetch-failed'
+      const message = error?.message || String(error)
+      if (!directoryExists(gitDir)) {
+        rememberLog(`[updates] release manifest check failed (${code}): ${message}`)
+        return {
+          supported: true,
+          source: 'release',
+          branch,
+          currentBranch: 'HEAD',
+          currentSha: marker.commitSha,
+          headTag: marker.tag,
+          releaseVersion: marker.version,
+          releaseBuildId: marker.buildId,
+          error: code,
+          message,
+          hermesRoot: updateRoot,
+          fetchedAt: Date.now()
+        }
+      }
+      // The release repo may still be empty (or unreachable) while the checkout
+      // keeps its git history: fall back to the git check so the install is
+      // never stuck without updates.
+      rememberLogOnce(`release-fallback:${code}`, `[updates] release manifest check failed (${code}): ${message}; falling back to git`)
+    }
+  }
+
   if (!directoryExists(gitDir)) {
     return {
       supported: false,
@@ -1589,6 +1839,7 @@ async function checkUpdates() {
 
     const updateResult = {
       supported: true,
+      source: 'git',
       branch,
       currentBranch,
       behind: status.behind,
@@ -1638,6 +1889,7 @@ async function checkUpdates() {
 
   const updateResult = {
     supported: true,
+    source: 'git',
     branch,
     currentBranch,
     behind,
@@ -6528,20 +6780,28 @@ async function sendClientTelemetry(updateInfo = null) {
       if (updateInfo.currentSha) patchLevel = updateInfo.currentSha.slice(0, 10)
       if (typeof updateInfo.behind === 'number') commitsBehindMain = updateInfo.behind
     } else {
-      try {
-        const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
-        const [currentSha, countStr, currentBranch] = await Promise.all([
-          git(['rev-parse', '--short', 'HEAD']),
-          git(['rev-list', 'HEAD..origin/main', '--count']),
-          git(['rev-parse', '--abbrev-ref', 'HEAD'])
-        ])
-        if (currentSha) patchLevel = currentSha
-        if (currentBranch) channel = currentBranch
-        if (countStr && !Number.isNaN(Number.parseInt(countStr, 10))) {
-          commitsBehindMain = Number.parseInt(countStr, 10)
+      // A release-managed install (AIS-312) has no usable git history: the
+      // marker is the identity, the configured (coerced) channel the channel.
+      const marker = readReleaseMarkerForRoot(updateRoot)
+      if (marker) {
+        channel = effectiveUpdateChannel(updateRoot, branch, marker)
+        patchLevel = marker.commitSha.slice(0, 10)
+      } else {
+        try {
+          const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
+          const [currentSha, countStr, currentBranch] = await Promise.all([
+            git(['rev-parse', '--short', 'HEAD']),
+            git(['rev-list', 'HEAD..origin/main', '--count']),
+            git(['rev-parse', '--abbrev-ref', 'HEAD'])
+          ])
+          if (currentSha) patchLevel = currentSha
+          if (currentBranch) channel = currentBranch
+          if (countStr && !Number.isNaN(Number.parseInt(countStr, 10))) {
+            commitsBehindMain = Number.parseInt(countStr, 10)
+          }
+        } catch {
+          // Ignore git errors
         }
-      } catch {
-        // Ignore git errors
       }
     }
 
@@ -6848,13 +7108,26 @@ ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
   }))
 )
 
-ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
+// `source` tells the renderer whether the install is release-managed (archive
+// updates, AIS-312: only the stable/preview channels exist) or a git checkout.
+ipcMain.handle('hermes:updates:branch:get', async () => {
+  const { branch } = readDesktopUpdateConfig()
+  const updateRoot = resolveUpdateRoot()
+  const marker = readReleaseMarkerForRoot(updateRoot)
+  return {
+    branch: marker ? effectiveUpdateChannel(updateRoot, branch, marker) : branch,
+    source: marker ? 'release' : 'git'
+  }
+})
 
 ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
-  const branch = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
+  let branch = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
+  const updateRoot = resolveUpdateRoot()
+  const marker = readReleaseMarkerForRoot(updateRoot)
+  if (marker) branch = effectiveUpdateChannel(updateRoot, branch, marker)
   writeDesktopUpdateConfig({ branch })
   persistUpdateChannelToHermesConfig(branch)
-  return { branch }
+  return { branch, source: marker ? 'release' : 'git' }
 })
 
 // Given a base version string (e.g. "0.2.3") and a git root, returns the
@@ -6911,9 +7184,14 @@ function resolveExactReleaseTagVersion(root) {
   }
 }
 
+// A release-managed install (AIS-312) reads its version from the marker
+// first: git describe would keep naming the old tag on a checkout whose tree
+// was replaced by an archive update without moving HEAD.
 function resolveHermesVersion() {
   try {
     const root = resolveUpdateRoot()
+    const marker = readReleaseMarkerForRoot(root)
+    if (marker) return marker.version
     const exact = resolveExactReleaseTagVersion(root)
     if (exact) return exact
     const base = resolveVersionFromPyproject(root)
@@ -6940,13 +7218,19 @@ function showAboutPanelFresh() {
   app.showAboutPanel()
 }
 
-ipcMain.handle('hermes:version', async () => ({
-  appVersion: resolveHermesVersion(),
-  electronVersion: process.versions.electron,
-  nodeVersion: process.versions.node,
-  platform: process.platform,
-  hermesRoot: resolveUpdateRoot()
-}))
+ipcMain.handle('hermes:version', async () => {
+  const hermesRoot = resolveUpdateRoot()
+  const marker = readReleaseMarkerForRoot(hermesRoot)
+  return {
+    appVersion: resolveHermesVersion(),
+    electronVersion: process.versions.electron,
+    nodeVersion: process.versions.node,
+    platform: process.platform,
+    hermesRoot,
+    source: marker ? 'release' : 'git',
+    releaseTag: marker ? marker.tag : undefined
+  }
+})
 
 // ===========================================================================
 // Uninstall — remove the Chat GUI (and optionally the agent / user data).
