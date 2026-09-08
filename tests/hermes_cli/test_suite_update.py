@@ -318,3 +318,25 @@ def test_failed_replacement_rolls_back_every_entry(tmp_path):
                 suite_update.apply_suite_update(_feed(digest), root)
 
     assert _snapshot(root) == before
+
+
+def test_failed_replacement_removes_new_entries_on_rollback(tmp_path):
+    root = _install_tree(tmp_path)
+    before = _snapshot(root)
+    data, digest = _build_archive(extra={"aaa-new-entry/data.txt": "new\n"})
+
+    real_copytree = suite_update.shutil.copytree
+    calls = {"n": 0}
+
+    def flaky_copytree(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("disk full")
+        return real_copytree(*a, **k)
+
+    with patch.object(suite_update.urllib.request, "urlopen", _urlopen_returning(data)):
+        with patch.object(suite_update.shutil, "copytree", flaky_copytree):
+            with pytest.raises(SuiteFeedError, match="rolled back"):
+                suite_update.apply_suite_update(_feed(digest), root)
+
+    assert _snapshot(root) == before

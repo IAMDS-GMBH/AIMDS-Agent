@@ -115,7 +115,7 @@ def get_available_skills() -> Dict[str, List[str]]:
 # Update check
 # =========================================================================
 
-# Cache update check results for 6 hours to avoid repeated git fetches
+# Cache update check results for 24 hours to avoid repeated git fetches
 _UPDATE_CHECK_CACHE_SECONDS = 24 * 3600
 
 # Sentinel returned when we know an update exists but can't count commits
@@ -305,7 +305,7 @@ def check_for_updates() -> Optional[int]:
 
     Returns the number of commits behind, ``UPDATE_AVAILABLE_NO_COUNT`` (-1)
     if behind but the count is unknown, ``0`` if up-to-date, or ``None`` if
-    the check failed or doesn't apply. Cached for 6 hours.
+    the check failed or doesn't apply. Cached for 24 hours.
     """
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"

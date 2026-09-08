@@ -446,6 +446,7 @@ def _replace_tree(source_root: Path, project_root: Path, rollback_dir: Path) -> 
     """
     rollback_dir.mkdir(parents=True, exist_ok=True)
     moved: list[tuple[Path, Path]] = []
+    created: list[Path] = []
     replaced = 0
     try:
         for src in sorted(source_root.iterdir()):
@@ -456,12 +457,22 @@ def _replace_tree(source_root: Path, project_root: Path, rollback_dir: Path) -> 
                 stashed = rollback_dir / src.name
                 shutil.move(str(dst), str(stashed))
                 moved.append((dst, stashed))
+            else:
+                created.append(dst)
             if src.is_dir():
                 shutil.copytree(str(src), str(dst), symlinks=False)
             else:
                 shutil.copy2(str(src), str(dst))
             replaced += 1
     except Exception as exc:
+        for dst in reversed(created):
+            try:
+                if dst.is_dir() and not dst.is_symlink():
+                    shutil.rmtree(str(dst), ignore_errors=True)
+                elif dst.exists() or dst.is_symlink():
+                    dst.unlink()
+            except Exception:
+                logger.exception("Failed to remove %s during Suite update rollback", dst)
         for dst, stashed in reversed(moved):
             try:
                 if dst.is_dir() and not dst.is_symlink():

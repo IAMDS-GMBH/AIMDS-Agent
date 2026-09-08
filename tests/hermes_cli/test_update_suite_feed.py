@@ -1,7 +1,6 @@
 """Suite update feed integration with the check and apply command paths."""
 
 import json
-import time
 from unittest.mock import patch
 
 import pytest
