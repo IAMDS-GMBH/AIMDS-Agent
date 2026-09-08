@@ -100,9 +100,12 @@ def _count_skills(hermes_home: Path) -> int:
 
 def _count_mcp_servers(config: dict) -> int:
     """Count configured MCP servers."""
-    mcp = config.get("mcp", {})
-    servers = mcp.get("servers", {})
-    return len(servers)
+    # Canonical key is top-level ``mcp_servers``; ``mcp.servers`` is the
+    # legacy shape some very old configs still carry.
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, dict):
+        servers = (config.get("mcp") or {}).get("servers", {}) if isinstance(config.get("mcp"), dict) else {}
+    return len(servers or {})
 
 
 def _cron_summary(hermes_home: Path) -> str:

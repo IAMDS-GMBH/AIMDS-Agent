@@ -40,6 +40,8 @@ declare global {
       }
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
+      // Unread-output badge: dock badge (macOS/Linux) or taskbar overlay (Windows).
+      setUnreadBadge?: (count: number) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
       readFileDataUrl: (filePath: string) => Promise<string>
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
@@ -103,6 +105,9 @@ declare global {
       }
       onClosePreviewRequested?: (callback: () => void) => () => void
       onOpenUpdatesRequested?: (callback: () => void) => () => void
+      // A native notification was clicked; `action` is what the renderer
+      // attached to the `notify` payload (validated by the main process).
+      onNotificationAction?: (callback: (action: HermesNotificationAction) => void) => () => void
       onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
       onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
@@ -452,7 +457,18 @@ export interface HermesNotification {
   title?: string
   body?: string
   silent?: boolean
+  action?: HermesNotificationAction
 }
+
+export interface HermesCronArtifactNotificationAction {
+  kind: 'cron-artifact'
+  jobId: string
+  path?: string
+  sessionId?: string
+  profile?: string
+}
+
+export type HermesNotificationAction = HermesCronArtifactNotificationAction
 
 export interface HermesPreviewTarget {
   binary?: boolean

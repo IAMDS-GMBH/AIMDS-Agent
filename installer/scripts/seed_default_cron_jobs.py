@@ -33,7 +33,10 @@ LEGACY_MARKER_FILE = ".aimds-default-cron-seeded"
 # Version 9: Change Vault & Memory Curator to weekly at midday (Fridays at 12:00 PM).
 # Version 10: briefs end with a FINDING/NEXT/OPEN_QUESTION marker block and land in
 #             journal/ instead of _inbox/; curator archives stale _inbox entries.
-CURRENT_DEFAULT_CRON_VERSION = 10
+# Version 11: AIS-305 — LLM-free collector: briefs/polls carry `collector`, compose-only
+#             prompts (scheduler injects '## Collected Data', writes the journal file and
+#             the language line), Teams check every 30 min, brief skills normalised to [].
+CURRENT_DEFAULT_CRON_VERSION = 11
 JOBS_FILE_REL = Path("cron") / "jobs.json"
 _SOURCE = "aimds-default-cron"
 
@@ -44,14 +47,15 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
         "name": "Morning Brief",
         "schedule": "0 8 * * 1-5",
         "prompt": (
-            "Create the morning brief using digest and available context in the user's language. "
-            "If MSOffice365MCP is active/connected, query Outlook calendar appointments, unread/actionable emails, and Teams updates. "
-            "Restrict the schedule/task focus strictly to the current work week (Mon-Fri) or over weekends to the next working day (Monday). "
-            "Write the full brief, including the preview for tomorrow/next working day, to the workspace file journal/YYYY-MM-DD-morning-brief.md "
-            "(today's date; overwrite if it exists) so queries like 'what is scheduled for tomorrow?' can be answered from it. Do not create files under _inbox/. "
+            "Compose today's morning brief from the '## Collected Data' block only. "
+            "Structure: 1) What matters today (hard cap 3), 2) Meetings today and on the next working day, "
+            "3) My tickets due or updated (max 5) and changes since the last brief, 4) Mail and Teams items that need action (max 5), "
+            "5) Open tasks and the time-tracking gap, 6) Preview for the next working day. "
+            "Omit empty sections; if nothing is relevant say 'nothing urgent'. Never invent items; name skipped or failed sources in one line. "
+            "Plain headings without emoji; status markers only in lists. The scheduler writes journal/YYYY-MM-DD-morning-brief.md and its frontmatter from your reply — do not write files. "
             "Finish your response with exactly this block on separate lines: 'FINDING: <one line - the single most important thing noticed>', 'NEXT: <one line - the recommended next action>', and, only if a decision or input from the user is missing, 'OPEN_QUESTION: <one line>'. Never leave the FINDING line out."
         ),
-        "skill": "digest",
+        "collector": "morning-brief",
         "deliver": "local",
         "enabled": True,
     },
@@ -60,18 +64,14 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
         "name": "Weekly Review",
         "schedule": "0 16 * * 5",
         "prompt": (
-            "Create a concise weekly review in the user's language in this exact structure: "
-            "1) Key outcomes this week, "
-            "2) Carry-over items, "
-            "3) Next week top 3 priorities, "
-            "4) Stale active projects (>=14 days inactivity), "
-            "5) Risks/open questions needing decisions. "
-            "If MSOffice365MCP is active/connected, include relevant emails, meetings, and team updates from the current work week. "
-            "Restrict focus strictly to the current work week (and next working day over weekends). "
-            "Write the full review to the workspace file journal/YYYY-MM-DD-weekly-review.md (today's date; overwrite if it exists). Do not create files under _inbox/. "
+            "Compose a concise weekly review from the '## Collected Data' and '## Stale Project Check' blocks only, in this exact structure: "
+            "1) Key outcomes this week, 2) Carry-over items, 3) Next week top 3 priorities, "
+            "4) Stale active projects (>=14 days inactivity), 5) Risks/open questions needing decisions. "
+            "Hard cap 5 items per section. Never invent items; name skipped or failed sources in one line. "
+            "Plain headings without emoji. The scheduler writes journal/YYYY-MM-DD-weekly-review.md and its frontmatter from your reply — do not write files. "
             "Finish your response with exactly this block on separate lines: 'FINDING: <one line - the single most important thing noticed>', 'NEXT: <one line - the recommended next action>', and, only if a decision or input from the user is missing, 'OPEN_QUESTION: <one line>'. Never leave the FINDING line out."
         ),
-        "skill": "digest",
+        "collector": "weekly-review",
         "deliver": "local",
         "enabled": True,
     },
@@ -80,24 +80,22 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
         "name": "M365 Mail Check",
         "schedule": "0 */2 * * 1-5",
         "prompt": (
-            "Check Outlook inbox for new unread or actionable emails using MSOffice365MCP/email tools. "
-            "If there are no new unread or actionable emails, report 'nothing new'. "
-            "If new actionable customer emails arrive, summarize them compactly in the user's language and highlight required actions."
+            "Summarize the new unread emails listed in the '## Collected Data' block, one line each, and flag required actions. "
+            "If the block lists no new items reply exactly [SILENT]."
         ),
-        "skill": "digest",
+        "collector": "mail-check",
         "deliver": "local",
         "enabled": True,
     },
     {
         "seed_key": "m365-teams-check",
         "name": "M365 Teams Check",
-        "schedule": "*/15 * * * 1-5",
+        "schedule": "*/30 * * * 1-5",
         "prompt": (
-            "Check Teams Activity Feed and chat messages for new unread mentions or messages using MSOffice365MCP/Teams tools. "
-            "If there are no new unread mentions or messages, report 'nothing new'. "
-            "If new messages or mentions exist, summarize them compactly in the user's language and highlight required actions."
+            "Summarize the new Teams messages and mentions listed in the '## Collected Data' block, one line each, and flag required actions. "
+            "If the block lists no new items reply exactly [SILENT]."
         ),
-        "skill": "digest",
+        "collector": "teams-check",
         "deliver": "local",
         "enabled": True,
     },
@@ -219,6 +217,7 @@ def _build_job(spec: dict[str, Any], jobs: list[dict[str, Any]]) -> dict[str, An
         }
         next_run_at = None
     skill = str(spec.get("skill") or "").strip() or None
+    collector = str(spec.get("collector") or "").strip() or None
     job = {
         "id": _unique_id(f"aimds-{seed_key}", jobs),
         "name": str(spec.get("name") or seed_key.replace("-", " ").title()),
@@ -244,6 +243,8 @@ def _build_job(spec: dict[str, Any], jobs: list[dict[str, Any]]) -> dict[str, An
         "last_delivery_error": None,
         "next_run_at": next_run_at,
     }
+    if collector:
+        job["collector"] = collector
     if not enabled:
         job["paused_at"] = now_iso
         job["paused_reason"] = "Disabled by AIMDS default"
@@ -405,6 +406,43 @@ def _upgrade_jobs_for_version(
                 if str(job.get("prompt") or "").strip() != target_prompt:
                     job["prompt"] = target_prompt
                     updated += 1
+
+    # v11 migration (AIS-305): collector-backed compose-only prompts, Teams cadence,
+    # brief skills normalised (the compose contract lives in the prompt now).
+    if from_version < 11 <= to_version:
+        for key in ("morning-brief", "weekly-review", "m365-mail-check", "m365-teams-check"):
+            spec = next(
+                (sp for sp in _DEFAULT_SPECS if _canonical_seed_key(sp["seed_key"]) == key),
+                None,
+            )
+            if spec is None:
+                continue
+            target_prompt = str(spec.get("prompt") or "").strip()
+            target_collector = str(spec.get("collector") or "").strip()
+            target_schedule = str(spec.get("schedule") or "").strip()
+            for job in jobs:
+                if not _job_is_aimds_default(job):
+                    continue
+                if not _job_matches_alias(job, _aliases(key)):
+                    continue
+                if str(job.get("prompt") or "").strip() != target_prompt:
+                    job["prompt"] = target_prompt
+                    updated += 1
+                if str(job.get("collector") or "") != target_collector:
+                    job["collector"] = target_collector
+                    updated += 1
+                if key in ("morning-brief", "weekly-review"):
+                    if job.get("skills") != [] or job.get("skill") is not None:
+                        job["skills"] = []
+                        job["skill"] = None
+                        updated += 1
+                if key == "m365-teams-check" and target_schedule:
+                    schedule = job.get("schedule")
+                    if isinstance(schedule, dict) and str(schedule.get("expr") or "") != target_schedule:
+                        schedule["expr"] = target_schedule
+                        schedule["display"] = target_schedule
+                        job["schedule_display"] = target_schedule
+                        updated += 1
 
     return updated
 

@@ -4,6 +4,7 @@ import { type CSSProperties, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { $tipMode, resolveIsNerdyMode } from '@/store/tip-mode'
 
+import { CronBriefCard } from './cron-brief-card'
 import introCopyJsonl from './intro-copy.jsonl?raw'
 
 type IntroCopy = {
@@ -286,6 +287,7 @@ export function Intro({ personality, seed }: IntroProps) {
         <p className="m-0 text-center leading-normal tracking-tight">{body}</p>
 
         <div className="mt-4 flex flex-col items-center justify-center gap-2.5 pointer-events-auto">
+          <CronBriefCard />
           <div className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-card/60 px-3.5 py-1.5 text-xs text-foreground/80 shadow-xs backdrop-blur-xs">
             <span>{tipText}</span>
           </div>

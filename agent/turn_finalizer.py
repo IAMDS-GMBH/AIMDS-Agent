@@ -388,20 +388,34 @@ def finalize_turn(
         messages=messages,
     )
 
+    # Background review is opt-out per agent: the review fork itself must
+    # never spawn a nested review (it did — every cron run paid for two full
+    # replays, AIS-305), and cron runs disable it via cron.background_review.
+    from agent.background_review import background_review_allowed
+
+    _review_allowed = background_review_allowed(agent)
+    if not _review_allowed:
+        logger.debug(
+            "background review skipped (fork=%s, enabled=%s)",
+            getattr(agent, "_is_background_review_fork", False),
+            getattr(agent, "_background_review_enabled", True),
+        )
+
     # Tool findings: did this turn teach something about a tool? (an error
     # recovered with changed arguments, a first successful use of a tool
     # tool_search loaded, the same tool called repeatedly)
     _tool_triggers = {}
-    try:
-        from agent.tool_findings import turn_triggers
+    if _review_allowed:
+        try:
+            from agent.tool_findings import turn_triggers
 
-        _tool_triggers = turn_triggers(agent)
-    except Exception:
-        _tool_triggers = {}
+            _tool_triggers = turn_triggers(agent)
+        except Exception:
+            _tool_triggers = {}
 
     # Background memory/skill/tool review — runs AFTER the response is delivered
     # so it never competes with the user's task for model attention.
-    if final_response and not interrupted and (_should_review_memory or _should_review_skills or _tool_triggers):
+    if _review_allowed and final_response and not interrupted and (_should_review_memory or _should_review_skills or _tool_triggers):
         try:
             agent._spawn_background_review(
                 messages_snapshot=list(messages),

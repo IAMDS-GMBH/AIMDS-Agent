@@ -289,6 +289,13 @@ export interface Translations {
       tipModeAuto: string
       tipModeBusiness: string
       tipModeNerd: string
+      previewAutoOpen: {
+        label: string
+        artifacts: string
+        all: string
+        never: string
+        hint: string
+      }
       themeTitle: string
       themeDesc: string
       themeProfileNote: (profile: string) => string
@@ -992,6 +999,26 @@ export interface Translations {
     promptScheduleRequired: string
     saveChanges: string
     createAction: string
+    newOutput: string
+    unseenCount: (count: number) => string
+    latestOutput: string
+    openLatestOutput: string
+    openOutputFailed: string
+    brief: {
+      title: string
+      badgeNew: string
+      finding: string
+      next: string
+      openBrief: string
+      openRun: string
+      noSummary: string
+    }
+    notifications: {
+      completedTitle: (name: string) => string
+      failedTitle: (name: string) => string
+      completedBody: string
+      failedBody: string
+    }
   }
 
   artifacts: {

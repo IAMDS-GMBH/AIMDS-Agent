@@ -42,7 +42,8 @@ def cleanup_scratch_tables(conn: sqlite3.Connection) -> int:
         )
         system_tables = {
             "sessions", "messages", "schema_version", "state_meta", "mcp_records",
-            "compression_locks", "todos", "inbox_entries"
+            "compression_locks", "todos", "inbox_entries", "brief_items", "brief_runs",
+            "api_calls", "workday_calendar", "absences"
         }
         tables = [row[0] for row in cursor.fetchall() if row[0].lower() not in system_tables]
         dropped = 0

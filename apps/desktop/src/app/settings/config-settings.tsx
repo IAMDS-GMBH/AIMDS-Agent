@@ -24,6 +24,7 @@ import { Check, ChevronDown } from '@/lib/icons'
 import { persistString, storedString } from '@/lib/storage'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { $previewAutoOpen, setPreviewAutoOpen } from '@/store/preview-settings'
 import { ensureDefaultWorkspaceCwd, FILE_PICKER_ROOT_STORAGE_KEY, setCurrentCwd } from '@/store/session'
 import { $tipMode, setTipMode } from '@/store/tip-mode'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
@@ -408,6 +409,7 @@ export function ConfigSettings({
   const a = t.settings.appearance
   const toolViewMode = useStore($toolViewMode)
   const tipMode = useStore($tipMode)
+  const previewAutoOpen = useStore($previewAutoOpen)
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [_defaults, setDefaults] = useState<HermesConfigRecord | null>(null)
   const [schema, setSchema] = useState<Record<string, ConfigFieldSchema> | null>(null)
@@ -458,6 +460,12 @@ export function ConfigSettings({
     { id: 'auto', label: a.tipModeAuto },
     { id: 'business', label: a.tipModeBusiness },
     { id: 'nerd', label: a.tipModeNerd }
+  ] as const
+
+  const previewAutoOpenOptions = [
+    { id: 'artifacts', label: a.previewAutoOpen.artifacts },
+    { id: 'all', label: a.previewAutoOpen.all },
+    { id: 'never', label: a.previewAutoOpen.never }
   ] as const
 
   useEffect(() => {
@@ -713,6 +721,20 @@ export function ConfigSettings({
                 }
                 description={a.tipModeDesc}
                 title={a.tipModeTitle}
+              />
+              <ListRow
+                action={
+                  <SegmentedControl
+                    onChange={id => {
+                      triggerHaptic('selection')
+                      setPreviewAutoOpen(id)
+                    }}
+                    options={previewAutoOpenOptions}
+                    value={previewAutoOpen}
+                  />
+                }
+                description={a.previewAutoOpen.hint}
+                title={a.previewAutoOpen.label}
               />
             </div>
           </div>

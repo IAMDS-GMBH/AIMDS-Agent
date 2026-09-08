@@ -110,6 +110,7 @@ tools:
     - m365_list_todo_tasks
     - m365_create_todo_task
     - m365_get_mailbox_settings
+    - m365_brief_snapshot
     - m365_get_my_signature
     - m365_get_mail_style
     - m365_index_search

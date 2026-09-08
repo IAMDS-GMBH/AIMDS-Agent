@@ -2604,6 +2604,22 @@ DEFAULT_CONFIG = {
         # 1 = serial (pre-v0.9 behaviour).
         # Also overridable via HERMES_CRON_MAX_PARALLEL env var.
         "max_parallel_jobs": None,
+        # Background memory/skill/tool-findings review forks after a cron run.
+        # Each fork replays the full run context 4+ times; off by default
+        # (AIS-305 measured ~400k input tokens per morning brief for it).
+        "background_review": False,
+        # LLM-free collector for the shipped brief/poll jobs (AIS-305): gathers
+        # calendar, mail, tickets, worklogs and workspace signals deterministically
+        # and lets the model compose only.
+        "brief_collector": {
+            "enabled": True,
+            # "en" | "de"; empty = display.language, falling back to "en".
+            "language": "",
+            "char_budget": 5000,
+            "mail_top": 15,
+            "source_timeout_seconds": 45,
+            "compose_max_iterations": 3,
+        },
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

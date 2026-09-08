@@ -1764,3 +1764,260 @@ class TestMailTrashSafetyAndAudit:
         assert server.m365_get_audit_log(action="send")["count"] == 1
         assert server.m365_get_audit_log(since="2999-01-01T00:00:00+00:00")["count"] == 0
         assert "delete" not in [t for t in ("m365_hard_delete_email",) if hasattr(server, t)]
+
+
+class TestBriefSnapshot:
+    """m365_brief_snapshot (AIS-305): bundled, trimmed call for briefs."""
+
+    WINDOW = ("2026-09-08T06:00:00", "2026-09-08T20:00:00")
+
+    @staticmethod
+    def _graph(overrides=None, fail=None):
+        """Build a _graph_request stand-in with realistic Graph payloads; `fail` raises for that endpoint prefix."""
+        events = {"value": [
+            {
+                "id": "evt-2", "subject": "Standup", "isAllDay": False,
+                "start": {"dateTime": "2026-09-08T09:30:00.0000000", "timeZone": "Europe/Berlin"},
+                "end": {"dateTime": "2026-09-08T09:45:00.0000000", "timeZone": "Europe/Berlin"},
+                "location": {"displayName": "Teams"},
+                "organizer": {"emailAddress": {"name": "Alice", "address": "alice@example.com"}},
+                "attendees": [{"emailAddress": {"name": "Bob"}}, {"emailAddress": {"name": "Carol"}}],
+                "responseStatus": {"response": "accepted"},
+                "body": {"contentType": "html", "content": "<p>secret agenda</p>"},
+            },
+            {
+                "id": "evt-1", "subject": "Focus", "isAllDay": True,
+                "start": {"dateTime": "2026-09-08T00:00:00.0000000", "timeZone": "Europe/Berlin"},
+                "end": {"dateTime": "2026-09-09T00:00:00.0000000", "timeZone": "Europe/Berlin"},
+                "organizer": {"emailAddress": {"name": "Me", "address": "me@example.com"}},
+            },
+        ]}
+        mails = {"value": [
+            {
+                "id": "m-1", "subject": "Invoice", "isRead": False, "importance": "high",
+                "receivedDateTime": "2026-09-08T05:10:00Z", "hasAttachments": True,
+                "webLink": "https://outlook.office.com/m-1",
+                "from": {"emailAddress": {"name": "Dana", "address": "dana@example.com"}},
+                "bodyPreview": "please pay", "body": {"content": "<p>please pay</p>"},
+            },
+            {
+                "id": "m-2", "subject": "Already read", "isRead": True,
+                "receivedDateTime": "2026-09-08T04:00:00Z",
+                "from": {"emailAddress": {"name": "Eve", "address": "eve@example.com"}},
+                "bodyPreview": "old",
+            },
+            {
+                "id": "m-3", "subject": "Newsletter", "isRead": False,
+                "receivedDateTime": "2026-09-08T03:00:00Z",
+                "from": {"emailAddress": {"name": "News", "address": "news@example.com"}},
+                "bodyPreview": "spam",
+            },
+        ]}
+        todo_lists = {"value": [
+            {"id": "list-x", "displayName": "Other"},
+            {"id": "list-default", "displayName": "Tasks", "wellknownListName": "defaultList"},
+        ]}
+        tasks = {"value": [
+            {"id": "t-nodue", "title": "No due date", "status": "notStarted", "importance": "normal"},
+            {"id": "t-done", "title": "Done already", "status": "completed",
+             "dueDateTime": {"dateTime": "2026-09-08T10:00:00.0000000", "timeZone": "UTC"}},
+            {"id": "t-later", "title": "Next week", "status": "notStarted",
+             "dueDateTime": {"dateTime": "2026-09-15T22:00:00.0000000", "timeZone": "UTC"}},
+            {"id": "t-today", "title": "Due today", "status": "inProgress", "importance": "high",
+             "dueDateTime": {"dateTime": "2026-09-08T10:00:00.0000000", "timeZone": "UTC"}},
+        ]}
+        chats = {"value": [
+            {"id": "chat-1", "topic": None, "chatType": "oneOnOne",
+             "members": [{"displayName": "Alice"}, {"displayName": "Me"}]},
+            {"id": "chat-2", "topic": "Project X", "chatType": "group"},
+            {"id": "chat-3", "topic": "Silent", "chatType": "group"},
+        ]}
+        long_text = "word " * 100
+        chat_msgs = {
+            "chat-1": {"value": [
+                {"id": "cm-1", "messageType": "message", "createdDateTime": "2026-09-08T05:00:00Z",
+                 "from": {"user": {"displayName": "Alice"}},
+                 "body": {"contentType": "html", "content": f"<p>Hi <b>there</b><br>{long_text}</p>"}},
+                {"id": "cm-2", "messageType": "systemEventMessage", "body": {"content": "joined"}},
+                {"id": "cm-3", "messageType": "message", "createdDateTime": "2026-09-08T04:00:00Z",
+                 "from": {"user": {"displayName": "Me"}}, "body": {"contentType": "text", "content": "ok"}},
+                {"id": "cm-4", "messageType": "message", "createdDateTime": "2026-09-08T03:00:00Z",
+                 "from": {"user": {"displayName": "Alice"}}, "body": {"contentType": "text", "content": "third"}},
+            ]},
+            "chat-2": {"value": [
+                {"id": "cm-5", "messageType": "message", "createdDateTime": "2026-09-08T02:00:00Z",
+                 "from": {"application": {"displayName": "Bot"}}, "body": {"contentType": "text", "content": "deployed"}},
+            ]},
+            "chat-3": {"value": []},
+        }
+        teams = {"value": [{"id": "team-1", "displayName": "Dev Team"}]}
+        channels = {"value": [{"id": "ch-1", "displayName": "General"}, {"id": "ch-2", "displayName": "Empty"}]}
+        channel_msgs = {
+            "ch-1": {"value": [
+                {"id": "chm-1", "messageType": "message", "createdDateTime": "2026-09-08T01:00:00Z",
+                 "from": {"user": {"displayName": "Bob"}}, "body": {"contentType": "html", "content": "<p>Release <i>done</i></p>"}},
+            ]},
+            "ch-2": {"value": []},
+        }
+        routes = {
+            "/me/calendar/calendarView": events,
+            "/me/mailFolders/inbox/messages": mails,
+            "/me/todo/lists": todo_lists,
+            "/me/todo/lists/list-default/tasks": tasks,
+            "/me/chats": chats,
+            "/me/joinedTeams": teams,
+            "/teams/team-1/channels": channels,
+        }
+        for cid, payload in chat_msgs.items():
+            routes[f"/me/chats/{cid}/messages"] = payload
+        for chid, payload in channel_msgs.items():
+            routes[f"/teams/team-1/channels/{chid}/messages"] = payload
+        routes.update(overrides or {})
+        calls = []
+
+        def fake(method, endpoint, json_data=None, params=None, extra_headers=None, account=None):
+            calls.append((method, endpoint, params or {}))
+            if fail and endpoint.startswith(fail):
+                raise RuntimeError(f"MS Graph API Error [403]: denied for {endpoint}")
+            if endpoint in routes:
+                return routes[endpoint]
+            raise AssertionError(f"unexpected Graph call {method} {endpoint}")
+
+        fake.calls = calls
+        return fake
+
+    def test_happy_path_trims_filters_and_orders(self):
+        fake = self._graph()
+        with patch.dict(server.os.environ, {"HERMES_TIMEZONE": "Europe/Berlin"}), \
+                patch.object(server, "_graph_request", side_effect=fake):
+            res = server.m365_brief_snapshot(*self.WINDOW, mail_top=15, todo_top=10, chats_top=5, messages_per_chat=2)
+
+        assert res["errors"] == []
+        assert res["window"]["start"] == "2026-09-08T06:00:00"
+        assert res["window"]["end"] == "2026-09-08T20:00:00"
+
+        # Events: sorted by start, trimmed fields, no attendees/body.
+        assert [e["subject"] for e in res["events"]] == ["Focus", "Standup"]
+        standup = res["events"][1]
+        assert set(standup) == {"subject", "start", "end", "start_local", "end_local", "is_all_day",
+                                "location", "organizer", "response_status"}
+        assert standup["start"] == "2026-09-08T09:30:00"
+        assert standup["start_local"].startswith("2026-09-08 09:30:00")
+        assert standup["location"] == "Teams"
+        assert standup["organizer"] == "Alice"
+        assert standup["response_status"] == "accepted"
+        assert res["events"][0]["is_all_day"] is True
+        # Reused m365_get_events: window forwarded to the calendarView call.
+        cal_calls = [c for c in fake.calls if c[1] == "/me/calendar/calendarView"]
+        assert cal_calls and cal_calls[0][2]["startDateTime"] == "2026-09-08T06:00:00"
+        assert cal_calls[0][2]["endDateTime"] == "2026-09-08T20:00:00"
+        assert "responseStatus" in cal_calls[0][2]["$select"]
+
+        # Mail: unread only, no body/bodyPreview, trimmed fields, server-side filter + no bodies selected.
+        assert [m["id"] for m in res["unread_mail"]] == ["m-1", "m-3"]
+        invoice = res["unread_mail"][0]
+        assert set(invoice) == {"id", "received", "from_name", "from_address", "subject", "importance",
+                                "has_attachments", "web_link"}
+        assert invoice["from_name"] == "Dana" and invoice["from_address"] == "dana@example.com"
+        assert invoice["importance"] == "high" and invoice["has_attachments"] is True
+        assert invoice["received"].startswith("2026-09-08 07:10:00")
+        mail_call = next(c for c in fake.calls if c[1] == "/me/mailFolders/inbox/messages")
+        assert mail_call[2]["$filter"] == "isRead eq false"
+        assert "bodyPreview" not in mail_call[2]["$select"] and "body" not in mail_call[2]["$select"].split(",")
+
+        # To Do: completed dropped, due-in-window first, then by due date, then no due date.
+        assert [t["id"] for t in res["todos"]] == ["t-today", "t-later", "t-nodue"]
+        today = res["todos"][0]
+        assert set(today) == {"id", "list", "title", "status", "due", "importance"}
+        assert today["list"] == "Tasks" and today["status"] == "inProgress"
+        assert today["due"].startswith("2026-09-08 12:00:00")
+        assert res["todos"][2]["due"] == ""
+        task_call = next(c for c in fake.calls if c[1] == "/me/todo/lists/list-default/tasks")
+        assert task_call[2]["$filter"] == "status ne 'completed'"
+
+        # Teams: chats with messages only, system events skipped, messages capped, HTML stripped + truncated.
+        chats = res["teams"]["chats"]
+        assert [c["chat_id"] for c in chats] == ["chat-1", "chat-2"]
+        assert chats[0]["topic"] == "Alice, Me"
+        assert set(chats[0]) == {"chat_id", "topic", "messages"}
+        assert len(chats[0]["messages"]) == 2
+        first = chats[0]["messages"][0]
+        assert set(first) == {"from", "created", "preview"}
+        assert first["from"] == "Alice"
+        assert first["preview"].startswith("Hi there word")
+        assert "<" not in first["preview"]
+        assert len(first["preview"]) <= 160
+        assert chats[0]["messages"][1]["preview"] == "ok"
+        assert chats[1]["messages"][0]["from"] == "Bot"
+        channels = res["teams"]["channels"]
+        assert len(channels) == 1
+        assert channels[0]["team"] == "Dev Team" and channels[0]["topic"] == "General"
+        assert channels[0]["messages"][0]["preview"] == "Release done"
+
+        assert res["counts"] == {"events": 2, "unread_mail": 2, "todos": 3, "chats": 2, "channels": 1}
+
+        # Nothing verbose leaks anywhere in the payload.
+        dumped = server.json.dumps(res)
+        for forbidden in ("bodyPreview", "attendees", "secret agenda", "please pay", "<p>", "<b>"):
+            assert forbidden not in dumped
+
+    def test_caps_are_enforced(self):
+        fake = self._graph()
+        with patch.dict(server.os.environ, {"HERMES_TIMEZONE": "Europe/Berlin"}), \
+                patch.object(server, "_graph_request", side_effect=fake):
+            res = server.m365_brief_snapshot(*self.WINDOW, mail_top=500, todo_top=1, chats_top=99, messages_per_chat=1)
+
+        mail_call = next(c for c in fake.calls if c[1] == "/me/mailFolders/inbox/messages")
+        assert mail_call[2]["$top"] == 50
+        chats_call = next(c for c in fake.calls if c[1] == "/me/chats")
+        assert chats_call[2]["$top"] == 15
+        assert [t["id"] for t in res["todos"]] == ["t-today"]
+        assert all(len(c["messages"]) == 1 for c in res["teams"]["chats"])
+        assert next(c for c in fake.calls if c[1] == "/me/chats/chat-1/messages")[2]["$top"] == 1
+
+    def test_zero_caps_skip_sources(self):
+        fake = self._graph()
+        with patch.object(server, "_graph_request", side_effect=fake):
+            res = server.m365_brief_snapshot(*self.WINDOW, mail_top=0, todo_top=0, chats_top=0)
+        endpoints = {c[1] for c in fake.calls}
+        assert endpoints == {"/me/calendar/calendarView"}
+        assert res["unread_mail"] == [] and res["todos"] == [] and res["teams"] == {"chats": [], "channels": []}
+        assert res["counts"]["events"] == 2
+
+    def test_failing_source_only_adds_error_entry(self):
+        fake = self._graph(fail="/me/mailFolders/inbox/messages")
+        with patch.dict(server.os.environ, {"HERMES_TIMEZONE": "Europe/Berlin"}), \
+                patch.object(server, "_graph_request", side_effect=fake):
+            res = server.m365_brief_snapshot(*self.WINDOW)
+
+        assert res["unread_mail"] == []
+        assert len(res["errors"]) == 1
+        assert res["errors"][0]["source"] == "mail"
+        assert "403" in res["errors"][0]["error"]
+        # Other sources are intact.
+        assert res["counts"]["events"] == 2
+        assert res["counts"]["todos"] == 3
+        assert res["counts"]["chats"] == 2
+        assert res["counts"]["unread_mail"] == 0
+
+    def test_teams_consent_missing_keeps_calendar_mail_and_todos(self):
+        fake = self._graph(fail="/me/chats")
+        with patch.object(server, "_graph_request", side_effect=fake):
+            res = server.m365_brief_snapshot(*self.WINDOW)
+        sources = [e["source"] for e in res["errors"]]
+        assert sources == ["teams"]
+        assert res["teams"]["chats"] == []
+        assert res["teams"]["channels"]  # joinedTeams path still worked
+        assert res["counts"]["events"] == 2 and res["counts"]["unread_mail"] == 2 and res["counts"]["todos"] == 3
+
+    def test_window_completion_and_shared_calendar(self):
+        fake = self._graph(overrides={
+            "/me/calendars": {"value": [{"id": "cal-office", "name": "Officezeiten"}]},
+            "/me/calendars/cal-office/calendarView": {"value": []},
+        })
+        with patch.dict(server.os.environ, {"HERMES_TIMEZONE": "Europe/Berlin"}), \
+                patch.object(server, "_graph_request", side_effect=fake):
+            res = server.m365_brief_snapshot("2026-09-08", "", calendar="Officezeiten", mail_top=0, todo_top=0, chats_top=0)
+        assert res["window"] == {"start": "2026-09-08T00:00:00", "end": "2026-09-08T23:59:59", "timezone": "Europe/Berlin"}
+        assert res["events"] == [] and res["errors"] == []
+        assert any(c[1] == "/me/calendars/cal-office/calendarView" for c in fake.calls)

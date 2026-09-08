@@ -374,6 +374,13 @@ export const en: Translations = {
       tipModeAuto: 'Auto (Endpoint)',
       tipModeBusiness: 'Business',
       tipModeNerd: 'Nerd / Team',
+      previewAutoOpen: {
+        label: 'Auto-open previews',
+        artifacts: 'Artifacts',
+        all: 'All files',
+        never: 'Never',
+        hint: 'Artifacts: only documents, pages and images the agent writes. All files: every file a tool touches. Never: open previews by hand.'
+      },
       themeTitle: 'Theme',
       themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
       themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`,
@@ -1241,7 +1248,27 @@ export const en: Translations = {
     optional: 'Optional',
     promptScheduleRequired: 'Prompt and schedule are required.',
     saveChanges: 'Save changes',
-    createAction: 'Create cron'
+    createAction: 'Create cron',
+    newOutput: 'New',
+    unseenCount: count => (count === 1 ? '1 new' : `${count} new`),
+    latestOutput: 'Latest output',
+    openLatestOutput: 'Open output',
+    openOutputFailed: 'Could not open the cron output',
+    brief: {
+      title: 'Brief',
+      badgeNew: 'New',
+      finding: 'Finding',
+      next: 'Next',
+      openBrief: 'Open brief',
+      openRun: 'Open run',
+      noSummary: 'No summary yet — open the brief to read it.'
+    },
+    notifications: {
+      completedTitle: name => `Cron job completed: ${name}`,
+      failedTitle: name => `Cron job failed: ${name}`,
+      completedBody: 'Click to open the report.',
+      failedBody: 'Execution failed.'
+    }
   },
 
   artifacts: {

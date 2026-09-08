@@ -138,12 +138,13 @@ async def _lifespan(app: "FastAPI"):
     loop = asyncio.get_running_loop()
 
     # Register cron completion callback for broadcasting events to desktop
-    def _on_cron_complete(job_id: str, success: bool, error: Optional[str] = None):
+    def _on_cron_complete(job_id: str, success: bool, error: Optional[str] = None, **extra):
         """Callback invoked when a cron job completes.
         
         Broadcasts a completion event to all connected event subscribers
         so the desktop UI can refresh the job runs list without waiting
-        for the next poll interval.
+        for the next poll interval. ``extra`` carries the artifact facts
+        (job_name, profile, output_path, output_at, session_id — AIS-305).
         """
         try:
             # Create event payload
@@ -153,6 +154,11 @@ async def _lifespan(app: "FastAPI"):
                 "success": success,
                 "error": error,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "job_name": extra.get("job_name"),
+                "profile": extra.get("profile"),
+                "output_path": extra.get("output_path"),
+                "output_at": extra.get("output_at"),
+                "session_id": extra.get("session_id"),
             })
             
             # run_job() completion can come from a worker thread; bridge back to
@@ -7886,7 +7892,15 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
     try:
         runs = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
         now = time.time()
+        _last_session = None
+        _last_output_path = None
+        if selected:
+            _job_row = _call_cron_for_profile(selected, "get_job", canonical)
+            if _job_row:
+                _last_session = _job_row.get("last_run_session_id")
+                _last_output_path = _job_row.get("last_output_path")
         for s in runs:
+            s["output_path"] = _last_output_path if (_last_session and s.get("id") == _last_session) else None
             s["is_active"] = (
                 s.get("ended_at") is None
                 and (now - s.get("last_active", s.get("started_at", 0))) < 300
@@ -7947,6 +7961,46 @@ async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[st
     return job
 
 
+@app.post("/api/cron/jobs/{job_id}/seen")
+async def mark_cron_job_seen(job_id: str, profile: Optional[str] = None):
+    """Record that the user opened the job's latest output (AIS-305)."""
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = _call_cron_for_profile(selected, "mark_job_seen", job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.get("/api/cron/jobs/{job_id}/output/latest")
+async def get_cron_job_latest_output(job_id: str, profile: Optional[str] = None):
+    """Latest artifact of a cron job (journal file or saved output doc), AIS-305."""
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = _call_cron_for_profile(selected, "get_job", job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    raw_path = job.get("last_output_path")
+    if not raw_path:
+        raise HTTPException(status_code=404, detail="No output yet")
+    path = Path(str(raw_path)).expanduser()
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Output file missing")
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Cannot read output: {exc}")
+    return {
+        "path": str(path),
+        "written_at": job.get("last_output_at"),
+        "content": content[:200_000],
+        "summary": job.get("last_output_summary"),
+        "session_id": job.get("last_run_session_id"),
+    }
+
+
 @app.post("/api/cron/jobs/{job_id}/pause")
 async def pause_cron_job(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
@@ -8004,8 +8058,31 @@ def _spawn_immediate_cron_job(profile: str, job_id: str) -> Optional[str]:
                     # Execute the job
                     _log.info("Executing job '%s' with HERMES_HOME=%s", job_id, home)
                     success, output, final_response, error = cron_sched.run_job(job)
+                    # Persist the output doc like the ticker does, so the run
+                    # has an artifact even when no journal file was written.
+                    _output_file = None
+                    try:
+                        from cron.jobs import save_job_output as _save_job_output
+
+                        _output_file = _save_job_output(job_id, output)
+                    except Exception as _save_exc:
+                        _log.debug("Immediate cron job '%s': output save skipped: %s", job_id, _save_exc)
+                    _meta = cron_sched.pop_run_meta(job_id)
+                    _summary = None
+                    if success and (final_response or "").strip():
+                        _s, _a, _oq, _has = cron_sched._extract_findings_summary_action(final_response)
+                        if _has:
+                            _summary = {"finding": _s, "next": _a, "open_question": (_oq[0] if _oq else "")}
+                    _output_path = _meta.get("journal_path") or (
+                        str(_output_file) if (success and _output_file and not _meta.get("silent")) else None
+                    )
                     # Mark the job as complete
-                    cron_sched.mark_job_run(job_id, success, error)
+                    cron_sched.mark_job_run(
+                        job_id, success, error,
+                        output_path=_output_path,
+                        session_id=_meta.get("session_id") or session_id,
+                        summary=_summary,
+                    )
                     _log.info(
                         "Immediate cron job '%s' (session %s) completed: %s",
                         job_id, session_id, "success" if success else "failed",

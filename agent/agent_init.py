@@ -1124,6 +1124,9 @@ def init_agent(
     agent._session_start_compact_workspace_hydration = True
     agent._session_start_bootstrap_contract_enabled = True
     agent._memory_nudge_interval = 10
+    # Background review defaults — see agent.background_review.background_review_allowed
+    agent._background_review_enabled = True
+    agent._is_background_review_fork = False
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
     if not skip_memory:
