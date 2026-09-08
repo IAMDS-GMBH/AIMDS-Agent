@@ -235,6 +235,16 @@ def test_update_check_release_manifest_error_auto_falls_back_to_git_check(root, 
     assert "Already up to date." in out
 
 
+def test_update_check_release_runs_before_the_pypi_branch(root, capsys):
+    """A source tree without .git and without a marker is not a PyPI install."""
+    with patch("hermes_cli.release_update.fetch_release_feed", return_value=_feed("9.9.9")), \
+         patch("hermes_cli.config.detect_install_method", return_value="pip"), \
+         patch("hermes_cli.banner.check_via_pypi") as pypi:
+        assert _run_check("stable") is None
+    pypi.assert_not_called()
+    assert "Update available: v9.9.9 (release archive" in capsys.readouterr().out
+
+
 def test_update_check_release_main_channel(root, capsys):
     with patch("hermes_cli.config.detect_install_method", return_value="release"), \
          patch("hermes_cli.release_update.fetch_release_feed") as fetch:

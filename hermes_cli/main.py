@@ -8208,6 +8208,15 @@ def _cmd_update_check(
         from hermes_cli.config import format_docker_update_message
         print(format_docker_update_message())
         sys.exit(1)
+
+    # Release archives first (AIS-312): a source tree without .git or marker
+    # is still a source tree, not a PyPI install — only when the release
+    # manifest cannot be served (auto) does the previous path decide.
+    if source == "release" and _check_via_release(
+        branch, forced=forced, branch_explicit=branch_explicit
+    ):
+        return
+
     if method == "pip":
         from hermes_cli.config import recommended_update_command
         from hermes_cli.banner import check_via_pypi
@@ -8222,11 +8231,6 @@ def _cmd_update_check(
         else:
             print("⚕ Update available on PyPI.")
             print(f"  Run '{recommended_update_command()}' to install.")
-        return
-
-    if source == "release" and _check_via_release(
-        branch, forced=forced, branch_explicit=branch_explicit
-    ):
         return
 
     git_dir = PROJECT_ROOT / ".git"
