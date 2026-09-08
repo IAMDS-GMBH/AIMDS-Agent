@@ -22,6 +22,7 @@ import {
   useState
 } from 'react'
 
+import { InlinePathLink } from '@/components/chat/inline-path-link'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
@@ -38,7 +39,8 @@ import {
   mediaPathFromMarkdownHref,
   mediaStreamUrl
 } from '@/lib/media'
-import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
+import { isBareFilePath } from '@/lib/paths'
+import { pathFromMarkdownHref, previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { cn } from '@/lib/utils'
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
@@ -303,7 +305,8 @@ function ListItem({ className, children, ...props }: ComponentProps<'li'>) {
   )
 }
 
-function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {  const mediaPath = mediaPathFromMarkdownHref(href)
+function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
+  const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
     return <MediaAttachment path={mediaPath} />
@@ -313,6 +316,13 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 
   if (previewTarget) {
     return <PreviewAttachment source="explicit-link" target={previewTarget} />
+  }
+
+  // Bare paths the preprocessor linked (`#path/…`): click-to-preview, no auto-open.
+  const filePath = pathFromMarkdownHref(href)
+
+  if (filePath) {
+    return <InlinePathLink path={filePath} />
   }
 
   const target = href ? normalizeExternalUrl(href) : href
@@ -339,6 +349,23 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 
   return (
     <PrettyLink className={cn('wrap-anywhere', className)} fallbackLabel={fallbackLabel} href={target} {...props} />
+  )
+}
+
+// Inline code that is exactly one file path (`` `~/notes/today.md` ``) becomes a
+// click-to-preview affordance; every other code span renders as-is. Wired as
+// streamdown's `inlineCode` slot so fenced blocks keep the default renderer.
+function MarkdownCode({ children, className, ...props }: ComponentProps<'code'>) {
+  const text = childrenToText(children)
+
+  if (text && isBareFilePath(text)) {
+    return <InlinePathLink code path={text.trim()} />
+  }
+
+  return (
+    <code className={className} {...props}>
+      {children}
+    </code>
   )
 }
 
@@ -530,6 +557,7 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
           <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props} />
         ),
         a: MarkdownLink,
+        inlineCode: MarkdownCode,
         // `---` as quiet spacing, not a heavy full-width rule.
         hr: (_props: ComponentProps<'hr'>) => <div aria-hidden className="my-3" />,
         blockquote: ({ className, ...props }: ComponentProps<'blockquote'>) => (

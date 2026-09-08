@@ -11,6 +11,10 @@ export interface PreviewTarget {
    * path the preview can't reliably re-read. Rendered directly and NOT
    * persisted to the session-preview registry (it would bloat localStorage). */
   dataUrl?: string
+  /** Inline text content when the renderer already holds it — e.g. a cron
+   * artifact fetched through the backend because the path isn't readable on
+   * this machine (remote backend). Rendered directly, never persisted. */
+  text?: string
   kind: 'file' | 'url'
   label: string
   large?: boolean
@@ -226,7 +230,10 @@ function persistSessionPreviewRegistry(registry: SessionPreviewRegistry) {
     // Drop the inline image bytes before persisting — a screenshot data URL is
     // megabytes and would blow the localStorage quota. On reload the record
     // falls back to reading its `path`/`url`.
-    const lean = JSON.stringify(pruneRegistry(registry), (key, value) => (key === 'dataUrl' ? undefined : value))
+    const lean = JSON.stringify(pruneRegistry(registry), (key, value) =>
+      key === 'dataUrl' || key === 'text' ? undefined : value
+    )
+
     window.localStorage.setItem(REGISTRY_STORAGE_KEY, lean)
   } catch {
     // Session previews are a desktop convenience; storage failures are nonfatal.

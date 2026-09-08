@@ -12,6 +12,7 @@ import type {
   ConfigSchemaResponse,
   CronJob,
   CronJobCreatePayload,
+  CronJobLatestOutput,
   CronJobUpdates,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
@@ -72,6 +73,9 @@ export type {
   ConfigSchemaResponse,
   CronJob,
   CronJobCreatePayload,
+  CronJobLatestOutput,
+  CronJobOrigin,
+  CronJobOutputSummary,
   CronJobSchedule,
   CronJobUpdates,
   ElevenLabsVoice,
@@ -694,6 +698,31 @@ export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`,
     method: 'DELETE'
+  })
+}
+
+// Cron jobs are served by the primary backend; a job that belongs to another
+// profile is addressed with `?profile=` rather than routed to a pooled backend.
+function cronProfileQuery(profile?: null | string): string {
+  const trimmed = typeof profile === 'string' ? profile.trim() : ''
+
+  return trimmed ? `?profile=${encodeURIComponent(trimmed)}` : ''
+}
+
+// Mark the job's newest output as seen (AIS-305). Returns the annotated job so
+// the caller can reconcile `last_seen_at` with what the server persisted.
+export function markCronJobSeen(jobId: string, profile?: null | string): Promise<CronJob> {
+  return window.hermesDesktop.api<CronJob>({
+    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/seen${cronProfileQuery(profile)}`,
+    method: 'POST'
+  })
+}
+
+// Newest artifact of a job as the backend read it — the fallback when the
+// desktop can't read `last_output_path` locally (remote backend).
+export function getCronJobLatestOutput(jobId: string, profile?: null | string): Promise<CronJobLatestOutput> {
+  return window.hermesDesktop.api<CronJobLatestOutput>({
+    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/output/latest${cronProfileQuery(profile)}`
   })
 }
 

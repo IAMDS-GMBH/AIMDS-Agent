@@ -1530,7 +1530,7 @@ def m365_get_events(
     else:
         base_path = "/me/calendar"
 
-    params: Dict[str, Any] = {"$select": "id,subject,start,end,location,organizer,attendees,isAllDay,categories"}
+    params: Dict[str, Any] = {"$select": "id,subject,start,end,location,organizer,attendees,isAllDay,categories,responseStatus"}
 
     if start_time_iso or end_time_iso:
         if start_time_iso and not end_time_iso:
@@ -3663,6 +3663,331 @@ def m365_create_todo_task(
 def m365_get_mailbox_settings() -> Dict[str, Any]:
     """Get Outlook mailbox settings including Out-Of-Office / Automatic Reply status, working hours, and language."""
     return _graph_request("GET", "/me/mailboxSettings")
+
+
+# ---------------------------------------------------------------------------
+# Bundled brief snapshot (AIS-305): one token-lean call for morning/daily
+# briefs instead of four verbose tool calls. Every source is isolated — a
+# failing one only adds an `errors` entry.
+# ---------------------------------------------------------------------------
+_BRIEF_PREVIEW_CHARS = 160
+_BRIEF_MAIL_CAP = 50
+_BRIEF_TODO_CAP = 50
+_BRIEF_CHATS_CAP = 15
+_BRIEF_MESSAGES_CAP = 10
+_BRIEF_TEAMS_CAP = 5
+_BRIEF_CHANNELS_PER_TEAM = 3
+
+
+def _parse_graph_datetime(value: Any) -> Optional[Any]:
+    """Parse an ISO string or Graph {dateTime, timeZone} object into an aware datetime (or None)."""
+    if not value:
+        return None
+    import datetime as _dtm
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:  # pragma: no cover
+        from backports.zoneinfo import ZoneInfo  # type: ignore
+    raw = ""
+    tz_name = "UTC"
+    if isinstance(value, dict):
+        raw = str(value.get("dateTime") or "")
+        tz_name = str(value.get("timeZone") or "UTC")
+    else:
+        raw = str(value)
+    if not raw:
+        return None
+    try:
+        clean = raw.strip().replace(" ", "T").replace("Z", "+00:00")
+        if "." in clean:
+            head, tail = clean.split(".", 1)
+            offset = ""
+            for idx, char in enumerate(tail):
+                if char in ("+", "-"):
+                    offset = tail[idx:]
+                    tail = tail[:idx]
+                    break
+            clean = f"{head}.{tail[:6]}{offset}"
+        dt = _dtm.datetime.fromisoformat(clean)
+        if dt.tzinfo is None:
+            try:
+                dt = dt.replace(tzinfo=ZoneInfo(tz_name))
+            except Exception:
+                dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+        return dt
+    except Exception:
+        return None
+
+
+def _brief_person(entry: Any) -> Tuple[str, str]:
+    """(name, address) from a Graph recipient/organizer object."""
+    if not isinstance(entry, dict):
+        return "", ""
+    ea = entry.get("emailAddress") if isinstance(entry.get("emailAddress"), dict) else entry
+    return str(ea.get("name") or ""), str(ea.get("address") or "")
+
+
+def _brief_event(evt: Dict[str, Any]) -> Dict[str, Any]:
+    start = evt.get("start")
+    end = evt.get("end")
+    loc = evt.get("location")
+    org_name, org_addr = _brief_person(evt.get("organizer"))
+    rs = evt.get("responseStatus") if isinstance(evt.get("responseStatus"), dict) else {}
+    return {
+        "subject": evt.get("subject") or "",
+        "start": evt.get("start_iso_local") or (start.get("dateTime") if isinstance(start, dict) else start) or "",
+        "end": evt.get("end_iso_local") or (end.get("dateTime") if isinstance(end, dict) else end) or "",
+        "start_local": evt.get("start_local") or _format_timestamp_local(start),
+        "end_local": evt.get("end_local") or _format_timestamp_local(end),
+        "is_all_day": bool(evt.get("isAllDay")),
+        "location": (loc.get("displayName") if isinstance(loc, dict) else loc) or "",
+        "organizer": org_name or org_addr,
+        "response_status": (rs.get("response") if rs else "") or "",
+    }
+
+
+def _brief_mail(msg: Dict[str, Any]) -> Dict[str, Any]:
+    from_name, from_addr = _brief_person(msg.get("from"))
+    return {
+        "id": msg.get("id") or "",
+        "received": _format_timestamp_local(msg.get("receivedDateTime")) or (msg.get("receivedDateTime") or ""),
+        "from_name": from_name,
+        "from_address": from_addr,
+        "subject": msg.get("subject") or "",
+        "importance": msg.get("importance") or "normal",
+        "has_attachments": bool(msg.get("hasAttachments")),
+        "web_link": msg.get("webLink") or "",
+    }
+
+
+def _brief_todo(task: Dict[str, Any], list_name: str) -> Dict[str, Any]:
+    due = task.get("dueDateTime")
+    return {
+        "id": task.get("id") or "",
+        "list": list_name,
+        "title": task.get("title") or "",
+        "status": task.get("status") or "",
+        "due": _format_timestamp_local(due) if due else "",
+        "importance": task.get("importance") or "normal",
+    }
+
+
+def _brief_teams_message(msg: Dict[str, Any]) -> Dict[str, Any]:
+    body = msg.get("body") if isinstance(msg.get("body"), dict) else {}
+    frm = msg.get("from") if isinstance(msg.get("from"), dict) else {}
+    user = frm.get("user") if isinstance(frm.get("user"), dict) else {}
+    app = frm.get("application") if isinstance(frm.get("application"), dict) else {}
+    content = body.get("content") or ""
+    content_type = str(body.get("contentType") or "text").lower()
+    text = _html_to_text(content) if content_type == "html" or _looks_like_html(str(content)) else str(content).strip()
+    return {
+        "from": user.get("displayName") or app.get("displayName") or "",
+        "created": _format_timestamp_local(msg.get("createdDateTime")) or (msg.get("createdDateTime") or ""),
+        "preview": _truncate(_re.sub(r"\s+", " ", text).strip(), _BRIEF_PREVIEW_CHARS),
+    }
+
+
+def _brief_window(start_time_iso: Optional[str], end_time_iso: Optional[str]) -> Tuple[str, str, str]:
+    """Normalise the brief window like m365_get_events does; returns (start_iso, end_iso, tz_name)."""
+    s_raw = str(start_time_iso or "").strip()
+    e_raw = str(end_time_iso or "").strip()
+    if s_raw and not e_raw:
+        e_raw = f"{s_raw.split('T')[0].split(' ')[0]}T23:59:59"
+    elif e_raw and not s_raw:
+        s_raw = f"{e_raw.split('T')[0].split(' ')[0]}T00:00:00"
+    start_clean, tz_name = _normalize_datetime_input(s_raw)
+    end_clean, _ = _normalize_datetime_input(e_raw, default_tz=tz_name)
+    return start_clean, end_clean, tz_name
+
+
+@mcp.tool()
+def m365_brief_snapshot(
+    start_time_iso: str,
+    end_time_iso: str,
+    mail_top: int = 15,
+    todo_top: int = 10,
+    chats_top: int = 5,
+    messages_per_chat: int = 2,
+    calendar: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Bundled, token-lean snapshot for daily/morning briefs: calendar events in the window, unread inbox mail, open To Do tasks and recent Teams activity in ONE call.
+
+    Prefer this over calling m365_get_events, m365_list_emails, m365_list_todo_tasks and
+    m365_get_activity_feed separately when composing a brief. Returns trimmed fields only
+    (no mail bodies/previews, no attendee lists, no HTML). Each source is fetched
+    independently: a failing source adds an `errors` entry, the others stay intact.
+
+    Args:
+        start_time_iso: Window start (ISO date/time, e.g. '2026-09-08' or '2026-09-08T06:00:00').
+        end_time_iso: Window end (ISO date/time). Used for calendar events and to rank To Do tasks due inside the window first.
+        mail_top: Max unread inbox mails (capped at 50, 0 skips mail).
+        todo_top: Max open To Do tasks from the default list (capped at 50, 0 skips tasks).
+        chats_top: Max recent Teams chats (capped at 15, 0 skips Teams).
+        messages_per_chat: Max messages per chat/channel (capped at 10).
+        calendar: Optional calendar name, ID or user email (like m365_get_events). Omit for the default calendar.
+    """
+    mail_top = max(0, min(int(mail_top or 0), _BRIEF_MAIL_CAP))
+    todo_top = max(0, min(int(todo_top or 0), _BRIEF_TODO_CAP))
+    chats_top = max(0, min(int(chats_top or 0), _BRIEF_CHATS_CAP))
+    messages_per_chat = max(1, min(int(messages_per_chat or 1), _BRIEF_MESSAGES_CAP))
+
+    start_clean, end_clean, tz_name = _brief_window(start_time_iso, end_time_iso)
+    window_start = _parse_graph_datetime({"dateTime": start_clean, "timeZone": tz_name})
+    window_end = _parse_graph_datetime({"dateTime": end_clean, "timeZone": tz_name})
+
+    out: Dict[str, Any] = {
+        "window": {"start": start_clean, "end": end_clean, "timezone": tz_name},
+        "events": [],
+        "unread_mail": [],
+        "todos": [],
+        "teams": {"chats": [], "channels": []},
+        "errors": [],
+    }
+
+    def _fail(source: str, err: Exception) -> None:
+        out["errors"].append({"source": source, "error": _truncate(str(err), 300)})
+
+    # 1. Calendar events in the window (reuses calendar resolution + local time fields).
+    try:
+        res = m365_get_events(calendar=calendar, start_time_iso=start_clean, end_time_iso=end_clean, top=100)
+        events = res.get("value", []) if isinstance(res, dict) else []
+        out["events"] = [_brief_event(e) for e in events if isinstance(e, dict)]
+        out["events"].sort(key=lambda e: e.get("start") or "")
+    except Exception as err:
+        _fail("events", err)
+
+    # 2. Unread inbox mail (server-side filter, client-side guard, no bodies).
+    if mail_top:
+        try:
+            params = {
+                "$top": mail_top,
+                "$filter": "isRead eq false",
+                "$select": "id,subject,from,receivedDateTime,isRead,importance,hasAttachments,webLink",
+            }
+            res = _graph_request("GET", "/me/mailFolders/inbox/messages", params=params)
+            msgs = res.get("value", []) if isinstance(res, dict) else []
+            unread = [m for m in msgs if isinstance(m, dict) and not m.get("isRead")]
+            out["unread_mail"] = [_brief_mail(m) for m in unread[:mail_top]]
+        except Exception as err:
+            _fail("mail", err)
+
+    # 3. Open To Do tasks from the default list, due-in-window first, then by due date.
+    if todo_top:
+        try:
+            lists_res = _graph_request("GET", "/me/todo/lists")
+            lists = lists_res.get("value", []) if isinstance(lists_res, dict) else []
+            default_list = next(
+                (l for l in lists if isinstance(l, dict) and l.get("wellknownListName") == "defaultList"),
+                lists[0] if lists else None,
+            )
+            if default_list and default_list.get("id"):
+                list_name = str(default_list.get("displayName") or "Tasks")
+                tasks_res = _graph_request(
+                    "GET",
+                    f"/me/todo/lists/{default_list['id']}/tasks",
+                    params={"$top": _BRIEF_TODO_CAP, "$filter": "status ne 'completed'"},
+                )
+                tasks = [
+                    t for t in (tasks_res.get("value", []) if isinstance(tasks_res, dict) else [])
+                    if isinstance(t, dict) and str(t.get("status") or "").lower() != "completed"
+                ]
+
+                def _todo_rank(task: Dict[str, Any]) -> Tuple[int, str]:
+                    due = _parse_graph_datetime(task.get("dueDateTime"))
+                    if due is None:
+                        return 2, ""
+                    in_window = bool(window_start and window_end and window_start <= due <= window_end)
+                    return (0 if in_window else 1), due.isoformat()
+
+                tasks.sort(key=_todo_rank)
+                out["todos"] = [_brief_todo(t, list_name) for t in tasks[:todo_top]]
+        except Exception as err:
+            _fail("todos", err)
+
+    # 4. Teams: recent chats and joined-team channels, trimmed messages only.
+    if chats_top:
+        try:
+            chats_res = _graph_request("GET", "/me/chats", params={"$top": chats_top})
+            for c in (chats_res.get("value", []) if isinstance(chats_res, dict) else []):
+                chat_id = c.get("id") if isinstance(c, dict) else None
+                if not chat_id:
+                    continue
+                try:
+                    msgs_res = _graph_request("GET", f"/me/chats/{chat_id}/messages", params={"$top": messages_per_chat})
+                except Exception as err:
+                    _fail("teams", RuntimeError(f"chat {chat_id}: {err}"))
+                    continue
+                msgs = [
+                    _brief_teams_message(m)
+                    for m in (msgs_res.get("value", []) if isinstance(msgs_res, dict) else [])
+                    if isinstance(m, dict) and (m.get("messageType") or "message") == "message"
+                ]
+                msgs = [m for m in msgs if m.get("preview")][:messages_per_chat]
+                if not msgs:
+                    continue
+                members = [
+                    (mm.get("displayName") or "")
+                    for mm in (c.get("members") or [])
+                    if isinstance(mm, dict)
+                ]
+                out["teams"]["chats"].append({
+                    "chat_id": chat_id,
+                    "topic": c.get("topic") or ", ".join(m for m in members if m) or (c.get("chatType") or ""),
+                    "messages": msgs,
+                })
+        except Exception as err:
+            _fail("teams", err)
+
+        try:
+            teams_res = _graph_request("GET", "/me/joinedTeams")
+            teams = (teams_res.get("value", []) if isinstance(teams_res, dict) else [])[:_BRIEF_TEAMS_CAP]
+            for t in teams:
+                team_id = t.get("id") if isinstance(t, dict) else None
+                if not team_id:
+                    continue
+                try:
+                    channels_res = _graph_request("GET", f"/teams/{team_id}/channels")
+                except Exception as err:
+                    _fail("teams", RuntimeError(f"team {t.get('displayName') or team_id}: {err}"))
+                    continue
+                channels = (channels_res.get("value", []) if isinstance(channels_res, dict) else [])[:_BRIEF_CHANNELS_PER_TEAM]
+                for ch in channels:
+                    ch_id = ch.get("id") if isinstance(ch, dict) else None
+                    if not ch_id:
+                        continue
+                    try:
+                        ch_msgs_res = _graph_request(
+                            "GET",
+                            f"/teams/{team_id}/channels/{ch_id}/messages",
+                            params={"$top": messages_per_chat},
+                        )
+                    except Exception:
+                        continue  # channel message access is commonly missing; not worth an error entry
+                    msgs = [
+                        _brief_teams_message(m)
+                        for m in (ch_msgs_res.get("value", []) if isinstance(ch_msgs_res, dict) else [])
+                        if isinstance(m, dict) and (m.get("messageType") or "message") == "message"
+                    ]
+                    msgs = [m for m in msgs if m.get("preview")][:messages_per_chat]
+                    if not msgs:
+                        continue
+                    out["teams"]["channels"].append({
+                        "team": t.get("displayName") or "",
+                        "channel_id": ch_id,
+                        "topic": ch.get("displayName") or "",
+                        "messages": msgs,
+                    })
+        except Exception as err:
+            _fail("teams", err)
+
+    out["counts"] = {
+        "events": len(out["events"]),
+        "unread_mail": len(out["unread_mail"]),
+        "todos": len(out["todos"]),
+        "chats": len(out["teams"]["chats"]),
+        "channels": len(out["teams"]["channels"]),
+    }
+    return out
 
 
 

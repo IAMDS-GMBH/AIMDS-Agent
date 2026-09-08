@@ -363,17 +363,17 @@ tool_loop_guardrails:
 # 6. Inserts summary as a user message, continues conversation seamlessly
 #
 # Post-compression tail budget is target_ratio × threshold × context_length:
-#   200K context, threshold 0.50, ratio 0.20 → 20K tokens of recent tail preserved
-#   1M   context, threshold 0.50, ratio 0.20 → 100K tokens of recent tail preserved
+#   200K context, threshold 0.75, ratio 0.20 → 30K tokens of recent tail preserved
+#   1M   context, threshold 0.75, ratio 0.20 → 150K tokens of recent tail preserved
 #
 compression:
   # Enable automatic context compression (default: true)
   # Set to false if you prefer to manage context manually or want errors on overflow
   enabled: true
   
-  # Trigger compression at this % of model's context limit (default: 0.50 = 50%)
+  # Trigger compression at this % of model's context limit (default: 0.75 = 75%)
   # Lower values = more aggressive compression, higher values = compress later
-  threshold: 0.50
+  threshold: 0.75
   
   # Fraction of the threshold to preserve as recent tail (default: 0.20 = 20%)
   # e.g. 20% of 50% threshold = 10% of total context kept as recent messages.
@@ -408,8 +408,34 @@ compression:
 # Anthropic supports two TTL tiers for cached prefixes: "5m" (default) and
 # "1h". Other values are ignored and "5m" is used.
 #
+# `cache_ttl` covers the prefix tier (tool schemas + system prompt, written
+# once per session); `message_ttl` covers the moving conversation breakpoints.
+# `message_ttl` defaults to "1h" on interactive surfaces (cli/tui/acp) — a
+# pause longer than 5 minutes otherwise re-writes the whole message tier
+# (16-21K tokens per pause was typical) — and to "5m" on one-shot surfaces
+# (cron, api-server, messengers). Set it explicitly to pin either tier.
+#
 prompt_caching:
   cache_ttl: "5m" # use "1h" for long sessions with pauses between turns
+  # message_ttl: "1h"
+
+# =============================================================================
+# Tool search (progressive tool disclosure)
+# =============================================================================
+# With many MCP servers the tool-schema JSON alone can cost 10K+ tokens per
+# call. tool_search replaces every deferrable schema (MCP tools, non-core
+# plugins) with three bridge tools — tool_search / tool_describe / tool_call —
+# and loads a tool's schema into the session on first use. Core Hermes tools
+# (terminal, read_file, write_file, patch, search_files, todo, memory, …) are
+# never deferred. Diagnose with `hermes prompt-size`.
+#
+# tools:
+#   tool_search:
+#     enabled: auto        # auto | on | off
+#     threshold_pct: 10    # auto: activate when deferrable schemas exceed this % of context
+#     search_default_limit: 8
+#     max_search_limit: 20
+#     autoload_top_n: 3    # top hits of a tool_search loaded into the session
 
 # =============================================================================
 # MCP result shaping
@@ -631,6 +657,20 @@ skills:
 # Agent Behavior
 # =============================================================================
 agent:
+  # Operating posture (see agent/coding_context.py):
+  #   auto (default) — terminal CLI runs as the co-developer ("developer"
+  #                    posture: coding toolset + enabled MCP servers,
+  #                    SOUL.dev.md identity, no M365/Jira prompt prose,
+  #                    knowledge-worker skills out of the index, compact
+  #                    session-start memory context). The desktop app / TUI
+  #                    keeps the co-worker prompt and adds the coding brief
+  #                    only inside a code workspace (git repo / manifest).
+  #   focus          — auto + collapse the toolset on every interactive surface
+  #   on             — force the plain coding brief everywhere (prompt-only)
+  #   off            — disable entirely (CLI behaves like the desktop)
+  # Override the developer identity by creating ~/.hermes/SOUL.dev.md.
+  # coding_context: auto
+
   # Maximum tool-calling iterations per conversation
   # Higher = more room for complex tasks, but costs more tokens
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration

@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
 
-import { jobState, jobTitle, STATE_DOT } from '../../cron/job-state'
+import { compareByOutputDesc, hasNewOutput, jobState, jobTitle, STATE_DOT } from '../../cron/job-state'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 
 import { SidebarLoadMoreRow } from './load-more-row'
@@ -84,6 +84,9 @@ interface SidebarCronJobsSectionProps {
   jobs: CronJob[]
   label: string
   max?: number
+  // Open the job's newest artifact in the preview (marks it seen). A run id
+  // targets that run's artifact instead of the newest one.
+  onOpenArtifact: (jobId: string, run?: SessionInfo) => void
   // Open a run session's chat (1 click to output).
   onOpenRun: (sessionId: string) => void
   // Open the full Cron page focused on this job (manage / full history).
@@ -99,11 +102,13 @@ export function SidebarCronJobsSection({
   label,
   max = 50,
   onManageJob,
+  onOpenArtifact,
   onOpenRun,
   onTriggerJob,
   onToggle,
   open
 }: SidebarCronJobsSectionProps) {
+  const { t } = useI18n()
   const [nowMs, setNowMs] = useState(() => Date.now())
   // Single-open inline peek so the section stays scannable.
   const [peekJobId, setPeekJobId] = useState<null | string>(null)
@@ -122,10 +127,22 @@ export function SidebarCronJobsSection({
     return () => window.clearInterval(id)
   }, [open])
 
-  // Upcoming first (soonest next run), jobs with no next run sink to the bottom,
-  // then alphabetical for stability.
+  // Unseen output floats to the top (newest artifact first) so a fresh brief is
+  // the first row. Below that: upcoming first (soonest next run), jobs with no
+  // next run sink to the bottom, then alphabetical for stability.
   const sorted = useMemo(() => {
     return [...jobs].sort((a, b) => {
+      const aNew = hasNewOutput(a)
+      const bNew = hasNewOutput(b)
+
+      if (aNew !== bNew) {
+        return aNew ? -1 : 1
+      }
+
+      if (aNew && bNew) {
+        return compareByOutputDesc(a, b)
+      }
+
       const an = nextRunMs(a)
       const bn = nextRunMs(b)
 
@@ -150,6 +167,7 @@ export function SidebarCronJobsSection({
   const hiddenCount = Math.min(sorted.length, max) - shown.length
   // When capped, signal "50+" rather than implying the list is complete.
   const countLabel = jobs.length > max ? `${max}+` : String(jobs.length)
+  const unseenCount = useMemo(() => jobs.filter(hasNewOutput).length, [jobs])
 
   return (
     <SidebarGroup className="shrink-0 p-0 pb-1">
@@ -161,6 +179,11 @@ export function SidebarCronJobsSection({
         >
           <SidebarPanelLabel>{label}</SidebarPanelLabel>
           <span className="text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{countLabel}</span>
+          {unseenCount > 0 && (
+            <span className="text-[0.6875rem] font-semibold text-(--theme-primary)">
+              {t.cron.unseenCount(unseenCount)}
+            </span>
+          )}
           <DisclosureCaret
             className="text-(--ui-text-tertiary) opacity-0 transition group-hover/section-label:opacity-100"
             open={open}
@@ -176,6 +199,7 @@ export function SidebarCronJobsSection({
               key={job.id}
               nowMs={nowMs}
               onManage={() => onManageJob(job.id)}
+              onOpenArtifact={run => onOpenArtifact(job.id, run)}
               onOpenRun={onOpenRun}
               onTogglePeek={() => setPeekJobId(prev => (prev === job.id ? null : job.id))}
               onTrigger={() => onTriggerJob(job.id)}
@@ -198,6 +222,7 @@ function CronJobSidebarRow({
   job,
   nowMs,
   onManage,
+  onOpenArtifact,
   onOpenRun,
   onTogglePeek,
   onTrigger
@@ -206,6 +231,7 @@ function CronJobSidebarRow({
   job: CronJob
   nowMs: number
   onManage: () => void
+  onOpenArtifact: (run?: SessionInfo) => void
   onOpenRun: (sessionId: string) => void
   onTogglePeek: () => void
   onTrigger: () => void
@@ -215,6 +241,7 @@ function CronJobSidebarRow({
   const state = jobState(job)
   const next = nextRunMs(job)
   const label = jobTitle(job)
+  const isNew = hasNewOutput(job)
 
   const meta = INACTIVE_STATES.has(state) ? (c.states[state] ?? state) : next !== null ? relativeTime(next, nowMs) : '—'
 
@@ -239,11 +266,19 @@ function CronJobSidebarRow({
               className={cn(
                 'size-1 rounded-full',
                 STATE_DOT[state] ?? 'bg-(--ui-text-quaternary)',
-                state === 'running' && 'size-1.5 animate-pulse'
+                state === 'running' && 'size-1.5 animate-pulse',
+                // Unseen output: the pip grows + pulses in the brand color so
+                // the row reads as "something new" even before the pill.
+                isNew && 'size-1.5 animate-pulse bg-(--theme-primary)'
               )}
             />
           </span>
-          <span className="min-w-0 truncate text-[0.8125rem] text-(--ui-text-secondary) group-hover/cron:text-foreground">
+          <span
+            className={cn(
+              'min-w-0 truncate text-[0.8125rem] text-(--ui-text-secondary) group-hover/cron:text-foreground',
+              isNew && 'font-medium text-foreground'
+            )}
+          >
             {label}
           </span>
           <DisclosureCaret
@@ -254,11 +289,26 @@ function CronJobSidebarRow({
             open={expanded}
           />
         </button>
-        {/* Trailing cluster: countdown by default, quick actions on hover. */}
+        {/* Trailing cluster: "New" pill (opens the artifact) or countdown by
+            default, quick actions on hover. */}
         <div className="flex items-center gap-0.5 justify-self-end pr-1">
-          <span className="text-[0.6875rem] text-(--ui-text-tertiary) tabular-nums group-hover/cron:hidden">
-            {meta}
-          </span>
+          {isNew ? (
+            <button
+              aria-label={c.openLatestOutput}
+              className="rounded-full bg-(--theme-primary) px-1.5 py-px text-[0.625rem] font-semibold uppercase leading-4 tracking-wide text-primary-foreground group-hover/cron:hidden"
+              onClick={event => {
+                event.stopPropagation()
+                onOpenArtifact()
+              }}
+              type="button"
+            >
+              {c.newOutput}
+            </button>
+          ) : (
+            <span className="text-[0.6875rem] text-(--ui-text-tertiary) tabular-nums group-hover/cron:hidden">
+              {meta}
+            </span>
+          )}
           <div className="hidden items-center gap-0.5 group-hover/cron:flex">
             <Tip label={c.triggerNow}>
               <button
@@ -283,12 +333,20 @@ function CronJobSidebarRow({
           </div>
         </div>
       </div>
-      {expanded && <CronJobSidebarRuns jobId={job.id} onOpenRun={onOpenRun} />}
+      {expanded && <CronJobSidebarRuns jobId={job.id} onOpenArtifact={onOpenArtifact} onOpenRun={onOpenRun} />}
     </div>
   )
 }
 
-function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (sessionId: string) => void }) {
+function CronJobSidebarRuns({
+  jobId,
+  onOpenArtifact,
+  onOpenRun
+}: {
+  jobId: string
+  onOpenArtifact: (run: SessionInfo) => void
+  onOpenRun: (sessionId: string) => void
+}) {
   const { t } = useI18n()
   const c = t.cron
   const selectedSessionId = useStore($selectedStoredSessionId)
@@ -334,21 +392,29 @@ function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (s
         <div className="py-1 pl-1 text-[0.6875rem] text-(--ui-text-tertiary)">{c.noRuns}</div>
       ) : (
         <>
-          {runs.map(run => (
-            <button
-              className={cn(
-                'truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
-                run.id === selectedSessionId
-                  ? 'bg-(--ui-row-active-background) text-foreground'
-                  : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
-              )}
-              key={run.id}
-              onClick={() => onOpenRun(run.id)}
-              type="button"
-            >
-              {formatRunTime(run.last_active || run.started_at)}
-            </button>
-          ))}
+          {runs.map(run => {
+            const hasArtifact = Boolean(run.output_path)
+
+            return (
+              <button
+                className={cn(
+                  'flex items-center gap-1 truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+                  run.id === selectedSessionId
+                    ? 'bg-(--ui-row-active-background) text-foreground'
+                    : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+                )}
+                key={run.id}
+                // A run that wrote an artifact opens the artifact (which also
+                // navigates to the run); bare runs just open the chat.
+                onClick={() => (hasArtifact ? onOpenArtifact(run) : onOpenRun(run.id))}
+                title={run.output_path || undefined}
+                type="button"
+              >
+                <span className="truncate">{formatRunTime(run.last_active || run.started_at)}</span>
+                {hasArtifact && <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="file" size="0.6875rem" />}
+              </button>
+            )
+          })}
         </>
       )}
     </div>

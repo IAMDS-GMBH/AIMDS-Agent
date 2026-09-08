@@ -28,6 +28,12 @@ const { execFileSync, spawn } = require('node:child_process')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { buildSessionWindowUrl, createSessionWindowRegistry } = require('./session-windows.cjs')
+const {
+  badgeOverlaySvgDataUrl,
+  buildNotificationOptions,
+  normalizeBadgeCount,
+  shouldFlashFrame
+} = require('./notifications.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
@@ -6049,13 +6055,74 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   })
 })
 
+// Native notifications keep their instance alive so a click can be routed back
+// into the renderer (AIS-305): focus the main window and hand it the action
+// (`{kind:'cron-artifact', jobId, …}`), which opens the artifact.
+const liveNotifications = new Set()
+
+function sendNotificationAction(action) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const { webContents } = mainWindow
+  if (!webContents || webContents.isDestroyed()) return
+  if (!mainWindow.isVisible()) mainWindow.show()
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.focus()
+  webContents.send('hermes:notification-action', action)
+}
+
 ipcMain.handle('hermes:notify', (_event, payload) => {
   if (!Notification.isSupported()) return false
-  new Notification({
-    title: payload?.title || 'Hermes',
-    body: payload?.body || '',
-    silent: Boolean(payload?.silent)
-  }).show()
+  const { action, options } = buildNotificationOptions(payload)
+  const notification = new Notification(options)
+  liveNotifications.add(notification)
+  const release = () => liveNotifications.delete(notification)
+  notification.on('close', release)
+  notification.on('failed', release)
+  notification.on('click', () => {
+    release()
+    if (action) sendNotificationAction(action)
+    else if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus()
+  })
+  notification.show()
+  return true
+})
+
+// Unread-output badge (AIS-305). macOS/Linux: dock badge via app.setBadgeCount.
+// Windows has no dock badge, so paint a small overlay icon on the taskbar entry
+// and flash the frame once when the count first becomes non-zero while the
+// window isn't focused.
+let unreadBadgeCount = 0
+
+function applyUnreadBadge(nextCount) {
+  const previous = unreadBadgeCount
+  unreadBadgeCount = nextCount
+
+  if (!IS_WINDOWS) {
+    try {
+      app.setBadgeCount(nextCount)
+    } catch {
+      // Unsupported launcher (some Linux desktops) — the in-app pills still show it.
+    }
+    return
+  }
+
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  try {
+    if (nextCount > 0) {
+      const image = nativeImage.createFromDataURL(badgeOverlaySvgDataUrl(nextCount))
+      mainWindow.setOverlayIcon(image, `${nextCount} unread`)
+      if (shouldFlashFrame(previous, nextCount, mainWindow.isFocused())) mainWindow.flashFrame(true)
+    } else {
+      mainWindow.setOverlayIcon(null, '')
+      mainWindow.flashFrame(false)
+    }
+  } catch (err) {
+    rememberLog(`[badge] overlay icon failed: ${err?.message || String(err)}`)
+  }
+}
+
+ipcMain.handle('hermes:setUnreadBadge', (_event, count) => {
+  applyUnreadBadge(normalizeBadgeCount(count))
   return true
 })
 

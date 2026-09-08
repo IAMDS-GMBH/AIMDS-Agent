@@ -54,3 +54,35 @@ def test_report_and_formatting():
     assert one["session_id"] == "good" and one["calls"] == 3
     assert "steady" in format_cache_report(one)
     assert "no api_calls rows yet" in format_cache_report(cache_report(_Db([]), days=7))
+
+
+class TestFormatCacheEconomics:
+    def test_silent_without_cache_activity(self):
+        from agent.cache_insights import format_cache_economics
+
+        assert format_cache_economics(1000, 0, 0) == ""
+        assert format_cache_economics(0, 0, 0) == ""
+
+    def test_reports_hit_ratio_write_weight_and_large_writes(self):
+        from agent.cache_insights import format_cache_economics
+
+        # 80K read, 10K uncached, 10K written at the 1h tier → 80% hit,
+        # writes cost 20K vs reads 8K → 2.5x.
+        line = format_cache_economics(10_000, 80_000, 10_000, large_writes=2, prefix_ttl="1h", message_ttl="1h")
+        assert "80%" in line
+        assert "2.5x" in line
+        assert "2 large re-writes" in line
+        assert "ttl 1h/1h" in line
+
+    def test_5m_tier_uses_lower_write_multiplier(self):
+        from agent.cache_insights import format_cache_economics
+
+        line = format_cache_economics(0, 80_000, 8_000, large_writes=1, message_ttl="5m")
+        # 8K × 1.25 = 10K vs 8K reads → 1.2x (rounded), singular wording.
+        assert "1.2x" in line or "1.3x" in line
+        assert "1 large re-write," in line
+
+    def test_large_write_threshold_constant(self):
+        from agent.cache_insights import LARGE_CACHE_WRITE_TOKENS
+
+        assert LARGE_CACHE_WRITE_TOKENS == 15_000

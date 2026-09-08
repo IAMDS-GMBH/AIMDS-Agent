@@ -22,6 +22,13 @@ DEFAULT_PREVIEW_SIZE_CHARS: int = 1_500
 # a much lower persistence threshold applies (session 20260829_223307: a 99K
 # worklog response sat just under the 100K default and was re-sent every turn).
 DEFAULT_INGESTED_RESULT_SIZE_CHARS: int = 10_000
+# Memory-server listings and searches are prose/JSON the shaper leaves alone
+# (is_shapeable_tool == False), so a 20-40 KB catalogue went straight into
+# the history (AIS-309, 14-day sample: memory_list ø 21 KB, memory_search
+# 40 KB). Persist above this and keep the preview; memory_read and
+# memory_context stay uncapped — those payloads are meant to be read whole.
+DEFAULT_MEMORY_LISTING_RESULT_SIZE_CHARS: int = 12_000
+_MEMORY_LISTING_SUFFIXES = ("memory_search", "memory_list")
 
 
 @dataclass(frozen=True)
@@ -43,14 +50,18 @@ class BudgetConfig:
     def resolve_threshold(self, tool_name: str) -> int | float:
         """Resolve the persistence threshold for a tool.
 
-        Priority: pinned -> tool_overrides -> jira default -> registry -> global default.
+        Priority: pinned -> tool_overrides -> jira default -> memory listing
+        default -> registry -> global default.
         """
         if tool_name in PINNED_THRESHOLDS:
             return PINNED_THRESHOLDS[tool_name]
         if tool_name in self.tool_overrides:
             return self.tool_overrides[tool_name]
-        if "jira" in tool_name.lower():
+        lowered = tool_name.lower()
+        if "jira" in lowered:
             return DEFAULT_JIRA_RESULT_SIZE_CHARS
+        if lowered.endswith(_MEMORY_LISTING_SUFFIXES):
+            return DEFAULT_MEMORY_LISTING_RESULT_SIZE_CHARS
         from tools.registry import registry
         return registry.get_max_result_size(tool_name, default=self.default_result_size)
 

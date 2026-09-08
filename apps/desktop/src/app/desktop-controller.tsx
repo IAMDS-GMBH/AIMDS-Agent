@@ -16,6 +16,7 @@ import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { ErrorBoundary } from '../components/error-boundary'
 import {
   bulkDeleteSessions,
+  getCronJobRuns,
   getCronJobs,
   getSessionMessages,
   listAllProfileSessions,
@@ -59,7 +60,6 @@ import {
 } from '../store/profile'
 import {
   $activeSessionId,
-  $cronSessions,
   $currentCwd,
   $freshDraftReady,
   $gatewayState,
@@ -91,6 +91,7 @@ import {
 } from '../store/session'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 import { isSecondaryWindow } from '../store/windows'
+import type { CronJob } from '../types/hermes'
 
 import { ChatView } from './chat'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
@@ -103,6 +104,7 @@ import {
 import { ChatSidebar } from './chat/sidebar'
 import { CommandPalette } from './command-palette'
 import { jobTitle } from './cron/job-state'
+import { openCronJobArtifact } from './cron/open-artifact'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
 import { useKeybinds } from './hooks/use-keybinds'
@@ -116,8 +118,9 @@ import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUT
 import { SessionPickerOverlay } from './session-picker-overlay'
 import { SessionSwitcher } from './session-switcher'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
-import { useCronCompletionListener } from './session/hooks/use-cron-completion-listener'
+import { type CronCompletionEvent, useCronCompletionListener } from './session/hooks/use-cron-completion-listener'
 import { useCronPolling } from './session/hooks/use-cron-polling'
+import { useCronUnreadBadge } from './session/hooks/use-cron-unread-badge'
 import { useCwdActions } from './session/hooks/use-cwd-actions'
 import { useHermesConfig } from './session/hooks/use-hermes-config'
 import { useMessageStream } from './session/hooks/use-message-stream'
@@ -718,81 +721,161 @@ export function DesktopController() {
     profile: activeGatewayProfile
   })
 
-  // Listen for cron job completion events and refresh the job list
+  // Resolve a job by id, refreshing the list when the atom doesn't know it yet
+  // (a completion can beat the poll that would have introduced the job).
+  const findCronJob = useCallback(
+    async (jobId: string): Promise<CronJob | null> => {
+      const known = $cronJobs.get().find(job => job.id === jobId)
+
+      if (known) {
+        return known
+      }
+
+      await refreshCronJobs()
+
+      return $cronJobs.get().find(job => job.id === jobId) ?? null
+    },
+    [refreshCronJobs]
+  )
+
+  // "Open" for a completed run: the artifact when the scheduler wrote one,
+  // else the run session (`/runs` returns `{runs}`, unwrapped by getCronJobRuns).
+  const openCronCompletion = useCallback(
+    async (event: CronCompletionEvent) => {
+      const job = await findCronJob(event.job_id)
+      const outputPath = event.output_path?.trim() || job?.last_output_path?.trim() || ''
+      const runId = event.session_id?.trim() || job?.last_run_session_id?.trim() || ''
+
+      if (outputPath) {
+        const target: CronJob = job ?? {
+          enabled: true,
+          id: event.job_id,
+          last_output_path: outputPath,
+          last_run_session_id: runId || null,
+          name: event.job_name ?? null,
+          profile: event.profile ?? undefined
+        }
+
+        await openCronJobArtifact(
+          { ...target, last_output_path: outputPath, last_run_session_id: runId || target.last_run_session_id },
+          { navigate, runId }
+        )
+
+        return
+      }
+
+      if (runId) {
+        navigate(sessionRoute(runId, job?.profile))
+
+        return
+      }
+
+      try {
+        const runs = await getCronJobRuns(event.job_id, 1)
+
+        if (runs[0]?.id) {
+          navigate(sessionRoute(runs[0].id, job?.profile))
+
+          return
+        }
+      } catch {
+        // Fall through to the cron page.
+      }
+
+      navigate(CRON_ROUTE)
+    },
+    [findCronJob, navigate]
+  )
+
+  // Listen for cron job completion events: toast + native notification (both
+  // deep-link to the artifact) and refresh the job list right away so the
+  // sidebar pill / brief card / badge flip without waiting for the poll.
   const handleCronJobCompleted = useCallback(
-    (jobId: string, success: boolean, error?: string) => {
-      const match = $cronJobs.get().find(job => job.id === jobId)
-      const titleText = match ? jobTitle(match) : jobId
+    (event: CronCompletionEvent) => {
+      const match = $cronJobs.get().find(job => job.id === event.job_id)
+      const titleText = match ? jobTitle(match) : event.job_name?.trim() || event.job_id
 
       const clippedTitle =
         titleText.length > CRON_TOAST_TITLE_MAX ? `${titleText.slice(0, CRON_TOAST_TITLE_MAX)}…` : titleText
 
-      const action = success
+      const action = event.success
         ? {
             label: translateNow('common.open'),
-            onClick: () => {
-              void (async () => {
-                try {
-                  const conn = await window.hermesDesktop?.getConnection(activeGatewayProfile)
-
-                  if (conn) {
-                    const res = await fetch(`${conn.baseUrl}/api/cron/jobs/${jobId}/runs?limit=1`)
-
-                    if (res.ok) {
-                      const runs = await res.json()
-
-                      if (Array.isArray(runs) && runs.length > 0 && runs[0]?.id) {
-                        navigate(sessionRoute(runs[0].id))
-
-                        return
-                      }
-                    }
-                  }
-                } catch (_) {
-                  // best-effort — fall through to the cron-session match below
-                }
-
-                const matchRun = $cronSessions.get().find((s: { id: string }) => s.id.startsWith(`cron_${jobId}_`))
-
-                if (matchRun) {
-                  navigate(sessionRoute(matchRun.id))
-                } else {
-                  navigate(CRON_ROUTE)
-                }
-              })()
-            }
+            onClick: () => void openCronCompletion(event)
           }
         : undefined
 
       notify({
-        kind: success ? 'success' : 'error',
-        title: `${success ? 'Cron job completed' : 'Cron job failed'} · ${clippedTitle}`,
-        message: success ? 'Execution finished.' : error || 'Execution failed.',
+        kind: event.success ? 'success' : 'error',
+        title: event.success
+          ? translateNow('cron.notifications.completedTitle', clippedTitle)
+          : translateNow('cron.notifications.failedTitle', clippedTitle),
+        message: event.success
+          ? translateNow('cron.notifications.completedBody')
+          : event.error || translateNow('cron.notifications.failedBody'),
         action,
-        durationMs: success ? 8000 : 0
+        durationMs: event.success ? 8000 : 0
       })
 
       if (window.hermesDesktop?.notify) {
         void window.hermesDesktop.notify({
-          title: success ? `Cron-Job abgeschlossen: ${clippedTitle}` : `Cron-Job fehlerhaft: ${clippedTitle}`,
-          body: success ? 'Klicken um den Bericht/Ausführung zu öffnen.' : error || 'Ausführung fehlgeschlagen.'
+          title: event.success
+            ? translateNow('cron.notifications.completedTitle', clippedTitle)
+            : translateNow('cron.notifications.failedTitle', clippedTitle),
+          body: event.success
+            ? translateNow('cron.notifications.completedBody')
+            : event.error || translateNow('cron.notifications.failedBody'),
+          action: event.success
+            ? {
+                kind: 'cron-artifact',
+                jobId: event.job_id,
+                path: event.output_path ?? undefined,
+                profile: event.profile ?? undefined,
+                sessionId: event.session_id ?? undefined
+              }
+            : undefined
         })
       }
 
       // Refresh immediately after surfacing completion, then once more shortly
       // after to absorb eventual persistence lag from scheduler/session writes.
+      void refreshCronJobs()
       void refreshSessions().catch(() => undefined)
       window.setTimeout(() => {
         void refreshSessions().catch(() => undefined)
       }, 800)
     },
-    [activeGatewayProfile, navigate, refreshSessions]
+    [openCronCompletion, refreshCronJobs, refreshSessions]
   )
 
   // Cron trigger requests are routed through the primary backend (no `profile`
   // query param). Listen on that same backend so completion toasts are reliable
   // even when the active chat profile points at a pooled backend.
   useCronCompletionListener(handleCronJobCompleted)
+
+  // OS badge mirrors the unseen-output count (primary window only).
+  useCronUnreadBadge()
+
+  // A clicked native notification lands here: open the artifact it points at.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onNotificationAction?.(action => {
+      if (action?.kind !== 'cron-artifact' || !action.jobId) {
+        return
+      }
+
+      void openCronCompletion({
+        job_id: action.jobId,
+        output_path: action.path ?? null,
+        profile: action.profile ?? null,
+        session_id: action.sessionId ?? null,
+        success: true,
+        timestamp: new Date().toISOString(),
+        type: 'cron_job_completed'
+      })
+    })
+
+    return () => unsubscribe?.()
+  }, [openCronCompletion])
 
   const composer = useComposerActions({
     activeSessionId,
@@ -1015,6 +1098,13 @@ export function DesktopController() {
       }}
       onNavigate={selectSidebarItem}
       onNewSessionInWorkspace={startSessionInWorkspace}
+      onOpenCronArtifact={(jobId, run) => {
+        void findCronJob(jobId).then(job => {
+          if (job) {
+            void openCronJobArtifact(job, { navigate, path: run?.output_path, runId: run?.id })
+          }
+        })
+      }}
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
       onSessionMaintenance={handleSessionMaintenance}
       onTriggerCronJob={jobId => {

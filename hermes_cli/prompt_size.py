@@ -39,6 +39,17 @@ def _build_inspection_agent(platform: str) -> Any:
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
     model = model_cfg.get("default") or model_cfg.get("model") or ""
 
+    # The posture may own the toolset (developer posture on the CLI, or
+    # ``focus`` mode) — cli.py / tui_gateway apply it the same way, so the
+    # schema count here matches what a real session sends.
+    enabled_toolsets = None
+    try:
+        from agent.coding_context import coding_selection
+
+        enabled_toolsets = coding_selection(platform=platform, config=cfg)
+    except Exception:
+        enabled_toolsets = None
+
     return AIAgent(
         model=model,
         api_key="inspect-only",
@@ -46,6 +57,7 @@ def _build_inspection_agent(platform: str) -> Any:
         quiet_mode=True,
         save_trajectories=False,
         platform=platform,
+        enabled_toolsets=enabled_toolsets,
     )
 
 
@@ -104,6 +116,7 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
 
     return {
         "platform": platform,
+        "posture": getattr(getattr(agent, "runtime_mode", None), "kind", "") or "general",
         "model": getattr(agent, "model", "") or "",
         "stable_blocks": stable_blocks,
         "system_prompt": {"chars": len(full), "bytes": _bytes(full)},
@@ -123,7 +136,10 @@ def render_breakdown(data: Dict[str, Any]) -> str:
     """Render the breakdown as plain text suitable for a terminal."""
     lines: List[str] = []
     sp = data["system_prompt"]
-    lines.append(f"Prompt-size breakdown (platform={data['platform']}, model={data['model'] or 'unset'})")
+    lines.append(
+        f"Prompt-size breakdown (platform={data['platform']}, "
+        f"posture={data.get('posture') or 'general'}, model={data['model'] or 'unset'})"
+    )
     lines.append("")
     lines.append(f"  System prompt total : {sp['bytes']:>8,} B  ({_fmt_kb(sp['bytes'])}, {sp['chars']:,} chars)")
     lines.append("")

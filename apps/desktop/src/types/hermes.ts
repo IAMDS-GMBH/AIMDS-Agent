@@ -343,6 +343,9 @@ export interface SessionInfo {
   profile?: string
   /** True when {@link profile} is the default profile. */
   is_default_profile?: boolean
+  /** Cron runs: absolute path of the artifact (journal markdown) the run
+   *  wrote, when the scheduler recorded one (AIS-305). */
+  output_path?: null | string
 }
 
 export interface SessionMessage {
@@ -470,13 +473,47 @@ export interface CronJob {
   id: string
   last_error?: null | string
   last_run_at?: null | string
+  /** ISO timestamp of the newest artifact the job wrote (AIS-305). */
+  last_output_at?: null | string
+  /** Absolute path of the newest artifact (journal markdown). */
+  last_output_path?: null | string
+  /** FINDING / NEXT / OPEN_QUESTION lines the backend already extracted. */
+  last_output_summary?: CronJobOutputSummary | null
+  /** Session id of the newest run (`cron_{job_id}_{ts}`). */
+  last_run_session_id?: null | string
+  /** When the user last opened this job's output in the desktop. Older than
+   *  {@link last_output_at} (or missing) means the output is unseen. */
+  last_seen_at?: null | string
+  last_status?: 'error' | 'ok' | null
   name?: null | string
   next_run_at?: null | string
+  /** Seed provenance for the shipped brief jobs (`morning-brief`, …). */
+  origin?: CronJobOrigin | null
+  /** Owning profile; passed back as `?profile=` on seen/output calls. */
+  profile?: string
   prompt?: null | string
   schedule?: CronJobSchedule
   schedule_display?: null | string
   script?: null | string
   state?: null | string
+}
+
+export interface CronJobOrigin {
+  kind?: null | string
+  seed_key?: null | string
+}
+
+export interface CronJobOutputSummary {
+  finding?: string
+  next?: string
+  open_question?: string
+}
+
+export interface CronJobLatestOutput {
+  content: string
+  path: string
+  summary?: CronJobOutputSummary | null
+  written_at?: null | string
 }
 
 export interface CronJobCreatePayload {

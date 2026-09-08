@@ -86,3 +86,67 @@ Version files on `main` (`pyproject.toml`, `acp_registry/agent.json`, …) are
 not bumped per release any more; bump them occasionally with
 `python scripts/set_version.py <x.y.z>` in a normal PR when a new minor line
 starts, so PyPI-style installs and `importlib.metadata` stay close to reality.
+
+## Public release repository (AIS-311)
+
+This repository is going private. Clients cannot read releases of a private
+repository, so every release is mirrored into the public
+**`IAMDS-GMBH/AIMDS-Agent-Releases`** (README plus releases, no code, no
+issues). The mirror is the download source for installers, install scripts
+and the source package; the client updater and installer switch to it in
+AIS-218 (updater) and AIS-313 (installer), the cutover itself is AIS-314.
+
+### What the workflow publishes
+
+`build-source-package` (workflow_dispatch, same main HEAD as the installers)
+runs `scripts/build_source_package.sh <version> <out-dir>`:
+
+| Asset | Content |
+|---|---|
+| `hermes-source-<version>.zip` | `git archive` of HEAD with the version stamped by `scripts/set_version.py`; root folder `hermes-agent-<version>/`; the `export-ignore` rules in `.gitattributes` keep `.github/`, `.agents/`, `tests/`, `apps/bootstrap-installer/`, `docs/plans/`, `createTag.sh` and `CONTRIBUTING.md` out — nothing that describes internal workflows ships |
+| `hermes-source-<version>.zip.sha256` | checksum, `sha256sum -c` format |
+| `hermes-release.json` | `{"format": "hermes-release-v1", "version", "tag", "commit_sha", "source_archive", "sha256", "size", "built_at"}` — the manifest the client updater reads |
+| `install.sh`, `install.ps1` | the install scripts of this release (the bootstrap installer fetches them from here instead of `raw.githubusercontent.com`) |
+
+`publish-release-assets` uploads these next to the installers on the internal
+release, then mirrors the release: same tag, `--prerelease` for candidates,
+`--latest` for stable, title `Hermes <tag>`, and **public notes = the AI
+summary only** (never the commit bullets — they carry commit hashes and author
+logins). `promote-stable` mirrors the promoted `vX.Y.Z` with the candidate's
+assets and the candidate's public notes. The tag in the public repository is
+created by `gh release create --target <default branch>`; it points at the
+README commit, not at source.
+
+Download URL scheme (anonymous, no token):
+
+```
+https://github.com/IAMDS-GMBH/AIMDS-Agent-Releases/releases/download/<tag>/<asset>
+```
+
+### Setup (once, org admin)
+
+1. **GitHub App** `AIMDS Release Publisher` (Organization → Settings →
+   Developer settings → GitHub Apps → New): no webhook, permission
+   **Repository → Contents: Read and write** only; install it on
+   `AIMDS-Agent-Releases` **only**. Generate a private key.
+2. In this repository: secrets `RELEASES_APP_ID` (the App ID) and
+   `RELEASES_APP_PRIVATE_KEY` (the `.pem` content); variable
+   `RELEASES_REPO=IAMDS-GMBH/AIMDS-Agent-Releases`.
+3. The workflow mints a short-lived installation token with
+   `actions/create-github-app-token` scoped to that one repository. While the
+   secrets are missing, the "Check public release mirror configuration" step
+   prints a warning and the mirror is skipped — the internal release is
+   unaffected.
+
+To rehearse, point `RELEASES_REPO` at a sandbox repository the app is
+installed on, run `./createTag.sh patch`, and check
+`gh release view <tag> --repo <sandbox>`; then switch the variable back.
+
+### Local check of the source package
+
+```bash
+scripts/build_source_package.sh 0.7.6-rc.1 "$TMPDIR/hermes-pkg"   # clean tree required
+unzip -l "$TMPDIR/hermes-pkg/hermes-source-0.7.6-rc.1.zip" | grep -E '\.github/|tests/|bootstrap-installer/' && echo "LEAK" || echo "clean"
+(cd "$TMPDIR/hermes-pkg" && shasum -a 256 -c hermes-source-0.7.6-rc.1.zip.sha256)
+git status --short   # empty: the version stamp was reverted
+```
