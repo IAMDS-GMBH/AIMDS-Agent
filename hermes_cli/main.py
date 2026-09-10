@@ -7970,6 +7970,24 @@ def _resolve_update_branch(args, *, source: Optional[str] = None) -> str:
     return CHANNEL_STABLE if _current_branch_name() == "HEAD" else CHANNEL_MAIN
 
 
+def _resolve_release_target(channel: str):
+    """The public release repository's manifest for a tag channel, or ``None`` (AIS-318).
+
+    ``stable``/``preview`` follow ``IAMDS-GMBH/AIMDS-Agent-Releases`` first;
+    when its manifest cannot be served the caller resolves the tag from
+    ``origin`` as before — announced, never silently.
+    """
+    from hermes_cli.release_channels import RELEASE_REPO
+    from hermes_cli.release_update import ReleaseFeedError, fetch_release_feed
+
+    try:
+        return fetch_release_feed(channel)
+    except ReleaseFeedError as exc:
+        print(f"⚠ Release repository {RELEASE_REPO} unavailable ({exc})")
+        print(f"  → Resolving the {channel} tag from origin instead.")
+        return None
+
+
 def _select_channel_tag(git_cmd: list, channel: str) -> tuple[list, str]:
     """``(all_tags, target_tag)`` for a tag channel after a tag fetch (AIS-292).
 
@@ -8268,8 +8286,41 @@ def _cmd_update_check(
             )
         upstream_exists = False
         tags, target_tag = _select_channel_tag(git_cmd, branch)
+        release_feed = _resolve_release_target(branch)
+        expected_sha = ""
+        if release_feed:
+            target_tag, expected_sha = release_feed.tag, release_feed.commit_sha
+            if target_tag not in tags:
+                # origin cannot deliver the tag the release repository names
+                # (private / unreachable source repository): answer from the
+                # manifest, the update would install the release archive.
+                from hermes_cli.release_channels import (
+                    HEAD_AT_TARGET,
+                    HEAD_NEWER_RELEASE,
+                    head_release_tag,
+                    resolve_head_vs_target,
+                )
+
+                print(f"  ✓ Latest {branch} release: {target_tag} (release repository)")
+                head_sha = _capture_head_sha(git_cmd, PROJECT_ROOT) or ""
+                head_tags = _tags_pointing_at_head(git_cmd)
+                state = resolve_head_vs_target(
+                    head_sha=head_sha, target_sha=expected_sha, head_tags=head_tags, target_tag=target_tag
+                )
+                if state == HEAD_AT_TARGET:
+                    print("✓ Already up to date.")
+                elif state == HEAD_NEWER_RELEASE:
+                    print(f"✓ On {head_release_tag(head_tags)}, newer than {branch} {target_tag} — nothing to do.")
+                else:
+                    from hermes_cli.config import recommended_update_command
+
+                    print(f"⚕ Update available: {target_tag} (release archive, {expected_sha[:10]}) — origin does not carry this tag.")
+                    suffix = f" --branch {branch}" if branch_explicit else ""
+                    print(f"  Run '{recommended_update_command()}{suffix}' to install.")
+                return
         if target_tag:
-            print(f"  ✓ Latest {branch} release: {target_tag}")
+            origin_note = " (release repository)" if release_feed else ""
+            print(f"  ✓ Latest {branch} release: {target_tag}{origin_note}")
             compare_branch = f"refs/tags/{target_tag}"
             if fetch_result.returncode != 0:
                 fetch_result = subprocess.CompletedProcess(args=fetch_result.args, returncode=0)
@@ -8357,6 +8408,10 @@ def _cmd_update_check(
         )
 
         head_sha, target_sha = _head_and_tag_shas(git_cmd, compare_branch)
+        if expected_sha and target_sha and target_sha != expected_sha:
+            print(f"✗ Tag {target_tag} on origin ({target_sha[:10]}) does not match the release repository ({expected_sha[:10]}).")
+            print("  Refusing to compare against a re-pointed tag.")
+            sys.exit(1)
         head_tags = _tags_pointing_at_head(git_cmd)
         head_state = resolve_head_vs_target(
             head_sha=head_sha, target_sha=target_sha, head_tags=head_tags, target_tag=target_tag
@@ -10096,6 +10151,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
 
             tags, latest_tag = _select_channel_tag(git_cmd, branch)
+            release_feed = _resolve_release_target(branch)
+            expected_sha = ""
+            if release_feed:
+                latest_tag, expected_sha = release_feed.tag, release_feed.commit_sha
+                if latest_tag not in tags:
+                    # The release repository names a tag origin cannot deliver
+                    # (private / unreachable source repository): install the
+                    # release archive instead of a git checkout (AIS-318).
+                    print(f"  ✓ Latest {branch} release: {latest_tag} (release repository)")
+                    print(f"→ Tag {latest_tag} is not available from origin — installing the release archive.")
+                    _cmd_update_via_release(
+                        args, branch, gateway_mode=gateway_mode, assume_yes=assume_yes, forced=True
+                    )
+                    return
             if latest_tag:
                 from hermes_cli.release_channels import (
                     HEAD_AT_TARGET,
@@ -10104,8 +10173,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     resolve_head_vs_target,
                 )
 
-                print(f"  ✓ Latest {branch} release: {latest_tag}")
+                origin_note = " (release repository)" if release_feed else ""
+                print(f"  ✓ Latest {branch} release: {latest_tag}{origin_note}")
                 head_sha, target_sha = _head_and_tag_shas(git_cmd, latest_tag)
+                if expected_sha and target_sha and target_sha != expected_sha:
+                    print(f"✗ Tag {latest_tag} on origin ({target_sha[:10]}) does not match the release repository ({expected_sha[:10]}).")
+                    print("  Refusing to check out a re-pointed tag. Nothing was changed.")
+                    sys.exit(1)
                 head_tags = _tags_pointing_at_head(git_cmd)
                 head_state = resolve_head_vs_target(
                     head_sha=head_sha, target_sha=target_sha, head_tags=head_tags, target_tag=latest_tag
