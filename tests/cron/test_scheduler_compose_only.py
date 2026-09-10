@@ -35,6 +35,13 @@ def env(tmp_path, monkeypatch):
     vault = tmp_path / "vault"
     install_run_job_stubs(monkeypatch, home, config={"display": {"language": "de"}}, vault=vault, keep_prompt_builder=True)
     monkeypatch.setattr(bc, "collect", _fake_collect())
+    # The journal file and its `updated:` line are named after the current day;
+    # freeze the scheduler's clock so the expectations below are not tied to
+    # the day the test was written (the CI run of 2026-09-10 failed on "2026-09-08").
+    from datetime import datetime, timezone
+    from cron import scheduler as _scheduler
+
+    monkeypatch.setattr(_scheduler, "_hermes_now", lambda: datetime(2026, 9, 8, 8, 0, tzinfo=timezone.utc))
     FakeAgent.response = "# Tages-Briefing\n\n## 📅 Heute\n- 09:00 Daily\n\nFINDING: Daily um 9\nNEXT: Vorbereiten"
     FakeAgent.tool_messages = 0
     return home, vault
