@@ -46,6 +46,7 @@ const {
 } = require('./update-remote.cjs')
 const {
   RELEASE_MARKER_FILE,
+  headReleaseTag,
   isTagChannel,
   latestManifestUrl,
   normalizeChannel,
@@ -1744,33 +1745,52 @@ async function checkUpdates() {
     const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
     const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
 
-    // The target is whatever the remote publishes (ls-remote), never a local
-    // tag that may be stale or missing.
-    const lsTags = await runGit(['ls-remote', '--tags', remote], { cwd: updateRoot })
-    if (lsTags.code !== 0 || !lsTags.stdout.trim()) {
-      return {
-        supported: true,
-        branch,
-        error: 'fetch-failed',
-        message: firstLine(lsTags.stderr) || 'git ls-remote --tags failed.',
-        hermesRoot: updateRoot,
-        fetchedAt: Date.now()
-      }
+    // The target comes from the public release repository first (AIS-318):
+    // its manifest names tag + commit. When that manifest cannot be served
+    // (empty mirror, offline) the remote's tags decide, as before — logged,
+    // never silently.
+    let manifest = null
+    try {
+      manifest = await fetchReleaseManifest(branch)
+    } catch (error) {
+      const code = error?.code === 'rate-limited' ? 'rate-limited' : 'fetch-failed'
+      rememberLogOnce(`release-target:${branch}:${code}`, `[updates] release repository unavailable (${code}): ${error?.message || error}; resolving ${branch} from ${remote}`)
     }
 
-    const remoteTags = parseLsRemoteTags(lsTags.stdout)
-    const tagName = selectReleaseTag(Object.keys(remoteTags), branch)
-    if (!tagName) {
-      return {
-        supported: true,
-        branch,
-        error: 'no-tags-found',
-        message: `No ${branch} release tag found on remote.`,
-        hermesRoot: updateRoot,
-        fetchedAt: Date.now()
+    let tagName
+    let targetSha
+    if (manifest) {
+      tagName = manifest.tag
+      targetSha = manifest.commit_sha
+    } else {
+      // The target is whatever the remote publishes (ls-remote), never a local
+      // tag that may be stale or missing.
+      const lsTags = await runGit(['ls-remote', '--tags', remote], { cwd: updateRoot })
+      if (lsTags.code !== 0 || !lsTags.stdout.trim()) {
+        return {
+          supported: true,
+          branch,
+          error: 'fetch-failed',
+          message: firstLine(lsTags.stderr) || 'git ls-remote --tags failed.',
+          hermesRoot: updateRoot,
+          fetchedAt: Date.now()
+        }
       }
+
+      const remoteTags = parseLsRemoteTags(lsTags.stdout)
+      tagName = selectReleaseTag(Object.keys(remoteTags), branch)
+      if (!tagName) {
+        return {
+          supported: true,
+          branch,
+          error: 'no-tags-found',
+          message: `No ${branch} release tag found on remote.`,
+          hermesRoot: updateRoot,
+          fetchedAt: Date.now()
+        }
+      }
+      targetSha = remoteTags[tagName]
     }
-    const targetSha = remoteTags[tagName]
 
     // Fetch the target tag so the local checkout can count and list the
     // commits up to it — that feeds the changelog in the updates overlay and,
@@ -1799,6 +1819,59 @@ async function checkUpdates() {
     // v0.7.4 is *newer* than its channel, not a dev checkout — never offer
     // the older release as an "update" (AIS-299, SUP-20260907).
     const headTags = headTagsRaw.split('\n').map(line => line.trim()).filter(Boolean)
+
+    if (manifest) {
+      // git must hold the manifest's commit to count/list commits. A tag the
+      // remote does not carry (private / unreachable source repository) is
+      // answered from the manifest alone; `hermes update` then installs the
+      // release archive. A tag the remote re-pointed is refused.
+      const localTagSha = await runGit(['rev-parse', `${tagName}^{commit}`], { cwd: updateRoot })
+      const haveCommit = await runGit(['cat-file', '-e', `${targetSha}^{commit}`], { cwd: updateRoot })
+      if (localTagSha.code === 0 && localTagSha.stdout.trim() && localTagSha.stdout.trim() !== targetSha) {
+        return {
+          supported: true,
+          source: 'git',
+          branch,
+          currentBranch,
+          currentSha,
+          targetTag: tagName,
+          targetVersion: manifest.version,
+          error: 'fetch-failed',
+          message: `Tag ${tagName} on ${remote} (${localTagSha.stdout.trim().slice(0, 10)}) does not match the release repository (${targetSha.slice(0, 10)}).`,
+          hermesRoot: updateRoot,
+          fetchedAt: Date.now()
+        }
+      }
+      if (haveCommit.code !== 0) {
+        const status = resolveReleaseStatus({
+          markerTag: headReleaseTag(headTags) || '',
+          markerCommit: currentSha,
+          targetTag: tagName,
+          targetCommit: targetSha
+        })
+        const updateResult = {
+          supported: true,
+          source: 'release',
+          branch,
+          currentBranch,
+          behind: status.behind,
+          aheadOfTarget: 0,
+          offChannel: false,
+          newerThanTarget: status.newerThanTarget === true,
+          headTag: status.headTag || undefined,
+          currentSha,
+          targetSha,
+          targetTag: tagName,
+          targetVersion: manifest.version,
+          commits: [],
+          dirty: dirtyStr.length > 0,
+          hermesRoot: updateRoot,
+          fetchedAt: Date.now()
+        }
+        void sendClientTelemetry(updateResult)
+        return updateResult
+      }
+    }
 
     // Both directions: HEAD..tag is what an update would pull, tag..HEAD tells
     // a dev/main checkout that it is *past* the release (SUP-20260907-101225:
@@ -7187,6 +7260,28 @@ function resolveExactReleaseTagVersion(root) {
 // A release-managed install (AIS-312) reads its version from the marker
 // first: git describe would keep naming the old tag on a checkout whose tree
 // was replaced by an archive update without moving HEAD.
+// `<highest release tag reachable from HEAD>+<commits since>` for a checkout
+// past a tag (AIS-318): a main checkout after v0.7.5 reports 0.7.5+6 — never
+// the pyproject number, which is not bumped per release since AIS-292. Stable
+// outranks the candidates of its own version; non-release tags are ignored.
+function resolveReleaseDescribeVersion(root) {
+  try {
+    const git = args => execFileSync(resolveGitBinary(), args, {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim()
+    const reachable = git(['tag', '--merged', 'HEAD', '--list', 'v*']).split('\n').map(t => t.trim()).filter(Boolean)
+    const tag = selectReleaseTag(reachable, 'preview')
+    if (!tag) return null
+    const ahead = Number.parseInt(git(['rev-list', '--count', `${tag}..HEAD`]), 10)
+    const base = versionFromTag(tag)
+    return Number.isFinite(ahead) && ahead > 0 ? `${base}+${ahead}` : base
+  } catch {
+    return null
+  }
+}
+
 function resolveHermesVersion() {
   try {
     const root = resolveUpdateRoot()
@@ -7194,6 +7289,8 @@ function resolveHermesVersion() {
     if (marker) return marker.version
     const exact = resolveExactReleaseTagVersion(root)
     if (exact) return exact
+    const described = resolveReleaseDescribeVersion(root)
+    if (described) return described
     const base = resolveVersionFromPyproject(root)
     if (base) {
       const ahead = resolveAheadCountFromGit(root, base)

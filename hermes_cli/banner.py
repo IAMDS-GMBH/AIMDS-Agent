@@ -228,6 +228,9 @@ def _version_tuple(v: str) -> tuple[int, ...]:
     :func:`hermes_cli.release_channels.compare_release_tags`.
     """
     parts = []
+    # "0.7.5+6" (checkout past a release tag, AIS-318): the local part is
+    # not a version segment.
+    v = v.split("+", 1)[0]
     for segment in v.split("."):
         try:
             parts.append(int(segment))

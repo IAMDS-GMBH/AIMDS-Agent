@@ -95,6 +95,22 @@ verification) is always fatal and leaves the tree unchanged; it is never
 retried through another transport. The same order applies to
 `hermes update --check`, the CLI banner and the desktop update check.
 
+**Target resolution on git checkouts (AIS-318).** `stable`/`preview` take
+their target from the public release repository first: `hermes-release.json`
+names the tag and the `commit_sha`. Where `origin` carries that tag the update
+stays a `git checkout <tag>` (the tag's commit must equal `commit_sha`, a
+re-pointed tag is refused). Where `origin` cannot deliver the tag — private
+or unreachable source repository — the release archive is installed instead
+and the marker written. When the manifest cannot be served the tag is
+resolved from `origin` as before, announced with a warning. The desktop
+`checkUpdates()` follows the same order (manifest, then `ls-remote --tags`).
+
+**Version shown for a checkout past a tag.** `hermes --version`, the banner,
+`/api/status` and the desktop report `<highest release tag reachable from
+HEAD>+<commits since>` (e.g. `0.7.5+6`, stable above the candidates of its
+own version); exactly on a tag only the version. `pyproject.toml` is the last
+fallback only.
+
 Manifest resolution: `stable` reads the static
 `releases/latest/download/hermes-release.json` (no API call, not rate
 limited); `preview` lists the newest releases via the API, picks the highest
