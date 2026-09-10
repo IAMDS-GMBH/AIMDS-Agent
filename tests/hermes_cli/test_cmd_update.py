@@ -784,28 +784,39 @@ class TestCmdUpdateCheckBranchFlag:
         assert "bb/gui" in out
 
 
-class TestCmdUpdateZipBranchRefusal:
-    """``hermes update --branch=<non-main>`` must refuse on the ZIP fallback path.
+class TestCmdUpdateLegacyArchiveBranchRefusal:
+    """``hermes update --branch=<non-main>`` must refuse on the source-archive fallback path.
 
-    The ZIP fallback hard-codes a GitHub archive URL for main.zip; honoring
-    --branch arbitrarily would require remote-branch existence checks the
-    fallback can't easily do. Refusing is the right move — silently lying
-    about which branch got installed is the bug --branch was meant to prevent.
+    The archive fallback hard-codes a GitHub archive URL; honoring --branch
+    arbitrarily would require remote-branch existence checks the fallback
+    can't easily do. Refusing is the right move — silently lying about which
+    branch got installed is the bug --branch was meant to prevent.
     """
 
-    def test_zip_fallback_refuses_non_main_branch(self, capsys):
-        from hermes_cli.main import _update_via_zip
+    def test_legacy_archive_refuses_non_main_branch(self, capsys):
+        from hermes_cli.main import _update_via_legacy_archive
 
         args = SimpleNamespace(branch="bb/gui")
         with pytest.raises(SystemExit) as exc_info:
-            _update_via_zip(args)
+            _update_via_legacy_archive(args, "bb/gui", gateway_mode=False, assume_yes=False)
         assert exc_info.value.code == 1
 
         out = capsys.readouterr().out
         assert "bb/gui" in out
         assert "not supported" in out
         # No actual download attempted.
-        assert "Downloading latest version" not in out
+        assert "Downloading" not in out
+
+    def test_release_path_refuses_branch_channels_when_pinned(self, capsys):
+        from hermes_cli.main import _cmd_update_via_release
+
+        with pytest.raises(SystemExit) as exc_info:
+            _cmd_update_via_release(
+                SimpleNamespace(branch="bb/gui"), "bb/gui",
+                gateway_mode=False, assume_yes=False, forced=True,
+            )
+        assert exc_info.value.code == 1
+        assert "needs a git checkout" in capsys.readouterr().out
 
 
 def test_is_termux_env_true_for_termux_prefix():

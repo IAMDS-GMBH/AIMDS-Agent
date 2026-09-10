@@ -98,3 +98,59 @@ def test_latest_release_tag_via_api():
         assert rc.latest_release_tag_via_api("main") is None
     with patch.object(rc.urllib.request, "urlopen", side_effect=OSError("offline")):
         assert rc.latest_release_tag_via_api("stable") is None
+
+
+def test_tag_fits_channel_and_update_source():
+    assert rc.tag_fits_channel("v0.7.5", "stable") and rc.tag_fits_channel("v0.7.5", "preview")
+    assert rc.tag_fits_channel("v0.7.5-rc.1", "preview") and not rc.tag_fits_channel("v0.7.5-rc.1", "stable")
+    assert rc.tag_fits_channel("v0.7.5", "tags")  # alias
+    assert not rc.tag_fits_channel("v0.7.5", "main") and not rc.tag_fits_channel("junk", "preview")
+    assert rc.normalize_update_source(None) == "auto" and rc.normalize_update_source(" Release ") == "release"
+    assert rc.normalize_update_source("git") == "git" and rc.normalize_update_source("stable") == "auto"
+    # the *channel* alias "release" must never leak into the source vocabulary and vice versa
+    assert rc.normalize_channel("release") == "stable"
+
+
+def test_release_repo_urls():
+    assert rc.RELEASE_REPO == "IAMDS-GMBH/AIMDS-Agent-Releases"
+    assert rc.release_download_url("v0.7.6", "hermes-source-0.7.6.zip") == "https://github.com/IAMDS-GMBH/AIMDS-Agent-Releases/releases/download/v0.7.6/hermes-source-0.7.6.zip"
+    assert rc.latest_manifest_url() == "https://github.com/IAMDS-GMBH/AIMDS-Agent-Releases/releases/latest/download/hermes-release.json"
+    assert rc.github_archive_url("v0.7.5", kind="tags").startswith("https://github.com/IAMDS-GMBH/AIMDS-Agent/")  # legacy stays on the source repo
+
+
+def test_fetch_release_via_api(monkeypatch):
+    seen = []
+
+    def fake_urlopen(request, timeout=0):
+        seen.append((request.full_url, dict(request.header_items())))
+        if request.full_url.endswith("/releases/latest"):
+            return _Resp(json.dumps({"tag_name": "v0.7.5", "assets": [{"name": "hermes-release.json"}]}).encode())
+        return _Resp(json.dumps([
+            {"tag_name": "v0.7.6-rc.1", "draft": False, "assets": []},
+            {"tag_name": "v0.7.6-rc.2", "draft": True, "assets": []},
+            {"tag_name": "v0.7.5", "draft": False, "assets": []},
+            {"tag_name": "nightly-3", "draft": False, "assets": []},
+        ]).encode())
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    with patch.object(rc.urllib.request, "urlopen", side_effect=fake_urlopen):
+        stable = rc.fetch_release_via_api("stable")
+        assert stable["tag_name"] == "v0.7.5" and stable["assets"][0]["name"] == "hermes-release.json"
+        assert seen[-1][0] == "https://api.github.com/repos/IAMDS-GMBH/AIMDS-Agent-Releases/releases/latest"
+        assert "Authorization" not in seen[-1][1]
+        preview = rc.fetch_release_via_api("preview")
+        assert preview["tag_name"] == "v0.7.6-rc.1"  # drafts and non-release tags ignored
+        assert rc.fetch_release_via_api("main") is None
+        assert rc.fetch_release_via_api("stable", repo="IAMDS-GMBH/AIMDS-Agent")["tag_name"] == "v0.7.5"
+        assert seen[-1][0].startswith("https://api.github.com/repos/IAMDS-GMBH/AIMDS-Agent/")
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    with patch.object(rc.urllib.request, "urlopen", side_effect=fake_urlopen):
+        rc.fetch_release_via_api("stable")
+    assert seen[-1][1]["Authorization"] == "Bearer tok"
+    with patch.object(rc.urllib.request, "urlopen", side_effect=OSError("offline")):
+        assert rc.fetch_release_via_api("stable") is None
+
+    # /releases/latest answering with a candidate is not a stable release
+    with patch.object(rc.urllib.request, "urlopen", side_effect=lambda r, timeout=0: _Resp(json.dumps({"tag_name": "v0.7.6-rc.1"}).encode())):
+        assert rc.fetch_release_via_api("stable") is None

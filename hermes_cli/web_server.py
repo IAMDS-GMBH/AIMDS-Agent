@@ -577,6 +577,18 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         ),
         "options": ["auto", "stable", "preview", "main"],
     },
+    "updates.source": {
+        "type": "select",
+        "description": (
+            "Where `hermes update` gets the code from. 'git' pulls this checkout's "
+            "origin (needs access to the source repository), 'release' installs the "
+            "verified source archive from the public release repository (no git; "
+            "stable/preview only), 'auto' uses git when the origin is reachable and "
+            "release archives otherwise — falling back to git with a warning if the "
+            "release manifest is unavailable."
+        ),
+        "options": ["auto", "git", "release"],
+    },
 }
 
 # Categories with fewer fields get merged into "general" to avoid tab sprawl.
@@ -2284,15 +2296,15 @@ async def check_hermes_update(force: bool = False):
     ``POST /api/hermes/update`` actually runs ``hermes update``.
 
     Returns:
-        install_method: 'git' | 'pip' | 'docker' | 'nixos' | 'homebrew' | ...
+        install_method: 'git' | 'release' | 'pip' | 'docker' | 'nixos' | 'homebrew' | ...
         current_version: installed Hermes version string
         behind: commits behind upstream (>=1), 0 if up to date,
                 -1 if behind by an unknown count (nix/pypi), or null if the
                 check could not run (offline, no remote, etc.)
         update_available: convenience bool (behind is non-zero and not null)
         can_apply: True when the dashboard's update button can apply it
-                   in place (git/pip); False for docker/nix/homebrew where the
-                   user must update out-of-band
+                   in place (git/release/pip); False for docker/nix/homebrew
+                   where the user must update out-of-band
         update_command: the recommended command for this install method
         message: human-readable guidance for non-applyable methods
         commits: for git/pip installs that are behind, a list of the commits
@@ -2300,6 +2312,9 @@ async def check_hermes_update(force: bool = False):
                  {sha, summary, author, at}. Absent/empty otherwise. The
                  desktop's remote update overlay renders this as "what's
                  changed". Additive: existing consumers ignore it.
+        channel, release_tag, release_version, release_build_id: for a
+                 source-archive install ('release', AIS-312) the release the
+                 last check compared against; null otherwise. Additive.
     """
     install_method = detect_install_method(PROJECT_ROOT)
     update_command = recommended_update_command_for_method(install_method)
@@ -2309,17 +2324,21 @@ async def check_hermes_update(force: bool = False):
         "current_version": __version__,
         "behind": None,
         "update_available": False,
-        "can_apply": install_method in ("git", "pip"),
+        "can_apply": install_method in ("git", "release", "pip"),
         "update_command": update_command,
         "message": None,
+        "channel": None,
+        "release_tag": None,
+        "release_version": None,
+        "release_build_id": None,
     }
 
     if install_method == "docker":
         payload["message"] = format_docker_update_message()
         return payload
 
-    # banner.check_for_updates() handles git / pypi / nix-revision paths and
-    # caches the result for 6h. ``force`` busts the cache so the "Check now"
+    # banner.check_for_updates() handles git / release-manifest / pypi /
+    # nix-revision paths and caches the result for 24h. ``force`` busts the cache so the "Check now"
     # button reflects reality immediately.
     try:
         from hermes_cli.banner import check_for_updates
@@ -2335,6 +2354,16 @@ async def check_hermes_update(force: bool = False):
         _log.exception("Update check failed")
         behind = None
 
+    if install_method == "release":
+        try:
+            from hermes_cli.banner import get_release_update_info
+
+            release_info = get_release_update_info() or {}
+            for key in ("channel", "release_tag", "release_version", "release_build_id"):
+                payload[key] = release_info.get(key)
+        except Exception:
+            _log.debug("Release update info lookup failed", exc_info=True)
+
     payload["behind"] = behind
     if behind is None:
         payload["message"] = "Couldn't reach the update source — try again later."
@@ -2342,6 +2371,8 @@ async def check_hermes_update(force: bool = False):
         payload["message"] = "You're on the latest version."
     else:
         payload["update_available"] = True
+        if payload.get("release_tag"):
+            payload["message"] = f"Release {payload['release_tag']} is available."
         # Enrich with the actual commits we're behind by, so the desktop's
         # remote update overlay can show "what's changed". git/pip only;
         # best-effort (empty list on any failure).

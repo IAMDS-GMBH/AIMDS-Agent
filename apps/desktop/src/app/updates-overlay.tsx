@@ -274,6 +274,46 @@ export function IdleView({
     )
   }
 
+  // Release-managed install (archive updates, AIS-312): there is no commit
+  // log to show, the offer is a whole release. Same card layout as the
+  // changelog below, no commit groups. No hooks here (AIS-276).
+  if (status.source === 'release') {
+    const version = status.targetVersion ?? (status.targetTag ? status.targetTag.replace(/^v/, '') : '')
+
+    return (
+      <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <BrandMark className="size-16" />
+
+          <div className="flex flex-col items-center gap-1">
+            <DialogTitle className="text-center text-xl">{u.releaseAvailable(version)}</DialogTitle>
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-0.5 text-[0.7rem] font-medium text-primary">
+              <span>{status.branch ? `Channel: ${status.branch}` : 'Hermes Update'}</span>
+              <span>•</span>
+              <span>v{version}</span>
+            </div>
+          </div>
+
+          <DialogDescription className="text-center text-sm">{u.releaseAvailableBody(version)}</DialogDescription>
+        </div>
+
+        <div className="grid gap-2">
+          <Button className="font-semibold" onClick={onInstall} size="lg">
+            {u.updateNow}
+          </Button>
+          <div className="flex items-center justify-between gap-2 px-1">
+            <Button className="font-medium" onClick={onLater} type="button" variant="text">
+              {u.maybeLater}
+            </Button>
+            <Button onClick={() => onReportIssue('Problem beim Update')} size="xs" type="button" variant="text">
+              Problem melden
+            </Button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   const groups = buildCommitChangelog(commits, { locale })
   const shownItems = totalItems(groups)
   const remaining = Math.max(0, behind - shownItems)

@@ -122,8 +122,8 @@ declare global {
       updates: {
         check: () => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
-        getBranch: () => Promise<{ branch: string }>
-        setBranch: (name: string) => Promise<{ branch: string }>
+        getBranch: () => Promise<{ branch: string; source?: 'release' | 'git' }>
+        setBranch: (name: string) => Promise<{ branch: string; source?: 'release' | 'git' }>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
       }
       uninstall: {
@@ -181,6 +181,11 @@ export interface DesktopVersionInfo {
   nodeVersion: string
   platform: string
   hermesRoot: string
+  /** `release`: the install was applied from a release archive and carries a
+   *  `.hermes-release.json` marker (AIS-312); `git`: a git checkout. */
+  source?: 'release' | 'git'
+  /** Release-managed installs: the marker's tag (`v0.7.6`). */
+  releaseTag?: string
 }
 
 export interface DesktopSupportLogSendResult {
@@ -225,6 +230,14 @@ export interface DesktopUpdateCommit {
 
 export interface DesktopUpdateStatus {
   supported: boolean
+  /** How the check was made: `release` compares the install's marker with the
+   *  channel's release manifest (archive install, AIS-312), `git` runs the git
+   *  fetch/rev-list path. */
+  source?: 'release' | 'git'
+  /** Release-managed installs: the installed release version / build id from
+   *  the marker. */
+  releaseVersion?: string
+  releaseBuildId?: string
   branch?: string
   currentBranch?: string
   reason?: string
