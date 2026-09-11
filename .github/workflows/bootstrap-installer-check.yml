@@ -54,10 +54,10 @@ jobs:
         env:
           HERMES_BUILD_PIN_TAG: v0.0.0-rc.1
           HERMES_BUILD_PIN_BRANCH: preview
-        run: cargo check --manifest-path apps/bootstrap-installer/src-tauri/Cargo.toml --locked
+        run: cargo check --manifest-path apps/bootstrap-installer/src-tauri/Cargo.toml
 
       - name: cargo test
         env:
           HERMES_BUILD_PIN_TAG: v0.0.0-rc.1
           HERMES_BUILD_PIN_BRANCH: preview
-        run: cargo test --manifest-path apps/bootstrap-installer/src-tauri/Cargo.toml --locked
+        run: cargo test --manifest-path apps/bootstrap-installer/src-tauri/Cargo.toml
