@@ -926,6 +926,12 @@ fn emit_event(app: &AppHandle, event: BootstrapEvent) {
         }
         BootstrapEvent::Failed { stage, error } => {
             tracing::error!(stage = ?stage, error = %error, "bootstrap FAILED");
+            // AIS-323: support sees a failed first install without waiting
+            // for the user to press "Problem melden" (best-effort, rate-limited).
+            let (stage, error) = (stage.clone(), error.clone());
+            tauri::async_runtime::spawn(async move {
+                crate::support::auto_report_bootstrap_failure(stage, error).await;
+            });
         }
         BootstrapEvent::Log { .. } => {
             // Log lines are teed via the sink callbacks in

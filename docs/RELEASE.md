@@ -196,6 +196,36 @@ Nothing on a customer machine talks to the source repository any more:
   `.hermes-mcp-install.json` records the checkout identity that
   `installed_commit()` reports. Third-party servers keep `install.type: git`.
 
+
+### Fallbacks and automatic incident reports (AIS-323)
+
+The release repository is primary; the source repository stays the emergency
+fallback so it can be made public again without losing clients. Every fallback
+is taken loudly and reported, so support sees it before customers do:
+
+| Path | Primary | Fallback (logged + reported) |
+|---|---|---|
+| `hermes update` (`updates.source: auto`) | release manifest decides the target; archive when origin cannot serve the tag | git checkout of origin (`update-fallback-git`, `update-fallback-origin-tags`), source-repository archive without `.git` (`update-fallback-source-archive`), `main` when a channel has no tag (`update-no-release-tag`); apply failures → `update-release-apply-failed` (high) |
+| `install.sh` / `install.ps1` | verified release archive | `git clone` of the source repository (`installer-fallback-git`); `installer-failure` / `installer-stage-<name>-failed` (high) when a stage fails |
+| Desktop update check | release manifest | `git ls-remote` on origin (`update-check-fallback-git`, `update-check-fallback-origin-tags`) |
+| Desktop bootstrap runner | scripts from the release archive of the stamp's tag | scripts of the installed agent, then `raw.githubusercontent.com` at the stamp's commit (`source-repo-fallback`); a failed bootstrap → `installer-failure-<stage>` (high) |
+| HermesSetup self-update | releases of the release repository | releases of the source repository (`self_update.rs`); a failed bootstrap → `installer-failure-<stage>` via `submit_support_ticket` |
+
+Reports are support cases (`hermes support send-logs`: redacted logs, `hermes
+dump`, `metadata.json` with `category: installation_update` and the event kind
+as `X-Hermes-Reason`). Without an installed Hermes (a failed first install)
+the scripts and the desktop post a minimal bundle (`metadata.json`,
+`manifest.json`, install context) themselves. Rules, identical in
+`hermes_cli/incident_report.py`, `apps/desktop/electron/incident-report.cjs`,
+the install scripts and `support.rs`:
+
+- `support.auto_report: false` in `config.yaml` or the environment variable
+  `HERMES_SUPPORT_AUTO_REPORT=0` disables the upload — the log line stays.
+- One case per event kind per 24 hours, tracked in
+  `<HERMES_HOME>/logs/incident-reports.json` (the scripts use
+  `incident-<kind>.stamp` files next to it).
+- Reporting is best-effort: it never fails or blocks the update / install.
+
 ### What the workflow publishes
 
 `build-source-package` (workflow_dispatch, same main HEAD as the installers)

@@ -283,8 +283,25 @@ async function downloadReleaseInstallScript(tag, destPath) {
   }
 }
 
-// Network resolution for a stamp: only release tags can be fetched — the
-// source repository (raw.githubusercontent.com) is private since AIS-314.
+// Emergency fallback (AIS-323): the source repository's raw file at the
+// stamp's commit. Only works while that repository is public — kept so the
+// repository can be made public again in an emergency without losing
+// clients; every use is logged and reported.
+function downloadSourceRepoInstallScript(commit, destPath) {
+  const scriptName = installScriptName()
+  const url = `https://raw.githubusercontent.com/IAMDS-GMBH/AIMDS-Agent/${commit}/scripts/${scriptName}`
+  return httpsGetBuffer(url).then(buf => {
+    if (!buf || buf.length === 0) throw new Error(`empty ${scriptName} from ${url}`)
+    fs.mkdirSync(path.dirname(destPath), { recursive: true })
+    const tmpPath = `${destPath}.tmp`
+    fs.writeFileSync(tmpPath, buf)
+    fs.renameSync(tmpPath, destPath)
+    return destPath
+  })
+}
+
+// Network resolution for a stamp: release tags come from the public release
+// repository (primary); commits only from the source repository fallback.
 function downloadInstallScript(installStamp, destPath) {
   const tag = installStamp && installStamp.tag
   if (tag && STAMP_TAG_RE.test(tag)) {
@@ -298,7 +315,14 @@ function downloadInstallScript(installStamp, destPath) {
   )
 }
 
-async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit, _download = downloadInstallScript }) {
+async function resolveInstallScript({
+  installStamp,
+  sourceRepoRoot,
+  hermesHome,
+  emit,
+  _download = downloadInstallScript,
+  _downloadSource = downloadSourceRepoInstallScript
+}) {
   // 1. Dev shortcut: prefer a local checkout's installer so we can iterate
   //    without pushing. SOURCE_REPO_ROOT comes from main.cjs (path.resolve
   //    of APP_ROOT/../..).
@@ -355,6 +379,21 @@ async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, 
       } catch {
         // Cache copy failed (read-only FS, etc.) -- use the source path directly.
         return { path: installed, source: 'installed-agent', ...identity }
+      }
+    }
+    // Last resort (AIS-323): the source repository, if it is (again) public.
+    const commit = installStamp && installStamp.commit
+    if (commit && STAMP_COMMIT_RE.test(commit)) {
+      emit({
+        type: 'log',
+        line: `[bootstrap] release fetch failed (${err.message}); falling back to the source repository for ${commit.slice(0, 12)}`
+      })
+      try {
+        await _downloadSource(commit, cached)
+        emit({ type: 'log', line: `[bootstrap] saved to ${cached} (source repository fallback)` })
+        return { path: cached, source: 'source-repo-fallback', ...identity }
+      } catch (sourceErr) {
+        emit({ type: 'log', line: `[bootstrap] source repository fallback failed too: ${sourceErr.message}` })
       }
     }
     throw err
@@ -861,6 +900,7 @@ module.exports = {
   buildPinArgs,
   buildPosixPinArgs,
   downloadInstallScript,
+  downloadSourceRepoInstallScript,
   fetchReleaseManifest,
   stampRef
 }

@@ -93,6 +93,11 @@ RELEASE_VERSION=""
 RELEASE_COMMIT=""
 RELEASE_SHA256=""
 RELEASE_ARCHIVE=""
+# Automatic incident reports (AIS-323): every fallback from the release
+# repository to the source repository and every failed install stage is
+# logged and — unless HERMES_SUPPORT_AUTO_REPORT=0 — reported to the support
+# server as a case (one per event kind per 24 h).
+SUPPORT_UPLOAD_URL_DEFAULT="https://suite-support.iamds.com/api/v1/upload"
 ENSURE_DEPS=""
 POSTINSTALL_MODE=false
 MANIFEST_MODE=false
@@ -1162,6 +1167,123 @@ show_manual_install_hint() {
 # ============================================================================
 
 # ---------------------------------------------------------------------------
+# Incident reports (AIS-323)
+# ---------------------------------------------------------------------------
+
+# report_install_incident <kind> <summary> [detail] [severity]
+# Logs the event and opens a support case: through the installed Hermes
+# (`hermes support send-logs`, full redacted bundle) when its venv exists,
+# otherwise as a minimal bundle (metadata.json + install context) uploaded
+# with curl. Best-effort: never fails the install, one case per kind per 24 h.
+report_install_incident() {
+    local kind="$1" summary="$2" detail="${3:-}" severity="${4:-medium}"
+    log_warn "[incident] $kind: $summary"
+    case "$(printf '%s' "${HERMES_SUPPORT_AUTO_REPORT:-}" | tr 'A-Z' 'a-z')" in
+        0|false|no|off) log_info "(automatic incident report disabled)"; return 0 ;;
+    esac
+    if [ -n "${PYTEST_CURRENT_TEST:-}" ]; then
+        return 0
+    fi
+    local stamp_dir="$HERMES_HOME/logs" stamp
+    stamp="$stamp_dir/incident-$(printf '%s' "$kind" | tr -c 'A-Za-z0-9._-' '_').stamp"
+    if [ -f "$stamp" ] && [ -z "$(find "$stamp" -mmin +1440 2>/dev/null)" ]; then
+        log_info "(incident $kind already reported within 24 h)"
+        return 0
+    fi
+    local install_type="fresh_install"
+    if [ -f "$INSTALL_DIR/$RELEASE_MARKER_FILE" ] || [ -d "$INSTALL_DIR/.git" ]; then
+        install_type="update"
+    fi
+    local reported=false
+    local venv_py="$INSTALL_DIR/venv/bin/python"
+    if [ -x "$venv_py" ] && "$venv_py" -c 'import hermes_cli.support_logs' >/dev/null 2>&1; then
+        if HERMES_HOME="$HERMES_HOME" "$venv_py" -m hermes_cli.main support send-logs --json \
+            --reason "$kind" --category installation_update --severity "$severity" \
+            --summary "$summary" --description "$detail" --client-type hermes-installer \
+            --context-type install_failure --install-type "$install_type" \
+            --timeout 20 --max-lines 400 >/dev/null 2>&1; then
+            reported=true
+        fi
+    else
+        local py="${PYTHON_PATH:-}"
+        if [ -z "$py" ] || [ ! -x "$py" ]; then py="$(command -v python3 || true)"; fi
+        if [ -n "$py" ] && command -v curl >/dev/null 2>&1; then
+            local url="${SUPPORT_UPLOAD_URL:-$SUPPORT_UPLOAD_URL_DEFAULT}"
+            local key="${SUPPORT_API_KEY:-anonymous}"
+            local case_id bundle
+            case_id="SUP-$(date -u +%Y%m%d-%H%M%S)"
+            bundle="$(mktemp 2>/dev/null || echo "/tmp/hermes-incident.$$").zip"
+            if INCIDENT_KIND="$kind" INCIDENT_SUMMARY="$summary" INCIDENT_DETAIL="$detail" \
+               INCIDENT_SEVERITY="$severity" INCIDENT_CASE="$case_id" INCIDENT_INSTALL_TYPE="$install_type" \
+               INCIDENT_VERSION="${RELEASE_TAG:-${INSTALL_TAG:-unknown}}" INCIDENT_INSTALL_DIR="$INSTALL_DIR" \
+               INCIDENT_CHANNEL="${CHANNEL:-}" INCIDENT_SOURCE="${INSTALL_SOURCE:-}" \
+               "$py" - "$bundle" <<'PY' >/dev/null 2>&1
+import datetime, getpass, json, os, platform, sys, zipfile
+now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+e = os.environ.get
+context = (
+    f"kind: {e('INCIDENT_KIND')}\nsummary: {e('INCIDENT_SUMMARY')}\ndetail: {e('INCIDENT_DETAIL')}\n"
+    f"install_dir: {e('INCIDENT_INSTALL_DIR')}\nchannel: {e('INCIDENT_CHANNEL')}\nsource: {e('INCIDENT_SOURCE')}\n"
+    f"version: {e('INCIDENT_VERSION')}\nos: {platform.platform()}\npython: {sys.version.split()[0]}\n"
+    f"timestamp: {now.isoformat()}\n"
+)
+try:
+    user = getpass.getuser()
+except Exception:
+    user = e("USER") or "unknown"
+metadata = {
+    "schema_version": "1.1.0",
+    "support_case_id": e("INCIDENT_CASE"),
+    "customer_id": e("IAMDS_CUSTOMER_ID") or "cust-iamds",
+    "customer_name": e("IAMDS_CUSTOMER_NAME") or "IAMDS GmbH",
+    "litellm_url": e("IAMDS_LITELLM_BASE_URL") or "https://suite.iamds.com/litellm/v1",
+    "model_used": "unknown",
+    "environment": e("HERMES_ENV") or "production",
+    "timestamp": now.isoformat(),
+    "client_info": {
+        "client_type": "hermes-installer",
+        "client_version": e("INCIDENT_VERSION") or "unknown",
+        "os": f"{platform.system()} {platform.release()} ({platform.machine()})",
+        "user_id": user,
+    },
+    "issue_details": {
+        "category": "installation_update",
+        "severity": e("INCIDENT_SEVERITY") or "medium",
+        "summary": e("INCIDENT_SUMMARY") or e("INCIDENT_KIND"),
+        "user_description": e("INCIDENT_DETAIL") or "",
+    },
+    "context_type": "install_failure",
+    "install_type": e("INCIDENT_INSTALL_TYPE") or "fresh_install",
+    "lifecycle": {"retention_days": 14, "max_size_kb": 25600},
+    "files": [{"path": "install-context.txt", "mime_type": "text/plain", "size_bytes": len(context.encode()), "content_category": "log"}],
+}
+manifest = {"schema": 1, "created_at": now.isoformat(), "client": "hermes-installer", "support_case_id": e("INCIDENT_CASE"), "metadata": metadata}
+with zipfile.ZipFile(sys.argv[1], "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    zf.writestr("metadata.json", json.dumps(metadata, indent=2))
+    zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+    zf.writestr("install-context.txt", context)
+PY
+            then
+                if curl -fsS -m 25 -H "Authorization: Bearer $key" -H "X-Hermes-Reason: $kind" \
+                    -H "X-Hermes-Filename: $(basename "$bundle")" -H "User-Agent: hermes-installer-incident/1" \
+                    -F "support_case_id=$case_id" -F "file=@$bundle;type=application/zip" "$url" >/dev/null 2>&1; then
+                    reported=true
+                    summary="$summary ($case_id)"
+                fi
+            fi
+            rm -f "$bundle"
+        fi
+    fi
+    if [ "$reported" = true ]; then
+        mkdir -p "$stamp_dir" 2>/dev/null && : > "$stamp" 2>/dev/null || true
+        log_info "Reported to support (automatic incident report; disable with HERMES_SUPPORT_AUTO_REPORT=0)"
+    else
+        log_warn "Could not report the incident to support (offline or no python3/curl)"
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Release archive install (AIS-313)
 # ---------------------------------------------------------------------------
 
@@ -1348,7 +1470,7 @@ write_release_marker() {
 # make it the tree at INSTALL_DIR (fresh install) or replace the code of an
 # existing install while keeping venv/, node_modules/, .env and .git.
 install_release_archive() {
-    fetch_release_manifest || exit 1
+    fetch_release_manifest || return 1
 
     if [ -f "$INSTALL_DIR/$RELEASE_MARKER_FILE" ]; then
         local installed_tag
@@ -1362,7 +1484,7 @@ install_release_archive() {
         && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
         log_error "Directory exists but is neither a git checkout nor a release install: $INSTALL_DIR"
         log_info "Remove it or choose a different directory with --dir"
-        exit 1
+        return 1
     fi
 
     local work archive_path url
@@ -1374,19 +1496,19 @@ install_release_archive() {
     if ! curl -fL --retry 3 --progress-bar -o "$archive_path" "$url"; then
         log_error "Download failed: $url"
         rm -rf "$work"
-        exit 1
+        return 1
     fi
     local actual
     actual="$(sha256_of_file "$archive_path" || true)"
     if [ -z "$actual" ]; then
         log_error "No sha256 tool available (sha256sum, shasum or python3) to verify the archive"
         rm -rf "$work"
-        exit 1
+        return 1
     fi
     if [ "$actual" != "$RELEASE_SHA256" ]; then
         log_error "Checksum mismatch for $RELEASE_ARCHIVE (expected $RELEASE_SHA256, got $actual)"
         rm -rf "$work"
-        exit 1
+        return 1
     fi
     log_success "Archive verified (sha256 $RELEASE_SHA256)"
 
@@ -1398,7 +1520,7 @@ install_release_archive() {
     else
         log_error "Neither unzip nor python3 is available to extract the archive"
         rm -rf "$work"
-        exit 1
+        return 1
     fi
     local src_root
     src_root="$(find "$work/extract" -mindepth 1 -maxdepth 1 -type d ! -name '__MACOSX' | head -1)"
@@ -1406,7 +1528,7 @@ install_release_archive() {
         || [ ! -f "$src_root/hermes_cli/main.py" ] || [ ! -f "$src_root/hermes_cli/config.py" ]; then
         log_error "The archive does not contain a hermes-agent source tree"
         rm -rf "$work"
-        exit 1
+        return 1
     fi
 
     if [ ! -d "$INSTALL_DIR" ] || [ -z "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
@@ -1443,7 +1565,7 @@ install_release_archive() {
 # win; an existing checkout on a named branch keeps following that branch so
 # re-running the installer never yanks a developer machine onto a tag.
 resolve_install_ref() {
-    if [ "$CHANNEL" != "stable" ] || [ -n "$INSTALL_COMMIT" ]; then
+    if [ -z "$CHANNEL" ] || [ -n "$INSTALL_COMMIT" ] || [ "$IS_TAG" = true ]; then
         return 0
     fi
     if [ -d "$INSTALL_DIR/.git" ]; then
@@ -1457,14 +1579,14 @@ resolve_install_ref() {
     fi
     local tag
     tag="$(git ls-remote --tags --refs "$REPO_URL_HTTPS" 'v*' 2>/dev/null \
-        | awk '{print $2}' | sed 's#^refs/tags/##' \
-        | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
+        | awk '{print $2}' | sed 's#^refs/tags/##' | select_release_tag "$CHANNEL" || true)"
     if [ -n "$tag" ]; then
         BRANCH="$tag"
         IS_TAG=true
-        log_info "Stable channel: installing release $tag"
+        log_info "$CHANNEL channel: installing release $tag"
     else
-        log_warn "Could not resolve the latest stable release tag; installing branch main instead."
+        log_warn "Could not resolve the latest $CHANNEL release tag; installing branch main instead."
+        report_install_incident "installer-no-release-tag" "no $CHANNEL release tag reachable — installing branch main instead" "dir=$INSTALL_DIR"
         BRANCH="main"
     fi
 }
@@ -1473,10 +1595,30 @@ clone_repo() {
     log_info "Installing to $INSTALL_DIR..."
     resolve_install_source
     if [ "$INSTALL_SOURCE" = "release" ]; then
-        install_release_archive
-        cd "$INSTALL_DIR"
-        log_success "Repository ready"
-        return 0
+        if install_release_archive; then
+            cd "$INSTALL_DIR"
+            log_success "Repository ready"
+            return 0
+        fi
+        # AIS-323: the release repository is primary; the source repository
+        # stays the emergency fallback (it can be made public again without
+        # losing clients). Take it loudly and report it.
+        if command -v git >/dev/null 2>&1 && [ ! -f "$INSTALL_DIR/$RELEASE_MARKER_FILE" -o -d "$INSTALL_DIR/.git" ]; then
+            log_warn "Release repository $RELEASE_REPO could not serve the install — falling back to the source repository (git)."
+            report_install_incident "installer-fallback-git" \
+                "release repository unavailable — falling back to a git clone of the source repository" \
+                "channel=${CHANNEL:-} tag=${INSTALL_TAG:-} dir=$INSTALL_DIR"
+            INSTALL_SOURCE="git"
+            if [ -n "$INSTALL_TAG" ]; then
+                BRANCH="$INSTALL_TAG"
+                IS_TAG=true
+            fi
+        else
+            report_install_incident "installer-failure" \
+                "repository stage failed: release repository unavailable and no git fallback possible" \
+                "channel=${CHANNEL:-} tag=${INSTALL_TAG:-} dir=$INSTALL_DIR" high
+            exit 1
+        fi
     fi
     resolve_install_ref
 
@@ -1577,6 +1719,7 @@ clone_repo() {
                 log_success "Cloned via HTTPS"
             else
                 log_error "Failed to clone repository"
+                report_install_incident "installer-failure" "repository stage failed: git clone of $BRANCH failed (SSH and HTTPS)" "dir=$INSTALL_DIR" high
                 exit 1
             fi
         fi
@@ -5130,6 +5273,10 @@ run_stage_protocol() {
     local code=$?
     set -e
 
+    if [ "$code" -ne 0 ] && [ "$stage" != "repository" ]; then
+        # The repository stage reports its own, more specific incidents.
+        report_install_incident "installer-stage-$stage-failed" "install stage '$stage' failed (exit code $code)" "dir=$INSTALL_DIR" high
+    fi
     if [ "$JSON_OUTPUT" = true ]; then
         if [ "$code" -eq 0 ]; then
             emit_stage_json "$stage" true false

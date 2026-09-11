@@ -268,3 +268,51 @@ test('downloadInstallScript refuses commit-only stamps without touching the netw
   await assert.rejects(downloadInstallScript({ commit: 'c'.repeat(40) }, '/tmp/never-written'), /no release tag|private/)
   await assert.rejects(downloadInstallScript(null, '/tmp/never-written'), /no release tag|private/)
 })
+
+test('resolveInstallScript falls back to the source repository only after the release fetch and the installed agent', async () => {
+  const home = mkTmpHome()
+  try {
+    const commit = 'd'.repeat(40)
+    const logs = []
+    const sourceCalls = []
+    // No installed agent seeded → release fetch fails → source repository fallback.
+    const result = await resolveInstallScript({
+      installStamp: { commit },
+      sourceRepoRoot: null,
+      hermesHome: home,
+      emit: ev => logs.push(ev.line || ''),
+      _download: async () => {
+        throw new Error('no release tag in the install stamp')
+      },
+      _downloadSource: async (c, dest) => {
+        sourceCalls.push(c)
+        fs.mkdirSync(path.dirname(dest), { recursive: true })
+        fs.writeFileSync(dest, '#!/bin/sh\necho from-source\n')
+        return dest
+      }
+    })
+    assert.equal(result.source, 'source-repo-fallback')
+    assert.deepEqual(sourceCalls, [commit])
+    assert.ok(logs.some(l => /falling back to the source repository/.test(l)))
+    assert.ok(fs.existsSync(cachedScriptPath(home, commit)))
+
+    // A release stamp never touches the source repository.
+    const noSource = []
+    await assert.rejects(
+      resolveInstallScript({
+        installStamp: { tag: 'v0.7.6-rc.2' },
+        sourceRepoRoot: null,
+        hermesHome: mkTmpHome(),
+        emit: () => {},
+        _download: async () => {
+          throw new Error('release repository unavailable')
+        },
+        _downloadSource: async c => (noSource.push(c), '/never')
+      }),
+      /release repository unavailable/
+    )
+    assert.deepEqual(noSource, [])
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})

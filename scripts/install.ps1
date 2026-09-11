@@ -108,6 +108,10 @@ $RepoUrlHttps = "https://github.com/IAMDS-GMBH/AIMDS-Agent.git"
 $ReleaseRepo = "IAMDS-GMBH/AIMDS-Agent-Releases"
 $ReleaseManifestAsset = "hermes-release.json"
 $ReleaseMarkerFile = ".hermes-release.json"
+# Automatic incident reports (AIS-323): fallbacks from the release repository
+# to the source repository and failed install stages are logged and, unless
+# HERMES_SUPPORT_AUTO_REPORT=0, reported to the support server as a case.
+$SupportUploadUrlDefault = "https://suite-support.iamds.com/api/v1/upload"
 $script:Channel = ""
 $script:InstallSource = ""
 $script:Release = $null
@@ -1354,6 +1358,122 @@ function Repair-InstallDirPermissionsForCurrentUser {
 }
 
 # ============================================================================
+# Incident reports (AIS-323)
+# ============================================================================
+
+function Report-InstallIncident {
+    # Logs the event and opens a support case: through the installed Hermes
+    # (`hermes support send-logs`, full redacted bundle) when its venv exists,
+    # otherwise as a minimal bundle (metadata.json + install context) posted
+    # as multipart/form-data. Best-effort, one case per kind per 24 h.
+    param(
+        [Parameter(Mandatory=$true)][string]$Kind,
+        [Parameter(Mandatory=$true)][string]$Summary,
+        [string]$Detail = "",
+        [string]$Severity = "medium"
+    )
+    Write-Warn "[incident] ${Kind}: $Summary"
+    $gate = ("$env:HERMES_SUPPORT_AUTO_REPORT").Trim().ToLowerInvariant()
+    if ($gate -in @("0", "false", "no", "off")) { Write-Info "(automatic incident report disabled)"; return }
+    if ($env:PYTEST_CURRENT_TEST) { return }
+    try {
+        $stampDir = Join-Path $HermesHome "logs"
+        $safeKind = ($Kind -replace '[^A-Za-z0-9._-]', '_')
+        $stamp = Join-Path $stampDir "incident-$safeKind.stamp"
+        if ((Test-Path $stamp) -and ((Get-Item $stamp).LastWriteTimeUtc -gt (Get-Date).ToUniversalTime().AddHours(-24))) {
+            Write-Info "(incident $Kind already reported within 24 h)"
+            return
+        }
+        $installType = if ((Test-Path (Join-Path $InstallDir $ReleaseMarkerFile)) -or (Test-Path "$InstallDir\.git")) { "update" } else { "fresh_install" }
+        $reported = $false
+        $venvPy = Join-Path $InstallDir "venv\Scripts\python.exe"
+        $hasHermes = $false
+        if (Test-Path $venvPy) {
+            try { & $venvPy -c "import hermes_cli.support_logs" 2>$null | Out-Null; $hasHermes = ($LASTEXITCODE -eq 0) } catch {}
+        }
+        if ($hasHermes) {
+            $prevHome = $env:HERMES_HOME
+            $env:HERMES_HOME = $HermesHome
+            try {
+                & $venvPy -m hermes_cli.main support send-logs --json --reason $Kind --category installation_update `
+                    --severity $Severity --summary $Summary --description $Detail --client-type hermes-installer `
+                    --context-type install_failure --install-type $installType --timeout 20 --max-lines 400 2>$null | Out-Null
+                $reported = ($LASTEXITCODE -eq 0)
+            } catch {} finally { $env:HERMES_HOME = $prevHome }
+        } else {
+            $url = if ($env:SUPPORT_UPLOAD_URL) { $env:SUPPORT_UPLOAD_URL } else { $SupportUploadUrlDefault }
+            $key = if ($env:SUPPORT_API_KEY) { $env:SUPPORT_API_KEY } else { "anonymous" }
+            $now = (Get-Date).ToUniversalTime()
+            $caseId = "SUP-" + $now.ToString("yyyyMMdd-HHmmss")
+            $version = if ($script:Release -and $script:Release.tag) { $script:Release.tag } elseif ($Tag) { $Tag } else { "unknown" }
+            $context = @(
+                "kind: $Kind", "summary: $Summary", "detail: $Detail", "install_dir: $InstallDir",
+                "channel: $($script:Channel)", "source: $($script:InstallSource)", "version: $version",
+                "os: $([System.Environment]::OSVersion.VersionString) ($env:PROCESSOR_ARCHITECTURE)",
+                "powershell: $($PSVersionTable.PSVersion)", "timestamp: $($now.ToString('yyyy-MM-ddTHH:mm:ss+00:00'))"
+            ) -join "`n"
+            $contextBytes = [System.Text.Encoding]::UTF8.GetBytes($context + "`n")
+            $metadata = [ordered]@{
+                schema_version = "1.1.0"; support_case_id = $caseId
+                customer_id = $(if ($env:IAMDS_CUSTOMER_ID) { $env:IAMDS_CUSTOMER_ID } else { "cust-iamds" })
+                customer_name = $(if ($env:IAMDS_CUSTOMER_NAME) { $env:IAMDS_CUSTOMER_NAME } else { "IAMDS GmbH" })
+                litellm_url = $(if ($env:IAMDS_LITELLM_BASE_URL) { $env:IAMDS_LITELLM_BASE_URL } else { "https://suite.iamds.com/litellm/v1" })
+                model_used = "unknown"; environment = $(if ($env:HERMES_ENV) { $env:HERMES_ENV } else { "production" })
+                timestamp = $now.ToString("yyyy-MM-ddTHH:mm:ss+00:00")
+                client_info = [ordered]@{ client_type = "hermes-installer"; client_version = $version; os = "Windows $([System.Environment]::OSVersion.Version) ($env:PROCESSOR_ARCHITECTURE)"; user_id = $env:USERNAME }
+                issue_details = [ordered]@{ category = "installation_update"; severity = $Severity; summary = $Summary; user_description = $Detail }
+                context_type = "install_failure"; install_type = $installType
+                lifecycle = [ordered]@{ retention_days = 14; max_size_kb = 25600 }
+                files = @([ordered]@{ path = "install-context.txt"; mime_type = "text/plain"; size_bytes = $contextBytes.Length; content_category = "log" })
+            }
+            $manifest = [ordered]@{ schema = 1; created_at = $metadata.timestamp; client = "hermes-installer"; support_case_id = $caseId; metadata = $metadata }
+            $work = Join-Path $env:TEMP ("hermes-incident-" + [guid]::NewGuid().ToString("N"))
+            New-Item -ItemType Directory -Force -Path $work | Out-Null
+            try {
+                $utf8 = New-Object System.Text.UTF8Encoding($false)
+                [System.IO.File]::WriteAllText((Join-Path $work "metadata.json"), ($metadata | ConvertTo-Json -Depth 6), $utf8)
+                [System.IO.File]::WriteAllText((Join-Path $work "manifest.json"), ($manifest | ConvertTo-Json -Depth 8), $utf8)
+                [System.IO.File]::WriteAllBytes((Join-Path $work "install-context.txt"), $contextBytes)
+                $zipPath = Join-Path $env:TEMP "$caseId-installer.zip"
+                if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
+                Compress-Archive -Path (Join-Path $work "*") -DestinationPath $zipPath -Force
+                $zipBytes = [System.IO.File]::ReadAllBytes($zipPath)
+                $boundary = "----hermes" + [guid]::NewGuid().ToString("N")
+                $crlf = "`r`n"
+                $head = "--$boundary$crlf" + "Content-Disposition: form-data; name=`"support_case_id`"$crlf$crlf$caseId$crlf" +
+                        "--$boundary$crlf" + "Content-Disposition: form-data; name=`"file`"; filename=`"$caseId-installer.zip`"$crlf" +
+                        "Content-Type: application/zip$crlf$crlf"
+                $tail = "$crlf--$boundary--$crlf"
+                $headBytes = [System.Text.Encoding]::ASCII.GetBytes($head)
+                $tailBytes = [System.Text.Encoding]::ASCII.GetBytes($tail)
+                $body = New-Object byte[] ($headBytes.Length + $zipBytes.Length + $tailBytes.Length)
+                [Array]::Copy($headBytes, 0, $body, 0, $headBytes.Length)
+                [Array]::Copy($zipBytes, 0, $body, $headBytes.Length, $zipBytes.Length)
+                [Array]::Copy($tailBytes, 0, $body, $headBytes.Length + $zipBytes.Length, $tailBytes.Length)
+                $headers = @{ Authorization = "Bearer $key"; "X-Hermes-Reason" = $Kind; "X-Hermes-Filename" = "$caseId-installer.zip"; "User-Agent" = "hermes-installer-incident/1" }
+                $prevProgress = $ProgressPreference; $ProgressPreference = "SilentlyContinue"
+                try {
+                    Invoke-WebRequest -Uri $url -Method Post -Headers $headers -ContentType "multipart/form-data; boundary=$boundary" -Body $body -TimeoutSec 25 -UseBasicParsing | Out-Null
+                    $reported = $true
+                } finally { $ProgressPreference = $prevProgress }
+                Remove-Item -Force $zipPath -ErrorAction SilentlyContinue
+            } finally {
+                Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+            }
+        }
+        if ($reported) {
+            New-Item -ItemType Directory -Force -Path $stampDir -ErrorAction SilentlyContinue | Out-Null
+            Set-Content -Path $stamp -Value (Get-Date).ToUniversalTime().ToString("o") -ErrorAction SilentlyContinue
+            Write-Info "Reported to support (automatic incident report; disable with HERMES_SUPPORT_AUTO_REPORT=0)"
+        } else {
+            Write-Warn "Could not report the incident to support (offline?)"
+        }
+    } catch {
+        Write-Warn "Could not report the incident to support: $_"
+    }
+}
+
+# ============================================================================
 # Release archive install (AIS-313)
 # ============================================================================
 
@@ -1602,9 +1722,25 @@ function Install-Repository {
     # Release archive (AIS-313) unless this is a developer checkout.
     Resolve-InstallSource
     if ($script:InstallSource -eq "release") {
-        Install-ReleaseArchive
-        Write-Success "Repository ready"
-        return
+        try {
+            Install-ReleaseArchive
+            Write-Success "Repository ready"
+            return
+        } catch {
+            $releaseError = "$_"
+            # AIS-323: the release repository is primary; the source repository
+            # stays the emergency fallback (it can be made public again without
+            # losing clients). Take it loudly and report it.
+            $canGit = (Get-Command git -ErrorAction SilentlyContinue) -and (-not (Test-Path (Join-Path $InstallDir $ReleaseMarkerFile)) -or (Test-Path "$InstallDir\.git"))
+            if ($canGit) {
+                Write-Warn "Release repository $ReleaseRepo could not serve the install ($releaseError) -- falling back to the source repository (git)."
+                Report-InstallIncident -Kind "installer-fallback-git" -Summary "release repository unavailable -- falling back to a git clone of the source repository" -Detail "error=$releaseError channel=$($script:Channel) tag=$Tag dir=$InstallDir"
+                $script:InstallSource = "git"
+            } else {
+                Report-InstallIncident -Kind "installer-failure" -Summary "repository stage failed: release repository unavailable and no git fallback possible" -Detail "error=$releaseError channel=$($script:Channel) tag=$Tag dir=$InstallDir" -Severity "high"
+                throw
+            }
+        }
     }
 
     # Git path with a release channel (developer checkout with repository
@@ -1632,7 +1768,8 @@ function Install-Repository {
                 Write-Info "$($script:Channel) channel: installing release $stableTag"
                 $script:Tag = "$stableTag"
             } else {
-                Write-Warn "Could not resolve the latest stable release tag; installing branch $Branch instead."
+                Write-Warn "Could not resolve the latest $($script:Channel) release tag; installing branch $Branch instead."
+                Report-InstallIncident -Kind "installer-no-release-tag" -Summary "no $($script:Channel) release tag reachable -- installing branch $Branch instead" -Detail "dir=$InstallDir"
             }
         }
     }
@@ -1891,6 +2028,7 @@ function Install-Repository {
         }
 
         if (-not $cloneSuccess) {
+            Report-InstallIncident -Kind "installer-failure" -Summary "repository stage failed: git clone of $Branch failed (SSH and HTTPS)" -Detail "dir=$InstallDir" -Severity "high"
             throw "Failed to clone the source repository (tried git clone via SSH and HTTPS). Installed clients use the release archive: pass -Branch stable|preview or -Tag vX.Y.Z."
         }
     }
@@ -4779,6 +4917,9 @@ function Invoke-Stage {
         Write-Warn "Stage '$($StageDef.Name)' failed: $_"
         if ($_.ScriptStackTrace) {
             Write-Warn "Stack trace:`n$($_.ScriptStackTrace)"
+        }
+        if ($StageDef.Name -ne "repository") {
+            Report-InstallIncident -Kind "installer-stage-$($StageDef.Name)-failed" -Summary "install stage '$($StageDef.Name)' failed: $_" -Detail "dir=$InstallDir" -Severity "high"
         }
         throw
     } finally {

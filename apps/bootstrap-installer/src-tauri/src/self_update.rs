@@ -30,8 +30,11 @@ use tokio::io::AsyncWriteExt;
 use crate::paths;
 
 // AIS-313: installer binaries are published (mirrored) in the public release
-// repository; the source repository is private.
+// repository; the source repository is private. AIS-323 keeps the source
+// repository as an emergency fallback (it can be made public again without
+// losing clients) — every use of it is logged.
 const REPO: &str = "IAMDS-GMBH/AIMDS-Agent-Releases";
+const FALLBACK_REPO: &str = "IAMDS-GMBH/AIMDS-Agent";
 
 /// Our own version, baked in at compile time from Cargo.toml.
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -95,7 +98,22 @@ fn pick_asset<'a>(assets: &'a [ReleaseAsset], asset_name: &str) -> Option<&'a Re
 /// `/latest` endpoint excludes prereleases and drafts, so it would never
 /// return anything for this repo's installer releases.
 async fn fetch_newest_release() -> Result<ReleaseInfo> {
-    let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=1");
+    match fetch_newest_release_from(REPO).await {
+        Ok(release) => Ok(release),
+        Err(primary_err) => {
+            tracing::warn!(
+                %primary_err,
+                "release repository {REPO} unavailable for the installer self-update; falling back to {FALLBACK_REPO}"
+            );
+            fetch_newest_release_from(FALLBACK_REPO)
+                .await
+                .map_err(|fallback_err| anyhow!("{primary_err}; fallback {FALLBACK_REPO}: {fallback_err}"))
+        }
+    }
+}
+
+async fn fetch_newest_release_from(repo: &str) -> Result<ReleaseInfo> {
+    let url = format!("https://api.github.com/repos/{repo}/releases?per_page=1");
     let response = reqwest::Client::new()
         .get(&url)
         .header("User-Agent", "hermes-setup/0.0.1")
@@ -118,7 +136,7 @@ async fn fetch_newest_release() -> Result<ReleaseInfo> {
         .with_context(|| format!("parsing releases JSON from {url}"))?;
 
     if releases.is_empty() {
-        return Err(anyhow!("no releases found for {REPO}"));
+        return Err(anyhow!("no releases found for {repo}"));
     }
     Ok(releases.remove(0))
 }

@@ -30,6 +30,89 @@ fn default_true() -> bool {
     true
 }
 
+/// AIS-323: report a failed bootstrap to support automatically — the same
+/// bundle the "Problem melden" button sends, without waiting for the user.
+/// Gated by `HERMES_SUPPORT_AUTO_REPORT` (0/false/no/off disables) and
+/// rate-limited to one case per event kind per 24 h through
+/// `<HERMES_HOME>/logs/incident-reports.json` (shared with the CLI and the
+/// desktop). Best-effort: every failure is only logged.
+pub async fn auto_report_bootstrap_failure(stage: Option<String>, error: String) {
+    let gate = std::env::var("HERMES_SUPPORT_AUTO_REPORT")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if matches!(gate.as_str(), "0" | "false" | "no" | "off") {
+        tracing::info!("bootstrap failure not reported (HERMES_SUPPORT_AUTO_REPORT is off)");
+        return;
+    }
+    let kind = format!(
+        "installer-failure-{}",
+        stage.clone().unwrap_or_else(|| "bootstrap".to_string())
+    );
+    let state_path = crate::paths::hermes_home().join("logs").join("incident-reports.json");
+    let now = time::OffsetDateTime::now_utc().unix_timestamp() as f64;
+    let mut state: serde_json::Map<String, serde_json::Value> = std::fs::read_to_string(&state_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    if let Some(last) = state
+        .get(&kind)
+        .and_then(|e| e.get("reported_at"))
+        .and_then(|v| v.as_f64())
+    {
+        if now - last < 24.0 * 3600.0 {
+            tracing::info!(%kind, "bootstrap failure already reported within 24 h — not reported again");
+            return;
+        }
+    }
+    let summary = format!(
+        "HermesSetup bootstrap failed{}",
+        stage
+            .as_deref()
+            .map(|s| format!(" at stage '{s}'"))
+            .unwrap_or_default()
+    );
+    let payload = SupportTicketPayload {
+        category: "installation_update".to_string(),
+        severity: "high".to_string(),
+        summary: summary.clone(),
+        user_description: Some(format!("Automatic incident report ({kind}). {error}")),
+        include_logs: true,
+        install_type: Some("fresh_install".to_string()),
+        context_type: Some("install_failure".to_string()),
+        error_message: Some(error),
+        attachments: None,
+    };
+    match submit_support_ticket(payload).await {
+        Ok(result) if result.ok => {
+            let case_id = result
+                .reference_id
+                .clone()
+                .or(result.support_case_id.clone())
+                .unwrap_or_default();
+            tracing::warn!(%kind, %case_id, "bootstrap failure reported to support (automatic incident report)");
+            state.insert(
+                kind,
+                serde_json::json!({ "reported_at": now, "case_id": case_id, "summary": summary }),
+            );
+            if let Some(parent) = state_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(
+                &state_path,
+                serde_json::to_string_pretty(&serde_json::Value::Object(state)).unwrap_or_default() + "\n",
+            );
+        }
+        Ok(result) => {
+            tracing::warn!(%kind, error = ?result.error, "bootstrap failure could not be reported to support");
+        }
+        Err(err) => {
+            tracing::warn!(%kind, %err, "bootstrap failure could not be reported to support");
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SupportTicketResult {
     pub ok: bool,
