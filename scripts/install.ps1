@@ -97,6 +97,29 @@ try {
 $BranchExplicit = $PSBoundParameters.ContainsKey('Branch')
 $RepoUrlSsh = "git@github.com:IAMDS-GMBH/AIMDS-Agent.git"
 $RepoUrlHttps = "https://github.com/IAMDS-GMBH/AIMDS-Agent.git"
+
+# Release archive install (AIS-313): installed clients get their code from the
+# public release repository -- hermes-release.json names the tag, commit and
+# the SHA-256 of hermes-source-<version>.zip; the archive is verified,
+# extracted and stamped with .hermes-release.json (the marker `hermes update`
+# reads). The source repository is only cloned for developers (-Branch
+# <git-branch>, -Commit, or an existing checkout whose origin is reachable).
+# -Branch stable|preview (and the legacy alias tags) select a release channel.
+$ReleaseRepo = "IAMDS-GMBH/AIMDS-Agent-Releases"
+$ReleaseManifestAsset = "hermes-release.json"
+$ReleaseMarkerFile = ".hermes-release.json"
+$script:Channel = ""
+$script:InstallSource = ""
+$script:Release = $null
+if ($BranchExplicit) {
+    switch ($Branch.ToLowerInvariant()) {
+        "stable"  { $script:Channel = "stable";  $script:Branch = "main" }
+        "tags"    { $script:Channel = "stable";  $script:Branch = "main" }
+        "preview" { $script:Channel = "preview"; $script:Branch = "main" }
+    }
+} elseif (-not $Tag -and -not $Commit) {
+    $script:Channel = "stable"
+}
 $PythonVersion = "3.11"
 $NodeVersion = "22"
 
@@ -1330,6 +1353,230 @@ function Repair-InstallDirPermissionsForCurrentUser {
     return $granted
 }
 
+# ============================================================================
+# Release archive install (AIS-313)
+# ============================================================================
+
+function Test-GitRemoteReachable {
+    # Whether the existing checkout's origin answers without prompting. A
+    # private source repository without credentials fails fast here, which
+    # routes the install to the release archives.
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return $false }
+    $prevPrompt = $env:GIT_TERMINAL_PROMPT; $prevSsh = $env:GIT_SSH_COMMAND; $prevAsk = $env:GIT_ASKPASS
+    $env:GIT_TERMINAL_PROMPT = "0"
+    $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
+    $env:GIT_ASKPASS = "echo"
+    try {
+        $global:LASTEXITCODE = 0
+        $null = & git -C $InstallDir ls-remote --exit-code origin HEAD 2>&1
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    } finally {
+        $env:GIT_TERMINAL_PROMPT = $prevPrompt; $env:GIT_SSH_COMMAND = $prevSsh; $env:GIT_ASKPASS = $prevAsk
+    }
+}
+
+function Resolve-InstallSource {
+    # Decide between the git checkout (developers) and the release archive
+    # (installed clients). Sets $script:InstallSource to "git" or "release".
+    if ($script:InstallSource) { return }
+    if ($Commit) {
+        $script:InstallSource = "git"
+    } elseif (-not $script:Channel -and -not $Tag) {
+        $script:InstallSource = "git"   # -Branch <git-branch>
+    } elseif ((Test-Path "$InstallDir\.git") -and (Get-Command git -ErrorAction SilentlyContinue)) {
+        $current = ""
+        $hasCommit = $false
+        Push-Location $InstallDir
+        try {
+            $global:LASTEXITCODE = 0
+            $null = & git -c windows.appendAtomically=false rev-parse --verify HEAD 2>&1
+            $hasCommit = ($LASTEXITCODE -eq 0)
+            if ($hasCommit) {
+                $current = @(& git -c windows.appendAtomically=false rev-parse --abbrev-ref HEAD 2>$null) | Select-Object -First 1
+            }
+        } catch {} finally { Pop-Location }
+        if (-not $hasCommit) {
+            $script:InstallSource = "git"   # broken clone: the git path moves it aside and re-clones
+        } elseif ($current -and $current -ne "HEAD") {
+            $script:InstallSource = "git"   # developer checkout on a named branch keeps following git
+        } elseif (Test-GitRemoteReachable) {
+            $script:InstallSource = "git"
+        } else {
+            Write-Info "origin of $InstallDir is not reachable -- using the public release archives"
+            $script:InstallSource = "release"
+        }
+    } else {
+        $script:InstallSource = "release"
+    }
+}
+
+function Select-ReleaseTag {
+    # Highest release tag for a channel: vX.Y.Z and, for preview, vX.Y.Z-rc.N;
+    # a stable tag outranks the candidates of its own version.
+    param([string[]]$Tags, [string]$Channel)
+    $best = $null; $bestKey = $null
+    foreach ($t in $Tags) {
+        if (-not $t) { continue }
+        if ($t -notmatch '^v(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$') { continue }
+        $isRc = [bool]$Matches[4]
+        if ($isRc -and $Channel -ne "preview") { continue }
+        $rc = if ($isRc) { [int]$Matches[4] } else { 999999 }
+        $key = @([int]$Matches[1], [int]$Matches[2], [int]$Matches[3], $rc)
+        $better = $false
+        if ($null -eq $bestKey) { $better = $true }
+        else {
+            for ($i = 0; $i -lt 4; $i++) {
+                if ($key[$i] -gt $bestKey[$i]) { $better = $true; break }
+                if ($key[$i] -lt $bestKey[$i]) { break }
+            }
+        }
+        if ($better) { $best = $t; $bestKey = $key }
+    }
+    return $best
+}
+
+function Get-ReleaseManifest {
+    # Download and validate hermes-release.json for -Tag or the channel.
+    $channel = if ($script:Channel) { $script:Channel } else { "stable" }
+    $headers = @{ Accept = "application/vnd.github+json"; "User-Agent" = "hermes-agent/install" }
+    if ($Tag) {
+        $url = "https://github.com/$ReleaseRepo/releases/download/$Tag/$ReleaseManifestAsset"
+    } elseif ($channel -eq "preview") {
+        $releases = @(Invoke-RestMethod -Uri "https://api.github.com/repos/$ReleaseRepo/releases?per_page=30" -Headers $headers -UseBasicParsing)
+        $tags = @($releases | Where-Object { -not $_.draft } | ForEach-Object { [string]$_.tag_name })
+        $best = Select-ReleaseTag -Tags $tags -Channel preview
+        if (-not $best) { throw "Could not resolve the preview release from https://github.com/$ReleaseRepo/releases" }
+        $url = "https://github.com/$ReleaseRepo/releases/download/$best/$ReleaseManifestAsset"
+    } else {
+        # GitHub redirects releases/latest/download/<asset> to the newest
+        # non-prerelease release -- exactly the stable channel, no API quota.
+        $url = "https://github.com/$ReleaseRepo/releases/latest/download/$ReleaseManifestAsset"
+    }
+    Write-Info "Resolving release from $url"
+    try {
+        $raw = (Invoke-WebRequest -Uri $url -Headers $headers -UseBasicParsing).Content
+        if ($raw -is [byte[]]) { $raw = [System.Text.Encoding]::UTF8.GetString($raw) }
+        $m = $raw | ConvertFrom-Json
+    } catch {
+        throw "Could not download the release manifest ($url): $_"
+    }
+    if ($m.format -ne "hermes-release-v1" -or -not $m.tag -or -not $m.version -or -not $m.commit_sha -or -not $m.source_archive) {
+        throw "Release manifest at $url is not a hermes-release-v1 manifest"
+    }
+    $sha = ([string]$m.sha256).ToLowerInvariant()
+    if ($sha -notmatch '^[0-9a-f]{64}$') { throw "Release manifest for $($m.tag) carries no valid sha256" }
+    if ($m.source_archive -ne "hermes-source-$($m.version).zip") { throw "Release manifest for $($m.tag) names an unexpected archive: $($m.source_archive)" }
+    if ($Tag -and $m.tag -ne $Tag) { throw "Release manifest tag $($m.tag) does not match the requested tag $Tag" }
+    return [pscustomobject]@{ tag = [string]$m.tag; version = [string]$m.version; commit_sha = [string]$m.commit_sha; sha256 = $sha; archive = [string]$m.source_archive }
+}
+
+function Test-ReleasePreserveEntry {
+    # Top-level entries that belong to the install, not to the archive. Same
+    # set as hermes_cli/release_update.py PRESERVE_ENTRIES.
+    param([string]$Name)
+    return @("venv", ".venv", "node_modules", ".git", ".env", ".worktrees", ".hermes-release.json", ".update-incomplete", ".update-incomplete.lock") -contains $Name
+}
+
+function Write-ReleaseMarker {
+    param($Release)
+    $channel = $script:Channel
+    if (-not $channel) { $channel = if ($Release.tag -match '-rc\.') { "preview" } else { "stable" } }
+    $payload = [ordered]@{
+        format      = "hermes-release-marker-v1"
+        channel     = $channel
+        tag         = $Release.tag
+        version     = $Release.version
+        commit_sha  = $Release.commit_sha
+        sha256      = $Release.sha256
+        build_id    = ""
+        applied_at  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss+00:00")
+    }
+    $json = ($payload | ConvertTo-Json -Depth 3) + "`n"
+    $path = Join-Path $InstallDir $ReleaseMarkerFile
+    # No BOM: hermes_cli/release_marker.py parses the file as strict UTF-8 JSON.
+    [System.IO.File]::WriteAllText("$path.tmp", $json, (New-Object System.Text.UTF8Encoding($false)))
+    Move-Item -Force "$path.tmp" $path
+}
+
+function Install-ReleaseArchive {
+    # Download hermes-source-<version>.zip, verify it against the manifest and
+    # make it the tree at $InstallDir (fresh install) or replace the code of
+    # an existing install while keeping venv, node_modules, .env and .git.
+    $release = Get-ReleaseManifest
+    $script:Release = $release
+    $markerPath = Join-Path $InstallDir $ReleaseMarkerFile
+
+    if (Test-Path $markerPath) {
+        try {
+            $installed = Get-Content $markerPath -Raw | ConvertFrom-Json
+            if ($installed.tag -eq $release.tag -and (Test-Path (Join-Path $InstallDir "pyproject.toml"))) {
+                Write-Info "Release $($release.tag) is already installed at $InstallDir"
+                return
+            }
+        } catch {}
+    }
+    $dirExists = Test-Path $InstallDir
+    $dirEmpty = $dirExists -and -not (Get-ChildItem -Force $InstallDir -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($dirExists -and -not $dirEmpty -and -not (Test-Path "$InstallDir\.git") -and -not (Test-Path $markerPath)) {
+        throw "Directory exists but is neither a git checkout nor a release install: $InstallDir (remove it or choose another -InstallDir)"
+    }
+
+    $work = Join-Path $env:TEMP ("hermes-release-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $work | Out-Null
+    try {
+        $archivePath = Join-Path $work $release.archive
+        $url = "https://github.com/$ReleaseRepo/releases/download/$($release.tag)/$($release.archive)"
+        Write-Info "Downloading $($release.archive) ($($release.tag)) ..."
+        $prevProgress = $ProgressPreference
+        $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest is far slower with the progress bar on
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $archivePath -UseBasicParsing
+        } finally { $ProgressPreference = $prevProgress }
+        $actual = (Get-FileHash -Algorithm SHA256 -Path $archivePath).Hash.ToLowerInvariant()
+        if ($actual -ne $release.sha256) {
+            throw "Checksum mismatch for $($release.archive) (expected $($release.sha256), got $actual)"
+        }
+        Write-Success "Archive verified (sha256 $($release.sha256))"
+
+        $extract = Join-Path $work "extract"
+        New-Item -ItemType Directory -Force -Path $extract | Out-Null
+        try {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($archivePath, $extract)
+        } catch {
+            Expand-Archive -Path $archivePath -DestinationPath $extract -Force
+        }
+        $srcRoot = Get-ChildItem $extract -Directory | Where-Object { $_.Name -ne "__MACOSX" } | Select-Object -First 1
+        if (-not $srcRoot) { throw "The archive does not contain a hermes-agent source tree" }
+        foreach ($marker in @("pyproject.toml", "run_agent.py", "hermes_cli\main.py", "hermes_cli\config.py")) {
+            if (-not (Test-Path (Join-Path $srcRoot.FullName $marker))) { throw "The archive does not contain a hermes-agent source tree ($marker missing)" }
+        }
+
+        if (-not $dirExists -or $dirEmpty) {
+            New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir) -ErrorAction SilentlyContinue | Out-Null
+            if ($dirEmpty) { Remove-Item -Force $InstallDir }
+            Invoke-WithRetry -Action { Move-Item $srcRoot.FullName $InstallDir }
+        } else {
+            Write-Info "Replacing the code of the existing install (venv, node_modules, .env and .git are kept) ..."
+            foreach ($entry in @(Get-ChildItem -Force $InstallDir)) {
+                if (Test-ReleasePreserveEntry $entry.Name) { continue }
+                Invoke-WithRetry -Action { Remove-Item -Recurse -Force -LiteralPath $entry.FullName }
+            }
+            foreach ($entry in @(Get-ChildItem -Force $srcRoot.FullName)) {
+                $target = Join-Path $InstallDir $entry.Name
+                if ((Test-ReleasePreserveEntry $entry.Name) -and (Test-Path $target)) { continue }
+                Invoke-WithRetry -Action { Move-Item -LiteralPath $entry.FullName $target }
+            }
+        }
+    } finally {
+        Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+    }
+    Write-ReleaseMarker -Release $release
+    Write-Success "Installed release $($release.tag) from $ReleaseRepo"
+}
+
 function Install-Repository {
     Write-Info "Installing to $InstallDir..."
 
@@ -1352,12 +1599,18 @@ function Install-Repository {
 
     $didUpdate = $false
 
-    # Stable channel default (AIS-299): without -Branch/-Tag/-Commit, install
-    # the highest vX.Y.Z release tag so the client sits on a detached release
-    # checkout -- what `hermes update` (updates.channel: auto -> stable) and
-    # the desktop's default channel expect. An existing checkout on a named
-    # branch keeps following that branch (developer machines).
-    if (-not $BranchExplicit -and -not $Tag -and -not $Commit) {
+    # Release archive (AIS-313) unless this is a developer checkout.
+    Resolve-InstallSource
+    if ($script:InstallSource -eq "release") {
+        Install-ReleaseArchive
+        Write-Success "Repository ready"
+        return
+    }
+
+    # Git path with a release channel (developer checkout with repository
+    # access): pin to the channel's highest tag. An existing checkout on a
+    # named branch keeps following that branch (developer machines).
+    if ($script:Channel -and -not $Tag -and -not $Commit) {
         $currentBranch = ""
         if (Test-Path "$InstallDir\.git") {
             Push-Location $InstallDir
@@ -1372,12 +1625,11 @@ function Install-Repository {
             $stableTag = ""
             try {
                 $refs = @(& git ls-remote --tags --refs $RepoUrlHttps 'v*' 2>$null)
-                $stableTag = @($refs | ForEach-Object { (($_ -split "\s+")[-1]) -replace '^refs/tags/', '' } |
-                    Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
-                    Sort-Object { [version]($_.Substring(1)) }) | Select-Object -Last 1
+                $remoteTags = @($refs | ForEach-Object { (($_ -split "\s+")[-1]) -replace '^refs/tags/', '' })
+                $stableTag = Select-ReleaseTag -Tags $remoteTags -Channel $script:Channel
             } catch {}
             if ($stableTag) {
-                Write-Info "Stable channel: installing release $stableTag"
+                Write-Info "$($script:Channel) channel: installing release $stableTag"
                 $script:Tag = "$stableTag"
             } else {
                 Write-Warn "Could not resolve the latest stable release tag; installing branch $Branch instead."
@@ -1638,59 +1890,8 @@ function Install-Repository {
             } catch { }
         }
 
-        # Fallback: download ZIP archive (bypasses git file I/O issues entirely)
         if (-not $cloneSuccess) {
-            if (Test-Path $InstallDir) { Remove-InstallDirWithProcessCleanup -TargetPath $InstallDir }
-            Write-Warn "Git clone failed -- downloading ZIP archive instead..."
-            try {
-                # Pick the ZIP URL for the most-specific ref the caller asked
-                # for.  GitHub supports archive URLs for commits, tags, and
-                # branches; we honour Commit > Tag > Branch.
-                if ($Commit) {
-                    $zipUrl = "https://github.com/IAMDS-GMBH/AIMDS-Agent/archive/$Commit.zip"
-                    $zipLabel = $Commit
-                } elseif ($Tag) {
-                    $zipUrl = "https://github.com/IAMDS-GMBH/AIMDS-Agent/archive/refs/tags/$Tag.zip"
-                    $zipLabel = $Tag
-                } else {
-                    $zipUrl = "https://github.com/IAMDS-GMBH/AIMDS-Agent/archive/refs/heads/$Branch.zip"
-                    $zipLabel = $Branch
-                }
-                $zipPath = "$env:TEMP\hermes-agent-$zipLabel.zip"
-                $extractPath = "$env:TEMP\hermes-agent-extract"
-
-                Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
-                if (Test-Path $extractPath) { Remove-Item -Recurse -Force $extractPath }
-                Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
-
-                # GitHub ZIPs extract to repo-branch/ subdirectory
-                $extractedDir = Get-ChildItem $extractPath -Directory | Select-Object -First 1
-                if ($extractedDir) {
-                    New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir) -ErrorAction SilentlyContinue | Out-Null
-                    Move-Item $extractedDir.FullName $InstallDir -Force
-                    Write-Success "Downloaded and extracted"
-
-                    # Initialize git repo so updates work later
-                    Push-Location $InstallDir
-                    git -c windows.appendAtomically=false init 2>$null
-                    git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
-                    git remote add origin $RepoUrlHttps 2>$null
-                    Pop-Location
-                    Write-Success "Git repo initialized for future updates"
-
-                    $cloneSuccess = $true
-                }
-
-                # Cleanup temp files
-                Remove-Item -Force $zipPath -ErrorAction SilentlyContinue
-                Remove-Item -Recurse -Force $extractPath -ErrorAction SilentlyContinue
-            } catch {
-                Write-Err "ZIP download also failed: $_"
-            }
-        }
-
-        if (-not $cloneSuccess) {
-            throw "Failed to download repository (tried git clone SSH, HTTPS, and ZIP)"
+            throw "Failed to clone the source repository (tried git clone via SSH and HTTPS). Installed clients use the release archive: pass -Branch stable|preview or -Tag vX.Y.Z."
         }
     }
 
@@ -1801,14 +2002,27 @@ function Install-Dependencies {
     # before the package is installed so importlib.metadata returns the correct
     # release tag at runtime.
     try {
-        # Shallow clones don't fetch tags -- fetch the nearest tag explicitly.
-        & git -C $InstallDir fetch --tags --depth=1 origin 2>$null
-        $gitTag = & git -C $InstallDir describe --tags --abbrev=0 2>$null
-        if ($LASTEXITCODE -eq 0 -and $gitTag) {
+        $releaseTag = ""
+        $markerPath = Join-Path $InstallDir $ReleaseMarkerFile
+        if (Test-Path $markerPath) {
+            # Release archive install (AIS-313): the marker is the version identity.
+            try { $releaseTag = [string]((Get-Content $markerPath -Raw | ConvertFrom-Json).tag) } catch {}
+        }
+        if ($releaseTag) {
             $pyExe = Join-Path $InstallDir "venv\Scripts\python.exe"
             if (-not (Test-Path $pyExe)) { $pyExe = $PythonPath }
-            Write-Info "Syncing version from git tag $gitTag ..."
-            & $pyExe (Join-Path $InstallDir "scripts\set_version.py") $gitTag 2>$null
+            Write-Info "Syncing version from release $releaseTag ..."
+            & $pyExe (Join-Path $InstallDir "scripts\set_version.py") $releaseTag 2>$null
+        } elseif (Test-Path "$InstallDir\.git") {
+            # Shallow clones don't fetch tags -- fetch the nearest tag explicitly.
+            & git -C $InstallDir fetch --tags --depth=1 origin 2>$null
+            $gitTag = & git -C $InstallDir describe --tags --abbrev=0 2>$null
+            if ($LASTEXITCODE -eq 0 -and $gitTag) {
+                $pyExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+                if (-not (Test-Path $pyExe)) { $pyExe = $PythonPath }
+                Write-Info "Syncing version from git tag $gitTag ..."
+                & $pyExe (Join-Path $InstallDir "scripts\set_version.py") $gitTag 2>$null
+            }
         }
     } catch {}
 

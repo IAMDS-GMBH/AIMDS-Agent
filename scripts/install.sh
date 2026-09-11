@@ -77,6 +77,22 @@ BRANCH="main"
 CHANNEL="stable"
 IS_TAG=false
 INSTALL_COMMIT=""
+# Release archive install (AIS-313): installed clients get their code from the
+# public release repository — hermes-release.json names the tag, commit and the
+# SHA-256 of hermes-source-<version>.zip; the archive is verified, extracted
+# and stamped with .hermes-release.json (the marker `hermes update` reads).
+# The source repository is only cloned for developers (--branch <git-branch>,
+# --commit, or an existing checkout whose origin is reachable).
+RELEASE_REPO="IAMDS-GMBH/AIMDS-Agent-Releases"
+RELEASE_MANIFEST_ASSET="hermes-release.json"
+RELEASE_MARKER_FILE=".hermes-release.json"
+INSTALL_TAG=""
+INSTALL_SOURCE=""
+RELEASE_TAG=""
+RELEASE_VERSION=""
+RELEASE_COMMIT=""
+RELEASE_SHA256=""
+RELEASE_ARCHIVE=""
 ENSURE_DEPS=""
 POSTINSTALL_MODE=false
 MANIFEST_MODE=false
@@ -114,12 +130,27 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --branch|-Branch)
-            BRANCH="$2"
+            # `stable` / `preview` (and the legacy alias `tags`) are release
+            # channels served from the release repository; anything else is a
+            # git branch of the source repository (developers).
+            case "$2" in
+                stable|tags) CHANNEL="stable" ;;
+                preview) CHANNEL="preview" ;;
+                *)
+                    BRANCH="$2"
+                    CHANNEL=""
+                    ;;
+            esac
+            shift 2
+            ;;
+        --tag|-Tag)
+            INSTALL_TAG="$2"
             CHANNEL=""
             shift 2
             ;;
         --commit|-Commit)
             INSTALL_COMMIT="$2"
+            CHANNEL=""
             shift 2
             ;;
         --manifest|-Manifest)
@@ -171,9 +202,11 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-skills    Start with a blank slate — seed no bundled skills, and"
             echo "                   write \$HERMES_HOME/.no-bundled-skills so future"
             echo "                   'hermes update' runs never inject bundled skills either"
-            echo "  --branch NAME  Git branch or tag to install (default: the latest stable"
-            echo "                   release tag vX.Y.Z; falls back to main when no tag is reachable)"
-            echo "  --commit SHA   Pin checkout to a specific commit after clone/update"
+            echo "  --branch NAME  Release channel 'stable' (default) or 'preview' — installed from"
+            echo "                   the verified release archive of github.com/IAMDS-GMBH/AIMDS-Agent-Releases;"
+            echo "                   any other name is a git branch of the source repository (developers)"
+            echo "  --tag vX.Y.Z   Install exactly this release tag from the release repository"
+            echo "  --commit SHA   Pin a git checkout to a specific commit (source repository access required)"
             echo "  --manifest     Print desktop bootstrap stage manifest as JSON"
             echo "  --stage NAME   Run one desktop bootstrap stage"
             echo "  --json         Print a JSON result frame for --stage"
@@ -1128,6 +1161,281 @@ show_manual_install_hint() {
 # Installation
 # ============================================================================
 
+# ---------------------------------------------------------------------------
+# Release archive install (AIS-313)
+# ---------------------------------------------------------------------------
+
+# Whether the existing checkout's origin answers without prompting. A private
+# source repository without credentials fails fast here (no terminal prompt,
+# no SSH passphrase dialog), which routes the install to the release archives.
+git_remote_reachable() {
+    command -v git >/dev/null 2>&1 || return 1
+    GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true \
+        GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
+        git -C "$INSTALL_DIR" ls-remote --exit-code origin HEAD >/dev/null 2>&1
+}
+
+# Decide between the git checkout (developers) and the release archive
+# (installed clients). Sets INSTALL_SOURCE to "git" or "release".
+resolve_install_source() {
+    if [ -n "$INSTALL_SOURCE" ]; then
+        return 0
+    fi
+    if [ -n "$INSTALL_COMMIT" ]; then
+        INSTALL_SOURCE="git"
+    elif [ -z "$CHANNEL" ] && [ -z "$INSTALL_TAG" ]; then
+        # --branch <git-branch>
+        INSTALL_SOURCE="git"
+    elif [ -d "$INSTALL_DIR/.git" ] && git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+        local current
+        current="$(git -C "$INSTALL_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+        if [ -n "$current" ] && [ "$current" != "HEAD" ]; then
+            # A developer checkout on a named branch keeps following git.
+            INSTALL_SOURCE="git"
+        elif git_remote_reachable; then
+            INSTALL_SOURCE="git"
+        else
+            log_info "origin of $INSTALL_DIR is not reachable — using the public release archives"
+            INSTALL_SOURCE="release"
+        fi
+    else
+        INSTALL_SOURCE="release"
+    fi
+    if [ "$INSTALL_SOURCE" = "git" ] && [ -n "$INSTALL_TAG" ]; then
+        BRANCH="$INSTALL_TAG"
+        IS_TAG=true
+    fi
+}
+
+# Read one string field from a flat JSON file (python3 when available).
+release_json_field() {
+    local file="$1" key="$2"
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$file" "$key" <<'PY' 2>/dev/null
+import json, sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8")).get(sys.argv[2], "")
+except Exception:
+    value = ""
+print(value if isinstance(value, str) else ("" if value is None else value))
+PY
+    else
+        sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p" "$file" | head -1
+    fi
+}
+
+# Highest release tag for a channel from a list of tags (one per line):
+# vX.Y.Z and, for preview, vX.Y.Z-rc.N; a stable tag outranks the candidates
+# of its own version.
+select_release_tag() {
+    local channel="$1"
+    if [ "$channel" = "preview" ]; then
+        grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
+    else
+        grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$'
+    fi | awk '{
+        tag=$0; sub(/^v/, "", tag); rc=999999
+        if (match(tag, /-rc\.[0-9]+$/)) { rc=substr(tag, RSTART+4); tag=substr(tag, 1, RSTART-1) }
+        split(tag, v, ".")
+        printf "%d %d %d %d %s\n", v[1], v[2], v[3], rc, $0
+    }' | sort -k1,1n -k2,2n -k3,3n -k4,4n | tail -1 | awk '{print $5}'
+}
+
+# Download and validate hermes-release.json for the tag or channel.
+fetch_release_manifest() {
+    local channel="${CHANNEL:-stable}" url tmp
+    tmp="$(mktemp 2>/dev/null || echo "/tmp/hermes-release.$$.json")"
+    if [ -n "$INSTALL_TAG" ]; then
+        url="https://github.com/$RELEASE_REPO/releases/download/$INSTALL_TAG/$RELEASE_MANIFEST_ASSET"
+    elif [ "$channel" = "preview" ]; then
+        local tags tag
+        tags="$(curl -fsSL --retry 3 -H 'Accept: application/vnd.github+json' \
+            -H 'User-Agent: hermes-agent/install' \
+            "https://api.github.com/repos/$RELEASE_REPO/releases?per_page=30" 2>/dev/null \
+            | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/' || true)"
+        tag="$(printf '%s\n' "$tags" | select_release_tag preview)"
+        if [ -z "$tag" ]; then
+            log_error "Could not resolve the preview release from https://github.com/$RELEASE_REPO/releases"
+            rm -f "$tmp"
+            return 1
+        fi
+        url="https://github.com/$RELEASE_REPO/releases/download/$tag/$RELEASE_MANIFEST_ASSET"
+    else
+        # GitHub redirects releases/latest/download/<asset> to the newest
+        # non-prerelease release — exactly the stable channel, no API quota.
+        url="https://github.com/$RELEASE_REPO/releases/latest/download/$RELEASE_MANIFEST_ASSET"
+    fi
+    log_info "Resolving release from $url"
+    if ! curl -fsSL --retry 3 -o "$tmp" "$url"; then
+        log_error "Could not download the release manifest ($url)"
+        rm -f "$tmp"
+        return 1
+    fi
+    local format
+    format="$(release_json_field "$tmp" format)"
+    RELEASE_TAG="$(release_json_field "$tmp" tag)"
+    RELEASE_VERSION="$(release_json_field "$tmp" version)"
+    RELEASE_COMMIT="$(release_json_field "$tmp" commit_sha)"
+    RELEASE_SHA256="$(release_json_field "$tmp" sha256 | tr 'A-F' 'a-f')"
+    RELEASE_ARCHIVE="$(release_json_field "$tmp" source_archive)"
+    rm -f "$tmp"
+    if [ "$format" != "hermes-release-v1" ] || [ -z "$RELEASE_TAG" ] || [ -z "$RELEASE_VERSION" ] \
+        || [ -z "$RELEASE_COMMIT" ] || [ -z "$RELEASE_ARCHIVE" ]; then
+        log_error "Release manifest at $url is not a hermes-release-v1 manifest"
+        return 1
+    fi
+    if ! printf '%s' "$RELEASE_SHA256" | grep -Eq '^[0-9a-f]{64}$'; then
+        log_error "Release manifest for $RELEASE_TAG carries no valid sha256"
+        return 1
+    fi
+    if [ "$RELEASE_ARCHIVE" != "hermes-source-$RELEASE_VERSION.zip" ]; then
+        log_error "Release manifest for $RELEASE_TAG names an unexpected archive: $RELEASE_ARCHIVE"
+        return 1
+    fi
+    if [ -n "$INSTALL_TAG" ] && [ "$RELEASE_TAG" != "$INSTALL_TAG" ]; then
+        log_error "Release manifest tag $RELEASE_TAG does not match the requested tag $INSTALL_TAG"
+        return 1
+    fi
+    return 0
+}
+
+sha256_of_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"
+    else
+        return 1
+    fi
+}
+
+# Top-level entries that belong to the install, not to the archive. Same set
+# as hermes_cli/release_update.py PRESERVE_ENTRIES.
+release_preserve_entry() {
+    case "$1" in
+        venv|.venv|node_modules|.git|.env|.worktrees|.hermes-release.json|.update-incomplete|.update-incomplete.lock) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+write_install_method_stamp() {
+    if [ -f "$INSTALL_DIR/$RELEASE_MARKER_FILE" ] && [ ! -d "$INSTALL_DIR/.git" ]; then
+        echo "release" > "$HERMES_HOME/.install_method"
+    else
+        echo "git" > "$HERMES_HOME/.install_method"
+    fi
+}
+
+write_release_marker() {
+    local channel="${CHANNEL:-}"
+    if [ -z "$channel" ]; then
+        case "$RELEASE_TAG" in
+            *-rc.*) channel="preview" ;;
+            *) channel="stable" ;;
+        esac
+    fi
+    local applied_at
+    applied_at="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+    local tmp="$INSTALL_DIR/$RELEASE_MARKER_FILE.tmp"
+    printf '{\n  "format": "hermes-release-marker-v1",\n  "channel": "%s",\n  "tag": "%s",\n  "version": "%s",\n  "commit_sha": "%s",\n  "sha256": "%s",\n  "build_id": "",\n  "applied_at": "%s"\n}\n' \
+        "$channel" "$RELEASE_TAG" "$RELEASE_VERSION" "$RELEASE_COMMIT" "$RELEASE_SHA256" "$applied_at" > "$tmp"
+    mv -f "$tmp" "$INSTALL_DIR/$RELEASE_MARKER_FILE"
+}
+
+# Download hermes-source-<version>.zip, verify it against the manifest and
+# make it the tree at INSTALL_DIR (fresh install) or replace the code of an
+# existing install while keeping venv/, node_modules/, .env and .git.
+install_release_archive() {
+    fetch_release_manifest || exit 1
+
+    if [ -f "$INSTALL_DIR/$RELEASE_MARKER_FILE" ]; then
+        local installed_tag
+        installed_tag="$(release_json_field "$INSTALL_DIR/$RELEASE_MARKER_FILE" tag)"
+        if [ "$installed_tag" = "$RELEASE_TAG" ] && [ -f "$INSTALL_DIR/pyproject.toml" ]; then
+            log_info "Release $RELEASE_TAG is already installed at $INSTALL_DIR"
+            return 0
+        fi
+    fi
+    if [ -d "$INSTALL_DIR" ] && [ ! -d "$INSTALL_DIR/.git" ] && [ ! -f "$INSTALL_DIR/$RELEASE_MARKER_FILE" ] \
+        && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
+        log_error "Directory exists but is neither a git checkout nor a release install: $INSTALL_DIR"
+        log_info "Remove it or choose a different directory with --dir"
+        exit 1
+    fi
+
+    local work archive_path url
+    work="$(mktemp -d 2>/dev/null || echo "/tmp/hermes-release.$$")"
+    mkdir -p "$work"
+    archive_path="$work/$RELEASE_ARCHIVE"
+    url="https://github.com/$RELEASE_REPO/releases/download/$RELEASE_TAG/$RELEASE_ARCHIVE"
+    log_info "Downloading $RELEASE_ARCHIVE ($RELEASE_TAG) ..."
+    if ! curl -fL --retry 3 --progress-bar -o "$archive_path" "$url"; then
+        log_error "Download failed: $url"
+        rm -rf "$work"
+        exit 1
+    fi
+    local actual
+    actual="$(sha256_of_file "$archive_path" || true)"
+    if [ -z "$actual" ]; then
+        log_error "No sha256 tool available (sha256sum, shasum or python3) to verify the archive"
+        rm -rf "$work"
+        exit 1
+    fi
+    if [ "$actual" != "$RELEASE_SHA256" ]; then
+        log_error "Checksum mismatch for $RELEASE_ARCHIVE (expected $RELEASE_SHA256, got $actual)"
+        rm -rf "$work"
+        exit 1
+    fi
+    log_success "Archive verified (sha256 $RELEASE_SHA256)"
+
+    mkdir -p "$work/extract"
+    if command -v unzip >/dev/null 2>&1; then
+        unzip -q "$archive_path" -d "$work/extract"
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$archive_path" "$work/extract"
+    else
+        log_error "Neither unzip nor python3 is available to extract the archive"
+        rm -rf "$work"
+        exit 1
+    fi
+    local src_root
+    src_root="$(find "$work/extract" -mindepth 1 -maxdepth 1 -type d ! -name '__MACOSX' | head -1)"
+    if [ -z "$src_root" ] || [ ! -f "$src_root/pyproject.toml" ] || [ ! -f "$src_root/run_agent.py" ] \
+        || [ ! -f "$src_root/hermes_cli/main.py" ] || [ ! -f "$src_root/hermes_cli/config.py" ]; then
+        log_error "The archive does not contain a hermes-agent source tree"
+        rm -rf "$work"
+        exit 1
+    fi
+
+    if [ ! -d "$INSTALL_DIR" ] || [ -z "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
+        mkdir -p "$(dirname "$INSTALL_DIR")"
+        rmdir "$INSTALL_DIR" 2>/dev/null || true
+        mv "$src_root" "$INSTALL_DIR"
+    else
+        log_info "Replacing the code of the existing install (venv, node_modules, .env and .git are kept) ..."
+        local entry name
+        for entry in "$INSTALL_DIR"/* "$INSTALL_DIR"/.[!.]*; do
+            [ -e "$entry" ] || [ -L "$entry" ] || continue
+            name="$(basename "$entry")"
+            release_preserve_entry "$name" && continue
+            rm -rf "$entry"
+        done
+        for entry in "$src_root"/* "$src_root"/.[!.]*; do
+            [ -e "$entry" ] || [ -L "$entry" ] || continue
+            name="$(basename "$entry")"
+            if release_preserve_entry "$name" && [ -e "$INSTALL_DIR/$name" ]; then
+                continue
+            fi
+            mv "$entry" "$INSTALL_DIR/$name"
+        done
+    fi
+    rm -rf "$work"
+    write_release_marker
+    log_success "Installed release $RELEASE_TAG from $RELEASE_REPO"
+}
+
 # Resolve the install ref for the stable channel (AIS-299): the highest
 # vX.Y.Z tag on the remote. Installed clients then sit on a detached release
 # checkout, which is what `hermes update` (updates.channel: auto → stable) and
@@ -1163,6 +1471,13 @@ resolve_install_ref() {
 
 clone_repo() {
     log_info "Installing to $INSTALL_DIR..."
+    resolve_install_source
+    if [ "$INSTALL_SOURCE" = "release" ]; then
+        install_release_archive
+        cd "$INSTALL_DIR"
+        log_success "Repository ready"
+        return 0
+    fi
     resolve_install_ref
 
     # An interrupted previous clone leaves a .git with no initial commit, where
@@ -1329,7 +1644,17 @@ install_deps() {
     # Sync version from git tag into pyproject.toml + hermes_cli/__init__.py
     # before the package is installed so `importlib.metadata.version("hermes-agent")`
     # returns the correct release tag at runtime.
-    if command -v git >/dev/null 2>&1 && git -C "$INSTALL_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+    if [ -f "$INSTALL_DIR/$RELEASE_MARKER_FILE" ]; then
+        # Release archive install (AIS-313): the marker is the version identity.
+        local _release_tag
+        _release_tag="$(release_json_field "$INSTALL_DIR/$RELEASE_MARKER_FILE" tag)"
+        if [ -n "$_release_tag" ]; then
+            local _py="${INSTALL_DIR}/venv/bin/python"
+            if [ ! -x "$_py" ]; then _py="$PYTHON_PATH"; fi
+            log_info "Syncing version from release $_release_tag ..."
+            "$_py" "$INSTALL_DIR/scripts/set_version.py" "$_release_tag" 2>/dev/null || true
+        fi
+    elif command -v git >/dev/null 2>&1 && git -C "$INSTALL_DIR" rev-parse --git-dir >/dev/null 2>&1; then
         # Shallow clones don't fetch tags — fetch the nearest tag explicitly.
         git -C "$INSTALL_DIR" fetch --tags --depth=1 origin 2>/dev/null || true
         local _git_tag
@@ -4767,7 +5092,7 @@ run_stage_body() {
             detect_os
             resolve_install_layout
             print_success
-            echo "git" > "$HERMES_HOME/.install_method"
+            write_install_method_stamp
             ;;
         *)
             log_error "Unknown stage: $stage"
@@ -4847,7 +5172,7 @@ main() {
 
     print_success
 
-    echo "git" > "$HERMES_HOME/.install_method"
+    write_install_method_stamp
 }
 
 if [ "$MANIFEST_MODE" = true ]; then

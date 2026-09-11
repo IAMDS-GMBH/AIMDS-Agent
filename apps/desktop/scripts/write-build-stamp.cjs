@@ -10,7 +10,9 @@
  *   {
  *     "schemaVersion": 1,
  *     "commit":        "<40-char SHA>",
- *     "branch":        "<branch name>",
+ *     "branch":        "<branch name or release channel>",
+ *     "tag":           "<release tag vX.Y.Z[-rc.N]>" | null   (release-archive installs, AIS-313)
+ *     "channel":       "stable" | "preview" | null
  *     "builtAt":       "<ISO 8601 UTC timestamp>",
  *     "dirty":         true|false,
  *     "source":        "ci" | "local"
@@ -57,6 +59,31 @@ function fromCI() {
   }
 }
 
+// A release-archive install (AIS-312/AIS-313) has no git history; its
+// identity is `<repo>/.hermes-release.json`. Prefer it over `git rev-parse`
+// even when a .git directory is still around: the tree was replaced without
+// moving HEAD, so git would name a stale commit.
+function fromReleaseMarker() {
+  let marker
+  try {
+    marker = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, ".hermes-release.json"), "utf8"))
+  } catch {
+    return null
+  }
+  if (!marker || marker.format !== "hermes-release-marker-v1") return null
+  const tag = typeof marker.tag === "string" ? marker.tag : ""
+  const commit = typeof marker.commit_sha === "string" ? marker.commit_sha : ""
+  if (!/^v\d+\.\d+\.\d+(?:-rc\.\d+)?$/.test(tag) || !/^[0-9a-f]{7,40}$/i.test(commit)) return null
+  return {
+    commit,
+    branch: typeof marker.channel === "string" && marker.channel ? marker.channel : null,
+    tag,
+    channel: typeof marker.channel === "string" && marker.channel ? marker.channel : null,
+    dirty: false,
+    source: "release"
+  }
+}
+
 function fromLocalGit() {
   const sha = tryExec("git rev-parse HEAD", { cwd: REPO_ROOT })
   if (!sha) return null
@@ -78,11 +105,14 @@ function fromLocalGit() {
 }
 
 function main() {
-  const stamp = fromCI() || fromLocalGit()
+  const stamp = fromCI() || fromReleaseMarker() || fromLocalGit()
   if (!stamp || !stamp.commit) {
     console.error(
-      "[write-build-stamp] ERROR: could not determine git commit.\n" +
+      "[write-build-stamp] ERROR: could not determine the code identity.\n" +
         "  - $GITHUB_SHA not set\n" +
+        "  - no .hermes-release.json release marker at " +
+        REPO_ROOT +
+        "\n" +
         "  - `git rev-parse HEAD` failed at " +
         REPO_ROOT +
         "\n" +
@@ -106,6 +136,8 @@ function main() {
     schemaVersion: STAMP_SCHEMA_VERSION,
     commit: stamp.commit,
     branch: stamp.branch,
+    tag: stamp.tag || null,
+    channel: stamp.channel || null,
     builtAt: new Date().toISOString(),
     dirty: stamp.dirty,
     source: stamp.source
@@ -118,6 +150,7 @@ function main() {
       path.relative(REPO_ROOT, OUT_FILE) +
       " -> " +
       stamp.commit.slice(0, 12) +
+      (stamp.tag ? " " + stamp.tag : "") +
       (stamp.branch ? " (" + stamp.branch + ")" : "") +
       (stamp.dirty ? " [DIRTY]" : "")
   )

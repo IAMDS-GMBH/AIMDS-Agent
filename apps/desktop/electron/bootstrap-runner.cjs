@@ -57,6 +57,12 @@ function hiddenWindowsChildOptions(options = {}) {
 }
 
 const STAMP_COMMIT_RE = /^[0-9a-f]{7,40}$/i
+// Release tag of a stamp written from `.hermes-release.json` (AIS-313): the
+// install scripts then install exactly this release from the public release
+// repository instead of cloning the (private) source repository.
+const STAMP_TAG_RE = /^v\d+\.\d+\.\d+(?:-rc\.\d+)?$/
+const RELEASE_REPO = 'IAMDS-GMBH/AIMDS-Agent-Releases'
+const RELEASE_MANIFEST_ASSET = 'hermes-release.json'
 
 // Stages flagged needs_user_input=true in the manifest are skipped by the
 // runner (passed -NonInteractive to install.ps1, which the install script
@@ -143,83 +149,153 @@ function installedAgentInstallScript(hermesHome) {
   }
 }
 
-function cachedScriptPath(hermesHome, commit) {
-  return path.join(bootstrapCacheDir(hermesHome), `install-${commit}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
+function cachedScriptPath(hermesHome, ref) {
+  const safe = String(ref).replace(/[^A-Za-z0-9._-]/g, '_')
+  return path.join(bootstrapCacheDir(hermesHome), `install-${safe}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
 
-function downloadInstallScript(commit, destPath) {
-  // Fetch from GitHub raw at the pinned commit. The raw URL with a SHA
-  // is immutable (unlike a branch ref), so we don't need integrity
-  // verification beyond "did the file we wrote pass a syntax probe."
-  const scriptName = installScriptName()
-  const url = `https://raw.githubusercontent.com/IAMDS-GMBH/AIMDS-Agent/${commit}/scripts/${scriptName}`
+// The ref a stamp pins the install scripts to: the release tag when the
+// desktop was built from a release-archive install, else the commit.
+function stampRef(installStamp) {
+  if (!installStamp) return null
+  if (installStamp.tag && STAMP_TAG_RE.test(installStamp.tag)) return installStamp.tag
+  if (installStamp.commit && STAMP_COMMIT_RE.test(installStamp.commit)) return installStamp.commit
+  return null
+}
+
+// GET `url` following redirects (GitHub release downloads redirect to the
+// asset store) and resolve the whole body as a Buffer.
+function httpsGetBuffer(url, { redirects = 5 } = {}) {
   return new Promise((resolve, reject) => {
-    fs.mkdirSync(path.dirname(destPath), { recursive: true })
-    const tmpPath = destPath + '.tmp'
-    const out = fs.createWriteStream(tmpPath)
-    https
-      .get(url, res => {
-        if (res.statusCode === 301 || res.statusCode === 302) {
-          // GitHub raw shouldn't redirect for a SHA URL, but follow once
-          // defensively.
-          out.close()
-          fs.unlinkSync(tmpPath)
-          https
-            .get(res.headers.location, res2 => {
-              if (res2.statusCode !== 200) {
-                reject(
-                  new Error(
-                    `Failed to download ${scriptName}: HTTP ${res2.statusCode} from redirect ${res.headers.location}`
-                  )
-                )
-                return
-              }
-              const out2 = fs.createWriteStream(tmpPath)
-              res2.pipe(out2)
-              out2.on('finish', () => {
-                out2.close()
-                fs.renameSync(tmpPath, destPath)
-                resolve(destPath)
-              })
-              out2.on('error', reject)
-            })
-            .on('error', reject)
+    const request = https.get(url, { headers: { 'User-Agent': 'hermes-desktop/bootstrap' } }, res => {
+      const status = res.statusCode || 0
+      if ([301, 302, 303, 307, 308].includes(status) && res.headers.location) {
+        res.resume()
+        if (redirects <= 0) {
+          reject(new Error(`Too many redirects fetching ${url}`))
           return
         }
-        if (res.statusCode !== 200) {
-          out.close()
-          try {
-            fs.unlinkSync(tmpPath)
-          } catch {
-            void 0
-          }
-          reject(new Error(`Failed to download ${scriptName}: HTTP ${res.statusCode} from ${url}`))
-          return
-        }
-        res.pipe(out)
-        out.on('finish', () => {
-          out.close()
-          fs.renameSync(tmpPath, destPath)
-          resolve(destPath)
-        })
-        out.on('error', err => {
-          try {
-            fs.unlinkSync(tmpPath)
-          } catch {
-            void 0
-          }
-          reject(err)
-        })
-      })
-      .on('error', err => {
-        try {
-          fs.unlinkSync(tmpPath)
-        } catch {
-          void 0
-        }
-        reject(err)
-      })
+        const next = new URL(res.headers.location, url).toString()
+        httpsGetBuffer(next, { redirects: redirects - 1 }).then(resolve, reject)
+        return
+      }
+      if (status !== 200) {
+        res.resume()
+        reject(new Error(`HTTP ${status} from ${url}`))
+        return
+      }
+      const chunks = []
+      res.on('data', chunk => chunks.push(chunk))
+      res.on('end', () => resolve(Buffer.concat(chunks)))
+      res.on('error', reject)
+    })
+    request.on('error', reject)
   })
+}
+
+// `hermes-release.json` of a release tag in the public release repository,
+// validated the way hermes_cli/release_update.py validates it.
+async function fetchReleaseManifest(tag) {
+  const url = `https://github.com/${RELEASE_REPO}/releases/download/${tag}/${RELEASE_MANIFEST_ASSET}`
+  let manifest
+  try {
+    manifest = JSON.parse((await httpsGetBuffer(url)).toString('utf8'))
+  } catch (err) {
+    throw new Error(`Failed to fetch the release manifest for ${tag}: ${err.message}`)
+  }
+  if (!manifest || manifest.format !== 'hermes-release-v1') {
+    throw new Error(`Release manifest for ${tag} is not a hermes-release-v1 manifest`)
+  }
+  const sha256 = String(manifest.sha256 || '').toLowerCase()
+  if (manifest.tag !== tag || !/^[0-9a-f]{64}$/.test(sha256)) {
+    throw new Error(`Release manifest for ${tag} is inconsistent (tag ${manifest.tag}, sha256 ${manifest.sha256})`)
+  }
+  if (manifest.source_archive !== `hermes-source-${manifest.version}.zip`) {
+    throw new Error(`Release manifest for ${tag} names an unexpected archive: ${manifest.source_archive}`)
+  }
+  return { ...manifest, sha256 }
+}
+
+// Extract one file out of a zip archive with the platform's own tooling
+// (unzip on POSIX, .NET on Windows) — Node ships no zip reader and the
+// install scripts need bash / PowerShell anyway.
+function extractZipEntry(zipPath, entry, destPath) {
+  const { execFile } = require('node:child_process')
+  return new Promise((resolve, reject) => {
+    if (process.platform === 'win32') {
+      const script =
+        'Add-Type -AssemblyName System.IO.Compression.FileSystem; ' +
+        `$zip = [System.IO.Compression.ZipFile]::OpenRead('${zipPath.replace(/'/g, "''")}'); ` +
+        `try { $e = $zip.GetEntry('${entry.replace(/'/g, "''")}'); if (-not $e) { throw 'entry not found: ${entry.replace(/'/g, "''")}' }; ` +
+        `[System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, '${destPath.replace(/'/g, "''")}', $true) } finally { $zip.Dispose() }`
+      execFile(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+        hiddenWindowsChildOptions({ maxBuffer: 64 * 1024 * 1024 }),
+        (err, _stdout, stderr) => (err ? reject(new Error(`extracting ${entry}: ${stderr || err.message}`)) : resolve(destPath))
+      )
+      return
+    }
+    execFile('unzip', ['-p', zipPath, entry], { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        reject(new Error(`extracting ${entry}: ${String(stderr || err.message).trim()}`))
+        return
+      }
+      if (!stdout || stdout.length === 0) {
+        reject(new Error(`extracting ${entry}: empty entry`))
+        return
+      }
+      fs.writeFileSync(destPath, stdout)
+      resolve(destPath)
+    })
+  })
+}
+
+// AIS-313: the install scripts travel inside `hermes-source-<version>.zip`
+// of the public release repository (they are not separate assets and the
+// source repository is private). Download the archive of the stamp's tag,
+// verify it against `hermes-release.json` and pull `scripts/<name>` out.
+async function downloadReleaseInstallScript(tag, destPath) {
+  const scriptName = installScriptName()
+  const manifest = await fetchReleaseManifest(tag)
+  const archiveUrl = `https://github.com/${RELEASE_REPO}/releases/download/${tag}/${manifest.source_archive}`
+  const archive = await httpsGetBuffer(archiveUrl)
+  const actual = require('node:crypto').createHash('sha256').update(archive).digest('hex')
+  if (actual !== manifest.sha256) {
+    throw new Error(`Checksum mismatch for ${manifest.source_archive}: expected ${manifest.sha256}, got ${actual}`)
+  }
+  fs.mkdirSync(path.dirname(destPath), { recursive: true })
+  const zipPath = `${destPath}.${process.pid}.zip`
+  const tmpPath = `${destPath}.tmp`
+  try {
+    fs.writeFileSync(zipPath, archive)
+    await extractZipEntry(zipPath, `hermes-agent-${manifest.version}/scripts/${scriptName}`, tmpPath)
+    fs.renameSync(tmpPath, destPath)
+    return destPath
+  } finally {
+    for (const leftover of [zipPath, tmpPath]) {
+      try {
+        fs.unlinkSync(leftover)
+      } catch {
+        void 0
+      }
+    }
+  }
+}
+
+// Network resolution for a stamp: only release tags can be fetched — the
+// source repository (raw.githubusercontent.com) is private since AIS-314.
+function downloadInstallScript(installStamp, destPath) {
+  const tag = installStamp && installStamp.tag
+  if (tag && STAMP_TAG_RE.test(tag)) {
+    return downloadReleaseInstallScript(tag, destPath)
+  }
+  return Promise.reject(
+    new Error(
+      `Cannot fetch ${installScriptName()} for commit ${String((installStamp && installStamp.commit) || '?').slice(0, 12)}: ` +
+        'the install stamp carries no release tag and the source repository is private (AIS-313)'
+    )
+  )
 }
 
 async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit, _download = downloadInstallScript }) {
@@ -232,55 +308,53 @@ async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, 
     return { path: localScript, source: 'local', kind: installScriptKind() }
   }
 
-  // 2. Packaged path: download from GitHub at the pinned commit (1B's stamp).
-  if (!installStamp || !installStamp.commit || !STAMP_COMMIT_RE.test(installStamp.commit)) {
+  // 2. Packaged path: the stamp names a release tag (release-archive install)
+  //    or a commit (developer build); the tag is what the release repository
+  //    can serve.
+  const ref = stampRef(installStamp)
+  if (!ref) {
     throw new Error(
       `Cannot resolve ${installScriptName()}: no SOURCE_REPO_ROOT and no install stamp. ` +
         'This packaged build was produced without a valid build-time stamp.'
     )
   }
+  const shortRef = STAMP_COMMIT_RE.test(ref) ? ref.slice(0, 12) : ref
+  const identity = { commit: installStamp.commit || null, tag: installStamp.tag || null, kind: installScriptKind() }
 
-  const cached = cachedScriptPath(hermesHome, installStamp.commit)
+  const cached = cachedScriptPath(hermesHome, ref)
   try {
     await fsp.access(cached, fs.constants.R_OK)
-    emit({
-      type: 'log',
-      line: `[bootstrap] using cached ${installScriptName()} for ${installStamp.commit.slice(0, 12)}`
-    })
-    return { path: cached, source: 'cache', commit: installStamp.commit, kind: installScriptKind() }
+    emit({ type: 'log', line: `[bootstrap] using cached ${installScriptName()} for ${shortRef}` })
+    return { path: cached, source: 'cache', ...identity }
   } catch {
     // not cached; download
   }
 
-  emit({
-    type: 'log',
-    line: `[bootstrap] fetching ${installScriptName()} for ${installStamp.commit.slice(0, 12)} from GitHub`
-  })
+  emit({ type: 'log', line: `[bootstrap] fetching ${installScriptName()} for ${shortRef} from the release repository` })
   try {
-    await _download(installStamp.commit, cached)
+    await _download(installStamp, cached)
     emit({ type: 'log', line: `[bootstrap] saved to ${cached}` })
-    return { path: cached, source: 'download', commit: installStamp.commit, kind: installScriptKind() }
+    return { path: cached, source: 'download', ...identity }
   } catch (err) {
-    // The pinned commit may not be fetchable from GitHub -- most commonly a
-    // locally-built desktop app stamped to an unpushed HEAD (see
-    // write-build-stamp.cjs fromLocalGit). Fall back to the installer that
-    // ships inside the already-installed agent checkout so dev/self-builds can
-    // still bootstrap instead of dying with a fatal 404.
+    // Nothing to fetch (commit-only stamp of a locally-built desktop app, no
+    // network, release repository unavailable): fall back to the installer
+    // that ships inside the already-installed agent checkout so the
+    // bootstrap can still run instead of dying with a fatal error.
     const installed = installedAgentInstallScript(hermesHome)
     if (installed) {
       emit({
         type: 'log',
         line:
-          `[bootstrap] GitHub fetch failed (${err.message}); ` +
+          `[bootstrap] release fetch failed (${err.message}); ` +
           `falling back to installed agent ${installScriptName()} at ${installed}`
       })
       try {
         fs.mkdirSync(path.dirname(cached), { recursive: true })
         fs.copyFileSync(installed, cached)
-        return { path: cached, source: 'installed-agent', commit: installStamp.commit, kind: installScriptKind() }
+        return { path: cached, source: 'installed-agent', ...identity }
       } catch {
         // Cache copy failed (read-only FS, etc.) -- use the source path directly.
-        return { path: installed, source: 'installed-agent', commit: installStamp.commit, kind: installScriptKind() }
+        return { path: installed, source: 'installed-agent', ...identity }
       }
     }
     throw err
@@ -484,11 +558,16 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
 // Manifest + stage dispatch
 // ---------------------------------------------------------------------------
 
-// Build the install.ps1 pin args (-Commit / -Branch) from the install-stamp
-// so the repository stage clones the exact SHA the .exe was tested with
-// instead of falling back to install.ps1's default ($Branch = "main").
+// Build the install.ps1 pin args from the install-stamp. A release stamp
+// (AIS-313) pins the exact release tag, which install.ps1 installs from the
+// public release repository; a developer stamp keeps -Commit / -Branch so the
+// repository stage clones the exact SHA the app was built from.
 function buildPinArgs(installStamp) {
   const args = []
+  if (installStamp && installStamp.tag && STAMP_TAG_RE.test(installStamp.tag)) {
+    args.push('-Tag', installStamp.tag)
+    return args
+  }
   if (installStamp && installStamp.commit) {
     args.push('-Commit', installStamp.commit)
   }
@@ -500,6 +579,10 @@ function buildPinArgs(installStamp) {
 
 function buildPosixPinArgs({ installStamp, activeRoot, hermesHome }) {
   const args = ['--dir', activeRoot, '--hermes-home', hermesHome]
+  if (installStamp && installStamp.tag && STAMP_TAG_RE.test(installStamp.tag)) {
+    args.push('--tag', installStamp.tag)
+    return args
+  }
   if (installStamp && installStamp.branch) {
     args.push('--branch', installStamp.branch)
   }
@@ -747,7 +830,8 @@ async function runBootstrap(opts) {
     // 5. Write the bootstrap-complete marker.
     const markerPayload = {
       pinnedCommit: installStamp ? installStamp.commit : null,
-      pinnedBranch: installStamp ? installStamp.branch : null
+      pinnedBranch: installStamp ? installStamp.branch : null,
+      pinnedTag: installStamp ? installStamp.tag || null : null
     }
     const marker = typeof writeMarker === 'function' ? writeMarker(markerPayload) : markerPayload
     emit({ type: 'complete', marker })
@@ -773,5 +857,10 @@ module.exports = {
   resolveLocalInstallScript,
   resolveInstallScript,
   installedAgentInstallScript,
-  cachedScriptPath
+  cachedScriptPath,
+  buildPinArgs,
+  buildPosixPinArgs,
+  downloadInstallScript,
+  fetchReleaseManifest,
+  stampRef
 }

@@ -10,7 +10,11 @@ const {
   resolveCanonicalSoulSource,
   resolveInstallScript,
   installedAgentInstallScript,
-  cachedScriptPath
+  cachedScriptPath,
+  buildPinArgs,
+  buildPosixPinArgs,
+  downloadInstallScript,
+  stampRef
 } = require('./bootstrap-runner.cjs')
 
 const SCRIPT_NAME = process.platform === 'win32' ? 'install.ps1' : 'install.sh'
@@ -200,4 +204,67 @@ test('enforceCanonicalSoul overwrites HERMES_HOME/SOUL.md from canonical source'
     fs.rmSync(active, { recursive: true, force: true })
     fs.rmSync(home, { recursive: true, force: true })
   }
+})
+
+// --- AIS-313: release-tag stamps ---------------------------------------------
+
+test('a release stamp pins the install scripts to its tag, not to a commit', () => {
+  const stamp = { commit: 'a'.repeat(40), branch: 'preview', tag: 'v0.7.6-rc.2', channel: 'preview' }
+  assert.deepEqual(buildPinArgs(stamp), ['-Tag', 'v0.7.6-rc.2'])
+  assert.deepEqual(buildPosixPinArgs({ installStamp: stamp, activeRoot: '/r', hermesHome: '/h' }), [
+    '--dir',
+    '/r',
+    '--hermes-home',
+    '/h',
+    '--tag',
+    'v0.7.6-rc.2'
+  ])
+  assert.equal(stampRef(stamp), 'v0.7.6-rc.2')
+})
+
+test('a developer stamp keeps the commit/branch pins', () => {
+  const stamp = { commit: 'b'.repeat(40), branch: 'main' }
+  assert.deepEqual(buildPinArgs(stamp), ['-Commit', 'b'.repeat(40), '-Branch', 'main'])
+  assert.deepEqual(buildPosixPinArgs({ installStamp: stamp, activeRoot: '/r', hermesHome: '/h' }), [
+    '--dir',
+    '/r',
+    '--hermes-home',
+    '/h',
+    '--branch',
+    'main',
+    '--commit',
+    'b'.repeat(40)
+  ])
+  assert.equal(stampRef(stamp), 'b'.repeat(40))
+  assert.equal(stampRef({ commit: 'not-a-sha', tag: 'nope' }), null)
+  assert.equal(stampRef(null), null)
+})
+
+test('resolveInstallScript caches a release stamp by its tag', async () => {
+  const home = mkTmpHome()
+  try {
+    const cached = cachedScriptPath(home, 'v0.7.6-rc.2')
+    fs.mkdirSync(path.dirname(cached), { recursive: true })
+    fs.writeFileSync(cached, '#!/bin/sh\necho cached\n')
+
+    const result = await resolveInstallScript({
+      installStamp: { commit: 'a'.repeat(40), tag: 'v0.7.6-rc.2' },
+      sourceRepoRoot: null,
+      hermesHome: home,
+      emit: () => {},
+      _download: async () => {
+        throw new Error('network must not be touched when the tag is cached')
+      }
+    })
+    assert.equal(result.source, 'cache')
+    assert.equal(result.path, cached)
+    assert.equal(result.tag, 'v0.7.6-rc.2')
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('downloadInstallScript refuses commit-only stamps without touching the network', async () => {
+  await assert.rejects(downloadInstallScript({ commit: 'c'.repeat(40) }, '/tmp/never-written'), /no release tag|private/)
+  await assert.rejects(downloadInstallScript(null, '/tmp/never-written'), /no release tag|private/)
 })

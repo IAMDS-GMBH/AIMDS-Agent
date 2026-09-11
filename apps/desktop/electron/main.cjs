@@ -221,6 +221,10 @@ function loadInstallStamp() {
           schemaVersion: parsed.schemaVersion,
           commit: parsed.commit,
           branch: parsed.branch || null,
+          // Release-archive installs (AIS-313): the tag the install scripts
+          // install from the public release repository.
+          tag: typeof parsed.tag === 'string' && /^v\d+\.\d+\.\d+(?:-rc\.\d+)?$/.test(parsed.tag) ? parsed.tag : null,
+          channel: parsed.channel || null,
           builtAt: parsed.builtAt || null,
           dirty: Boolean(parsed.dirty),
           source: parsed.source || null,
@@ -236,7 +240,7 @@ function loadInstallStamp() {
 const INSTALL_STAMP = loadInstallStamp()
 if (INSTALL_STAMP) {
   console.log(
-    `[hermes] install stamp: ${INSTALL_STAMP.commit.slice(0, 12)}${INSTALL_STAMP.branch ? ` (${INSTALL_STAMP.branch})` : ''}${INSTALL_STAMP.dirty ? ' [DIRTY]' : ''} from ${INSTALL_STAMP.source || 'unknown'}`
+    `[hermes] install stamp: ${INSTALL_STAMP.commit.slice(0, 12)}${INSTALL_STAMP.tag ? ` ${INSTALL_STAMP.tag}` : ''}${INSTALL_STAMP.branch ? ` (${INSTALL_STAMP.branch})` : ''}${INSTALL_STAMP.dirty ? ' [DIRTY]' : ''} from ${INSTALL_STAMP.source || 'unknown'}`
   )
 } else if (IS_PACKAGED) {
   // Dev builds without a stamp are normal; packaged builds without one

@@ -5,8 +5,9 @@
 //!      env var. Lets devs iterate without re-publishing the script.
 //!   2. Bundled fallback: use the install scripts embedded into this binary at
 //!      build time, so local bootstrap fixes ship with the generated installer.
-//!   3. Network: download from GitHub raw at a pinned commit or branch.
-//!      Commit pins are immutable; branch pins are HEAD-tracking.
+//!   3. Network: removed in AIS-313 — the source repository is private, so
+//!      HERMES_FORCE_REMOTE_INSTALL_SCRIPT now fails with a clear error. The
+//!      scripts themselves install from the public release archive.
 //!
 //! Mirrors `apps/desktop/electron/bootstrap-runner.cjs`'s `resolveInstallScript`,
 //! but the dev-checkout resolution is driven by an env var rather than the
@@ -15,7 +16,6 @@
 
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
-use tokio::io::AsyncWriteExt;
 
 use crate::paths;
 
@@ -29,6 +29,9 @@ pub struct ResolvedScript {
     /// what makes the repo stage clone the exact tested SHA.
     pub commit: Option<String>,
     pub branch: Option<String>,
+    /// Release tag pin (AIS-313): install exactly this release from the
+    /// public release repository (`-Tag vX.Y.Z[-rc.N]`).
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,6 +250,7 @@ pub async fn resolve(
                 source: ScriptSource::DevCheckout,
                 commit: pin.commit.clone(),
                 branch: pin.branch.clone(),
+                tag: pin.tag.clone(),
             });
         }
     }
@@ -280,6 +284,7 @@ pub async fn resolve(
             source: ScriptSource::Bundled,
             commit: pin.commit.clone(),
             branch: pin.branch.clone(),
+            tag: pin.tag.clone(),
         });
     }
 
@@ -316,6 +321,7 @@ pub async fn resolve(
             source: ScriptSource::Cached,
             commit: pin.commit.clone(),
             branch: pin.branch.clone(),
+            tag: pin.tag.clone(),
         });
     }
 
@@ -334,6 +340,7 @@ pub async fn resolve(
         source: ScriptSource::Downloaded,
         commit: pin.commit.clone(),
         branch: pin.branch.clone(),
+        tag: pin.tag.clone(),
     })
 }
 
@@ -397,6 +404,7 @@ fn materialize_bundled_aimds_assets(cache_root: &Path) -> Result<()> {
 pub struct Pin {
     pub commit: Option<String>,
     pub branch: Option<String>,
+    pub tag: Option<String>,
 }
 
 fn cached_path(kind: ScriptKind, commit_or_ref: &str) -> PathBuf {
@@ -430,70 +438,18 @@ fn truncate_ref(s: &str) -> &str {
     }
 }
 
-/// Downloads to `dest_path` via reqwest with rustls. Atomically renames
-/// `dest_path.tmp` → `dest_path` so partial writes don't poison the cache.
-async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Result<()> {
-    let url = format!(
-        "https://raw.githubusercontent.com/IAMDS-GMBH/AIMDS-Agent/{}/scripts/{}",
-        commit_or_ref,
-        kind.filename()
-    );
-
-    if let Some(parent) = dest_path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!("creating bootstrap-cache parent dir {}", parent.display())
-        })?;
-    }
-
-    let tmp_path = dest_path.with_extension({
-        let ext = dest_path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("tmp");
-        format!("{ext}.tmp")
-    });
-
-    let response = reqwest::Client::new()
-        .get(&url)
-        .header("User-Agent", "hermes-setup/0.0.1")
-        .send()
-        .await
-        .with_context(|| format!("GET {url}"))?;
-
-    if !response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to download {}: HTTP {} from {}",
-            kind.filename(),
-            response.status(),
-            url
-        ));
-    }
-
-    let bytes = response
-        .bytes()
-        .await
-        .with_context(|| format!("reading body of {url}"))?;
-
-    let mut file = tokio::fs::File::create(&tmp_path)
-        .await
-        .with_context(|| format!("creating temp file {}", tmp_path.display()))?;
-    file.write_all(&bytes)
-        .await
-        .with_context(|| format!("writing temp file {}", tmp_path.display()))?;
-    file.flush().await.context("flushing temp file")?;
-    drop(file);
-
-    tokio::fs::rename(&tmp_path, dest_path)
-        .await
-        .with_context(|| {
-            format!(
-                "renaming {} → {}",
-                tmp_path.display(),
-                dest_path.display()
-            )
-        })?;
-
-    Ok(())
+/// AIS-313: the source repository is private, so the scripts can no longer
+/// be fetched from `raw.githubusercontent.com`. The bundled copies (default)
+/// or `HERMES_SETUP_DEV_REPO_ROOT` are the supported sources; the scripts
+/// themselves install Hermes from the public release archive.
+async fn download(kind: ScriptKind, commit_or_ref: &str, _dest_path: &Path) -> Result<()> {
+    Err(anyhow!(
+        "fetching {} for {} from the source repository is no longer supported \
+         (AIS-313): unset HERMES_FORCE_REMOTE_INSTALL_SCRIPT to use the bundled script \
+         or point HERMES_SETUP_DEV_REPO_ROOT at a checkout",
+        kind.filename(),
+        commit_or_ref
+    ))
 }
 
 #[cfg(test)]

@@ -505,15 +505,25 @@ jobs:
           RELEASE_VERSION: ${{ steps.version.outputs.installer_version }}
         run: python scripts/set_version.py "$RELEASE_VERSION"
 
-      - name: Resolve bootstrap pins (main latest + commit fallback)
+      - name: Resolve bootstrap pins (release tag + channel, commit for developers)
         shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.installer_version }}
         run: |
           set -euo pipefail
+          # AIS-313: the shipped installer installs exactly its own release
+          # from the public release repository (HERMES_BUILD_PIN_TAG) and
+          # follows that release's channel afterwards (HERMES_BUILD_PIN_BRANCH
+          # = stable | preview). The commit pin stays for developers only.
           git fetch --no-tags --depth=1 origin main
           main_head="$(git rev-parse --verify origin/main^{commit})"
-          echo "HERMES_BUILD_PIN_BRANCH=main" >> "$GITHUB_ENV"
+          tag="v${RELEASE_VERSION#v}"
+          channel="stable"
+          case "$tag" in *-rc.*) channel="preview" ;; esac
+          echo "HERMES_BUILD_PIN_TAG=$tag" >> "$GITHUB_ENV"
+          echo "HERMES_BUILD_PIN_BRANCH=$channel" >> "$GITHUB_ENV"
           echo "HERMES_BUILD_PIN_COMMIT=$main_head" >> "$GITHUB_ENV"
-          echo "Resolved pins: branch=main, commit=$main_head"
+          echo "Resolved pins: tag=$tag, channel=$channel, commit=$main_head"
 
       - name: Export Apple signing credentials (macOS, skip_signing=false)
         if: runner.os == 'macOS' && inputs.skip_signing != true
