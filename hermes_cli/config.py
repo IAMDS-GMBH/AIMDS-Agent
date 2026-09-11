@@ -540,9 +540,15 @@ def get_managed_update_command() -> Optional[str]:
 
 
 def detect_install_method(project_root: Optional[Path] = None) -> str:
-    """Detect how Hermes was installed: 'docker', 'nixos', 'homebrew', 'git', or 'pip'.
+    """Detect how Hermes was installed: 'docker', 'nixos', 'homebrew', 'release', 'git', or 'pip'.
 
     Resolution order:
+    0. ``<project_root>/.hermes-release.json`` (AIS-312) -> 'release': the
+       tree was applied from a public release archive. Checked before the
+       per-profile stamp because the marker describes the shared code tree,
+       while the stamp only describes one HERMES_HOME — a checkout that the
+       installer stamped ``git`` and that later lost repository access must
+       not stay ``git`` forever.
     1. Stamped ``~/.hermes/.install_method`` file (written by installers)
     2. HERMES_MANAGED env / .managed marker (NixOS, Homebrew)
     3. .git directory presence -> 'git'
@@ -562,6 +568,15 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     container". Without that fallback such installs fall through to the
     ``.git``/pip checks and behave like any off-path install. See issue #34397.
     """
+    if project_root is None:
+        project_root = Path(__file__).parent.parent.resolve()
+    try:
+        from hermes_cli.release_marker import is_release_managed
+
+        if is_release_managed(project_root):
+            return "release"
+    except Exception:
+        pass
     stamp = get_hermes_home() / ".install_method"
     try:
         method = stamp.read_text(encoding="utf-8").strip().lower()
@@ -572,8 +587,6 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     managed = get_managed_system()
     if managed:
         return managed.lower().replace(" ", "-")
-    if project_root is None:
-        project_root = Path(__file__).parent.parent.resolve()
     if (project_root / ".git").is_dir():
         return "git"
     return "pip"
@@ -647,6 +660,10 @@ def recommended_update_command_for_method(method: str) -> str:
         return "brew upgrade hermes-agent"
     if method == "docker":
         return "docker pull nousresearch/hermes-agent:latest"
+    if method == "release":
+        # Source-archive install (AIS-312): `hermes update` reads the public
+        # release manifest and swaps the tree — same command as git.
+        return "hermes update"
     if method == "pip":
         if is_uv_tool_install():
             return "uv tool upgrade hermes-agent"
@@ -1907,8 +1924,11 @@ DEFAULT_CONFIG = {
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a
-        # handful of gateway slash-command replies).  Does NOT affect agent
-        # responses, log lines, tool outputs, or slash-command descriptions.
+        # handful of gateway slash-command replies).  Does not affect
+        # interactive agent responses (those mirror the user's message), log
+        # lines, tool outputs, or slash-command descriptions — but it sets the
+        # output language of scheduled cron runs (briefs and user jobs) unless
+        # cron.brief_collector.language overrides it (AIS-319).
         # Supported: en, de, es, fr, tr, uk, af, ko, it, ga, pt, ru, hu.
         # Unknown values fall back to en.
         "language": "en",
@@ -2613,7 +2633,8 @@ DEFAULT_CONFIG = {
         # and lets the model compose only.
         "brief_collector": {
             "enabled": True,
-            # "en" | "de"; empty = display.language, falling back to "en".
+            # Any supported language code/alias (see display.language); empty =
+            # display.language, falling back to "en". Applies to every cron run.
             "language": "",
             "char_budget": 5000,
             "mail_top": 15,
@@ -2932,6 +2953,7 @@ DEFAULT_CONFIG = {
         #               ignored paths — node_modules, venv, build outputs —
         #               are never touched.
         "non_interactive_local_changes": "stash",
+
         # Which update channel a bare ``hermes update`` follows (AIS-299).
         # ``--branch`` always wins. Releases are git tags: ``stable`` follows
         # vX.Y.Z, ``preview`` also the vX.Y.Z-rc.N candidates, ``main`` (or
@@ -2942,6 +2964,20 @@ DEFAULT_CONFIG = {
         # The desktop app writes the chosen channel here when you change it
         # under Settings → Advanced → Update channel.
         "channel": "auto",
+        # Where ``hermes update`` gets the code from (AIS-312).
+        #   "git"     — this checkout's ``origin`` (needs access to the
+        #               source repository).
+        #   "release" — verified source archives from the public release
+        #               repository (no git needed; the ``main`` channel is
+        #               not available there).
+        #   "auto"    — git when this is a checkout whose origin is
+        #               reachable; otherwise release. An install that was
+        #               applied from an archive (``.hermes-release.json``)
+        #               stays on release. Should the release manifest be
+        #               unavailable, auto falls back to git (or, without
+        #               git, to the source repository's tag archive) with
+        #               a visible warning — never silently.
+        "source": "auto",
     },
 
     # Language Server Protocol — semantic diagnostics from real

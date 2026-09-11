@@ -1536,6 +1536,9 @@ export const en: Translations = {
     switchToRelease: tag => `Switch to ${tag}`,
     newerReleaseBody: (headTag, targetTag, channel) =>
       `This installation is on ${headTag}, which is newer than the current "${channel}" release ${targetTag}. The channel catches up as soon as a newer release is published — there is nothing to install.`,
+    releaseAvailable: version => `Version ${version} available`,
+    releaseAvailableBody: version =>
+      `Hermes ${version} is ready to install. The updater downloads the release archive and restarts Hermes.`,
     manualTitle: 'Update from your terminal',
     manualBody: 'You installed Hermes from the command line, so updates run there too. Paste this into your terminal:',
     manualPickedUp: 'Hermes will pick up the new version next time you launch it.',

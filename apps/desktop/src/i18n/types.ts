@@ -1221,6 +1221,8 @@ export interface Translations {
     offChannelBody: (count: number, tag: string, channel: string) => string
     switchToRelease: (tag: string) => string
     newerReleaseBody: (headTag: string, targetTag: string, channel: string) => string
+    releaseAvailable: (version: string) => string
+    releaseAvailableBody: (version: string) => string
     manualTitle: string
     manualBody: string
     manualPickedUp: string

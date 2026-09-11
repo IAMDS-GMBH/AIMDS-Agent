@@ -72,6 +72,17 @@ def _patch_managed_uv(request):
 
 
 @pytest.fixture(autouse=True)
+def _no_release_repo():
+    """Tag channels consult the public release repository first (AIS-318);
+    tests never reach the network — the manifest is "unavailable" unless a
+    test patches ``fetch_release_feed`` itself."""
+    from hermes_cli.release_update import ReleaseFeedError
+
+    with patch("hermes_cli.release_update.fetch_release_feed", side_effect=ReleaseFeedError("offline in tests")):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _never_sync_real_skills(monkeypatch):
     """cmd_update reaches tools.skills_sync.sync_skills, whose SKILLS_DIR is
     fixed at import time — an unmocked call syncs (and now restores) the
@@ -784,28 +795,39 @@ class TestCmdUpdateCheckBranchFlag:
         assert "bb/gui" in out
 
 
-class TestCmdUpdateZipBranchRefusal:
-    """``hermes update --branch=<non-main>`` must refuse on the ZIP fallback path.
+class TestCmdUpdateLegacyArchiveBranchRefusal:
+    """``hermes update --branch=<non-main>`` must refuse on the source-archive fallback path.
 
-    The ZIP fallback hard-codes a GitHub archive URL for main.zip; honoring
-    --branch arbitrarily would require remote-branch existence checks the
-    fallback can't easily do. Refusing is the right move — silently lying
-    about which branch got installed is the bug --branch was meant to prevent.
+    The archive fallback hard-codes a GitHub archive URL; honoring --branch
+    arbitrarily would require remote-branch existence checks the fallback
+    can't easily do. Refusing is the right move — silently lying about which
+    branch got installed is the bug --branch was meant to prevent.
     """
 
-    def test_zip_fallback_refuses_non_main_branch(self, capsys):
-        from hermes_cli.main import _update_via_zip
+    def test_legacy_archive_refuses_non_main_branch(self, capsys):
+        from hermes_cli.main import _update_via_legacy_archive
 
         args = SimpleNamespace(branch="bb/gui")
         with pytest.raises(SystemExit) as exc_info:
-            _update_via_zip(args)
+            _update_via_legacy_archive(args, "bb/gui", gateway_mode=False, assume_yes=False)
         assert exc_info.value.code == 1
 
         out = capsys.readouterr().out
         assert "bb/gui" in out
         assert "not supported" in out
         # No actual download attempted.
-        assert "Downloading latest version" not in out
+        assert "Downloading" not in out
+
+    def test_release_path_refuses_branch_channels_when_pinned(self, capsys):
+        from hermes_cli.main import _cmd_update_via_release
+
+        with pytest.raises(SystemExit) as exc_info:
+            _cmd_update_via_release(
+                SimpleNamespace(branch="bb/gui"), "bb/gui",
+                gateway_mode=False, assume_yes=False, forced=True,
+            )
+        assert exc_info.value.code == 1
+        assert "needs a git checkout" in capsys.readouterr().out
 
 
 def test_is_termux_env_true_for_termux_prefix():
@@ -1201,3 +1223,131 @@ class TestResolveUpdateBranchDefault:
     def test_config_failure_never_crashes(self):
         assert self._resolve(None, config_raises=True, abbrev="HEAD") == "stable"
         assert self._resolve(None, config_raises=True, abbrev="main") == "main"
+
+
+# ---------------------------------------------------------------------------
+# AIS-318: tag channels resolve their target via the release repository first
+# ---------------------------------------------------------------------------
+
+_RELEASE_SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+def _release_feed(tag="v0.7.4", sha=_RELEASE_SHA):
+    from hermes_cli.release_channels import release_download_url
+    from hermes_cli.release_update import ReleaseFeed
+
+    version = tag[1:]
+    return ReleaseFeed(
+        version=version, tag=tag, commit_sha=sha,
+        package_url=release_download_url(tag, f"hermes-source-{version}.zip"),
+        sha256="c" * 64, size=1, build_id="b", channel="stable",
+    )
+
+
+def test_update_stable_falls_back_to_origin_tags_when_release_repo_unavailable(capsys):
+    calls = []
+    with patch("hermes_cli.main._clear_bytecode_cache", return_value=0), \
+         patch("hermes_cli.main._install_python_dependencies_with_optional_fallback", return_value=None), \
+         patch("hermes_cli.main._refresh_active_lazy_features", return_value=None), \
+         patch("hermes_cli.main._update_node_dependencies", return_value=None), \
+         patch("hermes_cli.main._build_web_ui", return_value=True), \
+         patch("hermes_cli.main._create_pre_update_snapshot", return_value=None), \
+         patch("hermes_cli.main._guard_new_code_or_rollback", return_value=None), \
+         patch("hermes_cli.main._write_update_incomplete_marker", return_value=None), \
+         patch("hermes_cli.main._clear_update_incomplete_marker", return_value=None):
+        code = _run_tag_channel_update(_tag_channel_side_effect(["v0.7.4"], calls=calls))
+    out = capsys.readouterr().out
+    assert code is None
+    assert "Release repository IAMDS-GMBH/AIMDS-Agent-Releases unavailable" in out
+    assert "Resolving the stable tag from origin instead." in out
+    assert "Latest stable release: v0.7.4\n" in out
+    assert any(c.endswith("checkout v0.7.4") for c in calls)
+
+
+def test_update_stable_uses_release_repo_target_and_checks_out_via_git(capsys):
+    calls = []
+    with patch("hermes_cli.release_update.fetch_release_feed", return_value=_release_feed("v0.7.5")), \
+         patch("hermes_cli.main._clear_bytecode_cache", return_value=0), \
+         patch("hermes_cli.main._install_python_dependencies_with_optional_fallback", return_value=None), \
+         patch("hermes_cli.main._refresh_active_lazy_features", return_value=None), \
+         patch("hermes_cli.main._update_node_dependencies", return_value=None), \
+         patch("hermes_cli.main._build_web_ui", return_value=True), \
+         patch("hermes_cli.main._create_pre_update_snapshot", return_value=None), \
+         patch("hermes_cli.main._guard_new_code_or_rollback", return_value=None), \
+         patch("hermes_cli.main._write_update_incomplete_marker", return_value=None), \
+         patch("hermes_cli.main._clear_update_incomplete_marker", return_value=None), \
+         patch("hermes_cli.main._cmd_update_via_release") as archive:
+        # origin carries v0.7.4 and v0.7.5; the manifest says v0.7.5 at _RELEASE_SHA
+        code = _run_tag_channel_update(_tag_channel_side_effect(["v0.7.4", "v0.7.5"], tag_sha=_RELEASE_SHA, calls=calls))
+    out = capsys.readouterr().out
+    assert code is None
+    archive.assert_not_called()
+    assert "Latest stable release: v0.7.5 (release repository)" in out
+    assert any(c.endswith("checkout v0.7.5") for c in calls)
+    assert "Code updated to v0.7.5" in out
+
+
+def test_update_stable_installs_release_archive_when_origin_lacks_the_tag(capsys):
+    calls = []
+    with patch("hermes_cli.release_update.fetch_release_feed", return_value=_release_feed("v0.7.6")), \
+         patch("hermes_cli.main._cmd_update_via_release", return_value=True) as archive:
+        code = _run_tag_channel_update(_tag_channel_side_effect(["v0.7.4", "v0.7.5"], calls=calls))
+    out = capsys.readouterr().out
+    assert code is None
+    archive.assert_called_once()
+    assert archive.call_args.args[1] == "stable" and archive.call_args.kwargs["forced"] is True
+    assert "not available from origin — installing the release archive" in out
+    assert not any("checkout" in c for c in calls)
+
+
+def test_update_stable_refuses_repointed_tag(capsys):
+    calls = []
+    with patch("hermes_cli.release_update.fetch_release_feed", return_value=_release_feed("v0.7.5")), \
+         patch("hermes_cli.main._install_python_dependencies_with_optional_fallback", return_value=None) as deps:
+        code = _run_tag_channel_update(_tag_channel_side_effect(["v0.7.5"], tag_sha="f" * 40, calls=calls))
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "does not match the release repository" in out
+    assert not any("checkout" in c for c in calls)
+    deps.assert_not_called()
+
+
+def test_update_check_stable_answers_from_manifest_when_origin_lacks_the_tag(capsys):
+    from hermes_cli.main import _cmd_update_check
+
+    calls = []
+    side_effect = _tag_channel_side_effect(["v0.7.4"], head_sha="headsha", calls=calls)
+    with patch("hermes_cli.release_update.fetch_release_feed", return_value=_release_feed("v0.7.6")), \
+         patch("hermes_cli.main.detect_install_method", return_value="git", create=True), \
+         patch("subprocess.run", side_effect=side_effect), \
+         patch("hermes_cli.config.recommended_update_command", return_value="hermes update"):
+        _cmd_update_check("stable", branch_explicit=True)
+    out = capsys.readouterr().out
+    assert "Latest stable release: v0.7.6 (release repository)" in out
+    assert "Update available: v0.7.6 (release archive, 0123456789) — origin does not carry this tag." in out
+    assert "Run 'hermes update --branch stable' to install." in out
+    assert not any("rev-list" in c for c in calls)
+
+
+def test_update_check_stable_on_manifest_commit_is_up_to_date(capsys):
+    from hermes_cli.main import _cmd_update_check
+
+    side_effect = _tag_channel_side_effect(["v0.7.4"], head_sha=_RELEASE_SHA)
+    with patch("hermes_cli.release_update.fetch_release_feed", return_value=_release_feed("v0.7.6")), \
+         patch("hermes_cli.main.detect_install_method", return_value="git", create=True), \
+         patch("subprocess.run", side_effect=side_effect):
+        _cmd_update_check("stable")
+    assert "✓ Already up to date." in capsys.readouterr().out
+
+
+def test_update_check_stable_refuses_repointed_tag(capsys):
+    from hermes_cli.main import _cmd_update_check
+
+    side_effect = _tag_channel_side_effect(["v0.7.5"], tag_sha="f" * 40)
+    with patch("hermes_cli.release_update.fetch_release_feed", return_value=_release_feed("v0.7.5")), \
+         patch("hermes_cli.main.detect_install_method", return_value="git", create=True), \
+         patch("subprocess.run", side_effect=side_effect):
+        with pytest.raises(SystemExit) as exc:
+            _cmd_update_check("stable")
+    assert exc.value.code == 1
+    assert "does not match the release repository" in capsys.readouterr().out

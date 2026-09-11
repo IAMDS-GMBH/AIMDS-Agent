@@ -35,6 +35,13 @@ def env(tmp_path, monkeypatch):
     vault = tmp_path / "vault"
     install_run_job_stubs(monkeypatch, home, config={"display": {"language": "de"}}, vault=vault, keep_prompt_builder=True)
     monkeypatch.setattr(bc, "collect", _fake_collect())
+    # The journal file and its `updated:` line are named after the current day;
+    # freeze the scheduler's clock so the expectations below are not tied to
+    # the day the test was written (the CI run of 2026-09-10 failed on "2026-09-08").
+    from datetime import datetime, timezone
+    from cron import scheduler as _scheduler
+
+    monkeypatch.setattr(_scheduler, "_hermes_now", lambda: datetime(2026, 9, 8, 8, 0, tzinfo=timezone.utc))
     FakeAgent.response = "# Tages-Briefing\n\n## 📅 Heute\n- 09:00 Daily\n\nFINDING: Daily um 9\nNEXT: Vorbereiten"
     FakeAgent.tool_messages = 0
     return home, vault
@@ -53,6 +60,7 @@ def test_compose_only_run_has_no_tools_and_writes_journal(env, caplog):
     prompt = agent.prompt_received
     assert "## Collected Data" in prompt and "You have NO tools" in prompt
     assert prompt.count("LANGUAGE:") == 1 and "in German" in prompt
+    assert prompt.index("LANGUAGE:") < prompt.index("## Collected Data")  # AIS-319: directive leads, not trails
     assert "TOOLS: If `tool_search`" not in prompt
 
     journal = vault / "journal" / "2026-09-08-morning-brief.md"
@@ -114,17 +122,34 @@ def test_collector_exception_falls_back_to_legacy_run(env, monkeypatch):
     assert ok
     agent = FakeAgent.instances[-1]
     assert agent.enabled_toolsets == ["hermes-cron"] and agent.max_iterations == 90
-    assert "## Collected Data" not in agent.prompt_received and "LANGUAGE:" not in agent.prompt_received
+    p = agent.prompt_received
+    # AIS-319: the legacy path keeps the configured language.
+    assert "## Collected Data" not in p and p.count("LANGUAGE:") == 1 and "in German" in p
 
 
-def test_non_collector_job_is_untouched(env, monkeypatch):
+def test_non_collector_job_gets_language_directive(env, monkeypatch):
     from cron import scheduler
 
     monkeypatch.setattr(scheduler, "_resolve_cron_enabled_toolsets", lambda job, cfg: None)
     ok, *_ = scheduler.run_job({"id": "user-job", "name": "Mine", "prompt": "hello", "deliver": "local"})
     assert ok
     agent = FakeAgent.instances[-1]
-    assert agent.enabled_toolsets is None and "Collected Data" not in agent.prompt_received
+    p = agent.prompt_received
+    assert agent.enabled_toolsets is None and "Collected Data" not in p
+    # AIS-319: user-created jobs answer in display.language too, exactly one directive, before the prompt.
+    assert p.count("LANGUAGE:") == 1 and "in German" in p and p.index("LANGUAGE:") < p.index("hello")
+
+
+def test_no_language_configured_defaults_to_english(tmp_path, monkeypatch):
+    from cron import scheduler
+
+    install_run_job_stubs(monkeypatch, tmp_path / "home", config={}, vault=tmp_path / "vault", keep_prompt_builder=True)
+    monkeypatch.setattr(scheduler, "_resolve_cron_enabled_toolsets", lambda job, cfg: None)
+    FakeAgent.response = "ok"
+    ok, *_ = scheduler.run_job({"id": "user-job", "name": "Mine", "prompt": "hello", "deliver": "local"})
+    assert ok
+    p = FakeAgent.instances[-1].prompt_received
+    assert p.count("LANGUAGE:") == 1 and "in English" in p
 
 
 def test_nothing_new_skips_agent_entirely(env, monkeypatch, caplog):
