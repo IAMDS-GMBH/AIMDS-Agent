@@ -94,9 +94,12 @@ class TestCheckSensitivePathMacOSBypass:
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/private/etc/ssh/sshd_config") is not None
 
-    def test_private_var_blocked(self):
+    def test_private_var_not_blocked(self):
+        # /private/var is deliberately NOT in _SENSITIVE_PATH_PREFIXES: macOS
+        # temp dirs resolve to /private/var/folders/..., and /var is not
+        # blocked on Linux either — only the /etc mirror is guarded.
         from tools.file_tools import _check_sensitive_path
-        assert _check_sensitive_path("/private/var/db/something") is not None
+        assert _check_sensitive_path("/private/var/folders/tmp/file.txt") is None
 
     def test_boot_still_blocked(self):
         from tools.file_tools import _check_sensitive_path

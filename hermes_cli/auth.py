@@ -624,11 +624,11 @@ def _resolve_api_key_provider_secret(
         if has_usable_secret(val):
             return val, env_var
 
-    if provider_id in ("aimds-suite-staging", "aimds-suite-dev", "aimds-suite-localdev"):
-        for fallback_env in ("IAMDS_LITELLM_API_KEY", "OPENAI_API_KEY"):
-            val = (get_env_value(fallback_env) or "").strip()
-            if has_usable_secret(val):
-                return val, fallback_env
+    # NOTE (AIS-286): staging/dev/localdev used to fall back to the prod key
+    # (IAMDS_LITELLM_API_KEY / OPENAI_API_KEY). That phantom credential made
+    # unconfigured environments look "connected" and produced 401s at
+    # runtime. Each environment now authenticates with its own key only —
+    # see hermes_cli/iamds_suite.py.
 
     # Fallback: try credential pool (e.g. zai key stored via auth.json)
     try:
@@ -5826,6 +5826,17 @@ def get_xai_oauth_auth_status() -> Dict[str, Any]:
 
 def _resolve_provider_base_url_env(provider_id: str, pconfig: ProviderConfig) -> str:
     """Resolve base URL env var for a provider with backward-compatible aliases."""
+    # AIMDS-Suite environments: config.yaml ``providers.<slug>.base_url`` is
+    # authoritative and the env var only a fallback (AIS-286). A stale env
+    # value must never steer the prod provider to another host again.
+    try:
+        from hermes_cli.iamds_suite import is_suite_provider, resolve_suite_endpoint
+
+        if is_suite_provider(provider_id):
+            ep = resolve_suite_endpoint(provider_id, allow_default=False)
+            return ep.base_url
+    except Exception:
+        pass
     env_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
     if env_url:
         return env_url

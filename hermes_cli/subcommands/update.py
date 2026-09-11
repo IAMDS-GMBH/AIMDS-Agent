@@ -17,7 +17,10 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     update_parser = subparsers.add_parser(
         "update",
         help="Update Hermes Agent to the latest version",
-        description="Pull the latest changes from git and reinstall dependencies",
+        description=(
+            "Update the code (git pull / release-tag checkout, or the verified "
+            "source archive from the public release repository) and reinstall dependencies"
+        ),
     )
     update_parser.add_argument(
         "--gateway",
@@ -55,10 +58,26 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         default=None,
         metavar="NAME",
         help=(
-            "Update against this branch instead of the default (main). "
-            "If the local checkout is on a different branch, hermes will "
-            "switch to the requested branch first (auto-stashing any "
-            "uncommitted changes)."
+            "Update channel or branch: 'stable' (vX.Y.Z release tags), "
+            "'preview' (also vX.Y.Z-rc.N candidates), 'main' or any branch "
+            "name. Default: the 'updates.channel' config key ('auto' = stable "
+            "on an installed checkout, main on a developer branch). If the "
+            "local checkout is on a different branch, hermes switches first "
+            "(auto-stashing any uncommitted changes). 'main' and branch names "
+            "need a git checkout with access to the source repository."
+        ),
+    )
+    update_parser.add_argument(
+        "--source",
+        default=None,
+        choices=["auto", "git", "release"],
+        help=(
+            "Where the code comes from: 'git' (this checkout's origin), "
+            "'release' (verified source archive from the public release "
+            "repository, stable/preview only), 'auto' (git when the origin "
+            "is reachable, release archives otherwise — with a git fallback "
+            "if the release manifest is unavailable). Default: the "
+            "'updates.source' config key."
         ),
     )
     update_parser.add_argument(

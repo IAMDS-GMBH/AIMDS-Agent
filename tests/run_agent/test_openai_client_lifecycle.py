@@ -91,8 +91,11 @@ def test_retry_after_api_connection_error_recreates_request_client(monkeypatch):
 
     assert result == {"ok": True}
     assert len(factory.calls) == 2
+    # The client that hit the connection error is evicted from the pool and
+    # closed; the fresh one stays pooled for the next request.
     assert first_request.close_calls >= 1
-    assert second_request.close_calls >= 1
+    assert agent._cached_request_client is second_request
+    assert second_request.close_calls == 0
 
 
 def test_stale_non_stream_close_is_single_owner(monkeypatch):
@@ -205,5 +208,8 @@ def test_streaming_call_recreates_closed_shared_client_before_request(monkeypatc
     assert response.choices[0].message.content == "Hello world"
     assert agent.client is replacement_shared
     assert stale_shared.close_calls >= 1
-    assert request_client.close_calls >= 1
+    # A healthy stream leaves the per-request client in the pool for reuse
+    # (connection pooling, 6a77429a5); only kills/aborts/errors evict+close it.
+    assert request_client.close_calls == 0
+    assert agent._cached_request_client is request_client
     assert len(factory.calls) == 2

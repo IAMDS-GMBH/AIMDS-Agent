@@ -332,6 +332,44 @@ class TestSyncSkills:
         assert "old-skill" not in result.get("updated", [])
         assert not (skills_dir / "old-skill").exists()
 
+    def test_deleted_skill_returns_when_shipped_version_changes(self, tmp_path):
+        """AIS-289: a skill the user deleted comes back once when the bundled
+        version changed since the manifest last saw it (teams-message-draft
+        was rewritten but never reached machines with the old hash)."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        skills_dir.mkdir(parents=True)
+        manifest_file.write_text("old-skill:0000000000000000000000000000dead\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert "old-skill" in result["copied"]
+        assert (skills_dir / "old-skill" / "SKILL.md").read_text() == "# Old"
+        assert f"old-skill:{_dir_hash(bundled / 'old-skill')}" in manifest_file.read_text()
+
+        # The user deletes it again; the shipped version is unchanged → stays deleted.
+        shutil.rmtree(skills_dir / "old-skill")
+        with self._patches(bundled, skills_dir, manifest_file):
+            again = sync_skills(quiet=True)
+        assert "old-skill" not in again["copied"]
+        assert not (skills_dir / "old-skill").exists()
+
+    def test_deleted_and_disabled_skill_is_not_re_offered(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        skills_dir.mkdir(parents=True)
+        manifest_file.write_text("old-skill:0000000000000000000000000000dead\n")
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+                patch("tools.skills_sync._disabled_names", return_value={"old-skill"}):
+            result = sync_skills(quiet=True)
+
+        assert "old-skill" not in result["copied"]
+        assert not (skills_dir / "old-skill").exists()
+
     def test_unmodified_skill_gets_updated(self, tmp_path):
         """Skill in manifest + on disk + user hasn't modified = update from bundled."""
         bundled = self._setup_bundled(tmp_path)

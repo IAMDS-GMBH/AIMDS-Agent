@@ -40,6 +40,27 @@ export function previewTargetFromMarkdownHref(href?: string): string | null {
   }
 }
 
+// Bare file paths in assistant prose link to `#path/<encoded>`; the markdown
+// link component turns those into an inline "open in preview" affordance
+// (never auto-opened — the user clicks).
+export function pathMarkdownHref(path: string): string {
+  return `#path/${encodeURIComponent(path)}`
+}
+
+export function pathFromMarkdownHref(href?: string): string | null {
+  if (!href?.startsWith('#path/')) {
+    return null
+  }
+
+  try {
+    const decoded = decodeURIComponent(href.slice('#path/'.length))
+
+    return decoded.trim() || null
+  } catch {
+    return null
+  }
+}
+
 export function previewName(target: string): string {
   try {
     const url = new URL(target)

@@ -88,6 +88,7 @@ export const en: Translations = {
     free: 'Free',
     loading: 'Loading…',
     notSet: 'Not set',
+    open: 'Open',
     refresh: 'Refresh',
     remove: 'Remove',
     replace: 'Replace',
@@ -373,6 +374,13 @@ export const en: Translations = {
       tipModeAuto: 'Auto (Endpoint)',
       tipModeBusiness: 'Business',
       tipModeNerd: 'Nerd / Team',
+      previewAutoOpen: {
+        label: 'Auto-open previews',
+        artifacts: 'Artifacts',
+        all: 'All files',
+        never: 'Never',
+        hint: 'Artifacts: only documents, pages and images the agent writes. All files: every file a tool touches. Never: open previews by hand.'
+      },
       themeTitle: 'Theme',
       themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
       themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`,
@@ -387,8 +395,9 @@ export const en: Translations = {
       removeTheme: 'Remove theme',
       importedBadge: 'Imported',
       updateChannelTitle: 'Update Channel',
-      updateChannelDesc: 'Choose between stable release versions (tags) or continuous developer updates (main).',
-      updateChannelStable: 'Stable (Tags)',
+      updateChannelDesc: 'Stable follows released versions, Preview also gets release candidates, Main follows the developer branch.',
+      updateChannelStable: 'Stable',
+      updateChannelPreview: 'Preview',
       updateChannelMain: 'Main (Branch)',
       filePickerRootTitle: 'Standard Workspace',
       filePickerRootDesc: 'Choose default root directory for the file browser (requires client restart).',
@@ -645,6 +654,8 @@ export const en: Translations = {
       catalogModalTitle: (name: string) => `Configure ${name}`,
       catalogModalDesc: 'Enter the required secrets or tokens to activate this MCP integration.',
       catalogSecretsNotice: 'Secrets will be stored securely in your .env configuration.',
+      catalogInstallFailedTitle: 'MCP installation failed',
+      catalogInstallFailedMessage: (name: string, detail: string) => `${name} could not be installed.${detail ? ` Last output: ${detail}` : ''}`,
       catalogInstallSuccessTitle: 'MCP Installed',
       catalogInstallSuccessMessage: (name: string) => `${name} has been added to your MCP configuration.`,
       catalogInstancePickerLabel: 'Instance',
@@ -685,7 +696,40 @@ export const en: Translations = {
       connectAnother: 'Connect another provider',
       otherProviders: 'Other providers',
       noProviderKeys: 'No provider API keys available.',
-      loading: 'Loading providers...'
+      loading: 'Loading providers...',
+      m365: {
+        grantForOrg: 'Grant for organization',
+        grantForOrgHint: 'Tenant admin: approve Teams chat, presence, shared mailboxes and To Do once for everyone',
+        orgApproved: 'Organization approved',
+        selfOnly: 'Mail, calendar and files only',
+        copied: 'Consent link copied',
+        openedAndCopied: 'Consent link opened in the browser and copied. Only a tenant administrator can accept it.',
+        loadFailed: 'Could not build the admin consent link'
+      },
+      suite: {
+        title: 'AIMDS-Suite environments',
+        intro: 'Base URL per environment. Sign in with Keycloak SSO to obtain or renew the API key.',
+        connected: 'Connected',
+        needsReauth: 'Re-authentication required',
+        notConfigured: 'Not configured',
+        unreachable: 'Not verified',
+        signInSso: 'Sign in with SSO',
+        reauthenticate: 'Re-authenticate',
+        enterUrlFirst: 'Enter the base URL first',
+        saveUrls: 'Save provider URLs',
+        saving: 'Saving…',
+        saved: 'AIMDS-Suite provider URLs saved',
+        checking: 'Checking…',
+        reason: {
+          keyMissing: 'No API key stored',
+          urlMissing: 'No base URL configured',
+          envMismatch: 'Environment variable points to a different host than the configured URL',
+          unauthorized: 'The stored key was rejected by the server',
+          runtime: 'The running session got an authentication error',
+          network: 'Server could not be reached',
+          ok: 'Key accepted'
+        }
+      }
     },
     sessions: {
       loading: 'Loading archived sessions…',
@@ -1118,13 +1162,6 @@ export const en: Translations = {
       error: 'error',
       completed: 'completed'
     },
-    deliveryLabels: {
-      local: 'This desktop',
-      telegram: 'Telegram',
-      discord: 'Discord',
-      slack: 'Slack',
-      email: 'Email'
-    },
     scheduleLabels: {
       daily: 'Daily',
       weekdays: 'Weekdays',
@@ -1205,14 +1242,33 @@ export const en: Translations = {
     promptLabel: 'Prompt',
     promptPlaceholder: 'Summarize my unread Slack threads and email me the top 5...',
     frequencyLabel: 'Frequency',
-    deliverLabel: 'Deliver to this desktop',
     customScheduleLabel: 'Custom schedule',
     customPlaceholder: '0 9 * * * or weekdays at 9am',
     customHint: 'Cron expression, or phrases like "every hour" or "weekdays at 9am".',
     optional: 'Optional',
     promptScheduleRequired: 'Prompt and schedule are required.',
     saveChanges: 'Save changes',
-    createAction: 'Create cron'
+    createAction: 'Create cron',
+    newOutput: 'New',
+    unseenCount: count => (count === 1 ? '1 new' : `${count} new`),
+    latestOutput: 'Latest output',
+    openLatestOutput: 'Open output',
+    openOutputFailed: 'Could not open the cron output',
+    brief: {
+      title: 'Brief',
+      badgeNew: 'New',
+      finding: 'Finding',
+      next: 'Next',
+      openBrief: 'Open brief',
+      openRun: 'Open run',
+      noSummary: 'No summary yet — open the brief to read it.'
+    },
+    notifications: {
+      completedTitle: name => `Cron job completed: ${name}`,
+      failedTitle: name => `Cron job failed: ${name}`,
+      completedBody: 'Click to open the report.',
+      failedBody: 'Execution failed.'
+    }
   },
 
   artifacts: {
@@ -1474,6 +1530,15 @@ export const en: Translations = {
     updateNow: 'Update now',
     maybeLater: 'Maybe later',
     moreChanges: count => `+ ${count} more change${count === 1 ? '' : 's'} included.`,
+    offChannelTitle: tag => `Release ${tag} available`,
+    offChannelBody: (count, tag, channel) =>
+      `This install is a development checkout ${count} commit${count === 1 ? '' : 's'} ahead of release ${tag}. The “${channel}” update channel only follows releases — switch to ${tag}, or set the channel to “main” in Settings.`,
+    switchToRelease: tag => `Switch to ${tag}`,
+    newerReleaseBody: (headTag, targetTag, channel) =>
+      `This installation is on ${headTag}, which is newer than the current "${channel}" release ${targetTag}. The channel catches up as soon as a newer release is published — there is nothing to install.`,
+    releaseAvailable: version => `Version ${version} available`,
+    releaseAvailableBody: version =>
+      `Hermes ${version} is ready to install. The updater downloads the release archive and restarts Hermes.`,
     manualTitle: 'Update from your terminal',
     manualBody: 'You installed Hermes from the command line, so updates run there too. Paste this into your terminal:',
     manualPickedUp: 'Hermes will pick up the new version next time you launch it.',
@@ -1580,6 +1645,9 @@ export const en: Translations = {
     connectedProvider: provider => `${provider} connected`,
     connectedPicking: provider => `${provider} connected. Picking a default model...`,
     signInFailed: 'Sign-in failed. Try again.',
+    adminConsentNeeded: 'Your organization requires admin approval',
+    adminConsentHint: 'Hand this link to a tenant administrator. After a one-time approval every user can sign in; no one has to repeat the sign-in.',
+    openAdminConsent: 'Open admin consent link',
     pickDifferentProvider: 'Pick a different provider',
     signInWith: provider => `Sign in with ${provider}`,
     openedBrowser: provider => `We opened ${provider} in your browser.`,
@@ -1678,6 +1746,9 @@ export const en: Translations = {
       update: 'update',
       updateInProgress: 'Update in progress',
       commitsBehind: (count, branch) => `${count} commit${count === 1 ? '' : 's'} behind ${branch}`,
+      releaseAvailable: tag => `release ${tag} available`,
+      aheadOfRelease: (count, tag) => `development checkout: ${count} commit${count === 1 ? '' : 's'} ahead of ${tag}`,
+      newerRelease: (headTag, targetTag, channel) => `${headTag} is newer than the ${channel} release ${targetTag}`,
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `Backend v${version}`,
       clientLabel: version => `client v${version}`,

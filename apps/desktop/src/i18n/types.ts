@@ -103,6 +103,7 @@ export interface Translations {
     free: string
     loading: string
     notSet: string
+    open: string
     refresh: string
     remove: string
     replace: string
@@ -288,6 +289,13 @@ export interface Translations {
       tipModeAuto: string
       tipModeBusiness: string
       tipModeNerd: string
+      previewAutoOpen: {
+        label: string
+        artifacts: string
+        all: string
+        never: string
+        hint: string
+      }
       themeTitle: string
       themeDesc: string
       themeProfileNote: (profile: string) => string
@@ -303,6 +311,7 @@ export interface Translations {
       updateChannelTitle: string
       updateChannelDesc: string
       updateChannelStable: string
+      updateChannelPreview: string
       updateChannelMain: string
       filePickerRootTitle: string
       filePickerRootDesc: string
@@ -551,6 +560,8 @@ export interface Translations {
       catalogModalTitle: (name: string) => string
       catalogModalDesc: string
       catalogSecretsNotice: string
+      catalogInstallFailedTitle: string
+      catalogInstallFailedMessage: (name: string, detail: string) => string
       catalogInstallSuccessTitle: string
       catalogInstallSuccessMessage: (name: string) => string
       catalogInstancePickerLabel: string
@@ -582,6 +593,39 @@ export interface Translations {
       otherProviders: string
       noProviderKeys: string
       loading: string
+      m365: {
+        grantForOrg: string
+        grantForOrgHint: string
+        orgApproved: string
+        selfOnly: string
+        copied: string
+        openedAndCopied: string
+        loadFailed: string
+      }
+      suite: {
+        title: string
+        intro: string
+        connected: string
+        needsReauth: string
+        notConfigured: string
+        unreachable: string
+        signInSso: string
+        reauthenticate: string
+        enterUrlFirst: string
+        saveUrls: string
+        saving: string
+        saved: string
+        checking: string
+        reason: {
+          keyMissing: string
+          urlMissing: string
+          envMismatch: string
+          unauthorized: string
+          runtime: string
+          network: string
+          ok: string
+        }
+      }
     }
     sessions: {
       loading: string
@@ -894,7 +938,6 @@ export interface Translations {
     search: string
     loading: string
     states: Record<string, string>
-    deliveryLabels: Record<string, string>
     scheduleLabels: Record<string, string>
     scheduleHints: Record<string, string>
     days: Record<string, string>
@@ -949,7 +992,6 @@ export interface Translations {
     promptLabel: string
     promptPlaceholder: string
     frequencyLabel: string
-    deliverLabel: string
     customScheduleLabel: string
     customPlaceholder: string
     customHint: string
@@ -957,6 +999,26 @@ export interface Translations {
     promptScheduleRequired: string
     saveChanges: string
     createAction: string
+    newOutput: string
+    unseenCount: (count: number) => string
+    latestOutput: string
+    openLatestOutput: string
+    openOutputFailed: string
+    brief: {
+      title: string
+      badgeNew: string
+      finding: string
+      next: string
+      openBrief: string
+      openRun: string
+      noSummary: string
+    }
+    notifications: {
+      completedTitle: (name: string) => string
+      failedTitle: (name: string) => string
+      completedBody: string
+      failedBody: string
+    }
   }
 
   artifacts: {
@@ -1155,6 +1217,12 @@ export interface Translations {
     updateNow: string
     maybeLater: string
     moreChanges: (count: number) => string
+    offChannelTitle: (tag: string) => string
+    offChannelBody: (count: number, tag: string, channel: string) => string
+    switchToRelease: (tag: string) => string
+    newerReleaseBody: (headTag: string, targetTag: string, channel: string) => string
+    releaseAvailable: (version: string) => string
+    releaseAvailableBody: (version: string) => string
     manualTitle: string
     manualBody: string
     manualPickedUp: string
@@ -1235,6 +1303,9 @@ export interface Translations {
     connectedProvider: (provider: string) => string
     connectedPicking: (provider: string) => string
     signInFailed: string
+    adminConsentNeeded: string
+    adminConsentHint: string
+    openAdminConsent: string
     pickDifferentProvider: string
     signInWith: (provider: string) => string
     openedBrowser: (provider: string) => string
@@ -1331,6 +1402,9 @@ export interface Translations {
       update: string
       updateInProgress: string
       commitsBehind: (count: number, branch: string) => string
+      releaseAvailable: (tag: string) => string
+      aheadOfRelease: (count: number, tag: string) => string
+      newerRelease: (headTag: string, targetTag: string, channel: string) => string
       desktopVersion: (version: string) => string
       backendVersion: (version: string) => string
       clientLabel: (version: string) => string

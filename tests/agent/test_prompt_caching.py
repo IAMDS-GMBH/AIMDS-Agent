@@ -296,3 +296,21 @@ class TestSystemPromptCacheSplit:
         system = out[0]["content"]
         assert isinstance(system, list) and len(system) == 1
         assert system[0]["cache_control"]["ttl"] == "1h"
+
+
+class TestMessageCacheTtlDefault:
+    """AIS-309: the moving message breakpoints default to the 1h tier on
+    interactive surfaces (a >5-minute pause otherwise re-writes the tier),
+    and stay on 5m for one-shot surfaces."""
+
+    def test_interactive_surfaces_default_to_1h(self):
+        from agent.agent_init import default_message_cache_ttl
+
+        for surface in ("cli", "tui", "acp", "desktop", "CLI "):
+            assert default_message_cache_ttl(surface) == "1h"
+
+    def test_one_shot_surfaces_keep_5m(self):
+        from agent.agent_init import default_message_cache_ttl
+
+        for surface in ("cron", "telegram", "api-server", "", None):
+            assert default_message_cache_ttl(surface) == "5m"

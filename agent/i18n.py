@@ -47,6 +47,16 @@ SUPPORTED_LANGUAGES: tuple[str, ...] = (
 )
 DEFAULT_LANGUAGE = "en"
 
+# English display names, used where the model is *told* which language to
+# answer in (e.g. the LANGUAGE line of a scheduled cron run).  Keep in sync
+# with SUPPORTED_LANGUAGES — tests assert the two key sets match.
+LANGUAGE_NAMES: dict[str, str] = {
+    "en": "English", "de": "German", "es": "Spanish", "fr": "French",
+    "tr": "Turkish", "uk": "Ukrainian", "af": "Afrikaans", "ko": "Korean",
+    "it": "Italian", "ga": "Irish", "pt": "Portuguese", "ru": "Russian",
+    "hu": "Hungarian",
+}
+
 # Accept a few natural aliases so users who type "chinese" / "zh-CN" / "jp"
 # get the right catalog instead of silently falling back to English.
 _LANGUAGE_ALIASES: dict[str, str] = {
@@ -153,6 +163,11 @@ def _normalize_lang(value: Any) -> str:
     if base in SUPPORTED_LANGUAGES:
         return base
     return DEFAULT_LANGUAGE
+
+
+def normalize_language(value: Any) -> str:
+    """Public wrapper around :func:`_normalize_lang` (codes, aliases, region tags → supported code)."""
+    return _normalize_lang(value)
 
 
 def _load_catalog(lang: str) -> dict[str, str]:
@@ -289,6 +304,8 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
 __all__ = [
     "SUPPORTED_LANGUAGES",
     "DEFAULT_LANGUAGE",
+    "LANGUAGE_NAMES",
+    "normalize_language",
     "t",
     "get_language",
     "reset_language_cache",

@@ -270,7 +270,6 @@ export const en: Translations = {
       monthlyAt: "Monthly on the {day} at {time}",
       onceAt: "Once at {time}",
     },
-    deliverTo: "Deliver to",
     scheduledJobs: "Scheduled Jobs",
     noJobs: "No cron jobs configured. Create one above.",
     last: "Last",
@@ -278,16 +277,6 @@ export const en: Translations = {
     pause: "Pause",
     resume: "Resume",
     triggerNow: "Trigger now",
-    delivery: {
-      local: "Local",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
-      email: "Email",
-      needsHomeChannel: "set a home channel first",
-      noneConfigured:
-        "No messaging platforms configured. Set one up under Channels to deliver reports.",
-    },
   },
 
   profiles: {

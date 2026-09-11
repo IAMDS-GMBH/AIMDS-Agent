@@ -327,8 +327,23 @@ def test_anthropic_pkce_branch_still_works():
     assert "claude.ai" in body["auth_url"]
 
 
-def test_xai_oauth_listed_as_loopback_flow():
-    """xAI Grok OAuth must surface in the catalog as a first-class loopback flow."""
+def test_xai_oauth_listed_as_loopback_flow(monkeypatch):
+    """xAI Grok OAuth must surface in the catalog as a first-class loopback flow.
+
+    ``/api/providers/oauth`` lists only providers with usable credentials (plus
+    GitHub / MCP-backed entries), so pretend xAI is logged in for the listing.
+    """
+    from hermes_cli import web_server as ws
+
+    real_status = ws._resolve_provider_status
+
+    def _status(provider_id, status_fn):
+        if provider_id == "xai-oauth":
+            return {"logged_in": True, "source": "test", "source_label": "test",
+                    "token_preview": "…abcd", "expires_at": None, "has_refresh_token": True}
+        return real_status(provider_id, status_fn)
+
+    monkeypatch.setattr(ws, "_resolve_provider_status", _status)
     resp = client.get("/api/providers/oauth", headers=HEADERS)
     assert resp.status_code == 200, resp.text
     providers = {p["id"]: p for p in resp.json()["providers"]}
@@ -768,3 +783,242 @@ def test_microsoft_dashboard_device_flow_requests_manifest_scopes(monkeypatch):
         assert requested_scopes["scopes"] != ["User.Read"]
     finally:
         ws._oauth_sessions.pop(result["session_id"], None)
+
+
+# --------------------------------------------------------------------------- AIS-286 consent tiers
+
+def test_microsoft_device_code_worker_consent_error_carries_action_url(monkeypatch, tmp_path):
+    """"Need admin approval" must surface as a structured consent error with
+    the tenant-admin consent URL so the UI can offer it as an action."""
+    from hermes_cli import web_server as ws
+    from hermes_cli.config import get_env_value
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("M365_TENANT_ID", raising=False)
+
+    class _ConsentApp(_FakeMsalApp):
+        def acquire_token_by_device_flow(self, flow):
+            return {"error": "invalid_grant", "error_description": "AADSTS90094: The grant requires admin permission."}
+
+    sid, _ = ws._new_oauth_session("microsoft", "device_code")
+    try:
+        ws._microsoft_device_code_worker(sid, _ConsentApp(), {"user_code": "MSFT-1234"})
+        sess = ws._oauth_sessions[sid]
+        assert sess["status"] == "error"
+        assert sess["error_code"] == "AADSTS90094"
+        assert sess["error_category"] == "consent"
+        assert "v2.0/adminconsent" in sess["action_url"]
+        assert get_env_value("M365_ACCESS_TOKEN") is None
+
+        poll = asyncio.run(ws.poll_oauth_session("microsoft", sid))
+        assert poll["error_code"] == "AADSTS90094"
+        assert poll["action_url"] == sess["action_url"]
+        assert "admin" in poll["error_message"].lower()
+    finally:
+        ws._oauth_sessions.pop(sid, None)
+
+
+def test_microsoft_device_code_worker_declined_has_no_action_url(monkeypatch, tmp_path):
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class _DeclinedApp(_FakeMsalApp):
+        def acquire_token_by_device_flow(self, flow):
+            return {"error": "authorization_declined"}
+
+    sid, _ = ws._new_oauth_session("microsoft", "device_code")
+    try:
+        ws._microsoft_device_code_worker(sid, _DeclinedApp(), {"user_code": "MSFT-1234"})
+        poll = asyncio.run(ws.poll_oauth_session("microsoft", sid))
+        assert poll["error_category"] == "declined"
+        assert "action_url" not in poll
+    finally:
+        ws._oauth_sessions.pop(sid, None)
+
+
+def test_microsoft_dashboard_login_requests_self_consent_tier(monkeypatch):
+    """The dashboard button requests exactly the self-consent tier (AIS-286)."""
+    import msal
+    from hermes_cli import web_server as ws
+    from hermes_cli.m365_auth import M365_LOGIN_SCOPES, M365_SELF_CONSENT_SCOPES
+
+    requested = {}
+
+    class _ScopeApp(_FakeMsalApp):
+        def initiate_device_flow(self, scopes=None):
+            requested["scopes"] = scopes
+            return super().initiate_device_flow(scopes=scopes)
+
+    monkeypatch.setattr(msal, "PublicClientApplication", _ScopeApp)
+    monkeypatch.setattr(ws, "_microsoft_device_code_worker", lambda *a, **kw: None)
+    result = asyncio.run(ws._start_device_code_flow("microsoft"))
+    try:
+        assert requested["scopes"] == M365_LOGIN_SCOPES == M365_SELF_CONSENT_SCOPES
+        assert "Chat.ReadWrite" not in requested["scopes"]
+    finally:
+        ws._oauth_sessions.pop(result["session_id"], None)
+
+
+def test_microsoft_admin_consent_url_endpoint(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for var in ("M365_CLIENT_ID", "M365_TENANT_ID"):
+        monkeypatch.delenv(var, raising=False)
+
+    class _App:
+        def get_accounts(self):
+            return [{"home_account_id": "a"}]
+
+        def acquire_token_silent(self, scopes, account=None):
+            from hermes_cli.m365_auth import M365_STANDARD_SCOPES
+
+            return {"access_token": "t"} if scopes == M365_STANDARD_SCOPES else None
+
+    monkeypatch.setattr("hermes_cli.m365_auth.get_msal_app", lambda *a, **kw: _App())
+
+    client = TestClient(ws.app)
+    assert client.get("/api/providers/oauth/microsoft/admin-consent-url").status_code in (401, 403)
+    resp = client.get(
+        "/api/providers/oauth/microsoft/admin-consent-url",
+        headers={"X-Hermes-Session-Token": ws._SESSION_TOKEN},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["url"].startswith("https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=41c29967")
+    assert data["granted_tier"] == "standard"
+    assert data["org_consented"] is True
+    assert "Chat.ReadWrite" in data["org_consent_scopes"]
+    assert "Chat.ReadWrite" not in data["self_consent_scopes"]
+
+
+# ---------------------------------------------------------------------------
+# AIS-304: a Microsoft sign-in must never re-install a live MSOffice365MCP
+# ---------------------------------------------------------------------------
+
+
+class _FakeProc:
+    def __init__(self, pid=777, running=False):
+        self.pid = pid
+        self._running = running
+
+    def poll(self):
+        return None if self._running else 0
+
+
+def test_auto_enable_installed_enables_and_reconnects_without_spawning(monkeypatch):
+    from hermes_cli import mcp_catalog
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setattr(mcp_catalog, "is_installed", lambda name: True)
+    ensure_calls = []
+    monkeypatch.setattr(
+        mcp_catalog, "ensure_m365_toolset_enabled", lambda: ensure_calls.append(1) or (True, None)
+    )
+    reconnects = []
+    monkeypatch.setattr("tools.mcp_tool.reconnect_mcp_server", lambda name: reconnects.append(name) or [])
+
+    def _no_spawn(*a, **kw):
+        raise AssertionError("must not spawn an install for an installed entry")
+
+    monkeypatch.setattr(ws, "_spawn_hermes_action", _no_spawn)
+
+    assert ws._auto_enable_m365_toolset() == (True, None)
+    assert ensure_calls == [1]
+    assert reconnects == ["MSOffice365MCP"]
+
+
+def test_auto_enable_installed_and_enabled_does_not_reconnect(monkeypatch):
+    from hermes_cli import mcp_catalog
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setattr(mcp_catalog, "is_installed", lambda name: True)
+    monkeypatch.setattr(mcp_catalog, "ensure_m365_toolset_enabled", lambda: (False, None))
+
+    def _no_reconnect(name):
+        raise AssertionError("nothing changed -> no reconnect")
+
+    monkeypatch.setattr("tools.mcp_tool.reconnect_mcp_server", _no_reconnect)
+    assert ws._auto_enable_m365_toolset() == (False, None)
+
+
+def test_auto_enable_not_installed_spawns_background_install(monkeypatch):
+    from hermes_cli import mcp_catalog
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setattr(mcp_catalog, "is_installed", lambda name: False)
+
+    def _inline(*a, **kw):
+        raise AssertionError("inline install_entry must not run on the request path")
+
+    monkeypatch.setattr(mcp_catalog, "install_entry", _inline)
+    ws._ACTION_PROCS.pop("mcp-install", None)
+    spawned = []
+    monkeypatch.setattr(ws, "_spawn_hermes_action", lambda sub, name: spawned.append((sub, name)) or _FakeProc())
+
+    assert ws._auto_enable_m365_toolset() == (True, None)
+    assert spawned == [(["mcp", "install", "MSOffice365MCP"], "mcp-install")]
+
+
+def test_auto_enable_does_not_start_a_second_install_action(monkeypatch):
+    from hermes_cli import mcp_catalog
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setattr(mcp_catalog, "is_installed", lambda name: False)
+    ws._ACTION_PROCS["mcp-install"] = _FakeProc(running=True)
+    try:
+        def _no_spawn(*a, **kw):
+            raise AssertionError("install action already running")
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", _no_spawn)
+        assert ws._auto_enable_m365_toolset() == (False, None)
+    finally:
+        ws._ACTION_PROCS.pop("mcp-install", None)
+
+
+def test_microsoft_device_code_worker_toolset_error_keeps_login_approved(monkeypatch, tmp_path, caplog):
+    """The enable step must neither block nor hide: login stays approved and
+    the error is logged (it used to be swallowed silently)."""
+    import logging
+
+    from hermes_cli import web_server as ws
+    from hermes_cli.config import get_env_value
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(ws, "_auto_enable_m365_toolset", lambda: (False, "boom"))
+
+    sid, _ = ws._new_oauth_session("microsoft", "device_code")
+    try:
+        with caplog.at_level(logging.WARNING, logger=ws._log.name):
+            ws._microsoft_device_code_worker(sid, _FakeMsalApp(), {"user_code": "MSFT-1234"})
+        assert ws._oauth_sessions[sid]["status"] == "approved"
+        assert get_env_value("M365_ACCESS_TOKEN") == "fake-msal-dashboard-token"
+        assert any("boom" in rec.getMessage() for rec in caplog.records)
+    finally:
+        ws._oauth_sessions.pop(sid, None)
+
+
+def test_microsoft_device_code_worker_never_reinstalls_installed_mcp(monkeypatch, tmp_path):
+    from hermes_cli import mcp_catalog
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_catalog, "is_installed", lambda name: True)
+    monkeypatch.setattr(mcp_catalog, "ensure_m365_toolset_enabled", lambda: (False, None))
+
+    def _no_install(*a, **kw):
+        raise AssertionError("install must not run after login for an installed entry")
+
+    monkeypatch.setattr(mcp_catalog, "install_entry", _no_install)
+    monkeypatch.setattr(mcp_catalog, "_do_git_install", _no_install)
+    monkeypatch.setattr(ws, "_spawn_hermes_action", _no_install)
+
+    sid, _ = ws._new_oauth_session("microsoft", "device_code")
+    try:
+        ws._microsoft_device_code_worker(sid, _FakeMsalApp(), {"user_code": "MSFT-1234"})
+        assert ws._oauth_sessions[sid]["status"] == "approved"
+    finally:
+        ws._oauth_sessions.pop(sid, None)

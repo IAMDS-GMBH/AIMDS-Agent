@@ -1384,35 +1384,9 @@ class TestWebServerEndpoints:
         telegram = next(platform for platform in status if platform["id"] == "telegram")
         assert telegram["enabled"] is False
 
-    def test_update_outlook_platform_auto_enables_toolset_after_credential_save(self, monkeypatch):
-        import hermes_cli.mcp_catalog as mcp_catalog
-        from hermes_cli.config import load_config
-
-        calls = {"count": 0}
-
-        def fake_enable():
-            calls["count"] += 1
-            return True, None
-
-        monkeypatch.setattr(mcp_catalog, "_enable_m365_toolset_for_cli", fake_enable)
-
-        resp = self.client.put(
-            "/api/messaging/platforms/outlook",
-            json={
-                "env": {
-                    "OUTLOOK_TENANT_ID": "tenant-123",
-                    "OUTLOOK_CLIENT_ID": "client-456",
-                },
-            },
-        )
-
-        assert resp.status_code == 200
-        assert calls["count"] == 1
-        # Saving Outlook credentials must NOT silently turn Outlook into a
-        # live gateway messaging platform (auto-poll inbox + auto-send
-        # replies). It only enables the chat/cron tool. The platform stays
-        # disabled until the user explicitly flips the toggle.
-        assert load_config().get("platforms", {}).get("outlook", {}).get("enabled") is not True
+    # The Outlook messaging platform was retired with the M365 MCP (AIS-187);
+    # the M365 toolset is auto-enabled by the Microsoft OAuth login instead
+    # (covered in tests/hermes_cli/test_mcp_catalog.py / test_web_oauth_dispatch.py).
 
     def test_messaging_platform_test_reports_missing_required_setup(self):
         resp = self.client.put("/api/messaging/platforms/telegram", json={"enabled": True})

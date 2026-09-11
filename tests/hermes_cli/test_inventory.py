@@ -293,9 +293,14 @@ def test_include_unconfigured_appends_canonical_skeletons():
     # skeleton rows.
     from hermes_cli.models import CANONICAL_PROVIDERS
 
+    from hermes_cli.inventory import LEGACY_PROVIDER_ALIASES
+
     seen_slugs = {r["slug"] for r in payload["providers"]}
     for entry in CANONICAL_PROVIDERS:
-        assert entry.slug in seen_slugs, f"missing {entry.slug}"
+        # Legacy iamds-litellm* slugs are folded into their aimds-suite-*
+        # successor and never get a skeleton row of their own.
+        expected = LEGACY_PROVIDER_ALIASES.get(entry.slug, entry.slug)
+        assert expected in seen_slugs, f"missing {expected} (for {entry.slug})"
     # Skeletons have empty models and source='canonical'.
     skeletons = [r for r in payload["providers"]
                  if r.get("source") == "canonical"]
@@ -437,8 +442,12 @@ def test_canonical_order_with_unconfigured_preserves_full_universe():
     slugs = [r["slug"] for r in payload["providers"]]
     # First row: first canonical provider in declaration order.
     assert slugs[0] == CANONICAL_PROVIDERS[0].slug
-    # Custom row trails canonical universe.
-    assert slugs.index("custom:Ollama") >= len(CANONICAL_PROVIDERS)
+    # Custom row trails the canonical universe (legacy alias slugs collapse
+    # into their aimds-suite-* successor, so count distinct targets).
+    from hermes_cli.inventory import LEGACY_PROVIDER_ALIASES
+
+    universe = {LEGACY_PROVIDER_ALIASES.get(e.slug, e.slug) for e in CANONICAL_PROVIDERS}
+    assert slugs.index("custom:Ollama") >= len(universe)
 
 
 # ─── Integration: end-to-end through real load_picker_context ──────────

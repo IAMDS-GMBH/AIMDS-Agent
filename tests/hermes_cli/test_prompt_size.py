@@ -116,3 +116,15 @@ def test_json_serializable(isolated_home):
     data = compute_prompt_breakdown("cli")
     # Round-trips cleanly for ``--json`` output.
     assert json.loads(json.dumps(data)) == json.loads(json.dumps(data))
+
+
+def test_breakdown_reports_posture_per_surface(isolated_home):
+    """AIS-309: the CLI is the co-developer, the desktop keeps the co-worker prompt."""
+    cli = compute_prompt_breakdown("cli")
+    tui = compute_prompt_breakdown("tui")
+    assert cli["posture"] == "developer"
+    assert tui["posture"] == "general"  # tmp_path is not a code workspace
+    assert "posture=developer" in render_breakdown(cli)
+    assert "posture=general" in render_breakdown(tui)
+    # The developer posture owns the toolset: no cron/workdays/sql schemas.
+    assert cli["tools"]["count"] <= tui["tools"]["count"]

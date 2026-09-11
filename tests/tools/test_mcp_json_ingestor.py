@@ -230,7 +230,26 @@ def test_ingest_hint_reports_window_and_eviction():
 
     res = IngestResult(10, replaced=4, evicted=7, window=("2026-01-01", "2026-01-31"))
     hint = _build_ingest_hint("mcp_MyTimeMCP_getWorklogs", res)
-    assert "Auto-ingested 10 records" in hint
+    assert "[ingested 10 rows → mcp_records" in hint
     assert "authoritative for 2026-01-01..2026-01-31" in hint
     assert "4 previously ingested rows" in hint
     assert "7 old rows" in hint and "may be incomplete" in hint
+
+
+def test_graph_value_collections_become_rows(tmp_path: Path):
+    """AIS-289: Microsoft Graph lists live under ``value`` — they used to be
+    ingested as ONE blob row, which is why chat messages vanished behind the
+    1,500-char preview."""
+    db_file = tmp_path / "state.db"
+    payload = json.dumps({
+        "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#chats('x')/messages",
+        "value": [
+            {"id": "1788436524663", "createdDateTime": "2026-09-03T11:55:24Z", "body": {"content": "hi"}},
+            {"id": "1788436524664", "createdDateTime": "2026-09-03T11:56:24Z", "body": {"content": "file"}},
+        ],
+    })
+    count = try_auto_ingest_json(payload, tool_name="mcp_MSOffice365MCP_m365_list_chat_messages",
+                                 tool_use_id="tc_graph", db_path=db_file)
+    assert int(count) == 2
+    rows = sqlite3.connect(str(db_file)).execute("SELECT id FROM mcp_records ORDER BY id").fetchall()
+    assert [r[0] for r in rows] == ["1788436524663", "1788436524664"]

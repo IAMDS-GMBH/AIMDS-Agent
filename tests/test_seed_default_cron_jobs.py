@@ -236,6 +236,79 @@ def test_v10_upgrade_rewrites_brief_prompts_with_marker_block(tmp_path):
     assert "journal/YYYY-MM-DD-morning-brief.md" in brief
     assert "FINDING: <one line" in brief
     assert "NEXT: <one line" in brief
-    assert "Do not create files under _inbox/" in brief
+    assert "do not write files" in brief  # v11: the scheduler writes the journal
     curator = jobs["aimds-vault-curator"]["prompt"]
     assert "_inbox/_archive/" in curator
+
+
+def _write_state(home, version):
+    state_file = home / SEED_STATE_FILE_REL
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(
+        json.dumps({"seed_version": version, "source": "aimds-default-cron"}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_seeds_defaults_carry_collector_kind(tmp_path):
+    home = tmp_path / ".hermes"
+    seed_default_cron_jobs(home)
+    jobs = {job["origin"]["seed_key"]: job for job in _read_jobs(home / "cron" / "jobs.json")}
+    assert jobs["morning-brief"]["collector"] == "morning-brief"
+    assert jobs["weekly-review"]["collector"] == "weekly-review"
+    assert jobs["m365-mail-check"]["collector"] == "mail-check"
+    assert jobs["m365-teams-check"]["collector"] == "teams-check"
+    assert "collector" not in jobs["vault-curator"]
+    assert jobs["morning-brief"]["skills"] == [] and jobs["morning-brief"]["skill"] is None
+    assert jobs["m365-teams-check"]["schedule"]["expr"] == "*/30 * * * 1-5"
+    assert "[SILENT]" in jobs["m365-mail-check"]["prompt"]
+    assert "Collected Data" in jobs["morning-brief"]["prompt"]
+
+
+def test_v11_upgrade_sets_collector_prompts_and_normalizes_brief_skills(tmp_path):
+    home = tmp_path / ".hermes"
+    (home / "cron").mkdir(parents=True)
+    jobs_path = home / "cron" / "jobs.json"
+    jobs_path.write_text(json.dumps({"jobs": [
+        {
+            "id": "aimds-morning-brief", "name": "Morning Brief", "prompt": "Old",
+            "origin": {"source": "aimds-default-cron", "seed_key": "morning-brief"},
+            "schedule": {"kind": "cron", "expr": "0 8 * * 1-5", "display": "0 8 * * 1-5"},
+            "skills": ["digest"], "skill": "digest", "enabled": True,
+        },
+        {
+            "id": "aimds-weekly-review", "name": "Weekly Review", "prompt": "Old",
+            "origin": {"source": "aimds-default-cron", "seed_key": "weekly-review"},
+            "schedule": {"kind": "cron", "expr": "0 16 * * 5", "display": "0 16 * * 5"},
+            "skills": [], "skill": None, "enabled": True,
+        },
+        {
+            "id": "aimds-m365-teams-check", "name": "M365 Teams Check", "prompt": "Old",
+            "origin": {"source": "aimds-default-cron", "seed_key": "m365-teams-check"},
+            "schedule": {"kind": "cron", "expr": "*/15 * * * 1-5", "display": "*/15 * * * 1-5"},
+            "schedule_display": "*/15 * * * 1-5", "enabled": True,
+        },
+        {
+            "id": "user-job", "name": "Mine", "prompt": "keep me",
+            "schedule": {"kind": "cron", "expr": "0 9 * * *", "display": "0 9 * * *"}, "enabled": True,
+        },
+    ]}), encoding="utf-8")
+    _write_state(home, 10)
+
+    assert CURRENT_DEFAULT_CRON_VERSION >= 11
+    result = seed_default_cron_jobs(home)
+    assert result["status"] == "upgraded"
+
+    jobs = {job["id"]: job for job in _read_jobs(jobs_path)}
+    assert jobs["aimds-morning-brief"]["collector"] == "morning-brief"
+    assert jobs["aimds-morning-brief"]["skills"] == []
+    assert jobs["aimds-morning-brief"]["skill"] is None
+    assert "Collected Data" in jobs["aimds-morning-brief"]["prompt"]
+    assert jobs["aimds-weekly-review"]["collector"] == "weekly-review"
+    assert jobs["aimds-m365-teams-check"]["collector"] == "teams-check"
+    assert jobs["aimds-m365-teams-check"]["schedule"]["expr"] == "*/30 * * * 1-5"
+    assert jobs["aimds-m365-teams-check"]["schedule_display"] == "*/30 * * * 1-5"
+    assert jobs["user-job"]["prompt"] == "keep me" and "collector" not in jobs["user-job"]
+    # deleted defaults are not recreated
+    assert "aimds-m365-mail-check" not in jobs and "aimds-vault-curator" not in jobs
+    assert len(jobs) == 4

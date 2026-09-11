@@ -1311,3 +1311,91 @@ class TestToolsConfigEndpoints:
                 kwargs["json"] = payload
             r = fn(path, **kwargs)
             assert r.status_code == 401, f"{method} {path} not gated"
+
+
+class TestMcpReinstallSafety:
+    """AIS-304: re-installing a live git-bootstrap MCP from the dashboard
+    must disconnect the running server first, and the status poll must
+    re-discover after the action ends — even when it failed and the
+    previous install was restored."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, self.header = _client()
+
+    def _fake_spawn(self, calls):
+        from types import SimpleNamespace
+
+        def _spawn(subcommand, name):
+            calls.append(("spawn", list(subcommand), name))
+            return SimpleNamespace(pid=4321)
+
+        return _spawn
+
+    def test_git_entry_reinstall_disconnects_live_server_before_spawn(self, monkeypatch):
+        from unittest.mock import patch
+
+        from hermes_cli import web_server as ws
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["mcp_servers"] = {"MSOffice365MCP": {"command": "/x/.venv/bin/python", "enabled": True}}
+        save_config(cfg)
+
+        calls = []
+        monkeypatch.setattr(ws, "_spawn_hermes_action", self._fake_spawn(calls))
+        with patch(
+            "tools.mcp_tool.disconnect_mcp_server",
+            side_effect=lambda name: calls.append(("disconnect", name)) or True,
+        ):
+            r = self.client.post("/api/mcp/catalog/install", json={"name": "MSOffice365MCP"})
+        assert r.status_code == 200, r.text
+        assert r.json()["background"] is True
+        assert calls == [
+            ("disconnect", "MSOffice365MCP"),
+            ("spawn", ["mcp", "install", "MSOffice365MCP"], "mcp-install"),
+        ]
+
+    def test_git_entry_first_install_does_not_disconnect(self, monkeypatch):
+        from unittest.mock import patch
+
+        from hermes_cli import web_server as ws
+
+        calls = []
+        monkeypatch.setattr(ws, "_spawn_hermes_action", self._fake_spawn(calls))
+        with patch("tools.mcp_tool.disconnect_mcp_server") as mock_disconnect:
+            r = self.client.post("/api/mcp/catalog/install", json={"name": "MSOffice365MCP"})
+        assert r.status_code == 200, r.text
+        mock_disconnect.assert_not_called()
+        assert calls == [("spawn", ["mcp", "install", "MSOffice365MCP"], "mcp-install")]
+
+    @pytest.mark.parametrize("exit_code", [0, 1])
+    def test_mcp_install_status_rediscovers_after_exit(self, monkeypatch, exit_code):
+        from unittest.mock import patch
+
+        from hermes_cli import web_server as ws
+
+        class _Proc:
+            pid = 999
+
+            def poll(self):
+                return exit_code
+
+            def wait(self, timeout=None):
+                pass
+
+        ws._ACTION_PROCS.pop("mcp-install", None)
+        ws._ACTION_RESULTS.pop("mcp-install", None)
+        ws._ACTION_PROCS["mcp-install"] = _Proc()
+        restarts = []
+        monkeypatch.setattr(ws, "_restart_gateway_if_running", lambda: restarts.append(1) or {})
+        try:
+            with patch("tools.mcp_tool.discover_mcp_tools", return_value=[]) as mock_discover:
+                resp = self.client.get("/api/actions/mcp-install/status")
+            assert resp.status_code == 200
+            assert resp.json()["exit_code"] == exit_code
+            mock_discover.assert_called_once()
+            assert restarts == ([1] if exit_code == 0 else [])
+        finally:
+            ws._ACTION_PROCS.pop("mcp-install", None)
+            ws._ACTION_RESULTS.pop("mcp-install", None)

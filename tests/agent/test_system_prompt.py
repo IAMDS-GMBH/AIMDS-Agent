@@ -237,3 +237,119 @@ class TestChoicesAreClickableAndPlansComeFirst:
         stable = _stable_prompt(agent)
         assert "the plan IS the deliverable" in stable
         assert "start executing only after the user picks one" in stable
+
+
+class TestGuidanceSeesDeferredTools:
+    """AIS-289: with tool_search active the Teams/M365 guidance must still be
+    built from the deferred MCP tools — session 20260904_090002_142f89 had a
+    37k-char prompt without a single m365_ name."""
+
+    M365 = {
+        "mcp_MSOffice365MCP_m365_send_chat_message",
+        "mcp_MSOffice365MCP_m365_find_chat",
+        "mcp_MSOffice365MCP_m365_download_chat_files",
+    }
+
+    def test_teams_block_present_when_tools_are_deferred(self):
+        # tui: the co-worker surface keeps the integration prose (the CLI's
+        # developer posture drops it — see TestDeveloperPosturePrompt).
+        agent = _make_agent(
+            valid_tool_names={"tool_search", "tool_call", "tool_describe", "terminal"},
+            platform="tui",
+        )
+        with patch("agent.deferred_tools.scoped_deferrable_names", return_value=frozenset(self.M365)):
+            stable = _stable_prompt(agent)
+        assert "# Teams: send to a person without guessing" in stable
+        assert "mcp_MSOffice365MCP_m365_download_chat_files" in stable
+        assert "tool_describe" in stable
+
+    def test_no_teams_block_without_bridge_and_without_tools(self):
+        agent = _make_agent(valid_tool_names={"terminal"}, platform="cli")
+        with patch("agent.deferred_tools.scoped_deferrable_names", return_value=frozenset(self.M365)) as spy:
+            stable = _stable_prompt(agent)
+        assert "# Teams: send to a person" not in stable
+        spy.assert_not_called()
+
+    def test_scope_failure_falls_back_to_visible_tools(self):
+        agent = _make_agent(valid_tool_names={"tool_search", "terminal"}, platform="cli")
+        with patch("agent.deferred_tools.scoped_deferrable_names", side_effect=RuntimeError("no registry")):
+            stable = _stable_prompt(agent)
+        assert "# Teams: send to a person" not in stable
+
+
+class TestDeveloperPosturePrompt:
+    """Terminal CLI = co-developer (AIS-309): identity variant, no M365/Jira
+    prose, knowledge-worker skills out of the index. The desktop (tui) keeps
+    the co-worker prompt — the regression guard is the tui half of each test."""
+
+    M365 = {
+        "mcp_MSOffice365MCP_m365_send_chat_message",
+        "mcp_MSOffice365MCP_m365_find_chat",
+        "mcp_MSOffice365MCP_m365_download_chat_files",
+    }
+
+    def test_cli_requests_dev_identity_variant(self):
+        agent = _make_agent(valid_tool_names=["read_file"], platform="cli")
+        with (
+            patch("run_agent.load_soul_md", return_value="") as soul,
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value=""),
+        ):
+            build_system_prompt_parts(agent)
+        soul.assert_called_once_with(variant="dev")
+
+    def test_tui_keeps_plain_soul(self):
+        agent = _make_agent(valid_tool_names=["read_file"], platform="tui")
+        with (
+            patch("run_agent.load_soul_md", return_value="") as soul,
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value=""),
+        ):
+            build_system_prompt_parts(agent)
+        soul.assert_called_once_with()
+
+    def test_integration_guidance_dropped_on_cli_even_when_reachable(self):
+        agent = _make_agent(
+            valid_tool_names={"tool_search", "tool_call", "tool_describe", "terminal"},
+            platform="cli",
+        )
+        with patch("agent.deferred_tools.scoped_deferrable_names", return_value=frozenset(self.M365)):
+            stable = _stable_prompt(agent)
+        assert "# Teams: send to a person without guessing" not in stable
+        assert "AI attribution" not in stable
+        # …but the co-developer brief is there.
+        assert "Co-developer contract" in stable
+
+    def test_integration_guidance_kept_on_tui(self):
+        agent = _make_agent(
+            valid_tool_names={"tool_search", "tool_call", "tool_describe", "terminal"},
+            platform="tui",
+        )
+        with patch("agent.deferred_tools.scoped_deferrable_names", return_value=frozenset(self.M365)):
+            stable = _stable_prompt(agent)
+        assert "# Teams: send to a person without guessing" in stable
+        assert "Co-developer contract" not in stable
+
+    def test_prebuilt_runtime_mode_is_reused(self):
+        # agent_init resolves the posture once; the prompt builder must not
+        # re-resolve it (cache invariant + one object for every consumer).
+        from agent.coding_context import resolve_runtime_mode
+
+        mode = resolve_runtime_mode(platform="cli", cwd="/", config={}, model="")
+        agent = _make_agent(valid_tool_names=["read_file"], platform="tui", runtime_mode=mode)
+        with patch("agent.coding_context.resolve_runtime_mode") as spy:
+            stable = _stable_prompt(agent)
+        spy.assert_not_called()
+        assert "Co-developer contract" in stable  # the injected developer mode won over platform=tui
+
+    def test_skill_index_receives_hidden_knowledge_worker_categories(self):
+        agent = _make_agent(valid_tool_names=["skills_list", "skill_view"], platform="cli")
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value=""),
+            patch("run_agent.build_skills_system_prompt", return_value="") as skills,
+        ):
+            build_system_prompt_parts(agent)
+        hidden = skills.call_args.kwargs["hidden_categories"]
+        assert "aimds_custom" in hidden and "email" in hidden

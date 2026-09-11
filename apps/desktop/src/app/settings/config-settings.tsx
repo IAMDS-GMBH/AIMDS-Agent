@@ -24,6 +24,7 @@ import { Check, ChevronDown } from '@/lib/icons'
 import { persistString, storedString } from '@/lib/storage'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { $previewAutoOpen, setPreviewAutoOpen } from '@/store/preview-settings'
 import { ensureDefaultWorkspaceCwd, FILE_PICKER_ROOT_STORAGE_KEY, setCurrentCwd } from '@/store/session'
 import { $tipMode, setTipMode } from '@/store/tip-mode'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
@@ -408,12 +409,16 @@ export function ConfigSettings({
   const a = t.settings.appearance
   const toolViewMode = useStore($toolViewMode)
   const tipMode = useStore($tipMode)
+  const previewAutoOpen = useStore($previewAutoOpen)
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [_defaults, setDefaults] = useState<HermesConfigRecord | null>(null)
   const [schema, setSchema] = useState<Record<string, ConfigFieldSchema> | null>(null)
   const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
-  const [updateChannel, setUpdateChannel] = useState<'stable' | 'main'>('main')
+  const [updateChannel, setUpdateChannel] = useState<'stable' | 'preview' | 'main'>('stable')
+  // Release-managed installs (archive updates, AIS-312) only know the release
+  // channels — `main` needs git history and is hidden for them.
+  const [updateSource, setUpdateSource] = useState<'release' | 'git' | null>(null)
 
   const [filePickerRoot, setFilePickerRoot] = useState<'userDir' | 'vault'>(() => {
     const saved = storedString(FILE_PICKER_ROOT_STORAGE_KEY)
@@ -430,17 +435,30 @@ export function ConfigSettings({
         .getBranch()
         .then(res => {
           if (res?.branch) {
-            setUpdateChannel(res.branch === 'tags' || res.branch === 'stable' ? 'stable' : 'main')
+            const b = res.branch
+            setUpdateChannel(b === 'tags' || b === 'stable' ? 'stable' : b === 'preview' ? 'preview' : 'main')
+          }
+
+          if (res?.source === 'release' || res?.source === 'git') {
+            setUpdateSource(res.source)
           }
         })
         .catch(() => {})
     }
   }, [])
 
-  const updateChannelOptions = [
-    { id: 'stable', label: a.updateChannelStable },
-    { id: 'main', label: a.updateChannelMain }
-  ] as const
+  const updateChannelOptions = useMemo<readonly { id: 'stable' | 'preview' | 'main'; label: string }[]>(() => {
+    const options: { id: 'stable' | 'preview' | 'main'; label: string }[] = [
+      { id: 'stable', label: a.updateChannelStable },
+      { id: 'preview', label: a.updateChannelPreview }
+    ]
+
+    if (updateSource !== 'release') {
+      options.push({ id: 'main', label: a.updateChannelMain })
+    }
+
+    return options
+  }, [a.updateChannelMain, a.updateChannelPreview, a.updateChannelStable, updateSource])
 
   const filePickerRootOptions = [
     { id: 'userDir', label: a.filePickerRootUserDir },
@@ -456,6 +474,12 @@ export function ConfigSettings({
     { id: 'auto', label: a.tipModeAuto },
     { id: 'business', label: a.tipModeBusiness },
     { id: 'nerd', label: a.tipModeNerd }
+  ] as const
+
+  const previewAutoOpenOptions = [
+    { id: 'artifacts', label: a.previewAutoOpen.artifacts },
+    { id: 'all', label: a.previewAutoOpen.all },
+    { id: 'never', label: a.previewAutoOpen.never }
   ] as const
 
   useEffect(() => {
@@ -620,8 +644,8 @@ export function ConfigSettings({
                   <SegmentedControl
                     onChange={id => {
                       triggerHaptic('selection')
-                      const branchName = id === 'stable' ? 'tags' : 'main'
-                      setUpdateChannel(id as 'stable' | 'main')
+                      const branchName = id === 'stable' ? 'stable' : id === 'preview' ? 'preview' : 'main'
+                      setUpdateChannel(id as 'stable' | 'preview' | 'main')
                       window.hermesDesktop?.updates?.setBranch?.(branchName).catch(() => {})
                       notify({ kind: 'info', title: c.restartNoticeTitle, message: c.restartNoticeDesc })
                     }}
@@ -711,6 +735,20 @@ export function ConfigSettings({
                 }
                 description={a.tipModeDesc}
                 title={a.tipModeTitle}
+              />
+              <ListRow
+                action={
+                  <SegmentedControl
+                    onChange={id => {
+                      triggerHaptic('selection')
+                      setPreviewAutoOpen(id)
+                    }}
+                    options={previewAutoOpenOptions}
+                    value={previewAutoOpen}
+                  />
+                }
+                description={a.previewAutoOpen.hint}
+                title={a.previewAutoOpen.label}
               />
             </div>
           </div>

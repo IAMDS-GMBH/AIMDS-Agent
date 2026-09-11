@@ -3,6 +3,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
 
+pytest.importorskip("msal")  # server.py imports msal at module level
+
 server_path = Path(__file__).parent.parent.parent / "optional-mcps" / "MSOffice365MCP" / "server.py"
 spec = importlib.util.spec_from_file_location("m365_server", server_path)
 server = importlib.util.module_from_spec(spec)
@@ -170,11 +172,14 @@ def test_m365_search_users():
 
 
 def test_m365_get_chat_members():
-    mock_res = {"value": [{"id": "mem-1", "displayName": "Gonzalo"}]}
+    mock_res = {"value": [{"id": "mem-1", "displayName": "Gonzalo", "email": "g@example.com"}]}
     with patch.object(server, "_graph_request", return_value=mock_res) as mock_req:
         res = server.m365_get_chat_members("chat-123")
-        assert res["value"][0]["id"] == "mem-1"
+        assert res["members"][0] == {"displayName": "Gonzalo", "email": "g@example.com", "user_id": "mem-1"}
+        assert res["count"] == 1
         mock_req.assert_called_once_with("GET", "/me/chats/chat-123/members")
+    with patch.object(server, "_graph_request", return_value=mock_res):
+        assert server.m365_get_chat_members("chat-123", raw=True)["value"][0]["id"] == "mem-1"
 
 
 def test_m365_get_or_create_direct_chat():
@@ -182,7 +187,7 @@ def test_m365_get_or_create_direct_chat():
     search_res = {"value": [{"id": "gonzalo-id-123"}]}
     chat_created = {"id": "19:direct-chat-id"}
 
-    def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None):
+    def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, **kwargs):
         if endpoint == "/me":
             return me_res
         if endpoint == "/users":
@@ -190,12 +195,16 @@ def test_m365_get_or_create_direct_chat():
         if endpoint == "/chats":
             assert json_data["chatType"] == "oneOnOne"
             assert len(json_data["members"]) == 2
+            assert json_data["members"][1]["user@odata.bind"].endswith("/users/gonzalo-id-123")
             return chat_created
         return {}
 
+    server._MY_IDENTITY_CACHE.clear()
     with patch.object(server, "_graph_request", side_effect=side_effect):
         res = server.m365_get_or_create_direct_chat("gonzalo@example.com")
         assert res["id"] == "19:direct-chat-id"
+        assert res["existing"] is False
+    server._MY_IDENTITY_CACHE.clear()
 
 
 def test_m365_sharepoint_tools():
@@ -330,8 +339,9 @@ def test_upload_file_to_onedrive_chunked_for_large_files(tmp_path):
 def test_m365_activity_feed_and_channel_tools():
     with patch.object(server, "_graph_request", return_value={"value": [{"id": "msg-123"}]}) as mock_req:
         res = server.m365_list_chat_messages("chat-1")
-        assert res["value"][0]["id"] == "msg-123"
+        assert res["messages"][0]["id"] == "msg-123"
         mock_req.assert_called_with("GET", "/me/chats/chat-1/messages", params={"$top": 10})
+        assert server.m365_list_chat_messages("chat-1", raw=True)["value"][0]["id"] == "msg-123"
 
     with patch.object(server, "_graph_request", return_value={"value": [{"id": "team-1"}]}) as mock_req:
         res = server.m365_list_joined_teams()
@@ -491,13 +501,26 @@ class TestRegression_ScopeTiering:
     def test_all_scopes_is_base_plus_admin(self):
         assert set(server.ALL_SCOPES) == set(server.BASE_SCOPES) | set(server.ADMIN_SCOPES)
 
-    def test_initiate_login_defaults_to_base_scopes(self):
+    def test_initiate_login_defaults_to_self_consent_scopes(self):
+        """AIS-286: the default sign-in requests only tier 0 so non-admins never
+        hit "Need admin approval"; org-tier scopes arrive silently later."""
         mock_app = MagicMock()
         mock_app.initiate_device_flow.return_value = {"user_code": "ABC123", "verification_uri": "https://example.com"}
         with patch.object(server, "_get_msal_app", return_value=mock_app):
             res = server.m365_initiate_login()
             assert res["requested_admin_scopes"] is False
-            mock_app.initiate_device_flow.assert_called_once_with(scopes=server.BASE_SCOPES)
+            assert res["requested_tier"] == "self"
+            mock_app.initiate_device_flow.assert_called_once_with(scopes=server.LOGIN_SCOPES)
+            assert server.LOGIN_SCOPES == server.SELF_CONSENT_SCOPES
+
+    def test_initiate_login_scope_tier_standard_and_invalid(self):
+        mock_app = MagicMock()
+        mock_app.initiate_device_flow.return_value = {"user_code": "ABC123", "verification_uri": "https://example.com"}
+        with patch.object(server, "_get_msal_app", return_value=mock_app):
+            res = server.m365_initiate_login(scope_tier="standard")
+            assert res["requested_tier"] == "standard"
+            mock_app.initiate_device_flow.assert_called_once_with(scopes=server.STANDARD_SCOPES)
+            assert "error" in server.m365_initiate_login(scope_tier="root")
 
     def test_initiate_login_requests_all_scopes_when_admin_opted_in(self):
         mock_app = MagicMock()
@@ -696,3 +719,1305 @@ def test_initiate_login_returns_user_code_and_flow_data():
     assert res["flow_data"] is flow
     assert "flow_data" in res["message"]
     assert "unchanged" in res["message"]
+
+
+# --------------------------------------------------------------------------- AIS-286 consent tiers
+
+class TestConsentTiers:
+    # Verified against the Graph permissions reference (2026-09): delegated
+    # scopes whose "Admin consent required" column is Yes.
+    ADMIN_CONSENT_REQUIRED = {
+        "Chat.ReadWrite", "OnlineMeetings.Read", "Presence.Read", "Mail.ReadWrite.Shared",
+        "Mail.Send.Shared", "Calendars.ReadWrite.Shared", "Tasks.ReadWrite",
+        "User.Read.All", "Directory.Read.All",
+    }
+
+    def test_self_consent_tier_has_no_admin_required_scopes(self):
+        assert not (set(server.SELF_CONSENT_SCOPES) & self.ADMIN_CONSENT_REQUIRED)
+        assert set(server.ORG_CONSENT_SCOPES) <= self.ADMIN_CONSENT_REQUIRED
+
+    def test_scope_sources_agree(self):
+        """manifest.yaml (dashboard/CLI login) == server LOGIN_SCOPES == hermes_cli.m365_auth."""
+        import yaml
+        from hermes_cli import m365_auth
+
+        manifest = yaml.safe_load((server_path.parent / "manifest.yaml").read_text(encoding="utf-8"))
+        assert manifest["auth"]["scopes"] == server.LOGIN_SCOPES == m365_auth.M365_LOGIN_SCOPES
+        assert server.SELF_CONSENT_SCOPES == m365_auth.M365_SELF_CONSENT_SCOPES
+        assert server.ORG_CONSENT_SCOPES == m365_auth.M365_ORG_CONSENT_SCOPES
+        assert server.ADMIN_SCOPES == m365_auth.M365_ADMIN_SCOPES
+        assert server.ALL_SCOPES == m365_auth.M365_ALL_SCOPES
+        assert set(manifest["tools"]["default_enabled"]) >= {"m365_initiate_login", "m365_complete_login", "m365_generate_admin_consent_url"}
+        assert manifest["auth"]["env"][1]["default"] == "organizations"
+
+    def test_fallback_literals_match_hermes_cli(self):
+        """The ImportError branch is production code for catalog installs."""
+        import re
+
+        src = server_path.read_text(encoding="utf-8")
+        block = src[src.index("except ImportError:\n    SELF_CONSENT_SCOPES"):src.index("# BASE_SCOPES keeps its historical meaning")]
+        found = {name: re.findall(r'"([A-Za-z.]+)"', block[block.index(name):]) for name in ("SELF_CONSENT_SCOPES", "ORG_CONSENT_SCOPES", "ADMIN_SCOPES")}
+        assert found["SELF_CONSENT_SCOPES"][: len(server.SELF_CONSENT_SCOPES)] == server.SELF_CONSENT_SCOPES
+        assert found["ORG_CONSENT_SCOPES"][: len(server.ORG_CONSENT_SCOPES)] == server.ORG_CONSENT_SCOPES
+        assert found["ADMIN_SCOPES"][: len(server.ADMIN_SCOPES)] == server.ADMIN_SCOPES
+
+    def test_get_access_token_probes_tiers_in_order_and_caches(self, monkeypatch):
+        server._GRANTED_TIER_CACHE.clear()
+        acc = {"home_account_id": "acc-1", "username": "u@example.com"}
+        calls = []
+
+        def silent(scopes, account=None):
+            calls.append(tuple(scopes))
+            return {"access_token": "tok"} if scopes == server.SELF_CONSENT_SCOPES else None
+
+        app = MagicMock()
+        app.get_accounts.return_value = [acc]
+        app.acquire_token_silent.side_effect = silent
+        with patch.object(server, "_get_msal_app", return_value=app), patch.object(server, "_save_cache"):
+            assert server._get_access_token() == "tok"
+            assert calls == [tuple(server.ALL_SCOPES), tuple(server.STANDARD_SCOPES), tuple(server.SELF_CONSENT_SCOPES)]
+            calls.clear()
+            assert server._get_access_token() == "tok"
+            # Cached tier is probed first — no failing network redemptions.
+            assert calls == [tuple(server.SELF_CONSENT_SCOPES)]
+        server._GRANTED_TIER_CACHE.clear()
+
+    def test_get_access_token_prefers_org_tier_after_consent(self):
+        server._GRANTED_TIER_CACHE.clear()
+        acc = {"home_account_id": "acc-2"}
+        app = MagicMock()
+        app.get_accounts.return_value = [acc]
+        app.acquire_token_silent.side_effect = lambda scopes, account=None: (
+            {"access_token": "wide"} if scopes in (server.ALL_SCOPES, server.STANDARD_SCOPES) else None
+        )
+        with patch.object(server, "_get_msal_app", return_value=app), patch.object(server, "_save_cache"):
+            assert server._get_access_token() == "wide"
+            assert server._GRANTED_TIER_CACHE["acc-2"][0] == "admin"
+        server._GRANTED_TIER_CACHE.clear()
+
+    def test_login_scopes_from_argv(self):
+        with patch.object(server.sys, "argv", ["server.py", "--login"]), patch.dict(server.os.environ, {}, clear=False):
+            server.os.environ.pop("M365_REQUEST_ADMIN_SCOPES", None)
+            assert server._login_scopes_from_argv() == server.LOGIN_SCOPES
+        with patch.object(server.sys, "argv", ["server.py", "--login", "--standard"]):
+            assert server._login_scopes_from_argv() == server.STANDARD_SCOPES
+        with patch.object(server.sys, "argv", ["server.py", "--login", "--admin"]):
+            assert server._login_scopes_from_argv() == server.ALL_SCOPES
+
+    def test_admin_consent_url_defaults_client_and_tenant_and_fq_scopes(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        for var in ("M365_CLIENT_ID", "OUTLOOK_CLIENT_ID", "TEAMS_CLIENT_ID", "M365_TENANT_ID", "OUTLOOK_TENANT_ID", "TEAMS_TENANT_ID"):
+            server.os.environ.pop(var, None)
+        with patch.dict(server.os.environ, env):
+            res = server.m365_generate_admin_consent_url()
+        assert res["success"] is True
+        assert res["client_id"] == server.DEFAULT_CLIENT_ID
+        assert res["tenant_id"] == "organizations"
+        url = res["admin_consent_url"]
+        assert url.startswith("https://login.microsoftonline.com/organizations/v2.0/adminconsent?")
+        assert "common" not in url
+        assert "graph.microsoft.com%2FChat.ReadWrite" in url
+        assert "redirect_uri=http%3A%2F%2Flocalhost%3A8400" in url
+        with patch.dict(server.os.environ, env):
+            res = server.m365_generate_admin_consent_url(use_default_scope=True)
+        assert "graph.microsoft.com%2F.default" in res["admin_consent_url"]
+
+    def test_admin_consent_url_never_uses_common_tenant(self, tmp_path):
+        with patch.dict(server.os.environ, {"HERMES_HOME": str(tmp_path), "M365_TENANT_ID": "common", "M365_CLIENT_ID": "app-1"}):
+            res = server.m365_generate_admin_consent_url()
+        assert res["tenant_id"] == "organizations"
+        assert "/organizations/v2.0/adminconsent" in res["admin_consent_url"]
+
+    def test_graph_403_hint_includes_consent_url(self):
+        fake_response = MagicMock(status_code=403, is_error=True, text='{"error":{"code":"Authorization_RequestDenied"}}')
+        fake_client = MagicMock()
+        fake_client.__enter__.return_value.request.return_value = fake_response
+        with patch.object(server, "_get_access_token", return_value="tok"), patch.object(server.httpx, "Client", return_value=fake_client):
+            with pytest.raises(RuntimeError) as exc:
+                server._graph_request("GET", "/me/chats")
+            assert "org-wide admin consent" in str(exc.value)
+            assert "v2.0/adminconsent" in str(exc.value)
+            with pytest.raises(RuntimeError) as exc:
+                server._graph_request("GET", "/users")
+            assert "admin tier" in str(exc.value)
+
+    def test_complete_login_reports_granted_tier_and_consent_hint(self):
+        app = MagicMock()
+        app.acquire_token_by_device_flow.return_value = {"access_token": "t", "id_token_claims": {"preferred_username": "u@example.com"}}
+        acc = {"home_account_id": "acc-3"}
+        app.get_accounts.return_value = [acc]
+        app.acquire_token_silent.side_effect = lambda scopes, account=None: (
+            {"access_token": "t"} if scopes == server.SELF_CONSENT_SCOPES else None
+        )
+        server._GRANTED_TIER_CACHE.clear()
+        with patch.object(server, "_get_msal_app", return_value=app), patch.object(server, "_save_cache"):
+            res = server.m365_complete_login({"user_code": "X"})
+        assert res["success"] is True
+        assert res["granted_tier"] == "self"
+        assert "v2.0/adminconsent" in res["admin_consent_hint"]["admin_consent_url"]
+        server._GRANTED_TIER_CACHE.clear()
+
+    def test_complete_login_consent_failure_returns_url(self):
+        app = MagicMock()
+        app.acquire_token_by_device_flow.return_value = {
+            "error": "invalid_grant",
+            "error_description": "AADSTS90094: The grant requires admin permission.",
+        }
+        with patch.object(server, "_get_msal_app", return_value=app):
+            res = server.m365_complete_login({"user_code": "X"})
+        assert res["category"] == "consent"
+        assert res["error_code"] == "AADSTS90094"
+        assert res["admin_consent_required"] is True
+        assert "v2.0/adminconsent" in res["admin_consent_url"]
+
+    def test_complete_login_declined_has_no_consent_url(self):
+        app = MagicMock()
+        app.acquire_token_by_device_flow.return_value = {"error": "authorization_declined"}
+        with patch.object(server, "_get_msal_app", return_value=app):
+            res = server.m365_complete_login({"user_code": "X"})
+        assert res["category"] == "declined"
+        assert "admin_consent_url" not in res
+
+
+# --------------------------------------------------------------------------- AIS-286 Teams smart-send
+
+ME = {"id": "me-1", "displayName": "Johannes Huchler", "userPrincipalName": "johannes@example.com"}
+
+
+def _chat(cid, ctype, members, topic=None, preview_from=None, preview="", updated="2026-09-03T08:00:00Z"):
+    return {
+        "id": cid,
+        "chatType": ctype,
+        "topic": topic,
+        "lastUpdatedDateTime": updated,
+        "members": [{"userId": m[0], "displayName": m[1], "email": m[2]} for m in members],
+        "lastMessagePreview": {
+            "body": {"content": preview, "contentType": "html"},
+            "from": {"user": {"displayName": preview_from or ""}},
+            "createdDateTime": updated,
+        } if preview else None,
+    }
+
+
+CHATS = [
+    _chat("c-fischi", "oneOnOne", [("me-1", "Johannes Huchler", "johannes@example.com"), ("u-2", "Martin Fischerauer", "martin.fischerauer@example.com")], preview_from="Martin Fischerauer", preview="<p>passt, <b>danke</b></p>"),
+    _chat("c-martin2", "oneOnOne", [("me-1", "Johannes Huchler", "johannes@example.com"), ("u-3", "Martin Berger", "martin.berger@example.com")]),
+    _chat("c-group", "group", [("me-1", "Johannes Huchler", "johannes@example.com"), ("u-2", "Martin Fischerauer", "martin.fischerauer@example.com"), ("u-4", "Anna Schmidt", "anna@example.com")], topic="Projekt Hermes Rollout"),
+    _chat("c-anna", "oneOnOne", [("me-1", "Johannes Huchler", "johannes@example.com"), ("u-4", "Anna Schmidt", "anna@example.com")]),
+]
+
+
+def _teams_graph(chats=CHATS, messages=None, sent=None):
+    sent = sent if sent is not None else []
+
+    def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, account=None, **kwargs):
+        if endpoint == "/me":
+            return ME
+        if endpoint == "/me/chats":
+            return {"value": chats}
+        if endpoint.endswith("/messages") and method == "POST":
+            sent.append((endpoint, json_data))
+            return {"id": "msg-new"}
+        if endpoint.endswith("/messages"):
+            return {"value": messages or []}
+        if endpoint == "/users":
+            raise RuntimeError("MS Graph API Error [403]: Authorization_RequestDenied")
+        return {"value": []}
+
+    return side_effect, sent
+
+
+class TestFindChat:
+    def setup_method(self):
+        server._MY_IDENTITY_CACHE.clear()
+
+    def test_exact_email_is_unique(self):
+        with patch.object(server, "_graph_request", side_effect=_teams_graph()[0]):
+            res = server.m365_find_chat("martin.fischerauer@example.com")
+        assert res["resolution"] == "unique"
+        assert res["chat_id"] == "c-fischi"
+        assert res["candidates"][0]["match_reason"].startswith("exact email")
+        top = res["candidates"][0]
+        assert top["members"][1] == {"displayName": "Martin Fischerauer", "email": "martin.fischerauer@example.com", "user_id": "u-2"}
+        assert top["last_message"]["preview"] == "passt, danke"  # HTML stripped
+        assert "lastMessagePreview" not in top
+
+    def test_full_name_prefers_direct_chat_over_group(self):
+        with patch.object(server, "_graph_request", side_effect=_teams_graph()[0]):
+            res = server.m365_find_chat("Martin Fischerauer")
+        assert res["resolution"] == "unique"
+        assert res["chat_id"] == "c-fischi"
+        assert [c["chat_id"] for c in res["candidates"][:2]] == ["c-fischi", "c-group"]
+
+    def test_first_name_with_two_people_is_ambiguous(self):
+        with patch.object(server, "_graph_request", side_effect=_teams_graph()[0]):
+            res = server.m365_find_chat("Martin")
+        assert res["resolution"] == "ambiguous"
+        assert "chat_id" not in res
+        assert {c["chat_id"] for c in res["candidates"][:2]} == {"c-fischi", "c-martin2"}
+        assert "ask" in res["next_step"].lower()
+
+    def test_nickname_prefix_matches_surname(self):
+        with patch.object(server, "_graph_request", side_effect=_teams_graph()[0]):
+            res = server.m365_find_chat("Fischi")
+        assert res["resolution"] == "unique"
+        assert res["chat_id"] == "c-fischi"
+
+    def test_group_topic(self):
+        with patch.object(server, "_graph_request", side_effect=_teams_graph()[0]):
+            res = server.m365_find_chat("Hermes Rollout", prefer="group")
+        assert res["resolution"] == "unique"
+        assert res["chat_id"] == "c-group"
+
+    def test_no_match_gives_direct_chat_hint_for_email(self):
+        with patch.object(server, "_graph_request", side_effect=_teams_graph()[0]):
+            res = server.m365_find_chat("nobody@example.com")
+        assert res["resolution"] == "none"
+        assert res["direct_chat_hint"]["tool"] == "m365_get_or_create_direct_chat"
+        assert "direct_chat_hint" not in server.m365_find_chat.__wrapped__("x") if hasattr(server.m365_find_chat, "__wrapped__") else True
+
+    def test_empty_query_rejected(self):
+        assert "error" in server.m365_find_chat("  ")
+
+
+class TestSendChatMessageSmart:
+    def setup_method(self):
+        server._MY_IDENTITY_CACHE.clear()
+
+    def test_to_unique_sends_markdown_as_html_and_reports_recipient(self):
+        side_effect, sent = _teams_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_send_chat_message(to="Fischi", content="Hi Martin,\n\nam **09./10.09** baue ich Überstunden ab:\n- Di frei\n- Mi ab 12")
+        assert res["sent"] is True
+        assert res["chat_id"] == "c-fischi"
+        assert res["recipient"]["members"][0]["displayName"] == "Martin Fischerauer"
+        assert res["chat_type"] == "oneOnOne"
+        assert sent[0][0] == "/me/chats/c-fischi/messages"
+        html = sent[0][1]["body"]["content"]
+        assert sent[0][1]["body"]["contentType"] == "html"
+        assert html == "<p>Hi Martin,</p><p>am <strong>09./10.09</strong> baue ich Überstunden ab:</p><ul><li>Di frei</li><li>Mi ab 12</li></ul>"
+        assert res["rendered_html"] == html
+        assert "**" not in res["plain_text"] and "Di frei" in res["plain_text"]
+        assert res["message_id"] == "msg-new"
+
+    def test_to_ambiguous_does_not_send(self):
+        side_effect, sent = _teams_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_send_chat_message(to="Martin", content="hi")
+        assert res["sent"] is False
+        assert res["resolution"] == "ambiguous"
+        assert "ambiguous" in res["error"]
+        assert sent == []
+
+    def test_to_unknown_does_not_send(self):
+        side_effect, sent = _teams_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_send_chat_message(to="Zaphod", content="hi")
+        assert res["sent"] is False and res["resolution"] == "none" and sent == []
+
+    def test_dry_run_never_sends(self):
+        side_effect, sent = _teams_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_send_chat_message(to="martin.fischerauer@example.com", content="*kurz*", dry_run=True)
+        assert res["dry_run"] is True and res["sent"] is False
+        assert res["rendered_html"] == "<p><em>kurz</em></p>"
+        assert res["recipient"]["chat_id"] == "c-fischi"
+        assert sent == []
+
+    def test_missing_chat_id_and_to_raises(self):
+        with pytest.raises(ValueError):
+            server.m365_send_chat_message(content="hi")
+
+    def test_existing_html_passes_through_and_text_mode_is_verbatim(self):
+        with patch.object(server, "_graph_request", return_value={"id": "m"}) as mock_req:
+            server.m365_send_chat_message("chat-1", "<p>Hallo <b>Welt</b></p>")
+            assert mock_req.call_args.kwargs["json_data"]["body"]["content"] == "<p>Hallo <b>Welt</b></p>"
+        with patch.object(server, "_graph_request", return_value={"id": "m"}) as mock_req:
+            res = server.m365_send_chat_message("chat-1", "**raw**", content_type="text")
+            assert mock_req.call_args.kwargs["json_data"]["body"] == {"contentType": "text", "content": "**raw**"}
+            assert res["rendered_html"] is None
+
+
+class TestMarkdownToTeamsHtml:
+    def test_blocks_and_inline(self):
+        md = "# Update\n\nHallo **Team**, kurzer *Stand*:\n\n1. erledigt\n2. offen\n\n> Zitat\n\nLink: [Doku](https://ex.ample/d) und `code` <3"
+        html = server._markdown_to_teams_html(md)
+        assert html == (
+            "<p><strong>Update</strong></p><p>Hallo <strong>Team</strong>, kurzer <em>Stand</em>:</p>"
+            "<ol><li>erledigt</li><li>offen</li></ol><blockquote>Zitat</blockquote>"
+            '<p>Link: <a href="https://ex.ample/d">Doku</a> und <code>code</code> &lt;3</p>'
+        )
+
+    def test_line_breaks_inside_paragraph_and_escaping(self):
+        assert server._markdown_to_teams_html("a\nb\n\nc & d") == "<p>a<br>b</p><p>c &amp; d</p>"
+        assert server._markdown_to_teams_html("") == ""
+        assert server._markdown_to_teams_html("<ul><li>x</li></ul>") == "<ul><li>x</li></ul>"
+
+    def test_html_to_text(self):
+        assert server._html_to_text("<p>Hi <b>x</b></p><ul><li>a</li><li>b</li></ul>&nbsp;") == "Hi x\n• a\n• b"
+
+
+class TestCompactRecords:
+    def test_list_chats_compact_and_raw(self):
+        side_effect, _ = _teams_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_list_chats(top=5)
+            assert res["count"] == 4
+            assert set(res["chats"][0]) == {"chat_id", "chat_type", "topic", "members", "last_message", "updated_at", "web_url"}
+            raw = server.m365_list_chats(top=5, raw=True)
+            assert raw["value"][0]["id"] == "c-fischi"
+
+    def test_list_chat_messages_compact_strips_html_and_system_events(self):
+        messages = [
+            {"id": "m1", "messageType": "message", "createdDateTime": "2026-09-03T08:00:00Z", "from": {"user": {"id": "u-2", "displayName": "Martin"}}, "body": {"contentType": "html", "content": "<p>Hallo <b>du</b></p>"}},
+            {"id": "m2", "messageType": "systemEventMessage", "body": {"contentType": "html", "content": "<systemEventMessage/>"}},
+        ]
+        side_effect, _ = _teams_graph(messages=messages)
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_list_chat_messages("c-fischi", top=5)
+        assert res["count"] == 1
+        assert res["messages"][0]["from"] == "Martin" and res["messages"][0]["text"] == "Hallo du"
+        assert res["messages"][0]["from_user_id"] == "u-2"
+
+
+class TestDirectChatWithoutDirectory:
+    def setup_method(self):
+        server._MY_IDENTITY_CACHE.clear()
+
+    def test_existing_direct_chat_is_returned_not_created(self):
+        side_effect, sent = _teams_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect) as mock_req:
+            res = server.m365_get_or_create_direct_chat("Martin Fischerauer")
+        assert res["id"] == "c-fischi" and res["existing"] is True
+        assert all(c.args[1] != "/chats" for c in mock_req.call_args_list)
+
+    def test_ambiguous_name_asks_instead_of_creating(self):
+        side_effect, _ = _teams_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_get_or_create_direct_chat("Martin")
+        assert "error" in res and len(res["candidates"]) >= 2
+
+    def test_unknown_email_without_directory_binds_upn_directly(self):
+        created = {}
+
+        def side_effect(method, endpoint, json_data=None, params=None, **kwargs):
+            if endpoint == "/me":
+                return ME
+            if endpoint == "/me/chats":
+                return {"value": []}
+            if endpoint.startswith("/users"):
+                raise RuntimeError("MS Graph API Error [403]: Authorization_RequestDenied")
+            if endpoint == "/chats":
+                created.update(json_data)
+                return {"id": "19:new"}
+            return {"value": []}
+
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_get_or_create_direct_chat("new.person@example.com")
+        assert res["id"] == "19:new"
+        assert created["members"][1]["user@odata.bind"].endswith("/users/new.person@example.com")
+
+    def test_unknown_name_without_directory_returns_actionable_error(self):
+        def side_effect(method, endpoint, json_data=None, params=None, **kwargs):
+            if endpoint == "/me":
+                return ME
+            if endpoint.startswith("/users"):
+                raise RuntimeError("403")
+            return {"value": []}
+
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_get_or_create_direct_chat("Zaphod Beeblebrox")
+        assert "email" in res["error"]
+
+
+class TestChatStyle:
+    def setup_method(self):
+        server._MY_IDENTITY_CACHE.clear()
+
+    def _messages(self, mine, theirs=("Alles klar, danke!",)):
+        out = []
+        for i, t in enumerate(mine):
+            out.append({"id": f"me{i}", "messageType": "message", "createdDateTime": "2026-09-01T08:00:00Z", "from": {"user": {"id": "me-1", "displayName": "Johannes Huchler"}}, "body": {"contentType": "text", "content": t}})
+        for i, t in enumerate(theirs):
+            out.append({"id": f"th{i}", "messageType": "message", "createdDateTime": "2026-09-01T09:00:00Z", "from": {"user": {"id": "u-2", "displayName": "Martin"}}, "body": {"contentType": "html", "content": f"<p>{t}</p>"}})
+        return out
+
+    def test_profile_from_own_messages_casual(self):
+        mine = ["Hi Martin, bist du am Mi da? VG", "Danke dir! 👍", "Moin, ich bin morgen im Homeoffice, melde mich dann. VG"]
+        side_effect, _ = _teams_graph(messages=self._messages(mine))
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_get_chat_style(to="Fischi")
+        prof = res["profile"]
+        assert res["source_messages"] == 3 and res["their_messages_seen"] == 1
+        assert prof["language"] == "de" and prof["address"] == "du" and prof["formality"] == "casual"
+        assert prof["sign_off"] == "vg" and prof["emoji"] == "sometimes"
+        assert prof["typical_length_words"] <= 12
+        assert len(res["examples"]) == 3 and res["recipient"]["chat_type"] == "oneOnOne"
+        assert "Teams style with" in res["how_to_use"]
+
+    def test_profile_formal_sie(self):
+        mine = ["Sehr geehrter Herr Müller,\n\nkönnten Sie mir bitte die Unterlagen bis Freitag zusenden? Ich benötige sie für den Bericht.\n\nViele Grüße\nJohannes Huchler"] * 3
+        side_effect, _ = _teams_graph(messages=self._messages(mine))
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_get_chat_style(chat_id="c-fischi")
+        prof = res["profile"]
+        assert prof["address"] == "Sie" and prof["formality"] == "formal"
+        assert prof["greeting"] == "sehr geehrter" and prof["sign_off"].startswith("viele gr")
+
+    def test_no_history_returns_teams_defaults(self):
+        side_effect, _ = _teams_graph(messages=self._messages([]))
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_get_chat_style(chat_id="c-fischi")
+        assert res["profile"] is None and res["source_messages"] == 0
+        assert res["defaults"]["sign_off"] == "none" and res["defaults"]["signature"] is False and res["defaults"]["attribution"] is False
+
+    def test_ambiguous_recipient(self):
+        side_effect, _ = _teams_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_get_chat_style(to="Martin")
+        assert res["error"] == "recipient ambiguous" and len(res["candidates"]) >= 2
+
+
+# --------------------------------------------------------------------------- AIS-288 Teams links + chat files
+
+CHAT_LINK = "https://teams.microsoft.com/l/chat/19%3A6bd3df1234%40thread.v2/0?context=%7B%22contextType%22%3A%22chat%22%7D"
+MSG_LINK = "https://teams.microsoft.com/l/message/19%3A6bd3df1234%40thread.v2/1725000000002?tenantId=t&context=c"
+
+
+class TestTeamsLinks:
+    def test_parse_chat_and_message_links(self):
+        assert server._parse_teams_link(CHAT_LINK) == {"chat_id": "19:6bd3df1234@thread.v2", "message_id": None, "kind": "chat"}
+        assert server._parse_teams_link(MSG_LINK) == {"chat_id": "19:6bd3df1234@thread.v2", "message_id": "1725000000002", "kind": "message"}
+        assert server._parse_teams_link("Fischi") is None
+        assert server._parse_teams_link("") is None
+        assert server._coerce_chat_ref(CHAT_LINK) == "19:6bd3df1234@thread.v2"
+        assert server._coerce_chat_ref(" 19:abc@thread.v2 ") == "19:abc@thread.v2"
+        assert server._coerce_chat_ref(None) is None
+
+    def test_find_chat_with_link_is_unique_without_ranking(self):
+        server._MY_IDENTITY_CACHE.clear()
+        calls = []
+
+        def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, account=None, **kw):
+            calls.append(endpoint)
+            if endpoint == "/me/chats/19:6bd3df1234@thread.v2":
+                return _chat("19:6bd3df1234@thread.v2", "oneOnOne", [("me-1", "Johannes Huchler", "johannes@example.com"), ("u-2", "Martin Fischerauer", "m@example.com")])
+            return {"value": []}
+
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_find_chat(MSG_LINK)
+        assert res["resolution"] == "unique" and res["chat_id"] == "19:6bd3df1234@thread.v2"
+        assert res["message_id"] == "1725000000002"
+        assert res["candidates"][0]["match_reason"] == "teams link"
+        assert "/me/chats" not in calls  # no scan of all chats
+
+    def test_list_chat_messages_and_style_accept_links(self):
+        with patch.object(server, "_graph_request", return_value={"value": []}) as mock_req:
+            server.m365_list_chat_messages(CHAT_LINK, top=3)
+            assert mock_req.call_args.args[1] == "/me/chats/19:6bd3df1234@thread.v2/messages"
+        with patch.object(server, "_graph_request", return_value={"value": []}) as mock_req:
+            server.m365_list_teams_message_attachments(message_id="m1", chat_id=CHAT_LINK)
+            assert mock_req.call_args_list[0].args[1] == "/me/chats/19:6bd3df1234@thread.v2/messages/m1"
+
+    def test_send_chat_message_accepts_link_as_to(self):
+        with patch.object(server, "_graph_request", return_value={"id": "msg"}) as mock_req:
+            res = server.m365_send_chat_message(to=CHAT_LINK, content="hi")
+        assert res["sent"] is True and res["chat_id"] == "19:6bd3df1234@thread.v2"
+        assert mock_req.call_args.args[1] == "/me/chats/19:6bd3df1234@thread.v2/messages"
+
+
+class TestDownloadChatFiles:
+    CHAT = "19:6bd3df1234@thread.v2"
+
+    def _messages(self):
+        return [
+            {"id": "1725000000003", "messageType": "message", "createdDateTime": "2026-09-04T07:00:00Z",
+             "from": {"user": {"id": "u-2", "displayName": "Martin"}}, "body": {"contentType": "text", "content": "danke"}},
+            {"id": "1725000000002", "messageType": "message", "createdDateTime": "2026-09-04T06:59:00Z",
+             "from": {"user": {"id": "u-2", "displayName": "Martin"}},
+             "body": {"contentType": "html", "content": "<p>anbei</p><attachment id=\"a1\"></attachment>"},
+             "attachments": [{"id": "a1", "name": "Angebot.docx", "contentType": "reference", "contentUrl": "https://iamds.sharepoint.com/sites/x/Angebot.docx"}]},
+            {"id": "1725000000001", "messageType": "message", "createdDateTime": "2026-09-04T06:58:00Z",
+             "from": {"user": {"id": "me-1", "displayName": "Johannes Huchler"}},
+             "body": {"contentType": "html", "content": '<p>screenshot</p><img src="https://graph.microsoft.com/v1.0/chats/x/messages/y/hostedContents/hc1/$value">'}},
+            {"id": "1725000000000", "messageType": "systemEventMessage", "body": {"contentType": "html", "content": "<systemEventMessage/>"}},
+        ]
+
+    def _graph(self, messages):
+        def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, account=None, **kw):
+            if endpoint == "/me":
+                return ME
+            if endpoint == f"/me/chats/{self.CHAT}/messages":
+                return {"value": messages}
+            if endpoint == f"/me/chats/{self.CHAT}":
+                return _chat(self.CHAT, "oneOnOne", [("me-1", "Johannes Huchler", "johannes@example.com"), ("u-2", "Martin Fischerauer", "martin.fischerauer@example.com")])
+            if endpoint == "/me/chats":
+                return {"value": CHATS}
+            return {"value": []}
+        return side_effect
+
+    def test_downloads_files_from_recent_messages_into_vault(self, tmp_path, monkeypatch):
+        server._MY_IDENTITY_CACHE.clear()
+        vault = tmp_path / "vault"; vault.mkdir()
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(vault))
+        downloads = []
+
+        def fake_download(url, account=None):
+            downloads.append(url)
+            if "/shares/" in url:
+                return b"%DOCX%"
+            if "hostedContents/hc1" in url:
+                return b"\x89PNG"
+            raise RuntimeError("unexpected")
+
+        with patch.object(server, "_graph_request", side_effect=self._graph(self._messages())), \
+             patch.object(server, "_graph_download_bytes", side_effect=fake_download):
+            res = server.m365_download_chat_files(chat_id=CHAT_LINK, last=5)
+        assert res["chat_id"] == self.CHAT and res["messages_scanned"] == 3
+        assert res["count"] == 1 and res["errors"] == []
+        f = res["files"][0]
+        assert f["name"] == "Angebot.docx" and f["from"] == "Martin" and f["message_id"] == "1725000000002"
+        assert Path(f["saved_path"]).read_bytes() == b"%DOCX%"
+        assert Path(f["saved_path"]).parent == vault / "documents" / "m365_attachments" / "Martin_Fischerauer"
+        assert all("/shares/u!" in u for u in downloads)  # images skipped by default
+
+    def test_include_images_and_duplicate_names(self, tmp_path, monkeypatch):
+        server._MY_IDENTITY_CACHE.clear()
+        vault = tmp_path / "vault"; vault.mkdir()
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(vault))
+        (vault / "documents" / "m365_attachments" / "Martin_Fischerauer").mkdir(parents=True)
+        (vault / "documents" / "m365_attachments" / "Martin_Fischerauer" / "Angebot.docx").write_bytes(b"old")
+
+        def fake_download(url, account=None):
+            return b"\x89PNG" if "hostedContents" in url else b"%DOCX%"
+
+        with patch.object(server, "_graph_request", side_effect=self._graph(self._messages())), \
+             patch.object(server, "_graph_download_bytes", side_effect=fake_download):
+            res = server.m365_download_chat_files(chat_id=self.CHAT, last=5, include_images=True)
+        names = sorted(f["name"] for f in res["files"])
+        assert names == ["Angebot.docx", "inline_image_hc1.png"]
+        docx = next(f for f in res["files"] if f["name"] == "Angebot.docx")
+        assert docx["saved_path"].endswith("Angebot (2).docx")  # existing file kept
+
+    def test_message_link_restricts_to_that_message(self, tmp_path, monkeypatch):
+        server._MY_IDENTITY_CACHE.clear()
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(tmp_path))
+        with patch.object(server, "_graph_request", side_effect=self._graph(self._messages())), \
+             patch.object(server, "_graph_download_bytes", return_value=b"x"):
+            res = server.m365_download_chat_files(chat_id=MSG_LINK, last=10)
+        assert res["messages_scanned"] == 1 and res["count"] == 1
+
+    def test_resolves_recipient_by_name_and_reports_hint_when_empty(self, tmp_path, monkeypatch):
+        server._MY_IDENTITY_CACHE.clear()
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(tmp_path))
+        messages = [m for m in self._messages() if m["id"] == "1725000000003"]
+
+        def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, account=None, **kw):
+            if endpoint == "/me":
+                return ME
+            if endpoint == "/me/chats":
+                return {"value": CHATS}
+            if endpoint == "/me/chats/c-fischi/messages":
+                return {"value": messages}
+            return {"value": []}
+
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_download_chat_files(to="Fischi", last=5)
+        assert res["chat_id"] == "c-fischi" and res["count"] == 0
+        assert res["recipient"]["chat_type"] == "oneOnOne"
+        assert "include_images" in res["hint"]
+
+    def test_download_failure_is_reported_not_raised(self, tmp_path, monkeypatch):
+        server._MY_IDENTITY_CACHE.clear()
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(tmp_path))
+        with patch.object(server, "_graph_request", side_effect=self._graph(self._messages())), \
+             patch.object(server, "_graph_download_bytes", side_effect=RuntimeError("403")):
+            res = server.m365_download_chat_files(chat_id=self.CHAT, last=5)
+        assert res["count"] == 0 and res["errors"][0]["name"] == "Angebot.docx"
+
+    def test_requires_chat_or_recipient(self):
+        assert "error" in server.m365_download_chat_files()
+
+    def test_manifest_enables_new_tool(self):
+        import yaml
+
+        manifest = yaml.safe_load((server_path.parent / "manifest.yaml").read_text(encoding="utf-8"))
+        assert "m365_download_chat_files" in manifest["tools"]["default_enabled"]
+        assert "m365_download_teams_message_attachment" in manifest["tools"]["default_enabled"]
+
+
+class TestDownloadEmailAttachments:
+    def _graph(self, attachments):
+        def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, account=None, **kw):
+            if endpoint == "/me/messages/msg-1":
+                return {"subject": "Angebot: LBBW / TP3", "from": {"emailAddress": {"name": "Martin"}}, "receivedDateTime": "2026-09-04T07:00:00Z"}
+            if endpoint == "/me/messages/msg-1/attachments":
+                return {"value": attachments}
+            return {}
+        return side_effect
+
+    def test_saves_all_file_attachments_into_vault(self, tmp_path, monkeypatch):
+        import base64
+
+        vault = tmp_path / "vault"; vault.mkdir()
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(vault))
+        atts = [
+            {"@odata.type": "#microsoft.graph.fileAttachment", "id": "a1", "name": "Angebot.pdf", "contentType": "application/pdf", "contentBytes": base64.b64encode(b"%PDF").decode()},
+            {"@odata.type": "#microsoft.graph.fileAttachment", "id": "a2", "name": "logo.png", "contentType": "image/png", "isInline": True, "contentBytes": base64.b64encode(b"png").decode()},
+            {"@odata.type": "#microsoft.graph.fileAttachment", "id": "a3", "name": "big.xlsx", "contentType": "application/x"},
+            {"@odata.type": "#microsoft.graph.itemAttachment", "id": "a4", "name": "Fwd: alt"},
+        ]
+        with patch.object(server, "_graph_request", side_effect=self._graph(atts)), \
+             patch.object(server, "_graph_download_bytes", return_value=b"XLSX") as dl:
+            res = server.m365_download_email_attachments("msg-1")
+        assert res["subject"].startswith("Angebot") and res["from"] == "Martin"
+        assert [f["name"] for f in res["files"]] == ["Angebot.pdf", "big.xlsx"]
+        assert res["skipped"] == 2 and res["errors"] == []
+        assert Path(res["files"][0]["saved_path"]).read_bytes() == b"%PDF"
+        assert Path(res["files"][0]["saved_path"]).parent == vault / "documents" / "m365_attachments" / "mail" / "Angebot_LBBW_TP3"
+        assert dl.call_args.args[0] == "/me/messages/msg-1/attachments/a3/$value"
+
+    def test_include_inline_and_error_reporting(self, tmp_path, monkeypatch):
+        import base64
+
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(tmp_path))
+        atts = [
+            {"@odata.type": "#microsoft.graph.fileAttachment", "id": "a2", "name": "logo.png", "isInline": True, "contentBytes": base64.b64encode(b"png").decode()},
+            {"@odata.type": "#microsoft.graph.fileAttachment", "id": "a3", "name": "broken.bin"},
+        ]
+        with patch.object(server, "_graph_request", side_effect=self._graph(atts)), \
+             patch.object(server, "_graph_download_bytes", side_effect=RuntimeError("404")):
+            res = server.m365_download_email_attachments("msg-1", include_inline=True)
+        assert [f["name"] for f in res["files"]] == ["logo.png"]
+        assert res["errors"][0]["name"] == "broken.bin"
+
+    def test_no_files_gives_hint(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(tmp_path))
+        with patch.object(server, "_graph_request", side_effect=self._graph([])):
+            res = server.m365_download_email_attachments("msg-1")
+        assert res["count"] == 0 and "include_inline" in res["hint"]
+
+    def test_manifest_enables_tool(self):
+        import yaml
+
+        manifest = yaml.safe_load((server_path.parent / "manifest.yaml").read_text(encoding="utf-8"))
+        assert "m365_download_email_attachments" in manifest["tools"]["default_enabled"]
+
+
+class TestDownloadDriveFileByUrl:
+    """AIS-289: `m365_download_drive_file` takes a SharePoint/OneDrive URL and
+    resolves it through the shares API — the agent had only the contentUrl of
+    a chat attachment and got a 404 from the item-id path."""
+
+    URL = "https://iamds-my.sharepoint.com/personal/m_f_iamds_com/Documents/Microsoft%20Teams-Chatdateien/plan_4.docx"
+
+    def test_url_goes_through_shares_api(self, tmp_path, monkeypatch):
+        vault = tmp_path / "vault"; vault.mkdir()
+        monkeypatch.setenv("HERMES_VAULT_PATH", str(vault))
+        calls = []
+
+        def fake_request(method, endpoint, **kw):
+            calls.append(endpoint)
+            assert endpoint.startswith("/shares/u!") and endpoint.endswith("/driveItem")
+            return {"id": "01ITEM", "name": "plan_4.docx", "size": 6}
+
+        def fake_download(endpoint, account=None):
+            calls.append(endpoint)
+            assert endpoint.startswith("/shares/u!") and endpoint.endswith("/driveItem/content")
+            return b"%DOCX%"
+
+        with patch.object(server, "_graph_request", side_effect=fake_request), \
+             patch.object(server, "_graph_download_bytes", side_effect=fake_download):
+            res = server.m365_download_drive_file(self.URL)
+        assert res["success"] is True and res["source"] == "url" and res["file_id"] == "01ITEM"
+        assert Path(res["saved_path"]).read_bytes() == b"%DOCX%"
+        assert Path(res["saved_path"]).parent == vault / "documents" / "m365_downloads"
+        assert len(calls) == 2
+
+    def test_item_id_path_unchanged(self, tmp_path):
+        with patch.object(server, "_graph_request", return_value={"id": "01ITEM", "name": "a.pdf"}) as req, \
+             patch.object(server, "_graph_download_bytes", return_value=b"%PDF") as dl:
+            res = server.m365_download_drive_file("01ITEM", save_path=str(tmp_path / "a.pdf"))
+        assert req.call_args[0][1] == "/me/drive/items/01ITEM"
+        assert dl.call_args[0][0] == "/me/drive/items/01ITEM/content"
+        assert res["source"] == "item_id" and (tmp_path / "a.pdf").read_bytes() == b"%PDF"
+
+    def test_graph_error_is_returned_not_raised(self):
+        with patch.object(server, "_graph_request", return_value={"error": "MS Graph API Error [404]: itemNotFound"}):
+            res = server.m365_download_drive_file(self.URL)
+        assert "error" in res
+
+
+# ---------------------------------------------------------------------------
+# AIS-289: local index, contacts, own signature, per-contact mail style
+# ---------------------------------------------------------------------------
+
+
+def _mail(mid, frm, to, subject, body_html, received="2026-09-01T08:00:00Z", has_att=False):
+    return {
+        "id": mid,
+        "subject": subject,
+        "from": {"emailAddress": {"name": frm[0], "address": frm[1]}},
+        "toRecipients": [{"emailAddress": {"name": n, "address": a}} for n, a in to],
+        "receivedDateTime": received,
+        "sentDateTime": received,
+        "bodyPreview": server._html_to_text(body_html)[:255],
+        "body": {"contentType": "html", "content": body_html},
+        "hasAttachments": has_att,
+    }
+
+
+class TestLocalIndex:
+    def setup_method(self):
+        server._MY_IDENTITY_CACHE.clear()
+        server._INDEX_FTS_STATE["available"] = None
+
+    def test_list_emails_fills_index_and_search_finds_the_mail(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        mails = {"value": [
+            _mail("m1", ("Martin Fischerauer", "martin.fischerauer@example.com"), [("Johannes", "johannes@example.com")],
+                  "Angebot Wikisana QS24", "<p>Hallo Johannes,</p><p>anbei der Umzugsplan als Entwurf.</p>", has_att=True),
+            _mail("m2", ("Tobias Hehl", "tobias.hehl@example.com"), [("Johannes", "johannes@example.com")],
+                  "Release Notes", "<p>Moin, die Notes sind fertig.</p>"),
+        ]}
+        with patch.object(server, "_graph_request", return_value=mails):
+            server.m365_list_emails(top=10)
+        assert (tmp_path / "state" / "m365_index.sqlite").exists()
+        res = server.m365_index_search("umzugsplan angebot")
+        assert res["count"] >= 1 and res["hits"][0]["kind"] == "mail" and res["hits"][0]["message_id"] == "m1"
+        assert res["hits"][0]["has_attachments"] is True and "m365_get_email" in res["hits"][0]["next"]
+        only_contacts = server.m365_index_search("fischerauer", kind="contact")
+        assert only_contacts["hits"] and only_contacts["hits"][0]["email"] == "martin.fischerauer@example.com"
+        assert res["index"]["mails"] == 2 and res["index"]["contacts"] >= 2
+
+    def test_index_search_falls_back_to_like_without_fts(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        server._INDEX_FTS_STATE["available"] = False
+        with patch.object(server, "_graph_request", return_value={"value": [
+            _mail("m9", ("A B", "a@example.com"), [("J", "j@example.com")], "Budgetplanung 2027", "<p>Zahlen im Anhang</p>")]}):
+            server.m365_list_emails(top=5)
+        res = server.m365_index_search("Budgetplanung", kind="mail")
+        assert res["count"] == 1 and res["hits"][0]["subject"] == "Budgetplanung 2027"
+
+    def test_chats_and_messages_are_indexed_via_find_chat_and_list_messages(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        messages = [
+            {"id": "1001", "messageType": "message", "createdDateTime": "2026-09-03T11:55:24Z",
+             "from": {"user": {"id": "u-2", "displayName": "Martin Fischerauer"}},
+             "body": {"contentType": "html", "content": "<p>Hier der Umzugsplan Entwurf 4</p>"},
+             "attachments": [{"id": "a1", "name": "2026-09-03-wikisana-qs24-umzugsplan-entwurf_4.docx", "contentType": "reference"}]},
+        ]
+        side_effect, _ = _teams_graph(messages=messages)
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            found = server.m365_find_chat("Fischerauer")
+            server.m365_list_chat_messages(found["chat_id"], top=5)
+        hit = server.m365_index_search("umzugsplan entwurf", kind="chat_message")
+        assert hit["count"] == 1 and hit["hits"][0]["chat_id"] == "c-fischi"
+        assert hit["hits"][0]["file_names"] == ["2026-09-03-wikisana-qs24-umzugsplan-entwurf_4.docx"]
+        chats = server.m365_index_search("Fischerauer", kind="chat")
+        assert any(h["chat_id"] == "c-fischi" for h in chats["hits"])
+        contact = server.m365_find_contact("martin.fischerauer@example.com")
+        assert contact["resolution"] == "unique" and contact["contact"]["chat_id_1on1"] == "c-fischi"
+        assert "teams" in contact["contact"]["sources"]
+
+    def test_nickname_that_resolved_a_chat_becomes_an_alias(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        side_effect, _ = _teams_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_find_chat("Fischi")
+            assert res["resolution"] == "unique"
+            again = server.m365_find_chat("Fischi")
+        contact = server.m365_find_contact("Fischi")
+        assert contact["resolution"] == "unique"
+        assert "Fischi" in contact["contact"]["aliases"]
+        assert again["alias_used"]["query"] == "Fischi" and "fischerauer" in again["alias_used"]["resolved_as"].lower()
+
+    def test_index_disabled_env_is_a_noop(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("M365_INDEX_DISABLED", "1")
+        with patch.object(server, "_graph_request", return_value={"value": [
+            _mail("m1", ("A", "a@example.com"), [("J", "j@example.com")], "S", "<p>b</p>")]}):
+            server.m365_list_emails()
+        assert not (tmp_path / "state" / "m365_index.sqlite").exists()
+        assert server.m365_index_search("S")["count"] == 0
+        assert "disabled" in server.m365_index_refresh()["error"]
+
+    def test_index_refresh_pulls_chats_mail_and_contacts(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        calls = []
+
+        def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, account=None, **kw):
+            calls.append((endpoint, params))
+            if endpoint == "/me":
+                return ME
+            if endpoint == "/me/chats":
+                return {"value": CHATS}
+            if endpoint.startswith("/me/chats/") and endpoint.endswith("/messages"):
+                return {"value": [{"id": "5", "messageType": "message", "createdDateTime": "2026-09-02T08:00:00Z",
+                                   "from": {"user": {"id": "u-2", "displayName": "Martin"}}, "body": {"contentType": "text", "content": "Plan steht"}}]}
+            if endpoint.startswith("/me/mailFolders/inbox/messages"):
+                assert params["$filter"].startswith("receivedDateTime ge ")
+                return {"value": [_mail("i1", ("X Y", "x@example.com"), [("J", "johannes@example.com")], "Inbox one", "<p>hi</p>")]}
+            if endpoint.startswith("/me/mailFolders/sentitems/messages"):
+                return {"value": [_mail("s1", ("Johannes", "johannes@example.com"), [("X Y", "x@example.com")], "Re: Inbox one", "<p>ok</p>")]}
+            if endpoint == "/me/contacts":
+                return {"value": [{"id": "c1", "displayName": "Gonzalo Perez", "givenName": "Gonzalo", "surname": "Perez", "nickName": "Gonzo",
+                                   "emailAddresses": [{"address": "gonzalo@example.com"}]}]}
+            return {"value": []}
+
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_index_refresh(scope="all", days=14, max_items=50)
+        assert res["errors"] == []
+        assert res["indexed"]["chats"] == len(CHATS) and res["indexed"]["chat_messages"] >= 1
+        assert res["indexed"]["mail_inbox"] == 1 and res["indexed"]["mail_sentitems"] == 1
+        assert res["indexed"]["contacts_folder"] == 1
+        gonzo = server.m365_find_contact("Gonzo")
+        assert gonzo["resolution"] == "unique" and gonzo["contact"]["email"] == "gonzalo@example.com"
+        # the user's own address never becomes a contact
+        assert server.m365_find_contact("johannes@example.com")["resolution"] == "none"
+
+
+class TestSignatureDetection:
+    SIG = "<p>Viele Grüße</p><p>Johannes Huchler<br>IAMDS GmbH · Head of Something<br>+49 123 456</p>"
+
+    def _sent(self, bodies):
+        return {"value": [_mail(f"s{i}", ("Johannes", "johannes@example.com"), [("X", "x@example.com")], f"Subj {i}", b) for i, b in enumerate(bodies)]}
+
+    def test_common_trailing_block_and_closing(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        bodies = [
+            "<p>Hallo Martin,</p><p>passt so.</p>" + self.SIG,
+            "<p>Hi Tobias,</p><p>bitte prüfen.</p>" + self.SIG + "<p>Von: Tobias Hehl<br>Gesendet: gestern</p><p>alter Text</p>",
+            "<p>Moin,</p><p>danke!</p>" + self.SIG,
+            "<p>Kurze Antwort ohne alles</p>",
+        ]
+        with patch.object(server, "_graph_request", return_value=self._sent(bodies)):
+            res = server.m365_get_my_signature(sample=10)
+        assert res["closing"] == "Viele Grüße"
+        assert res["signature_lines"] == ["Johannes Huchler", "IAMDS GmbH · Head of Something", "+49 123 456"]
+        assert res["coverage"] == 0.75 and res["confidence"] == "medium"
+        assert res["signature_html"].startswith("<p>Johannes Huchler<br>")
+        assert "Outlook: email signature" in res["how_to_use"]
+        assert server._index_get_setting("my_signature")["lines"][0] == "Johannes Huchler"
+
+    def test_no_repeated_block_means_low_confidence(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        bodies = ["<p>eins</p>", "<p>zwei zwei</p>", "<p>drei drei drei</p>"]
+        with patch.object(server, "_graph_request", return_value=self._sent(bodies)):
+            res = server.m365_get_my_signature(sample=5)
+        assert res["confidence"] == "low" and res["signature_lines"] == [] and res["closing"] == ""
+        assert "Ask the user once" in res["how_to_use"]
+
+    def test_helpers_strip_history_and_signature(self):
+        text = "Hallo,\n\nkurz.\n\nViele Grüße\nJohannes Huchler\nIAMDS GmbH\n\nVon: X\nGesendet: Y\nalt"
+        cut = server._strip_quoted_history(text)
+        assert cut.endswith("IAMDS GmbH")
+        assert server._strip_signature(cut, ["Johannes Huchler", "IAMDS GmbH"]) == "Hallo,\n\nkurz.\n\nViele Grüße"
+        block, share = server._common_trailing_block(["a\nVG\nJ", "b\nVG\nJ", "c\nLG\nJ"], min_share=0.6)
+        assert block == ["VG", "J"] and share == 2 / 3
+        assert server._split_closing(["Viele Grüße", "Johannes"]) == ("Viele Grüße", ["Johannes"])
+
+
+class TestMailStyle:
+    SIG = "<p>Viele Grüße</p><p>Johannes Huchler<br>IAMDS GmbH</p>"
+
+    def _graph(self, sent_bodies, received_bodies=()):
+        def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, account=None, **kw):
+            if endpoint == "/me":
+                return ME
+            if endpoint == "/me/mailFolders/sentitems/messages":
+                assert params["$search"] == '"to:martin.fischerauer@example.com"'
+                return {"value": [_mail(f"s{i}", ("Johannes", "johannes@example.com"), [("Martin Fischerauer", "martin.fischerauer@example.com")], f"Re: Thema {i}", b)
+                                  for i, b in enumerate(sent_bodies)]}
+            if endpoint == "/me/messages":
+                assert params["$search"] == '"from:martin.fischerauer@example.com"'
+                return {"value": [_mail(f"r{i}", ("Martin Fischerauer", "martin.fischerauer@example.com"), [("Johannes", "johannes@example.com")], f"Thema {i}", b)
+                                  for i, b in enumerate(received_bodies)]}
+            return {"value": []}
+        return side_effect
+
+    def test_profile_from_sent_mail_with_signature_stripped(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        sent = [
+            "<p>Hi Fischi,</p><p>kannst du mir den Plan bis Freitag schicken? Danke dir.</p>" + self.SIG,
+            "<p>Hi Fischi,</p><p>passt, dann machen wir das so.</p>" + self.SIG,
+            "<p>Hi Fischi,</p><p>ich bin morgen im Homeoffice, melde mich.</p>" + self.SIG + "<p>Von: Martin<br>Gesendet: gestern</p><p>alt</p>",
+        ]
+        received = ["<p>Hi Johannes,</p><p>klar, schicke ich dir heute.</p><p>VG Martin</p>"]
+        with patch.object(server, "_graph_request", side_effect=self._graph(sent, received)):
+            res = server.m365_get_mail_style(to="martin.fischerauer@example.com")
+        prof = res["profile"]
+        assert res["source_messages"] == 3 and res["their_messages_seen"] == 1
+        assert prof["greeting_form"] == "hi" and prof["greeting_name"] == "Fischi" and prof["greeting_line"] == "Hi Fischi,"
+        assert prof["address"] == "du" and prof["closing"] == "Viele Grüße" and prof["language"] == "de"
+        assert prof["their_address"] == "du" and prof["their_greeting"].startswith("Hi Johannes")
+        assert all("IAMDS GmbH" not in ex for ex in res["examples"])
+        assert res["recipient"] == {"email": "martin.fischerauer@example.com", "display_name": "Martin Fischerauer"}
+        # learned on the contact: alias + mail style
+        contact = server.m365_find_contact("Fischi")
+        assert contact["resolution"] == "unique"
+        assert contact["contact"]["style_mail"]["greeting_line"] == "Hi Fischi,"
+
+    def test_name_resolves_via_contact_index_and_no_history_returns_defaults(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        conn = server._index_conn()
+        with conn:
+            server._index_record_contact(conn, email="martin.fischerauer@example.com", display_name="Martin Fischerauer", source="teams")
+        conn.close()
+        with patch.object(server, "_graph_request", side_effect=self._graph([], [])):
+            res = server.m365_get_mail_style(to="Martin Fischerauer")
+        assert res["profile"] is None and res["defaults"]["closing"] == "Viele Grüße"
+        assert res["recipient"]["email"] == "martin.fischerauer@example.com"
+
+    def test_unknown_name_without_mail_history_is_none(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with patch.object(server, "_graph_request", return_value={"value": []}):
+            res = server.m365_get_mail_style(to="Niemand")
+        assert res["resolution"] == "none" and "m365_index_refresh" in res["hint"]
+
+
+# ---------------------------------------------------------------------------
+# AIS-231: no hard delete, audited mail writes
+# ---------------------------------------------------------------------------
+
+
+class TestMailTrashSafetyAndAudit:
+    def setup_method(self):
+        server._MY_IDENTITY_CACHE.clear()
+        server._INDEX_FTS_STATE["available"] = None
+
+    def _graph(self, calls, folders=None):
+        folders = folders if folders is not None else [{"id": "FOLDER-PROJ", "displayName": "Projekte"}]
+
+        def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, account=None, **kw):
+            calls.append((method, endpoint, json_data, params))
+            if endpoint == "/me/messages/m1" and method == "GET":
+                return {"id": "m1", "subject": "Angebot", "from": {"emailAddress": {"name": "Martin", "address": "martin@example.com"}},
+                        "receivedDateTime": "2026-09-01T08:00:00Z", "parentFolderId": "INBOXID"}
+            if endpoint.startswith("/me/mailFolders") and method == "GET":
+                wanted = (params or {}).get("$filter", "")
+                return {"value": [f for f in folders if f["displayName"] in wanted]}
+            if endpoint.endswith("/move") and method == "POST":
+                return {"id": "m1-moved", "subject": "Angebot"}
+            if endpoint == "/me/sendMail":
+                return {}
+            return {"value": []}
+        return side_effect
+
+    def test_trash_moves_to_deleted_items_and_is_audited(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        calls = []
+        with patch.object(server, "_graph_request", side_effect=self._graph(calls)):
+            res = server.m365_trash_email("m1")
+        assert res["success"] and res["action"] == "trash" and res["destination"] == "deleteditems"
+        assert res["new_message_id"] == "m1-moved" and "Hard delete" in res["note"]
+        move = [c for c in calls if c[0] == "POST"][0]
+        assert move[1] == "/me/messages/m1/move" and move[2] == {"destinationId": "deleteditems"}
+        log = server.m365_get_audit_log()
+        assert log["count"] == 1
+        entry = log["entries"][0]
+        assert entry["action"] == "trash" and entry["tool"] == "m365_trash_email" and entry["target_id"] == "m1"
+        assert entry["subject"] == "Angebot" and entry["counterpart"] == "martin@example.com" and entry["result"] == "ok"
+        assert entry["details"]["destination"] == "deleteditems" and entry["details"]["new_message_id"] == "m1-moved"
+
+    def test_delete_is_an_alias_for_trash(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        calls = []
+        with patch.object(server, "_graph_request", side_effect=self._graph(calls)):
+            res = server.m365_delete_email("m1")
+        assert res["action"] == "trash" and "disabled" in res["note"]
+        assert not any("DELETE" == c[0] for c in calls)
+        assert server.m365_get_audit_log(action="trash")["entries"][0]["tool"] == "m365_delete_email"
+
+    def test_move_resolves_well_known_and_display_names(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        calls = []
+        with patch.object(server, "_graph_request", side_effect=self._graph(calls)):
+            a = server.m365_move_email("m1", "Archiv")
+            b = server.m365_move_email("m1", "Projekte")
+            c = server.m365_move_email("m1", "Unbekannt")
+        assert a["destination"] == "archive"
+        assert b["destination"] == "Projekte"
+        assert [x[2] for x in calls if x[0] == "POST"] == [{"destinationId": "archive"}, {"destinationId": "FOLDER-PROJ"}]
+        assert "No mail folder named 'Unbekannt'" in c["error"]
+        log = server.m365_get_audit_log(action="move")
+        assert log["count"] == 3 and log["entries"][0]["result"] == "error"
+
+    def test_send_is_audited_including_failures(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with patch.object(server, "_graph_request", return_value={}):
+            server.m365_send_email(to=["a@example.com"], subject="Hallo", body="Text")
+        with patch.object(server, "_graph_request", side_effect=RuntimeError("MS Graph API Error [403]")):
+            with pytest.raises(RuntimeError):
+                server.m365_send_email(to=["b@example.com"], subject="Fail", body="Text")
+        log = server.m365_get_audit_log(action="send")
+        assert [e["result"] for e in log["entries"]] == ["error", "ok"]
+        assert log["entries"][1]["counterpart"] == "a@example.com" and log["entries"][1]["subject"] == "Hallo"
+        assert "403" in log["entries"][0]["error"]
+
+    def test_audit_log_filters_and_limit(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for i in range(5):
+            server._audit_log("m365_move_email", "move", target_id=f"m{i}")
+        server._audit_log("m365_send_email", "send", subject="x")
+        assert server.m365_get_audit_log(limit=2)["count"] == 2
+        assert server.m365_get_audit_log(action="send")["count"] == 1
+        assert server.m365_get_audit_log(since="2999-01-01T00:00:00+00:00")["count"] == 0
+        assert "delete" not in [t for t in ("m365_hard_delete_email",) if hasattr(server, t)]
+
+
+class TestBriefSnapshot:
+    """m365_brief_snapshot (AIS-305): bundled, trimmed call for briefs."""
+
+    WINDOW = ("2026-09-08T06:00:00", "2026-09-08T20:00:00")
+
+    @staticmethod
+    def _graph(overrides=None, fail=None):
+        """Build a _graph_request stand-in with realistic Graph payloads; `fail` raises for that endpoint prefix."""
+        events = {"value": [
+            {
+                "id": "evt-2", "subject": "Standup", "isAllDay": False,
+                "start": {"dateTime": "2026-09-08T09:30:00.0000000", "timeZone": "Europe/Berlin"},
+                "end": {"dateTime": "2026-09-08T09:45:00.0000000", "timeZone": "Europe/Berlin"},
+                "location": {"displayName": "Teams"},
+                "organizer": {"emailAddress": {"name": "Alice", "address": "alice@example.com"}},
+                "attendees": [{"emailAddress": {"name": "Bob"}}, {"emailAddress": {"name": "Carol"}}],
+                "responseStatus": {"response": "accepted"},
+                "body": {"contentType": "html", "content": "<p>secret agenda</p>"},
+            },
+            {
+                "id": "evt-1", "subject": "Focus", "isAllDay": True,
+                "start": {"dateTime": "2026-09-08T00:00:00.0000000", "timeZone": "Europe/Berlin"},
+                "end": {"dateTime": "2026-09-09T00:00:00.0000000", "timeZone": "Europe/Berlin"},
+                "organizer": {"emailAddress": {"name": "Me", "address": "me@example.com"}},
+            },
+        ]}
+        mails = {"value": [
+            {
+                "id": "m-1", "subject": "Invoice", "isRead": False, "importance": "high",
+                "receivedDateTime": "2026-09-08T05:10:00Z", "hasAttachments": True,
+                "webLink": "https://outlook.office.com/m-1",
+                "from": {"emailAddress": {"name": "Dana", "address": "dana@example.com"}},
+                "bodyPreview": "please pay", "body": {"content": "<p>please pay</p>"},
+            },
+            {
+                "id": "m-2", "subject": "Already read", "isRead": True,
+                "receivedDateTime": "2026-09-08T04:00:00Z",
+                "from": {"emailAddress": {"name": "Eve", "address": "eve@example.com"}},
+                "bodyPreview": "old",
+            },
+            {
+                "id": "m-3", "subject": "Newsletter", "isRead": False,
+                "receivedDateTime": "2026-09-08T03:00:00Z",
+                "from": {"emailAddress": {"name": "News", "address": "news@example.com"}},
+                "bodyPreview": "spam",
+            },
+        ]}
+        todo_lists = {"value": [
+            {"id": "list-x", "displayName": "Other"},
+            {"id": "list-default", "displayName": "Tasks", "wellknownListName": "defaultList"},
+        ]}
+        tasks = {"value": [
+            {"id": "t-nodue", "title": "No due date", "status": "notStarted", "importance": "normal"},
+            {"id": "t-done", "title": "Done already", "status": "completed",
+             "dueDateTime": {"dateTime": "2026-09-08T10:00:00.0000000", "timeZone": "UTC"}},
+            {"id": "t-later", "title": "Next week", "status": "notStarted",
+             "dueDateTime": {"dateTime": "2026-09-15T22:00:00.0000000", "timeZone": "UTC"}},
+            {"id": "t-today", "title": "Due today", "status": "inProgress", "importance": "high",
+             "dueDateTime": {"dateTime": "2026-09-08T10:00:00.0000000", "timeZone": "UTC"}},
+        ]}
+        chats = {"value": [
+            {"id": "chat-1", "topic": None, "chatType": "oneOnOne",
+             "members": [{"displayName": "Alice"}, {"displayName": "Me"}]},
+            {"id": "chat-2", "topic": "Project X", "chatType": "group"},
+            {"id": "chat-3", "topic": "Silent", "chatType": "group"},
+        ]}
+        long_text = "word " * 100
+        chat_msgs = {
+            "chat-1": {"value": [
+                {"id": "cm-1", "messageType": "message", "createdDateTime": "2026-09-08T05:00:00Z",
+                 "from": {"user": {"displayName": "Alice"}},
+                 "body": {"contentType": "html", "content": f"<p>Hi <b>there</b><br>{long_text}</p>"}},
+                {"id": "cm-2", "messageType": "systemEventMessage", "body": {"content": "joined"}},
+                {"id": "cm-3", "messageType": "message", "createdDateTime": "2026-09-08T04:00:00Z",
+                 "from": {"user": {"displayName": "Me"}}, "body": {"contentType": "text", "content": "ok"}},
+                {"id": "cm-4", "messageType": "message", "createdDateTime": "2026-09-08T03:00:00Z",
+                 "from": {"user": {"displayName": "Alice"}}, "body": {"contentType": "text", "content": "third"}},
+            ]},
+            "chat-2": {"value": [
+                {"id": "cm-5", "messageType": "message", "createdDateTime": "2026-09-08T02:00:00Z",
+                 "from": {"application": {"displayName": "Bot"}}, "body": {"contentType": "text", "content": "deployed"}},
+            ]},
+            "chat-3": {"value": []},
+        }
+        teams = {"value": [{"id": "team-1", "displayName": "Dev Team"}]}
+        channels = {"value": [{"id": "ch-1", "displayName": "General"}, {"id": "ch-2", "displayName": "Empty"}]}
+        channel_msgs = {
+            "ch-1": {"value": [
+                {"id": "chm-1", "messageType": "message", "createdDateTime": "2026-09-08T01:00:00Z",
+                 "from": {"user": {"displayName": "Bob"}}, "body": {"contentType": "html", "content": "<p>Release <i>done</i></p>"}},
+            ]},
+            "ch-2": {"value": []},
+        }
+        routes = {
+            "/me/calendar/calendarView": events,
+            "/me/mailFolders/inbox/messages": mails,
+            "/me/todo/lists": todo_lists,
+            "/me/todo/lists/list-default/tasks": tasks,
+            "/me/chats": chats,
+            "/me/joinedTeams": teams,
+            "/teams/team-1/channels": channels,
+        }
+        for cid, payload in chat_msgs.items():
+            routes[f"/me/chats/{cid}/messages"] = payload
+        for chid, payload in channel_msgs.items():
+            routes[f"/teams/team-1/channels/{chid}/messages"] = payload
+        routes.update(overrides or {})
+        calls = []
+
+        def fake(method, endpoint, json_data=None, params=None, extra_headers=None, account=None):
+            calls.append((method, endpoint, params or {}))
+            if fail and endpoint.startswith(fail):
+                raise RuntimeError(f"MS Graph API Error [403]: denied for {endpoint}")
+            if endpoint in routes:
+                return routes[endpoint]
+            raise AssertionError(f"unexpected Graph call {method} {endpoint}")
+
+        fake.calls = calls
+        return fake
+
+    def test_happy_path_trims_filters_and_orders(self):
+        fake = self._graph()
+        with patch.dict(server.os.environ, {"HERMES_TIMEZONE": "Europe/Berlin"}), \
+                patch.object(server, "_graph_request", side_effect=fake):
+            res = server.m365_brief_snapshot(*self.WINDOW, mail_top=15, todo_top=10, chats_top=5, messages_per_chat=2)
+
+        assert res["errors"] == []
+        assert res["window"]["start"] == "2026-09-08T06:00:00"
+        assert res["window"]["end"] == "2026-09-08T20:00:00"
+
+        # Events: sorted by start, trimmed fields, no attendees/body.
+        assert [e["subject"] for e in res["events"]] == ["Focus", "Standup"]
+        standup = res["events"][1]
+        assert set(standup) == {"subject", "start", "end", "start_local", "end_local", "is_all_day",
+                                "location", "organizer", "response_status"}
+        assert standup["start"] == "2026-09-08T09:30:00"
+        assert standup["start_local"].startswith("2026-09-08 09:30:00")
+        assert standup["location"] == "Teams"
+        assert standup["organizer"] == "Alice"
+        assert standup["response_status"] == "accepted"
+        assert res["events"][0]["is_all_day"] is True
+        # Reused m365_get_events: window forwarded to the calendarView call.
+        cal_calls = [c for c in fake.calls if c[1] == "/me/calendar/calendarView"]
+        assert cal_calls and cal_calls[0][2]["startDateTime"] == "2026-09-08T06:00:00"
+        assert cal_calls[0][2]["endDateTime"] == "2026-09-08T20:00:00"
+        assert "responseStatus" in cal_calls[0][2]["$select"]
+
+        # Mail: unread only, no body/bodyPreview, trimmed fields, server-side filter + no bodies selected.
+        assert [m["id"] for m in res["unread_mail"]] == ["m-1", "m-3"]
+        invoice = res["unread_mail"][0]
+        assert set(invoice) == {"id", "received", "from_name", "from_address", "subject", "importance",
+                                "has_attachments", "web_link"}
+        assert invoice["from_name"] == "Dana" and invoice["from_address"] == "dana@example.com"
+        assert invoice["importance"] == "high" and invoice["has_attachments"] is True
+        assert invoice["received"].startswith("2026-09-08 07:10:00")
+        mail_call = next(c for c in fake.calls if c[1] == "/me/mailFolders/inbox/messages")
+        assert mail_call[2]["$filter"] == "isRead eq false"
+        assert "bodyPreview" not in mail_call[2]["$select"] and "body" not in mail_call[2]["$select"].split(",")
+
+        # To Do: completed dropped, due-in-window first, then by due date, then no due date.
+        assert [t["id"] for t in res["todos"]] == ["t-today", "t-later", "t-nodue"]
+        today = res["todos"][0]
+        assert set(today) == {"id", "list", "title", "status", "due", "importance"}
+        assert today["list"] == "Tasks" and today["status"] == "inProgress"
+        assert today["due"].startswith("2026-09-08 12:00:00")
+        assert res["todos"][2]["due"] == ""
+        task_call = next(c for c in fake.calls if c[1] == "/me/todo/lists/list-default/tasks")
+        assert task_call[2]["$filter"] == "status ne 'completed'"
+
+        # Teams: chats with messages only, system events skipped, messages capped, HTML stripped + truncated.
+        chats = res["teams"]["chats"]
+        assert [c["chat_id"] for c in chats] == ["chat-1", "chat-2"]
+        assert chats[0]["topic"] == "Alice, Me"
+        assert set(chats[0]) == {"chat_id", "topic", "messages"}
+        assert len(chats[0]["messages"]) == 2
+        first = chats[0]["messages"][0]
+        assert set(first) == {"from", "created", "preview"}
+        assert first["from"] == "Alice"
+        assert first["preview"].startswith("Hi there word")
+        assert "<" not in first["preview"]
+        assert len(first["preview"]) <= 160
+        assert chats[0]["messages"][1]["preview"] == "ok"
+        assert chats[1]["messages"][0]["from"] == "Bot"
+        channels = res["teams"]["channels"]
+        assert len(channels) == 1
+        assert channels[0]["team"] == "Dev Team" and channels[0]["topic"] == "General"
+        assert channels[0]["messages"][0]["preview"] == "Release done"
+
+        assert res["counts"] == {"events": 2, "unread_mail": 2, "todos": 3, "chats": 2, "channels": 1}
+
+        # Nothing verbose leaks anywhere in the payload.
+        dumped = server.json.dumps(res)
+        for forbidden in ("bodyPreview", "attendees", "secret agenda", "please pay", "<p>", "<b>"):
+            assert forbidden not in dumped
+
+    def test_caps_are_enforced(self):
+        fake = self._graph()
+        with patch.dict(server.os.environ, {"HERMES_TIMEZONE": "Europe/Berlin"}), \
+                patch.object(server, "_graph_request", side_effect=fake):
+            res = server.m365_brief_snapshot(*self.WINDOW, mail_top=500, todo_top=1, chats_top=99, messages_per_chat=1)
+
+        mail_call = next(c for c in fake.calls if c[1] == "/me/mailFolders/inbox/messages")
+        assert mail_call[2]["$top"] == 50
+        chats_call = next(c for c in fake.calls if c[1] == "/me/chats")
+        assert chats_call[2]["$top"] == 15
+        assert [t["id"] for t in res["todos"]] == ["t-today"]
+        assert all(len(c["messages"]) == 1 for c in res["teams"]["chats"])
+        assert next(c for c in fake.calls if c[1] == "/me/chats/chat-1/messages")[2]["$top"] == 1
+
+    def test_zero_caps_skip_sources(self):
+        fake = self._graph()
+        with patch.object(server, "_graph_request", side_effect=fake):
+            res = server.m365_brief_snapshot(*self.WINDOW, mail_top=0, todo_top=0, chats_top=0)
+        endpoints = {c[1] for c in fake.calls}
+        assert endpoints == {"/me/calendar/calendarView"}
+        assert res["unread_mail"] == [] and res["todos"] == [] and res["teams"] == {"chats": [], "channels": []}
+        assert res["counts"]["events"] == 2
+
+    def test_failing_source_only_adds_error_entry(self):
+        fake = self._graph(fail="/me/mailFolders/inbox/messages")
+        with patch.dict(server.os.environ, {"HERMES_TIMEZONE": "Europe/Berlin"}), \
+                patch.object(server, "_graph_request", side_effect=fake):
+            res = server.m365_brief_snapshot(*self.WINDOW)
+
+        assert res["unread_mail"] == []
+        assert len(res["errors"]) == 1
+        assert res["errors"][0]["source"] == "mail"
+        assert "403" in res["errors"][0]["error"]
+        # Other sources are intact.
+        assert res["counts"]["events"] == 2
+        assert res["counts"]["todos"] == 3
+        assert res["counts"]["chats"] == 2
+        assert res["counts"]["unread_mail"] == 0
+
+    def test_teams_consent_missing_keeps_calendar_mail_and_todos(self):
+        fake = self._graph(fail="/me/chats")
+        with patch.object(server, "_graph_request", side_effect=fake):
+            res = server.m365_brief_snapshot(*self.WINDOW)
+        sources = [e["source"] for e in res["errors"]]
+        assert sources == ["teams"]
+        assert res["teams"]["chats"] == []
+        assert res["teams"]["channels"]  # joinedTeams path still worked
+        assert res["counts"]["events"] == 2 and res["counts"]["unread_mail"] == 2 and res["counts"]["todos"] == 3
+
+    def test_window_completion_and_shared_calendar(self):
+        fake = self._graph(overrides={
+            "/me/calendars": {"value": [{"id": "cal-office", "name": "Officezeiten"}]},
+            "/me/calendars/cal-office/calendarView": {"value": []},
+        })
+        with patch.dict(server.os.environ, {"HERMES_TIMEZONE": "Europe/Berlin"}), \
+                patch.object(server, "_graph_request", side_effect=fake):
+            res = server.m365_brief_snapshot("2026-09-08", "", calendar="Officezeiten", mail_top=0, todo_top=0, chats_top=0)
+        assert res["window"] == {"start": "2026-09-08T00:00:00", "end": "2026-09-08T23:59:59", "timezone": "Europe/Berlin"}
+        assert res["events"] == [] and res["errors"] == []
+        assert any(c[1] == "/me/calendars/cal-office/calendarView" for c in fake.calls)

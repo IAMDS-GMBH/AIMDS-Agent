@@ -1,11 +1,18 @@
 import { useEffect, useRef } from 'react'
 
-type CronCompletionEvent = {
+export interface CronCompletionEvent {
   type: 'cron_job_completed'
   job_id: string
   success: boolean
   error?: string
   timestamp: string
+  // AIS-305: the scheduler annotates the completion with what it wrote so
+  // the desktop can open the artifact without a second round-trip.
+  job_name?: null | string
+  profile?: null | string
+  output_path?: null | string
+  output_at?: null | string
+  session_id?: null | string
 }
 
 /**
@@ -16,7 +23,7 @@ type CronCompletionEvent = {
  * for the next poll interval.
  */
 export function useCronCompletionListener(
-  onJobCompleted?: (jobId: string, success: boolean, error?: string) => Promise<void> | void,
+  onJobCompleted?: (event: CronCompletionEvent) => Promise<void> | void,
   profile?: string
 ) {
   const wsRef = useRef<WebSocket | null>(null)
@@ -68,7 +75,7 @@ export function useCronCompletionListener(
               console.info(
                 `[cron-completion] Job ${data.job_id} completed: ${data.success ? 'success' : 'failed'}`
               )
-              onJobCompleted(data.job_id, data.success, data.error)
+              void onJobCompleted(data)
             }
           } catch (e) {
             console.error('[cron-completion] Failed to parse message:', e)

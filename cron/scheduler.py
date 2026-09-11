@@ -32,7 +32,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -1376,7 +1376,161 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
-def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
+# ---------------------------------------------------------------------------
+# AIS-305: run metadata handed from run_job() to _process_job()/API trigger
+# (run_job's 4-tuple return is public API; the extra facts travel here).
+# ---------------------------------------------------------------------------
+_RUN_META: Dict[str, dict] = {}
+_RUN_META_LOCK = threading.Lock()
+
+
+def _set_run_meta(job_id: str, **meta) -> None:
+    with _RUN_META_LOCK:
+        _RUN_META.setdefault(job_id, {}).update(meta)
+
+
+def pop_run_meta(job_id: str) -> dict:
+    with _RUN_META_LOCK:
+        return _RUN_META.pop(job_id, {}) or {}
+
+
+def _load_user_config() -> dict:
+    """Read ``HERMES_HOME/config.yaml`` (env-expanded); ``{}`` when absent/broken."""
+    try:
+        import yaml
+
+        cfg_path = _get_hermes_home() / "config.yaml"
+        if not cfg_path.exists():
+            return {}
+        with open(cfg_path, encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh) or {}
+        return _expand_env_vars(cfg) if isinstance(cfg, dict) else {}
+    except Exception as exc:
+        logger.debug("config.yaml unreadable for collector: %s", exc)
+        return {}
+
+
+_JOURNAL_ALLOWED_KEYS = ("type", "title", "created", "updated", "status", "tags", "related_to")
+_HUB_START = "<!-- briefs:start -->"
+_HUB_END = "<!-- briefs:end -->"
+
+
+def _strip_frontmatter(text: str) -> str:
+    stripped = text.lstrip()
+    if stripped.startswith("---"):
+        end = stripped.find("\n---", 3)
+        if end != -1:
+            return stripped[end + 4:].lstrip("\n")
+    return text
+
+
+def _write_brief_journal(job: dict, kind: str, final_response: str, lang: str, *, now=None) -> Optional[Path]:
+    """Write the brief to ``<workspace>/journal/<YYYY-MM-DD>-<kind>.md`` (Obsidian-conform).
+
+    Frontmatter uses only the keys the vault schema allows (``_conventions.md``);
+    ``created`` is preserved across reruns; the hub gets a bounded "latest
+    briefs" section. Never raises.
+    """
+    try:
+        from cron.brief_collector import HEADINGS, brief_title
+
+        now = now or _hermes_now()
+        day = now.date()
+        root = resolve_agent_cwd().expanduser().resolve()
+        journal_dir = root / "journal"
+        journal_dir.mkdir(parents=True, exist_ok=True)
+        path = journal_dir / f"{day.isoformat()}-{kind}.md"
+        title = brief_title(kind, lang, day)
+        created = day.isoformat()
+        if path.exists():
+            try:
+                prev_meta = _parse_simple_frontmatter(path.read_text(encoding="utf-8", errors="replace"))
+                prev_created = _parse_dateish(prev_meta.get("created", ""))
+                if prev_created:
+                    created = prev_created.isoformat()
+            except Exception:
+                pass
+        body = _strip_frontmatter(str(final_response or "")).strip()
+        # No emoji in headings (vault rule) — strip leading symbols from heading lines.
+        body_lines = []
+        for ln in body.splitlines():
+            if ln.startswith("#"):
+                hashes = len(ln) - len(ln.lstrip("#"))
+                rest = ln[hashes:].strip()
+                rest = re.sub(r"^[^\w\[\(\"']+", "", rest).strip()
+                ln = "#" * hashes + " " + rest
+            body_lines.append(ln)
+        body = "\n".join(body_lines).strip()
+        if not body.startswith("#"):
+            body = f"# {title}\n\n{body}"
+        fm = (
+            "---\n"
+            "type: journal\n"
+            f"title: \"{title}\"\n"
+            f"created: {created}\n"
+            f"updated: {day.isoformat()}\n"
+            "status: reference\n"
+            f"tags: [journal, {kind}]\n"
+            "related_to: [\"[[journal/_hub|Journal]]\"]\n"
+            "---\n\n"
+        )
+        tmp = path.with_suffix(".md.tmp")
+        tmp.write_text(fm + body + "\n", encoding="utf-8")
+        from utils import atomic_replace
+
+        atomic_replace(str(tmp), str(path))
+        _update_journal_hub(journal_dir, lang)
+        return path
+    except Exception as exc:
+        logger.warning("Job '%s': journal write failed: %s", job.get("id"), exc)
+        return None
+
+
+def _update_journal_hub(journal_dir: Path, lang: str, limit: int = 10) -> None:
+    """Replace the ``<!-- briefs:start/end -->`` block in ``journal/_hub.md`` with the newest briefs."""
+    try:
+        from cron.brief_collector import HEADINGS
+
+        hub = journal_dir / "_hub.md"
+        files = sorted(
+            [p for p in journal_dir.glob("????-??-??-*.md") if p.is_file()],
+            key=lambda p: p.name, reverse=True,
+        )[:limit]
+        heading = HEADINGS.get(lang, HEADINGS["en"])["latest"]
+        lines = [_HUB_START, f"## {heading}"]
+        for p in files:
+            try:
+                meta = _parse_simple_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+                title = meta.get("title") or p.stem
+            except Exception:
+                title = p.stem
+            lines.append(f"- [[journal/{p.stem}|{title}]]")
+        lines.append(_HUB_END)
+        block = "\n".join(lines)
+        if hub.exists():
+            text = hub.read_text(encoding="utf-8", errors="replace")
+            if _HUB_START in text and _HUB_END in text:
+                pre, _, rest = text.partition(_HUB_START)
+                _, _, post = rest.partition(_HUB_END)
+                new_text = pre + block + post
+            else:
+                new_text = text.rstrip("\n") + "\n\n" + block + "\n"
+        else:
+            new_text = (
+                "---\ntype: hub\ntitle: \"Journal\"\n"
+                f"created: {_hermes_now().date().isoformat()}\nupdated: {_hermes_now().date().isoformat()}\n---\n\n"
+                "# Journal\n\n" + block + "\n"
+            )
+        tmp = hub.with_suffix(".md.tmp")
+        tmp.write_text(new_text, encoding="utf-8")
+        from utils import atomic_replace
+
+        atomic_replace(str(tmp), str(hub))
+    except Exception as exc:
+        logger.debug("journal hub update skipped: %s", exc)
+
+
+def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None, collected=None, lang: Optional[str] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
     Args:
@@ -1386,6 +1540,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             When provided, the script is not re-executed and the cached
             result is used for prompt injection. When omitted, the script
             (if any) runs inline as before.
+        collected: Optional ``CollectorResult`` for compose-only runs (AIS-305).
+        lang: Output language code for the LANGUAGE directive; ``None`` → ``en``.
     """
     user_prompt = str(job.get("prompt") or "")
     prompt = user_prompt
@@ -1474,10 +1630,19 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 logger.warning("context_from: failed to read output for job %r: %s", source_job_id, e)
                 # silent skip — do not pollute the prompt with error messages
 
+    # AIS-319: every scheduled run answers in the configured Hermes language
+    # (cron.brief_collector.language → display.language → en). The directive
+    # sits inside the [IMPORTANT: …] hint so it precedes collected data, script
+    # output and the user prompt for all job kinds, not only the brief.
+    from cron.brief_collector import language_instruction
+
+    lang_line = language_instruction(lang or "en")
+
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
     cron_hint = (
         "[IMPORTANT: You are running as a scheduled cron job. "
+        + lang_line + " "
         "DELIVERY: Your final response will be automatically delivered "
         "to the user's Desktop — do NOT send outbound emails/messages or use "
         "any external delivery mechanism yourself. Just produce your "
@@ -1493,7 +1658,30 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "delivery. Never combine [SILENT] with content — either report "
         "your findings normally, or say [SILENT] and nothing more.]\n\n"
     )
-    prompt = cron_hint + prompt
+    if collected is not None:
+        # Compose-only run (AIS-305): the collector already gathered the data;
+        # the agent has no tools and the scheduler writes the journal file.
+        cron_hint = (
+            "[IMPORTANT: You are running as a scheduled cron job. "
+            + lang_line + " "
+            "DELIVERY: Your final response is delivered to the user's Desktop and "
+            "saved as the journal file by the scheduler — do NOT send messages or "
+            "write files yourself. You have NO tools: compose ONLY from the "
+            "'## Collected Data' block below; never fetch, search or guess missing "
+            "data. If a source is marked skipped or failed, say so in one line. "
+            "Do not output YAML frontmatter; the scheduler adds it. "
+            + (
+                "SILENT: If there is genuinely nothing new to report, respond with "
+                "exactly \"[SILENT]\" (nothing else).]\n\n"
+                if collected.kind in ("mail-check", "teams-check")
+                else "Always produce the brief, even when most sections are empty — say "
+                "'nothing urgent' for empty parts; never answer [SILENT].]\n\n"
+            )
+        )
+        prompt = cron_hint + str(collected.text or "").rstrip() + "\n\n" + prompt
+        has_injected_data = True
+    else:
+        prompt = cron_hint + prompt
     stale_hint = _build_weekly_stale_projects_hint(job)
     if stale_hint:
         prompt = stale_hint + prompt
@@ -1810,8 +1998,54 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             )
             return True, silent_doc, SILENT_MARKER, None
 
+    # AIS-305: LLM-free collector for the shipped brief/poll jobs. Runs before
+    # the prompt is assembled; a failure here falls back to the legacy path.
+    collected = None
+    collector_kind = None
+    brief_lang = "en"
+    _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    _user_cfg = _load_user_config()
     try:
-        prompt = _build_job_prompt(job, prerun_script=prerun_script)
+        from cron.brief_collector import brief_language, collect, resolve_collector_kind
+
+        collector_kind = resolve_collector_kind(job, _user_cfg)
+        brief_lang = brief_language(_user_cfg)
+        if collector_kind:
+            try:
+                from tools.mcp_tool import discover_mcp_tools
+
+                discover_mcp_tools()
+            except Exception as _mcp_exc:
+                logger.warning("Job '%s': MCP init before collector failed (non-fatal): %s", job_id, _mcp_exc)
+            job_for_collect = dict(job)
+            job_for_collect["_session_id"] = _cron_session_id
+            collected = collect(job_for_collect, collector_kind, cfg=_user_cfg)
+            logger.info(
+                "Job '%s': collector kind=%s items=%s elapsed=%.1fs %s",
+                job_id, collector_kind, collected.counts, collected.elapsed_s, collected.sources_line(),
+            )
+            if job.get("enabled_toolsets"):
+                logger.info("Job '%s': enabled_toolsets ignored — compose-only run has no tools", job_id)
+    except Exception as _col_exc:
+        logger.warning("Job '%s': collector failed, falling back to legacy prompt: %s", job_id, _col_exc)
+        collected = None
+
+    if collected is not None and not collected.has_new:
+        logger.info("Job '%s': collector found nothing new — agent skipped (0 tokens)", job_id)
+        logger.info("[AIS-161] cron cost: job=%s api_calls=0 in=0 out=0 cache_read=0 compose_only=True collector=nothing-new", job_id)
+        silent_doc = (
+            f"# Cron Job: {job_name}\n\n"
+            f"**Job ID:** {job_id}\n"
+            f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"**Status:** silent (collector: nothing new)\n"
+            f"**Collector:** {collected.sources_line()}\n"
+            f"**Cost:** api_calls=0\n"
+        )
+        _set_run_meta(job_id, session_id="", journal_path=None, api_calls=0, collector_kind=collector_kind, silent=True)
+        return True, silent_doc, SILENT_MARKER, None
+
+    try:
+        prompt = _build_job_prompt(job, prerun_script=prerun_script, collected=collected, lang=brief_lang)
     except CronPromptInjectionBlocked as block_exc:
         # Assembled prompt (user prompt + loaded skill content) tripped the
         # injection scanner. Refuse to run the agent this tick and surface
@@ -1839,7 +2073,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         return True, "", SILENT_MARKER, None
     origin = _resolve_origin(job)
-    _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
@@ -1922,14 +2155,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except UnicodeDecodeError:
             load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="latin-1")
 
-        delivery_target = _resolve_delivery_target(job)
-        if delivery_target:
-            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(delivery_target["platform"])
-            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"].set(str(delivery_target["chat_id"]))
-            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(
-                ""
-                if delivery_target.get("thread_id") is None
-                else str(delivery_target["thread_id"])
+        # Desktop build (AIS-145): cron output stays on this desktop. The
+        # HERMES_CRON_AUTO_DELIVER_* vars (the agent's send_message auto-route
+        # to a chat) are intentionally never populated — they were the second
+        # path by which a legacy deliver="telegram" job could still reach an
+        # external platform after the scheduler's own delivery was disabled.
+        if _normalize_deliver_value(job.get("deliver")) != "local":
+            logger.info(
+                "Job '%s': deliver=%r ignored — cron delivery is fixed to local on the desktop build",
+                job_id, job.get("deliver"),
             )
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
@@ -1992,6 +2226,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         # Max iterations
         max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+        if collected is not None:
+            from cron.brief_collector import collector_config
+
+            max_iterations = int(collector_config(_cfg).get("compose_max_iterations") or 3)
 
         # Provider routing
         pr = _cfg.get("provider_routing", {})
@@ -2096,7 +2334,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
-            enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
+            # Compose-only runs pass [] directly: _resolve_cron_enabled_toolsets
+            # treats an empty list as "unset" and would fall back to the cli set.
+            enabled_toolsets=([] if collected is not None else _resolve_cron_enabled_toolsets(job, _cfg)),
             disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
@@ -2116,6 +2356,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         agent._enforce_initial_memory_context = False
         agent._session_start_compact_workspace_hydration = False
         agent._session_start_bootstrap_contract_enabled = False
+        # Background memory/skill/tool-findings review after the run replays
+        # the whole context several times; cron runs opt out unless
+        # cron.background_review is switched on (AIS-305).
+        agent._background_review_enabled = bool(
+            ((_cfg.get("cron") or {}) if isinstance(_cfg, dict) else {}).get("background_review", False)
+        )
 
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
@@ -2250,6 +2496,41 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 """
         
         logger.info("Job '%s' completed successfully", job_name)
+
+        # AIS-305: compose-only bookkeeping — journal file, watermark, cost line.
+        journal_path = None
+        if collected is not None:
+            is_silent = SILENT_MARKER in final_response.strip().upper()
+            if collector_kind in ("morning-brief", "weekly-review") and final_response.strip() and not is_silent:
+                journal_path = _write_brief_journal(job, collector_kind, final_response, brief_lang)
+                if journal_path:
+                    output += f"\n**Journal:** {journal_path}\n"
+            if final_response.strip():
+                try:
+                    from cron.brief_store import BriefStore
+
+                    _ws = BriefStore()
+                    try:
+                        collected.commit(_ws)
+                    finally:
+                        _ws.close()
+                except Exception as _wm_exc:
+                    logger.debug("Job '%s': watermark commit skipped: %s", job_id, _wm_exc)
+            output += f"**Collector:** {collected.sources_line()}\n"
+        _api_calls = int(getattr(agent, "session_api_calls", 0) or 0) if agent is not None else 0
+        _in = int(result.get("prompt_tokens") or 0) if isinstance(result, dict) else 0
+        _out = int(result.get("completion_tokens") or 0) if isinstance(result, dict) else 0
+        _cache = int(result.get("cache_read_tokens") or 0) if isinstance(result, dict) else 0
+        logger.info(
+            "[AIS-161] cron cost: job=%s api_calls=%d in=%d out=%d cache_read=%d compose_only=%s sources=%s",
+            job_id, _api_calls, _in, _out, _cache, collected is not None,
+            collected.sources_line() if collected is not None else "-",
+        )
+        output += f"**Cost:** api_calls={_api_calls} in={_in} out={_out} cache_read={_cache}\n"
+        _set_run_meta(
+            job_id, session_id=_cron_session_id, journal_path=str(journal_path) if journal_path else None,
+            api_calls=_api_calls, collector_kind=collector_kind, silent=False,
+        )
         # A cron run that did real work leaves a trace in the vault (the
         # agent is built with skip_memory, so nothing else would write one).
         try:
@@ -2454,7 +2735,21 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                _meta = pop_run_meta(job["id"])
+                _summary = None
+                if success and final_response.strip():
+                    _s, _a, _oq, _has = _extract_findings_summary_action(final_response)
+                    if _has:
+                        _summary = {"finding": _s, "next": _a, "open_question": (_oq[0] if _oq else "")}
+                _extra_kwargs = {}
+                _output_path = _meta.get("journal_path") or (str(output_file) if success and not _meta.get("silent") else None)
+                if _output_path:
+                    _extra_kwargs["output_path"] = _output_path
+                if _meta.get("session_id"):
+                    _extra_kwargs["session_id"] = _meta["session_id"]
+                if _summary:
+                    _extra_kwargs["summary"] = _summary
+                mark_job_run(job["id"], success, error, delivery_error=delivery_error, **_extra_kwargs)
                 try:
                     prepare_next_day_prefetch(job["id"])
                 except Exception as pe:

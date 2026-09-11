@@ -27,6 +27,7 @@ from agent.prompt_builder import (
     build_outlook_signature_guidance,
     build_outlook_contact_profiling_guidance,
     build_ai_attribution_guidance,
+    build_teams_send_guidance,
     build_jira_guidance,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
@@ -1720,3 +1721,167 @@ def test_memory_prompt_teaches_active_contexts_hygiene():
     assert "active_contexts" in text
     assert "`always`" in text  # tag global rules before filtering
     assert "user confirms" in text
+
+
+class TestBuildTeamsSendGuidance:
+    """build_teams_send_guidance() (AIS-286): only with the m365 Teams send
+    tool; tells the model to resolve recipients with the tool, never send on
+    ambiguous, and pass the approved Markdown through."""
+
+    NAMES = {
+        "mcp_MSOffice365MCP_m365_send_chat_message",
+        "mcp_MSOffice365MCP_m365_find_chat",
+        "mcp_MSOffice365MCP_m365_get_chat_style",
+        "mcp_MSOffice365MCP_m365_get_or_create_direct_chat",
+        "memory_save",
+    }
+
+    def test_empty_without_teams_send_tool(self):
+        assert build_teams_send_guidance({"outlook_write_email", "memory_save"}) == ""
+        assert build_teams_send_guidance({"mcp_MSOffice365MCP_m365_send_email"}) == ""
+        assert build_teams_send_guidance(None) == ""
+
+    def test_full_guidance(self):
+        text = build_teams_send_guidance(self.NAMES)
+        assert text.startswith("# Teams: send to a person without guessing")
+        for name in self.NAMES:
+            assert name in text
+        assert "ambiguous" in text and "chat URL" in text
+        assert "Teams style with <Name>" in text
+        assert "Markdown" in text and "renders it to the HTML" in text
+        assert "no signature, no attribution line" in text
+
+    def test_send_tool_only(self):
+        text = build_teams_send_guidance({"mcp_MSOffice365MCP_m365_send_chat_message"})
+        assert text and "to=<name" in text
+        assert "m365_find_chat" not in text and "Teams style" not in text
+        assert "teams.microsoft.com" not in text
+
+    def test_links_and_files_guidance_with_download_tool(self):
+        text = build_teams_send_guidance(self.NAMES | {"mcp_MSOffice365MCP_m365_download_chat_files"})
+        assert "teams.microsoft.com/l/chat" in text
+        assert "mcp_MSOffice365MCP_m365_download_chat_files" in text and "saved_path" in text
+        # AIS-294: the next step after a download is named, not left to the model
+        assert "`read_file(saved_path)`" in text and "as Markdown" in text
+        assert "never parse a document with terminal commands" in text
+        assert "attachments=[" in text and "m365_download_email_attachments" not in text
+
+    def test_mail_attachments_and_sending_files(self):
+        text = build_teams_send_guidance(self.NAMES | {
+            "mcp_MSOffice365MCP_m365_download_chat_files",
+            "mcp_MSOffice365MCP_m365_download_email_attachments",
+            "mcp_MSOffice365MCP_m365_send_email",
+        })
+        assert "mcp_MSOffice365MCP_m365_download_email_attachments" in text
+        assert "mcp_MSOffice365MCP_m365_send_email" in text and "(email)" in text
+
+    def test_deferred_loading_sentence_only_with_tool_search(self):
+        """AIS-289: with the bridge active the Teams tools are deferred; the
+        guidance names the loading path instead of letting the model hunt
+        for substitutes."""
+        names = self.NAMES | {"mcp_MSOffice365MCP_m365_download_chat_files"}
+        without = build_teams_send_guidance(names)
+        assert "tool_describe" not in without and "may be deferred" not in without
+        with_bridge = build_teams_send_guidance(names | {"tool_search", "tool_call", "tool_describe"})
+        assert "may be deferred behind `tool_search`" in with_bridge
+        assert "tool_describe(<name>)" in with_bridge and "tool_call(<name>" in with_bridge
+        assert "do not substitute drive, SharePoint or terminal tools" in with_bridge
+
+    def test_sharepoint_url_is_not_an_item_id(self):
+        base = self.NAMES | {"mcp_MSOffice365MCP_m365_download_chat_files"}
+        text = build_teams_send_guidance(base)
+        assert "NOT a drive item id" in text and "never fetch it with curl" in text
+        assert "m365_download_drive_file" not in text
+        with_drive = build_teams_send_guidance(base | {"mcp_MSOffice365MCP_m365_download_drive_file"})
+        assert "pass it as `file_id` to `mcp_MSOffice365MCP_m365_download_drive_file`" in with_drive
+
+    def test_signature_and_attribution_treat_teams_as_chat(self):
+        names = {"mcp_MSOffice365MCP_m365_send_email", "mcp_MSOffice365MCP_m365_send_chat_message", "memory_save"}
+        sig = build_outlook_signature_guidance(names)
+        assert "do not add the email signature" in sig
+        att = build_ai_attribution_guidance(names)
+        assert "NO attribution line" in att
+        assert "very end of the message" not in att
+
+
+class TestDataHandlingMcpRecordsInstructions:
+    """AIS-289: the mcp_records how-to lives once in the static prompt, not
+    in a 600-char hint on every tool result."""
+
+    def test_sql_rung_explains_shaped_results_and_rows_query(self):
+        from agent.prompt_builder import build_data_handling_guidance
+
+        text = build_data_handling_guidance({"sql", "terminal"})
+        assert "tool_use_id" in text and "raw_data" in text
+        assert "`_shaped` block" in text
+        assert "SELECT raw_data FROM mcp_records WHERE tool_use_id" in text
+        assert "read a persisted-output file back" in text
+
+    def test_without_sql_no_query_text(self):
+        from agent.prompt_builder import build_data_handling_guidance
+
+        text = build_data_handling_guidance({"terminal"})
+        assert "SELECT raw_data" not in text and "not in this session" in text
+
+
+class TestSignatureAndStyleToolsInGuidance:
+    """AIS-289: with the MCP's deterministic tools present, the signature and
+    per-contact tone steps call them instead of eyeballing sent mail."""
+
+    BASE = {"mcp_MSOffice365MCP_m365_send_email", "mcp_MSOffice365MCP_m365_list_emails", "memory_save"}
+
+    def test_signature_step_uses_get_my_signature_when_present(self):
+        text = build_outlook_signature_guidance(self.BASE | {"mcp_MSOffice365MCP_m365_get_my_signature"})
+        assert "mcp_MSOffice365MCP_m365_get_my_signature()" in text
+        assert "closing" in text and "signature_html" in text and "confidence: low" in text
+        assert "Outlook: email signature" in text
+
+    def test_signature_step_falls_back_to_sent_mail_scan(self):
+        text = build_outlook_signature_guidance(self.BASE)
+        assert "m365_get_my_signature" not in text
+        assert "mcp_MSOffice365MCP_m365_list_emails" in text and "Outlook: email signature" in text
+
+    def test_tone_step_uses_get_mail_style_and_find_contact(self):
+        names = self.BASE | {"mcp_MSOffice365MCP_m365_get_mail_style", "mcp_MSOffice365MCP_m365_find_contact"}
+        text = build_outlook_signature_guidance(names)
+        assert "mcp_MSOffice365MCP_m365_get_mail_style(to=<name or email>)" in text
+        assert "Mail style with <Name>" in text and "greeting_line" in text
+        assert "mcp_MSOffice365MCP_m365_find_contact(query)" in text
+        assert "hints.tone" not in text
+
+    def test_teams_guidance_gets_index_paragraph_only_with_index_tool(self):
+        base = {"mcp_MSOffice365MCP_m365_send_chat_message", "memory_save"}
+        without = build_teams_send_guidance(base)
+        assert "Vague references" not in without
+        with_index = build_teams_send_guidance(base | {"mcp_MSOffice365MCP_m365_index_search", "mcp_MSOffice365MCP_m365_find_contact"})
+        assert "mcp_MSOffice365MCP_m365_index_search(query=<words>" in with_index
+        assert "m365_index_refresh(scope='all')" in with_index
+        assert "mcp_MSOffice365MCP_m365_find_contact(query)" in with_index and "nicknames" in with_index
+
+
+class TestMailSafetyGuidance:
+    """AIS-231: no hard delete, audited writes — only with a mail MCP that has the trash/move tools."""
+
+    def test_empty_without_trash_or_move_tools(self):
+        from agent.prompt_builder import build_mail_safety_guidance
+
+        assert build_mail_safety_guidance({"mcp_MSOffice365MCP_m365_send_email", "terminal"}) == ""
+        assert build_mail_safety_guidance(None) == ""
+
+    def test_m365_family(self):
+        from agent.prompt_builder import build_mail_safety_guidance
+
+        names = {"mcp_MSOffice365MCP_m365_trash_email", "mcp_MSOffice365MCP_m365_move_email", "mcp_MSOffice365MCP_m365_get_audit_log"}
+        text = build_mail_safety_guidance(names)
+        assert text.startswith("# Mailbox safety: no hard delete, audited writes")
+        assert "`mcp_MSOffice365MCP_m365_trash_email(message_id)`" in text
+        assert "mcp_MSOffice365MCP_m365_move_email(message_id, destination_folder)" in text
+        assert "mcp_MSOffice365MCP_m365_get_audit_log(limit, action)" in text
+        assert "IMAP" not in text and "never need to log them" in text
+
+    def test_imap_family(self):
+        from agent.prompt_builder import build_mail_safety_guidance
+
+        text = build_mail_safety_guidance({"mcp_EMailMCP_email_trash_message", "mcp_EMailMCP_email_get_audit_log"})
+        assert "IMAP mailbox" in text and "mcp_EMailMCP_email_trash_message(message_id, folder)" in text
+        assert "Outlook/M365" not in text

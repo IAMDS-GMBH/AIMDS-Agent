@@ -1,7 +1,7 @@
 ---
 name: word
 description: "Create, read, edit, and convert Microsoft Word (.docx) files."
-version: 1.1.0
+version: 1.2.0
 author: aimds
 license: MIT
 platforms: [linux, macos, windows]
@@ -32,10 +32,16 @@ python3 scripts/read.py document.docx --styles     # List styles in use
 
 ```
 python3 scripts/write.py --from-md input.md output.docx        # Markdown → DOCX
-python3 scripts/write.py --replace "Old" "New" document.docx   # Find & replace
+python3 scripts/write.py --replace "Old" "New" document.docx   # Find & replace (spans runs, body+tables+headers/footers, prints count)
 python3 scripts/write.py --append "New paragraph." document.docx
 python3 scripts/write.py --merge a.docx b.docx c.docx --out merged.docx
 ```
+
+Inside Hermes prefer the `office_word` tool (same scripts, with workspace path
+resolution, timeout and sensitive-path guard): actions `read_text`,
+`read_markdown`, `read_tables`, `read_metadata`, `read_styles`, `from_markdown`
+(`source_path` or inline `text`), `find_replace`, `append_paragraph`, `merge`,
+`convert`.
 
 ### scripts/convert.py — Export to other formats
 
@@ -49,8 +55,9 @@ python3 scripts/convert.py reports/ --to pdf        # Convert entire folder
 ## Prerequisites
 
 ```bash
-uv pip install python-docx markitdown docx2pdf
-# For Markdown → DOCX / HTML: brew install pandoc  (or apt/winget)
+uv pip install -e ".[office]"        # python-docx, markitdown[docx], openpyxl, python-pptx (pinned)
+# Optional, better fidelity: brew install pandoc  (Markdown ↔ DOCX/HTML)
+#                            LibreOffice or docx2pdf (DOCX → PDF)
 ```
 
 ## Quick decision guide
@@ -69,4 +76,5 @@ uv pip install python-docx markitdown docx2pdf
 
 - **PDF conversion**: `--to pdf` uses `docx2pdf` (requires Word on macOS/Windows) then falls back to LibreOffice. For Linux always use LibreOffice.
 - **Styles are locale-sensitive**: built-in names like `"List Bullet"` differ in German Word. Use `read.py --styles` to inspect what's available.
-- **Find & replace splits runs**: Word may split a word across multiple runs. If `--replace` misses something, use `read.py --markdown` first to confirm the exact text.
+- **Find & replace across runs**: `--replace` joins the runs of each paragraph, so matches split by formatting boundaries are found; the first touched run keeps its formatting. Text inside hyperlinks/fields is not covered — check with `read.py --markdown`.
+- **Merge is structural**: `--merge` appends body XML; styles and numbering come from the first document.

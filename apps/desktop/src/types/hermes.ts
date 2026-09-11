@@ -88,10 +88,25 @@ export interface OAuthSubmitResponse {
 }
 
 export interface OAuthPollResponse {
+  /** Consent failures carry the tenant-admin consent URL (AIS-286). */
+  action_url?: null | string
+  error_category?: null | string
+  error_code?: null | string
   error_message?: null | string
   expires_at?: null | number
   session_id: string
   status: 'approved' | 'denied' | 'error' | 'expired' | 'pending'
+}
+
+export interface MicrosoftAdminConsentResponse {
+  client_id: string
+  granted_tier: 'admin' | 'self' | 'standard' | null
+  org_consent_scopes: string[]
+  org_consented: boolean
+  scopes: string[]
+  self_consent_scopes: string[]
+  tenant_id: string
+  url: string
 }
 
 export interface EnvVarInfo {
@@ -328,6 +343,9 @@ export interface SessionInfo {
   profile?: string
   /** True when {@link profile} is the default profile. */
   is_default_profile?: boolean
+  /** Cron runs: absolute path of the artifact (journal markdown) the run
+   *  wrote, when the scheduler recorded one (AIS-305). */
+  output_path?: null | string
 }
 
 export interface SessionMessage {
@@ -455,13 +473,47 @@ export interface CronJob {
   id: string
   last_error?: null | string
   last_run_at?: null | string
+  /** ISO timestamp of the newest artifact the job wrote (AIS-305). */
+  last_output_at?: null | string
+  /** Absolute path of the newest artifact (journal markdown). */
+  last_output_path?: null | string
+  /** FINDING / NEXT / OPEN_QUESTION lines the backend already extracted. */
+  last_output_summary?: CronJobOutputSummary | null
+  /** Session id of the newest run (`cron_{job_id}_{ts}`). */
+  last_run_session_id?: null | string
+  /** When the user last opened this job's output in the desktop. Older than
+   *  {@link last_output_at} (or missing) means the output is unseen. */
+  last_seen_at?: null | string
+  last_status?: 'error' | 'ok' | null
   name?: null | string
   next_run_at?: null | string
+  /** Seed provenance for the shipped brief jobs (`morning-brief`, …). */
+  origin?: CronJobOrigin | null
+  /** Owning profile; passed back as `?profile=` on seen/output calls. */
+  profile?: string
   prompt?: null | string
   schedule?: CronJobSchedule
   schedule_display?: null | string
   script?: null | string
   state?: null | string
+}
+
+export interface CronJobOrigin {
+  kind?: null | string
+  seed_key?: null | string
+}
+
+export interface CronJobOutputSummary {
+  finding?: string
+  next?: string
+  open_question?: string
+}
+
+export interface CronJobLatestOutput {
+  content: string
+  path: string
+  summary?: CronJobOutputSummary | null
+  written_at?: null | string
 }
 
 export interface CronJobCreatePayload {
@@ -600,6 +652,33 @@ export interface PlatformStatus {
   updated_at: string
 }
 
+export type AimdsSuiteState = 'connected' | 'needs_reauth' | 'not_configured' | 'unreachable'
+
+export interface AimdsSuiteEnvStatus {
+  base_url: string
+  base_url_source: '' | 'config' | 'default' | 'env'
+  default_base_url: string
+  env_base_url: string
+  env_mismatch: boolean
+  http_status: null | number
+  id: string
+  key_env: string
+  key_present: boolean
+  key_preview: string
+  key_source: string
+  label: string
+  mcp?: { connected: boolean | null; name: string; url: string; url_matches: boolean | null }
+  probe_error: string
+  reason: string
+  runtime_auth_failure: null | { http_status: null | number; message: string; since: number; source: string; state: string }
+  state: AimdsSuiteState
+}
+
+export interface AimdsSuiteStatusResponse {
+  checked_at: string
+  environments: AimdsSuiteEnvStatus[]
+}
+
 export interface StatusResponse {
   active_sessions: number
   auth_providers?: string[]
@@ -616,6 +695,9 @@ export interface StatusResponse {
   gateway_updated_at: string | null
   hermes_home: string
   latest_config_version: number
+  // Runtime auth failures of AIMDS-Suite environments keyed by provider id
+  // (401 from LiteLLM or the IAMDS MCP); cleared by a successful re-auth.
+  provider_auth?: Record<string, { http_status: null | number; message: string; since: number; source: string; state: string }>
   release_date: string
   started_at?: number
   uptime_seconds?: number
@@ -696,6 +778,9 @@ export interface McpCatalogInstallResponse {
   // the request's instance_name for multi-instance entries, otherwise the
   // catalog name.
   name?: string
+  /** Set when the install runs as a detached `hermes mcp install` action (git-bootstrap entries). */
+  action?: string
+  background?: boolean
 }
 
 export interface McpServersResponse {

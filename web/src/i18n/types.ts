@@ -286,7 +286,6 @@ export interface Translations {
       monthlyAt: string;
       onceAt: string;
     };
-    deliverTo: string;
     scheduledJobs: string;
     noJobs: string;
     last: string;
@@ -294,15 +293,6 @@ export interface Translations {
     pause: string;
     resume: string;
     triggerNow: string;
-    delivery: {
-      local: string;
-      telegram: string;
-      discord: string;
-      slack: string;
-      email: string;
-      needsHomeChannel?: string;
-      noneConfigured?: string;
-    };
   };
 
   // ── Plugins page ──

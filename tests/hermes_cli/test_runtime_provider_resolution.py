@@ -2775,3 +2775,46 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+
+def test_resolve_runtime_provider_suite_ignores_legacy_model_base_url(monkeypatch):
+    """AIS-298 / SUP-20260907-111120: a stale top-level ``model.base_url`` (the
+    pre-AIS-286 "direct endpoint" setting, here still pointing at staging) must
+    not steer an AIMDS-Suite provider away from its configured host.
+
+    ``providers.aimds-suite-prod.base_url`` equals the registry default, so the
+    "pool entry fell back to the hardcoded default" heuristic used to treat it
+    as unset and let ``model.base_url`` win — every new session and cron job
+    then started on staging with the prod key (401 token_not_found_in_db).
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "aimds-suite-prod")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "aimds-suite-prod",
+            "base_url": "https://staging.suite.iamds.com/litellm/v1",
+            "default": "AIMDS-Suite-Auto",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "provider": provider,
+            "api_key": "sk-prod-key",
+            "base_url": "https://suite.iamds.com/litellm/v1",
+            "source": "IAMDS_LITELLM_API_KEY",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="aimds-suite-prod")
+
+    assert resolved["provider"] == "aimds-suite-prod"
+    assert resolved["base_url"] == "https://suite.iamds.com/litellm/v1"
+    assert resolved["api_key"] == "sk-prod-key"

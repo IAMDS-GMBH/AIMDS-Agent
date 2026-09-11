@@ -818,6 +818,25 @@ function FlowPanel({
           <ErrorIcon className="shrink-0" size="0.875rem" />
           <span>{flow.message || t.onboarding.signInFailed}</span>
         </div>
+        {flow.actionUrl && (
+          <div className="flex flex-col gap-1 rounded-md border border-border/60 bg-muted/30 p-2 text-xs">
+            <span className="font-medium text-foreground">{t.onboarding.adminConsentNeeded}</span>
+            <span className="text-muted-foreground">{t.onboarding.adminConsentHint}</span>
+            <div className="flex items-center gap-2">
+              <a className="font-mono text-primary hover:underline break-all" href={flow.actionUrl} rel="noreferrer" target="_blank">
+                {t.onboarding.openAdminConsent}
+              </a>
+              <Button
+                className="h-5 px-1.5 text-[11px]"
+                onClick={() => void navigator.clipboard.writeText(flow.actionUrl ?? '')}
+                size="xs"
+                variant="ghost"
+              >
+                {t.common.copy}
+              </Button>
+            </div>
+          </div>
+        )}
         <div className="flex justify-end">
           <Button onClick={cancelOnboardingFlow} variant="outline">
             {t.onboarding.pickDifferentProvider}

@@ -372,9 +372,18 @@ def build_data_handling_guidance(valid_tool_names: "set[str] | None" = None) -> 
     if has_sql:
         rungs.append(
             "Large or structured tool results are auto-ingested into SQLite `mcp_records` "
-            "(~/.hermes/state.db). Aggregate, sum, group and compare with the `sql` tool "
-            "(SUM/COUNT/ROUND/GROUP BY, CTEs) instead of mental arithmetic — and fetch in "
-            "bounded slices (month by month) rather than one call for everything."
+            "(~/.hermes/state.db; columns id, tool_name, tool_use_id, reference_key, timestamp, "
+            "user_id, duration_seconds, category, comment, raw_data — raw_data is the full JSON "
+            "row). A tool result ending in `[ingested N rows → mcp_records …]` or carrying a "
+            "`_shaped` block is a bounded view: the complete rows are in the table — "
+            "`SELECT raw_data FROM mcp_records WHERE tool_use_id = '<id>'` — do not re-fetch, "
+            "parse the JSON by hand, or read a persisted-output file back. Aggregate, sum, group "
+            "and compare with the `sql` tool (SUM/COUNT/ROUND/GROUP BY, CTEs, e.g. "
+            "`SELECT reference_key, ROUND(SUM(duration_seconds)/3600.0, 2) AS hours FROM "
+            "mcp_records WHERE tool_name = '...' GROUP BY reference_key`) instead of mental "
+            "arithmetic; scope personal worklog/ticket queries to the active user "
+            "(`WHERE user_id LIKE '%...%'`) and fetch in bounded slices (month by month) rather "
+            "than one call for everything."
         )
     else:
         rungs.append(
@@ -1961,27 +1970,33 @@ def build_outlook_signature_guidance(valid_tool_names: "set[str] | None" = None)
     list_emails = mail_tools.get("list_emails") or mail_tools.get("search_emails")
     sent_hint = mail_tools.get("sent_folder_hint", "folder='sent'")
     chat_tool = mail_tools.get("send_chat_message")
-    html_scope = (
-        f"emails (`{write_email}`) and Teams messages (`{chat_tool}`)"
-        if chat_tool
-        else f"emails (`{write_email}`)"
-    )
-
-    return (
-        "# Outlook/M365: HTML formatting, signature & per-contact tone\n"
-        f"Always compose {html_scope} as HTML, never plain text — this is what makes "
-        "paragraphs, line breaks, and the signature/attribution below render correctly instead "
-        "of collapsing into one unreadable block.\n"
-        "Global signature (derive once, reuse silently): this is a MANDATORY prerequisite step, "
-        f"not optional polish. Before your FIRST `{write_email}` call for a new email "
-        "(not a reply — replies already show the existing thread) in a session, you MUST first "
-        "check memory for a previously saved note about the user's own email signature/closing. "
+    signature_tool = _resolve_m365_tool_name(names, "m365_get_my_signature")
+    mail_style_tool = _resolve_m365_tool_name(names, "m365_get_mail_style")
+    contact_tool = _resolve_m365_tool_name(names, "m365_find_contact")
+    # AIS-289: the MCP derives signature and per-contact register
+    # deterministically from sent mail; the model no longer eyeballs mails.
+    signature_step = (
+        f"If none exists, call `{signature_tool}()` — it returns `closing`, `signature_lines`/`signature_html` "
+        "and `coverage` from the user's own sent mail — and save closing + signature via "
+        f"`{tool_name}` (schema `notes`, title 'Outlook: email signature'). With `confidence: low` ask the "
+        "user once instead of guessing."
+        if signature_tool
+        else
         f"If none exists, call `{list_emails}` with {sent_hint} on a few recent messages "
         "yourself — do not ask the user to describe their own style, just look it up — infer the "
         "signature/closing the user actually uses, and save it via "
-        f"`{tool_name}` (schema `notes`, e.g. title 'Outlook: email signature'). Only draft the "
-        "email after this lookup/save step. From then on in later sessions, reuse the saved note "
-        "automatically — do not ask the user for their signature or re-derive it every time.\n"
+        f"`{tool_name}` (schema `notes`, e.g. title 'Outlook: email signature')."
+    )
+    tone_step = (
+        f"Before writing to a specific person, look for a memory `person` note 'Mail style with <Name>'; if "
+        f"none exists call `{mail_style_tool}(to=<name or email>)` — it returns greeting_line, du/Sie, closing, "
+        "typical length, language and how the person addresses the user — and save the profile on that "
+        f"person's memory entry via `{tool_name}` (schema `person`, tag mail-style). Mirror it: never assume "
+        "the same greeting/register for every recipient."
+        + (f" `{contact_tool}(query)` resolves names, nicknames and aliases to an email without directory rights."
+           if contact_tool else "")
+        if mail_style_tool
+        else
         "Per-contact tone (casual vs. formal): NEVER assume the same greeting/register for every "
         "recipient. Before writing to or replying to a specific person, check the existing thread "
         "(when replying) and/or that person's prior sent/received messages for the tone actually "
@@ -1990,6 +2005,28 @@ def build_outlook_signature_guidance(valid_tool_names: "set[str] | None" = None)
         f"(schema `person`, e.g. `hints.tone = \"casual\"` or `\"formal\"`) via `{tool_name}` so it "
         "doesn't need to be re-derived every time; only re-infer it when no prior thread/history "
         "exists yet for that contact."
+    )
+    teams_note = (
+        f" Teams messages (`{chat_tool}`) are different: pass the Markdown you showed the user as "
+        "`content` — the tool renders it to the HTML Teams displays, so do not hand-write HTML "
+        "there and do not add the email signature."
+        if chat_tool
+        else ""
+    )
+
+    return (
+        "# Outlook/M365: HTML formatting, signature & per-contact tone\n"
+        f"Always compose emails (`{write_email}`) as HTML, never plain text — this is what makes "
+        "paragraphs, line breaks, and the signature/attribution below render correctly instead "
+        f"of collapsing into one unreadable block.{teams_note}\n"
+        "Global signature (derive once, reuse silently): this is a MANDATORY prerequisite step, "
+        f"not optional polish. Before your FIRST `{write_email}` call for a new email "
+        "(not a reply — replies already show the existing thread) in a session, you MUST first "
+        "check memory for a previously saved note about the user's own email signature/closing. "
+        f"{signature_step} Only draft the "
+        "email after this lookup/save step. From then on in later sessions, reuse the saved note "
+        "automatically — do not ask the user for their signature or re-derive it every time.\n"
+        f"Per-contact tone (casual vs. formal): {tone_step}"
     )
 
 
@@ -2032,11 +2069,18 @@ def build_ai_attribution_guidance(valid_tool_names: "set[str] | None" = None) ->
     scope_bits = [b for b in (f"emails (`{write_email}`)" if write_email else None,
                               f"Teams messages (`{chat_tool}`)" if chat_tool else None) if b]
     scope = " and ".join(scope_bits)
+    teams_rule = (
+        f" For Teams messages (`{chat_tool}`) the default is NO attribution line — Teams is chat, "
+        "not mail; add it only when the saved style profile for that person shows the user does, "
+        "or the user asked for it."
+        if chat_tool
+        else ""
+    )
 
     return (
         "# AI attribution footer\n"
         f"Append a short attribution line to {scope} you compose: for emails, on its own line "
-        f"right after the signature/closing; for Teams messages, at the very end of the message. "
+        f"right after the signature/closing.{teams_rule} "
         f"Default format: '(Erstellt von {default_name})' (translate/adapt naturally to the "
         "conversation's language). Before your first such message in a session, check memory "
         "(schema `notes`) for a previously saved custom name or format for this — the user may "
@@ -2045,6 +2089,166 @@ def build_ai_attribution_guidance(valid_tool_names: "set[str] | None" = None) ->
         f"instruction (a new name, a different phrasing, or to omit it), persist it immediately "
         f"via `{tool_name}` (schema `notes`, e.g. title 'Assistant: attribution preference') so "
         "it's remembered in later sessions without asking again."
+    )
+
+
+def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str:
+    """Instruct the model how to send a Teams message to a *person* without
+    guessing: resolve the chat with the tool (never from memory), never send
+    on an ambiguous match, draft in the recipient's register, pass the approved
+    Markdown as content, and confirm the recipient from the tool result.
+
+    Written against a real session (2026-09-03) in which the assistant looked
+    for a chat id in memory, tried the wrong tool, asked the user for the chat
+    URL, drafted a formal letter and sent plain text with Markdown asterisks.
+
+    Only injected when the MSOffice365MCP ``m365_send_chat_message`` tool is
+    present (the legacy ``outlook_*`` family has no Teams tool).
+    """
+    names = set(valid_tool_names or set())
+    send_tool = _resolve_m365_tool_name(names, "m365_send_chat_message")
+    if not send_tool:
+        return ""
+    find_tool = _resolve_m365_tool_name(names, "m365_find_chat")
+    style_tool = _resolve_m365_tool_name(names, "m365_get_chat_style")
+    direct_tool = _resolve_m365_tool_name(names, "m365_get_or_create_direct_chat")
+    files_tool = _resolve_m365_tool_name(names, "m365_download_chat_files")
+    mail_files_tool = _resolve_m365_tool_name(names, "m365_download_email_attachments")
+    mail_tool = _resolve_m365_tool_name(names, "m365_send_email")
+    drive_tool = _resolve_m365_tool_name(names, "m365_download_drive_file")
+    index_tool = _resolve_m365_tool_name(names, "m365_index_search")
+    contact_tool = _resolve_m365_tool_name(names, "m365_find_contact")
+    memory_tool = _resolve_memory_save_tool_name(names)
+    index_line = (
+        f"\nVague references: when the user points at a chat, message, mail or person without an id or exact "
+        f"name (\"the chat about the move plan\", \"the mail from Martin about the offer\", \"Fischi\"), call "
+        f"`{index_tool}(query=<words>, kind=chat|chat_message|mail|contact|any)` first — it searches the local "
+        "index of metadata and snippets that the list/find tools fill as a side effect, and every hit carries "
+        "the ids plus a `next` hint. An empty index is filled once with `m365_index_refresh(scope='all')`."
+        + (f" `{contact_tool}(query)` resolves names, nicknames and learned aliases to email, Teams user id and "
+           "1:1 chat id without directory rights; nicknames that resolved a chat and greeting names from mail "
+           "are learned automatically." if contact_tool else "")
+        if index_tool
+        else ""
+    )
+    # With the bridge active these tools are usually deferred: name the
+    # loading path so the model does not go looking for substitutes.
+    deferred_line = (
+        " These tools may be deferred behind `tool_search`: load one with `tool_describe(<name>)` or "
+        "call it directly via `tool_call(<name>, {...})` — do not substitute drive, SharePoint or "
+        "terminal tools for them."
+        if "tool_search" in names
+        else ""
+    )
+
+    resolve_line = (
+        f"Resolve the recipient with `{find_tool}(query=<name|nickname|email|topic>)` or simply pass "
+        f"`to=<name>` to `{send_tool}` — it resolves the chat itself."
+        if find_tool
+        else f"Pass `to=<name|nickname|email|topic>` to `{send_tool}` — it resolves the chat itself."
+    )
+    none_line = (
+        f" If the result is `none` and you have an email or full name, use `{direct_tool}`; otherwise "
+        "ask for the person's full name or email."
+        if direct_tool
+        else " If the result is `none`, ask for the person's full name or email."
+    )
+    style_line = ""
+    if style_tool:
+        memory_bit = (
+            f" Look for a memory `person` note titled 'Teams style with <Name>' first; if none exists, "
+            f"call `{style_tool}(to=<name>)` and save the returned profile there via `{memory_tool}` "
+            "so it is not re-derived next time."
+            if memory_tool
+            else f" Call `{style_tool}(to=<name>)` first."
+        )
+        style_line = (
+            f"Register: match how the user actually writes to this person.{memory_bit} Without history "
+            "use the Teams defaults: short, first-name or no greeting, 'du' unless the profile says 'Sie', "
+            "no closing formula, no signature, no attribution line, no technical detail about how you got "
+            "the information, and nothing the recipient cannot verify.\n"
+        )
+    return (
+        "# Teams: send to a person without guessing\n"
+        f"When asked to send something to a person or group via Teams: {resolve_line} Never take a "
+        "chat_id from memory, an earlier session or a guess, never call the joined-teams/channel tools "
+        "to find a person, and never ask the user for a chat URL or id. If the resolution is "
+        f"`ambiguous`, show the candidates (members, topic, last message) and ask which one — do not "
+        f"pick silently.{none_line}\n"
+        f"{style_line}"
+        "Draft: show the exact message in the chat as normal Markdown (bold, lists, links; no code "
+        "block) in the recipient's language, wait for approval, then send the identical Markdown as "
+        f"`content` — `{send_tool}` renders it to the HTML Teams displays, so the preview equals what "
+        "arrives. Do not hand-write HTML unless the user asked for specific markup.\n"
+        "Confirm from the tool result (`recipient`, `plain_text`), not from assumption. If `sent` is "
+        "false, say why (ambiguous / not found) and resolve again."
+        + (
+            f"\nLinks and files: a pasted Teams link (https://teams.microsoft.com/l/chat/… or /l/message/…) "
+            f"is a valid `chat_id` for every chat tool — never ask the user to extract the id. For \"the "
+            f"document/file from the chat\" call `{files_tool}(chat_id=<link or id> | to=<name>, last=5)`; it "
+            "downloads the shared files into the Vault and returns `saved_path` per file — work with those "
+            "paths, do not describe the file from the chat preview. To read a downloaded document call "
+            "`read_file(saved_path)`: Office files (docx/xlsx/pptx) and PDFs come back as Markdown "
+            "(converted by the AIMDS-Suite Docling when reachable, locally otherwise) — never parse a "
+            "document with terminal commands. A SharePoint/OneDrive URL seen in a chat "
+            "message is NOT a drive item id and never an attachment id"
+            + (f"; if you only have such a URL, pass it as `file_id` to `{drive_tool}`" if drive_tool else "")
+            + "; never fetch it with curl or a script."
+            + (
+                f" For the attachments of an email use `{mail_files_tool}(message_id=…)` the same way."
+                if mail_files_tool
+                else ""
+            )
+            + f" To SEND a file, pass its path in `attachments=[…]` of `{send_tool}`"
+            + (f" (Teams) or `{mail_tool}` (email)" if mail_tool else "")
+            + " — Vault-relative paths and paths returned by the download tools are accepted; the file is "
+            "uploaded and linked, never pasted as text."
+            if files_tool
+            else ""
+        )
+        + index_line
+        + deferred_line
+    )
+
+
+def build_mail_safety_guidance(valid_tool_names: "set[str] | None" = None) -> str:
+    """Mailbox safety (AIS-231): there is no hard delete — "delete" means the
+    trash/Deleted Items move — and every send/move/trash is logged by the MCP
+    itself; the audit tool shows it. Injected when a mail MCP with the
+    move/trash tools is present (MSOffice365MCP ``m365_*`` or the IMAP
+    ``email_*`` family)."""
+    names = set(valid_tool_names or set())
+    m365_trash = _resolve_m365_tool_name(names, "m365_trash_email")
+    m365_move = _resolve_m365_tool_name(names, "m365_move_email")
+    m365_audit = _resolve_m365_tool_name(names, "m365_get_audit_log")
+    imap_trash = _resolve_m365_tool_name(names, "email_trash_message")
+    imap_move = _resolve_m365_tool_name(names, "email_move_message")
+    imap_audit = _resolve_m365_tool_name(names, "email_get_audit_log")
+    lines = []
+    if m365_trash or m365_move:
+        lines.append(
+            "Outlook/M365: "
+            + (f"move mail with `{m365_move}(message_id, destination_folder)`; " if m365_move else "")
+            + (f"\"delete\" always means `{m365_trash}(message_id)` (Deleted Items, recoverable) — " if m365_trash else "")
+            + "hard delete is not available and must not be attempted via other means"
+            + (f"; `{m365_audit}(limit, action)` shows what was sent, moved or trashed." if m365_audit else ".")
+        )
+    if imap_trash or imap_move:
+        lines.append(
+            "IMAP mailbox: "
+            + (f"move mail with `{imap_move}(message_id, destination_folder, folder)`; " if imap_move else "")
+            + (f"\"delete\" always means `{imap_trash}(message_id, folder)` (Trash folder, recoverable) — " if imap_trash else "")
+            + "hard delete is not available"
+            + (f"; `{imap_audit}(limit, action)` shows what was sent, moved or trashed." if imap_audit else ".")
+        )
+    if not lines:
+        return ""
+    return (
+        "# Mailbox safety: no hard delete, audited writes\n"
+        + " ".join(lines)
+        + " Sends, moves and trash actions are logged by the tool itself — you never need to log them; "
+        "when the user asks what happened to a mail, read the audit log instead of guessing. Before "
+        "trashing or moving more than a handful of mails, list them and confirm once."
     )
 
 
@@ -2161,12 +2365,34 @@ def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE
     return head + marker + tail
 
 
-def load_soul_md() -> Optional[str]:
-    """Load SOUL.md from HERMES_HOME and return its content, or None.
+# Packaged identity variants (AIS-309). A posture may ask for a variant
+# (``developer`` → ``SOUL.dev.md``); resolution order is the user's own
+# ``HERMES_HOME/SOUL.<variant>.md``, then the loadout file shipped with the
+# repo, then plain ``SOUL.md``. No installer/sync step needed for variants.
+_LOADOUT_IDENTITY_DIR = (
+    Path(__file__).resolve().parent.parent / "installer" / "skills-hidden" / "aimds-loadout" / "identity"
+)
+
+
+def _soul_variant_candidates(variant: str) -> list[Path]:
+    home = get_hermes_home()
+    variant = (variant or "").strip().lower()
+    if not variant:
+        return [home / "SOUL.md"]
+    name = f"SOUL.{variant}.md"
+    return [home / name, _LOADOUT_IDENTITY_DIR / name, home / "SOUL.md"]
+
+
+def load_soul_md(variant: str = "") -> Optional[str]:
+    """Load the identity file from HERMES_HOME and return its content, or None.
 
     Used as the agent identity (slot #1 in the system prompt).  When this
     returns content, ``build_context_files_prompt`` should be called with
     ``skip_soul=True`` so SOUL.md isn't injected twice.
+
+    ``variant`` selects an alternate identity (``"dev"`` → ``SOUL.dev.md``):
+    the user's ``HERMES_HOME`` copy wins, then the packaged loadout file,
+    then ``SOUL.md`` as the fallback.
     """
     try:
         from hermes_cli.config import ensure_hermes_home
@@ -2174,19 +2400,20 @@ def load_soul_md() -> Optional[str]:
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
-    soul_path = get_hermes_home() / "SOUL.md"
-    if not soul_path.exists():
-        return None
-    try:
-        content = soul_path.read_text(encoding="utf-8").strip()
+    for soul_path in _soul_variant_candidates(variant):
+        if not soul_path.exists():
+            continue
+        try:
+            content = soul_path.read_text(encoding="utf-8").strip()
+        except Exception as e:
+            logger.debug("Could not read %s: %s", soul_path, e)
+            continue
         if not content:
-            return None
-        content = _scan_context_content(content, "SOUL.md")
-        content = _truncate_content(content, "SOUL.md")
+            continue
+        content = _scan_context_content(content, soul_path.name)
+        content = _truncate_content(content, soul_path.name)
         return content
-    except Exception as e:
-        logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
-        return None
+    return None
 
 
 def _load_hermes_md(cwd_path: Path) -> str:

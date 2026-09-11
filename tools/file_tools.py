@@ -781,6 +781,46 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
+def _convert_document_for_read(path: str, resolved_str: str, file_ops) -> tuple:
+    """Convert an Office/PDF file for ``read_file``; returns ``(result, error_dict)``.
+
+    Conversion runs on the host, so it is only offered when the task's file
+    backend is local — inside a Docker/SSH sandbox the document is not
+    reachable from here and the caller gets an explicit error instead of
+    raw bytes.
+    """
+    from tools.document_convert import DocumentConvertError, convert_document
+
+    local_check = getattr(file_ops, "_lsp_local_only", None)
+    try:
+        is_local = bool(local_check()) if callable(local_check) else True
+    except Exception:
+        is_local = True
+    if not is_local:
+        return None, {
+            "error": (
+                f"Cannot read '{path}': document conversion (Office/PDF → Markdown) "
+                "is only available for the local environment, not inside a remote sandbox."
+            ),
+            "path": path,
+        }
+    try:
+        return convert_document(resolved_str), None
+    except DocumentConvertError as exc:
+        return None, {
+            "error": f"{exc}. Do not parse the file with terminal commands.",
+            "path": path,
+            "reasons": exc.reasons,
+            "hint": (
+                "If office_word / office_excel / office_powerpoint are available, "
+                "their read_markdown / read_sheet / read_text actions are an alternative."
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("document conversion crashed for %s: %s", resolved_str, exc, exc_info=True)
+        return None, {"error": f"Could not convert '{path}' to text: {type(exc).__name__}: {exc}", "path": path}
+
+
 def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
@@ -799,9 +839,22 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         _resolved = _resolve_path_for_task(path, task_id)
 
+        # ── Document conversion (AIS-294) ─────────────────────────────
+        # Office/PDF files are returned as Markdown (AIMDS-Suite Docling
+        # when reachable, local converters otherwise) instead of hitting
+        # the binary guard; legacy .doc/.xls/.ppt get an explicit answer.
+        from tools.document_convert import (
+            is_convertible_document,
+            is_legacy_office_document,
+            legacy_document_error,
+        )
+        _is_document = is_convertible_document(_resolved)
+        if is_legacy_office_document(_resolved):
+            return json.dumps({"error": legacy_document_error(path)}, ensure_ascii=False)
+
         # ── Binary file guard ─────────────────────────────────────────
         # Block binary files by extension (no I/O).
-        if has_binary_extension(str(_resolved)):
+        if not _is_document and has_binary_extension(str(_resolved)):
             _ext = _resolved.suffix.lower()
             return json.dumps({
                 "error": (
@@ -883,8 +936,23 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
+        _converted = None
+        if _is_document:
+            _converted, _conv_error = _convert_document_for_read(path, resolved_str, file_ops)
+            if _conv_error:
+                return json.dumps(_conv_error, ensure_ascii=False)
+            result = file_ops.read_file(_converted.cache_path, offset, limit)
+        else:
+            result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
+        if _converted is not None:
+            result_dict["converted_from"] = resolved_str
+            result_dict["converter"] = _converted.backend
+            result_dict["cache_path"] = _converted.cache_path
+            if _converted.warnings:
+                result_dict["converter_warnings"] = _converted.warnings
+            if _converted.suite_state and _converted.backend != "suite-docling":
+                result_dict["suite_docling"] = _converted.suite_state
 
         # ── Character-count guard ─────────────────────────────────────
         # We're model-agnostic so we can't count tokens; characters are
@@ -1495,7 +1563,7 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read text files with line numbers. Use offset/limit for large files.",
+    "description": "Read text files with line numbers. Use offset/limit for large files. Office files (docx/xlsx/pptx/odt/ods/odp) and PDFs are returned as Markdown automatically — never parse them with terminal commands.",
     "parameters": {
         "type": "object",
         "properties": {

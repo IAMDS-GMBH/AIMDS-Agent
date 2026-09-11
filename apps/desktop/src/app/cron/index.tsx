@@ -40,7 +40,8 @@ import { OverlayMain, OverlayNewButton, OverlaySidebar, OverlaySplitLayout } fro
 import { OverlayView } from '../overlays/overlay-view'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
-import { jobState, jobTitle, STATE_DOT } from './job-state'
+import { hasNewOutput, jobState, jobTitle, outputDate, STATE_DOT } from './job-state'
+import { openCronJobArtifact } from './open-artifact'
 
 const SCHEDULE_OPTIONS: ReadonlyArray<ScheduleOption> = [
   { expr: '0 9 * * *', value: 'daily' },
@@ -344,10 +345,10 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
       
       // If the response includes a session_id, navigate to the session immediately
       // so the user can see the output in real-time
-      if ((updated as any)?.session_id) {
-        const sessionId = (updated as any).session_id
-        const profile = (updated as any)?.profile
-        onOpenSession?.(sessionId, profile)
+      const sessionId = (updated as CronJob & { session_id?: string })?.session_id
+
+      if (sessionId) {
+        onOpenSession?.(sessionId, updated.profile)
       }
     } catch (err) {
       notifyError(err, c.failedTrigger)
@@ -593,6 +594,7 @@ function CronJobDetail({
             </div>
 
             {prompt && <p className="line-clamp-3 text-xs text-muted-foreground">{prompt}</p>}
+            <CronJobLatestOutput c={c} job={job} onOpenSession={onOpenSession} />
             {job.last_error && (
               <p className="inline-flex items-start gap-1 text-[0.7rem] text-destructive">
                 <AlertTriangle className="mt-px size-3 shrink-0" />
@@ -604,6 +606,48 @@ function CronJobDetail({
           <CronJobRuns c={c} job={job} onOpenSession={onOpenSession} />
         </div>
       </div>
+    </div>
+  )
+}
+
+// "Latest output" row: when the job wrote an artifact, its date, a "New" pill
+// while unseen, and the one-click open (preview + marks seen + jumps to the run).
+function CronJobLatestOutput({
+  c,
+  job,
+  onOpenSession
+}: {
+  c: Translations['cron']
+  job: CronJob
+  onOpenSession?: (sessionId: string, profile?: string) => void
+}) {
+  const date = outputDate(job)
+
+  if (!job.last_output_path && !date) {
+    return null
+  }
+
+  const isNew = hasNewOutput(job)
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      <span className="text-muted-foreground">{c.latestOutput}</span>
+      <span className="tabular-nums" title={job.last_output_path || undefined}>
+        {date ? date.toLocaleString() : '—'}
+      </span>
+      {isNew && <StatePill tone="good">{c.newOutput}</StatePill>}
+      <Button
+        onClick={() =>
+          void openCronJobArtifact(job, {
+            navigate: onOpenSession ? () => onOpenSession(job.last_run_session_id ?? '', job.profile) : undefined
+          })
+        }
+        size="xs"
+        variant="outline"
+      >
+        <Codicon name="file" size="0.75rem" />
+        {c.openLatestOutput}
+      </Button>
     </div>
   )
 }
@@ -684,10 +728,24 @@ function CronJobRuns({
             <button
               className="flex items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-xs hover:bg-(--chrome-action-hover) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
               key={run.id}
-              onClick={() => onOpenSession?.(run.id, (job as any)?.profile)}
+              // A run that wrote an artifact opens it (preview + jump to the
+              // run); bare runs open the chat directly.
+              onClick={() =>
+                run.output_path
+                  ? void openCronJobArtifact(job, {
+                      navigate: onOpenSession ? () => onOpenSession(run.id, job.profile) : undefined,
+                      path: run.output_path,
+                      runId: run.id
+                    })
+                  : onOpenSession?.(run.id, job.profile)
+              }
+              title={run.output_path || undefined}
               type="button"
             >
-              <span className="truncate text-foreground">{run.title?.trim() || run.preview?.trim() || run.id}</span>
+              <span className="flex min-w-0 items-center gap-1.5 text-foreground">
+                {run.output_path && <Codicon className="shrink-0 text-muted-foreground" name="file" size="0.75rem" />}
+                <span className="truncate">{run.title?.trim() || run.preview?.trim() || run.id}</span>
+              </span>
               <span className="shrink-0 text-[0.62rem] text-muted-foreground tabular-nums">
                 {formatRunTime(run.last_active || run.started_at)}
               </span>

@@ -437,7 +437,11 @@ class TestModalPaintNow:
             cli, lambda: cli._clarify_callback("Pick one", ["a", "b"]),
             "_clarify_state",
         )
-        assert value == "a"
+        # The clarify callback returns a structured response since the
+        # response_state/reason_code contract; the chosen option is nested.
+        assert value["user_response"] == "a"
+        assert value["resolved"] is True
+        assert value["response_state"] == "answered"
 
     def test_sudo_prompt_paints_under_both_gates(self):
         cli = _make_real_paint_cli_stub()

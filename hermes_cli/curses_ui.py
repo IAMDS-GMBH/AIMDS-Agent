@@ -4,11 +4,23 @@ Used by `hermes tools` and `hermes skills` for interactive checklists.
 Provides a curses multi-select with keyboard navigation, plus a
 text-based numbered fallback for terminals without curses support.
 """
+import os
 import sys
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Set
 
 from hermes_cli.colors import Colors, color
+
+
+def _stdin_interactive() -> bool:
+    """``isatty()`` unless ``HERMES_NONINTERACTIVE`` says otherwise (mirrors
+    hermes_cli.mcp_catalog._stdin_interactive; kept local to avoid a cycle)."""
+    if os.environ.get("HERMES_NONINTERACTIVE", "").strip().lower() in {"1", "true", "yes"}:
+        return False
+    try:
+        return bool(sys.stdin is not None and sys.stdin.isatty())
+    except (AttributeError, ValueError):
+        return False
 
 
 def _query_matches(label: str, query: str) -> bool:
@@ -402,7 +414,9 @@ def _run_curses_menu(
     # Non-TTY (piped/redirected stdin): curses and input() both hang or spin,
     # so return the cancel value directly — matching the pre-refactor guard in
     # each menu (the numbered fallback is only for curses errors on a real TTY).
-    if not sys.stdin.isatty():
+    # HERMES_NONINTERACTIVE covers the Windows NUL device, which reports
+    # isatty() == True (AIS-304).
+    if not _stdin_interactive():
         return cancel_value
 
     use_search = searchable and search_labels is not None and len(search_labels) == item_count

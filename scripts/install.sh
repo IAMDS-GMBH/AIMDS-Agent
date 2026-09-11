@@ -72,6 +72,10 @@ RUN_SETUP=true
 SKIP_BROWSER=false
 NO_SKILLS=false
 BRANCH="main"
+# Release channel for fresh installs (AIS-299): "stable" resolves BRANCH to
+# the highest vX.Y.Z tag on the remote; an explicit --branch clears it.
+CHANNEL="stable"
+IS_TAG=false
 INSTALL_COMMIT=""
 ENSURE_DEPS=""
 POSTINSTALL_MODE=false
@@ -111,6 +115,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --branch|-Branch)
             BRANCH="$2"
+            CHANNEL=""
             shift 2
             ;;
         --commit|-Commit)
@@ -166,7 +171,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-skills    Start with a blank slate — seed no bundled skills, and"
             echo "                   write \$HERMES_HOME/.no-bundled-skills so future"
             echo "                   'hermes update' runs never inject bundled skills either"
-            echo "  --branch NAME  Git branch to install (default: main)"
+            echo "  --branch NAME  Git branch or tag to install (default: the latest stable"
+            echo "                   release tag vX.Y.Z; falls back to main when no tag is reachable)"
             echo "  --commit SHA   Pin checkout to a specific commit after clone/update"
             echo "  --manifest     Print desktop bootstrap stage manifest as JSON"
             echo "  --stage NAME   Run one desktop bootstrap stage"
@@ -1122,8 +1128,42 @@ show_manual_install_hint() {
 # Installation
 # ============================================================================
 
+# Resolve the install ref for the stable channel (AIS-299): the highest
+# vX.Y.Z tag on the remote. Installed clients then sit on a detached release
+# checkout, which is what `hermes update` (updates.channel: auto → stable) and
+# the desktop (default channel stable) expect. Explicit --branch / --commit
+# win; an existing checkout on a named branch keeps following that branch so
+# re-running the installer never yanks a developer machine onto a tag.
+resolve_install_ref() {
+    if [ "$CHANNEL" != "stable" ] || [ -n "$INSTALL_COMMIT" ]; then
+        return 0
+    fi
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        local current
+        current="$(git -C "$INSTALL_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+        if [ -n "$current" ] && [ "$current" != "HEAD" ]; then
+            log_info "Existing checkout follows branch '$current'; keeping it (pass --branch to change)."
+            BRANCH="$current"
+            return 0
+        fi
+    fi
+    local tag
+    tag="$(git ls-remote --tags --refs "$REPO_URL_HTTPS" 'v*' 2>/dev/null \
+        | awk '{print $2}' | sed 's#^refs/tags/##' \
+        | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
+    if [ -n "$tag" ]; then
+        BRANCH="$tag"
+        IS_TAG=true
+        log_info "Stable channel: installing release $tag"
+    else
+        log_warn "Could not resolve the latest stable release tag; installing branch main instead."
+        BRANCH="main"
+    fi
+}
+
 clone_repo() {
     log_info "Installing to $INSTALL_DIR..."
+    resolve_install_ref
 
     # An interrupted previous clone leaves a .git with no initial commit, where
     # the update path's `git stash` / `git checkout` abort with "You do not
@@ -1155,10 +1195,17 @@ clone_repo() {
             # every ref, and this repo carries thousands of auto-generated
             # branches — on a non-single-branch checkout that turns each update
             # into a multi-minute download that can stall the installer.
-            git remote set-branches origin "$BRANCH" 2>/dev/null || true
-            git fetch origin "$BRANCH"
-            git checkout "$BRANCH"
-            git pull --ff-only origin "$BRANCH"
+            if [ "$IS_TAG" = true ]; then
+                # Release tag: fetch just that tag and check it out detached —
+                # there is nothing to fast-forward.
+                git fetch --force origin "+refs/tags/$BRANCH:refs/tags/$BRANCH"
+                git checkout --detach "$BRANCH"
+            else
+                git remote set-branches origin "$BRANCH" 2>/dev/null || true
+                git fetch origin "$BRANCH"
+                git checkout "$BRANCH"
+                git pull --ff-only origin "$BRANCH"
+            fi
 
             if [ -n "$autostash_ref" ]; then
                 # Managed install checkout: default to NOT restoring stashed
@@ -1483,7 +1530,7 @@ try:
     specs = data["project"]["optional-dependencies"]["all"]
     extras = []
     for s in specs:
-        m = re.search(r"hermes-agent\[([\w-]+)\]", s)
+        m = re.search(r"(?:aimds|hermes)-agent\[([\w-]+)\]", s)
         if m:
             extras.append(m.group(1))
     print(",".join(extras))
@@ -1617,13 +1664,25 @@ ensure_office_document_dependencies() {
         installer_cmd="\"$python_exe\" -m pip install"
     fi
 
+    # Word/Excel/PowerPoint libs are pinned in pyproject.toml's [office]
+    # extra (AIS-139): install the extra once if any import is missing.
+    local office_missing=false
+    for import_name in docx pptx markitdown openpyxl pandas; do
+        if ! "$python_exe" -c "import ${import_name}" >/dev/null 2>&1; then
+            office_missing=true
+            break
+        fi
+    done
+    if [ "$office_missing" = true ]; then
+        missing=true
+        log_info "Installing office document dependencies: .[office]"
+        if ! (cd "$INSTALL_DIR" && eval "$installer_cmd -e \".[office]\""); then
+            log_warn "Failed to install .[office]. Word/Excel/PowerPoint tools may be unavailable until installed manually."
+        fi
+    fi
+
     for entry in \
-        "docx|python-docx>=1,<2|Word (.docx)" \
-        "pptx|python-pptx>=1,<2|PowerPoint (.pptx)" \
-        "markitdown|markitdown[pptx]>=0.1,<1|Office text extraction" \
         "PIL|Pillow>=10,<12|PowerPoint thumbnails" \
-        "openpyxl|openpyxl>=3,<4|Excel workbook processing" \
-        "pandas|pandas>=2,<3|Spreadsheet/tabular conversion" \
         "pypdf|pypdf>=5,<6|PDF merge/split/manipulation" \
         "fitz|pymupdf>=1.24,<2|PDF metadata/inspection" \
         "fpdf|fpdf2>=2.8,<3|Word/PDF text rendering fallback" \

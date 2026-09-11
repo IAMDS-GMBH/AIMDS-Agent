@@ -101,7 +101,7 @@ def _is_jira_get_worklog_tool(tool_name: str) -> bool:
     return "get_worklog" in name or "getworklog" in name
 
 
-def _build_ingest_hint(tool_name: str, ingest_count: int, *, sql_available: bool = True) -> str:
+def _build_ingest_hint(tool_name: str, ingest_count: int, *, sql_available: bool = True, tool_use_id: str = "") -> str:
     """Build the auto-ingest hint appended/prefixed to a tool result.
 
     Honest and short: it names where the rows went and the one tool that
@@ -113,25 +113,24 @@ def _build_ingest_hint(tool_name: str, ingest_count: int, *, sql_available: bool
     no-user-param worklog tool) a shorter note explains why ``user_id`` is
     unreliable on Tempo-synced entries.
     """
-    columns = "(id, tool_name, reference_key, timestamp, user_id, duration_seconds, category, comment, raw_data)"
     # ingest_count may be an IngestResult (int subclass) carrying window-
     # replacement / cap-eviction metadata (AIS-275).
     replaced = int(getattr(ingest_count, "replaced", 0) or 0)
     evicted = int(getattr(ingest_count, "evicted", 0) or 0)
     window = getattr(ingest_count, "window", None)
+    # One stable line per result (AIS-289): the schema of mcp_records, the
+    # example query and the "don't read the file back" rule live in the
+    # system prompt (build_data_handling_guidance) — static text is cached
+    # once, a 600-char hint on every tool result is re-sent every turn.
     if sql_available:
         hint = (
-            f"[Auto-ingested {int(ingest_count)} records into SQLite table 'mcp_records' (~/.hermes/state.db). "
-            f"Columns: {columns}. Query them with the `sql` tool, e.g. "
-            "`SELECT reference_key, ROUND(SUM(duration_seconds)/3600.0, 2) AS hours FROM mcp_records "
-            "WHERE tool_name = '...' GROUP BY reference_key`. "
-            "Scope personal worklog/ticket queries to the active user (e.g. `WHERE user_id LIKE '%...%'`).]"
+            f"[ingested {int(ingest_count)} rows → mcp_records (tool_name={tool_name!r}, "
+            f"tool_use_id={tool_use_id!r}); query with `sql`]"
         )
     else:
         hint = (
-            f"[Auto-ingested {int(ingest_count)} records into SQLite table 'mcp_records' (~/.hermes/state.db). "
-            f"Columns: {columns}. The `sql` tool is not in this session — ask for it "
-            "or work from the persisted output.]"
+            f"[ingested {int(ingest_count)} rows → mcp_records (tool_name={tool_name!r}, "
+            f"tool_use_id={tool_use_id!r}); the `sql` tool is not in this session]"
         )
     if window:
         hint += (
@@ -166,6 +165,7 @@ def _build_persisted_message(
     ingest_count: int = 0,
     tool_name: str = "",
     sql_available: bool = True,
+    tool_use_id: str = "",
 ) -> str:
     """Build the <persisted-output> replacement block."""
     size_kb = original_size / 1024
@@ -178,7 +178,7 @@ def _build_persisted_message(
     msg += f"This tool result was too large ({original_size:,} characters, {size_str}).\n"
     msg += f"Full output saved to: {file_path}\n"
     if ingest_count > 0:
-        msg += _build_ingest_hint(tool_name, ingest_count, sql_available=sql_available) + "\n"
+        msg += _build_ingest_hint(tool_name, ingest_count, sql_available=sql_available, tool_use_id=tool_use_id) + "\n"
         if sql_available:
             # Reading the saved file back costs the context the persistence
             # just saved (a 96k payload becomes a 96k read_file); the rows
@@ -238,9 +238,24 @@ def maybe_persist_tool_result(
         except Exception as exc:
             logger.debug("Auto-ingest failed for %s: %s", tool_use_id, exc)
 
+    # Shape MCP JSON *after* the ingest saw the full payload and *before* any
+    # size decision: noise keys and empty values go, item lists and long
+    # strings are capped, keys are sorted — deterministic, so an identical
+    # answer yields a byte-identical tool result (prompt-cache prefix).
+    # The rows behind a capped list are already in mcp_records. AIS-289.
+    if isinstance(content, str):
+        try:
+            from tools.mcp_result_shaper import shape_tool_result
+
+            content = shape_tool_result(
+                content, tool_name, tool_use_id, rows_ingested=ingest_count > 0,
+            )
+        except Exception as exc:
+            logger.debug("Result shaping failed for %s: %s", tool_use_id, exc)
+
     ingest_hint = ""
     if ingest_count > 0:
-        ingest_hint = "\n\n" + _build_ingest_hint(tool_name, ingest_count, sql_available=sql_available)
+        ingest_hint = "\n\n" + _build_ingest_hint(tool_name, ingest_count, sql_available=sql_available, tool_use_id=tool_use_id)
         # The rows live in mcp_records now — keeping the raw payload inline
         # only re-sends it every turn. Pinned-inf tools (read_file) keep their
         # exemption; core tools never ingest (should_ingest_tool).
@@ -271,7 +286,7 @@ def maybe_persist_tool_result(
                 return _build_persisted_message(
                     preview, has_more, len(content), remote_path,
                     ingest_count=ingest_count, tool_name=tool_name,
-                    sql_available=sql_available,
+                    sql_available=sql_available, tool_use_id=tool_use_id,
                 )
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)

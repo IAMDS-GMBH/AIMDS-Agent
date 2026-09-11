@@ -119,24 +119,17 @@ _MISSING = object()
 
 
 _AIMDS_TOOL_INCLUDE_RAW = [
-    # Canonical AIMDS default tools (KB, Memory, WebSearch).
+    # Canonical AIMDS default tools (Memory, WebSearch, ntfy, Customer store).
     # Flexible alias matching in mcp_tool.py automatically handles server
-    # prefixes (e.g. mcp_IAMDS_..., aimds_kb_..., mcp_memory_...).
-    "kb_search",
-    "kb_get_topic",
-    "kb_list_topics",
-    "kb_get_recent",
-    "kb_get_related",
-    "kb_get_tags",
-    "kb_get_backlinks",
-    "kb_get_graph",
+    # prefixes (e.g. mcp_memory_..., mcp_ntfy-...).
+    # Enforced on every update (CLI-only key): tools the gateway no longer
+    # serves (kb_* of the retired aimds_kb, memory_get/upsert/delete) were
+    # dropped with AIS-291; keep the retired lists in
+    # _AIMDS_TOOL_INCLUDE_LEGACY so old synthetic stubs are still recognized.
     "memory_context",
-    "memory_get",
     "memory_list",
     "memory_save",
     "memory_read",
-    "memory_upsert",
-    "memory_delete",
     "memory_search",
     "memory_manage",
     "memory_backlinks",
@@ -147,9 +140,53 @@ _AIMDS_TOOL_INCLUDE_RAW = [
     "skill",
     "web_search",
     "web_fetch",
+    # go-mcp-ntfy (AIS-291): notifications on the user's private and group
+    # topics. Present only when the key has mcp_ntfy.
+    "ntfy_send_notification",
+    "ntfy_list_topics",
+    "ntfy_get_messages",
+    # go-mcp-customer document store: read_file's Suite Docling path needs
+    # ingest + get_document in-process (AIS-294); search/meta let the model
+    # find what it ingested. Present only when the key has mcp_customer.
+    "storage_ingest_upload",
+    "storage_get_document",
+    "storage_search",
+    "storage_meta",
 ]
 
 _AIMDS_TOOL_INCLUDE_LEGACY = (
+    # v17 list (until AIS-291): kb_* + memory_get/upsert/delete still included.
+    (
+        "kb_search",
+        "kb_get_topic",
+        "kb_list_topics",
+        "kb_get_recent",
+        "kb_get_related",
+        "kb_get_tags",
+        "kb_get_backlinks",
+        "kb_get_graph",
+        "memory_context",
+        "memory_get",
+        "memory_list",
+        "memory_save",
+        "memory_read",
+        "memory_upsert",
+        "memory_delete",
+        "memory_search",
+        "memory_manage",
+        "memory_backlinks",
+        "memory_transfer",
+        "memory_meta",
+        "memory_agent",
+        "memory_summarize_session",
+        "skill",
+        "web_search",
+        "web_fetch",
+        "storage_ingest_upload",
+        "storage_get_document",
+        "storage_search",
+        "storage_meta",
+    ),
     (
         "kb_search",
         "kb_get_topic",

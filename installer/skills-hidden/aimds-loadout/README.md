@@ -84,6 +84,9 @@ Hermes-AIMDS-Loadout/
 7. **Gateway-Daemon** sicherstellen (`hermes gateway install`) — sonst keine
    Cron-Jobs / Goals im Hintergrund.
 8. **Blueprints** anbieten — `/blueprint morning-brief` etc. (siehe `blueprints/`).
+   Die Standard-Jobs (Morning Brief, Weekly Review, M365-Polls) nutzen den LLM-freien
+   Collector (`cron/brief_collector.py`): Datenbeschaffung deterministisch, user-bezogen,
+   in `state.db` persistiert; der Agent komponiert nur (AIS-305, `blueprints/README.md`).
 
 ### AIS-161 Mess-Workflow (Tokenlast/TTFT)
 

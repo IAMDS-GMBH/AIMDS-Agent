@@ -138,12 +138,13 @@ async def _lifespan(app: "FastAPI"):
     loop = asyncio.get_running_loop()
 
     # Register cron completion callback for broadcasting events to desktop
-    def _on_cron_complete(job_id: str, success: bool, error: Optional[str] = None):
+    def _on_cron_complete(job_id: str, success: bool, error: Optional[str] = None, **extra):
         """Callback invoked when a cron job completes.
         
         Broadcasts a completion event to all connected event subscribers
         so the desktop UI can refresh the job runs list without waiting
-        for the next poll interval.
+        for the next poll interval. ``extra`` carries the artifact facts
+        (job_name, profile, output_path, output_at, session_id — AIS-305).
         """
         try:
             # Create event payload
@@ -153,6 +154,11 @@ async def _lifespan(app: "FastAPI"):
                 "success": success,
                 "error": error,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "job_name": extra.get("job_name"),
+                "profile": extra.get("profile"),
+                "output_path": extra.get("output_path"),
+                "output_at": extra.get("output_at"),
+                "session_id": extra.get("session_id"),
             })
             
             # run_job() completion can come from a worker thread; bridge back to
@@ -561,6 +567,28 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         ),
         "options": ["stash", "discard"],
     },
+    "updates.channel": {
+        "type": "select",
+        "description": (
+            "Update channel for `hermes update` without --branch. 'stable' follows "
+            "released versions (vX.Y.Z tags), 'preview' also release candidates, "
+            "'main' the developer branch. 'auto' = stable on an installed (detached) "
+            "checkout, main on a developer branch checkout."
+        ),
+        "options": ["auto", "stable", "preview", "main"],
+    },
+    "updates.source": {
+        "type": "select",
+        "description": (
+            "Where `hermes update` gets the code from. 'git' pulls this checkout's "
+            "origin (needs access to the source repository), 'release' installs the "
+            "verified source archive from the public release repository (no git; "
+            "stable/preview only), 'auto' uses git when the origin is reachable and "
+            "release archives otherwise — falling back to git with a warning if the "
+            "release manifest is unavailable."
+        ),
+        "options": ["auto", "git", "release"],
+    },
 }
 
 # Categories with fewer fields get merged into "general" to avoid tab sprawl.
@@ -949,6 +977,10 @@ _REMOTE_HEALTH_CRITICAL_NAMES = {
     "Keycloak SSO",
 }
 
+# Informational only (no severity impact): the services behind read_file's
+# Office/PDF → Markdown path (AIS-294). Down = documents convert locally.
+_REMOTE_HEALTH_OPTIONAL_SLUGS = ("docling", "customer-storage")
+
 
 def _is_service_up(status: Any) -> bool:
     return str(status or "").strip().lower() in {"healthy", "ok", "up"}
@@ -988,27 +1020,21 @@ def _derive_remote_health_target(config: dict[str, Any]) -> tuple[str, str]:
     if not base_url:
         return provider, ""
 
-    if base_url.endswith("/litellm/v1"):
-        base_url = base_url[: -len("/litellm/v1")]
-    elif base_url.endswith("/litellm/mcp"):
-        base_url = base_url[: -len("/litellm/mcp")]
+    from hermes_cli.iamds_suite import suite_health_url
 
-    return provider, f"{base_url}/uptime/health"
+    return provider, suite_health_url(base_url)
 
 
 def _fetch_remote_health(url: str, timeout: float = 8.0) -> tuple[dict | None, int | None, str | None]:
-    """Blocking HTTP GET for the remote uptime health endpoint."""
-    req = urllib.request.Request(url, method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = json.loads(resp.read())
-            if not isinstance(body, dict):
-                return None, resp.status, "Health endpoint returned non-JSON object payload."
-            return body, resp.status, None
-    except urllib.error.HTTPError as exc:
-        return None, exc.code, f"Health endpoint returned HTTP {exc.code}."
-    except Exception:
-        return None, None, f"Could not reach {url}."
+    """Blocking HTTP GET for the remote uptime health endpoint.
+
+    Shares the fetcher with the document converter's Docling gate
+    (``hermes_cli.iamds_suite.fetch_health_json``, AIS-294).
+    """
+    from hermes_cli.iamds_suite import fetch_health_json
+
+    body, status, error = fetch_health_json(url, timeout=timeout)
+    return body, status, (error or None)
 
 
 def _summarize_remote_health(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1072,9 +1098,21 @@ def _summarize_remote_health(payload: dict[str, Any]) -> dict[str, Any]:
     services = payload.get("services")
     tier_summary = services if isinstance(services, dict) else {}
 
+    from hermes_cli.iamds_suite import suite_service_state
+
+    optional_services = []
+    for slug in _REMOTE_HEALTH_OPTIONAL_SLUGS:
+        state = suite_service_state(payload, slug)
+        name = next(
+            (str(i.get("name") or slug) for i in details if isinstance(i, dict) and i.get("slug") == slug),
+            slug,
+        )
+        optional_services.append({"name": name, "slug": slug, "status": state, "is_up": state == "up"})
+
     return {
         "checked_at": payload.get("checked_at"),
         "critical_services": critical_services,
+        "optional_services": optional_services,
         "overall_status": str(payload.get("status") or "unknown"),
         "severity": severity,
         "tier_summary": tier_summary,
@@ -1570,7 +1608,50 @@ async def get_status():
         "active_sessions": active_sessions,
         "auth_required": auth_required,
         "auth_providers": auth_providers,
+        # Runtime auth failures of AIMDS-Suite environments (401 from LiteLLM
+        # or the IAMDS MCP). Desktop polls this every 15 s and raises the
+        # "re-authenticate" prompt (AIS-286). Cleared by apply_reauth().
+        "provider_auth": _suite_provider_auth_flags(),
     }
+
+
+def _suite_provider_auth_flags() -> Dict[str, Any]:
+    try:
+        from hermes_cli.iamds_suite import suite_auth_failures
+
+        return suite_auth_failures()
+    except Exception:
+        return {}
+
+
+@app.get("/api/providers/aimds-suite/status")
+async def get_aimds_suite_status(request: Request, probe: bool = False, profile: Optional[str] = None):
+    """Tri-state status of every AIMDS-Suite environment (see hermes_cli.iamds_suite).
+
+    ``probe=true`` performs a live GET against LiteLLM with the stored key and
+    therefore requires the dashboard token; the cheap variant is unauthenticated
+    like ``/api/status``.
+    """
+    if probe:
+        _require_token(request)
+    from hermes_cli.iamds_suite import all_suite_statuses
+
+    with _profile_scope(profile):
+        return await asyncio.get_running_loop().run_in_executor(None, lambda: all_suite_statuses(probe=probe))
+
+
+@app.post("/api/providers/aimds-suite/{env}/reauth-complete")
+async def complete_aimds_suite_reauth(env: str, request: Request, profile: Optional[str] = None):
+    """Make a freshly stored key/URL effective without a restart (desktop SSO path)."""
+    _require_token(request)
+    from hermes_cli.iamds_suite import apply_reauth, canonical_suite_provider
+
+    provider = canonical_suite_provider(env)
+    if not provider:
+        raise HTTPException(status_code=400, detail=f"Unknown AIMDS-Suite environment {env!r}")
+    with _profile_scope(profile):
+        result = await asyncio.get_running_loop().run_in_executor(None, lambda: apply_reauth(provider))
+    return {"ok": True, **result}
 
 
 @app.get("/api/subagents")
@@ -1986,6 +2067,51 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     return proc
 
 
+_M365_MCP_NAME = "MSOffice365MCP"
+
+
+def _auto_enable_m365_toolset() -> Tuple[bool, Optional[str]]:
+    """After a successful Microsoft sign-in, make MSOffice365MCP usable.
+
+    Installed → only flip ``enabled`` (cheap, config-only) and reconnect so
+    the running server sees the change. Not installed → start the same
+    detached ``hermes mcp install`` action the catalog UI uses instead of
+    cloning inline on the request thread. Never re-installs an existing
+    entry: doing so wiped the directory the live server ran from (AIS-304).
+    Safe to call from a worker thread; async callers wrap it in
+    ``asyncio.to_thread``. Returns ``(changed, error)``.
+    """
+    from hermes_cli import mcp_catalog
+
+    try:
+        if not mcp_catalog.is_installed(_M365_MCP_NAME):
+            running = _ACTION_PROCS.get("mcp-install")
+            if running is not None and running.poll() is None:
+                _log.info(
+                    "%s install action already running (pid %s); not starting another",
+                    _M365_MCP_NAME, running.pid,
+                )
+                return False, None
+            _spawn_hermes_action(
+                _profile_cli_args(None) + ["mcp", "install", _M365_MCP_NAME],
+                "mcp-install",
+            )
+            _log.info("%s not installed yet; started the background install action", _M365_MCP_NAME)
+            return True, None
+
+        changed, error = mcp_catalog.ensure_m365_toolset_enabled()
+        if changed:
+            try:
+                from tools.mcp_tool import reconnect_mcp_server
+
+                reconnect_mcp_server(_M365_MCP_NAME)
+            except Exception:
+                _log.debug("%s reconnect after enable failed", _M365_MCP_NAME, exc_info=True)
+        return changed, error
+    except Exception as exc:
+        return False, str(exc)
+
+
 def _tail_lines(path: Path, n: int) -> List[str]:
     """Return the last ``n`` lines of ``path``.  Reads the whole file — fine
     for our small per-action logs.  Binary-decoded with ``errors='replace'``
@@ -2170,15 +2296,15 @@ async def check_hermes_update(force: bool = False):
     ``POST /api/hermes/update`` actually runs ``hermes update``.
 
     Returns:
-        install_method: 'git' | 'pip' | 'docker' | 'nixos' | 'homebrew' | ...
+        install_method: 'git' | 'release' | 'pip' | 'docker' | 'nixos' | 'homebrew' | ...
         current_version: installed Hermes version string
         behind: commits behind upstream (>=1), 0 if up to date,
                 -1 if behind by an unknown count (nix/pypi), or null if the
                 check could not run (offline, no remote, etc.)
         update_available: convenience bool (behind is non-zero and not null)
         can_apply: True when the dashboard's update button can apply it
-                   in place (git/pip); False for docker/nix/homebrew where the
-                   user must update out-of-band
+                   in place (git/release/pip); False for docker/nix/homebrew
+                   where the user must update out-of-band
         update_command: the recommended command for this install method
         message: human-readable guidance for non-applyable methods
         commits: for git/pip installs that are behind, a list of the commits
@@ -2186,6 +2312,9 @@ async def check_hermes_update(force: bool = False):
                  {sha, summary, author, at}. Absent/empty otherwise. The
                  desktop's remote update overlay renders this as "what's
                  changed". Additive: existing consumers ignore it.
+        channel, release_tag, release_version, release_build_id: for a
+                 source-archive install ('release', AIS-312) the release the
+                 last check compared against; null otherwise. Additive.
     """
     install_method = detect_install_method(PROJECT_ROOT)
     update_command = recommended_update_command_for_method(install_method)
@@ -2195,17 +2324,21 @@ async def check_hermes_update(force: bool = False):
         "current_version": __version__,
         "behind": None,
         "update_available": False,
-        "can_apply": install_method in ("git", "pip"),
+        "can_apply": install_method in ("git", "release", "pip"),
         "update_command": update_command,
         "message": None,
+        "channel": None,
+        "release_tag": None,
+        "release_version": None,
+        "release_build_id": None,
     }
 
     if install_method == "docker":
         payload["message"] = format_docker_update_message()
         return payload
 
-    # banner.check_for_updates() handles git / pypi / nix-revision paths and
-    # caches the result for 6h. ``force`` busts the cache so the "Check now"
+    # banner.check_for_updates() handles git / release-manifest / pypi /
+    # nix-revision paths and caches the result for 24h. ``force`` busts the cache so the "Check now"
     # button reflects reality immediately.
     try:
         from hermes_cli.banner import check_for_updates
@@ -2221,6 +2354,16 @@ async def check_hermes_update(force: bool = False):
         _log.exception("Update check failed")
         behind = None
 
+    if install_method == "release":
+        try:
+            from hermes_cli.banner import get_release_update_info
+
+            release_info = get_release_update_info() or {}
+            for key in ("channel", "release_tag", "release_version", "release_build_id"):
+                payload[key] = release_info.get(key)
+        except Exception:
+            _log.debug("Release update info lookup failed", exc_info=True)
+
     payload["behind"] = behind
     if behind is None:
         payload["message"] = "Couldn't reach the update source — try again later."
@@ -2228,6 +2371,8 @@ async def check_hermes_update(force: bool = False):
         payload["message"] = "You're on the latest version."
     else:
         payload["update_available"] = True
+        if payload.get("release_tag"):
+            payload["message"] = f"Release {payload['release_tag']} is available."
         # Enrich with the actual commits we're behind by, so the desktop's
         # remote update overlay can show "what's changed". git/pip only;
         # best-effort (empty list on any failure).
@@ -2473,13 +2618,17 @@ async def get_action_status(name: str, lines: int = 200):
             # the new server's tools stay unavailable until Hermes is fully
             # restarted. Trigger discovery here, exactly once, the moment
             # this poll first observes the subprocess finished successfully.
-            if name == "mcp-install" and exit_code == 0:
+            # Discovery runs for a failed install too: a re-install first
+            # disconnects the live server (AIS-304) and a failed clone
+            # restores the previous install, which must come back online.
+            if name == "mcp-install":
                 try:
                     from tools.mcp_tool import discover_mcp_tools
                     await asyncio.to_thread(discover_mcp_tools)
                 except Exception:
                     _log.debug("Post-install MCP tool discovery failed", exc_info=True)
-                _restart_gateway_if_running()
+                if exit_code == 0:
+                    _restart_gateway_if_running()
 
     return {
         "name": name,
@@ -3408,6 +3557,10 @@ def _apply_model_assignment_sync(
 def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     """Reverse _normalize_config_for_web before saving.
 
+    ``config_parse_error`` is a read-only marker appended by ``GET /api/config``
+    (see get_config); clients round-trip the whole record, so strip it here
+    or it lands as an empty section in config.yaml (AIS-286).
+
     Reconstructs ``model`` as a dict by reading the current on-disk config
     to recover model subkeys (provider, base_url, api_mode, etc.) that were
     stripped from the GET response.  The frontend only sees model as a flat
@@ -3417,6 +3570,9 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     as ``context_length``.  A value of 0 or absent means "auto-detect" (omitted
     from the dict so get_model_context_length() uses its normal resolution).
     """
+    if isinstance(config, dict):
+        config = dict(config)
+        config.pop("config_parse_error", None)
     config = dict(config)
     # Remove any _model_meta that might have leaked in (shouldn't happen
     # with the stripped GET response, but be defensive)
@@ -3461,8 +3617,18 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
 async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
     try:
         with _profile_scope(body.profile or profile):
-            save_config(_denormalize_config_from_web(body.config))
-        return {"ok": True}
+            saved = _denormalize_config_from_web(body.config)
+            save_config(saved)
+            env_sync: Dict[str, str] = {}
+            if isinstance(body.config, dict) and "providers" in body.config:
+                # providers.<aimds-suite-*>.base_url is authoritative; mirror it
+                # into the *_BASE_URL env vars so nothing else can drift (AIS-286).
+                try:
+                    from hermes_cli.iamds_suite import sync_suite_env_from_providers
+                    env_sync = sync_suite_env_from_providers(saved)
+                except Exception:
+                    _log.debug("suite env sync after config save failed", exc_info=True)
+        return {"ok": True, "env_sync": env_sync}
     except HTTPException:
         raise
     except Exception:
@@ -3476,10 +3642,15 @@ async def get_env_vars(profile: Optional[str] = None):
         env_on_disk = load_env()
     channel_keys = _channel_managed_env_keys()
     result = {}
+    from hermes_cli.auth import has_usable_secret as _has_usable_secret
     for var_name, info in OPTIONAL_ENV_VARS.items():
         value = env_on_disk.get(var_name)
+        # Secrets count as set only when they look usable (no placeholders,
+        # no 1-3 char leftovers) — the desktop card derives "connected" from
+        # this flag (AIS-286).
+        is_set = bool(value) and (_has_usable_secret(value) if info.get("password") else True)
         result[var_name] = {
-            "is_set": bool(value),
+            "is_set": is_set,
             "redacted_value": redact_key(value) if value else None,
             "description": info.get("description", ""),
             "url": info.get("url"),
@@ -3581,6 +3752,25 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
             return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
         except Exception:
             return {"ok": False, "reachable": False, "message": f"Could not reach {url}."}
+
+    try:
+        from hermes_cli.iamds_suite import SUITE_ENVIRONMENTS, probe_suite_endpoint, resolve_suite_endpoint
+
+        _suite_env = next((e for e in SUITE_ENVIRONMENTS.values() if e.key_env == key), None)
+    except Exception:
+        _suite_env = None
+    if _suite_env is not None:
+        ep = resolve_suite_endpoint(_suite_env.provider_id, allow_default=False)
+        if not ep.base_url:
+            return {"ok": False, "reachable": False, "message": f"Configure the {_suite_env.label} base URL first."}
+        code, err = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: probe_suite_endpoint(ep.base_url, value)
+        )
+        if code is None:
+            return {"ok": False, "reachable": False, "message": f"Could not reach {ep.base_url}: {err}"}
+        if code in (401, 403):
+            return {"ok": False, "reachable": True, "message": f"{_suite_env.label} rejected this key (HTTP {code})."}
+        return {"ok": code < 500, "reachable": True, "message": "" if code < 500 else f"HTTP {code} from {ep.base_url}"}
 
     probe = _CREDENTIAL_PROBES.get(key)
     if not probe:
@@ -4867,9 +5057,7 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
                     _write_platform_enabled(platform_id, True)
             if platform_id == "outlook":
                 try:
-                    from hermes_cli.mcp_catalog import _enable_m365_toolset_for_cli
-
-                    changed, toolset_error = _enable_m365_toolset_for_cli()
+                    changed, toolset_error = await asyncio.to_thread(_auto_enable_m365_toolset)
                     if toolset_error:
                         _log.warning(
                             "Outlook credentials saved but auto-enable of outlook toolset failed: %s",
@@ -5030,9 +5218,9 @@ async def outlook_authenticate_start(body: OutlookAuthStart):
                 toolset_enabled = False
                 toolset_enable_error = None
                 try:
-                    from hermes_cli.mcp_catalog import _enable_m365_toolset_for_cli
-
-                    toolset_enabled, toolset_enable_error = _enable_m365_toolset_for_cli()
+                    toolset_enabled, toolset_enable_error = await asyncio.to_thread(
+                        _auto_enable_m365_toolset
+                    )
                 except Exception as exc:
                     toolset_enable_error = str(exc)
                 if toolset_enable_error:
@@ -5474,16 +5662,16 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                 "last_refresh": raw.get("last_refresh"),
             }
         if provider_id == "iamds-keycloak":
-            try:
-                from hermes_cli.config import get_env_value
-                api_key = (get_env_value("IAMDS_LITELLM_API_KEY") or "").strip()
-            except Exception:
-                api_key = os.getenv("IAMDS_LITELLM_API_KEY", "").strip()
+            from hermes_cli.iamds_suite import STATE_CONNECTED, suite_environment_status
+            st = suite_environment_status("aimds-suite-prod", probe=False, include_mcp=False)
             return {
-                "logged_in": bool(api_key),
+                "logged_in": st["state"] == STATE_CONNECTED,
+                "state": st["state"],
+                "reason": st["reason"],
+                "base_url": st["base_url"],
                 "source": "iamds_keycloak",
                 "source_label": "IAMDS LiteLLM (Keycloak SSO)",
-                "token_preview": _truncate_token(api_key),
+                "token_preview": st.get("key_preview") or "",
                 "expires_at": None,
                 "has_refresh_token": False,
             }
@@ -6141,13 +6329,13 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
         if tenant_id == "common":
             tenant_id = "organizations"
 
-        # Request the same scopes as the CLI's `_microsoft_device_code_login`
-        # (hermes_cli/mcp_catalog.py) and the MSOffice365MCP catalog manifest,
-        # not just "User.Read" — a dashboard-initiated login otherwise grants
-        # too little for the MCP's Mail/Calendar/Teams/etc. tools to work.
-        from hermes_cli import mcp_catalog
-        m365_entry = mcp_catalog.get_entry("MSOffice365MCP")
-        scopes = (m365_entry.auth.scopes if m365_entry else None) or ["User.Read"]
+        # Request the self-consent tier (AIS-286): the same list the CLI's
+        # `_microsoft_device_code_login`, the chat tool and the MSOffice365MCP
+        # manifest use. Org-level scopes (Teams chat, presence, shared
+        # mailboxes, To Do) arrive silently after a one-time tenant-admin
+        # consent, so non-admin users never hit "Need admin approval" here.
+        from hermes_cli.m365_auth import M365_LOGIN_SCOPES
+        scopes = list(M365_LOGIN_SCOPES)
 
         def _do_initiate_device_flow():
             from hermes_cli.m365_auth import get_msal_app
@@ -6359,22 +6547,23 @@ _IAMDS_KEYCLOAK_DEFAULT_REALM = "aimds"
 _IAMDS_KEYCLOAK_DEFAULT_CLIENT_ID = "hermes-app"
 
 
-def _iamds_keycloak_base_url() -> str:
-    """Derive the IAMDS suite base URL from IAMDS_LITELLM_BASE_URL.
+def _iamds_keycloak_base_url(env: str = "aimds-suite-prod") -> str:
+    """Derive the IAMDS suite root URL for a Suite environment.
 
-    Strips the /litellm (or /litellm/v1) suffix so the caller can append
-    Keycloak paths like /auth/realms/{realm}/protocol/openid-connect/auth.
-    Raises RuntimeError if the env var is unset.
+    Uses the same precedence as the runtime (config.yaml providers.<slug>
+    before the env var, never a default host — AIS-286) and strips the
+    /litellm (or /litellm/v1) suffix so the caller can append Keycloak paths
+    like /auth/realms/{realm}/protocol/openid-connect/auth.
+    Raises RuntimeError if no base URL is configured.
     """
-    try:
-        from hermes_cli.config import get_env_value
-        raw = (get_env_value("IAMDS_LITELLM_BASE_URL") or "").strip().rstrip("/")
-    except Exception:
-        raw = os.getenv("IAMDS_LITELLM_BASE_URL", "").strip().rstrip("/")
+    from hermes_cli.iamds_suite import resolve_suite_endpoint
+
+    ep = resolve_suite_endpoint(env, allow_default=False)
+    raw = ep.base_url.strip().rstrip("/")
     if not raw:
         raise RuntimeError(
-            "IAMDS_LITELLM_BASE_URL is not set. "
-            "Configure it in Settings → IAMDS LiteLLM before connecting via Keycloak."
+            f"No base URL configured for {ep.label}. "
+            "Configure it in Settings → Providers → AIMDS-Suite before connecting via Keycloak."
         )
     for suffix in ("/litellm/v1", "/litellm", "/auth"):
         if raw.endswith(suffix):
@@ -6402,16 +6591,18 @@ def _iamds_keycloak_extract_api_key(access_token: str) -> str:
     return key
 
 
-def _start_iamds_keycloak_loopback_flow() -> Dict[str, Any]:
-    """Begin the IAMDS Keycloak loopback PKCE flow.
+def _start_iamds_keycloak_loopback_flow(env: str = "aimds-suite-prod") -> Dict[str, Any]:
+    """Begin the IAMDS Keycloak loopback PKCE flow for one Suite environment.
 
-    Derives the Keycloak endpoint from IAMDS_LITELLM_BASE_URL, binds a local
-    callback server, and spawns a background worker. Returns the authorize URL
-    for the client to open in the browser.
+    Derives the Keycloak endpoint from the environment's configured base URL,
+    binds a local callback server, and spawns a background worker. Returns
+    the authorize URL for the client to open in the browser.
     """
     from hermes_cli import auth as hauth
+    from hermes_cli.iamds_suite import SUITE_ENVIRONMENTS, canonical_suite_provider
 
-    base_url = _iamds_keycloak_base_url()
+    env = canonical_suite_provider(env) or "aimds-suite-prod"
+    base_url = _iamds_keycloak_base_url(env)
     realm = os.getenv("IAMDS_KEYCLOAK_REALM", _IAMDS_KEYCLOAK_DEFAULT_REALM)
     client_id = os.getenv("IAMDS_KEYCLOAK_CLIENT_ID", _IAMDS_KEYCLOAK_DEFAULT_CLIENT_ID)
 
@@ -6462,6 +6653,8 @@ def _start_iamds_keycloak_loopback_flow() -> Dict[str, Any]:
     sess["state"] = state
     sess["token_endpoint"] = token_endpoint
     sess["client_id"] = client_id
+    sess["suite_env"] = env
+    sess["target_key_env"] = SUITE_ENVIRONMENTS[env].key_env
     sess["expires_at"] = time.time() + _IAMDS_KEYCLOAK_LOOPBACK_TIMEOUT_SECONDS
 
     threading.Thread(
@@ -6560,12 +6753,20 @@ def _iamds_keycloak_loopback_worker(session_id: str) -> None:
     if _cancelled():
         return
 
+    target_key_env = str(sess.get("target_key_env") or "IAMDS_LITELLM_API_KEY")
     try:
         from hermes_cli.config import save_env_value
-        save_env_value("IAMDS_LITELLM_API_KEY", api_key)
+        save_env_value(target_key_env, api_key)
     except Exception as exc:
-        _fail(f"Failed to save IAMDS_LITELLM_API_KEY: {exc}")
+        _fail(f"Failed to save {target_key_env}: {exc}")
         return
+    # Make the new key effective right away: pool reset, MCP reconnect,
+    # live sessions rebuild their client (AIS-286 self-healing).
+    try:
+        from hermes_cli.iamds_suite import apply_reauth
+        apply_reauth(str(sess.get("suite_env") or "aimds-suite-prod"))
+    except Exception:
+        _log.debug("apply_reauth after Keycloak login failed", exc_info=True)
 
     with _oauth_sessions_lock:
         s = _oauth_sessions.get(session_id)
@@ -6784,21 +6985,32 @@ def _microsoft_device_code_worker(session_id: str, app_obj: Any, flow: Dict[str,
         result = app_obj.acquire_token_by_device_flow(flow)
         token = result.get("access_token") if result else None
         if not token:
-            err = (result or {}).get("error_description") or (result or {}).get("error") or (
-                "Microsoft sign-in did not complete"
-            )
+            from hermes_cli.m365_auth import build_admin_consent_url, classify_m365_auth_error
+
+            classified = classify_m365_auth_error(result or "Microsoft sign-in did not complete")
+            action_url = None
+            if classified.admin_consent_required:
+                try:
+                    action_url = build_admin_consent_url()
+                except Exception:
+                    action_url = None
             with _oauth_sessions_lock:
                 sess["status"] = "error"
-                sess["error_message"] = str(err)
+                sess["error_message"] = classified.message
+                sess["error_code"] = classified.code or None
+                sess["error_category"] = classified.category
+                sess["action_url"] = action_url
             return
         from hermes_cli.m365_auth import save_msal_cache
         save_msal_cache(app_obj)
         save_env_value("M365_ACCESS_TOKEN", token)
-        try:
-            from hermes_cli.mcp_catalog import _enable_m365_toolset_for_cli
-            _enable_m365_toolset_for_cli()
-        except Exception as exc:
-            _log.warning("oauth/device: failed to auto-enable MSOffice365MCP after login: %s", exc)
+        changed, toolset_error = _auto_enable_m365_toolset()
+        if toolset_error:
+            _log.warning(
+                "oauth/device: failed to auto-enable MSOffice365MCP after login: %s", toolset_error
+            )
+        elif changed:
+            _log.info("oauth/device: MSOffice365MCP enabled after login (session=%s)", session_id)
         with _oauth_sessions_lock:
             sess["status"] = "approved"
         _log.info("oauth/device: microsoft login completed (session=%s)", session_id)
@@ -6957,8 +7169,9 @@ async def start_oauth_login(provider_id: str, request: Request):
                 None, _start_xai_loopback_flow
             )
         if catalog_entry["flow"] == "loopback" and provider_id == "iamds-keycloak":
+            _suite_env = str(request.query_params.get("env") or "aimds-suite-prod")
             return await asyncio.get_running_loop().run_in_executor(
-                None, _start_iamds_keycloak_loopback_flow
+                None, lambda: _start_iamds_keycloak_loopback_flow(_suite_env)
             )
     except HTTPException:
         raise
@@ -6999,11 +7212,61 @@ async def poll_oauth_session(provider_id: str, session_id: str):
         raise HTTPException(status_code=404, detail="Session not found or expired")
     if sess["provider"] != provider_id:
         raise HTTPException(status_code=400, detail="Provider mismatch for session")
-    return {
+    payload = {
         "session_id": session_id,
         "status": sess["status"],
         "error_message": sess.get("error_message"),
         "expires_at": sess.get("expires_at"),
+    }
+    # Structured failure details (AIS-286): a consent failure carries the
+    # tenant-admin consent URL so the UI can offer it as an action.
+    for key in ("error_code", "error_category", "action_url"):
+        if sess.get(key):
+            payload[key] = sess[key]
+    return payload
+
+
+@app.get("/api/providers/oauth/microsoft/admin-consent-url")
+async def microsoft_admin_consent_url(request: Request, use_default_scope: bool = False):
+    """Tenant-onboarding URL for the Microsoft 365 app (token-protected).
+
+    A tenant administrator opens it once; afterwards every user of that
+    organization silently receives the org-consent tier (Teams chat, presence,
+    shared mailboxes, To Do). ``granted_tier`` reports what the currently
+    cached account can already obtain (None when nobody is signed in).
+    """
+    _require_token(request)
+    from hermes_cli.m365_auth import (
+        M365_ALL_SCOPES,
+        M365_ORG_CONSENT_SCOPES,
+        M365_SELF_CONSENT_SCOPES,
+        build_admin_consent_url,
+        resolve_m365_client_id,
+        resolve_m365_tenant_id,
+    )
+
+    def _probe_granted_tier() -> Optional[str]:
+        try:
+            from hermes_cli.m365_auth import get_msal_app, m365_granted_tier
+
+            app_obj = get_msal_app()
+            accounts = app_obj.get_accounts()
+            if not accounts:
+                return None
+            return m365_granted_tier(app_obj, accounts[0])
+        except Exception:
+            return None
+
+    granted_tier = await asyncio.get_running_loop().run_in_executor(None, _probe_granted_tier)
+    return {
+        "url": build_admin_consent_url(use_default_scope=use_default_scope),
+        "client_id": resolve_m365_client_id(),
+        "tenant_id": resolve_m365_tenant_id(),
+        "scopes": ["https://graph.microsoft.com/.default"] if use_default_scope else list(M365_ALL_SCOPES),
+        "self_consent_scopes": list(M365_SELF_CONSENT_SCOPES),
+        "org_consent_scopes": list(M365_ORG_CONSENT_SCOPES),
+        "granted_tier": granted_tier,
+        "org_consented": granted_tier in ("standard", "admin"),
     }
 
 
@@ -7660,7 +7923,15 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
     try:
         runs = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
         now = time.time()
+        _last_session = None
+        _last_output_path = None
+        if selected:
+            _job_row = _call_cron_for_profile(selected, "get_job", canonical)
+            if _job_row:
+                _last_session = _job_row.get("last_run_session_id")
+                _last_output_path = _job_row.get("last_output_path")
         for s in runs:
+            s["output_path"] = _last_output_path if (_last_session and s.get("id") == _last_session) else None
             s["is_active"] = (
                 s.get("ended_at") is None
                 and (now - s.get("last_active", s.get("started_at", 0))) < 300
@@ -7721,6 +7992,46 @@ async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[st
     return job
 
 
+@app.post("/api/cron/jobs/{job_id}/seen")
+async def mark_cron_job_seen(job_id: str, profile: Optional[str] = None):
+    """Record that the user opened the job's latest output (AIS-305)."""
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = _call_cron_for_profile(selected, "mark_job_seen", job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.get("/api/cron/jobs/{job_id}/output/latest")
+async def get_cron_job_latest_output(job_id: str, profile: Optional[str] = None):
+    """Latest artifact of a cron job (journal file or saved output doc), AIS-305."""
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = _call_cron_for_profile(selected, "get_job", job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    raw_path = job.get("last_output_path")
+    if not raw_path:
+        raise HTTPException(status_code=404, detail="No output yet")
+    path = Path(str(raw_path)).expanduser()
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Output file missing")
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Cannot read output: {exc}")
+    return {
+        "path": str(path),
+        "written_at": job.get("last_output_at"),
+        "content": content[:200_000],
+        "summary": job.get("last_output_summary"),
+        "session_id": job.get("last_run_session_id"),
+    }
+
+
 @app.post("/api/cron/jobs/{job_id}/pause")
 async def pause_cron_job(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
@@ -7778,8 +8089,31 @@ def _spawn_immediate_cron_job(profile: str, job_id: str) -> Optional[str]:
                     # Execute the job
                     _log.info("Executing job '%s' with HERMES_HOME=%s", job_id, home)
                     success, output, final_response, error = cron_sched.run_job(job)
+                    # Persist the output doc like the ticker does, so the run
+                    # has an artifact even when no journal file was written.
+                    _output_file = None
+                    try:
+                        from cron.jobs import save_job_output as _save_job_output
+
+                        _output_file = _save_job_output(job_id, output)
+                    except Exception as _save_exc:
+                        _log.debug("Immediate cron job '%s': output save skipped: %s", job_id, _save_exc)
+                    _meta = cron_sched.pop_run_meta(job_id)
+                    _summary = None
+                    if success and (final_response or "").strip():
+                        _s, _a, _oq, _has = cron_sched._extract_findings_summary_action(final_response)
+                        if _has:
+                            _summary = {"finding": _s, "next": _a, "open_question": (_oq[0] if _oq else "")}
+                    _output_path = _meta.get("journal_path") or (
+                        str(_output_file) if (success and _output_file and not _meta.get("silent")) else None
+                    )
                     # Mark the job as complete
-                    cron_sched.mark_job_run(job_id, success, error)
+                    cron_sched.mark_job_run(
+                        job_id, success, error,
+                        output_path=_output_path,
+                        session_id=_meta.get("session_id") or session_id,
+                        summary=_summary,
+                    )
                     _log.info(
                         "Immediate cron job '%s' (session %s) completed: %s",
                         job_id, session_id, "success" if success else "failed",
@@ -8342,6 +8676,17 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     # action path so the request returns immediately and the UI can tail logs.
     # The -p subprocess rebinds HERMES_HOME-derived paths in the child.
     if entry.install is not None:
+        if mcp_catalog.is_installed(instance_name):
+            # Re-install of a live stdio server: the action wipes the clone
+            # the server runs from. Drop the connection first so its process
+            # exits and the directory can be replaced (AIS-304); the status
+            # poll re-discovers the server once the action finished.
+            try:
+                from tools.mcp_tool import disconnect_mcp_server
+
+                await asyncio.to_thread(disconnect_mcp_server, instance_name)
+            except Exception:
+                _log.debug("Pre-reinstall disconnect of '%s' failed", instance_name, exc_info=True)
         try:
             proc = _spawn_hermes_action(
                 _profile_cli_args(effective_profile) + ["mcp", "install", name],

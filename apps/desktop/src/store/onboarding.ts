@@ -48,7 +48,7 @@ export type OnboardingFlow =
       saving: boolean
       status: 'confirming_model'
     }
-  | { message: string; provider?: OAuthProvider; start?: OAuthStartResponse; status: 'error' }
+  | { actionUrl?: null | string; message: string; provider?: OAuthProvider; start?: OAuthStartResponse; status: 'error' }
 
 export interface DesktopOnboardingState {
   /** null until the first runtime check resolves. Seeded from localStorage so
@@ -574,7 +574,7 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
 // through to the error flow so the user can retry from the same context.
 async function pollSession(provider: OAuthProvider, start: DeviceStart | LoopbackStart, ctx: OnboardingContext) {
   try {
-    const { error_message, status } = await pollOAuthSession(provider.id, start.session_id)
+    const { action_url, error_message, status } = await pollOAuthSession(provider.id, start.session_id)
 
     if (status === 'approved') {
       clearPoll()
@@ -588,7 +588,7 @@ async function pollSession(provider: OAuthProvider, start: DeviceStart | Loopbac
       )
     } else if (status !== 'pending') {
       clearPoll()
-      setFlow({ status: 'error', provider, start, message: error_message || `Sign-in ${status}.` })
+      setFlow({ status: 'error', provider, start, message: error_message || `Sign-in ${status}.`, actionUrl: action_url })
     }
   } catch (error) {
     clearPoll()

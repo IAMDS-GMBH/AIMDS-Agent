@@ -261,6 +261,22 @@ class TestIsClaudeCodeTokenValid:
         assert is_claude_code_token_valid(creds) is True
 
 
+@pytest.fixture(autouse=True)
+def _isolate_claude_code_keychain(monkeypatch):
+    """Never let a developer's real Claude Code login leak into these tests.
+
+    ``resolve_anthropic_token`` consults the macOS keychain before the
+    ``~/.claude/.credentials.json`` file; monkeypatching ``Path.home`` alone
+    still returned the real OAuth token on a signed-in Mac and made the whole
+    class fail (and print the token). Hermetic by default; tests that want a
+    keychain hit patch the helper themselves.
+    """
+    monkeypatch.setattr(
+        "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+        lambda: None,
+    )
+
+
 class TestResolveAnthropicToken:
     def test_prefers_oauth_token_over_api_key(self, monkeypatch, tmp_path):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-mykey")

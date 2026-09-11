@@ -549,8 +549,10 @@ class TestLoadGatewayConfig:
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
+        # ntfy is a bundled plugin platform (plugins/platforms/ntfy); the
+        # former outlook platform was retired with the M365 MCP (AIS-187).
         config_path.write_text(
-            "outlook:\n"
+            "ntfy:\n"
             "  enabled: true\n",
             encoding="utf-8",
         )
@@ -562,9 +564,9 @@ class TestLoadGatewayConfig:
         ):
             config = load_gateway_config()
 
-        outlook = Platform("outlook")
-        assert outlook in config.platforms
-        assert config.platforms[outlook].enabled is True
+        ntfy = Platform("ntfy")
+        assert ntfy in config.platforms
+        assert config.platforms[ntfy].enabled is True
 
     def test_bridges_nested_gateway_platforms_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

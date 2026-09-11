@@ -6,7 +6,7 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
-import type { CronJob, CronDeliveryTarget, ProfileInfo, SkillInfo } from "@/lib/api";
+import type { CronJob, ProfileInfo, SkillInfo } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import {
   DEFAULT_SCHEDULE_STATE,
@@ -213,11 +213,7 @@ export default function CronPage() {
     open: createModalOpen,
     onClose: closeCreateModal,
   });
-  const [deliver, setDeliver] = useState("local");
   const [jobSkills, setJobSkills] = useState<string[]>([]);
-  const [deliveryTargets, setDeliveryTargets] = useState<CronDeliveryTarget[]>([
-    { id: "local", name: "Local", home_target_set: true, home_env_var: null },
-  ]);
   const [creating, setCreating] = useState(false);
   const createProfile = selectedProfile === "all" ? "default" : selectedProfile;
 
@@ -226,7 +222,6 @@ export default function CronPage() {
   const [editPrompt, setEditPrompt] = useState("");
   const [editSchedule, setEditSchedule] = useState("");
   const [editName, setEditName] = useState("");
-  const [editDeliver, setEditDeliver] = useState("local");
   const [editSkills, setEditSkills] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const closeEditModal = useCallback(() => setEditJob(null), []);
@@ -248,7 +243,6 @@ export default function CronPage() {
       asText(job.schedule?.expr) || asText(job.schedule_display) || "",
     );
     setEditName(getJobName(job));
-    setEditDeliver(asText(job.deliver) || "local");
     setEditSkills(Array.isArray(job.skills) ? job.skills.filter(Boolean) : []);
   }, []);
 
@@ -265,18 +259,6 @@ export default function CronPage() {
       .getProfiles()
       .then((res) => setProfiles(res.profiles))
       .catch(() => setProfiles([]));
-  }, []);
-
-  useEffect(() => {
-    api
-      .getCronDeliveryTargets()
-      .then((res) => setDeliveryTargets(res.targets))
-      .catch(() =>
-        // Fall back to local-only so the modal still works if the endpoint fails.
-        setDeliveryTargets([
-          { id: "local", name: "Local", home_target_set: true, home_env_var: null },
-        ]),
-      );
   }, []);
 
   useEffect(() => {
@@ -313,58 +295,6 @@ export default function CronPage() {
 
   const scheduleString = buildScheduleString(scheduleState);
 
-  // Label for a delivery option. Configured platforms missing their cron home
-  // channel are still offered (option B), annotated so the user knows what to
-  // fix rather than wondering why delivery silently no-ops.
-  const deliverLabel = useCallback(
-    (target: CronDeliveryTarget): string => {
-      const base = target.id === "local" ? t.cron.delivery.local : target.name;
-      if (target.id !== "local" && !target.home_target_set) {
-        const hint = t.cron.delivery.needsHomeChannel ?? "set a home channel first";
-        return `${base} — ${hint}`;
-      }
-      return base;
-    },
-    [t.cron.delivery],
-  );
-
-  const renderDeliverOptions = useCallback(
-    () =>
-      deliveryTargets.map((target) => (
-        <SelectOption key={target.id} value={target.id}>
-          {deliverLabel(target)}
-        </SelectOption>
-      )),
-    [deliveryTargets, deliverLabel],
-  );
-
-  // The edit modal must always show the job's current target, even if that
-  // platform is no longer configured (e.g. job created via CLI, or the
-  // gateway was later removed) — otherwise the value would silently vanish
-  // from the dropdown and saving would drop it.
-  const renderEditDeliverOptions = useCallback(
-    (current: string) => {
-      const known = new Set(deliveryTargets.map((target) => target.id));
-      const options = deliveryTargets.map((target) => (
-        <SelectOption key={target.id} value={target.id}>
-          {deliverLabel(target)}
-        </SelectOption>
-      ));
-      if (current && !known.has(current)) {
-        options.push(
-          <SelectOption key={current} value={current}>
-            {current}
-          </SelectOption>,
-        );
-      }
-      return options;
-    },
-    [deliveryTargets, deliverLabel],
-  );
-
-  const onlyLocalAvailable =
-    deliveryTargets.filter((target) => target.id !== "local").length === 0;
-
   const handleCreate = async () => {
     if (!prompt.trim() || !scheduleString) {
       showToast(`${t.cron.prompt} & ${t.cron.schedule} required`, "error");
@@ -377,7 +307,6 @@ export default function CronPage() {
           prompt: prompt.trim(),
           schedule: scheduleString,
           name: name.trim() || undefined,
-          deliver,
           skills: jobSkills.length > 0 ? jobSkills : undefined,
         },
         createProfile,
@@ -386,7 +315,6 @@ export default function CronPage() {
       setPrompt("");
       setScheduleState(DEFAULT_SCHEDULE_STATE);
       setName("");
-      setDeliver("local");
       setJobSkills([]);
       setCreateModalOpen(false);
       loadJobs();
@@ -411,7 +339,6 @@ export default function CronPage() {
           prompt: editPrompt.trim(),
           schedule: editSchedule.trim(),
           name: editName.trim(),
-          deliver: editDeliver,
           skills: editSkills,
         },
         getJobProfile(editJob),
@@ -605,23 +532,6 @@ export default function CronPage() {
               />
 
               <div className="grid gap-2">
-                <Label htmlFor="cron-deliver">{t.cron.deliverTo}</Label>
-                <Select
-                  id="cron-deliver"
-                  value={deliver}
-                  onValueChange={(v) => setDeliver(v)}
-                >
-                  {renderDeliverOptions()}
-                </Select>
-                {onlyLocalAvailable && (
-                  <p className="text-xs text-muted-foreground">
-                    {t.cron.delivery.noneConfigured ??
-                      "No messaging platforms configured. Set one up under Channels to deliver reports."}
-                  </p>
-                )}
-              </div>
-
-              <div className="grid gap-2">
                 <Label htmlFor="cron-skills">Skills (optional)</Label>
                 <SkillsPicker
                   id="cron-skills"
@@ -715,17 +625,6 @@ export default function CronPage() {
                     onChange={(e) => setEditSchedule(e.target.value)}
                   />
                 </div>
-
-                <div className="grid gap-2">
-                  <Label htmlFor="edit-cron-deliver">{t.cron.deliverTo}</Label>
-                  <Select
-                    id="edit-cron-deliver"
-                    value={editDeliver}
-                    onValueChange={(v) => setEditDeliver(v)}
-                  >
-                    {renderEditDeliverOptions(editDeliver)}
-                  </Select>
-                </div>
               </div>
 
               <div className="grid gap-2">
@@ -795,7 +694,6 @@ export default function CronPage() {
           const promptText = getJobPrompt(job);
           const title = getJobTitle(job);
           const hasName = Boolean(getJobName(job));
-          const deliver = asText(job.deliver);
           const profile = getJobProfile(job);
           const jobKey = getJobKey(job);
 
@@ -811,9 +709,6 @@ export default function CronPage() {
                       {state}
                     </Badge>
                     <Badge tone="outline">{profileLabel(profile)}</Badge>
-                    {deliver && deliver !== "local" && (
-                      <Badge tone="outline">{deliver}</Badge>
-                    )}
                     {Array.isArray(job.skills) && job.skills.length > 0 && (
                       <Badge tone="outline" title={job.skills.join(", ")}>
                         {job.skills.length === 1

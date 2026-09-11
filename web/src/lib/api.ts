@@ -467,9 +467,7 @@ export const api = {
   // Cron jobs
   getCronJobs: (profile = "all") =>
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
-  getCronDeliveryTargets: () =>
-    fetchJSON<{ targets: CronDeliveryTarget[] }>("/api/cron/delivery-targets"),
-  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string; skills?: string[] }, profile = "default") =>
+  createCronJob: (job: { prompt: string; schedule: string; name?: string; skills?: string[] }, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -479,7 +477,7 @@ export const api = {
     fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/pause?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
   updateCronJob: (
     id: string,
-    updates: { prompt?: string; schedule?: string; name?: string; deliver?: string; skills?: string[] },
+    updates: { prompt?: string; schedule?: string; name?: string; skills?: string[] },
     profile = "default",
   ) =>
     fetchJSON<CronJob>(
@@ -2058,7 +2056,22 @@ export interface OAuthPollResponse {
   session_id: string;
   status: "pending" | "approved" | "denied" | "expired" | "error";
   error_message?: string | null;
+  /** Structured failure details (AIS-286); consent failures carry the admin-consent URL. */
+  error_code?: string | null;
+  error_category?: string | null;
+  action_url?: string | null;
   expires_at?: number | null;
+}
+
+export interface MicrosoftAdminConsentResponse {
+  url: string;
+  client_id: string;
+  tenant_id: string;
+  scopes: string[];
+  self_consent_scopes: string[];
+  org_consent_scopes: string[];
+  granted_tier: "self" | "standard" | "admin" | null;
+  org_consented: boolean;
 }
 
 // ── Dashboard theme types ──────────────────────────────────────────────
@@ -2159,4 +2172,48 @@ export interface AgentPluginUpdateResponse {
 export interface PluginProvidersPutRequest {
   memory_provider?: string;
   context_engine?: string;
+}
+
+// ---------------------------------------------------------------------------
+// AIMDS-Suite provider status / re-auth (AIS-286)
+// ---------------------------------------------------------------------------
+
+export type AimdsSuiteState = "connected" | "needs_reauth" | "not_configured" | "unreachable";
+
+export interface AimdsSuiteEnvStatus {
+  id: string;
+  label: string;
+  key_env: string;
+  base_url: string;
+  base_url_source: "config" | "env" | "default" | "";
+  env_mismatch: boolean;
+  key_present: boolean;
+  key_source: string;
+  state: AimdsSuiteState;
+  reason: string;
+  http_status: number | null;
+  runtime_auth_failure: Record<string, unknown> | null;
+  mcp?: Record<string, unknown> | null;
+}
+
+export interface AimdsSuiteStatusResponse {
+  checked_at: string;
+  environments: AimdsSuiteEnvStatus[];
+}
+
+export async function getAimdsSuiteStatus(probe = false): Promise<AimdsSuiteStatusResponse> {
+  return fetchJSON<AimdsSuiteStatusResponse>(
+    `/api/providers/aimds-suite/status${probe ? "?probe=true" : ""}`,
+  );
+}
+
+export async function completeAimdsSuiteReauth(env: string): Promise<{ ok: boolean }> {
+  return fetchJSON<{ ok: boolean }>(
+    `/api/providers/aimds-suite/${encodeURIComponent(env)}/reauth-complete`,
+    { method: "POST" },
+  );
+}
+
+export async function getMicrosoftAdminConsentUrl(): Promise<MicrosoftAdminConsentResponse> {
+  return fetchJSON<MicrosoftAdminConsentResponse>("/api/providers/oauth/microsoft/admin-consent-url");
 }

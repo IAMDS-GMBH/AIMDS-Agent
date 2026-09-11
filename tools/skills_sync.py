@@ -15,7 +15,9 @@ Update logic:
       * If user copy matches origin hash: user hasn't modified it → safe to
         update from bundled if bundled changed. New origin hash recorded.
       * If user copy differs from origin hash: user customized it → SKIP.
-  - DELETED by user (in manifest, absent from user dir): respected, not re-added.
+  - DELETED by user (in manifest, absent from user dir): respected while the
+    bundled version is unchanged; a changed bundled version is copied again
+    once (manifest moves to the new hash). skills.disabled is the opt-out.
   - REMOVED from bundled (in manifest, gone from repo): cleaned from manifest.
 
 The manifest lives at ~/.hermes/skills/.bundled_manifest.
@@ -957,7 +959,26 @@ def sync_skills(quiet: bool = False) -> dict:
 
         else:
             # ── In manifest but not on disk — user deleted it ──
-            skipped += 1
+            # Respected while the shipped skill is unchanged. A *changed*
+            # shipped version is offered again once (AIS-289: the rewritten
+            # teams-message-draft never reached a machine whose manifest
+            # still carried the hash of the old upstream copy). The manifest
+            # moves to the new hash, so a second rm sticks until the next
+            # change; ``skills.disabled`` is the permanent opt-out.
+            origin_hash = manifest.get(skill_name, "")
+            if origin_hash and bundled_hash != origin_hash and skill_name not in disabled:
+                try:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copytree(skill_src, dest)
+                    copied.append(skill_name)
+                    manifest[skill_name] = bundled_hash
+                    if not quiet:
+                        print(f"  + {skill_name} (shipped version changed)")
+                except (OSError, IOError) as e:
+                    if not quiet:
+                        print(f"  ! Failed to copy {skill_name}: {e}")
+            else:
+                skipped += 1
 
     # Clean stale manifest entries (skills removed from bundled dir)
     cleaned = sorted(set(manifest.keys()) - bundled_names)
