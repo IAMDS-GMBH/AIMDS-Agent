@@ -4,11 +4,19 @@ import type { NavigateFunction } from 'react-router-dom'
 
 import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import {
+  type ChatMessage,
+  chatMessageArraysEquivalent,
+  chatMessageText,
+  preserveLocalAssistantErrors,
+  toChatMessages
+} from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
+import { isCronRunFinished, isCronSessionId } from '@/lib/cron-run-state'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { clearQueuedPrompts } from '@/store/composer-queue'
+import { $cronJobs } from '@/store/cron'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
@@ -22,6 +30,7 @@ import {
   setActiveSessionId,
   setAwaitingResponse,
   setBusy,
+  setCronSessionInFlight,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -93,29 +102,6 @@ function preserveReasoningParts(message: ChatMessage, previous: ChatMessage): Ch
   const reasoningParts = previous.parts.filter(part => part.type === 'reasoning')
 
   return reasoningParts.length ? { ...message, parts: [...reasoningParts, ...message.parts] } : message
-}
-
-function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
-  if (
-    a.id !== b.id ||
-    a.role !== b.role ||
-    a.pending !== b.pending ||
-    a.error !== b.error ||
-    a.hidden !== b.hidden ||
-    a.branchGroupId !== b.branchGroupId
-  ) {
-    return false
-  }
-
-  if (a.parts.length !== b.parts.length) {
-    return false
-  }
-
-  return a.parts.every((part, index) => JSON.stringify(part) === JSON.stringify(b.parts[index]))
-}
-
-function chatMessageArraysEquivalent(a: ChatMessage[], b: ChatMessage[]): boolean {
-  return a.length === b.length && a.every((message, index) => chatMessagesEquivalent(message, b[index]))
 }
 
 function reconcileResumeMessages(nextMessages: ChatMessage[], previousMessages: ChatMessage[]): ChatMessage[] {
@@ -606,15 +592,23 @@ export function useSessionActions({
           // Non-fatal: gateway resume below can still hydrate the session.
         }
 
-        // Cron sessions (id starts with 'cron_') can be in-flight without a
-        // resume-able runtime id. Keep their stored snapshot visible and let the
-        // dedicated cron polling hook refresh the transcript every second.
-        const isCronSession = storedSessionId.startsWith('cron_')
+        // A cron session whose run is still in flight has no resume-able
+        // runtime: the scheduler's agent runs outside the gateway and persists
+        // the transcript only when the turn ends, so resuming now would put a
+        // second agent on the same session. Keep the stored snapshot visible
+        // and let the cron polling hook refresh it until the run settles.
+        // A finished run (the common case: the user opens a delivered brief
+        // and asks about it) resumes like any other session so the follow-up
+        // turn streams live with tool cards and busy state (AIS-320).
+        const cronRunInFlight =
+          isCronSessionId(storedSessionId) && !isCronRunFinished(storedSessionId, localSnapshot, $cronJobs.get())
 
-        if (isCronSession) {
+        if (cronRunInFlight) {
           if (!isCurrentResume()) {
             return
           }
+
+          setCronSessionInFlight(storedSessionId)
 
           const currentMessages = $messages.get()
           const previousMessages = isSessionSwitch ? [] : currentMessages
@@ -638,6 +632,10 @@ export function useSessionActions({
           )
 
           return
+        }
+
+        if (isCronSessionId(storedSessionId)) {
+          setCronSessionInFlight(current => (current === storedSessionId ? null : current))
         }
 
         const resumed = await requestGateway<SessionResumeResponse>('session.resume', {

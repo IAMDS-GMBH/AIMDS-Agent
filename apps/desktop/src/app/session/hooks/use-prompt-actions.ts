@@ -45,8 +45,10 @@ import {
   $messages,
   $sessions,
   $yoloActive,
+  setActiveSessionId,
   setAwaitingResponse,
   setBusy,
+  setCronSessionInFlight,
   setMessages,
   setModelPickerOpen,
   setSessionPickerOpen,
@@ -706,7 +708,12 @@ export function usePromptActions({
             const recoveredId = resumed?.session_id
 
             if (recoveredId) {
+              // Publish the live id to the store as well: hooks keyed on
+              // `$activeSessionId` (e.g. cron transcript polling) must not
+              // keep acting on the stale stored id while this turn streams.
               activeSessionIdRef.current = recoveredId
+              setActiveSessionId(recoveredId)
+              setCronSessionInFlight(current => (current === selectedStoredSessionIdRef.current ? null : current))
               await requestGateway('prompt.submit', {
                 session_id: recoveredId,
                 text,

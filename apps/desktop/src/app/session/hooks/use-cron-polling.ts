@@ -1,91 +1,99 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { getSessionMessages } from '@/hermes'
-import { toChatMessages } from '@/lib/chat-messages'
-import { setMessages } from '@/store/session'
+import { chatMessageArraysEquivalent, toChatMessages } from '@/lib/chat-messages'
+import { isCronRunFinished } from '@/lib/cron-run-state'
+import { $cronJobs } from '@/store/cron'
+import { $awaitingResponse, $busy, $cronSessionInFlight, $messages, setCronSessionInFlight, setMessages } from '@/store/session'
 
 interface UseCronPollingOptions {
   activeSessionId: string | null
   profile?: string
-  /**
-   * Only poll if the session was created/started recently.
-   * Cron jobs that are in-flight will have last_active within this window.
-   * Set to 0 to always poll. Default: 5 minutes.
-   */
-  recentThresholdMs?: number
+  // Called once the polled transcript shows the run has settled; the caller
+  // resumes the session normally so the next turn streams live.
+  onRunFinished?: (storedSessionId: string) => void
 }
 
-const CRON_POLL_INTERVAL_MS = 1000 // Poll every 1 second for real-time updates
-const DEFAULT_RECENT_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
+const CRON_POLL_INTERVAL_MS = 1000
 
 /**
- * Auto-poll transcript for active cron sessions.
+ * Refresh the transcript of a cron session whose run is still in flight (AIS-320).
  *
- * Cron sessions (id starts with "cron_") are started by the backend when manually triggered.
- * This hook polls the session transcript every 3 seconds to show real-time output updates
- * in the UI without requiring manual refresh. Polling stops when the session is no longer
- * active, or when the auto-detect heuristic determines it's no longer in-flight.
+ * The scheduler's agent runs outside the gateway and persists messages only
+ * when the turn ends, so the stored snapshot is the only view of such a run.
+ * Poll it once a second while the session is marked in flight
+ * (`$cronSessionInFlight`, set by the resume path), publish only when the
+ * content actually changed — a fresh array per tick re-measures the whole
+ * thread and jerks the scroll position — and never while a live turn is
+ * streaming into the same view. When the snapshot shows the run finished,
+ * stop and hand the session to the normal resume path.
  */
-export function useCronPolling({
-  activeSessionId,
-  profile,
-  recentThresholdMs = DEFAULT_RECENT_THRESHOLD_MS
-}: UseCronPollingOptions) {
+export function useCronPolling({ activeSessionId, profile, onRunFinished }: UseCronPollingOptions) {
+  const inFlightSessionId = useStore($cronSessionInFlight)
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const lastPollRef = useRef<number>(0)
+  const inFlightRequestRef = useRef(false)
+  const onRunFinishedRef = useRef(onRunFinished)
+  onRunFinishedRef.current = onRunFinished
+
+  const target = activeSessionId && inFlightSessionId === activeSessionId ? activeSessionId : null
 
   useEffect(() => {
-    // Only poll cron sessions
-    if (!activeSessionId || !activeSessionId.startsWith('cron_')) {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current)
-        pollIntervalRef.current = null
-      }
-
+    if (!target) {
       return
     }
 
-    // Set up polling
+    let cancelled = false
+
     const poll = async () => {
+      if (cancelled || inFlightRequestRef.current || document.visibilityState !== 'visible') {
+        return
+      }
+
+      // A live turn owns the view; the stored snapshot lags behind it.
+      if ($busy.get() || $awaitingResponse.get()) {
+        return
+      }
+
+      inFlightRequestRef.current = true
+
       try {
-        const now = Date.now()
+        const response = await getSessionMessages(target, profile)
 
-        // Rate-limit to avoid hammering the backend
-        if (now - lastPollRef.current < CRON_POLL_INTERVAL_MS) {
+        if (cancelled || !response?.messages || $cronSessionInFlight.get() !== target) {
           return
         }
 
-        lastPollRef.current = now
+        const next = toChatMessages(response.messages)
 
-        // Only continue polling if document is visible
-        if (document.visibilityState !== 'visible') {
-          return
+        if (!chatMessageArraysEquivalent(next, $messages.get())) {
+          setMessages(next)
         }
 
-        const response = await getSessionMessages(activeSessionId, profile)
-
-        if (response?.messages) {
-          setMessages(toChatMessages(response.messages))
+        if (isCronRunFinished(target, next, $cronJobs.get())) {
+          setCronSessionInFlight(current => (current === target ? null : current))
+          onRunFinishedRef.current?.(target)
         }
       } catch (err) {
         // Silent fail - don't disrupt the UX if polling fails
         console.debug('[cron-polling] Failed to fetch session transcript:', err)
+      } finally {
+        inFlightRequestRef.current = false
       }
     }
 
-    // Initial poll
     void poll()
-
-    // Set up interval
     pollIntervalRef.current = setInterval(() => {
       void poll()
     }, CRON_POLL_INTERVAL_MS)
 
     return () => {
+      cancelled = true
+
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current)
         pollIntervalRef.current = null
       }
     }
-  }, [activeSessionId, profile])
+  }, [profile, target])
 }

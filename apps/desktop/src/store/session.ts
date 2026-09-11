@@ -222,6 +222,9 @@ export const $sessionsLoading = atom(true)
 export const $workingSessionIds = atom<string[]>([])
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
+// Stored id of a cron session whose run has not been persisted yet (AIS-320):
+// shown from its snapshot and polled until it settles, then resumed normally.
+export const $cronSessionInFlight = atom<string | null>(null)
 export const $messages = atom<ChatMessage[]>([])
 export const $freshDraftReady = atom(false)
 export const $busy = atom(false)
@@ -268,6 +271,7 @@ export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessio
 export const setWorkingSessionIds = (next: Updater<string[]>) => updateAtom($workingSessionIds, next)
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => updateAtom($selectedStoredSessionId, next)
+export const setCronSessionInFlight = (next: Updater<string | null>) => updateAtom($cronSessionInFlight, next)
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 export const setBusy = (next: Updater<boolean>) => updateAtom($busy, next)

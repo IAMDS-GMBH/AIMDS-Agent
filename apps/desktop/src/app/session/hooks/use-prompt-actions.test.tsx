@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
-import { $connection, $sessions, setSessions } from '@/store/session'
+import { $activeSessionId, $connection, $sessions, setActiveSessionId, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment, usePromptActions } from './use-prompt-actions'
@@ -658,6 +658,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
   })
 
   it('resumes the stored session and retries once when prompt.submit reports "session not found"', async () => {
+    setActiveSessionId(RUNTIME_SESSION_ID)
     // After sleep/wake the gateway's in-memory session table is cleared, so the
     // first prompt.submit with the stale runtime id fails. The hook resumes the
     // durable stored id (which survives gateway restarts), gets a fresh live id,
@@ -702,6 +703,9 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
+    // The live id is published to the store too, so hooks keyed on it
+    // (cron transcript polling) stop acting on the stale stored id (AIS-320).
+    expect($activeSessionId.get()).toBe(RECOVERED_SESSION_ID)
   })
 
   it('resumes the stored session and retries once when session.interrupt reports "session not found"', async () => {
