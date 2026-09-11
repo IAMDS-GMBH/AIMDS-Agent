@@ -716,8 +716,22 @@ export function DesktopController() {
     void refreshActiveProfile()
   }, [activeGatewayProfile, refreshCurrentModel])
 
+  // A cron run that settled while its session was open resumes like any other
+  // session, so the next turn streams live instead of being polled (AIS-320).
+  const handleCronRunFinished = useCallback(
+    (storedSessionId: string) => {
+      if (selectedStoredSessionIdRef.current !== storedSessionId) {
+        return
+      }
+
+      void resumeSession(storedSessionId, false, undefined, true)
+    },
+    [resumeSession, selectedStoredSessionIdRef]
+  )
+
   useCronPolling({
     activeSessionId,
+    onRunFinished: handleCronRunFinished,
     profile: activeGatewayProfile
   })
 

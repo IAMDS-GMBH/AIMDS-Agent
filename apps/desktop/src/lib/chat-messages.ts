@@ -972,3 +972,26 @@ export function preserveLocalAssistantErrors(
 export function branchGroupForUser(userMessage: ChatMessage): string {
   return `branch:${userMessage.id}`
 }
+
+export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
+  if (
+    a.id !== b.id ||
+    a.role !== b.role ||
+    a.pending !== b.pending ||
+    a.error !== b.error ||
+    a.hidden !== b.hidden ||
+    a.branchGroupId !== b.branchGroupId
+  ) {
+    return false
+  }
+
+  if (a.parts.length !== b.parts.length) {
+    return false
+  }
+
+  return a.parts.every((part, index) => JSON.stringify(part) === JSON.stringify(b.parts[index]))
+}
+
+export function chatMessageArraysEquivalent(a: ChatMessage[], b: ChatMessage[]): boolean {
+  return a.length === b.length && a.every((message, index) => chatMessagesEquivalent(message, b[index]))
+}
