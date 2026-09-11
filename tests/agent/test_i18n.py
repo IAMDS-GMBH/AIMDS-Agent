@@ -224,3 +224,13 @@ def test_t_resolves_real_string_in_source_checkout():
     regressions independent of packaging."""
     assert i18n.t("gateway.reset.header_default", lang="en") != "gateway.reset.header_default"
     assert i18n.t("gateway.status.header", lang="en") != "gateway.status.header"
+
+
+def test_language_names_cover_every_supported_language():
+    assert set(i18n.LANGUAGE_NAMES) == set(i18n.SUPPORTED_LANGUAGES)
+    assert i18n.LANGUAGE_NAMES["de"] == "German"
+
+
+@pytest.mark.parametrize("value, expected", [("Deutsch", "de"), ("de-AT", "de"), ("FR", "fr"), ("xx", "en"), ("", "en"), (None, "en")])
+def test_normalize_language_public_wrapper(value, expected):
+    assert i18n.normalize_language(value) == expected

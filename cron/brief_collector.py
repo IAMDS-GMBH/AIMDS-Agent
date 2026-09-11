@@ -51,13 +51,13 @@ HEADINGS = {
         "morning-brief": "Morning Brief", "weekly-review": "Weekly Review",
         "mail-check": "Mail Check", "teams-check": "Teams Check",
         "preview": "Preview: next working day", "changed": "Changed since the last brief",
-        "latest": "Latest briefs", "language": "English",
+        "latest": "Latest briefs",
     },
     "de": {
         "morning-brief": "Tages-Briefing", "weekly-review": "Wochen-Rückblick",
         "mail-check": "Mail-Check", "teams-check": "Teams-Check",
         "preview": "Vorschau: nächster Arbeitstag", "changed": "Seit dem letzten Briefing geändert",
-        "latest": "Letzte Briefings", "language": "German",
+        "latest": "Letzte Briefings",
     },
 }
 
@@ -74,17 +74,23 @@ def collector_config(cfg: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def brief_language(cfg: Optional[Dict[str, Any]]) -> str:
-    """``cron.brief_collector.language`` → ``display.language`` → ``en`` (only en/de)."""
-    def _norm(v: Any) -> str:
-        s = str(v or "").strip().lower().replace("_", "-")
-        return s.split("-")[0] if s else ""
+    """Output language of scheduled runs: ``cron.brief_collector.language`` → ``display.language`` → ``en``.
 
-    lang = _norm(collector_config(cfg).get("language"))
-    if lang in ("en", "de"):
-        return lang
+    Any language ``agent.i18n`` supports is accepted (codes, aliases such as
+    ``Deutsch``, region tags such as ``de-AT``); unknown values normalise to
+    ``en``.  Journal titles (``HEADINGS``) exist in en/de only and fall back to
+    English for other languages — the LANGUAGE directive still applies.
+    """
+    from agent.i18n import normalize_language
+
+    raw = collector_config(cfg).get("language")
+    if isinstance(raw, str) and raw.strip():
+        return normalize_language(raw)
     display = (cfg or {}).get("display") if isinstance(cfg, dict) else None
-    lang = _norm((display or {}).get("language") if isinstance(display, dict) else "")
-    return lang if lang in ("en", "de") else "en"
+    raw = display.get("language") if isinstance(display, dict) else None
+    if isinstance(raw, str) and raw.strip():
+        return normalize_language(raw)
+    return "en"
 
 
 def _canonical_seed_key(raw: Any) -> str:
@@ -546,5 +552,19 @@ def brief_title(kind: str, lang: str, day: date) -> str:
 
 
 def language_instruction(lang: str) -> str:
-    name = HEADINGS.get(lang, HEADINGS["en"])["language"]
-    return f"LANGUAGE: Write the entire brief in {name}. Do not mix languages."
+    """One-line LANGUAGE directive for every scheduled run (all cron jobs, not only briefs).
+
+    Wording must stay clear of the cron prompt-injection scanner's strict
+    patterns (no "ignore … instructions", "disregard", "system prompt override")
+    and must keep the scheduler's literal markers untranslated.
+    """
+    from agent.i18n import LANGUAGE_NAMES, normalize_language
+
+    name = LANGUAGE_NAMES.get(normalize_language(lang), "English")
+    return (
+        f"LANGUAGE: Write your entire response in {name}, including headings, list items and summaries; "
+        "do not mix languages. Keep proper nouns, ticket keys, e-mail subjects and quoted titles as they are, "
+        "and keep the literal markers FINDING:, NEXT:, OPEN_QUESTION:, OPEN_QUESTION_NEEDED: and [SILENT] "
+        f"exactly as written. This is a scheduled run with no user message to mirror; {name} is the user's "
+        "configured language."
+    )

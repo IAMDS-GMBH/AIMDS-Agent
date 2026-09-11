@@ -1924,8 +1924,11 @@ DEFAULT_CONFIG = {
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a
-        # handful of gateway slash-command replies).  Does NOT affect agent
-        # responses, log lines, tool outputs, or slash-command descriptions.
+        # handful of gateway slash-command replies).  Does not affect
+        # interactive agent responses (those mirror the user's message), log
+        # lines, tool outputs, or slash-command descriptions — but it sets the
+        # output language of scheduled cron runs (briefs and user jobs) unless
+        # cron.brief_collector.language overrides it (AIS-319).
         # Supported: en, de, es, fr, tr, uk, af, ko, it, ga, pt, ru, hu.
         # Unknown values fall back to en.
         "language": "en",
@@ -2630,7 +2633,8 @@ DEFAULT_CONFIG = {
         # and lets the model compose only.
         "brief_collector": {
             "enabled": True,
-            # "en" | "de"; empty = display.language, falling back to "en".
+            # Any supported language code/alias (see display.language); empty =
+            # display.language, falling back to "en". Applies to every cron run.
             "language": "",
             "char_budget": 5000,
             "mail_top": 15,
