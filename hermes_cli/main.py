@@ -7196,7 +7196,7 @@ def _backfill_default_skill_dependencies(
         for mod in office_extra_imports
     ] + [
         ("PIL", "Pillow>=10,<12", "PowerPoint thumbnails"),
-        ("pypdf", "pypdf>=5,<6", "PDF merge/split/manipulation"),
+        ("pypdf", "pypdf>=5,<7", "PDF merge/split/manipulation"),
         ("fitz", "pymupdf>=1.24,<2", "PDF metadata/inspection"),
         ("fpdf", "fpdf2>=2.8,<3", "Word/PDF text rendering fallback"),
         ("weasyprint", "weasyprint>=62,<63", "HTML to PDF conversion"),
