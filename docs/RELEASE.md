@@ -156,8 +156,7 @@ starts, so PyPI-style installs and `importlib.metadata` stay close to reality.
 This repository is going private. Clients cannot read releases of a private
 repository, so every release is mirrored into the public
 **`IAMDS-GMBH/AIMDS-Agent-Releases`** (README plus releases, no code, no
-issues). The mirror is the download source for installers, install scripts
-and the source package; the client updater switched to it in AIS-312
+issues). The mirror is the download source for installers and the source package; the client updater switched to it in AIS-312
 (`updates.source`, see above), the installer follows in AIS-313, the cutover
 itself is AIS-314.
 
@@ -168,10 +167,9 @@ runs `scripts/build_source_package.sh <version> <out-dir>`:
 
 | Asset | Content |
 |---|---|
-| `hermes-source-<version>.zip` | `git archive` of HEAD with the version stamped by `scripts/set_version.py`; root folder `hermes-agent-<version>/`; the `export-ignore` rules in `.gitattributes` keep `.github/`, `.agents/`, `tests/`, `apps/bootstrap-installer/`, `docs/plans/`, `createTag.sh` and `CONTRIBUTING.md` out — nothing that describes internal workflows ships |
+| `hermes-source-<version>.zip` | `git archive` of HEAD with the version stamped by `scripts/set_version.py`; root folder `hermes-agent-<version>/`; the `export-ignore` rules in `.gitattributes` keep everything out that the installed client does not need to run, build its UIs or update itself — `.github/`, `.agents/`, `tests/`, `apps/bootstrap-installer/`, `docs/`, `docker/` + `Dockerfile`, `assets/` (README screenshots), PR/design material and the developer/CI scripts under `scripts/` (AIS-322). `scripts/install.sh` / `install.ps1` travel inside the archive; they are not separate assets — the installer (AIS-313) takes them from the verified archive |
 | `hermes-source-<version>.zip.sha256` | checksum, `sha256sum -c` format |
 | `hermes-release.json` | `{"format": "hermes-release-v1", "version", "tag", "commit_sha", "source_archive", "sha256", "size", "built_at"}` — the manifest the client updater reads |
-| `install.sh`, `install.ps1` | the install scripts of this release (the bootstrap installer fetches them from here instead of `raw.githubusercontent.com`) |
 
 `publish-release-assets` uploads these next to the installers on the internal
 release, then mirrors the release: same tag, `--prerelease` for candidates,

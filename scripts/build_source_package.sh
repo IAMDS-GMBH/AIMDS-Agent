@@ -116,7 +116,5 @@ with open(sys.argv[1], "w", encoding="utf-8") as fh:
     fh.write("\n")
 PY
 
-cp scripts/install.sh scripts/install.ps1 "$out_dir/"
-
 echo "Source package ready in $out_dir:"
 ls -l "$out_dir"

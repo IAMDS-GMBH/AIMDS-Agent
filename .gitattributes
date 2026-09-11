@@ -9,15 +9,49 @@ Dockerfile  text eol=lf
 *.dockerfile text eol=lf
 docker/entrypoint.sh text eol=lf
 
-# Source package (AIS-311, scripts/build_source_package.sh): `git archive`
-# honours export-ignore, so everything listed here stays out of the public
-# hermes-source-<version>.zip. Rule: nothing that describes internal
-# workflows, CI, planning or tooling ships to customers.
+# Source package (AIS-311/AIS-322, scripts/build_source_package.sh): `git
+# archive` honours export-ignore, so everything listed here stays out of the
+# public hermes-source-<version>.zip. Rule: the archive carries only what the
+# installed client needs to run, build its UIs and update itself — nothing
+# that describes internal workflows, CI, planning, tooling, container
+# deployment or documentation ships to customers.
 .github/                 export-ignore
 .agents/                 export-ignore
 .gitattributes           export-ignore
 tests/                   export-ignore
 apps/bootstrap-installer/ export-ignore
-docs/plans/              export-ignore
+docs/                    export-ignore
 createTag.sh             export-ignore
 CONTRIBUTING.md          export-ignore
+SECURITY.md              export-ignore
+# README screenshots and PR/design material
+assets/                  export-ignore
+apps/desktop/pr-assets/  export-ignore
+apps/desktop/DESIGN.md   export-ignore
+apps/desktop/preview-demo.html export-ignore
+# Container deployment (built from the repository, never from the archive)
+docker/                  export-ignore
+Dockerfile               export-ignore
+.dockerignore            export-ignore
+# Developer / CI / release tooling under scripts/. Kept in the archive:
+# install.sh, install.ps1, install.cmd, lib/, whatsapp-bridge/, hermes-gateway,
+# set_version.py, install_psutil_android.py, run_tests.sh, keystroke_diagnostic.py.
+scripts/release.py       export-ignore
+scripts/build_source_package.sh export-ignore
+scripts/run_tests_parallel.py export-ignore
+scripts/lint_diff.py     export-ignore
+scripts/check-windows-footguns.py export-ignore
+scripts/check-windows-docx-env.ps1 export-ignore
+scripts/check_subprocess_stdin.py export-ignore
+scripts/contributor_audit.py export-ignore
+scripts/profile-tui.py   export-ignore
+scripts/sample_and_compress.py export-ignore
+scripts/benchmark_browser_eval.py export-ignore
+scripts/tool_search_livetest.py export-ignore
+scripts/analyze_livetest.py export-ignore
+scripts/LIVETEST_README.md export-ignore
+scripts/build_model_catalog.py export-ignore
+scripts/discord-voice-doctor.py export-ignore
+scripts/setup_open_webui.sh export-ignore
+scripts/docker_config_migrate.py export-ignore
+scripts/kill_modal.sh    export-ignore
