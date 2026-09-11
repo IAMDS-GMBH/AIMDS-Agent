@@ -1540,6 +1540,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None, collecte
             When provided, the script is not re-executed and the cached
             result is used for prompt injection. When omitted, the script
             (if any) runs inline as before.
+        collected: Optional ``CollectorResult`` for compose-only runs (AIS-305).
+        lang: Output language code for the LANGUAGE directive; ``None`` → ``en``.
     """
     user_prompt = str(job.get("prompt") or "")
     prompt = user_prompt
@@ -1628,10 +1630,19 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None, collecte
                 logger.warning("context_from: failed to read output for job %r: %s", source_job_id, e)
                 # silent skip — do not pollute the prompt with error messages
 
+    # AIS-319: every scheduled run answers in the configured Hermes language
+    # (cron.brief_collector.language → display.language → en). The directive
+    # sits inside the [IMPORTANT: …] hint so it precedes collected data, script
+    # output and the user prompt for all job kinds, not only the brief.
+    from cron.brief_collector import language_instruction
+
+    lang_line = language_instruction(lang or "en")
+
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
     cron_hint = (
         "[IMPORTANT: You are running as a scheduled cron job. "
+        + lang_line + " "
         "DELIVERY: Your final response will be automatically delivered "
         "to the user's Desktop — do NOT send outbound emails/messages or use "
         "any external delivery mechanism yourself. Just produce your "
@@ -1652,6 +1663,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None, collecte
         # the agent has no tools and the scheduler writes the journal file.
         cron_hint = (
             "[IMPORTANT: You are running as a scheduled cron job. "
+            + lang_line + " "
             "DELIVERY: Your final response is delivered to the user's Desktop and "
             "saved as the journal file by the scheduler — do NOT send messages or "
             "write files yourself. You have NO tools: compose ONLY from the "
@@ -1668,10 +1680,6 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None, collecte
         )
         prompt = cron_hint + str(collected.text or "").rstrip() + "\n\n" + prompt
         has_injected_data = True
-        if lang:
-            from cron.brief_collector import language_instruction
-
-            prompt = prompt.rstrip() + "\n\n" + language_instruction(lang) + "\n"
     else:
         prompt = cron_hint + prompt
     stale_hint = _build_weekly_stale_projects_hint(job)
@@ -2037,10 +2045,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return True, silent_doc, SILENT_MARKER, None
 
     try:
-        if collected is not None:
-            prompt = _build_job_prompt(job, prerun_script=prerun_script, collected=collected, lang=brief_lang)
-        else:
-            prompt = _build_job_prompt(job, prerun_script=prerun_script)
+        prompt = _build_job_prompt(job, prerun_script=prerun_script, collected=collected, lang=brief_lang)
     except CronPromptInjectionBlocked as block_exc:
         # Assembled prompt (user prompt + loaded skill content) tripped the
         # injection scanner. Refuse to run the agent this tick and surface
