@@ -290,7 +290,7 @@ jobs:
             gh release create "$TAG" --target "$target" "${flags[@]}"
           fi
           shopt -s nullglob globstar
-          files=("$ASSET_DIR"/**/HermesSetup* "$ASSET_DIR"/**/hermes-source-* "$ASSET_DIR"/**/hermes-release.json "$ASSET_DIR"/**/install.sh "$ASSET_DIR"/**/install.ps1)
+          files=("$ASSET_DIR"/**/HermesSetup* "$ASSET_DIR"/**/hermes-source-* "$ASSET_DIR"/**/hermes-release.json)
           if [ ${#files[@]} -eq 0 ]; then
             echo "::error::No assets found under $ASSET_DIR to mirror"
             exit 1
@@ -1034,7 +1034,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           files=(release-assets/**/HermesSetup.dmg release-assets/**/HermesSetup.exe release-assets/**/HermesSetup.AppImage release-assets/**/HermesSetup.deb release-assets/**/HermesSetup.rpm release-assets/**/HermesSetup-debug.dmg release-assets/**/HermesSetup-debug.exe)
-          files+=(release-assets/**/hermes-source-*.zip release-assets/**/hermes-source-*.zip.sha256 release-assets/**/hermes-release.json release-assets/**/install.sh release-assets/**/install.ps1)
+          files+=(release-assets/**/hermes-source-*.zip release-assets/**/hermes-source-*.zip.sha256 release-assets/**/hermes-release.json)
           if [ ${#files[@]} -eq 0 ]; then
             files=(release-assets/**/*.dmg release-assets/**/*.exe release-assets/**/*.AppImage release-assets/**/*.deb release-assets/**/*.rpm)
           fi
@@ -1109,7 +1109,7 @@ jobs:
             gh release create "$TAG" --target "$target" "${flags[@]}"
           fi
           shopt -s nullglob globstar
-          files=("$ASSET_DIR"/**/HermesSetup* "$ASSET_DIR"/**/hermes-source-* "$ASSET_DIR"/**/hermes-release.json "$ASSET_DIR"/**/install.sh "$ASSET_DIR"/**/install.ps1)
+          files=("$ASSET_DIR"/**/HermesSetup* "$ASSET_DIR"/**/hermes-source-* "$ASSET_DIR"/**/hermes-release.json)
           if [ ${#files[@]} -eq 0 ]; then
             echo "::error::No assets found under $ASSET_DIR to mirror"
             exit 1
