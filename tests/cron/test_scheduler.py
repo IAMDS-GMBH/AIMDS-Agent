@@ -2255,6 +2255,14 @@ class TestBuildJobPromptSilentHint:
         assert "do NOT send outbound emails" in result
         assert "automatically delivered" in result
 
+    def test_language_directive_default_and_explicit(self):
+        """AIS-319: exactly one LANGUAGE directive, English by default, ahead of the prompt."""
+        result = _build_job_prompt({"prompt": "My custom prompt"})
+        assert result.count("LANGUAGE:") == 1
+        assert "in English" in result
+        assert result.index("LANGUAGE:") < result.index("My custom prompt")
+        assert "in French" in _build_job_prompt({"prompt": "x"}, lang="fr")
+
     def test_delivery_guidance_precedes_user_prompt(self):
         """System guidance appears before the user's prompt text."""
         job = {"prompt": "My custom prompt"}

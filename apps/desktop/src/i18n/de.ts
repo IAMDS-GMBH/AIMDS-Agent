@@ -1538,6 +1538,9 @@ export const de
     switchToRelease: tag => `Auf ${tag} wechseln`,
     newerReleaseBody: (headTag, targetTag, channel) =>
       `Diese Installation steht auf ${headTag} und ist neuer als das aktuelle Release ${targetTag} des Kanals „${channel}". Der Kanal zieht nach, sobald eine neuere Version freigegeben ist – es gibt nichts zu installieren.`,
+    releaseAvailable: version => `Version ${version} verfügbar`,
+    releaseAvailableBody: version =>
+      `Hermes ${version} ist bereit zur Installation. Das Update lädt das Release-Archiv herunter und startet Hermes neu.`,
     manualTitle: 'Update über Terminal durchführen',
     manualBody: 'Hermes wurde über die Befehlszeile installiert, daher laufen Updates dort ebenfalls. In das Terminal einfügen:',
     manualPickedUp: 'Hermes nimmt die neue Version beim nächsten Start auf.',

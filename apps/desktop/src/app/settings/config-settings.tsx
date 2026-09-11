@@ -416,6 +416,9 @@ export function ConfigSettings({
   const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
   const [updateChannel, setUpdateChannel] = useState<'stable' | 'preview' | 'main'>('stable')
+  // Release-managed installs (archive updates, AIS-312) only know the release
+  // channels — `main` needs git history and is hidden for them.
+  const [updateSource, setUpdateSource] = useState<'release' | 'git' | null>(null)
 
   const [filePickerRoot, setFilePickerRoot] = useState<'userDir' | 'vault'>(() => {
     const saved = storedString(FILE_PICKER_ROOT_STORAGE_KEY)
@@ -435,16 +438,27 @@ export function ConfigSettings({
             const b = res.branch
             setUpdateChannel(b === 'tags' || b === 'stable' ? 'stable' : b === 'preview' ? 'preview' : 'main')
           }
+
+          if (res?.source === 'release' || res?.source === 'git') {
+            setUpdateSource(res.source)
+          }
         })
         .catch(() => {})
     }
   }, [])
 
-  const updateChannelOptions = [
-    { id: 'stable', label: a.updateChannelStable },
-    { id: 'preview', label: a.updateChannelPreview },
-    { id: 'main', label: a.updateChannelMain }
-  ] as const
+  const updateChannelOptions = useMemo<readonly { id: 'stable' | 'preview' | 'main'; label: string }[]>(() => {
+    const options: { id: 'stable' | 'preview' | 'main'; label: string }[] = [
+      { id: 'stable', label: a.updateChannelStable },
+      { id: 'preview', label: a.updateChannelPreview }
+    ]
+
+    if (updateSource !== 'release') {
+      options.push({ id: 'main', label: a.updateChannelMain })
+    }
+
+    return options
+  }, [a.updateChannelMain, a.updateChannelPreview, a.updateChannelStable, updateSource])
 
   const filePickerRootOptions = [
     { id: 'userDir', label: a.filePickerRootUserDir },

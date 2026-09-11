@@ -50,16 +50,27 @@ def test_resolve_collector_kind_respects_config_switch():
     ({}, "en"),
     ({"display": {"language": "de"}}, "de"),
     ({"display": {"language": "de-AT"}}, "de"),
-    ({"display": {"language": "fr"}}, "en"),
+    ({"display": {"language": "fr"}}, "fr"),
+    ({"display": {"language": "Deutsch"}}, "de"),
+    ({"display": {"language": "xx"}}, "en"),
+    ({"display": {"language": ""}}, "en"),
     ({"display": {"language": "de"}, "cron": {"brief_collector": {"language": "en"}}}, "en"),
     ({"cron": {"brief_collector": {"language": "DE"}}}, "de"),
+    ({"cron": {"brief_collector": {"language": "français"}}}, "fr"),
 ])
 def test_brief_language(cfg, expected):
     assert bc.brief_language(cfg) == expected
 
 
 def test_language_instruction_and_titles():
-    assert "German" in bc.language_instruction("de") and "Do not mix" in bc.language_instruction("de")
+    de = bc.language_instruction("de")
+    assert "in German" in de and "do not mix languages" in de
+    assert "in French" in bc.language_instruction("fr")
+    assert "in English" in bc.language_instruction("xx")
+    # The scheduler parses these literally — the directive must tell the model to keep them.
+    for marker in ("FINDING:", "NEXT:", "OPEN_QUESTION:", "[SILENT]"):
+        assert marker in de
+    assert bc.brief_title("morning-brief", "fr", date(2026, 9, 8)) == "Morning Brief 2026-09-08"
     assert bc.brief_title("morning-brief", "de", date(2026, 9, 8)) == "Tages-Briefing 2026-09-08"
     assert bc.brief_title("weekly-review", "en", date(2026, 9, 11)) == "Weekly Review 2026-W37"
 

@@ -276,21 +276,28 @@ export function useStatusbarItems({
     // version pill, tooltip explains why the channel shows nothing (AIS-299).
     const headTag = updateStatus?.headTag ?? null
     const newerThanTarget = !applying && behind === 0 && updateStatus?.newerThanTarget === true && !!headTag && !!targetTag
+    // Release-managed install (archive updates, AIS-312): the offer is a
+    // whole release version, not a commit count.
+    const targetVersion = updateStatus?.targetVersion ?? null
+    const releaseUpdate = !applying && behind > 0 && updateStatus?.source === 'release' && !!targetVersion
 
     const version = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
     const base = remote ? copy.clientLabel(appVersion ?? sha ?? copy.unknown) : version
 
     const label = applying
       ? `${base} · ${updateApply.stage === 'restart' ? copy.restart : copy.update}`
-      : !applying && behind > 0
-        ? `${base} · ✨ Update (+${behind})`
-        : offChannel
-          ? `${base} · ${copy.releaseAvailable(targetTag)}`
-          : base
+      : releaseUpdate
+        ? `${base} · ✨ v${targetVersion}`
+        : !applying && behind > 0
+          ? `${base} · ✨ Update (+${behind})`
+          : offChannel
+            ? `${base} · ${copy.releaseAvailable(targetTag)}`
+            : base
 
     const tooltip = [
       applying ? updateApply.message || copy.updateInProgress : null,
-      !applying && behind > 0 && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
+      releaseUpdate && copy.releaseAvailable(`v${targetVersion}`),
+      !applying && behind > 0 && !releaseUpdate && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
       offChannel && copy.aheadOfRelease(updateStatus?.aheadOfTarget ?? 0, targetTag),
       newerThanTarget && copy.newerRelease(headTag, targetTag, updateStatus?.branch ?? 'stable'),
       appVersion && copy.desktopVersion(appVersion),
@@ -336,7 +343,9 @@ export function useStatusbarItems({
     updateStatus?.headTag,
     updateStatus?.newerThanTarget,
     updateStatus?.offChannel,
-    updateStatus?.targetTag
+    updateStatus?.source,
+    updateStatus?.targetTag,
+    updateStatus?.targetVersion
   ])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {

@@ -51,6 +51,62 @@ def _get_version_from_git() -> str | None:
     return None
 
 
+def _get_release_marker_version(root: "Path | None" = None) -> str | None:
+    """Version of a source-archive install (``.hermes-release.json``), else ``None``.
+
+    Read *before* git: after an archive update on a converted checkout
+    ``git describe`` still names the old tag (AIS-297 phantom-update loop).
+    """
+    try:
+        from hermes_cli.release_marker import read_release_marker
+
+        marker = read_release_marker(root or Path(__file__).resolve().parent.parent)
+        if marker and isinstance(marker.get("version"), str) and marker["version"].strip():
+            return marker["version"].strip()
+    except Exception:
+        pass
+    return None
+
+
+def _get_release_describe_version(root: "Path | None" = None) -> str | None:
+    """``<highest reachable release tag>+<commits since>`` for a checkout past a tag (AIS-318).
+
+    A developer/``main`` checkout after ``v0.7.5`` reports ``0.7.5+6`` — the
+    highest *release* tag reachable from HEAD (stable above the candidates
+    of its own version), never the ``pyproject.toml`` number, which is not
+    bumped per release since AIS-292. ``None`` without git, without a
+    reachable release tag, or exactly on the tag (that case is handled by
+    :func:`_get_exact_release_tag_version`).
+    """
+    try:
+        root = root or Path(__file__).resolve().parent.parent
+        if not (root / ".git").exists():
+            return None
+        from hermes_cli.release_channels import select_release_tag, version_from_tag
+
+        listed = subprocess.run(
+            ["git", "tag", "--merged", "HEAD", "--list", "v*"],
+            cwd=root, capture_output=True, text=True, timeout=2,
+        )
+        if listed.returncode != 0:
+            return None
+        tag = select_release_tag(listed.stdout.split(), "preview")
+        if not tag:
+            return None
+        counted = subprocess.run(
+            ["git", "rev-list", "--count", f"{tag}..HEAD"],
+            cwd=root, capture_output=True, text=True, timeout=2,
+        )
+        if counted.returncode != 0:
+            return None
+        ahead = int(counted.stdout.strip() or "0")
+        base = version_from_tag(tag)
+        return f"{base}+{ahead}" if ahead > 0 else base
+    except Exception:
+        pass
+    return None
+
+
 def _get_exact_release_tag_version() -> str | None:
     """Version of the release tag HEAD sits on, for source checkouts.
 
@@ -77,18 +133,25 @@ def _get_exact_release_tag_version() -> str | None:
     return None
 
 
+_marker_version = _get_release_marker_version()
 try:
     from importlib.metadata import metadata as _pkg_metadata, PackageNotFoundError as _PNF
     try:
         _meta = _pkg_metadata("aimds-agent")
     except Exception:
         _meta = _pkg_metadata("hermes-agent")
-    __version__ = _get_exact_release_tag_version() or _meta["Version"] or "0.0.0"
+    __version__ = (
+        _marker_version
+        or _get_exact_release_tag_version()
+        or _get_release_describe_version()
+        or _meta["Version"]
+        or "0.0.0"
+    )
     __release_date__ = _meta.get("X-Release-Date") or "unknown"
 except Exception:
     # Fallback for editable installs or environments where metadata isn't available.
-    # Try git tags first, then hardcoded version.
-    __version__ = _get_version_from_git() or "0.7.3"
+    # Try the release marker, then git tags, then the hardcoded version.
+    __version__ = _marker_version or _get_release_describe_version() or _get_version_from_git() or "0.7.3"
     __release_date__ = "2026.8.26"
 
 
