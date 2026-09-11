@@ -261,7 +261,6 @@ export const ko: Translations = {
       monthlyAt: "매월 {day} {time}",
       onceAt: "{time}에 한 번",
     },
-    deliverTo: "전달 대상",
     scheduledJobs: "예약된 작업",
     noJobs: "구성된 cron 작업이 없습니다. 위에서 하나 만드세요.",
     last: "마지막",
@@ -269,13 +268,6 @@ export const ko: Translations = {
     pause: "일시 정지",
     resume: "재개",
     triggerNow: "지금 실행",
-    delivery: {
-      local: "로컬",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
-      email: "Email",
-    },
   },
 
   profiles: {

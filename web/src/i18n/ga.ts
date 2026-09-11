@@ -270,7 +270,6 @@ export const ga: Translations = {
       monthlyAt: "An {day} de gach mí ag {time}",
       onceAt: "Uair amháin ag {time}",
     },
-    deliverTo: "Seachadadh chuig",
     scheduledJobs: "Poist sceidealta",
     noJobs: "Níl poist cron cumraithe. Cruthaigh ceann thuas.",
     last: "Deireanach",
@@ -278,13 +277,6 @@ export const ga: Translations = {
     pause: "Sos",
     resume: "Lean ar aghaidh",
     triggerNow: "Spreag anois",
-    delivery: {
-      local: "Áitiúil",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
-      email: "Email",
-    },
   },
 
   profiles: {

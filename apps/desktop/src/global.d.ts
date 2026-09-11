@@ -40,6 +40,8 @@ declare global {
       }
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
+      // Unread-output badge: dock badge (macOS/Linux) or taskbar overlay (Windows).
+      setUnreadBadge?: (count: number) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
       readFileDataUrl: (filePath: string) => Promise<string>
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
@@ -103,6 +105,9 @@ declare global {
       }
       onClosePreviewRequested?: (callback: () => void) => () => void
       onOpenUpdatesRequested?: (callback: () => void) => () => void
+      // A native notification was clicked; `action` is what the renderer
+      // attached to the `notify` payload (validated by the main process).
+      onNotificationAction?: (callback: (action: HermesNotificationAction) => void) => () => void
       onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
       onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
@@ -117,8 +122,8 @@ declare global {
       updates: {
         check: () => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
-        getBranch: () => Promise<{ branch: string }>
-        setBranch: (name: string) => Promise<{ branch: string }>
+        getBranch: () => Promise<{ branch: string; source?: 'release' | 'git' }>
+        setBranch: (name: string) => Promise<{ branch: string; source?: 'release' | 'git' }>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
       }
       uninstall: {
@@ -176,6 +181,11 @@ export interface DesktopVersionInfo {
   nodeVersion: string
   platform: string
   hermesRoot: string
+  /** `release`: the install was applied from a release archive and carries a
+   *  `.hermes-release.json` marker (AIS-312); `git`: a git checkout. */
+  source?: 'release' | 'git'
+  /** Release-managed installs: the marker's tag (`v0.7.6`). */
+  releaseTag?: string
 }
 
 export interface DesktopSupportLogSendResult {
@@ -220,12 +230,34 @@ export interface DesktopUpdateCommit {
 
 export interface DesktopUpdateStatus {
   supported: boolean
+  /** How the check was made: `release` compares the install's marker with the
+   *  channel's release manifest (archive install, AIS-312), `git` runs the git
+   *  fetch/rev-list path. */
+  source?: 'release' | 'git'
+  /** Release-managed installs: the installed release version / build id from
+   *  the marker. */
+  releaseVersion?: string
+  releaseBuildId?: string
   branch?: string
   currentBranch?: string
   reason?: string
   message?: string
   error?: string
   behind?: number
+  /** Tag channels (stable/preview): commits HEAD is *past* the channel's
+   *  release tag. Non-zero with `offChannel` means a dev/main checkout on a
+   *  release channel — the overlay offers "switch to the release", never a
+   *  phantom "+1 update" (AIS-297). */
+  aheadOfTarget?: number
+  offChannel?: boolean
+  /** Tag channels: HEAD sits on a release tag (`headTag`, e.g. `v0.7.5-rc.1`)
+   *  that is *newer* than the channel's target — up to date, no offer, never
+   *  a downgrade (AIS-299). */
+  newerThanTarget?: boolean
+  headTag?: string
+  /** Tag channels: the release tag (`v0.7.4`) / version (`0.7.4`) targeted. */
+  targetTag?: string
+  targetVersion?: string
   currentSha?: string
   targetSha?: string
   commits?: DesktopUpdateCommit[]
@@ -438,7 +470,18 @@ export interface HermesNotification {
   title?: string
   body?: string
   silent?: boolean
+  action?: HermesNotificationAction
 }
+
+export interface HermesCronArtifactNotificationAction {
+  kind: 'cron-artifact'
+  jobId: string
+  path?: string
+  sessionId?: string
+  profile?: string
+}
+
+export type HermesNotificationAction = HermesCronArtifactNotificationAction
 
 export interface HermesPreviewTarget {
   binary?: boolean

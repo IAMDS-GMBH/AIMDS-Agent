@@ -8315,6 +8315,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print(f"  Input tokens:              {input_tokens:>10,}")
         print(f"  Cache read tokens:         {cache_read_tokens:>10,}")
         print(f"  Cache write tokens:        {cache_write_tokens:>10,}")
+        # Cache economics (AIS-309): writes cost 1.25x/2x, reads 0.1x, so the
+        # write share and the number of large re-writes (an expired message
+        # tier) say more about spend than the totals above.
+        from agent.cache_insights import format_cache_economics
+
+        cache_line = format_cache_economics(
+            input_tokens, cache_read_tokens, cache_write_tokens,
+            getattr(agent, "session_large_cache_writes", 0) or 0,
+            getattr(agent, "_cache_ttl", ""), getattr(agent, "_message_cache_ttl", ""),
+        )
+        if cache_line:
+            print(cache_line)
         print(f"  Output tokens:             {output_tokens:>10,}")
         if reasoning_tokens:
             print(f"  ↳ Reasoning (subset):      {reasoning_tokens:>10,}")

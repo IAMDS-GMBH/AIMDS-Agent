@@ -61,8 +61,16 @@ def test_upsert_aimds_defaults_creates_required_sections():
     assert out["curator"]["prune_builtins"] is False
 
     include = out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["include"]
-    assert "kb_search" in include
     assert "memory_context" in include
+    # AIS-291: go-mcp-ntfy tools are part of the default include; the retired
+    # aimds_kb tools and the memory_get/upsert/delete trio are gone.
+    for name in ("ntfy_send_notification", "ntfy_list_topics", "ntfy_get_messages"):
+        assert name in include
+    for name in ("kb_search", "memory_get", "memory_upsert", "memory_delete"):
+        assert name not in include
+    # AIS-294: go-mcp-customer document tools for read_file's Suite Docling path
+    for tool in ("storage_ingest_upload", "storage_get_document", "storage_search", "storage_meta"):
+        assert tool in include, tool
     assert out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["resources"] is False
     assert out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["prompts"] is False
 
@@ -80,7 +88,7 @@ def test_upsert_aimds_defaults_overrides_existing_conflicting_values():
     assert out["tools"]["tool_search"]["threshold_pct"] == 10
     assert out["prompt_caching"]["cache_ttl"] == "1h" and out["prompt_caching"]["message_ttl"] == "5m"
     assert "goal_judge" not in out["auxiliary"]
-    assert "kb_search" in out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["include"]
+    assert "ntfy_list_topics" in out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["include"]
     assert out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["resources"] is False
 
 
@@ -131,7 +139,8 @@ def test_upsert_removes_synthetic_iamds_stub_and_migrates_to_aimds_suite_mcp():
     out = upsert_aimds_defaults(cfg)
     assert "IAMDS" not in out["mcp_servers"]
     assert "AIMDSSuiteMCP" in out["mcp_servers"]
-    assert "kb_search" in out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["include"]
+    include = out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["include"]
+    assert "ntfy_send_notification" in include and "kb_search" not in include
 
 
 def test_upsert_removes_synthetic_aimds_gateway_when_iamds_exists():
@@ -161,7 +170,25 @@ def test_upsert_removes_synthetic_aimds_gateway_when_iamds_exists():
     }
     out = upsert_aimds_defaults(cfg)
     assert "aimds-gateway" not in out["mcp_servers"]
-    assert "kb_search" in out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["include"]
+    assert "ntfy_send_notification" in out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["include"]
+
+
+def test_upsert_removes_synthetic_stub_carrying_the_pre_ais291_list():
+    """A stub written by the v17 upsert (kb_* + memory_get/upsert/delete still
+    included) is still recognized as ours after the list changed (AIS-291)."""
+    v17 = list(_MODULE._AIMDS_TOOL_INCLUDE_LEGACY[0])
+    assert "kb_search" in v17 and "memory_upsert" in v17 and "storage_meta" in v17
+    cfg = {
+        "mcp_servers": {
+            "AIMDSSuiteMCP": {"provider": "iamds", "url": "https://example/mcp"},
+            "aimds-gateway": {"tools": {"include": v17, "resources": False, "prompts": False}},
+        }
+    }
+    out = upsert_aimds_defaults(cfg)
+    assert "aimds-gateway" not in out["mcp_servers"]
+    include = out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["include"]
+    assert "ntfy_get_messages" in include
+    assert "kb_search" not in include and "memory_upsert" not in include
 
 
 def test_upsert_targets_provider_iamds_even_with_custom_server_name():
@@ -181,7 +208,7 @@ def test_upsert_targets_provider_iamds_even_with_custom_server_name():
 
     out = upsert_aimds_defaults(cfg)
     include = out["mcp_servers"]["corp-gateway"]["tools"]["include"]
-    assert "kb_search" in include
+    assert "ntfy_send_notification" in include and "kb_search" not in include
     assert "memory_context" in include
     assert out["mcp_servers"]["custom-tools"].get("tools") is None
 

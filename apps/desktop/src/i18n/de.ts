@@ -89,6 +89,7 @@ export const de
     free: 'Kostenlos',
     loading: 'Lade…',
     notSet: 'Nicht gesetzt',
+    open: 'Öffnen',
     refresh: 'Aktualisieren',
     remove: 'Entfernen',
     replace: 'Ersetzen',
@@ -374,6 +375,13 @@ export const de
       tipModeAuto: 'Auto (Endpoint)',
       tipModeBusiness: 'Business',
       tipModeNerd: 'Nerd / Team',
+      previewAutoOpen: {
+        label: 'Vorschau automatisch öffnen',
+        artifacts: 'Artefakte',
+        all: 'Alle Dateien',
+        never: 'Nie',
+        hint: 'Artefakte: nur Dokumente, Seiten und Bilder, die der Agent schreibt. Alle Dateien: jede Datei, die ein Tool anfasst. Nie: Vorschauen nur von Hand öffnen.'
+      },
       themeTitle: 'Theme',
       themeDesc: 'Nur Desktop-Paletten. Der gewählte Modus wird darüber angewendet.',
       themeProfileNote: profile => `Für das Profil „${profile}" gespeichert — jedes Profil hat sein eigenes Theme.`,
@@ -388,8 +396,9 @@ export const de
       removeTheme: 'Theme entfernen',
       importedBadge: 'Importiert',
       updateChannelTitle: 'Update-Kanal',
-      updateChannelDesc: 'Wähle zwischen stabilen Release-Versionen (Tags) oder Entwickler-Updates (Main).',
-      updateChannelStable: 'Stable (Tags)',
+      updateChannelDesc: 'Stable folgt freigegebenen Versionen, Preview erhält zusätzlich Release-Kandidaten, Main folgt dem Entwickler-Branch.',
+      updateChannelStable: 'Stable',
+      updateChannelPreview: 'Preview',
       updateChannelMain: 'Main (Branch)',
       filePickerRootTitle: 'Standard Workspace',
       filePickerRootDesc: 'Wähle das Standard-Startverzeichnis für den Datei-Browser (erfordert Client-Neustart).',
@@ -646,6 +655,8 @@ export const de
       catalogModalTitle: (name: string) => `${name} konfigurieren`,
       catalogModalDesc: 'Gib die erforderlichen Secrets oder Tokens ein, um diese MCP-Integration zu aktivieren.',
       catalogSecretsNotice: 'Secrets werden sicher in deiner .env-Konfiguration gespeichert.',
+      catalogInstallFailedTitle: 'MCP-Installation fehlgeschlagen',
+      catalogInstallFailedMessage: (name: string, detail: string) => `${name} konnte nicht installiert werden.${detail ? ` Letzte Ausgabe: ${detail}` : ''}`,
       catalogInstallSuccessTitle: 'MCP installiert',
       catalogInstallSuccessMessage: (name: string) => `${name} wurde zu deiner MCP-Konfiguration hinzugefügt.`,
       catalogInstancePickerLabel: 'Instanz',
@@ -686,7 +697,40 @@ export const de
       connectAnother: 'Weiteren Anbieter verbinden',
       otherProviders: 'Andere Anbieter',
       noProviderKeys: 'Keine Anbieter-API-Schlüssel verfügbar.',
-      loading: 'Lade Anbieter...'
+      loading: 'Lade Anbieter...',
+      m365: {
+        grantForOrg: 'Für Organisation freigeben',
+        grantForOrgHint: 'Tenant-Admin: Teams-Chat, Präsenz, geteilte Postfächer und To Do einmalig für alle freigeben',
+        orgApproved: 'Organisation freigegeben',
+        selfOnly: 'Nur Mail, Kalender und Dateien',
+        copied: 'Freigabe-Link kopiert',
+        openedAndCopied: 'Freigabe-Link im Browser geöffnet und kopiert. Nur ein Tenant-Administrator kann ihn bestätigen.',
+        loadFailed: 'Admin-Freigabe-Link konnte nicht erzeugt werden'
+      },
+      suite: {
+        title: 'AIMDS-Suite-Umgebungen',
+        intro: 'Base-URL je Umgebung. Mit Keycloak-SSO anmelden, um den API-Schlüssel zu holen oder zu erneuern.',
+        connected: 'Verbunden',
+        needsReauth: 'Neu anmelden erforderlich',
+        notConfigured: 'Nicht konfiguriert',
+        unreachable: 'Nicht geprüft',
+        signInSso: 'Mit SSO anmelden',
+        reauthenticate: 'Neu anmelden',
+        enterUrlFirst: 'Zuerst die Base-URL eintragen',
+        saveUrls: 'Anbieter-URLs speichern',
+        saving: 'Speichere…',
+        saved: 'AIMDS-Suite-Anbieter-URLs gespeichert',
+        checking: 'Prüfe…',
+        reason: {
+          keyMissing: 'Kein API-Schlüssel hinterlegt',
+          urlMissing: 'Keine Base-URL konfiguriert',
+          envMismatch: 'Umgebungsvariable zeigt auf einen anderen Host als die konfigurierte URL',
+          unauthorized: 'Der hinterlegte Schlüssel wurde vom Server abgelehnt',
+          runtime: 'Die laufende Sitzung hat einen Authentifizierungsfehler erhalten',
+          network: 'Server nicht erreichbar',
+          ok: 'Schlüssel akzeptiert'
+        }
+      }
     },
     sessions: {
       loading: 'Lade archivierte Sitzungen…',
@@ -1119,13 +1163,6 @@ export const de
       error: 'Fehler',
       completed: 'abgeschlossen'
     },
-    deliveryLabels: {
-      local: 'Dieser Desktop',
-      telegram: 'Telegram',
-      discord: 'Discord',
-      slack: 'Slack',
-      email: 'E-Mail'
-    },
     scheduleLabels: {
       daily: 'Täglich',
       weekdays: 'Wochentags',
@@ -1206,14 +1243,33 @@ export const de
     promptLabel: 'Prompt',
     promptPlaceholder: 'Meine ungelesenen Slack-Threads zusammenfassen und mir die Top 5 mailen...',
     frequencyLabel: 'Häufigkeit',
-    deliverLabel: 'An diesen Desktop zustellen',
     customScheduleLabel: 'Benutzerdefinierter Zeitplan',
     customPlaceholder: '0 9 * * * oder wochentags um 9:00',
     customHint: 'Cron-Ausdruck oder Ausdrücke wie „jede Stunde" oder „wochentags um 9:00".',
     optional: 'Optional',
     promptScheduleRequired: 'Prompt und Zeitplan sind erforderlich.',
     saveChanges: 'Änderungen speichern',
-    createAction: 'Cron erstellen'
+    createAction: 'Cron erstellen',
+    newOutput: 'Neu',
+    unseenCount: count => (count === 1 ? '1 neu' : `${count} neu`),
+    latestOutput: 'Letzte Ausgabe',
+    openLatestOutput: 'Ausgabe öffnen',
+    openOutputFailed: 'Cron-Ausgabe konnte nicht geöffnet werden',
+    brief: {
+      title: 'Briefing',
+      badgeNew: 'Neu',
+      finding: 'Erkenntnis',
+      next: 'Nächster Schritt',
+      openBrief: 'Briefing öffnen',
+      openRun: 'Ausführung öffnen',
+      noSummary: 'Noch keine Zusammenfassung — Briefing öffnen, um es zu lesen.'
+    },
+    notifications: {
+      completedTitle: name => `Cron-Job abgeschlossen: ${name}`,
+      failedTitle: name => `Cron-Job fehlgeschlagen: ${name}`,
+      completedBody: 'Klicken, um den Bericht zu öffnen.',
+      failedBody: 'Ausführung fehlgeschlagen.'
+    }
   },
 
   artifacts: {
@@ -1476,6 +1532,15 @@ export const de
     updateNow: 'Jetzt aktualisieren',
     maybeLater: 'Vielleicht später',
     moreChanges: count => `+ ${count} weitere Änderung${count === 1 ? '' : 'en'} enthalten.`,
+    offChannelTitle: tag => `Release ${tag} verfügbar`,
+    offChannelBody: (count, tag, channel) =>
+      `Diese Installation ist ein Entwicklungsstand und liegt ${count} Commit${count === 1 ? '' : 's'} vor dem Release ${tag}. Der Update-Kanal „${channel}" folgt nur Releases – wechsle auf ${tag} oder stelle den Kanal in den Einstellungen auf „main".`,
+    switchToRelease: tag => `Auf ${tag} wechseln`,
+    newerReleaseBody: (headTag, targetTag, channel) =>
+      `Diese Installation steht auf ${headTag} und ist neuer als das aktuelle Release ${targetTag} des Kanals „${channel}". Der Kanal zieht nach, sobald eine neuere Version freigegeben ist – es gibt nichts zu installieren.`,
+    releaseAvailable: version => `Version ${version} verfügbar`,
+    releaseAvailableBody: version =>
+      `Hermes ${version} ist bereit zur Installation. Das Update lädt das Release-Archiv herunter und startet Hermes neu.`,
     manualTitle: 'Update über Terminal durchführen',
     manualBody: 'Hermes wurde über die Befehlszeile installiert, daher laufen Updates dort ebenfalls. In das Terminal einfügen:',
     manualPickedUp: 'Hermes nimmt die neue Version beim nächsten Start auf.',
@@ -1582,6 +1647,9 @@ export const de
     connectedProvider: provider => `${provider} verbunden`,
     connectedPicking: provider => `${provider} verbunden. Standardmodell wird ausgewählt...`,
     signInFailed: 'Anmeldung fehlgeschlagen. Erneut versuchen.',
+    adminConsentNeeded: 'Deine Organisation verlangt eine Admin-Freigabe',
+    adminConsentHint: 'Gib diesen Link an einen Tenant-Administrator. Nach der einmaligen Freigabe kann sich jeder anmelden; niemand muss die Anmeldung wiederholen.',
+    openAdminConsent: 'Admin-Freigabe-Link öffnen',
     pickDifferentProvider: 'Anderen Anbieter wählen',
     signInWith: provider => `Anmelden mit ${provider}`,
     openedBrowser: provider => `${provider} wurde im Browser geöffnet.`,
@@ -1680,6 +1748,9 @@ export const de
       update: 'aktualisieren',
       updateInProgress: 'Update läuft',
       commitsBehind: (count, branch) => `${count} Commit${count === 1 ? '' : 's'} hinter ${branch}`,
+      releaseAvailable: tag => `Release ${tag} verfügbar`,
+      aheadOfRelease: (count, tag) => `Entwicklungsstand: ${count} Commit${count === 1 ? '' : 's'} vor ${tag}`,
+      newerRelease: (headTag, targetTag, channel) => `${headTag} ist neuer als das ${channel}-Release ${targetTag}`,
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `Backend v${version}`,
       clientLabel: version => `Client v${version}`,

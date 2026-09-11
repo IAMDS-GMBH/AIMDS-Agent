@@ -561,7 +561,12 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
           return
         }
 
-        const result = await readTextPreview(filePath)
+        // Inline text (a remote cron artifact the API handed us) wins over a
+        // path this machine may not be able to read.
+        const result =
+          typeof target.text === 'string'
+            ? { binary: false, byteSize: target.text.length, path: filePath, text: target.text }
+            : await readTextPreview(filePath)
 
         if (active) {
           const shouldBlock = !forcePreview && (result.binary || (result.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
@@ -590,7 +595,19 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     return () => {
       active = false
     }
-  }, [blockedByTarget, dataDoc, filePath, forcePreview, isImage, isText, officeDoc, reloadKey, target.dataUrl, target.language])
+  }, [
+    blockedByTarget,
+    dataDoc,
+    filePath,
+    forcePreview,
+    isImage,
+    isText,
+    officeDoc,
+    reloadKey,
+    target.dataUrl,
+    target.language,
+    target.text
+  ])
 
   if (officeDoc) {
     const handleOpen = () => {

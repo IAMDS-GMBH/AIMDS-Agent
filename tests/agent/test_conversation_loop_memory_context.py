@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from agent.conversation_loop import (
     _enforce_single_onboarding_clarify_question,
@@ -1384,3 +1385,69 @@ def test_sanitize_onboarding_context_line_text_extracts_context_from_blob():
     clean = _sanitize_onboarding_context_line_text(dirty)
 
     assert clean == "The profile in the remote server is not set yet, we will proceed with onboarding."
+
+
+# ── compact session-start briefing (developer posture, AIS-309) ─────────────
+
+
+def _run_initial_call(agent):
+    captured = {}
+
+    def _mock_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count):
+        tc = assistant_message.tool_calls[0]
+        captured["tool_args"] = json.loads(tc.function.arguments)
+        messages.append({"role": "tool", "name": tc.function.name, "tool_call_id": tc.id, "content": '{"ok":1}'})
+
+    agent._execute_tool_calls = _mock_execute_tool_calls
+    messages = [{"role": "user", "content": "hello"}]
+    _enforce_initial_memory_context_call(
+        agent, messages=messages, conversation_history=[], original_user_message="hello", effective_task_id="t1"
+    )
+    return captured["tool_args"], messages
+
+
+def _dev_agent(tool_name):
+    from agent.coding_context import resolve_runtime_mode
+
+    return SimpleNamespace(
+        valid_tool_names={tool_name},
+        _enforce_initial_memory_context=True,
+        enabled_toolsets=None,
+        disabled_toolsets=None,
+        _emit_interim_assistant_message=lambda msg: None,
+        log_prefix="",
+        runtime_mode=resolve_runtime_mode(platform="cli", cwd="/", config={}),
+    )
+
+
+def test_developer_posture_sends_compact_args_when_schema_declares_them():
+    tool = "mcp_IAMDS_mcp_memory_memory_context"
+    schema = {"name": tool, "parameters": {"type": "object", "properties": {"contexts": {}, "limit": {}, "query": {}}}}
+    with patch("tools.registry.registry.get_schema", return_value=schema):
+        args, messages = _run_initial_call(_dev_agent(tool))
+    assert args == {"contexts": ["coding", "git", "agent"], "limit": 8}
+    assert json.loads(messages[1]["tool_calls"][0]["function"]["arguments"]) == args
+
+
+def test_developer_posture_filters_args_to_schema_and_falls_back_to_empty():
+    tool = "mcp_IAMDS_mcp_memory_memory_context"
+    only_limit = {"name": tool, "parameters": {"type": "object", "properties": {"limit": {}}}}
+    with patch("tools.registry.registry.get_schema", return_value=only_limit):
+        args, _ = _run_initial_call(_dev_agent(tool))
+    assert args == {"limit": 8}
+    with patch("tools.registry.registry.get_schema", return_value=None):
+        args, _ = _run_initial_call(_dev_agent(tool))  # fresh agent: the guard is once-per-session
+    assert args == {}
+
+
+def test_coworker_posture_keeps_plain_call():
+    from agent.coding_context import resolve_runtime_mode
+
+    tool = "mcp_IAMDS_mcp_memory_memory_context"
+    agent = _dev_agent(tool)
+    agent.runtime_mode = resolve_runtime_mode(platform="tui", cwd="/", config={})
+    schema = {"name": tool, "parameters": {"type": "object", "properties": {"contexts": {}, "limit": {}}}}
+    with patch("tools.registry.registry.get_schema", return_value=schema) as spy:
+        args, _ = _run_initial_call(agent)
+    assert args == {}
+    spy.assert_not_called()

@@ -262,7 +262,6 @@ export const fr: Translations = {
       monthlyAt: "Le {day} de chaque mois à {time}",
       onceAt: "Une fois le {time}",
     },
-    deliverTo: "Livrer à",
     scheduledJobs: "Tâches planifiées",
     noJobs: "Aucune tâche cron configurée. Créez-en une ci-dessus.",
     last: "Dernière",
@@ -270,13 +269,6 @@ export const fr: Translations = {
     pause: "Pause",
     resume: "Reprendre",
     triggerNow: "Déclencher maintenant",
-    delivery: {
-      local: "Local",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
-      email: "Email",
-    },
   },
 
   profiles: {

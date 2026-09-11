@@ -50,11 +50,14 @@ def test_latest_message_wins_over_inherited_active_task():
     """The handoff must explicitly privilege the latest user message over a
     stale ``## Active Task`` — the core #35344 contract."""
     lower = SUMMARY_PREFIX.lower()
-    assert "latest user message" in lower
-    assert "## active task" in lower
-    # Conflict-resolution must be explicit, not implied.
-    assert "wins" in lower or "supersede" in lower
-    assert "discard" in lower
+    assert "respond to the latest user message" in lower
+    # The prefix frames the whole summary (including any inherited
+    # "## Active Task" section) as background reference, not instructions.
+    assert "reference only" in lower
+    assert "not new active instructions" in lower
+    # Explicit override verbs were dropped in f7045421b (llm-guard false
+    # positives); make sure they do not creep back in.
+    assert "resume exactly" not in lower
 
 
 def test_no_resume_exactly_directive_can_hijack():
@@ -86,7 +89,7 @@ def test_resumed_stale_handoff_gets_renormalized_to_current_prefix():
     # current latest-message-wins framing.
     assert "resume exactly" not in renormalized.lower()
     assert renormalized.startswith(SUMMARY_PREFIX)
-    assert "wins" in renormalized.lower()
+    assert "reference only" in renormalized.lower()
 
 
 def test_legacy_prefix_handoff_also_renormalized():

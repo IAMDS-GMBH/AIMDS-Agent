@@ -262,7 +262,6 @@ export const ru: Translations = {
       monthlyAt: "Ежемесячно {day} числа в {time}",
       onceAt: "Один раз {time}",
     },
-    deliverTo: "Доставить в",
     scheduledJobs: "Запланированные задачи",
     noJobs: "Cron-задачи не настроены. Создайте задачу выше.",
     last: "Последний",
@@ -270,13 +269,6 @@ export const ru: Translations = {
     pause: "Пауза",
     resume: "Возобновить",
     triggerNow: "Запустить сейчас",
-    delivery: {
-      local: "Локально",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
-      email: "Email",
-    },
   },
 
   profiles: {

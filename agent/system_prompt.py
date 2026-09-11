@@ -93,12 +93,32 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
 
+    # Operating posture (general / coding / developer) — resolved ONCE here
+    # and handed to every consumer below (identity variant, integration
+    # guidance gate, skill-index pruning, coding brief + workspace snapshot).
+    # ``agent.runtime_mode`` is set at construction (agent_init) so the
+    # conversation loop sees the same object; the fallback keeps lightweight
+    # test agents (SimpleNamespace) and older callers working.
+    _mode = getattr(agent, "runtime_mode", None)
+    if _mode is None:
+        try:
+            from agent.coding_context import resolve_runtime_mode
+
+            _mode = resolve_runtime_mode(
+                platform=agent.platform, cwd=resolve_context_cwd(), model=agent.model
+            )
+        except Exception:
+            _mode = None
+    _profile = getattr(_mode, "profile", None)
+
     # Try SOUL.md as primary identity unless the caller explicitly skipped it.
     # Some execution modes (cron) still want HERMES_HOME persona while keeping
-    # cwd project instructions disabled.
+    # cwd project instructions disabled. The posture may select an identity
+    # variant (developer → SOUL.dev.md, falling back to SOUL.md).
     _soul_loaded = False
     if agent.load_soul_identity or not agent.skip_context_files:
-        _soul_content = _r.load_soul_md()
+        _variant = getattr(_profile, "identity_variant", "") or ""
+        _soul_content = _r.load_soul_md(variant=_variant) if _variant else _r.load_soul_md()
         if _soul_content:
             stable_parts.append(_soul_content)
             _soul_loaded = True
@@ -185,27 +205,48 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             if local_fallback:
                 stable_parts.append(local_fallback)
 
-    outlook_memory_guidance = _r.build_outlook_memory_guidance(agent.valid_tool_names)
-    if outlook_memory_guidance:
-        stable_parts.append(outlook_memory_guidance)
+    # Integration guidance is gated on the tools the session can *reach*, not
+    # only on the ones currently in the schema: with tool_search active every
+    # MCP tool is deferred and ``valid_tool_names`` holds just the core tools,
+    # which silently dropped the Teams/Outlook/Jira blocks from every such
+    # session (AIS-289). Core-tool checks above stay on valid_tool_names.
+    from agent.deferred_tools import guidance_tool_names
 
-    outlook_signature_guidance = _r.build_outlook_signature_guidance(agent.valid_tool_names)
-    if outlook_signature_guidance:
-        stable_parts.append(outlook_signature_guidance)
+    _guidance_names = guidance_tool_names(agent)
 
-    outlook_contact_profiling_guidance = _r.build_outlook_contact_profiling_guidance(
-        agent.valid_tool_names
-    )
-    if outlook_contact_profiling_guidance:
-        stable_parts.append(outlook_contact_profiling_guidance)
+    # The developer posture (terminal CLI) drops the whole M365/Jira
+    # integration tier (~10 KB): the tools stay reachable via tool_search,
+    # only the every-turn prose goes (AIS-309).
+    if not getattr(_profile, "suppress_integration_guidance", False):
+        outlook_memory_guidance = _r.build_outlook_memory_guidance(_guidance_names)
+        if outlook_memory_guidance:
+            stable_parts.append(outlook_memory_guidance)
 
-    ai_attribution_guidance = _r.build_ai_attribution_guidance(agent.valid_tool_names)
-    if ai_attribution_guidance:
-        stable_parts.append(ai_attribution_guidance)
+        outlook_signature_guidance = _r.build_outlook_signature_guidance(_guidance_names)
+        if outlook_signature_guidance:
+            stable_parts.append(outlook_signature_guidance)
 
-    jira_guidance = _r.build_jira_guidance(agent.valid_tool_names)
-    if jira_guidance:
-        stable_parts.append(jira_guidance)
+        mail_safety_guidance = _r.build_mail_safety_guidance(_guidance_names)
+        if mail_safety_guidance:
+            stable_parts.append(mail_safety_guidance)
+
+        outlook_contact_profiling_guidance = _r.build_outlook_contact_profiling_guidance(
+            _guidance_names
+        )
+        if outlook_contact_profiling_guidance:
+            stable_parts.append(outlook_contact_profiling_guidance)
+
+        ai_attribution_guidance = _r.build_ai_attribution_guidance(_guidance_names)
+        if ai_attribution_guidance:
+            stable_parts.append(ai_attribution_guidance)
+
+        teams_send_guidance = _r.build_teams_send_guidance(_guidance_names)
+        if teams_send_guidance:
+            stable_parts.append(teams_send_guidance)
+
+        jira_guidance = _r.build_jira_guidance(_guidance_names)
+        if jira_guidance:
+            stable_parts.append(jira_guidance)
     # Tool-use enforcement: tells the model to actually call tools instead
     # of describing intended actions.  Controlled by config.yaml
     # agent.tool_use_enforcement:
@@ -252,10 +293,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
     if has_skills_tools:
+        # Skill index filters (requires_tools / requires_toolsets) see the
+        # reachable set too — otherwise every skill that needs an MCP tool
+        # disappears from the index as soon as that tool is deferred.
         avail_toolsets = {
             toolset
             for toolset in (
-                _r.get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names
+                _r.get_toolset_for_tool(tool_name) for tool_name in _guidance_names
             )
             if toolset
         }
@@ -263,15 +307,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # (discovery-only — skills_list/skill_view still reach everything).
         _hidden_cats = frozenset()
         try:
-            from agent.coding_context import coding_hidden_skill_categories
-
-            _hidden_cats = coding_hidden_skill_categories(
-                platform=agent.platform, cwd=resolve_context_cwd()
-            )
+            _hidden_cats = _mode.hidden_skill_categories() if _mode is not None else frozenset()
         except Exception:
             _hidden_cats = frozenset()
         skills_prompt = _r.build_skills_system_prompt(
-            available_tools=agent.valid_tool_names,
+            available_tools=_guidance_names,
             available_toolsets=avail_toolsets,
             hidden_categories=_hidden_cats or None,
         )
@@ -306,17 +346,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # git/workspace snapshot are built once here and cached for the session;
     # the snapshot is never re-probed per turn (that would break the prompt
     # cache), so the brief tells the model to re-check git before relying on it.
-    if agent.valid_tool_names:
+    if agent.valid_tool_names and _mode is not None:
         try:
-            from agent.coding_context import coding_system_blocks
-
-            stable_parts.extend(
-                coding_system_blocks(
-                    platform=agent.platform,
-                    cwd=resolve_context_cwd(),
-                    model=agent.model,
-                )
-            )
+            stable_parts.extend(_mode.system_blocks())
         except Exception:
             # Coding-context probing must never block prompt build.
             pass

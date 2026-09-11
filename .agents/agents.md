@@ -1,143 +1,42 @@
-# Hermes Agent — Compact Instructions
+# AIMDS-Agent — Instructions for AI coding work
 
-Use this file as the repo instruction source for AI coding work. Keep it short, stable, and cache-friendly.
+Fork of NousResearch/hermes-agent, maintained by IAMDS. Details: `docs/REPOSITORY_STRUCTURE.md` (architecture, folders), `CONTRIBUTING.md` (adding tools/skills/plugins, cross-platform rules).
 
-## Core invariants
+## Invariants
 
-- Prompt-cache safety is mandatory. Do not mutate past context, swap toolsets mid-conversation, or rebuild system prompt mid-session (except context compression).
-- Preserve strict message-role alternation. Never inject synthetic user messages in-loop.
-- Keep core tool schema narrow. New core tools are last resort because every tool is sent every call.
+- Prompt-cache safety: never mutate past context, swap toolsets, or rebuild the system prompt mid-session (context compression excepted).
+- Strict user/assistant role alternation; no synthetic user messages in-loop.
+- Core tool schema stays narrow: every core tool is sent on every call.
 
-## Product intent
+## Where new capability goes
 
-- Expand capability at edges (platforms, providers, models, UI features) while keeping core lean.
-- Prefer fixing real reported bugs over speculative infra.
-- Large mechanical refactors are welcome when they clearly reduce core complexity.
+Extend existing code → CLI command + skill → service-gated tool (`check_fn`) → plugin → MCP catalog entry → new core tool (last resort). Plugins never patch core files; widen generic hooks instead.
 
-## Footprint ladder (choose highest viable rung)
+## Workflow
 
-1. Extend existing code
-2. CLI command + skill
-3. Service-gated tool (`check_fn`)
-4. Plugin
-5. MCP server in catalog
-6. New core tool (only if fundamental and broadly needed)
+- Branch `feature/AIS-<nr>-<slug>` from `main`, PR into `main`, squash-merge only after review. No direct pushes.
+- Conventional Commits with scope (`feat(AIS-123): …`, scopes: `desktop`, `cli`, `mcp`, `gateway`, `installer`, `skills`, `vault`). Subject lines populate the in-app update changelog, so write them for end users.
 
-If multiple PRs target same integration category (providers/backends/notifiers), design shared ABC + orchestrator, then plug implementations into it.
+## Quality bar
 
-## Change quality bar
+- Reproduce the bug on current `main`; fix the root cause and sibling code paths.
+- No silent failures or broad catch-and-ignore; behavior-safe defaults.
+- Reuse existing helpers; surgical but complete edits, no drive-by changes.
 
-- Reproduce bug on current `main`; fix root cause and sibling paths.
-- Keep behavior-safe defaults; no silent failures or broad catch-and-ignore patterns.
-- Reuse existing helpers/patterns; avoid duplicate managers/hooks.
-- Maintain type safety; avoid `as any` style escapes unless truly unavoidable.
-- Keep edits surgical but complete; avoid unrelated drive-by changes.
+## Tests
 
-## Commit and changelog guidelines
+- `scripts/run_tests.sh` (per-file isolation, CI parity), never raw `pytest` for the suite.
+- Invariant tests over snapshot/change-detector tests (model names, counts, config literals).
+- Integration-sensitive paths (config resolution, I/O, security boundaries, provider wiring): real imports, real path.
 
-- Follow Conventional Commits format: `<type>(<scope>): <short imperative summary>`.
-  - Common types: `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `chore`, `build`, `ci`.
-  - Common scopes: `desktop`, `cli`, `mcp`, `gateway`, `installer`, `skills`, `vault`.
-- Write subject lines in the imperative mood ("add", "fix", "remove" — not "added" or "fixing").
-- Keep subject lines under 50–72 characters without trailing period.
-- User-facing impact: commit messages directly populate the in-app update changelog (`readCommitLog`); make subject lines human-readable, describing *what* changed and *why* for end users.
+## Config
 
-## Testing and validation
+- Secrets only in `.env`. Behavioral settings in `config.yaml`, not new user-facing `HERMES_*` env vars.
+- Paths via `get_hermes_home()` (code) and `display_hermes_home()` (user-facing); never hardcode `~/.hermes`.
 
-- Use `scripts/run_tests.sh` (not raw `pytest`) for parity with CI.
-- Python env activation (prefer `.venv`, fallback `venv`):
-  - `source .venv/bin/activate`
-  - `source venv/bin/activate`
-- Prefer invariant tests over snapshot/change-detector tests (model names, counts, config literals).
-- For integration-sensitive paths (config resolution, I/O, security boundaries, provider wiring), validate real path with real imports.
-
-## Config policy
-
-- Secrets only in `.env` (keys/tokens/passwords).
-- Behavioral settings belong in `config.yaml`, not new user-facing `HERMES_*` env vars.
-- Canonical AIMDS Suite provider instance keys are `aimds-suite-prod` (`suite.iamds.com`), `aimds-suite-staging` (`staging.suite.iamds.com`), and `aimds-suite-dev` (`dev.suite.iamds.com`). Custom domains (e.g. `https://<custom-domain>/litellm/mcp/`) are dynamically resolved from the configured provider `base_url`. Legacy `iamds-litellm*` aliases are preserved for backward compatibility.
-- AIMDS Suite endpoints: Hermes owns the cache breakpoints (`anthropic_prompt_cache_policy` returns `(True, False)`): last tool + system prompt at `prompt_caching.cache_ttl` (1h by policy), the newest user/assistant messages at `prompt_caching.message_ttl` (5m). The proxy's `prompt_cache_hook.py` keeps client markers untouched and only adds its own when a request carries none.
-- Request timeouts default to 180s in `config.yaml` for AIMDS Suite endpoints.
-- API calls scale timeouts exponentially on retries (`2 ** retry_count` multiplier). Live progress status notifications must inform the user during retry attempts, and terminal API errors must be formatted as friendly, actionable messages rather than raw technical stack/string dumps.
-- Use profile-aware paths:
-  - Code paths: `get_hermes_home()`
-  - User-facing paths: `display_hermes_home()`
-- Never hardcode `~/.hermes` in runtime code.
-
-## Tooling and architecture rules
-
-- Keep model-tool cross-references out of static schema descriptions when referenced tools may be absent; add dynamic hints in `get_tool_definitions()` logic.
-- For MCP-backed memory: load `memory_context` ONCE at session start, before the first substantive tool call, and apply what it returns — standing rules, profile and hubs are cheaper to carry than to re-derive, and they keep the conversation short. Search memory again when a task touches a topic the vault may already document. Do NOT call memory tools on every generic turn.
-- **Dual-Memory Partitioning**:
-  - **Memory MCP**: Stores concise global rules, directives, preferences, and high-level architectural invariants (< 1-2 KB per entry).
-  - **Local Vault Index / Brain / Obsidian (`.md` files)**: Stores detailed documentation, specifications, logs, and changelogs. Never store large documents in Memory MCP; write them to `.md` files indexed via local vector search.
-- **Chat Response & Preview Efficiency**:
-  - Keep chat responses concise.
-  - When generating or updating large files/documents (e.g. changelogs, reports), do NOT dump full file content into chat output. Provide a short 2-3 line summary and path reference so the desktop preview UI renders the file.
-- **Tabular & MCP Data Processing**: Always ingest multi-row MCP exports, worklogs, and structured data into local SQLite tables (~/.hermes/state.db) and query via SQL instead of writing in-prompt Python string-parsing scripts.
-- For gateway running-session controls, ensure approval/control commands bypass both message guards where required.
-- Avoid wiring dead/unused code into live paths without end-to-end validation.
-
-## Support, diagnostics, and issue reporting
-
-- Support bundles are sent to AIMDS Suite Support (`https://suite-support.iamds.com/api/v1/upload`) via `hermes support send-logs` (CLI/Desktop) or native Rust client (Bootstrap Installer).
-- Diagnostic bundles contain redacting manifests, session logs, environment metadata, and optional binary screenshots in the `attachments/` subfolder.
-- The Desktop app (`apps/desktop`) and Installer (`apps/bootstrap-installer`) support screenshot attachments via file picker, drag-and-drop, and clipboard paste in their "Problem melden" dialogs.
-- When resolving customer support cases via `aimds-support-tool`, verify that fixes address root cause and edge cases across platforms before updating case status to `RESOLVED`.
-
-## UI & platform styling invariants
-
-- **Windows Dark Mode**: Windows Chromium/Webview requires `color-scheme: dark;` on `:root.dark`, `.dark`, and native `<select>` controls to ensure select dropdown popups render with a dark background.
-- Keep UI theme tokens aligned with Tailwind v4 and existing CSS variables in `apps/desktop/src/styles.css`.
-
-## Plugins and memory providers
-
-- Plugins must not patch core files with plugin-specific logic. Expand generic hooks/surface instead.
-- New memory backends should be external plugin repos, not new in-tree directories under `plugins/memory/`.
-
-## Context and instruction files
-
-- Keep this file concise and high-signal; move long rationale and examples to docs.
-
-## Known non-negotiables
+## Non-negotiables
 
 - No destructive git operations unless explicitly requested.
-- Do not break prompt caching for convenience.
-- Do not replace missing real results with fabricated output.
-- Do not add telemetry/attribution without explicit user-facing opt-in gate.
-- Never run `hermes update` inside this source checkout. It auto-stashes
-  dirty changes and, on a restore conflict, silently `git reset --hard`s
-  the tree with no visible error — this discarded real WIP across 9
-  accumulated `hermes-update-autostash-*` stashes before the guard was
-  added (`hermes_cli/config.py::is_canonical_install_location`,
-  `hermes_cli/main.py::_cmd_update_impl`, commit `fe64764f0`). The guard
-  now refuses non-interactive runs against a non-canonical checkout, but
-  interactive runs still only warn — so just don't run it here at all.
-  Use `git pull`/`git fetch` directly to sync this checkout instead.
-
-## Repository map
-
-- `agent/` — core agent loop, coding posture, context/session management.
-- `tools/` — built-in tool implementations + tool discovery/search (`tool_search.py`, `mcp_tool.py`).
-- `toolsets.py` — toolset definitions; wires tools into platform presets.
-- `providers/` — model-provider integrations and auth flows.
-- `plugins/` — optional plugin surface (e.g. memory backends); must not patch core.
-- `optional-mcps/`, `optional-skills/` — bundled but opt-in MCP servers / skills.
-- `skills/` — bundled skills, organized by category.
-- `hermes_cli/` — CLI entrypoints, config resolution, defaults, support log packaging.
-- `apps/desktop/` — Electron + React 19 + Vite desktop client.
-- `apps/bootstrap-installer/` — Tauri v2 + Rust cross-platform bootstrap installer & updater with Keycloak SSO.
-- `gateway/`, `tui_gateway/`, `ui-tui/` — gateway and terminal UI surfaces.
-- `cron/`, `acp_adapter/`, `acp_registry/` — scheduling and agent-communication-protocol support.
-- `docker/`, `packaging/`, `installer/`, `scripts/` — build, packaging, and installer tooling.
-- `tests/` + `scripts/run_tests.sh` — test suite and CI-parity test runner.
-- `docs/` — longer-form documentation, architecture guide (`docs/REPOSITORY_STRUCTURE.md`), and rationale.
-
-## Useful references (full details)
-
-- `.agents/agents.md` (this file — full development guide)
-- `CONTRIBUTING.md` (contribution workflow, adding tools/skills/plugins)
-- `toolsets.py` (toolset definitions)
-- `hermes_cli/config.py` (defaults and config policy)
-- `agent/coding_context.py` (coding posture behavior)
-- `tests/` + `scripts/run_tests.sh` (test execution policy)
+- No fabricated results in place of missing real ones.
+- No telemetry or attribution without an explicit user-facing opt-in.
+- Never run `hermes update` inside this checkout: it autostashes and can `git reset --hard` on conflict (guard: `hermes_cli/config.py::is_canonical_install_location`). Use `git pull`.

@@ -225,6 +225,45 @@ export function IdleView({
     )
   }
 
+  // Tag channel, HEAD on a release tag *newer* than the channel's target
+  // (v0.7.5-rc.1 while stable is still v0.7.4): up to date — no install
+  // button, the older release is not an update (AIS-299).
+  if (behind === 0 && status.newerThanTarget && status.headTag && status.targetTag) {
+    return (
+      <CenteredStatus
+        body={u.newerReleaseBody(status.headTag, status.targetTag, status.branch ?? 'stable')}
+        icon={<CheckCircle2 className="size-7 text-emerald-600 dark:text-emerald-400" />}
+        title={u.allSetTitle}
+      />
+    )
+  }
+
+  // Tag channel, HEAD past the release tag (dev/main checkout on stable or
+  // preview). Nothing to *update*, but the channel's release is installable —
+  // offer that explicitly instead of the phantom "+1 update" that looped in
+  // SUP-20260907-101225 (AIS-297).
+  if (behind === 0 && status.offChannel && status.targetTag) {
+    const tag = status.targetTag
+
+    return (
+      <CenteredStatus
+        action={
+          <div className="flex items-center gap-2">
+            <Button onClick={onInstall} size="sm">
+              {u.switchToRelease(tag)}
+            </Button>
+            <Button onClick={onLater} size="sm" variant="outline">
+              {u.maybeLater}
+            </Button>
+          </div>
+        }
+        body={u.offChannelBody(status.aheadOfTarget ?? 0, tag, status.branch ?? 'stable')}
+        icon={<AlertCircle className="size-6 text-muted-foreground" />}
+        title={u.offChannelTitle(tag)}
+      />
+    )
+  }
+
   if (behind === 0) {
     return (
       <CenteredStatus
@@ -232,6 +271,46 @@ export function IdleView({
         icon={<CheckCircle2 className="size-7 text-emerald-600 dark:text-emerald-400" />}
         title={u.allSetTitle}
       />
+    )
+  }
+
+  // Release-managed install (archive updates, AIS-312): there is no commit
+  // log to show, the offer is a whole release. Same card layout as the
+  // changelog below, no commit groups. No hooks here (AIS-276).
+  if (status.source === 'release') {
+    const version = status.targetVersion ?? (status.targetTag ? status.targetTag.replace(/^v/, '') : '')
+
+    return (
+      <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <BrandMark className="size-16" />
+
+          <div className="flex flex-col items-center gap-1">
+            <DialogTitle className="text-center text-xl">{u.releaseAvailable(version)}</DialogTitle>
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-0.5 text-[0.7rem] font-medium text-primary">
+              <span>{status.branch ? `Channel: ${status.branch}` : 'Hermes Update'}</span>
+              <span>•</span>
+              <span>v{version}</span>
+            </div>
+          </div>
+
+          <DialogDescription className="text-center text-sm">{u.releaseAvailableBody(version)}</DialogDescription>
+        </div>
+
+        <div className="grid gap-2">
+          <Button className="font-semibold" onClick={onInstall} size="lg">
+            {u.updateNow}
+          </Button>
+          <div className="flex items-center justify-between gap-2 px-1">
+            <Button className="font-medium" onClick={onLater} type="button" variant="text">
+              {u.maybeLater}
+            </Button>
+            <Button onClick={() => onReportIssue('Problem beim Update')} size="xs" type="button" variant="text">
+              Problem melden
+            </Button>
+          </div>
+        </div>
+      </div>
     )
   }
 

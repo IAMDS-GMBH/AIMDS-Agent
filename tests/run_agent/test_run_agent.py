@@ -1085,35 +1085,25 @@ class TestBuildSystemPrompt:
 
     def test_includes_datetime(self, agent):
         prompt = agent._build_system_prompt()
-        # Should contain current date info like "Conversation started:"
-        assert "Conversation started:" in prompt
+        # AIS-275: the authoritative date lives in the volatile
+        # "Current Local Time & Date:" block (hermes_time.build_time_block).
+        assert "Current Local Time & Date:" in prompt
 
-    def test_datetime_is_date_only_not_minute_precision(self, agent):
-        """Timestamp must be date-only (no HH:MM) so the system prompt
-        stays byte-stable for the full day. Minute precision invalidates
-        prefix-cache KV on every rebuild path (compression, fresh-agent
-        gateway turns, session resume without a stored prompt)."""
-        prompt = agent._build_system_prompt()
-        # Find the line and strip it for inspection
-        for line in prompt.splitlines():
-            if line.startswith("Conversation started:"):
-                # Must NOT contain AM/PM indicator (minute precision had %I:%M %p)
-                assert " AM" not in line and " PM" not in line, (
-                    f"Timestamp line has time-of-day, breaks daily cache stability: {line!r}"
-                )
-                # Must NOT contain a colon followed by two digits (HH:MM pattern)
-                import re as _re
-                assert not _re.search(r":\d{2}", line), (
-                    f"Timestamp line has HH:MM, breaks daily cache stability: {line!r}"
-                )
-                break
-        else:
-            assert False, "Expected a 'Conversation started:' line in the system prompt"
+    def test_datetime_block_is_isolated_volatile_suffix(self, agent):
+        """The time block carries HH:MM:SS, so it must sit behind the
+        SYSTEM_VOLATILE_MARKER split point (prompt_caching) — the cache-stable
+        prefix before it must not contain any other timestamp."""
+        from agent.prompt_caching import SYSTEM_VOLATILE_MARKER
 
-    def test_does_not_include_nous_subscription_prompt(self, agent, monkeypatch):
-        monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
         prompt = agent._build_system_prompt()
-        assert "NOUS SUBSCRIPTION BLOCK" not in prompt
+        assert prompt.count(SYSTEM_VOLATILE_MARKER) == 1
+        idx = prompt.rfind("\n\n" + SYSTEM_VOLATILE_MARKER)
+        assert idx > 0, "volatile date block must be a separate trailing paragraph"
+        stable_prefix = prompt[:idx]
+        import re as _re
+        assert not _re.search(r"\b\d{1,2}:\d{2}:\d{2}\b", stable_prefix), (
+            "clock time leaked into the cache-stable prompt prefix"
+        )
 
     def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
         tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
@@ -4259,7 +4249,7 @@ class TestRunConversation:
         agent.max_tokens = None
         requested_caps = []
 
-        def _fake_build_api_kwargs(api_messages):
+        def _fake_build_api_kwargs(api_messages, **_kwargs):
             ephemeral = getattr(agent, "_ephemeral_max_output_tokens", None)
             if ephemeral is not None:
                 agent._ephemeral_max_output_tokens = None

@@ -4733,3 +4733,65 @@ def test_tempo_tools_get_a_description_when_the_server_ships_none():
     schema = _convert_mcp_schema("TempoMCP", tool)
     assert "date range" in schema["description"]
     assert "jira_get_worklog" in schema["description"]
+
+
+# ---------------------------------------------------------------------------
+# disconnect_mcp_server (AIS-304)
+# ---------------------------------------------------------------------------
+
+
+class TestDisconnectMcpServer:
+    def test_mcp_not_available_returns_false(self):
+        from tools.mcp_tool import disconnect_mcp_server
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", False):
+            assert disconnect_mcp_server("srv") is False
+
+    def test_unknown_server_returns_false(self):
+        from tools.mcp_tool import disconnect_mcp_server, _servers
+
+        _servers.pop("nope", None)
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._mcp_loop", None):
+            assert disconnect_mcp_server("nope") is False
+
+    def test_pops_connected_server_without_loop(self):
+        from tools.mcp_tool import disconnect_mcp_server, _servers
+
+        _servers["live"] = _make_mock_server("live")
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._mcp_loop", None):
+                assert disconnect_mcp_server("live") is True
+            assert "live" not in _servers
+        finally:
+            _servers.pop("live", None)
+
+    def test_schedules_shutdown_when_loop_is_running(self):
+        from tools.mcp_tool import disconnect_mcp_server, _servers
+
+        _servers["live"] = _make_mock_server("live")
+        fake_loop = MagicMock()
+        fake_loop.is_running.return_value = True
+        fake_future = MagicMock()
+        fake_future.result.return_value = None
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._mcp_loop", fake_loop), \
+                 patch("agent.async_utils.safe_schedule_threadsafe", return_value=fake_future) as mock_schedule:
+                assert disconnect_mcp_server("live") is True
+            mock_schedule.assert_called_once()
+            fake_future.result.assert_called_once_with(timeout=10)
+            assert "live" not in _servers
+        finally:
+            _servers.pop("live", None)
+
+    def test_reconnect_uses_disconnect(self):
+        from tools.mcp_tool import reconnect_mcp_server
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool.disconnect_mcp_server", return_value=True) as mock_disconnect, \
+             patch("tools.mcp_tool._load_mcp_config", return_value={"srv": {"url": "https://x/mcp"}}), \
+             patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp_srv_tool"]):
+            assert reconnect_mcp_server("srv") == ["mcp_srv_tool"]
+        mock_disconnect.assert_called_once_with("srv")

@@ -272,6 +272,17 @@ class TestDelegationAvailability:
 
         assert "delegate_task" in TOOLSETS["hermes-cli"]["tools"]
 
+    def test_cli_and_cron_include_office_tools(self):
+        """AIS-294: office_word/excel/powerpoint must be reachable (deferred
+        behind tool_search) on the desktop and in cron, otherwise a downloaded
+        .docx has no tool at all once read_file's conversion fails."""
+        from toolsets import TOOLSETS, resolve_toolset
+
+        for name in ("hermes-cli", "hermes-cron"):
+            assert "office" in TOOLSETS[name]["includes"], name
+            resolved = set(resolve_toolset(name))
+            assert {"office_word", "office_excel", "office_powerpoint"} <= resolved, name
+
     def test_core_tools_stay_free_of_delegation(self):
         """Messaging platforms share _HERMES_CORE_TOOLS.
 

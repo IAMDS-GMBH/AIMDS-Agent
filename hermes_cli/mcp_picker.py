@@ -27,6 +27,7 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.cli_output import prompt_yes_no
 from hermes_cli.curses_ui import curses_single_select
 from hermes_cli.mcp_catalog import (
+    _stdin_interactive,
     CatalogEntry,
     CatalogError,
     catalog_diagnostics,
@@ -278,7 +279,7 @@ def run_picker() -> None:
     Loops until the user hits ESC/q. After each action the picker re-renders
     so the user can manage several entries in one session.
     """
-    if not sys.stdin.isatty():
+    if not _stdin_interactive():
         # Non-interactive shell: degrade to the text dump rather than failing.
         _print_rows_text(_build_rows())
         return
@@ -491,5 +492,15 @@ def install_by_name(identifier: str) -> int:
         install_entry(entry, enable=True)
     except CatalogError as exc:
         print(color(f"  ✗ install failed: {exc}", Colors.RED))
+        return 1
+    except Exception as exc:  # noqa: BLE001 - the action log is the only trace
+        # Anything else (PermissionError on a locked dir, a download that
+        # broke mid-stream, ...) used to escape as a bare traceback. The
+        # desktop shows the last lines of the action log, so end with one
+        # readable line naming the failure (AIS-303).
+        import traceback
+
+        traceback.print_exc()
+        print(color(f"  ✗ install failed: {type(exc).__name__}: {exc}", Colors.RED))
         return 1
     return 0

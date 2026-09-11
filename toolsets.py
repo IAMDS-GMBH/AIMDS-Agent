@@ -438,7 +438,10 @@ TOOLSETS = {
         # month in parallel on a small model) is not merely rare — it is
         # impossible.
         "tools": _HERMES_CORE_TOOLS + ["cronjob", "delegate_task"],
-        "includes": []
+        # Word/Excel/PowerPoint file tools ride along deferred (tool_search
+        # loads them on demand, no token cost until then). Without this the
+        # desktop had no reachable document tool at all (AIS-294).
+        "includes": ["office"]
     },
 
     "hermes-cron": {
@@ -449,7 +452,7 @@ TOOLSETS = {
         # the user explicitly enables them.
         "description": "Default cron toolset - same core tools as hermes-cli; gated by `hermes tools`",
         "tools": _HERMES_CORE_TOOLS,
-        "includes": []
+        "includes": ["office"]
     },
 
     "hermes-telegram": {

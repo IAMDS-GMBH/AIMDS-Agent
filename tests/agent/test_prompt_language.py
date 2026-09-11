@@ -37,7 +37,11 @@ def _german_hits(text: str):
 
 
 def test_soul_files_are_english_and_do_not_force_german():
-    for rel in ("installer/skills-hidden/aimds-loadout/identity/SOUL.md", "docker/SOUL.md"):
+    for rel in (
+        "installer/skills-hidden/aimds-loadout/identity/SOUL.md",
+        "installer/skills-hidden/aimds-loadout/identity/SOUL.dev.md",
+        "docker/SOUL.md",
+    ):
         text = (_REPO_ROOT / rel).read_text(encoding="utf-8")
         assert not _german_hits(text), (rel, _german_hits(text))
         assert "Default to German" not in text

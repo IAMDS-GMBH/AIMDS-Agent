@@ -311,3 +311,71 @@ class TestServerSkills:
         payload = {"query": "session start", "mode": "ranked", "total_available": 0, "matches": [], "autoload": []}
         out = json.loads(dt.absorb_bridge_result(agent, "tool_search", {"query": "session start", "kind": "tool"}, json.dumps(payload)))
         assert out["matches"] == []
+
+
+class TestGuidanceToolNames:
+    """AIS-289: prompt guidance is gated on reachable tools, not only on the
+    schema — with the bridge active every MCP tool is deferred."""
+
+    def test_includes_scoped_deferrable_names_when_bridge_active(self):
+        _register("mcp_gd_probe_tool", "mcp-gd")
+        agent = _agent(["mcp-gd"])
+        names = dt.guidance_tool_names(agent)
+        assert "terminal" in names and "tool_search" in names
+        assert "mcp_gd_probe_tool" in names
+        # the schema itself is untouched
+        assert "mcp_gd_probe_tool" not in agent.valid_tool_names
+
+    def test_visible_only_without_bridge(self):
+        _register("mcp_gd2_probe_tool", "mcp-gd2")
+        agent = _agent(["mcp-gd2"], with_bridge=False)
+        assert dt.guidance_tool_names(agent) == agent.valid_tool_names
+
+    def test_falls_back_to_visible_when_scope_lookup_fails(self, monkeypatch):
+        agent = _agent(["mcp-gd"])
+        monkeypatch.setattr(dt, "scoped_deferrable_names", lambda a: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert dt.guidance_tool_names(agent) == agent.valid_tool_names
+
+
+class TestAutoloadForMessage:
+    """AIS-289: a Teams / SharePoint link in the user message loads the tools
+    that handle it before the first API call."""
+
+    LINK = "Kannst du das Dokument aus https://teams.microsoft.com/l/chat/19%3Aabc%40thread.v2/conversations holen?"
+
+    def _setup(self):
+        for suffix in ("m365_find_chat", "m365_download_chat_files", "m365_list_chat_messages",
+                       "m365_send_chat_message", "m365_download_drive_file"):
+            _register(f"mcp_al_{suffix}", "mcp-al")
+        return _agent(["mcp-al"])
+
+    def test_teams_link_loads_chat_tools(self):
+        agent = self._setup()
+        loaded = dt.autoload_for_message(agent, self.LINK)
+        assert set(loaded) == {
+            "mcp_al_m365_find_chat", "mcp_al_m365_download_chat_files",
+            "mcp_al_m365_list_chat_messages", "mcp_al_m365_send_chat_message",
+        }
+        assert "mcp_al_m365_download_chat_files" in agent.valid_tool_names
+        assert "mcp_al_m365_download_drive_file" not in agent.valid_tool_names
+        # second call: nothing new
+        assert dt.autoload_for_message(agent, self.LINK) == []
+
+    def test_sharepoint_url_loads_drive_download(self):
+        agent = self._setup()
+        loaded = dt.autoload_for_message(
+            agent, "hol mir https://iamds-my.sharepoint.com/personal/x/Documents/Plan.docx"
+        )
+        assert loaded == ["mcp_al_m365_download_drive_file"]
+
+    def test_plain_text_loads_nothing(self):
+        agent = self._setup()
+        assert dt.autoload_for_message(agent, "wie ist das Wetter?") == []
+        assert dt.autoload_for_message(agent, "") == []
+
+    def test_noop_without_bridge_or_tools(self):
+        agent = _agent(["mcp-al"], with_bridge=False)
+        assert dt.autoload_for_message(agent, self.LINK) == []
+        # bridge on, but the server is not in scope → nothing loads
+        agent = _agent(["mcp-other"])
+        assert dt.autoload_for_message(agent, self.LINK) == []

@@ -87,24 +87,20 @@ Das System besteht im Wesentlichen aus 4 Hauptschichten:
 * **`plugins/`**: Modular ladbare Erweiterungen (z.B. Suchprovider wie DuckDuckGo/Tavily, Browser-Automation, Achievements).
 * **`optional-skills/`**: Große Sammlung spezialisierter Skills (z.B. MLOps, Blockchain, Pentesting), die bei Bedarf aktiviert werden können.
 * **`optional-mcps/`**: Vorlagen und Konfigurationen für MCP-Server (z.B. Atlassian Jira/Confluence, Microsoft Office 365, GitHub).
-* **`skills-disabled/`**: Temporär deaktivierte Upstream-Skills.
 
 ---
 
-### D. Setup, Workspace-Templates & Packaging (`installer/`, `scripts/`, `packaging/`)
+### D. Setup, Workspace-Templates & Build (`installer/`, `scripts/`, `docker/`)
 * **`installer/`**:
   * `workspace-template/`: Die initiale Arbeitsbereich-Vorlage mit Standard-Dokumenten und Verzeichnissen, die bei Erstinstallation in das Benutzerverzeichnis kopiert wird.
   * `scripts/`: Plattformspezifische Installationsskripte (`install.ps1`, `install-macos.sh`).
 * **`scripts/`**: Entwickler- und CI-Skripte (`run_tests.sh`, `sign-windows.ps1`, `build_desktop.py` etc.).
-* **`packaging/`**: Paketierungsbeschreibungen (z.B. Homebrew-Formel).
+* **`docker/`** + `Dockerfile`: Container-Image (Entrypoint, `stage2-hook.sh` für AIMDS-Defaults).
 
 ---
 
-### E. Upstream-Forschungs- & Datengenerierungs-Tools (NousResearch)
-*Hinweis: Diese Tools stammen aus dem Upstream-Repository für Synthetic Data Generation und Benchmarks:*
-* **`batch_runner.py`**, **`mini_swe_runner.py`**, **`trajectory_compressor.py`**: Ausführung von SWE-bench-Aufgaben und Kompression von Agenten-Trajektorien.
-* **`datagen-config-examples/`**: Konfigurationsbeispiele für Benchmark- und Trajektoriengenerierung.
-* **`plans/`** & **`.plans/`**: Upstream-Konzeptpläne.
+### E. Upstream-Batch-Tools (NousResearch)
+* **`batch_runner.py`**, **`trajectory_compressor.py`**, **`toolset_distributions.py`**: Batch-Ausführung und Kompression von Agenten-Trajektorien. Teil des Python-Pakets (`py-modules`), von AIMDS nicht aktiv genutzt.
 
 ---
 

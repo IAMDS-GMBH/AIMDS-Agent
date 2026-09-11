@@ -3,6 +3,7 @@ import { JsonRpcGatewayClient } from '@hermes/shared'
 import type {
   ActionResponse,
   ActionStatusResponse,
+  AimdsSuiteStatusResponse,
   AnalyticsResponse,
   AudioSpeakResponse,
   AudioTranscriptionResponse,
@@ -11,6 +12,7 @@ import type {
   ConfigSchemaResponse,
   CronJob,
   CronJobCreatePayload,
+  CronJobLatestOutput,
   CronJobUpdates,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
@@ -24,6 +26,7 @@ import type {
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
+  MicrosoftAdminConsentResponse,
   ModelAssignmentRequest,
   ModelAssignmentResponse,
   ModelInfoResponse,
@@ -70,6 +73,9 @@ export type {
   ConfigSchemaResponse,
   CronJob,
   CronJobCreatePayload,
+  CronJobLatestOutput,
+  CronJobOrigin,
+  CronJobOutputSummary,
   CronJobSchedule,
   CronJobUpdates,
   ElevenLabsVoice,
@@ -437,6 +443,21 @@ export function keycloakLogin(params: {
   return window.hermesDesktop.keycloakLogin(params)
 }
 
+export function getAimdsSuiteStatus(options: { probe?: boolean } = {}): Promise<AimdsSuiteStatusResponse> {
+  return window.hermesDesktop.api<AimdsSuiteStatusResponse>({
+    ...profileScoped(),
+    path: `/api/providers/aimds-suite/status${options.probe ? '?probe=true' : ''}`
+  })
+}
+
+export function completeAimdsSuiteReauth(env: string): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
+    path: `/api/providers/aimds-suite/${encodeURIComponent(env)}/reauth-complete`,
+    method: 'POST'
+  })
+}
+
 export function validateProviderCredential(
   key: string,
   value: string
@@ -497,6 +518,13 @@ export function submitOAuthCode(providerId: string, sessionId: string, code: str
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}/submit`,
     method: 'POST',
     body: { session_id: sessionId, code }
+  })
+}
+
+export function getMicrosoftAdminConsentUrl(): Promise<MicrosoftAdminConsentResponse> {
+  return window.hermesDesktop.api<MicrosoftAdminConsentResponse>({
+    ...profileScoped(),
+    path: '/api/providers/oauth/microsoft/admin-consent-url'
   })
 }
 
@@ -670,6 +698,31 @@ export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`,
     method: 'DELETE'
+  })
+}
+
+// Cron jobs are served by the primary backend; a job that belongs to another
+// profile is addressed with `?profile=` rather than routed to a pooled backend.
+function cronProfileQuery(profile?: null | string): string {
+  const trimmed = typeof profile === 'string' ? profile.trim() : ''
+
+  return trimmed ? `?profile=${encodeURIComponent(trimmed)}` : ''
+}
+
+// Mark the job's newest output as seen (AIS-305). Returns the annotated job so
+// the caller can reconcile `last_seen_at` with what the server persisted.
+export function markCronJobSeen(jobId: string, profile?: null | string): Promise<CronJob> {
+  return window.hermesDesktop.api<CronJob>({
+    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/seen${cronProfileQuery(profile)}`,
+    method: 'POST'
+  })
+}
+
+// Newest artifact of a job as the backend read it — the fallback when the
+// desktop can't read `last_output_path` locally (remote backend).
+export function getCronJobLatestOutput(jobId: string, profile?: null | string): Promise<CronJobLatestOutput> {
+  return window.hermesDesktop.api<CronJobLatestOutput>({
+    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/output/latest${cronProfileQuery(profile)}`
   })
 }
 

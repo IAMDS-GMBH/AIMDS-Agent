@@ -26,6 +26,9 @@ def _make_minimal_agent(memory_manager, context_compressor, session_id="abc"):
         _memory_manager=memory_manager,
         context_compressor=context_compressor,
         session_id=session_id,
+        # commit_memory_session now also hands the transcript to the
+        # session-summary hook; a no-op keeps this unit test focused.
+        _summarize_session_into_memory=lambda messages, *, reason: None,
     )
     obj.commit_memory_session = AIAgent.commit_memory_session.__get__(obj)
     return obj

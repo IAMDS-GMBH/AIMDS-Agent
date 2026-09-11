@@ -663,7 +663,13 @@ def _cache_mcp_image_block(block) -> str:
     return f"MEDIA:{image_path}"
 
 
-def _resolve_mcp_ssl_verify(config: dict) -> bool:
+def _resolve_mcp_ssl_verify(config: dict) -> "bool | str":
+    """Resolve ``ssl_verify`` for an MCP server: ``True``/``False`` or a CA-bundle path.
+
+    httpx accepts a filesystem path as ``verify=``; a string that is not a
+    truthy/falsy keyword is treated as that path (custom corporate CA). It
+    used to be coerced to ``True``, which silently ignored the bundle.
+    """
     env_ssl = os.getenv("HERMES_SSL_VERIFY", "").lower()
     if env_ssl in ("false", "0", "no", "off"):
         return False
@@ -671,7 +677,12 @@ def _resolve_mcp_ssl_verify(config: dict) -> bool:
     if isinstance(val, bool):
         return val
     if isinstance(val, str):
-        return val.lower() not in ("false", "0", "no", "off")
+        lowered = val.strip().lower()
+        if lowered in ("false", "0", "no", "off"):
+            return False
+        if lowered in ("", "true", "1", "yes", "on"):
+            return True
+        return val.strip()  # CA bundle path
     return bool(val)
 
 
@@ -1631,7 +1642,7 @@ class MCPServerTask:
 
         command = config.get("command")
         args = config.get("args", [])
-        user_env = config.get("env")
+        user_env = _inject_suite_ntfy_env(self.name, config.get("env"))
 
         if not command:
             raise ValueError(f"MCP server '{self.name}' has no 'command' in config")
@@ -2262,6 +2273,7 @@ class MCPServerTask:
                             self.name,
                             exc,
                         )
+                        _flag_iamds_mcp_auth_failure(self.name, exc, getattr(self, "_config", None))
                         self._error = exc
                         self._ready.set()
                         return
@@ -2502,6 +2514,40 @@ def _unwrap_exception(exc: BaseException) -> BaseException:
     return current
 
 
+def _iamds_provider_for_server(server_name: str, config: Optional[dict] = None) -> Optional[str]:
+    """Return the canonical aimds-suite-* provider a server is tagged with, else None."""
+    try:
+        from hermes_cli.iamds_suite import canonical_suite_provider
+
+        cfg = config if isinstance(config, dict) else (_load_mcp_config() or {}).get(server_name) or {}
+        tag = str(cfg.get("provider") or "").strip().lower()
+        if tag in ("iamds", "aimds") or server_name in ("AIMDSSuiteMCP", "AIMDS", "IAMDS"):
+            # Untagged/short-tagged servers follow the active model provider.
+            try:
+                from hermes_cli.config import load_config
+
+                active = str(((load_config() or {}).get("model") or {}).get("provider") or "")
+            except Exception:
+                active = ""
+            return canonical_suite_provider(active) or "aimds-suite-prod"
+        return canonical_suite_provider(tag)
+    except Exception:
+        return None
+
+
+def _flag_iamds_mcp_auth_failure(server_name: str, exc: BaseException, config: Optional[dict] = None) -> None:
+    """Record an AIMDS MCP 401 so the desktop card flips to "needs re-auth" (AIS-286)."""
+    provider = _iamds_provider_for_server(server_name, config)
+    if not provider:
+        return
+    try:
+        from hermes_cli.iamds_suite import mark_suite_auth_failure
+
+        mark_suite_auth_failure(provider, 401, f"{server_name}: {exc}", source="mcp")
+    except Exception:
+        pass
+
+
 def _is_auth_error(exc: BaseException) -> bool:
     """Return True if ``exc`` indicates an MCP OAuth failure.
 
@@ -2633,14 +2679,24 @@ def _handle_auth_error_and_retry(
     # needs_reauth error. Bumps the circuit breaker so the model stops
     # retrying the tool.
     _bump_server_error(server_name)
+    _iamds_provider = _iamds_provider_for_server(server_name)
+    if _iamds_provider:
+        _flag_iamds_mcp_auth_failure(server_name, exc)
+        _reauth_hint = (
+            f"MCP server '{server_name}' rejected the AIMDS-Suite virtual key (401). "
+            "Ask the user to re-authenticate via Settings → Providers → AIMDS-Suite → "
+            "Re-authenticate (Keycloak SSO). Do NOT retry this tool."
+        )
+    else:
+        _reauth_hint = (
+            f"MCP server '{server_name}' requires re-authentication. "
+            f"Run `hermes mcp login {server_name}` (or delete the tokens "
+            f"file under ~/.hermes/mcp-tokens/ and restart). Do NOT retry "
+            f"this tool — ask the user to re-authenticate."
+        )
     return json.dumps(
         {
-            "error": (
-                f"MCP server '{server_name}' requires re-authentication. "
-                f"Run `hermes mcp login {server_name}` (or delete the tokens "
-                f"file under ~/.hermes/mcp-tokens/ and restart). Do NOT retry "
-                f"this tool — ask the user to re-authenticate."
-            ),
+            "error": _reauth_hint,
             "needs_reauth": True,
             "server": server_name,
         },
@@ -3162,6 +3218,22 @@ def _resolve_iamds_provider_credentials(
             except Exception:
                 api_key = str(os.environ.get(key_env, "")).strip()
 
+    if not base_url or not api_key:
+        # Single source of truth for AIMDS-Suite environments (AIS-286):
+        # config.yaml providers.<slug> beats the env var, no cross-env key
+        # fallback. Legacy iamds-litellm* slugs resolve to their successor.
+        try:
+            from hermes_cli.iamds_suite import is_suite_provider, resolve_suite_endpoint
+
+            if is_suite_provider(provider_norm):
+                _ep = resolve_suite_endpoint(provider_norm, config=cfg, allow_default=False)
+                if not base_url and _ep.base_url:
+                    base_url = _ep.base_url
+                if not api_key and _ep.api_key:
+                    api_key = _ep.api_key
+        except Exception:
+            pass
+
     if not base_url:
         base_env = _IAMDS_BASE_ENV_VAR.get(provider_norm, "")
         if base_env:
@@ -3219,6 +3291,43 @@ def _format_bearer_token(value: str) -> str:
     if token[:7].lower() == "bearer ":
         return token
     return f"Bearer {token}"
+
+
+_NTFY_MCP_NAMES = frozenset({"ntfymcp", "ntfy", "ntfy-mcp", "ntfy_mcp"})
+
+
+def _inject_suite_ntfy_env(server_name: str, user_env: Optional[dict]) -> Optional[dict]:
+    """Zero-touch env for the catalog ntfy MCP (AIS-232).
+
+    The stdio server only sees the safe baseline env plus ``mcp_servers.<name>.env``.
+    When the entry is the ntfy MCP and no ``NTFY_SERVER_URL`` is configured,
+    derive server, token and default topic from the active AIMDS-Suite
+    provider (``<root>/ntfy``, the VirtualKey, ``private-<user_id>``).
+    Explicit values always win; a missing Suite leaves the env untouched.
+    """
+    if str(server_name or "").strip().lower() not in _NTFY_MCP_NAMES:
+        return user_env
+    env = dict(user_env or {})
+    if str(env.get("NTFY_SERVER_URL") or "").strip():
+        return user_env
+    try:
+        from hermes_cli.iamds_suite import resolve_suite_ntfy
+
+        resolved = resolve_suite_ntfy()
+    except Exception as exc:
+        logger.debug("ntfy MCP: suite auto-config unavailable: %s", exc)
+        return user_env
+    if resolved is None or not resolved.server_url or not resolved.token:
+        return user_env
+    env["NTFY_SERVER_URL"] = resolved.server_url
+    env.setdefault("NTFY_AUTH_TOKEN", resolved.token)
+    if resolved.topic and not str(env.get("NTFY_DEFAULT_TOPIC") or "").strip():
+        env["NTFY_DEFAULT_TOPIC"] = resolved.topic
+    logger.info(
+        "MCP server '%s': ntfy zero-touch config from AIMDS-Suite provider %s (server=%s, topic=%s)",
+        server_name, resolved.provider_id, resolved.server_url, resolved.topic or "-",
+    )
+    return env
 
 
 def _build_iamds_mcp_url(provider_base_url: str) -> str:
@@ -3624,6 +3733,25 @@ def _clean_mcp_args(server: "MCPServerTask", tool_name: str, args: dict) -> dict
     return clean
 
 
+def _structured_duplicates_text(text_result: str, structured: Any) -> bool:
+    """True when ``structuredContent`` carries the same data as the text block.
+
+    FastMCP wraps a dict/list return as ``content=[json.dumps(value)]`` plus
+    ``structuredContent=value``; scalar/list returns arrive as
+    ``structuredContent={"result": value}``. Either way the text is redundant.
+    """
+    try:
+        parsed = json.loads(text_result)
+    except (TypeError, ValueError):
+        return False
+    if parsed == structured:
+        return True
+    if isinstance(structured, dict) and set(structured.keys()) == {"result"}:
+        inner = structured.get("result")
+        return parsed == inner or text_result == inner
+    return False
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, provider: Optional[str] = None):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -3725,6 +3853,13 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, pr
             structured = getattr(result, "structuredContent", None)
             if structured is not None:
                 if text_result:
+                    # FastMCP serialises a dict return value twice: the text
+                    # block is json.dumps(value) and structuredContent is the
+                    # value itself (or {"result": value} for non-object
+                    # returns). Sending both doubled the tokens of every
+                    # M365/Tempo call (AIS-289) — emit the object once.
+                    if _structured_duplicates_text(text_result, structured):
+                        return json.dumps({"result": structured}, ensure_ascii=False)
                     return json.dumps(
                         {
                             "result": text_result,
@@ -4845,6 +4980,48 @@ def _existing_tool_names() -> List[str]:
     return names
 
 
+def _catalog_default_tools(server_name: str) -> Set[str]:
+    """Manifest ``tools.default_enabled`` for a catalog-installed server, else empty.
+
+    Cheap and fail-safe: the catalog is parsed from the shipped manifests; any
+    error (no catalog, name is a custom server) yields an empty set.
+    """
+    try:
+        from hermes_cli.mcp_catalog import get_entry
+
+        entry = get_entry(server_name)
+    except Exception:
+        return set()
+    if entry is None or not entry.tools or not entry.tools.default_enabled:
+        return set()
+    return {str(t) for t in entry.tools.default_enabled if str(t).strip()}
+
+
+def _merge_catalog_default_tools(server_name: str, include_set: Set[str]) -> Set[str]:
+    """Keep catalog installs current: ``tools.include`` ∪ manifest ``default_enabled``.
+
+    ``mcp_servers.<name>.tools.include`` is written once at install time and
+    carried over verbatim on reinstall, so tools added to a manifest's
+    ``default_enabled`` later (e.g. the Teams attachment download tools) never
+    reached existing installs — the agent simply did not have them
+    (AIS-288 / SUP-20260904-071240). Curated defaults are therefore always
+    registered; a user's include list still governs every non-default tool.
+    An empty include list means "all tools" and is left alone.
+    """
+    if not include_set:
+        return include_set
+    defaults = _catalog_default_tools(server_name)
+    if not defaults:
+        return include_set
+    missing = {t for t in defaults if _normalized_tool_filter_key(t) not in {_normalized_tool_filter_key(i) for i in include_set}}
+    if missing:
+        logger.info(
+            "MCP server '%s': enabling %d manifest default tool(s) missing from tools.include: %s",
+            server_name, len(missing), ", ".join(sorted(missing)),
+        )
+    return set(include_set) | missing
+
+
 def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> List[str]:
     """Register tools from an already-connected server into the registry.
 
@@ -4877,6 +5054,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     exclude_set = _normalize_name_filter(
         tools_filter.get("exclude"), f"mcp_servers.{name}.tools.exclude"
     )
+    include_set = _merge_catalog_default_tools(name, include_set)
 
     safe_server_name = sanitize_mcp_name_component(name)
 
@@ -5126,6 +5304,50 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     return _existing_tool_names()
 
 
+def disconnect_mcp_server(name: str) -> bool:
+    """Shut down one connected MCP server and drop it from the registry.
+
+    Used before a catalog re-install of a stdio server: the install wipes
+    ``~/.hermes/mcp-installs/<name>`` and on Windows that fails (or, worse,
+    half-succeeds) while the server's ``python.exe`` is still running from
+    it (AIS-304). After the install, ``discover_mcp_tools()`` reconnects
+    the server because it is no longer in ``_servers``. Returns ``True``
+    when a connection existed.
+    """
+    if not _MCP_AVAILABLE:
+        return False
+
+    with _lock:
+        existing = _servers.pop(name, None)
+
+    if existing is None:
+        return False
+
+    async def _do_shutdown():
+        try:
+            await existing.shutdown()
+        except Exception:
+            logger.debug("Error shutting down MCP server '%s' for disconnect", name, exc_info=True)
+
+    with _lock:
+        loop = _mcp_loop
+    if loop is not None and loop.is_running():
+        from agent.async_utils import safe_schedule_threadsafe
+
+        fut = safe_schedule_threadsafe(
+            _do_shutdown(),
+            loop,
+            logger=logger,
+            log_message=f"MCP disconnect: shutdown of '{name}' failed to schedule",
+        )
+        if fut is not None:
+            try:
+                fut.result(timeout=10)
+            except Exception as exc:
+                logger.debug("MCP disconnect: shutdown of '%s' errored: %s", name, exc)
+    return True
+
+
 def reconnect_mcp_server(name: str) -> List[str]:
     """Force a live reconnect of a single already-configured MCP server.
 
@@ -5147,33 +5369,7 @@ def reconnect_mcp_server(name: str) -> List[str]:
     if not _MCP_AVAILABLE:
         return []
 
-    with _lock:
-        existing = _servers.pop(name, None)
-
-    if existing is not None:
-
-        async def _do_shutdown():
-            try:
-                await existing.shutdown()
-            except Exception:
-                logger.debug("Error shutting down MCP server '%s' for reconnect", name, exc_info=True)
-
-        with _lock:
-            loop = _mcp_loop
-        if loop is not None and loop.is_running():
-            from agent.async_utils import safe_schedule_threadsafe
-
-            fut = safe_schedule_threadsafe(
-                _do_shutdown(),
-                loop,
-                logger=logger,
-                log_message=f"MCP reconnect: shutdown of '{name}' failed to schedule",
-            )
-            if fut is not None:
-                try:
-                    fut.result(timeout=10)
-                except Exception as exc:
-                    logger.debug("MCP reconnect: shutdown of '%s' errored: %s", name, exc)
+    disconnect_mcp_server(name)
 
     servers = _load_mcp_config()
     cfg = servers.get(name)

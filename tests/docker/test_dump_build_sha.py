@@ -67,8 +67,7 @@ def _read_baked_sha_from_image(image: str) -> str | None:
 def test_dump_reports_baked_sha_when_present(built_image: str) -> None:
     """When the image was built with ``HERMES_GIT_SHA``, dump must surface it.
 
-    Together with the smoke-test action (which exercises ``--help``), this
-    closes the regression loop for the missing-sha bug: any future change
+    This closes the regression loop for the missing-sha bug: any future change
     that breaks the baked-file -> dump pipeline will fail CI here.
     """
     baked = _read_baked_sha_from_image(built_image)

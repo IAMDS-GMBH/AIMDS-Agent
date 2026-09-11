@@ -15,6 +15,7 @@ if _REPO_ROOT not in sys.path:
 from hermes_cli import workspace_template as wt  # noqa: E402
 
 TEMPLATE = Path(_REPO_ROOT) / "installer" / "workspace-template"
+V2_FIXTURES = Path(_REPO_ROOT) / "tests" / "fixtures" / "workspace_template_v2"
 
 
 def _seed_v1_workspace(root: Path) -> None:
@@ -112,12 +113,12 @@ def _seed_v2_workspace(root: Path) -> None:
     """A vault created from template v2 (unedited copies) plus legacy notes."""
     root.mkdir(parents=True)
     (root / ".workspace-template-version").write_text("v2\n", encoding="utf-8")
-    import subprocess
-
+    # HEAD ships template v3, so "an unedited v2 copy" comes from checked-in
+    # fixtures (tests/fixtures/workspace_template_v2/, byte-identical to the
+    # v2 hashes in .previous-versions.json). Git history is not an option:
+    # CI checks out with fetch-depth 1.
     for rel in ("AGENTS.md", "HARNESS.md", "_conventions.md", "projects/_hub.md", "_templates/note.md"):
-        blob = subprocess.run(["git", "show", f"HEAD:installer/workspace-template/{rel}"], capture_output=True, cwd=_REPO_ROOT).stdout
-        if not blob:
-            blob = (TEMPLATE / rel).read_bytes()
+        blob = (V2_FIXTURES / rel).read_bytes()
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_bytes(blob)
     (root / "projects" / "decision-worklog-rule.md").write_text(JSON_NOTE, encoding="utf-8")
@@ -200,3 +201,16 @@ def test_ensure_hermes_home_never_upgrades_the_workspace(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     cfg.ensure_hermes_home()
     assert calls == []
+
+
+def test_v2_fixtures_match_previous_version_hashes():
+    """The v2 fixtures must keep matching .previous-versions.json, otherwise
+    upgrade_workspace() would treat them as user-edited files."""
+    import hashlib
+    import json
+
+    previous = json.loads((TEMPLATE / ".previous-versions.json").read_text(encoding="utf-8"))
+    for path in sorted(V2_FIXTURES.rglob("*.md")):
+        rel = str(path.relative_to(V2_FIXTURES))
+        digest = hashlib.md5(path.read_bytes()).hexdigest()
+        assert digest in set((previous.get(rel) or {}).values()), rel

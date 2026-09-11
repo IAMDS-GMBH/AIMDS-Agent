@@ -8,3 +8,16 @@ web/package-lock.json linguist-generated=true
 Dockerfile  text eol=lf
 *.dockerfile text eol=lf
 docker/entrypoint.sh text eol=lf
+
+# Source package (AIS-311, scripts/build_source_package.sh): `git archive`
+# honours export-ignore, so everything listed here stays out of the public
+# hermes-source-<version>.zip. Rule: nothing that describes internal
+# workflows, CI, planning or tooling ships to customers.
+.github/                 export-ignore
+.agents/                 export-ignore
+.gitattributes           export-ignore
+tests/                   export-ignore
+apps/bootstrap-installer/ export-ignore
+docs/plans/              export-ignore
+createTag.sh             export-ignore
+CONTRIBUTING.md          export-ignore

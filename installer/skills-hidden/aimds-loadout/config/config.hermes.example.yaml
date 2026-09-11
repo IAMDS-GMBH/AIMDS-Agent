@@ -21,6 +21,16 @@ tools:
     search_default_limit: 8
     max_search_limit: 20
 
+# --- Dokumente in read_file (AIS-294) -----------------------------------------
+# Office (docx/xlsx/pptx/odt/ods/odp) und PDF kommen als Markdown zurück.
+#   auto  = AIMDS-Suite Docling (go-mcp-customer), sobald <domain>/uptime/health
+#           docling + customer-storage als "up" meldet und die storage_*-Tools
+#           im Gateway sind; sonst lokal (markitdown, python-docx, openpyxl, pypdf)
+#   suite = nur Suite (Fehler statt lokalem Fallback)
+#   local = nie hochladen
+documents:
+  converter: auto
+
 # Claude/Anthropic Prompt Caching (wenn vom aktiven Modell/Provider unterstützt)
 prompt_caching:
   cache_ttl: "5m"

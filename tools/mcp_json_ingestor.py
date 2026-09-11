@@ -42,7 +42,8 @@ def cleanup_scratch_tables(conn: sqlite3.Connection) -> int:
         )
         system_tables = {
             "sessions", "messages", "schema_version", "state_meta", "mcp_records",
-            "compression_locks", "todos", "inbox_entries"
+            "compression_locks", "todos", "inbox_entries", "brief_items", "brief_runs",
+            "api_calls", "workday_calendar", "absences"
         }
         tables = [row[0] for row in cursor.fetchall() if row[0].lower() not in system_tables]
         dropped = 0
@@ -240,7 +241,9 @@ def _extract_items(data: Any) -> List[Dict[str, Any]]:
 
     if isinstance(data, dict):
         # Check common collection keys
-        for key in ("worklogs", "issues", "tickets", "entries", "records", "items", "data", "results", "values", "cases"):
+        # ``value`` is Microsoft Graph's collection key: without it a chat or
+        # drive listing was ingested as ONE blob row (AIS-289).
+        for key in ("worklogs", "issues", "tickets", "entries", "records", "items", "data", "results", "values", "value", "cases", "matches"):
             val = data.get(key)
             if isinstance(val, list):
                 return [item for item in val if isinstance(item, dict)]

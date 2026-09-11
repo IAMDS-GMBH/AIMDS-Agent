@@ -248,3 +248,58 @@ def test_send_logs_with_attachment(tmp_path, monkeypatch, capsys):
         assert att_manifest["mime_type"] == "image/png"
 
 
+
+
+def test_send_logs_bundles_action_logs(tmp_path, monkeypatch, capsys):
+    """AIS-303: detached actions (``hermes mcp install`` & co.) only write to
+    ``logs/action-*.log``; a bundle without them cannot explain a failed
+    catalog install."""
+    hermes_home = tmp_path / ".hermes"
+    logs_dir = hermes_home / "logs"
+    logs_dir.mkdir(parents=True)
+    (logs_dir / "desktop.log").write_text("desktop line\n", encoding="utf-8")
+    (logs_dir / "action-mcp-install.log").write_text(
+        "=== mcp-install started ===\n  git not found\n  ✗ install failed: boom token=sk-abcdefghijklmnopqrstuv\n",
+        encoding="utf-8",
+    )
+    (logs_dir / "action-doctor.log").write_text("doctor ok\n", encoding="utf-8")
+    (logs_dir / "action-empty.log").write_text("", encoding="utf-8")
+    (logs_dir / "unrelated.log").write_text("not shipped\n", encoding="utf-8")
+
+    monkeypatch.setattr(support_logs, "get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(support_logs, "display_hermes_home", lambda: "~/.hermes")
+    monkeypatch.setattr(support_logs, "_support_config", lambda: {})
+    monkeypatch.setattr(support_logs, "_capture_dump_text", lambda: "dump\n")
+
+    captured = {}
+
+    class _Resp:
+        status = 202
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"reference_id":"SUP-1"}'
+
+    def _fake_urlopen(req, timeout=0):
+        captured["data"] = req.data
+        return _Resp()
+
+    monkeypatch.setattr(support_logs.urllib.request, "urlopen", _fake_urlopen)
+
+    assert support_logs.run_send_logs(_parse(["--json"])) == 0
+    with zipfile.ZipFile(io.BytesIO(captured["data"])) as zf:
+        names = set(zf.namelist())
+        assert {"logs/desktop.log", "logs/action-mcp-install.log", "logs/action-doctor.log"} <= names
+        assert "logs/action-empty.log" not in names
+        assert "logs/unrelated.log" not in names
+        install_log = zf.read("logs/action-mcp-install.log").decode("utf-8")
+        assert "install failed" in install_log
+        assert "sk-abcdefghijklmnopqrstuv" not in install_log
+        manifest = json.loads(zf.read("manifest.json"))
+        included = {f["name"] for f in manifest["included_files"]}
+        assert {"desktop.log", "action-mcp-install.log", "action-doctor.log"} <= included

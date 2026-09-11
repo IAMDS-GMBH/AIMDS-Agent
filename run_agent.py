@@ -155,6 +155,8 @@ from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock
     build_outlook_contact_profiling_guidance,
     build_ai_attribution_guidance,
     build_jira_guidance,
+    build_mail_safety_guidance,
+    build_teams_send_guidance,
     load_soul_md,
 )
 from agent.process_bootstrap import _get_proxy_from_env  # noqa: F401
@@ -639,6 +641,7 @@ class AIAgent:
         self.session_completion_tokens = 0
         self.session_cache_read_tokens = 0
         self.session_cache_write_tokens = 0
+        self.session_large_cache_writes = 0
         self.session_reasoning_tokens = 0
         self.session_api_calls = 0
         self.session_estimated_cost_usd = 0.0
@@ -3593,9 +3596,41 @@ class AIAgent:
                 self._cached_request_kwargs = request_kwargs
             return client
 
+    # Close reasons that mark the *normal* end of a healthy request. The
+    # pooled request client (``_cached_request_client``) survives these so
+    # its connection pool stays warm. Every other reason (stale-call kill,
+    # interrupt abort, retry cleanup, connection error) means the pool may be
+    # wedged: evict the client from the cache and really close it, otherwise
+    # the next request silently reuses a dead socket (regression from the
+    # pooling change in 6a77429a5, pinned by
+    # tests/run_agent/test_openai_client_lifecycle.py).
+    _POOLED_REQUEST_CLOSE_REASONS = frozenset({"request_complete", "stream_request_complete"})
+
+    def _evict_cached_request_client(self, client: Any = None, *, reason: str) -> bool:
+        """Drop ``client`` (default: the pooled one) from the request-client cache.
+
+        Returns True when a cached client was evicted. Does not close it —
+        the caller decides (owner thread closes, stranger thread only aborts).
+        """
+        cached = getattr(self, "_cached_request_client", None)
+        if cached is None or (client is not None and client is not cached):
+            return False
+        self._cached_request_client = None
+        self._cached_request_kwargs = None
+        logger.info(
+            "OpenAI request client evicted from pool (%s) %s",
+            reason,
+            self._client_log_context(),
+        )
+        return True
+
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
-        if client is getattr(self, "client", None) or client is getattr(self, "_cached_request_client", None):
+        if client is None or client is getattr(self, "client", None):
             return
+        if client is getattr(self, "_cached_request_client", None):
+            if reason in self._POOLED_REQUEST_CLOSE_REASONS:
+                return  # healthy request finished: keep the pooled client alive
+            self._evict_cached_request_client(client, reason=reason)
         self._close_openai_client(client, reason=reason, shared=False)
 
     def _abort_request_openai_client(self, client: Any, *, reason: str) -> None:
@@ -3614,6 +3649,11 @@ class AIAgent:
         """
         if client is None:
             return
+        # A client whose sockets we are tearing down must never be handed out
+        # again: evict it from the request-client pool so the owning thread's
+        # deferred close really closes it and the next request gets a fresh
+        # client (see _close_request_openai_client).
+        self._evict_cached_request_client(client, reason=reason)
         try:
             shutdown_count = self._force_close_tcp_sockets(client)
             logger.info(
@@ -3751,6 +3791,69 @@ class AIAgent:
         if not self._replace_primary_openai_client(reason="nous_credential_refresh"):
             return False
 
+        return True
+
+    def _try_refresh_iamds_client_credentials(self) -> bool:
+        """Re-read the AIMDS-Suite key/URL from disk and rebuild the client.
+
+        Called after a 401/403 from an aimds-suite-* provider: the user may
+        have re-authenticated via Keycloak SSO (new key in ~/.hermes/.env) or
+        fixed the base URL in the settings while this session was running.
+        Returns True only when something actually changed and the shared
+        client was rebuilt (AIS-286).
+        """
+        try:
+            from hermes_cli.iamds_suite import is_suite_provider, resolve_suite_endpoint
+        except Exception:
+            return False
+        if not is_suite_provider(getattr(self, "provider", "")):
+            return False
+        try:
+            from hermes_cli.config import invalidate_env_cache
+
+            invalidate_env_cache()
+        except Exception:
+            pass
+        try:
+            from hermes_cli.env_loader import load_hermes_dotenv
+
+            load_hermes_dotenv()
+        except Exception:
+            pass
+        try:
+            ep = resolve_suite_endpoint(self.provider)
+        except Exception as exc:
+            logger.debug("IAMDS credential refresh: resolve failed: %s", exc)
+            return False
+        if not ep.api_key or not ep.base_url:
+            return False
+        new_key = ep.api_key.strip()
+        new_base = ep.base_url.strip().rstrip("/")
+        if new_key == (self.api_key or "") and new_base == (self.base_url or "").rstrip("/"):
+            return False
+
+        self.api_key = new_key
+        self.base_url = new_base
+        self._client_kwargs["api_key"] = new_key
+        self._client_kwargs["base_url"] = new_base
+        try:
+            self._apply_client_headers_for_base_url(new_base)
+        except Exception:
+            pass
+        if not self._replace_primary_openai_client(reason="iamds_reauth"):
+            return False
+        try:
+            from agent.credential_pool import load_pool
+
+            self._credential_pool = load_pool(self.provider)
+        except Exception:
+            pass
+        try:
+            from hermes_cli.iamds_suite import clear_suite_auth_failure
+
+            clear_suite_auth_failure(self.provider)
+        except Exception:
+            pass
         return True
 
     def _try_refresh_copilot_client_credentials(self) -> bool:

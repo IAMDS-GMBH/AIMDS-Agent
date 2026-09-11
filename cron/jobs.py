@@ -73,8 +73,35 @@ def register_global_completion_callback(callback):
         _global_completion_callbacks.append(callback)
 
 
-def _emit_completion_event(job_id: str, success: bool, error: Optional[str] = None):
-    """Emit completion event to all registered callbacks for this job."""
+def _call_completion_callback(callback, job_id: str, success: bool, error: Optional[str], extra: dict) -> None:
+    """Call ``callback`` with the extended payload, falling back to the 3-arg form."""
+    try:
+        callback(job_id, success, error, **extra)
+    except TypeError as exc:
+        if "unexpected keyword" not in str(exc) and "positional" not in str(exc):
+            raise
+        callback(job_id, success, error)
+
+
+def mark_job_seen(job_id: str, at: Optional[str] = None) -> Optional[dict]:
+    """Record that the user opened the job's latest output (AIS-305). Returns the job."""
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        for job in jobs:
+            if job["id"] == job_id:
+                job["last_seen_at"] = at or _hermes_now().isoformat()
+                save_jobs(jobs)
+                return job
+    return None
+
+
+def _emit_completion_event(job_id: str, success: bool, error: Optional[str] = None, **extra):
+    """Emit completion event to all registered callbacks for this job.
+
+    ``extra`` (job_name, profile, output_path, output_at, session_id) is passed
+    as keyword arguments to callbacks that accept them; legacy 3-arg callbacks
+    keep working.
+    """
     with _callbacks_lock:
         job_callbacks = _completion_callbacks.get(job_id, [])
         global_callbacks = list(_global_completion_callbacks)
@@ -82,7 +109,7 @@ def _emit_completion_event(job_id: str, success: bool, error: Optional[str] = No
     # Call job-specific callbacks
     for callback in job_callbacks:
         try:
-            callback(job_id, success, error)
+            _call_completion_callback(callback, job_id, success, error, extra)
         except Exception as e:
             logger.error(
                 "Error in cron completion callback for job '%s': %s",
@@ -92,7 +119,7 @@ def _emit_completion_event(job_id: str, success: bool, error: Optional[str] = No
     # Call global callbacks
     for callback in global_callbacks:
         try:
-            callback(job_id, success, error)
+            _call_completion_callback(callback, job_id, success, error, extra)
         except Exception as e:
             logger.error(
                 "Error in cron global completion callback for job '%s': %s",
@@ -204,6 +231,13 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
     if not state:
         state = "scheduled" if normalized.get("enabled", True) else "paused"
     normalized["state"] = state
+
+    # Desktop build (AIS-145): cron results are delivered to this desktop
+    # only. Jobs created before the change (or hand-edited) may still carry
+    # deliver="telegram" / "origin" / "all"; coerce on read so the scheduler,
+    # the dashboard and the cronjob tool never see — or act on — an external
+    # target. Storage is left untouched; the next update_job() rewrites it.
+    normalized["deliver"] = "local"
 
     return normalized
 
@@ -475,6 +509,25 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 # Job CRUD Operations
 # =============================================================================
 
+def _coerce_local_delivery(jobs: List[Any]) -> List[Any]:
+    """Desktop build (AIS-145): every loaded job delivers to this desktop only.
+
+    Applied at the single load boundary so the scheduler tick, the dashboard,
+    the cronjob tool and ``update_job`` all see ``deliver="local"`` — a job
+    persisted before the change with ``"telegram"`` / ``"origin"`` / ``"all"``
+    is read as local and rewritten as local on its next save.
+    """
+    for job in jobs:
+        if isinstance(job, dict) and job.get("deliver") != "local":
+            if job.get("deliver") not in (None, ""):
+                logger.info(
+                    "Cron job %s: stored deliver=%r ignored — delivery is fixed to local",
+                    job.get("id", "?"), job.get("deliver"),
+                )
+            job["deliver"] = "local"
+    return jobs
+
+
 def load_jobs() -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
     ensure_dirs()
@@ -509,14 +562,14 @@ def load_jobs() -> List[Dict[str, Any]]:
             # Hit control-character corruption — rewrite with proper escaping.
             save_jobs(jobs)
             logger.warning("Auto-repaired jobs.json (had invalid control characters)")
-        return jobs
+        return _coerce_local_delivery(jobs)
     if isinstance(data, list):
         # Bare array — likely saved/edited outside save_jobs(). Wrap it back
         # into the expected {"jobs": [...]} structure.
         if data:
             save_jobs(data)
             logger.warning("Auto-repaired jobs.json (bare list wrapped as dict)")
-        return data
+        return _coerce_local_delivery(data)
 
     raise RuntimeError(
         f"Cron database corrupted: expected {{'jobs': [...]}}, got {type(data).__name__}"
@@ -602,8 +655,8 @@ def create_job(
         schedule: Schedule string (see parse_schedule)
         name: Optional friendly name
         repeat: How many times to run (None = forever, 1 = once)
-        deliver: Where to deliver output ("origin", "local", "telegram", etc.)
-        origin: Source info where job was created (for "origin" delivery)
+        deliver: Ignored — desktop build delivers to this desktop only (always "local").
+        origin: Source info where job was created (provenance only)
         skill: Optional legacy single skill name to load before running the prompt
         skills: Optional ordered list of skills to load before running the prompt
         model: Optional per-job model override
@@ -650,9 +703,12 @@ def create_job(
     if parsed_schedule["kind"] == "once" and repeat is None:
         repeat = 1
 
-    # Default delivery to origin if available, otherwise local
-    if deliver is None:
-        deliver = "origin" if origin else "local"
+    # Desktop build (AIS-145): delivery is always local. ``deliver`` is kept
+    # in the signature for API compatibility but ignored; ``origin`` is still
+    # recorded as provenance and no longer used as a delivery target.
+    if deliver not in (None, "local"):
+        logger.info("create_job: ignoring deliver=%r — cron delivery is fixed to local", deliver)
+    deliver = "local"
 
     job_id = uuid.uuid4().hex[:12]
     now = _hermes_now().isoformat()
@@ -812,6 +868,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             else:
                 updates["workdir"] = _normalize_workdir(_wd)
 
+        # Desktop build (AIS-145): delivery cannot be changed away from local.
+        if "deliver" in updates and updates["deliver"] != "local":
+            logger.info("update_job: ignoring deliver=%r for job %s — delivery is fixed to local", updates["deliver"], job_id)
+        updates = {**updates, "deliver": "local"} if "deliver" in updates else updates
+
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates
 
@@ -921,7 +982,9 @@ def remove_job(job_id: str) -> bool:
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None, *,
+                 output_path: Optional[str] = None, session_id: Optional[str] = None,
+                 summary: Optional[dict] = None):
     """
     Mark a job as having been run.
     
@@ -943,6 +1006,16 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_delivery_error"] = delivery_error
                 # Clear any explicit manual-trigger marker once the run finished.
                 job["manual_triggered_at"] = None
+                # AIS-305: artifact + unread bookkeeping for the desktop.
+                if session_id:
+                    job["last_run_session_id"] = session_id
+                if success and output_path:
+                    job["last_output_path"] = str(output_path)
+                    job["last_output_at"] = now
+                    job["last_output_summary"] = summary if isinstance(summary, dict) else None
+                _evt_job_name = job.get("name") or job_id
+                _evt_output_path = job.get("last_output_path") if success and output_path else None
+                _evt_output_at = job.get("last_output_at") if success and output_path else None
                 
                 # Increment completed count
                 if job.get("repeat"):
@@ -992,7 +1065,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 save_jobs(jobs)
                 
                 # Emit completion event to all registered listeners
-                _emit_completion_event(job_id, success, error)
+                _emit_completion_event(job_id, success, error, job_name=_evt_job_name, profile=None, output_path=_evt_output_path, output_at=_evt_output_at, session_id=session_id)
                 return
 
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)

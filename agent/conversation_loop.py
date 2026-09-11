@@ -60,6 +60,7 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
+from agent.cache_insights import LARGE_CACHE_WRITE_TOKENS
 from agent.prompt_builder import _resolve_memory_context_tool_name, _resolve_memory_save_tool_name
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.retry_utils import jittered_backoff
@@ -247,6 +248,38 @@ def _enforce_personal_query_memory_context_call(
         )
 
 
+def _initial_memory_context_args(agent: Any, tool_name: str) -> Dict[str, Any]:
+    """Arguments for the forced session-start ``memory_context`` call.
+
+    The active posture may declare a compact briefing (developer posture:
+    ``contexts=[coding, git, agent]``, ``limit=8`` — AIS-309: the full
+    briefing averaged 13 KB per session and sat in the history for good).
+    Only keys the registered tool schema declares are sent, so a memory
+    server without those parameters still gets the plain ``{}`` call.
+    """
+    mode = getattr(agent, "runtime_mode", None)
+    profile = getattr(mode, "profile", None)
+    kwargs_fn = getattr(profile, "memory_context_kwargs", None)
+    wanted: Dict[str, Any] = {}
+    try:
+        wanted = dict(kwargs_fn()) if callable(kwargs_fn) else {}
+    except Exception:
+        wanted = {}
+    if not wanted:
+        return {}
+    try:
+        from tools.registry import registry
+
+        schema = registry.get_schema(tool_name) or {}
+    except Exception:
+        return {}
+    params = schema.get("parameters") or schema.get("input_schema") or {}
+    props = params.get("properties") if isinstance(params, dict) else None
+    if not isinstance(props, dict):
+        return {}
+    return {k: v for k, v in wanted.items() if k in props}
+
+
 def _enforce_initial_memory_context_call(
     agent: Any,
     *,
@@ -282,7 +315,7 @@ def _enforce_initial_memory_context_call(
             agent._initial_memory_context_enforced = True
             return
 
-    call_args: Dict[str, Any] = {}
+    call_args: Dict[str, Any] = _initial_memory_context_args(agent, tool_name)
 
     call_id = f"memory-context-init-{uuid.uuid4().hex[:12]}"
     assistant_tool_msg = {
@@ -1945,6 +1978,16 @@ def run_conversation(
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
+    # A Teams / SharePoint link in the message loads the tools that handle it
+    # (deferred behind tool_search) before the first API call — deterministic
+    # instead of hoping the model searches for them (AIS-289).
+    try:
+        from agent.deferred_tools import autoload_for_message
+
+        autoload_for_message(agent, original_user_message)
+    except Exception as _autoload_exc:
+        logger.debug("message-link autoload skipped: %s", _autoload_exc)
+
     _enforce_initial_memory_context_call(
         agent,
         messages=messages,
@@ -3198,6 +3241,10 @@ def run_conversation(
                     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
                     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
                     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+                    # Large write = an expired/re-built cache tier being re-sent
+                    # (AIS-309: /usage surfaces the count).
+                    if canonical_usage.cache_write_tokens >= LARGE_CACHE_WRITE_TOKENS:
+                        agent.session_large_cache_writes = getattr(agent, "session_large_cache_writes", 0) + 1
 
                     # One api_calls row per request (served model, cache
                     # accounting, latency) — the session totals cannot show
@@ -3790,6 +3837,28 @@ def run_conversation(
                     print(f"{agent.log_prefix}     • Check credits / billing: https://portal.nousresearch.com")
                     print(f"{agent.log_prefix}     • Verify stored credentials: {_dhh}/auth.json")
                     print(f"{agent.log_prefix}     • Switch providers temporarily: /model <model> --provider openrouter")
+                if status_code in (401, 403) and not _retry.iamds_auth_retry_attempted:
+                    try:
+                        from hermes_cli.iamds_suite import is_suite_provider as _is_suite
+                    except Exception:
+                        _is_suite = None
+                    if _is_suite is not None and _is_suite(getattr(agent, "provider", "")):
+                        _retry.iamds_auth_retry_attempted = True
+                        if agent._try_refresh_iamds_client_credentials():
+                            agent._buffer_vprint("🔐 AIMDS-Suite credentials refreshed from disk after 401. Retrying request...")
+                            continue
+                        # Nothing new on disk: record the failure so the desktop /
+                        # dashboard card flips to "needs re-auth" (AIS-286).
+                        try:
+                            from hermes_cli.iamds_suite import mark_suite_auth_failure as _mark_suite
+
+                            _mark_suite(agent.provider, status_code, str(api_error)[:300], source="llm")
+                        except Exception:
+                            pass
+                        agent._buffer_vprint(
+                            f"🔐 AIMDS-Suite {status_code}: the virtual key was rejected by LiteLLM. "
+                            "Re-authenticate via Settings → Providers → AIMDS-Suite → Re-authenticate (Keycloak SSO)."
+                        )
                 if (
                     agent.provider == "copilot"
                     and status_code == 401

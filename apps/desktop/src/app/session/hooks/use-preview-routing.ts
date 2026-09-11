@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect } from 'react'
 
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
+import { shouldAutoOpenToolPreview } from '@/lib/preview-auto-open'
 import {
   $previewTarget,
   $sessionPreviewRegistry,
@@ -13,6 +14,7 @@ import {
   setPreviewTarget,
   setSessionPreviewTarget
 } from '@/store/preview'
+import { $previewAutoOpen } from '@/store/preview-settings'
 import { $currentCwd } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -164,6 +166,12 @@ export function usePreviewRouting({
       const candidate = structuredPreviewCandidate(event.payload)
 
       if (!candidate) {
+        return
+      }
+
+      // The user's auto-open policy (Settings → Auto-open previews) gates every
+      // tool-driven open; manual opens (links, file browser) never pass here.
+      if (!shouldAutoOpenToolPreview(event, candidate, $previewAutoOpen.get())) {
         return
       }
 

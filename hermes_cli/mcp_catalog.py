@@ -23,9 +23,13 @@ See references/mcp-catalog.md (this repo's skill) for the manifest schema.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import stat
 import subprocess
+import time
+from hermes_cli._subprocess_compat import windows_hide_flags
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -411,8 +415,34 @@ def _adapt_bootstrap_command(cmd: str) -> str:
         r"(?<![\w./-])python3(?![\w.-])", lambda _match: replacement, cmd
     )
     if sys.platform == "win32":
-        adapted = adapted.replace(_VENV_BIN_UNIX, _VENV_BIN_WINDOWS)
+        adapted = _adapt_venv_bootstrap_for_windows(adapted)
     return adapted
+
+
+def _adapt_venv_bootstrap_for_windows(cmd: str) -> str:
+    """Rewrite ``.venv/bin/<exe>`` invocations so ``cmd.exe`` can run them.
+
+    Bootstrap commands run through the shell. On Windows that is ``cmd.exe``,
+    which does not accept forward slashes in the *program* position
+    (``.venv/Scripts/pip`` fails with "'.venv' is not recognized"), and venv
+    launchers need their ``.exe`` suffix. ``pip`` is additionally routed
+    through ``python.exe -m pip`` — the ``pip.exe`` shim embeds the venv's
+    absolute path and breaks when the install dir is later moved (AIS-286,
+    SUP-20260903-101450).
+    """
+    def _rewrite(match: "re.Match[str]") -> str:
+        prefix, exe = match.group(1), match.group(2)
+        base = (prefix + _VENV_BIN_WINDOWS).replace("/", "\\")
+        if exe in ("pip", "pip3"):
+            return f'"{base}python.exe" -m pip'
+        if exe in ("python", "python3"):
+            return f'"{base}python.exe"'
+        exe_name = exe if exe.lower().endswith(".exe") else f"{exe}.exe"
+        return f'"{base}{exe_name}"'
+
+    # ``prefix`` = whatever precedes ``.venv/bin/`` in the same token (an
+    # absolute install dir or nothing); ``exe`` = the launcher name.
+    return re.sub(r'"?([^\s"]*?)\.venv/bin/([A-Za-z0-9_.-]+)"?', _rewrite, cmd)
 
 
 def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
@@ -432,29 +462,176 @@ def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
         expanded = cmd.replace(_INSTALL_DIR_VAR, str(cwd))
         expanded = _adapt_bootstrap_command(expanded)
         print(color(f"  $ {expanded}", Colors.DIM))
-        proc = subprocess.run(expanded, cwd=str(cwd), shell=True)
+        proc = subprocess.run(expanded, cwd=str(cwd), shell=True, **_hidden_window_kwargs())
         if proc.returncode != 0:
             raise CatalogError(
                 f"bootstrap step failed (exit {proc.returncode}): {expanded}"
             )
 
 
+def _hidden_window_kwargs() -> Dict[str, Any]:
+    """``creationflags`` that stop each install subprocess from flashing a
+    console window on Windows (the dashboard runs ``hermes mcp install`` as a
+    detached child, so every ``git``/``pip`` call would otherwise pop up its
+    own window for a moment). No-op elsewhere."""
+    flags = windows_hide_flags()
+    return {"creationflags": flags} if flags else {}
+
+
+def _rmtree_force(path: Path) -> None:
+    """``shutil.rmtree`` that also removes read-only files.
+
+    A git clone marks its pack files read-only, which makes ``os.unlink``
+    fail on Windows with ``PermissionError: [WinError 5]`` — so wiping a
+    previous ``~/.hermes/mcp-installs/<name>`` before a re-install (or on
+    uninstall) died there instead of reaching the actual install (AIS-303).
+    Clearing the read-only bit and retrying is the standard remedy; any other
+    error is re-raised unchanged.
+    """
+
+    def _on_error(func, target, exc_info):
+        exc = exc_info[1]
+        if isinstance(exc, PermissionError):
+            try:
+                os.chmod(target, stat.S_IWRITE | stat.S_IREAD)
+                func(target)
+                return
+            except OSError:
+                pass
+        raise exc
+
+    shutil.rmtree(path, onerror=_on_error)
+
+
+def _stdin_interactive() -> bool:
+    """Whether install-time prompts (device-code login, tool checklist) may run.
+
+    ``HERMES_NONINTERACTIVE`` wins over ``isatty()``: the dashboard spawns
+    ``hermes mcp install`` with ``stdin=DEVNULL`` and that variable set, and
+    on Windows the NUL device still reports ``isatty() == True`` — so the
+    action process happily started a Microsoft device-code login (blocking
+    until the code expired) and rendered the text checklist (AIS-304).
+    """
+    flag = os.environ.get("HERMES_NONINTERACTIVE", "").strip().lower()
+    if flag in {"1", "true", "yes"}:
+        return False
+    stdin = getattr(sys, "stdin", None)
+    try:
+        return bool(stdin is not None and stdin.isatty())
+    except (AttributeError, ValueError):
+        return False
+
+
+def _stale_install_dirs(dest: Path) -> List[Path]:
+    """Previous installs set aside by :func:`_set_aside_existing_install`."""
+    try:
+        return sorted(p for p in dest.parent.glob(f"{dest.name}.old-*") if p.is_dir())
+    except OSError:
+        return []
+
+
+def _sweep_stale_installs(dest: Path) -> None:
+    """Best-effort removal of ``<name>.old-*`` leftovers from earlier installs."""
+    for old in _stale_install_dirs(dest):
+        try:
+            _rmtree_force(old)
+        except OSError as exc:
+            print(color(f"  Note: could not remove old install {old}: {exc}", Colors.DIM))
+
+
+def _set_aside_existing_install(dest: Path, entry_name: str) -> Optional[Path]:
+    """Move an existing install out of the way *before* anything is deleted.
+
+    Wiping ``dest`` in place while the MCP server still runs out of it was
+    the AIS-304 failure: on Windows the server's ``.venv\\Scripts\\python.exe``
+    is locked, so ``rmtree`` removed ``site-packages`` and then died on the
+    executable — leaving a half-deleted venv ("Could not find a suitable
+    TLS CA certificate bundle", then "Connection closed" on reload). A
+    rename either succeeds atomically or fails before touching a single
+    file; a failure means the directory is in use and the install must not
+    proceed. Returns the set-aside path, or ``None`` when nothing existed.
+    """
+    if not dest.exists():
+        return None
+    old = dest.parent / f"{dest.name}.old-{int(time.time())}-{os.getpid()}"
+    print(color(f"  Setting aside existing install at {dest}", Colors.DIM))
+    try:
+        os.rename(dest, old)
+    except OSError as exc:
+        raise CatalogError(
+            f"Cannot replace the existing install at {dest}: it is in use "
+            f"(most likely by the running '{entry_name}' MCP server). Disable "
+            "or reload that MCP server, or restart Hermes, then retry. "
+            f"({exc})"
+        ) from exc
+    return old
+
+
 def _do_git_install(entry: CatalogEntry) -> Path:
     """Clone the entry's repo into ``~/.hermes/mcp-installs/<name>`` and run
-    bootstrap commands. Returns the install directory."""
+    bootstrap commands. Returns the install directory.
+
+    A previous install is set aside (renamed) first and only removed once
+    the new one is complete; if the clone or bootstrap fails, the previous
+    install is restored so a broken re-install never leaves the user with
+    nothing (see :func:`_set_aside_existing_install`).
+    """
     assert entry.install is not None and entry.install.type == "git"
-    install = entry.install
     dest = _install_root() / entry.name
 
-    git = shutil.which("git")
-    if not git:
-        raise CatalogError("git is required to install this MCP but was not found on PATH")
+    _sweep_stale_installs(dest)
+    previous = _set_aside_existing_install(dest, entry.name)
+    try:
+        _fetch_and_bootstrap(entry, dest)
+    except BaseException:
+        if previous is not None:
+            try:
+                if dest.exists():
+                    _rmtree_force(dest)
+                os.rename(previous, dest)
+                print(color(f"  Restored previous install at {dest}", Colors.DIM))
+            except OSError as exc:
+                print(color(
+                    f"  Note: could not restore previous install from {previous}: {exc}",
+                    Colors.YELLOW,
+                ))
+        raise
+    if previous is not None:
+        try:
+            _rmtree_force(previous)
+        except OSError:
+            print(color(
+                f"  Note: could not remove previous install {previous}; "
+                "it will be cleaned up on the next install.",
+                Colors.DIM,
+            ))
+    return dest
 
-    if dest.exists():
-        # Fresh checkout each install — manifest version is the source of truth,
-        # so wipe + re-clone for determinism.
-        print(color(f"  Removing existing install at {dest}", Colors.DIM))
-        shutil.rmtree(dest)
+
+def _fetch_and_bootstrap(entry: CatalogEntry, dest: Path) -> None:
+    """Clone (or download) ``entry`` into the not-yet-existing ``dest`` and
+    run its bootstrap commands. Raises :class:`CatalogError` on failure."""
+    install = entry.install
+    assert install is not None
+    git = shutil.which("git")
+
+    if not git:
+        # Typical on a customer's Windows machine: no Git for Windows. GitHub
+        # serves every branch/tag/SHA as a zip archive, which is all a catalog
+        # install needs (no history is required; ``installed_commit`` simply
+        # reports None). Non-GitHub sources still need git.
+        archive_url = _github_archive_url(install.url, install.ref)
+        if not archive_url:
+            raise CatalogError(
+                "git is required to install this MCP but was not found on PATH "
+                f"(and {install.url} offers no archive download). Install Git "
+                "(https://git-scm.com/downloads) and retry."
+            )
+        print(color(f"  git not found — downloading {archive_url} → {dest}", Colors.CYAN))
+        _download_archive_install(archive_url, dest)
+        if install.bootstrap:
+            _run_bootstrap(dest, install.bootstrap)
+        return
 
     print(color(f"  Cloning {install.url} ({install.ref}) → {dest}", Colors.CYAN))
 
@@ -467,6 +644,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     if not is_sha_ref:
         proc = subprocess.run(
             [git, "clone", "--depth", "1", "--branch", install.ref, install.url, str(dest)],
+            **_hidden_window_kwargs(),
         )
         if proc.returncode == 0:
             pass
@@ -474,20 +652,64 @@ def _do_git_install(entry: CatalogEntry) -> Path:
             # Branch/tag form failed (unlikely for valid manifests; possible if
             # the ref was deleted upstream). Fall through to the full-clone path.
             if dest.exists():
-                shutil.rmtree(dest)
+                _rmtree_force(dest)
             is_sha_ref = True  # treat the same as a SHA ref from here
 
     if is_sha_ref:
-        proc = subprocess.run([git, "clone", install.url, str(dest)])
+        proc = subprocess.run([git, "clone", install.url, str(dest)], **_hidden_window_kwargs())
         if proc.returncode != 0:
             raise CatalogError(f"git clone failed for {install.url}")
-        proc = subprocess.run([git, "-C", str(dest), "checkout", install.ref])
+        proc = subprocess.run([git, "-C", str(dest), "checkout", install.ref], **_hidden_window_kwargs())
         if proc.returncode != 0:
             raise CatalogError(f"git checkout {install.ref} failed")
 
     if install.bootstrap:
         _run_bootstrap(dest, install.bootstrap)
 
+
+def _github_archive_url(repo_url: str, ref: str) -> Optional[str]:
+    """``https://github.com/<org>/<repo>(.git)`` + ref → codeload zip URL, else None."""
+    m = re.match(r"^https?://(?:www\.)?github\.com/([^/\s]+)/([^/\s]+?)(?:\.git)?/?$", (repo_url or "").strip())
+    if not m or not ref:
+        return None
+    org, repo = m.group(1), m.group(2)
+    return f"https://codeload.github.com/{org}/{repo}/zip/{ref}"
+
+
+def _download_archive_install(archive_url: str, dest: Path, *, timeout: int = 180) -> Path:
+    """Download a repository zip archive and unpack it to ``dest``.
+
+    GitHub archives contain a single top-level ``<repo>-<ref>/`` folder; that
+    folder becomes ``dest`` so the layout matches a ``git clone``.
+    """
+    import io
+    import tempfile
+    import urllib.request
+    import zipfile
+
+    req = urllib.request.Request(archive_url, headers={"User-Agent": "hermes-mcp-catalog"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - https codeload URL built above
+            data = resp.read()
+    except Exception as exc:
+        raise CatalogError(f"archive download failed for {archive_url}: {exc}") from exc
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise CatalogError(f"archive download for {archive_url} is not a zip file") from exc
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="hermes-mcp-archive-", dir=str(dest.parent)) as tmp:
+        tmp_path = Path(tmp)
+        for member in archive.infolist():
+            # Zip-slip guard: every entry must stay inside the temp dir.
+            target = (tmp_path / member.filename).resolve()
+            if tmp_path.resolve() not in target.parents and target != tmp_path.resolve():
+                raise CatalogError(f"archive entry escapes extraction dir: {member.filename}")
+        archive.extractall(tmp_path)
+        entries = [p for p in tmp_path.iterdir() if p.name != "__MACOSX"]
+        source = entries[0] if len(entries) == 1 and entries[0].is_dir() else tmp_path
+        shutil.move(str(source), str(dest))
     return dest
 
 
@@ -596,20 +818,48 @@ def _github_device_code_login(
     return copilot_device_code_login()
 
 
-def _enable_m365_toolset_for_cli() -> tuple[bool, Optional[str]]:
-    """Ensure MSOffice365MCP is installed and enabled in Hermes config.yaml."""
+_M365_MCP_NAME = "MSOffice365MCP"
+
+
+def ensure_m365_toolset_enabled() -> tuple[bool, Optional[str]]:
+    """Make sure MSOffice365MCP is installed *and* enabled in config.yaml.
+
+    Called after every successful Microsoft sign-in (dashboard device-code
+    worker, Outlook platform save, Outlook auth flow, TUI gateway). An
+    already installed entry is only switched to ``enabled: true`` — the
+    clone under ``~/.hermes/mcp-installs`` is never touched. Re-running the
+    full install here (as this used to) wiped the directory the running
+    MCP server was executing from (AIS-304). Only a missing entry triggers
+    an install, which is the CLI/TUI fallback; the dashboard prefers the
+    background action for that case (see web_server._auto_enable_m365_toolset).
+
+    Returns ``(changed, error)``.
+    """
     try:
-        entry = get_entry("MSOffice365MCP")
+        if is_installed(_M365_MCP_NAME):
+            if is_enabled(_M365_MCP_NAME):
+                return False, None
+            cfg = load_config()
+            servers = cfg.setdefault("mcp_servers", {})
+            server_cfg = servers.get(_M365_MCP_NAME)
+            if not isinstance(server_cfg, dict):
+                server_cfg = {}
+                servers[_M365_MCP_NAME] = server_cfg
+            server_cfg["enabled"] = True
+            save_config(cfg)
+            return True, None
+        entry = get_entry(_M365_MCP_NAME)
         if not entry:
-            return False, "MSOffice365MCP catalog entry not found"
+            return False, f"{_M365_MCP_NAME} catalog entry not found"
         install_entry(entry, enable=True, skip_auth_prompt=True)
         return True, None
     except Exception as exc:
         return False, str(exc)
 
 
-# Backwards compatibility alias
-_enable_outlook_toolset_for_cli = _enable_m365_toolset_for_cli
+# Backwards compatibility aliases (callers predate the rename).
+_enable_m365_toolset_for_cli = ensure_m365_toolset_enabled
+_enable_outlook_toolset_for_cli = ensure_m365_toolset_enabled
 
 
 def _microsoft_device_code_login(
@@ -648,12 +898,24 @@ def _microsoft_device_code_login(
     if tenant_id == "common":
         tenant_id = "organizations"
 
-    from hermes_cli.m365_auth import get_msal_app, save_msal_cache
+    from hermes_cli.m365_auth import (
+        M365_LOGIN_SCOPES,
+        build_admin_consent_url,
+        classify_m365_auth_error,
+        get_msal_app,
+        save_msal_cache,
+    )
 
     print(color("  Starting Microsoft OAuth device code login...", Colors.CYAN))
     app = get_msal_app(client_id=client_id, tenant_id=tenant_id)
-    flow = app.initiate_device_flow(scopes=entry.auth.scopes or ["User.Read"])
+    # Self-consent tier (AIS-286): identical to the dashboard button and the
+    # chat tool. A manifest may narrow it further but never widen it, so a
+    # non-admin install can't run into "Need admin approval".
+    manifest_scopes = [sc for sc in (entry.auth.scopes or []) if sc in M365_LOGIN_SCOPES]
+    flow = app.initiate_device_flow(scopes=manifest_scopes or list(M365_LOGIN_SCOPES))
     if "user_code" not in flow:
+        classified = classify_m365_auth_error(flow)
+        print(color(f"  ✗ Could not start Microsoft sign-in: {classified.message}", Colors.YELLOW))
         return None
     print(color(
         f"  Open {flow['verification_uri']} and enter code: {flow['user_code']}",
@@ -662,8 +924,18 @@ def _microsoft_device_code_login(
     result = app.acquire_token_by_device_flow(flow)
     if result and "access_token" in result:
         save_msal_cache(app)
-        _enable_m365_toolset_for_cli()
+        # No ensure_m365_toolset_enabled() here: this runs *inside*
+        # install_entry(), which writes the enabled server block itself right
+        # after the auth step — the old call re-ran the whole install nested.
         return result["access_token"]
+    classified = classify_m365_auth_error(result or "Microsoft sign-in did not complete")
+    print(color(f"  ✗ Microsoft sign-in failed: {classified.message}", Colors.YELLOW))
+    if classified.admin_consent_required:
+        print(color(
+            "  A tenant administrator must approve the app once for your organization:\n"
+            f"  {build_admin_consent_url(client_id=client_id, tenant_id=tenant_id)}",
+            Colors.YELLOW,
+        ))
     return None
 
 
@@ -847,8 +1119,16 @@ def _apply_tool_selection(
             ``entry.name`` when omitted.
     """
     server_name = server_name or entry.name
-    import sys as _sys
-    if not _sys.stdin.isatty():
+    # Reinstall keeps the user's prior selection but never below the manifest's
+    # current defaults — otherwise tools added to ``default_enabled`` after the
+    # first install would stay hidden forever (AIS-288). Runtime applies the
+    # same union in tools.mcp_tool for installs that are not reinstalled.
+    if prior_selection is not None and entry.tools.default_enabled:
+        missing = [t for t in entry.tools.default_enabled if t not in prior_selection]
+        if missing:
+            print(color(f"  Adding {len(missing)} new default tool(s) from the manifest: {', '.join(missing)}", Colors.DIM))
+            prior_selection = list(prior_selection) + missing
+    if not _stdin_interactive():
         if prior_selection is not None:
             _write_tools_include(server_name, prior_selection)
         elif entry.tools.default_enabled:
@@ -902,10 +1182,9 @@ def _apply_tool_selection(
 
     pre_indices = {i for i, n in enumerate(tool_names) if n in pre_set}
 
-    # Non-TTY: skip the checklist. Priority matches the interactive
+    # Non-interactive: skip the checklist. Priority matches the interactive
     # pre-check priority: prior user selection > manifest default > all-on.
-    import sys as _sys
-    if not _sys.stdin.isatty():
+    if not _stdin_interactive():
         if prior_selection is not None:
             include = [n for n in prior_selection if n in tool_names]
             _write_tools_include(server_name, include)
@@ -1098,11 +1377,10 @@ def install_entry(
         else:
             has_token = any(v and v.strip() for v in collected.values())
 
-        import sys as _sys
         handler = _DEVICE_CODE_PROVIDERS.get(entry.auth.provider) if entry.auth.provider else None
         if not has_token and handler:
             label = _DEVICE_CODE_PROVIDER_LABELS.get(entry.auth.provider, entry.auth.provider)
-            if _sys.stdin.isatty():
+            if _stdin_interactive():
                 token: Optional[str] = None
                 try:
                     token = handler(entry, collected)
@@ -1195,7 +1473,7 @@ def uninstall_entry(name: str, *, purge_install_dir: bool = True) -> bool:
     if purge_install_dir:
         clone = _install_root() / name
         if clone.exists():
-            shutil.rmtree(clone)
+            _rmtree_force(clone)
             removed = True
 
     return removed

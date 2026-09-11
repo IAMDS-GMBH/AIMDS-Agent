@@ -236,6 +236,21 @@ _COMBINED_REVIEW_PROMPT = (
 
 
 
+def background_review_allowed(agent: Any) -> bool:
+    """Whether ``agent`` may spawn a background memory/skill/tool review.
+
+    False for the review fork itself (``_is_background_review_fork``) and for
+    agents that opted out (``_background_review_enabled`` is False — cron runs
+    do this unless ``cron.background_review`` is on). Missing attributes mean
+    "allowed" so plain test doubles keep the historical behaviour.
+    """
+    if getattr(agent, "_is_background_review_fork", False):
+        return False
+    if getattr(agent, "_background_review_enabled", True) is False:
+        return False
+    return True
+
+
 def summarize_background_review_actions(
     review_messages: List[Dict],
     prior_snapshot: List[Dict],
@@ -423,6 +438,12 @@ def _run_review_in_thread(
             review_agent._user_profile_enabled = agent._user_profile_enabled
             review_agent._memory_nudge_interval = 0
             review_agent._skill_nudge_interval = 0
+            # The fork must never review itself: its own run_conversation goes
+            # through the same turn finalizer, and its memory_save calls trip
+            # the tool-findings trigger — one review became two on every cron
+            # run (AIS-305).
+            review_agent._is_background_review_fork = True
+            review_agent._background_review_enabled = False
             # Suppress all status/warning emits from the fork so the
             # user only sees the final successful-action summary.
             # Without this, mid-review "Iteration budget exhausted",

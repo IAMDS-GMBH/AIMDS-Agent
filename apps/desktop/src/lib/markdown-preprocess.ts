@@ -1,5 +1,6 @@
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
-import { stripPreviewTargets } from '@/lib/preview-targets'
+import { findBarePaths } from '@/lib/paths'
+import { pathMarkdownHref, stripPreviewTargets } from '@/lib/preview-targets'
 
 const REASONING_BLOCK_RE = /<(think|thinking|reasoning|scratchpad|analysis)>[\s\S]*?<\/\1>\s*/gi
 const PREVIEW_MARKER_RE = /\[Preview:[^\]]+\]\(#preview[:/][^)]+\)/gi
@@ -138,14 +139,39 @@ function autoLinkRawUrls(text: string): string {
   })
 }
 
+// Bare file paths in prose (`/tmp/report.md`, `~/notes/x.md`) become
+// `[path](#path/…)` links so the chat can offer "open in preview" on click.
+// Runs on prose segments only — callers split out fences and inline code
+// first — and skips paths that are already link targets or part of a URL.
+export function autoLinkBarePaths(text: string): string {
+  const matches = findBarePaths(text)
+
+  if (matches.length === 0) {
+    return text
+  }
+
+  let out = ''
+  let cursor = 0
+
+  for (const { index, path } of matches) {
+    out += text.slice(cursor, index)
+    out += `[${path}](${pathMarkdownHref(path)})`
+    cursor = index + path.length
+  }
+
+  return out + text.slice(cursor)
+}
+
 function normalizeVisibleProse(text: string): string {
   return text
     .split(INLINE_CODE_SPLIT_RE)
     .map(part =>
       part.startsWith('`')
         ? part
-        : autoLinkRawUrls(
-            part.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+        : autoLinkBarePaths(
+            autoLinkRawUrls(
+              part.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+            )
           )
     )
     .join('')
