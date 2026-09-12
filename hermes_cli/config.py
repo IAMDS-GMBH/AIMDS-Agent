@@ -2256,6 +2256,10 @@ DEFAULT_CONFIG = {
         "upload_url": "https://suite-support.iamds.com/api/v1/upload",
         "api_key": "",
         "timeout_seconds": 45,
+        # AIS-323: update/installer fallbacks (release repository → source
+        # repository) and update failures open a support case automatically
+        # (one per event kind per 24 h). false = log only.
+        "auto_report": True,
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

@@ -5764,6 +5764,7 @@ def _cmd_update_via_release(
     except ReleaseFeedError as exc:
         print(f"✗ Release update failed: {exc}")
         print("  Your install is unchanged.")
+        _report_update_incident("update-release-apply-failed", f"applying {feed.tag} failed: {exc}", channel=channel, severity="high")
         sys.exit(1)
     print(f"  ✓ Replaced {replaced} top-level entries from {feed.tag}")
 
@@ -7845,6 +7846,25 @@ def _current_branch_name() -> str:
     return str(proc.stdout or "").strip()
 
 
+def _report_update_incident(kind: str, detail: str, *, channel: str = "", severity: str = "medium") -> None:
+    """Log + auto-report an update fallback / failure as a support case (AIS-323, best-effort)."""
+    try:
+        from hermes_cli import __version__
+        from hermes_cli.incident_report import report_incident
+
+        description = f"channel={channel or 'auto'}; version={__version__}; install={PROJECT_ROOT}; platform={sys.platform}"
+        report_incident(
+            kind,
+            f"hermes update: {detail}",
+            description,
+            severity=severity,
+            context_type="update_failure",
+            install_type="update",
+        )
+    except Exception as exc:  # reporting must never break the update itself
+        logger.debug("incident report skipped: %s", exc)
+
+
 def _git_remote_reachable(cwd: Path, *, timeout: int = 15) -> bool:
     """``git ls-remote --exit-code origin HEAD`` without ever prompting for credentials."""
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
@@ -7913,9 +7933,13 @@ def _resolve_update_source(args, *, project_root: Optional[Path] = None) -> tupl
         from hermes_cli.release_update import is_source_tree
 
         return (SOURCE_RELEASE if is_source_tree(root) else "pip"), False
+    # Git checkout with a reachable origin: the git path, whose target (tag +
+    # commit) the release repository decides first (AIS-318) — origin only
+    # delivers the objects, and the archive path takes over when it cannot.
     if _git_remote_reachable(root):
         return SOURCE_GIT, False
     print("→ origin is not reachable — trying the public release archives")
+    _report_update_incident("update-origin-unreachable", "origin of the git checkout is not reachable; using the public release archives")
     return SOURCE_RELEASE, False
 
 
@@ -7985,6 +8009,11 @@ def _resolve_release_target(channel: str):
     except ReleaseFeedError as exc:
         print(f"⚠ Release repository {RELEASE_REPO} unavailable ({exc})")
         print(f"  → Resolving the {channel} tag from origin instead.")
+        _report_update_incident(
+            "update-fallback-origin-tags",
+            f"release repository unavailable ({exc}); resolving the {channel} tag from the source repository",
+            channel=channel,
+        )
         return None
 
 
@@ -10013,10 +10042,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
         ):
             return
         if not git_dir.exists():
+            _report_update_incident(
+                "update-fallback-source-archive",
+                "release repository unavailable — falling back to the source repository's archive",
+                channel=channel,
+            )
             _update_via_legacy_archive(
                 args, channel, gateway_mode=gateway_mode, assume_yes=assume_yes
             )
             return
+        _report_update_incident(
+            "update-fallback-git",
+            "release repository unavailable — falling back to the git update path",
+            channel=channel,
+        )
         print("→ Continuing with the git update path...")
         print()
 
@@ -10270,6 +10309,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # Tags exist but none for this channel yet (e.g. preview before
                 # the first candidate): the only sensible target is main. Say so.
                 print(f"⚠ No release tag for the {branch} channel yet, falling back to main branch...")
+                _report_update_incident("update-no-release-tag", f"no release tag for the {branch} channel — following main instead", channel=branch)
                 branch = "main"
 
         if not tag_checkout_done:
@@ -10479,6 +10519,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("→ Falling back to the release archives...")
             print()
             channel = _resolve_update_branch(args)
+            _report_update_incident("update-fallback-release-after-git", f"git update failed ({e}); falling back to the release archives", channel=channel)
             if not _cmd_update_via_release(
                 args,
                 channel,
@@ -10486,6 +10527,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 assume_yes=assume_yes,
                 forced=False,
             ):
+                _report_update_incident(
+                    "update-fallback-source-archive",
+                    "release repository unavailable after the git failure — falling back to the source repository's archive",
+                    channel=channel,
+                )
                 _update_via_legacy_archive(
                     args, channel, gateway_mode=gateway_mode, assume_yes=assume_yes
                 )

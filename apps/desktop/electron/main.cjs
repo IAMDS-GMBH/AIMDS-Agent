@@ -27,6 +27,7 @@ const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
+const { reportIncident: reportAutoIncident } = require('./incident-report.cjs')
 const { buildSessionWindowUrl, createSessionWindowRegistry } = require('./session-windows.cjs')
 const {
   badgeOverlaySvgDataUrl,
@@ -1725,6 +1726,17 @@ async function checkUpdates() {
       // keeps its git history: fall back to the git check so the install is
       // never stuck without updates.
       rememberLogOnce(`release-fallback:${code}`, `[updates] release manifest check failed (${code}): ${message}; falling back to git`)
+      void reportAutoIncident({
+        kind: 'update-check-fallback-git',
+        summary: `desktop update check: release repository unavailable (${code}); falling back to git`,
+        detail: message,
+        contextType: 'update_failure',
+        installType: 'update',
+        clientVersion: app.getVersion(),
+        hermesHome: HERMES_HOME,
+        runCli: runSupportLogUpload,
+        log: rememberLog
+      })
     }
   }
 
@@ -1759,6 +1771,17 @@ async function checkUpdates() {
     } catch (error) {
       const code = error?.code === 'rate-limited' ? 'rate-limited' : 'fetch-failed'
       rememberLogOnce(`release-target:${branch}:${code}`, `[updates] release repository unavailable (${code}): ${error?.message || error}; resolving ${branch} from ${remote}`)
+      void reportAutoIncident({
+        kind: 'update-check-fallback-origin-tags',
+        summary: `desktop update check: release repository unavailable (${code}); resolving ${branch} from the source repository`,
+        detail: String(error?.message || error),
+        contextType: 'update_failure',
+        installType: 'update',
+        clientVersion: app.getVersion(),
+        hermesHome: HERMES_HOME,
+        runCli: runSupportLogUpload,
+        log: rememberLog
+      })
     }
 
     let tagName
@@ -3102,6 +3125,20 @@ async function ensureRuntime(backend) {
       )
       bootstrapError.isBootstrapFailure = true
       bootstrapError.failedStage = bootstrapResult.failedStage || null
+      // AIS-323: a failed first install is exactly what support must see —
+      // report it (full bundle when a venv exists, minimal otherwise).
+      void reportAutoIncident({
+        kind: `installer-failure-${bootstrapResult.failedStage || 'bootstrap'}`,
+        summary: `desktop bootstrap failed${bootstrapResult.failedStage ? ` at stage '${bootstrapResult.failedStage}'` : ''}`,
+        detail: String(bootstrapResult.error || 'unknown error'),
+        severity: 'high',
+        contextType: 'install_failure',
+        installType: 'fresh_install',
+        clientVersion: app.getVersion(),
+        hermesHome: HERMES_HOME,
+        runCli: runSupportLogUpload,
+        log: rememberLog
+      })
       // Latch the failure so subsequent startHermes() calls return this
       // same error without re-running install.ps1.  Cleared by the
       // hermes:bootstrap:reset IPC (renderer's "Reload and retry").

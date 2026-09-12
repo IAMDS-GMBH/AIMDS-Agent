@@ -141,6 +141,7 @@ def test_resolve_update_source_auto_git_probe(root, capsys):
     assert "origin is not reachable" in capsys.readouterr().out
 
 
+
 def test_resolve_update_source_explicit_flag_wins(root):
     with patch("hermes_cli.config.load_config", return_value=_config(source="git")):
         assert hermes_main._resolve_update_source(SimpleNamespace(source="release")) == ("release", True)
