@@ -53,8 +53,9 @@ Which channel a bare `hermes update` follows (AIS-299): `--branch` wins, then
 `updates.channel` in `config.yaml` (the desktop writes it when you change the
 channel), then `auto` — `stable` on a detached checkout (installed clients sit
 on a release tag), `main` on a named branch (developer checkouts). Fresh
-`install.sh` runs check out the highest stable tag unless `--branch`/`--commit`
-say otherwise.
+`install.sh` / `install.ps1` runs install the highest stable release from the
+release repository (AIS-313, see below) unless `--branch <git-branch>` /
+`--commit` / `--tag` say otherwise.
 
 The check compares the checkout with the channel's tag and lists the commits
 in between (that is the changelog in the updates overlay); the update checks
@@ -157,8 +158,43 @@ This repository is going private. Clients cannot read releases of a private
 repository, so every release is mirrored into the public
 **`IAMDS-GMBH/AIMDS-Agent-Releases`** (README plus releases, no code, no
 issues). The mirror is the download source for installers and the source package; the client updater switched to it in AIS-312
-(`updates.source`, see above), the installer follows in AIS-313, the cutover
+(`updates.source`, see above), the installers in AIS-313 (below), the cutover
 itself is AIS-314.
+
+### Installing from the release repository (AIS-313)
+
+Nothing on a customer machine talks to the source repository any more:
+
+- **`scripts/install.sh` / `scripts/install.ps1`** — without `--branch
+  <git-branch>` / `--commit` the repository stage resolves
+  `hermes-release.json` for the channel (`stable`, default; `preview` via
+  `--branch preview`) or for an exact `--tag vX.Y.Z[-rc.N]`, downloads
+  `hermes-source-<version>.zip`, verifies the SHA-256 from the manifest,
+  extracts it (fresh install) or replaces the code of an existing install
+  while keeping `venv/`, `node_modules/`, `.env` and `.git`, and writes
+  `.hermes-release.json` (the same marker `hermes update` writes). A checkout
+  on a named git branch, or one whose `origin` is reachable, keeps using git —
+  that is the developer path. The stable channel needs a promoted `vX.Y.Z`
+  release in the mirror; until one exists, fresh stable installs fail with
+  "Could not download the release manifest".
+- **HermesSetup (Tauri bootstrap installer)** — bundles both scripts and is
+  built with `HERMES_BUILD_PIN_TAG=v<version>` and
+  `HERMES_BUILD_PIN_BRANCH=<channel>`, so a `v0.7.6-rc.2` installer installs
+  exactly `v0.7.6-rc.2` (`-Tag`) and later `hermes update` runs follow the
+  `preview` channel. Its self-update lists the releases of the release
+  repository. The developer-only `HERMES_FORCE_REMOTE_INSTALL_SCRIPT` fetch
+  from `raw.githubusercontent.com` was removed.
+- **Desktop bootstrap runner** (`apps/desktop/electron/bootstrap-runner.cjs`)
+  — the build stamp (`install-stamp.json`) is written from
+  `.hermes-release.json` on release-archive installs (`tag`, `channel`,
+  `source: release`) and pins the scripts with `--tag`; when the scripts have
+  to be fetched they are taken out of the verified `hermes-source-<ver>.zip`
+  of that tag, never from the source repository.
+- **MCP catalog** — the shipped servers (`MSOffice365MCP`, `E-MailMCP`,
+  `NtfyMCP`) use `install.type: local` and are copied from
+  `optional-mcps/<name>` of the running install into `mcp-installs/<name>`;
+  `.hermes-mcp-install.json` records the checkout identity that
+  `installed_commit()` reports. Third-party servers keep `install.type: git`.
 
 ### What the workflow publishes
 

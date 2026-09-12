@@ -31,6 +31,15 @@ fn main() {
 
     let commit = resolve_commit_pin();
     let branch = resolve_branch_pin();
+    let tag = resolve_tag_pin();
+
+    if let Some(t) = &tag {
+        // AIS-313: a release build pins the installer to its own release tag;
+        // install.ps1/install.sh then install exactly that release from the
+        // public release repository (no source-repository access needed).
+        println!("cargo:rustc-env=BUILD_PIN_TAG={t}");
+        println!("cargo:warning=hermes-bootstrap: pinning to release tag {t}");
+    }
 
     if let Some(c) = &commit {
         println!("cargo:rustc-env=BUILD_PIN_COMMIT={c}");
@@ -150,6 +159,30 @@ fn resolve_commit_pin() -> Option<String> {
 fn is_sha(s: &str) -> bool {
     let len = s.len();
     (7..=40).contains(&len) && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// `HERMES_BUILD_PIN_TAG` (vX.Y.Z or vX.Y.Z-rc.N): the release the shipped
+/// installer installs. Unset for local developer builds.
+fn resolve_tag_pin() -> Option<String> {
+    let v = std::env::var("HERMES_BUILD_PIN_TAG").ok()?;
+    let v = v.trim();
+    if v.is_empty() {
+        return None;
+    }
+    let body = v.strip_prefix('v').unwrap_or(v);
+    let valid = {
+        let mut parts = body.splitn(2, "-rc.");
+        let core = parts.next().unwrap_or("");
+        let rc = parts.next();
+        let core_ok = core.split('.').count() == 3
+            && core.split('.').all(|x| !x.is_empty() && x.chars().all(|c| c.is_ascii_digit()));
+        let rc_ok = rc.map_or(true, |n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+        core_ok && rc_ok
+    };
+    if !valid {
+        panic!("HERMES_BUILD_PIN_TAG={v:?} is not a release tag (vX.Y.Z or vX.Y.Z-rc.N)");
+    }
+    Some(if v.starts_with('v') { v.to_string() } else { format!("v{v}") })
 }
 
 fn resolve_branch_pin() -> Option<String> {

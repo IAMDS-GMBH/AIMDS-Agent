@@ -23,6 +23,7 @@ See references/mcp-catalog.md (this repo's skill) for the manifest schema.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -106,14 +107,21 @@ class TransportSpec:
 
 @dataclass
 class InstallSpec:
-    """Optional bootstrap step (git clone + dep install).
+    """Optional bootstrap step (fetch server code + dep install).
 
     Omit for one-shot launchable servers (npx, uvx).
+
+    ``type: git`` clones ``url`` at ``ref`` (third-party servers).
+    ``type: local`` (AIS-313) copies ``path`` — a directory of this Hermes
+    checkout such as ``optional-mcps/<name>`` — into the install dir. The
+    shipped servers travel inside the release archive, so installing them
+    never touches the (private) source repository.
     """
-    type: str  # "git"
-    url: str
-    ref: str  # commit/tag/branch — pinned, never floats
+    type: str  # "git" | "local"
+    url: str = ""
+    ref: str = ""  # commit/tag/branch — pinned, never floats (git only)
     bootstrap: List[str] = field(default_factory=list)
+    path: str = ""  # checkout-relative directory (local only)
 
 
 @dataclass
@@ -265,21 +273,35 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         if not isinstance(install_raw, dict):
             raise CatalogError(f"{path}: 'install' must be a mapping")
         i_type = install_raw.get("type")
-        if i_type != "git":
-            raise CatalogError(f"{path}: install.type must be 'git' (got {i_type!r})")
-        url = install_raw.get("url") or ""
-        ref = install_raw.get("ref") or ""
-        if not url or not ref:
-            raise CatalogError(f"{path}: install.url and install.ref are required")
+        if i_type not in ("git", "local"):
+            raise CatalogError(f"{path}: install.type must be 'git' or 'local' (got {i_type!r})")
         bootstrap = install_raw.get("bootstrap") or []
         if not isinstance(bootstrap, list):
             raise CatalogError(f"{path}: install.bootstrap must be a list")
-        install = InstallSpec(
-            type=i_type,
-            url=url,
-            ref=ref,
-            bootstrap=[str(c) for c in bootstrap],
-        )
+        if i_type == "git":
+            url = install_raw.get("url") or ""
+            ref = install_raw.get("ref") or ""
+            if not url or not ref:
+                raise CatalogError(f"{path}: install.url and install.ref are required")
+            install = InstallSpec(
+                type=i_type,
+                url=url,
+                ref=ref,
+                bootstrap=[str(c) for c in bootstrap],
+            )
+        else:
+            local_path = str(install_raw.get("path") or "").strip().replace("\\", "/")
+            if not local_path:
+                raise CatalogError(f"{path}: install.path is required for install.type 'local'")
+            if local_path.startswith("/") or re.match(r"^[A-Za-z]:", local_path) or ".." in local_path.split("/"):
+                raise CatalogError(
+                    f"{path}: install.path must be a relative path inside the Hermes checkout (got {local_path!r})"
+                )
+            install = InstallSpec(
+                type=i_type,
+                bootstrap=[str(c) for c in bootstrap],
+                path=local_path.strip("/"),
+            )
 
     return CatalogEntry(
         name=name,
@@ -576,7 +598,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     install is restored so a broken re-install never leaves the user with
     nothing (see :func:`_set_aside_existing_install`).
     """
-    assert entry.install is not None and entry.install.type == "git"
+    assert entry.install is not None and entry.install.type in ("git", "local")
     dest = _install_root() / entry.name
 
     _sweep_stale_installs(dest)
@@ -608,11 +630,96 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     return dest
 
 
+# Identity file of a ``type: local`` install (no ``.git`` to ask). Records
+# which checkout the server code was copied from so ``installed_commit`` can
+# tell a later run whether the copy still matches the running Hermes.
+_LOCAL_INSTALL_INFO = ".hermes-mcp-install.json"
+
+
+def _checkout_identity() -> str:
+    """Commit (release marker, else git HEAD) or version of this Hermes checkout."""
+    root = Path(__file__).resolve().parent.parent
+    try:
+        from hermes_cli.release_marker import read_release_marker
+
+        marker = read_release_marker(root)
+        if marker and marker.get("commit_sha"):
+            return str(marker["commit_sha"])
+    except Exception:
+        pass
+    git = shutil.which("git")
+    if git and (root / ".git").exists():
+        proc = subprocess.run(
+            [git, "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, **_hidden_window_kwargs()
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    try:
+        from hermes_cli import __version__
+
+        return f"version:{__version__}"
+    except Exception:
+        return "unknown"
+
+
+def _local_install_source(rel_path: str) -> Path:
+    """Directory of this checkout that a ``type: local`` install copies.
+
+    ``optional-mcps/<name>`` honours the packaged / ``HERMES_OPTIONAL_MCPS``
+    location like the catalog itself; other paths resolve under the checkout
+    root next to the ``hermes_cli`` package.
+    """
+    parts = [p for p in rel_path.replace("\\", "/").split("/") if p]
+    if not parts or ".." in parts:
+        raise CatalogError(f"invalid install.path {rel_path!r}")
+    if parts[0] == "optional-mcps":
+        return _catalog_root().joinpath(*parts[1:]) if len(parts) > 1 else _catalog_root()
+    return Path(__file__).resolve().parent.parent.joinpath(*parts)
+
+
+def _copy_local_install(install: InstallSpec, dest: Path) -> None:
+    """Copy the checkout directory ``install.path`` into ``dest/<install.path>``.
+
+    Keeps the checkout layout so ``${INSTALL_DIR}/optional-mcps/<name>/server.py``
+    style transports and bootstrap commands keep working. Virtualenvs and
+    caches of the source tree are never copied.
+    """
+    source = _local_install_source(install.path)
+    if not source.is_dir():
+        raise CatalogError(
+            f"install.path {install.path!r} does not exist in this Hermes install ({source}); "
+            "run `hermes update` and retry"
+        )
+    target = dest.joinpath(*[p for p in install.path.split("/") if p])
+    print(color(f"  Copying {source} → {target}", Colors.CYAN))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        str(source),
+        str(target),
+        symlinks=False,
+        ignore=shutil.ignore_patterns(".venv", "venv", "node_modules", "__pycache__", "*.pyc", ".git"),
+    )
+    info = {
+        "format": "hermes-mcp-install-v1",
+        "type": "local",
+        "path": install.path,
+        "source_commit": _checkout_identity(),
+    }
+    (dest / _LOCAL_INSTALL_INFO).write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+
+
 def _fetch_and_bootstrap(entry: CatalogEntry, dest: Path) -> None:
-    """Clone (or download) ``entry`` into the not-yet-existing ``dest`` and
-    run its bootstrap commands. Raises :class:`CatalogError` on failure."""
+    """Fetch ``entry`` into the not-yet-existing ``dest`` (clone, download or
+    copy from the checkout) and run its bootstrap commands. Raises
+    :class:`CatalogError` on failure."""
     install = entry.install
     assert install is not None
+    if install.type == "local":
+        dest.mkdir(parents=True, exist_ok=True)
+        _copy_local_install(install, dest)
+        if install.bootstrap:
+            _run_bootstrap(dest, install.bootstrap)
+        return
     git = shutil.which("git")
 
     if not git:
@@ -722,6 +829,18 @@ def installed_commit(install_dir: Path) -> Optional[str]:
     server code is actually running, so a fix that shipped weeks ago can keep
     failing on a client with no way to notice.
     """
+    info_path = install_dir / _LOCAL_INSTALL_INFO
+    if info_path.is_file():
+        # ``type: local`` install (AIS-313): the identity of the checkout the
+        # server code was copied from.
+        try:
+            info = json.loads(info_path.read_text(encoding="utf-8"))
+            value = info.get("source_commit") if isinstance(info, dict) else None
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        except (OSError, ValueError):
+            pass
+        return None
     git = shutil.which("git")
     if not git or not (install_dir / ".git").exists():
         return None

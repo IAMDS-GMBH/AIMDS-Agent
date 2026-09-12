@@ -135,9 +135,11 @@ async fn run_update(app: AppHandle) -> Result<()> {
 
     let hermes_home = crate::paths::hermes_home();
     let install_root = hermes_home.join("hermes-agent");
+    // AIS-313: without an explicit --branch, `hermes update` picks its own
+    // target (updates.channel / the release marker); a release build's
+    // BUILD_PIN_BRANCH is the channel (`stable` / `preview`), never `main`.
     let update_branch = update_branch_from_args(std::env::args().skip(1))
-        .or_else(|| option_env_string("BUILD_PIN_BRANCH"))
-        .unwrap_or_else(|| "main".to_string());
+        .or_else(|| option_env_string("BUILD_PIN_BRANCH"));
     let target_app = if cfg!(target_os = "macos") {
         target_app_from_args(std::env::args().skip(1))
     } else {
@@ -196,7 +198,10 @@ async fn run_update(app: AppHandle) -> Result<()> {
         &app,
         Some("update"),
         LogStream::Stdout,
-        &format!("[update] updating against branch {update_branch}"),
+        &format!(
+            "[update] updating against {}",
+            update_branch.as_deref().unwrap_or("the configured update channel")
+        ),
     );
     let child_env = update_child_env(&install_root);
     let mut update_args: Vec<String> =
@@ -208,8 +213,10 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // time `hermes update` runs there is no legitimate hermes.exe to protect,
     // and the guard would only produce a false "Hermes is still running" stop.
     update_args.push("--force".into());
-    update_args.push("--branch".into());
-    update_args.push(update_branch);
+    if let Some(branch) = update_branch {
+        update_args.push("--branch".into());
+        update_args.push(branch);
+    }
 
     emit_stage(&app, "update", StageState::Running, None, None);
     let started = Instant::now();

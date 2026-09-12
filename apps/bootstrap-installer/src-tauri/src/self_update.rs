@@ -29,7 +29,9 @@ use tokio::io::AsyncWriteExt;
 
 use crate::paths;
 
-const REPO: &str = "IAMDS-GMBH/AIMDS-Agent";
+// AIS-313: installer binaries are published (mirrored) in the public release
+// repository; the source repository is private.
+const REPO: &str = "IAMDS-GMBH/AIMDS-Agent-Releases";
 
 /// Our own version, baked in at compile time from Cargo.toml.
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");

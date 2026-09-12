@@ -27,7 +27,7 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 
 Download the **Hermes installer** (`.dmg` on macOS, `.exe` on Windows) from the link provided by your IAMDS contact.
 
-For scripted/manual Windows installs, use `scripts/install.ps1`.
+For scripted/manual installs, run `scripts/install.sh` (macOS/Linux) or `scripts/install.ps1` (Windows) from the release archive of [AIMDS-Agent-Releases](https://github.com/IAMDS-GMBH/AIMDS-Agent-Releases); both install the latest stable release from that repository (`--branch preview` for candidates, `--tag vX.Y.Z` for an exact version).
 
 **1. Welcome screen** — click **Install Hermes** to begin. The installer sets everything up in the background.
 

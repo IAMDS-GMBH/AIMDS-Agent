@@ -2364,3 +2364,104 @@ class TestGitInstallSafeReplace:
         assert mcp_catalog._do_git_install(entry) == dest
         assert (dest / "marker").read_text() == "new"
         assert list(install_root.glob("demo.old-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# install.type: local (AIS-313) — shipped servers are copied from the checkout
+# ---------------------------------------------------------------------------
+class TestLocalInstall:
+    def _seed_server(self, catalog_dir: Path, name: str = "demo") -> Path:
+        server_dir = catalog_dir / name
+        server_dir.mkdir(parents=True, exist_ok=True)
+        (server_dir / "server.py").write_text("print('hi')\n", encoding="utf-8")
+        (server_dir / "requirements.txt").write_text("mcp\n", encoding="utf-8")
+        (server_dir / "__pycache__").mkdir()
+        (server_dir / "__pycache__" / "server.cpython-311.pyc").write_bytes(b"x")
+        (server_dir / ".venv").mkdir()
+        (server_dir / ".venv" / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
+        return server_dir
+
+    def test_manifest_parses_local_install(self, catalog_dir):
+        _write_manifest(
+            catalog_dir,
+            "demo",
+            _basic_manifest(
+                install={"type": "local", "path": "optional-mcps/demo", "bootstrap": ["echo ok"]},
+                transport={"type": "stdio", "command": "${INSTALL_DIR}/.venv/bin/python", "args": ["${INSTALL_DIR}/optional-mcps/demo/server.py"]},
+            ),
+        )
+        from hermes_cli.mcp_catalog import get_entry
+
+        entry = get_entry("demo")
+        assert entry is not None and entry.install is not None
+        assert entry.install.type == "local"
+        assert entry.install.path == "optional-mcps/demo"
+        assert entry.install.url == "" and entry.install.ref == ""
+        assert entry.install.bootstrap == ["echo ok"]
+
+    @pytest.mark.parametrize("bad", ["/etc/passwd", "../outside", "optional-mcps/../../x", "C:/Windows", ""])
+    def test_manifest_rejects_unsafe_local_paths(self, catalog_dir, bad):
+        manifest = _write_manifest(
+            catalog_dir,
+            "demo",
+            _basic_manifest(install={"type": "local", "path": bad}, transport={"type": "stdio", "command": "x", "args": []}),
+        )
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest, get_entry
+
+        with pytest.raises(CatalogError):
+            _parse_manifest(manifest)
+        # The catalog skips the broken manifest instead of crashing.
+        assert get_entry("demo") is None
+
+    def test_local_install_copies_the_checkout_directory_and_runs_bootstrap(self, catalog_dir, monkeypatch, tmp_path):
+        self._seed_server(catalog_dir)
+        _write_manifest(
+            catalog_dir,
+            "demo",
+            _basic_manifest(
+                install={"type": "local", "path": "optional-mcps/demo", "bootstrap": ["echo bootstrap ${INSTALL_DIR}"]},
+                transport={"type": "stdio", "command": "python", "args": ["${INSTALL_DIR}/optional-mcps/demo/server.py"]},
+            ),
+        )
+        from hermes_cli import mcp_catalog
+        from hermes_cli.mcp_catalog import _do_git_install, get_entry, installed_commit
+
+        ran = []
+        monkeypatch.setattr(mcp_catalog, "_run_bootstrap", lambda cwd, cmds: ran.append((cwd, list(cmds))))
+        monkeypatch.setattr(mcp_catalog, "_checkout_identity", lambda: "deadbeef" * 5)
+        # No git needed and none must be called.
+        monkeypatch.setattr(mcp_catalog.shutil, "which", lambda x: None)
+
+        entry = get_entry("demo")
+        dest = _do_git_install(entry)
+
+        copied = dest / "optional-mcps" / "demo"
+        assert (copied / "server.py").read_text(encoding="utf-8") == "print('hi')\n"
+        assert (copied / "requirements.txt").exists()
+        assert not (copied / "__pycache__").exists(), "caches of the source tree are not copied"
+        assert not (copied / ".venv").exists(), "virtualenvs of the source tree are not copied"
+        assert ran == [(dest, ["echo bootstrap ${INSTALL_DIR}"])]
+        assert installed_commit(dest) == "deadbeef" * 5
+
+    def test_local_install_missing_source_is_a_clear_error(self, catalog_dir, monkeypatch):
+        _write_manifest(
+            catalog_dir,
+            "demo",
+            _basic_manifest(install={"type": "local", "path": "optional-mcps/does-not-exist"}, transport={"type": "stdio", "command": "x", "args": []}),
+        )
+        from hermes_cli.mcp_catalog import CatalogError, _do_git_install, get_entry
+
+        with pytest.raises(CatalogError, match="does not exist in this Hermes install"):
+            _do_git_install(get_entry("demo"))
+
+    def test_shipped_manifests_do_not_clone_the_source_repository(self):
+        import yaml as _yaml
+
+        root = Path(__file__).resolve().parents[2] / "optional-mcps"
+        for manifest in sorted(root.glob("*/manifest.yaml")):
+            data = _yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+            install = data.get("install") or {}
+            url = str(install.get("url") or "")
+            assert "IAMDS-GMBH/AIMDS-Agent" not in url, f"{manifest} still installs from the private source repository"
+            if install.get("type") == "local":
+                assert (root / Path(install["path"]).relative_to("optional-mcps")).is_dir(), manifest

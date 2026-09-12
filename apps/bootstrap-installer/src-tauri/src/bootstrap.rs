@@ -52,8 +52,14 @@ pub struct StartBootstrapArgs {
     /// Optional override for the commit pin. Used as fallback when branch
     /// tracking fails.
     pub commit: Option<String>,
-    /// Optional override for the branch pin. Defaults to `main`.
+    /// Optional override for the branch pin. `stable` / `preview` select a
+    /// release channel of the public release repository (the default is
+    /// `stable`); any other name is a git branch of the source repository.
     pub branch: Option<String>,
+    /// Optional release tag (`vX.Y.Z[-rc.N]`) to install from the public
+    /// release repository. Defaults to the build-time BUILD_PIN_TAG.
+    #[serde(default)]
+    pub tag: Option<String>,
     /// Include Stage-Desktop (build apps/desktop) in the manifest. The
     /// signed bootstrap installer passes true; the deprecated Electron-side
     /// bootstrap-runner passes false to avoid building-while-running.
@@ -372,12 +378,17 @@ async fn run_bootstrap(
         .filter(|tz| !tz.is_empty());
     let kind = ScriptKind::for_current_os();
 
+    // AIS-313: installed clients get their code from the public release
+    // repository — a release build pins the installer to its own tag, and
+    // without a tag the `stable` channel applies. Git branches / commit pins
+    // are for developers with source-repository access.
     let pin = Pin {
         commit: args.commit.or_else(|| option_env_string("BUILD_PIN_COMMIT")),
         branch: args
             .branch
             .or_else(|| option_env_string("BUILD_PIN_BRANCH"))
-            .or_else(|| Some("main".to_string())),
+            .or_else(|| Some("stable".to_string())),
+        tag: args.tag.or_else(|| option_env_string("BUILD_PIN_TAG")),
     };
 
     tracing::info!(
@@ -595,8 +606,11 @@ async fn run_bootstrap(
 
         // Branch-first install policy: if repository stage fails and we have a
         // build-time commit pin, retry once pinned to commit.
+        // Not for release-archive installs (tag or channel pin): a commit pin
+        // would send install.ps1 to the private source repository.
         let can_retry_with_commit = stage.name.eq_ignore_ascii_case("repository")
             && script.commit.is_some()
+            && !pin_uses_release_archive(&script)
             && !stage_args.iter().any(|arg| arg == "-Commit");
         let needs_retry = match &result_frame {
             None => true,
@@ -844,9 +858,29 @@ async fn run_install_script(
         })
 }
 
+/// Whether the pin installs from the public release archive (AIS-313): an
+/// explicit release tag, or a release channel instead of a git branch.
+fn pin_uses_release_archive(script: &install_script::ResolvedScript) -> bool {
+    if script.tag.is_some() {
+        return true;
+    }
+    matches!(
+        script
+            .branch
+            .as_deref()
+            .map(|b| b.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("stable") | Some("preview") | Some("tags")
+    )
+}
+
 fn build_pin_args(script: &install_script::ResolvedScript, include_commit: bool) -> Vec<String> {
     let mut out = Vec::new();
-    if let Some(b) = &script.branch {
+    if let Some(t) = &script.tag {
+        // install.ps1 `-Tag` / install.sh `-Tag`: exactly this release.
+        out.push("-Tag".to_string());
+        out.push(t.clone());
+    } else if let Some(b) = &script.branch {
         out.push("-Branch".to_string());
         out.push(b.clone());
     }
@@ -908,6 +942,7 @@ fn option_env_string(key: &str) -> Option<String> {
     let val = match key {
         "BUILD_PIN_COMMIT" => option_env!("BUILD_PIN_COMMIT"),
         "BUILD_PIN_BRANCH" => option_env!("BUILD_PIN_BRANCH"),
+        "BUILD_PIN_TAG" => option_env!("BUILD_PIN_TAG"),
         _ => None,
     };
     val.map(|s| s.to_string())
@@ -926,6 +961,45 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::path::Path;
+
+    fn resolved(commit: Option<&str>, branch: Option<&str>, tag: Option<&str>) -> install_script::ResolvedScript {
+        install_script::ResolvedScript {
+            path: PathBuf::from("install.ps1"),
+            source: ScriptSource::Bundled,
+            commit: commit.map(str::to_string),
+            branch: branch.map(str::to_string),
+            tag: tag.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn release_tag_pin_wins_over_branch_and_is_passed_as_tag() {
+        let script = resolved(Some("abcdef1234567"), Some("preview"), Some("v0.7.6-rc.2"));
+        assert_eq!(build_pin_args(&script, false), vec!["-Tag", "v0.7.6-rc.2"]);
+        assert_eq!(
+            build_pin_args(&script, true),
+            vec!["-Tag", "v0.7.6-rc.2", "-Commit", "abcdef1234567"]
+        );
+        assert!(pin_uses_release_archive(&script));
+    }
+
+    #[test]
+    fn release_channel_branch_is_a_release_archive_install() {
+        for channel in ["stable", "preview", "Tags"] {
+            let script = resolved(Some("abcdef1234567"), Some(channel), None);
+            assert_eq!(build_pin_args(&script, false), vec!["-Branch", channel]);
+            assert!(pin_uses_release_archive(&script), "{channel}");
+        }
+    }
+
+    #[test]
+    fn git_branch_pin_keeps_the_developer_path() {
+        let script = resolved(Some("abcdef1234567"), Some("main"), None);
+        assert_eq!(build_pin_args(&script, false), vec!["-Branch", "main"]);
+        assert!(!pin_uses_release_archive(&script));
+        let feature = resolved(None, Some("feature/AIS-313-installer-release-repo"), None);
+        assert!(!pin_uses_release_archive(&feature));
+    }
 
     fn unique_tmp_dir(tag: &str) -> PathBuf {
         let base = std::env::temp_dir().join(format!(
