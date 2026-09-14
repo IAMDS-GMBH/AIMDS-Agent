@@ -832,6 +832,156 @@ def _is_headless() -> bool:
 # Main login flow
 # =============================================================================
 
+@dataclass
+class GoogleBrowserLogin:
+    """State of a browser (loopback) login started by :func:`begin_browser_flow`.
+
+    The callback server is already serving; ``auth_url`` is what the user
+    must open. Hand the object to :func:`finish_browser_flow` to wait for the
+    redirect and exchange the code, or to :func:`abort_browser_flow` to
+    release the listener without exchanging anything.
+    """
+
+    server: http.server.HTTPServer
+    thread: threading.Thread
+    ready: threading.Event
+    verifier: str
+    state: str
+    redirect_uri: str
+    client_id: str
+    client_secret: str
+    auth_url: str
+    project_id: str = ""
+
+
+def _build_auth_url(*, client_id: str, redirect_uri: str, state: str, challenge: str) -> str:
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": OAUTH_SCOPES,
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+    return AUTH_ENDPOINT + "?" + urllib.parse.urlencode(params) + "#hermes"
+
+
+def begin_browser_flow(*, project_id: str = "") -> GoogleBrowserLogin:
+    """Bind the loopback callback server and build the authorize URL.
+
+    Does not print, does not open a browser and does not block — callers
+    (the CLI login and the dashboard's loopback worker) decide how to
+    surface ``auth_url`` and then call :func:`finish_browser_flow`.
+
+    ``_OAuthCallbackHandler`` keeps its capture state as class attributes,
+    so only one browser login can be in flight at a time.
+    """
+    client_id = _require_client_id()  # raises GoogleOAuthError with install hints
+    client_secret = _get_client_secret()
+
+    verifier, challenge = _generate_pkce_pair()
+    state = secrets.token_urlsafe(16)
+
+    server, port = _bind_callback_server(DEFAULT_REDIRECT_PORT)
+    redirect_uri = f"http://{REDIRECT_HOST}:{port}{CALLBACK_PATH}"
+
+    _OAuthCallbackHandler.expected_state = state
+    _OAuthCallbackHandler.captured_code = None
+    _OAuthCallbackHandler.captured_error = None
+    ready = threading.Event()
+    _OAuthCallbackHandler.ready = ready
+
+    auth_url = _build_auth_url(
+        client_id=client_id, redirect_uri=redirect_uri, state=state, challenge=challenge,
+    )
+
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    return GoogleBrowserLogin(
+        server=server,
+        thread=server_thread,
+        ready=ready,
+        verifier=verifier,
+        state=state,
+        redirect_uri=redirect_uri,
+        client_id=client_id,
+        client_secret=client_secret,
+        auth_url=auth_url,
+        project_id=project_id,
+    )
+
+
+def abort_browser_flow(login: GoogleBrowserLogin) -> None:
+    """Release the callback listener of a login that will not be finished."""
+    try:
+        login.server.shutdown()
+    except Exception:
+        pass
+    try:
+        login.server.server_close()
+    except Exception:
+        pass
+    try:
+        login.thread.join(timeout=2.0)
+    except Exception:
+        pass
+
+
+def _wait_for_browser_callback(
+    login: GoogleBrowserLogin, *, timeout: float
+) -> Optional[str]:
+    """Block until the redirect lands; return the code or ``None`` on timeout.
+
+    Raises ``GoogleOAuthError`` when the callback carried an error. The
+    listener is always released before returning.
+    """
+    try:
+        if login.ready.wait(timeout=timeout):
+            code = _OAuthCallbackHandler.captured_code
+            error = _OAuthCallbackHandler.captured_error
+            if error:
+                raise GoogleOAuthError(
+                    f"Authorization failed: {error}",
+                    code="google_oauth_authorization_failed",
+                )
+            return code
+        return None
+    finally:
+        abort_browser_flow(login)
+
+
+def _exchange_and_persist(login: GoogleBrowserLogin, code: str) -> GoogleCredentials:
+    token_resp = exchange_code(
+        code, login.verifier, login.redirect_uri,
+        client_id=login.client_id, client_secret=login.client_secret,
+    )
+    return _persist_token_response(token_resp, project_id=login.project_id)
+
+
+def finish_browser_flow(
+    login: GoogleBrowserLogin,
+    *,
+    timeout: float = CALLBACK_WAIT_SECONDS,
+) -> GoogleCredentials:
+    """Wait for the browser redirect, exchange the code and persist credentials.
+
+    Non-interactive counterpart of :func:`start_oauth_flow`: a timeout raises
+    ``GoogleOAuthError(code="google_oauth_timeout")`` instead of prompting for
+    a pasted URL.
+    """
+    code = _wait_for_browser_callback(login, timeout=timeout)
+    if not code:
+        raise GoogleOAuthError(
+            "Timed out waiting for the Google sign-in to complete.",
+            code="google_oauth_timeout",
+        )
+    return _exchange_and_persist(login, code)
+
+
 def start_oauth_flow(
     *,
     force_relogin: bool = False,
@@ -840,6 +990,9 @@ def start_oauth_flow(
     project_id: str = "",
 ) -> GoogleCredentials:
     """Run the interactive browser OAuth flow and persist credentials.
+
+    Composes :func:`begin_browser_flow` (bind + URL) with the terminal UX
+    (print, open browser, paste fallback on timeout) and the shared exchange.
 
     Args:
         force_relogin: If False and valid creds already exist, return them.
@@ -854,41 +1007,17 @@ def start_oauth_flow(
             logger.info("Google OAuth credentials already present; skipping login.")
             return existing
 
-    client_id = _require_client_id()  # raises GoogleOAuthError with install hints
-    client_secret = _get_client_secret()
-
-    verifier, challenge = _generate_pkce_pair()
-    state = secrets.token_urlsafe(16)
-
     # If headless, skip the listener and go straight to paste mode
     if _is_headless() and open_browser:
         logger.info("Headless environment detected; using paste-mode OAuth fallback.")
+        client_id = _require_client_id()  # raises GoogleOAuthError with install hints
+        client_secret = _get_client_secret()
+        verifier, challenge = _generate_pkce_pair()
+        state = secrets.token_urlsafe(16)
         return _paste_mode_login(verifier, challenge, state, client_id, client_secret, project_id)
 
-    server, port = _bind_callback_server(DEFAULT_REDIRECT_PORT)
-    redirect_uri = f"http://{REDIRECT_HOST}:{port}{CALLBACK_PATH}"
-
-    _OAuthCallbackHandler.expected_state = state
-    _OAuthCallbackHandler.captured_code = None
-    _OAuthCallbackHandler.captured_error = None
-    ready = threading.Event()
-    _OAuthCallbackHandler.ready = ready
-
-    params = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": OAUTH_SCOPES,
-        "state": state,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-        "access_type": "offline",
-        "prompt": "consent",
-    }
-    auth_url = AUTH_ENDPOINT + "?" + urllib.parse.urlencode(params) + "#hermes"
-
-    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    server_thread.start()
+    login = begin_browser_flow(project_id=project_id)
+    auth_url = login.auth_url
 
     print()
     print("Opening your browser to sign in to Google…")
@@ -911,29 +1040,10 @@ def start_oauth_flow(
         except Exception as exc:
             logger.debug("webbrowser.open failed: %s", exc)
 
-    code: Optional[str] = None
-    try:
-        if ready.wait(timeout=callback_wait_seconds):
-            code = _OAuthCallbackHandler.captured_code
-            error = _OAuthCallbackHandler.captured_error
-            if error:
-                raise GoogleOAuthError(
-                    f"Authorization failed: {error}",
-                    code="google_oauth_authorization_failed",
-                )
-        else:
-            logger.info("Callback server timed out — offering manual paste fallback.")
-            code = _prompt_paste_fallback()
-    finally:
-        try:
-            server.shutdown()
-        except Exception:
-            pass
-        try:
-            server.server_close()
-        except Exception:
-            pass
-        server_thread.join(timeout=2.0)
+    code = _wait_for_browser_callback(login, timeout=callback_wait_seconds)
+    if code is None:
+        logger.info("Callback server timed out — offering manual paste fallback.")
+        code = _prompt_paste_fallback()
 
     if not code:
         raise GoogleOAuthError(
@@ -941,11 +1051,7 @@ def start_oauth_flow(
             code="google_oauth_no_code",
         )
 
-    token_resp = exchange_code(
-        code, verifier, redirect_uri,
-        client_id=client_id, client_secret=client_secret,
-    )
-    return _persist_token_response(token_resp, project_id=project_id)
+    return _exchange_and_persist(login, code)
 
 
 def _paste_mode_login(

@@ -54,27 +54,32 @@ afterEach(() => {
 })
 
 describe('onboarding Picker', () => {
-  it('features Nous Portal and hides other providers behind a disclosure', () => {
-    setProviders([provider('anthropic', 'Anthropic Claude'), provider('nous', 'Nous Portal')])
+  it('features the common providers and hides the rest behind a disclosure', () => {
+    setProviders([
+      provider('nous', 'Nous Portal'),
+      provider('google-gemini-cli', 'Google Gemini (OAuth)'),
+      provider('anthropic', 'Anthropic Claude')
+    ])
     render(<Picker ctx={ctx} />)
 
-    expect(screen.getByText('Nous Portal')).toBeTruthy()
+    expect(screen.getByText('Anthropic (OAuth)')).toBeTruthy()
+    expect(screen.getByText('Google Gemini (OAuth)')).toBeTruthy()
     expect(screen.getByText(/^Recommended$|^Empfohlen$/i)).toBeTruthy()
-    expect(screen.queryByText('Anthropic API Key')).toBeNull()
+    expect(screen.queryByText('Nous Portal')).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: /Other providers|Andere Anbieter/i }))
 
-    expect(screen.getByText('Anthropic API Key')).toBeTruthy()
+    expect(screen.getByText('Nous Portal')).toBeTruthy()
     expect(screen.getByRole('button', { name: /Collapse|Einklappen/i })).toBeTruthy()
   })
 
-  it('shows every provider directly when Nous Portal is absent', () => {
-    setProviders([provider('anthropic', 'Anthropic Claude'), provider('openai-codex', 'OpenAI Codex / ChatGPT')])
+  it('shows every provider directly when no common provider is present', () => {
+    setProviders([provider('nous', 'Nous Portal'), provider('openai-codex', 'OpenAI Codex / ChatGPT')])
     render(<Picker ctx={ctx} />)
 
-    expect(screen.getByText('Anthropic API Key')).toBeTruthy()
+    expect(screen.getByText('Nous Portal')).toBeTruthy()
     expect(screen.getByText('OpenAI OAuth (ChatGPT)')).toBeTruthy()
-    expect(screen.queryByText('Other sign-in options')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Other providers|Andere Anbieter/i })).toBeNull()
     expect(screen.queryByText('Recommended')).toBeNull()
   })
 

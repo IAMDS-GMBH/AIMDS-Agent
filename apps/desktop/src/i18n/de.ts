@@ -698,6 +698,28 @@ export const de
       otherProviders: 'Andere Anbieter',
       noProviderKeys: 'Keine Anbieter-API-Schlüssel verfügbar.',
       loading: 'Lade Anbieter...',
+      oauth: {
+        connectedTitle: 'Verbundene Konten',
+        availableTitle: 'Verfügbare Anbieter',
+        connected: 'Verbunden',
+        notConnected: 'Nicht verbunden',
+        configured: 'Konfiguriert',
+        connect: 'Verbinden',
+        disconnect: 'Trennen',
+        disconnecting: 'Wird getrennt…',
+        authenticated: 'Angemeldet',
+        authenticateVia: {
+          pkce: 'Mit deinem Konto im Browser anmelden',
+          device_code: 'Mit einem Gerätecode anmelden',
+          loopback: 'Mit deinem Konto im Browser anmelden',
+          external: 'Einmalig über die Anbieter-CLI anmelden'
+        },
+        apiKeyHint: 'API-Schlüssel einfügen',
+        customHint: 'OpenAI-kompatible Endpunkt-URL plus optionaler API-Schlüssel',
+        disconnected: 'Konto getrennt',
+        disconnectedTitle: 'Konto getrennt',
+        disconnectFailed: 'Konto konnte nicht getrennt werden'
+      },
       m365: {
         grantForOrg: 'Für Organisation freigeben',
         grantForOrgHint: 'Tenant-Admin: Teams-Chat, Präsenz, geteilte Postfächer und To Do einmalig für alle freigeben',
@@ -1624,9 +1646,11 @@ export const de
       openai: { short: 'GPT-Modelle', description: 'Direkter Zugriff auf OpenAI-Modelle.' },
       gemini: { short: 'Gemini-Modelle', description: 'Direkter Zugriff auf Google Gemini-Modelle.' },
       xai: { short: 'Grok-Modelle', description: 'Direkter Zugriff auf xAI Grok-Modelle.' },
+      groq: { short: 'schnelle offene Modelle', description: 'Direkter Zugriff auf offene Modelle bei Groq.' },
       local: {
-        short: 'selbst gehostet',
-        description: 'Hermes auf einen lokalen oder selbst gehosteten OpenAI-kompatiblen Endpunkt richten (vLLM, llama.cpp, Ollama usw.).'
+        short: 'eigener Endpunkt',
+        description:
+          'Hermes auf einen beliebigen OpenAI-kompatiblen Endpunkt richten (vLLM, llama.cpp, Ollama, gehostetes Gateway). API-Schlüssel ergänzen, falls der Endpunkt einen verlangt.'
       }
     },
     backToSignIn: 'Zurück zur Anmeldung',
@@ -1636,6 +1660,7 @@ export const de
     couldNotSave: 'Zugangsdaten konnten nicht gespeichert werden.',
     connecting: 'Verbinde',
     update: 'Aktualisieren',
+    customEndpointKey: 'API-Schlüssel (optional, falls der Endpunkt einen verlangt)',
     flowSubtitles: {
       pkce: 'Öffnet deinen Browser zur Anmeldung, dann geht es hier weiter',
       device_code: 'Öffnet eine Bestätigungsseite im Browser — Hermes verbindet sich automatisch',

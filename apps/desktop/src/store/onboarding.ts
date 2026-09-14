@@ -3,9 +3,11 @@ import { atom } from 'nanostores'
 import {
   cancelOAuthSession,
   getGlobalModelOptions,
+  getHermesConfigRecord,
   getRecommendedDefaultModel,
   listOAuthProviders,
   pollOAuthSession,
+  saveHermesConfig,
   setEnvVar,
   setModelAssignment,
   startOAuthLogin,
@@ -423,11 +425,32 @@ export function clearPendingProviderOAuth() {
   pendingProviderOAuthId = null
 }
 
+// Same hand-off for API-key providers (AIS-325): the Accounts page's
+// "Available providers" rows for OpenRouter / Groq / a custom endpoint open
+// the manual overlay straight on the key form with that option preselected.
+let pendingApiKeyEnv: null | string = null
+
+export function startManualApiKeyEntry(envKey: string) {
+  pendingApiKeyEnv = envKey
+  pendingProviderOAuthId = null
+  startManualOnboarding(null)
+  patch({ mode: 'apikey' })
+}
+
+export function peekPendingApiKeyEntry(): null | string {
+  return pendingApiKeyEnv
+}
+
+export function clearPendingApiKeyEntry() {
+  pendingApiKeyEnv = null
+}
+
 // Dismiss a manually-opened provider selector without touching the existing
 // (working) configuration. Only valid in the manual path — the unconfigured
 // first-run flow has no close affordance because the app can't run yet.
 export function closeManualOnboarding() {
   pendingProviderOAuthId = null
+  pendingApiKeyEnv = null
 
   patch({ manual: false, requested: false, flow: { status: 'idle' } })
 }
@@ -709,18 +732,24 @@ export async function recheckExternalSignin(ctx: OnboardingContext) {
   )
 }
 
-export async function saveOnboardingApiKey(envKey: string, value: string, label: string, ctx: OnboardingContext) {
+export async function saveOnboardingApiKey(
+  envKey: string,
+  value: string,
+  label: string,
+  ctx: OnboardingContext,
+  extra: { apiKey?: string } = {}
+) {
   const trimmed = value.trim()
 
   if (!trimmed) {
     return { ok: false, message: 'Enter a value first.' }
   }
 
-  // The "Local / custom endpoint" option carries a base URL, not an API key.
-  // It must be wired into config (provider=custom + base_url + model), not
-  // dropped into .env — runtime resolution ignores OPENAI_BASE_URL.
+  // The "Custom endpoint" option carries a base URL (plus an optional API
+  // key), not an API key. It must be wired into config (provider + base_url +
+  // model), not dropped into .env — runtime resolution ignores OPENAI_BASE_URL.
   if (envKey === 'OPENAI_BASE_URL') {
-    return saveOnboardingLocalEndpoint(trimmed, ctx)
+    return saveOnboardingLocalEndpoint(trimmed, ctx, extra.apiKey)
   }
 
   // No key validation here on purpose: we previously live-probed the key and
@@ -762,8 +791,25 @@ export async function saveOnboardingApiKey(envKey: string, value: string, label:
 // re-assigns the model from /api/model/options WITHOUT a base_url, which would
 // wipe the base_url we just wrote. We have a concrete model already, so we
 // verify the runtime directly and finish.
-export async function saveOnboardingLocalEndpoint(baseUrl: string, ctx: OnboardingContext) {
+// Config key for a user-defined provider entry (`providers.<key>` in
+// config.yaml) derived from the endpoint host, e.g. `custom-api-example-com`.
+export function customProviderKey(baseUrl: string): string {
+  let host = ''
+
+  try {
+    host = new URL(baseUrl).host
+  } catch {
+    host = baseUrl
+  }
+
+  const slug = host.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+
+  return `custom-${slug || 'endpoint'}`
+}
+
+export async function saveOnboardingLocalEndpoint(baseUrl: string, ctx: OnboardingContext, apiKey?: string) {
   const url = baseUrl.trim()
+  const key = (apiKey ?? '').trim()
 
   if (!url) {
     return { ok: false, message: 'Enter the endpoint URL first.' }
@@ -775,7 +821,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, ctx: Onboardi
   let model = ''
 
   try {
-    const probe = await validateProviderCredential('OPENAI_BASE_URL', url)
+    const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key || undefined)
 
     if (!probe.ok && probe.reachable) {
       return { ok: false, message: probe.message || 'Could not reach that endpoint.' }
@@ -798,7 +844,20 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, ctx: Onboardi
   }
 
   try {
-    await setModelAssignment({ scope: 'main', provider: 'custom', model, base_url: url })
+    let provider = 'custom'
+
+    if (key) {
+      // An authenticated endpoint becomes a named user-defined provider so
+      // the key travels with the base URL (config `providers.<key>`), instead
+      // of the key-less `custom` slot.
+      provider = customProviderKey(url)
+      const config = await getHermesConfigRecord()
+      const providers = { ...((config.providers as Record<string, unknown> | undefined) ?? {}) }
+      providers[provider] = { name: provider, base_url: url, api_key: key, discover_models: true }
+      await saveHermesConfig({ ...config, providers })
+    }
+
+    await setModelAssignment({ scope: 'main', provider, model, base_url: url })
     await ctx.requestGateway('reload.env').catch(() => undefined)
 
     const runtime = await checkRuntime(ctx)

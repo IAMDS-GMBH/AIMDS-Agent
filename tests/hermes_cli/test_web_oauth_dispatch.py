@@ -330,8 +330,9 @@ def test_anthropic_pkce_branch_still_works():
 def test_xai_oauth_listed_as_loopback_flow(monkeypatch):
     """xAI Grok OAuth must surface in the catalog as a first-class loopback flow.
 
-    ``/api/providers/oauth`` lists only providers with usable credentials (plus
-    GitHub / MCP-backed entries), so pretend xAI is logged in for the listing.
+    Since AIS-325 ``/api/providers/oauth`` lists every non-hidden catalog
+    entry regardless of login state; the logged-in stub only keeps this test
+    independent of the developer machine's real xAI credentials.
     """
     from hermes_cli import web_server as ws
 
@@ -1022,3 +1023,215 @@ def test_microsoft_device_code_worker_never_reinstalls_installed_mcp(monkeypatch
         assert ws._oauth_sessions[sid]["status"] == "approved"
     finally:
         ws._oauth_sessions.pop(sid, None)
+
+
+def test_listing_includes_unconnected_providers_and_hides_hidden_entries(monkeypatch):
+    """AIS-325: the settings page and the onboarding overlay need every
+    connectable provider, not just the ones already logged in."""
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setattr(
+        ws, "_resolve_provider_status", lambda provider_id, status_fn: {"logged_in": False, "source": None}
+    )
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    providers = {p["id"]: p for p in resp.json()["providers"]}
+
+    for expected in ("nous", "openai-codex", "anthropic", "claude-code"):
+        assert expected in providers, expected
+        assert providers[expected]["status"]["logged_in"] is False
+    assert "iamds-keycloak" not in providers  # hidden=True stays out
+    assert providers["claude-code"]["name"] == "Claude Code (OAuth)"
+    assert providers["anthropic"]["name"] == "Anthropic (OAuth)"
+    # Catalog order is preserved for the UI.
+    ids = [p["id"] for p in resp.json()["providers"]]
+    assert ids == [p["id"] for p in ws._OAUTH_PROVIDER_CATALOG if not p.get("hidden")]
+
+
+# ---------------------------------------------------------------------------
+# Google Gemini loopback flow (AIS-325)
+# ---------------------------------------------------------------------------
+
+
+def test_gemini_listed_as_loopback_flow_without_credentials(monkeypatch):
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setattr(
+        auth_mod, "get_gemini_oauth_auth_status", lambda: {"logged_in": False, "error": "not logged in"}
+    )
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    providers = {p["id"]: p for p in resp.json()["providers"]}
+    gem = providers["google-gemini-cli"]
+    assert gem["flow"] == "loopback"
+    assert gem["name"] == "Google Gemini (OAuth)"
+    assert gem["status"]["logged_in"] is False
+
+
+def test_gemini_status_adapter_never_exposes_the_access_token(monkeypatch):
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setattr(
+        auth_mod,
+        "get_gemini_oauth_auth_status",
+        lambda: {
+            "logged_in": True,
+            "auth_file": "/tmp/google_oauth.json",
+            "source": "google-oauth",
+            "api_key": "ya29.super-secret-access-token-value",
+            "expires_at_ms": 1_800_000_000_000,
+            "email": "user@example.com",
+            "project_id": "p",
+        },
+    )
+    status = ws._gemini_oauth_status()
+    assert status["logged_in"] is True
+    assert status["source_label"] == "user@example.com"
+    assert status["expires_at"].endswith("Z")
+    assert "api_key" not in status
+    assert "super-secret" not in repr(status)
+
+
+def test_gemini_loopback_start_returns_google_authorize_url(monkeypatch):
+    from agent import google_oauth
+    from hermes_cli import web_server as ws
+
+    class _Login:
+        auth_url = "https://accounts.google.com/o/oauth2/v2/auth?code_challenge=x&state=s"
+        state = "s"
+
+    monkeypatch.setattr(google_oauth, "begin_browser_flow", lambda **k: _Login())
+    monkeypatch.setattr(ws, "_gemini_loopback_worker", lambda sid: None)
+
+    resp = client.post("/api/providers/oauth/google-gemini-cli/start", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    try:
+        assert body["flow"] == "loopback"
+        assert body["auth_url"].startswith("https://accounts.google.com/")
+        assert "code_challenge" in body["auth_url"]
+        sess = ws._oauth_sessions[body["session_id"]]
+        assert sess["provider"] == "google-gemini-cli"
+        assert isinstance(sess["login"], _Login)
+    finally:
+        ws._oauth_sessions.pop(body["session_id"], None)
+
+
+def test_gemini_loopback_start_surfaces_missing_client_id(monkeypatch):
+    from agent import google_oauth
+
+    def _boom(**k):
+        raise google_oauth.GoogleOAuthError(
+            "Google OAuth client ID is not available. Install gemini-cli.",
+            code="google_oauth_client_id_missing",
+        )
+
+    monkeypatch.setattr(google_oauth, "begin_browser_flow", _boom)
+    resp = client.post("/api/providers/oauth/google-gemini-cli/start", headers=HEADERS)
+    assert resp.status_code == 400
+    assert "gemini-cli" in resp.json()["detail"]
+
+
+def _gemini_session(ws, session_id):
+    class _Login:
+        auth_url = "https://accounts.google.com/x"
+        ready = None
+
+    ws._oauth_sessions[session_id] = {
+        "session_id": session_id,
+        "provider": "google-gemini-cli",
+        "flow": "loopback",
+        "created_at": time.time(),
+        "status": "pending",
+        "error_message": None,
+        "login": _Login(),
+    }
+
+
+def test_gemini_loopback_worker_marks_active_and_mirrors_pool_entry(monkeypatch):
+    from agent import google_oauth
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import web_server as ws
+
+    session_id = "gemini-loopback-success-test"
+    _gemini_session(ws, session_id)
+    marked, pooled = {}, {}
+    monkeypatch.setattr(
+        google_oauth,
+        "finish_browser_flow",
+        lambda login, *, timeout: google_oauth.GoogleCredentials(
+            access_token="g-access", refresh_token="g-refresh", expires_ms=123,
+            email="user@example.com", project_id="proj",
+        ),
+    )
+    monkeypatch.setattr(auth_mod, "_mark_google_gemini_cli_active", lambda creds: marked.update(creds))
+    monkeypatch.setattr(ws, "_add_gemini_oauth_pool_entry", lambda creds: pooled.update(creds))
+
+    try:
+        ws._gemini_loopback_worker(session_id)
+        sess = ws._oauth_sessions[session_id]
+        assert sess["status"] == "approved"
+        assert "login" not in sess
+        assert marked["email"] == "user@example.com" and marked["access_token"] == "g-access"
+        assert pooled["refresh_token"] == "g-refresh"
+    finally:
+        ws._oauth_sessions.pop(session_id, None)
+
+
+def test_gemini_loopback_worker_reports_sign_in_failure(monkeypatch):
+    from agent import google_oauth
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import web_server as ws
+
+    session_id = "gemini-loopback-failure-test"
+    _gemini_session(ws, session_id)
+
+    def _fail(login, *, timeout):
+        raise google_oauth.GoogleOAuthError("Authorization failed: access_denied")
+
+    monkeypatch.setattr(google_oauth, "finish_browser_flow", _fail)
+    monkeypatch.setattr(google_oauth, "abort_browser_flow", lambda login: None)
+    monkeypatch.setattr(
+        auth_mod, "_mark_google_gemini_cli_active", lambda creds: pytest.fail("must not persist")
+    )
+    try:
+        ws._gemini_loopback_worker(session_id)
+        sess = ws._oauth_sessions[session_id]
+        assert sess["status"] == "error"
+        assert "access_denied" in sess["error_message"]
+    finally:
+        ws._oauth_sessions.pop(session_id, None)
+
+
+def test_gemini_cancel_releases_listener(monkeypatch):
+    import threading
+
+    from agent import google_oauth
+    from hermes_cli import web_server as ws
+
+    session_id = "gemini-loopback-cancel-test"
+    _gemini_session(ws, session_id)
+    login = ws._oauth_sessions[session_id]["login"]
+    login.ready = threading.Event()
+    aborted = []
+    monkeypatch.setattr(google_oauth, "abort_browser_flow", lambda l: aborted.append(l))
+
+    resp = client.delete(f"/api/providers/oauth/sessions/{session_id}", headers=HEADERS)
+    assert resp.status_code == 200 and resp.json()["ok"] is True
+    assert aborted == [login]
+    assert login.ready.is_set()
+    assert session_id not in ws._oauth_sessions
+
+
+def test_gemini_disconnect_clears_store_and_auth_state(monkeypatch):
+    from agent import google_oauth
+    from hermes_cli import auth as auth_mod
+
+    calls = []
+    monkeypatch.setattr(google_oauth, "clear_credentials", lambda: calls.append("file"))
+    monkeypatch.setattr(auth_mod, "clear_provider_auth", lambda pid: calls.append(pid))
+
+    resp = client.delete("/api/providers/oauth/google-gemini-cli", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "provider": "google-gemini-cli"}
+    assert calls == ["file", "google-gemini-cli"]

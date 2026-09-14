@@ -593,6 +593,23 @@ export interface Translations {
       otherProviders: string
       noProviderKeys: string
       loading: string
+      oauth: {
+        connectedTitle: string
+        availableTitle: string
+        connected: string
+        notConnected: string
+        configured: string
+        connect: string
+        disconnect: string
+        disconnecting: string
+        authenticated: string
+        authenticateVia: Record<string, string>
+        apiKeyHint: string
+        customHint: string
+        disconnected: string
+        disconnectedTitle: string
+        disconnectFailed: string
+      }
       m365: {
         grantForOrg: string
         grantForOrgHint: string
@@ -1298,6 +1315,7 @@ export interface Translations {
     connecting: string
     update: string
     flowSubtitles: Record<string, string>
+    customEndpointKey: string
     startingSignIn: (provider: string) => string
     verifyingCode: (provider: string) => string
     connectedProvider: (provider: string) => string
