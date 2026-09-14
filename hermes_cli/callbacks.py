@@ -22,8 +22,11 @@ def clarify_callback(cli, question, choices):
     responds. Returns the user's choice or a timeout message.
     """
     from cli import CLI_CONFIG
+    from tools.clarify_gateway import get_clarify_timeout
 
-    timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
+    # AIS-333: shared resolution (clarify.timeout → agent.clarify_timeout →
+    # 600) so the CLI no longer expires 5x earlier than the gateway.
+    timeout = get_clarify_timeout(CLI_CONFIG)
     response_queue = queue.Queue()
     is_open_ended = not choices
 

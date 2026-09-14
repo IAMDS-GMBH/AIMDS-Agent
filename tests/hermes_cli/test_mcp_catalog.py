@@ -10,6 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import sys
+
 import pytest
 import yaml
 
@@ -2526,3 +2528,83 @@ class TestVersionPinsAndToolPrefix:
         assert _build_server_config(entry, None)["tool_prefix"] == "dm"
         plain = _parse_manifest(_write_manifest(catalog_dir, "plain", _basic_manifest(name="plain")))
         assert "tool_prefix" not in _build_server_config(plain, None)
+
+
+class TestInstallVerifyImports:
+    """AIS-334 / SUP-20260908-110726: an install whose venv cannot import its
+    own dependencies fails loudly instead of dying later as 'Connection lost'."""
+
+    def test_manifest_parses_verify_imports(self, catalog_dir):
+        body = _basic_manifest(
+            install={
+                "type": "local",
+                "path": "optional-mcps/demo",
+                "bootstrap": ["python3 -m venv .venv"],
+                "verify_imports": ["mcp", "certifi"],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        e = list_catalog()[0]
+        assert e.install is not None and e.install.verify_imports == ["mcp", "certifi"]
+
+    def test_manifest_rejects_bad_verify_imports(self, catalog_dir):
+        body = _basic_manifest(
+            install={"type": "local", "path": "optional-mcps/demo", "verify_imports": ["os; import sys"]},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        assert list_catalog() == []
+
+    @staticmethod
+    def _fake_venv(dest: Path) -> None:
+        bin_dir = dest / ".venv" / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "python").symlink_to(sys.executable)
+
+    def test_verify_passes_with_importable_modules(self, tmp_path, capsys):
+        from hermes_cli import mcp_catalog
+
+        self._fake_venv(tmp_path)
+        mcp_catalog._verify_install_imports(tmp_path, ["json", "os"])
+        assert "verified imports: json, os" in capsys.readouterr().out
+
+    def test_verify_fails_with_readable_cause(self, tmp_path):
+        from hermes_cli import mcp_catalog
+
+        self._fake_venv(tmp_path)
+        with pytest.raises(mcp_catalog.CatalogError) as exc:
+            mcp_catalog._verify_install_imports(tmp_path, ["json", "certifi_definitely_missing_xyz"])
+        msg = str(exc.value)
+        assert "install verification failed" in msg
+        assert "No module named 'certifi_definitely_missing_xyz'" in msg
+        assert "stop Hermes and re-run the install" in msg
+
+    def test_verify_fails_without_venv(self, tmp_path):
+        from hermes_cli import mcp_catalog
+
+        with pytest.raises(mcp_catalog.CatalogError, match="no virtualenv interpreter"):
+            mcp_catalog._verify_install_imports(tmp_path, ["json"])
+
+    def test_verify_is_a_no_op_without_modules(self, tmp_path):
+        from hermes_cli import mcp_catalog
+
+        mcp_catalog._verify_install_imports(tmp_path, [])
+
+    def test_local_install_runs_verification(self, tmp_path, monkeypatch):
+        from hermes_cli import mcp_catalog
+
+        calls = []
+        monkeypatch.setattr(mcp_catalog, "_copy_local_install", lambda install, dest: None)
+        monkeypatch.setattr(mcp_catalog, "_run_bootstrap", lambda dest, cmds: calls.append(("bootstrap", list(cmds))))
+        monkeypatch.setattr(mcp_catalog, "_verify_install_imports", lambda dest, mods: calls.append(("verify", list(mods))))
+        entry = mcp_catalog.CatalogEntry(
+            name="demo", description="d", source="s",
+            transport=mcp_catalog.TransportSpec(type="stdio", command="x", args=[]),
+            auth=mcp_catalog.AuthSpec(type="none"),
+            install=mcp_catalog.InstallSpec(type="local", path="optional-mcps/demo", bootstrap=["true"], verify_imports=["mcp"]),
+        )
+        mcp_catalog._fetch_and_bootstrap(entry, tmp_path / "dest")
+        assert calls == [("bootstrap", ["true"]), ("verify", ["mcp"])]

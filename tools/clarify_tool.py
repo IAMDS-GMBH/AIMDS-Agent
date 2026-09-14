@@ -117,14 +117,24 @@ def clarify_tool(
         user_response = str(callback_result).strip()
         response_state, resolved, reason_code = _normalize_legacy_response_state(user_response)
 
-    return json.dumps({
+    payload = {
         "question": question,
         "choices_offered": choices,
         "user_response": user_response,
         "response_state": response_state,
         "resolved": resolved,
         "reason_code": reason_code,
-    }, ensure_ascii=False)
+    }
+    # AIS-333: a platform that knows its deadline reports it so the UI can say
+    # "timed out after N s" instead of silently collapsing the question card.
+    if isinstance(callback_result, dict):
+        try:
+            timeout_seconds = int(callback_result.get("timeout_seconds") or 0)
+        except (TypeError, ValueError):
+            timeout_seconds = 0
+        if timeout_seconds > 0:
+            payload["timeout_seconds"] = timeout_seconds
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def check_clarify_requirements() -> bool:

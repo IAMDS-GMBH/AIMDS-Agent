@@ -8183,3 +8183,83 @@ def test_reap_idle_sessions_closes_only_evictable(monkeypatch):
         assert closed == [("stale", "idle_timeout")]
     finally:
         server._sessions.clear()
+
+
+# ── AIS-333: clarify timeout is distinguishable and visible ───────────────
+
+
+def test_block_with_outcome_reports_timeout_not_empty_answer(monkeypatch):
+    """A prompt nobody answered is a timeout; an answered "" is not."""
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload)))
+
+    answer, timed_out, rid = server._block_with_outcome("clarify.request", "sid-t", {"question": "q?"}, timeout=0.05)
+    assert answer == ""
+    assert timed_out is True
+    assert rid and emitted[0][0] == "clarify.request"
+    assert emitted[0][2]["request_id"] == rid
+    assert rid not in server._pending and rid not in server._answers
+
+    # Answered with an empty string before the deadline → not a timeout.
+    def _answer_soon():
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            with server._prompt_lock:
+                pending = [r for r, (owner, _ev) in server._pending.items() if owner == "sid-e"]
+            if pending:
+                with server._prompt_lock:
+                    _owner, ev = server._pending[pending[0]]
+                    server._answers[pending[0]] = ""
+                    ev.set()
+                return
+            time.sleep(0.01)
+
+    threading.Thread(target=_answer_soon, daemon=True).start()
+    answer, timed_out, _rid = server._block_with_outcome("clarify.request", "sid-e", {"question": "q?"}, timeout=2)
+    assert answer == ""
+    assert timed_out is False
+
+
+def test_clarify_cb_timeout_emits_event_and_returns_timeout_state(monkeypatch):
+    """The desktop clarify callback: deadline in the request, clarify.timeout on expiry."""
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, dict(payload or {}))))
+    # Whole seconds only (the resolver floors sub-second values to the default).
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"clarify": {"timeout": 1}})
+
+    cbs = server._agent_cbs("sid-clarify")
+    before = time.time()
+    result = cbs["clarify_callback"]("Which region?", ["Bavaria", "Berlin"])
+
+    assert isinstance(result, dict)
+    assert result["response_state"] == "timeout"
+    assert result["reason_code"] == "clarify_timeout"
+    assert result["resolved"] is False
+    assert result["user_response"] == ""
+
+    request = next(p for e, _s, p in emitted if e == "clarify.request")
+    assert request["question"] == "Which region?"
+    assert request["choices"] == ["Bavaria", "Berlin"]
+    assert request["timeout_seconds"] == 1
+    assert request["deadline_at"] >= int(before * 1000)
+
+    timeout = next((e, s, p) for e, s, p in emitted if e == "clarify.timeout")
+    assert timeout[1] == "sid-clarify"
+    assert timeout[2]["request_id"] == request["request_id"]
+
+
+def test_clarify_cb_uses_agent_clarify_timeout_when_clarify_section_absent(monkeypatch):
+    seen = {}
+
+    def _fake_block(event, sid, payload, timeout=300):
+        seen["timeout"] = timeout
+        seen["payload"] = dict(payload)
+        return "Bavaria", False, "rid-x"
+
+    monkeypatch.setattr(server, "_block_with_outcome", _fake_block)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"clarify_timeout": 480}})
+
+    result = server._agent_cbs("sid-cfg")["clarify_callback"]("Region?", None)
+    assert result == "Bavaria"
+    assert seen["timeout"] == 480.0
+    assert seen["payload"]["timeout_seconds"] == 480

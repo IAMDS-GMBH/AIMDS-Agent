@@ -286,6 +286,15 @@ class TestProfileBuildDirective:
 
         assert "first message ever" in profile_build_directive()
 
+    def test_directive_re_asks_timed_out_questions_and_checks_worktime(self):
+        """AIS-333: a timed-out clarify is not a decline; the work-time step must land."""
+        from agent.onboarding import profile_build_directive
+
+        d = profile_build_directive()
+        assert 'response_state "timeout"' in d
+        assert "ask it again" in d
+        assert "workdays(action='configure'" in d
+
 
 class TestProfileBuildSeenFlag:
     def test_flag_round_trips(self, tmp_path):

@@ -1740,3 +1740,93 @@ class TestKeywordBlobUsesFirstLineOnly:
         # PascalCase parts that are plain English words are not server keywords
         assert "open" not in keywords and "project" not in keywords
         assert "openproject" in keywords  # from the uvx package spec
+
+
+class TestAIS330Diagnostics(TestLargeServerOpenProject):
+    """AIS-330 / SUP-20260914-152536: honest limit clamp, tool_prefix as a
+    server alias, and a not-found error that names the server."""
+
+    def test_clamped_limit_is_reported(self, monkeypatch):
+        import tools.tool_search as ts
+        catalog = self._catalog(monkeypatch)
+        monkeypatch.setattr(ts, "_cached_catalog", lambda deferrable, skills: catalog)
+        monkeypatch.setattr(ts, "_ensure_mcp_discovery_completed", lambda: None)
+        defs = [_td(e.name, e.description) for e in catalog]
+        out = json.loads(ts.dispatch_tool_search({"query": "create update list", "limit": 200}, current_tool_defs=defs))
+        assert out["mode"] == "ranked"
+        assert out["limit_clamped"] is True
+        assert out["requested_limit"] == 200
+        assert out["limit_applied"] <= 50 and len(out["matches"]) <= out["limit_applied"]
+        assert "does not mean a tool does not exist" in out["hint"]
+        plain = json.loads(ts.dispatch_tool_search({"query": "create update list", "limit": 5}, current_tool_defs=defs))
+        assert "limit_clamped" not in plain and "requested_limit" not in plain
+
+    def test_tool_prefix_is_a_server_alias(self, monkeypatch):
+        import tools.tool_search as ts
+        import tools.mcp_tool as mt
+        monkeypatch.setattr(mt, "get_mcp_server_prefixes", lambda: {"OpenProjectMCP": "op", "X": "m"})
+        assert ts._normalize_source_key("mcp_op_") == "openprojectmcp"
+        assert ts._normalize_source_key("mcp_op") == "openprojectmcp"
+        assert ts._normalize_source_key("op") == "openprojectmcp"
+        # one-letter prefixes are too ambiguous to act as aliases
+        assert ts._normalize_source_key("m") == "m"
+        catalog = self._catalog(monkeypatch)
+        monkeypatch.setattr(ts, "_cached_catalog", lambda deferrable, skills: catalog)
+        monkeypatch.setattr(ts, "_ensure_mcp_discovery_completed", lambda: None)
+        defs = [_td(e.name, e.description) for e in catalog]
+        out = json.loads(ts.dispatch_tool_search({"query": "mcp_op_", "limit": 200}, current_tool_defs=defs))
+        assert out["mode"] == "source_browse"
+        assert out["source_total"] == len(_OP_TOOLS)
+        assert all(m["name"].startswith("mcp_op_") for m in out["matches"])
+
+    def test_unknown_prefix_still_ranks(self, monkeypatch):
+        import tools.tool_search as ts
+        import tools.mcp_tool as mt
+        monkeypatch.setattr(mt, "get_mcp_server_prefixes", lambda: {})
+        assert ts._normalize_source_key("mcp_op_") == "mcpop"
+
+    def _patch_mcp(self, monkeypatch, *, status, prefixes, registered, missing):
+        import tools.mcp_tool as mt
+        import tools.tool_search as ts
+        monkeypatch.setattr(ts, "_ensure_mcp_discovery_completed", lambda: None)
+        monkeypatch.setattr(mt, "get_mcp_status", lambda: status)
+        monkeypatch.setattr(mt, "get_mcp_server_prefixes", lambda: prefixes)
+        monkeypatch.setattr(mt, "get_mcp_server_registered_tool_names", lambda s: registered.get(s, []))
+        monkeypatch.setattr(mt, "get_mcp_missing_include_tools", lambda s: missing.get(s, []))
+
+    def test_not_found_names_loaded_server_without_the_tool(self, monkeypatch):
+        from tools.tool_search import resolve_underlying_call
+        self._patch_mcp(
+            monkeypatch,
+            status=[{"name": "OpenProjectMCP", "connected": True, "disabled": False}],
+            prefixes={"OpenProjectMCP": "op"},
+            registered={"OpenProjectMCP": [f"mcp_op_{t}" for t in ("list_projects", "get_work_package")]},
+            missing={"OpenProjectMCP": ["bulk_close_work_packages", "create_work_package"]},
+        )
+        # a name no other test registers in the (global) registry
+        _, _, err = resolve_underlying_call({"name": "mcp_op_bulk_close_work_packages", "arguments": {}})
+        assert "not registered or found" in err
+        assert "'OpenProjectMCP' (prefix 'op') is loaded with 2 tool(s) but does not expose 'bulk_close_work_packages'" in err
+        assert "OPENPROJECT_WRITE_PROJECTS" in err
+        assert "Do not retry or search again" in err
+        assert "Use tool_search" not in err
+
+    def test_not_found_names_unconnected_server(self, monkeypatch):
+        from tools.tool_search import resolve_underlying_call
+        self._patch_mcp(
+            monkeypatch,
+            status=[{"name": "MSOffice365MCP", "connected": False, "disabled": False}],
+            prefixes={}, registered={}, missing={},
+        )
+        _, _, err = resolve_underlying_call({"name": "mcp_MSOffice365MCP_m365_list_emails", "arguments": {}})
+        assert "'MSOffice365MCP' is configured but not connected" in err
+        assert "tell the user" in err
+        # a bare name cannot be mapped to a server, but the outage is still mentioned
+        _, _, err = resolve_underlying_call({"name": "m365_list_emails", "arguments": {}})
+        assert "Use tool_search" in err and "MSOffice365MCP" in err and "not connected" in err
+
+    def test_not_found_generic_when_nothing_is_known(self, monkeypatch):
+        from tools.tool_search import resolve_underlying_call
+        self._patch_mcp(monkeypatch, status=[], prefixes={}, registered={}, missing={})
+        _, _, err = resolve_underlying_call({"name": "nope_tool", "arguments": {}})
+        assert err == "Tool 'nope_tool' is not registered or found. Use tool_search to find the exact registered tool name."

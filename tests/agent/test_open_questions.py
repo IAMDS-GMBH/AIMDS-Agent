@@ -144,3 +144,51 @@ def test_persists_structured_ambiguous_clarify_result(tmp_path, monkeypatch):
 
     content = (tmp_path / "_open-questions.md").read_text(encoding="utf-8")
     assert "context=Clarify required for: Who approves this deployment?" in content
+
+
+def test_onboarding_clarify_timeout_is_recorded_as_open_question(tmp_path, monkeypatch):
+    """AIS-333: an expired onboarding question is still owed — record it."""
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    agent = SimpleNamespace(
+        _current_turn_id="turn-openq-onb",
+        platform="tui",
+        _onboarding_clarify_active=True,
+    )
+
+    _maybe_persist_blocking_clarify_open_question(
+        agent,
+        function_name="clarify",
+        function_args={"question": "Which state/canton do you work in?"},
+        function_result=json.dumps(
+            {
+                "question": "Which state/canton do you work in?",
+                "user_response": "",
+                "response_state": "timeout",
+                "resolved": False,
+                "reason_code": "clarify_timeout",
+                "timeout_seconds": 600,
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    text = (tmp_path / "_open-questions.md").read_text(encoding="utf-8")
+    assert "Which state/canton do you work in?" in text
+    assert "did not answer in time" in text
+
+
+def test_non_onboarding_clarify_timeout_stays_unrecorded(tmp_path, monkeypatch):
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    agent = SimpleNamespace(_current_turn_id="turn-openq-plain", platform="tui", _onboarding_clarify_active=False)
+
+    _maybe_persist_blocking_clarify_open_question(
+        agent,
+        function_name="clarify",
+        function_args={"question": "Deploy now?"},
+        function_result=json.dumps(
+            {"question": "Deploy now?", "user_response": "", "response_state": "timeout", "resolved": False, "reason_code": "clarify_timeout"},
+            ensure_ascii=False,
+        ),
+    )
+
+    assert not (tmp_path / "_open-questions.md").exists()

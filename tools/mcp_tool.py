@@ -2844,6 +2844,15 @@ _parallel_safe_servers: set = set()
 # guessing.
 _mcp_tool_server_names: Dict[str, str] = {}
 
+# AIS-330: ``tools.include`` / manifest ``default_enabled`` entries the server
+# did NOT advertise at registration time, keyed by server name. An OpenProject
+# install without OPENPROJECT_WRITE_PROJECTS silently lost all 13 write tools
+# (SUP-20260914-152536): the include filter iterates what the server offers,
+# so a configured-but-absent tool produced no log line at all. tool_search
+# and the not-found error read this map so the model learns *why* a tool is
+# missing instead of searching and retrying.
+_mcp_missing_include_tools: Dict[str, List[str]] = {}
+
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
@@ -4885,6 +4894,25 @@ def get_mcp_server_for_tool(tool_name: str) -> Optional[str]:
         return _mcp_tool_server_names.get(str(tool_name or ""))
 
 
+def get_mcp_missing_include_tools(server_name: str) -> List[str]:
+    """Configured tools *server_name* did not advertise at registration (AIS-330)."""
+    with _lock:
+        return list(_mcp_missing_include_tools.get(str(server_name or ""), ()))
+
+
+def get_mcp_server_registered_tool_names(server_name: str) -> List[str]:
+    """Registered (prefixed) tool names owned by *server_name*."""
+    safe = sanitize_mcp_name_component(str(server_name or ""))
+    with _lock:
+        return sorted(t for t, s in _mcp_tool_server_names.items() if s == safe)
+
+
+def get_mcp_server_prefixes() -> Dict[str, str]:
+    """``{server_name: tool_prefix}`` for every server with a configured prefix (AIS-327)."""
+    with _prefix_lock:
+        return dict(_mcp_server_prefixes)
+
+
 # ---------------------------------------------------------------------------
 # Short tool prefixes (AIS-327)
 # ---------------------------------------------------------------------------
@@ -5281,6 +5309,56 @@ def _merge_catalog_default_tools(server_name: str, include_set: Set[str]) -> Set
     return set(include_set) | missing
 
 
+def _record_missing_include_tools(
+    name: str, server: MCPServerTask, include_set: Set[str], safe_server_name: str
+) -> List[str]:
+    """Log once which configured tools the server did not offer (AIS-330).
+
+    ``tools.include`` (∪ manifest ``default_enabled``) is intersected with the
+    tools the server advertises, so an entry with no counterpart vanished
+    without a trace: an OpenProject server started without
+    ``OPENPROJECT_WRITE_PROJECTS`` registered 28 read tools while config.yaml
+    listed 41 — the model then spent ten identical calls on
+    ``mcp_op_update_work_package`` (SUP-20260914-152536). One WARNING names
+    the gap; the map feeds tool_search's not-found diagnostics.
+    """
+    if not include_set:
+        with _lock:
+            _mcp_missing_include_tools.pop(name, None)
+        return []
+    advertised: Set[str] = set()
+    for mcp_tool in getattr(server, "_tools", []) or []:
+        raw = getattr(mcp_tool, "name", "") or ""
+        if not raw:
+            continue
+        advertised |= _tool_filter_aliases(raw)
+        advertised |= _tool_filter_aliases(
+            f"mcp_{safe_server_name}_{sanitize_mcp_name_component(raw)}"
+        )
+    # Resource/prompt utility tools are registered separately below and may
+    # legitimately appear in the include list.
+    for util in _UTILITY_CAPABILITY_ATTRS:
+        advertised |= _tool_filter_aliases(util)
+        advertised |= _tool_filter_aliases(f"mcp_{safe_server_name}_{util}")
+    missing = sorted(
+        item for item in include_set if not (_tool_filter_aliases(item) & advertised)
+    )
+    with _lock:
+        if missing:
+            _mcp_missing_include_tools[name] = missing
+        else:
+            _mcp_missing_include_tools.pop(name, None)
+    if missing:
+        logger.warning(
+            "MCP server '%s': %d of %d configured tool(s) not advertised by the "
+            "server: %s — the server was started without them (for OpenProject "
+            "a missing OPENPROJECT_WRITE_PROJECTS write scope hides every write "
+            "tool); the agent will be told these tools are unavailable",
+            name, len(missing), len(include_set), ", ".join(missing),
+        )
+    return missing
+
+
 def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> List[str]:
     """Register tools from an already-connected server into the registry.
 
@@ -5387,6 +5465,8 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
         )
         _track_mcp_tool_server(tool_name_prefixed, name)
         registered_names.append(tool_name_prefixed)
+
+    _record_missing_include_tools(name, server, include_set, safe_server_name)
 
     # Register MCP Resources & Prompts utility tools, filtered by config and
     # only when the server actually supports the corresponding capability.

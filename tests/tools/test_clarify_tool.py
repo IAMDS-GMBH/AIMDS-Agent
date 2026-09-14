@@ -210,3 +210,31 @@ class TestClarifySchema:
     def test_max_choices_is_four(self):
         """MAX_CHOICES constant should be 4."""
         assert MAX_CHOICES == 4
+
+
+class TestClarifyTimeoutResult:
+    """AIS-333: a platform that knows its deadline reports it in the result."""
+
+    def test_timeout_dict_keeps_timeout_seconds(self):
+        def cb(question, choices):
+            return {
+                "user_response": "",
+                "response_state": "timeout",
+                "resolved": False,
+                "reason_code": "clarify_timeout",
+                "timeout_seconds": 600,
+            }
+
+        result = json.loads(clarify_tool("Region?", callback=cb))
+        assert result["response_state"] == "timeout"
+        assert result["reason_code"] == "clarify_timeout"
+        assert result["resolved"] is False
+        assert result["timeout_seconds"] == 600
+
+    def test_answered_dict_has_no_timeout_seconds(self):
+        def cb(question, choices):
+            return {"user_response": "Bavaria", "response_state": "answered", "resolved": True, "reason_code": ""}
+
+        result = json.loads(clarify_tool("Region?", callback=cb))
+        assert "timeout_seconds" not in result
+        assert result["user_response"] == "Bavaria"

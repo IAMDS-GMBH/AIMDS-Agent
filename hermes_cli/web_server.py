@@ -22,6 +22,7 @@ import json
 import logging
 import mimetypes
 import os
+import socket
 import re
 import secrets
 import shutil
@@ -122,13 +123,83 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     from cron.scheduler import tick as cron_tick
 
     _log.info("Desktop cron ticker started (interval=%ds)", interval)
-    # Tick once up front (catches jobs due at launch), then on the interval.
+    # AIS-332 / SUP-20260914-063903: the first tick used to fire immediately,
+    # i.e. within seconds of the backend coming up after login or
+    # wake-from-sleep, before DNS was usable. A due morning brief then burned
+    # its API retries against an unresolvable provider host and was written
+    # off as a failed run. Wait a bit before the first tick and skip ticks
+    # while the provider host does not resolve; the job stays due and runs on
+    # the next tick once the network is back.
+    first_delay = _desktop_cron_first_tick_delay()
+    if first_delay > 0 and stop_event.wait(first_delay):
+        return
     while not stop_event.is_set():
+        if not _provider_host_resolvable():
+            _log.debug("Desktop cron tick skipped: provider host does not resolve yet")
+            stop_event.wait(interval)
+            continue
         try:
             cron_tick(verbose=False, sync=False)
         except Exception as e:
             _log.debug("Desktop cron tick error: %s", e)
         stop_event.wait(interval)
+
+
+def _desktop_cron_first_tick_delay(default: float = 90.0) -> float:
+    """Seconds to wait before the desktop ticker's first tick (env override)."""
+    raw = os.getenv("HERMES_DESKTOP_CRON_FIRST_TICK_DELAY", "").strip()
+    if not raw:
+        return default
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return default
+
+
+def _active_provider_host() -> str:
+    """Hostname of the active model provider's base URL, ``""`` when unknown."""
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from utils import base_url_hostname
+
+        runtime = resolve_runtime_provider()
+        return base_url_hostname(str((runtime or {}).get("base_url") or ""))
+    except Exception as exc:
+        _log.debug("Desktop cron ticker: provider host unknown (%s)", exc)
+        return ""
+
+
+def _provider_host_resolvable(timeout: float = 3.0) -> bool:
+    """Whether the active provider host resolves via DNS.
+
+    ``True`` when the host is unknown or loopback (nothing to check) and when
+    resolution does not answer within ``timeout`` (never block cron on a slow
+    resolver); ``False`` only on a definite resolution failure.
+    """
+    host = _active_provider_host()
+    if not host or host in {"localhost", "127.0.0.1", "::1"}:
+        return True
+
+    outcome: dict = {}
+
+    def _resolve() -> None:
+        try:
+            socket.getaddrinfo(host, None)
+            outcome["ok"] = True
+        except socket.gaierror as exc:
+            outcome["ok"] = False
+            outcome["error"] = str(exc)
+        except Exception:
+            outcome["ok"] = True
+
+    worker = threading.Thread(target=_resolve, name="desktop-cron-dns-probe", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive() or "ok" not in outcome:
+        return True
+    if not outcome["ok"]:
+        _log.debug("Desktop cron ticker: %s does not resolve (%s)", host, outcome.get("error"))
+    return bool(outcome["ok"])
 
 
 @asynccontextmanager

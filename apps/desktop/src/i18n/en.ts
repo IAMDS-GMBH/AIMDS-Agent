@@ -1175,6 +1175,13 @@ export const en: Translations = {
     close: 'Close tasks',
     search: 'Search automated tasks...',
     loading: 'Loading automated tasks...',
+    // AIS-332: failed cron run shown inside the run's session (SUP-20260914-063903).
+    runFailed: {
+      title: 'This run failed.',
+      runNow: 'Run now',
+      running: 'Starting…',
+      runFailed: 'Could not start the task.'
+    },
     states: {
       enabled: 'enabled',
       scheduled: 'scheduled',
@@ -1984,7 +1991,14 @@ export const en: Translations = {
       shortcut: '⌘/Ctrl + Enter to send',
       back: 'Back',
       skip: 'Skip',
-      send: 'Send'
+      send: 'Send',
+      // AIS-333: clarify deadline / timeout (SUP-20260914-092956)
+      timeRemaining: (mmss: string) => `Time to answer: ${mmss}`,
+      timeRemainingSoon: (mmss: string) => `Answer within ${mmss} — the agent continues without you afterwards`,
+      timedOutTitle: 'Time is up',
+      timedOutBody: (seconds: number) =>
+        `No answer arrived within ${seconds} s, so the agent continued without your input. Reply in the chat if you still want to answer.`,
+      timedOutQuestion: 'Question'
     },
     tool: {
       code: 'Code',

@@ -18,7 +18,7 @@ import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
-import { setClarifyRequest } from '@/store/clarify'
+import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
@@ -1025,7 +1025,10 @@ export function useMessageStream({
             requestId,
             question,
             choices: Array.isArray(payload?.choices) ? payload!.choices!.filter(c => typeof c === 'string') : null,
-            sessionId: sessionId ?? null
+            sessionId: sessionId ?? null,
+            deadlineAt: typeof payload?.deadline_at === 'number' && payload.deadline_at > 0 ? payload.deadline_at : null,
+            timeoutSeconds:
+              typeof payload?.timeout_seconds === 'number' && payload.timeout_seconds > 0 ? payload.timeout_seconds : null
           })
 
           // The transcript only renders the active session, so a background
@@ -1036,6 +1039,20 @@ export function useMessageStream({
           if (sessionId) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
           }
+        }
+      } else if (event.type === 'clarify.timeout') {
+        // AIS-333: the gateway stopped waiting for this question. Drop the
+        // parked request so the card cannot be answered into the void and the
+        // "needs input" flag clears; the tool.complete that follows carries
+        // response_state "timeout", which ClarifyTool renders as an expired card.
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+        if (requestId) {
+          clearClarifyRequest(requestId, sessionId ?? null)
+        }
+
+        if (sessionId) {
+          updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
         }
       } else if (event.type === 'approval.request') {
         // Dangerous-command / execute_code approval. The Python side is blocked

@@ -192,6 +192,10 @@ def profile_build_directive() -> str:
         "tool or local Vault/Memory store (`memory_save` / `memory_upsert`). Prefer MCP `memory_save` "
         "when available; otherwise use local `memory` with target=\"user\". Keep entries compact and high-signal.\n"
         "If they decline at any point, stop immediately and continue normally. "
+        "If a question times out (clarify returns response_state \"timeout\"), the user did NOT decline: "
+        "say the question expired and ask it again in your next message. Before you tell the user the "
+        "profile is complete, check that the work-time profile was stored with `workdays(action='configure', …)` "
+        "when they offered one; if not, ask for it again first. "
         "Keep the whole exchange light and conversational, not an interrogation.]"
     )
 

@@ -224,3 +224,29 @@ class TestGatewayTextIntercept:
         
         # Clean up
         cm.clear_session("sk-tf")
+
+
+class TestClarifyTimeoutResolution:
+    """AIS-333: one resolution order for every surface."""
+
+    def test_clarify_section_wins(self):
+        from tools import clarify_gateway as cm
+
+        assert cm.get_clarify_timeout({"clarify": {"timeout": 45}, "agent": {"clarify_timeout": 300}}) == 45
+
+    def test_agent_section_is_the_fallback(self):
+        from tools import clarify_gateway as cm
+
+        assert cm.get_clarify_timeout({"agent": {"clarify_timeout": "300"}}) == 300
+
+    def test_default_is_600(self):
+        from tools import clarify_gateway as cm
+
+        assert cm.get_clarify_timeout({}) == 600
+        assert cm.get_clarify_timeout({"clarify": {"timeout": ""}, "agent": {}}) == 600
+
+    def test_non_positive_and_garbage_fall_through(self):
+        from tools import clarify_gateway as cm
+
+        assert cm.get_clarify_timeout({"clarify": {"timeout": 0}, "agent": {"clarify_timeout": 90}}) == 90
+        assert cm.get_clarify_timeout({"clarify": {"timeout": "soon"}}) == 600

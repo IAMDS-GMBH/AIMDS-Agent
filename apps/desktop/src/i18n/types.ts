@@ -954,6 +954,13 @@ export interface Translations {
     close: string
     search: string
     loading: string
+    // AIS-332: failed cron run shown inside the run's session.
+    runFailed: {
+      title: string
+      runNow: string
+      running: string
+      runFailed: string
+    }
     states: Record<string, string>
     scheduleLabels: Record<string, string>
     scheduleHints: Record<string, string>
@@ -1631,6 +1638,12 @@ export interface Translations {
       back: string
       skip: string
       send: string
+      // AIS-333: clarify deadline / timeout
+      timeRemaining: (mmss: string) => string
+      timeRemainingSoon: (mmss: string) => string
+      timedOutTitle: string
+      timedOutBody: (seconds: number) => string
+      timedOutQuestion: string
     }
     tool: {
       code: string

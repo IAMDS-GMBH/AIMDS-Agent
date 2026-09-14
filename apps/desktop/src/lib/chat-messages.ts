@@ -55,6 +55,9 @@ export type GatewayEventPayload = {
   request_id?: string
   question?: string
   choices?: string[] | null
+  // clarify.request deadline / clarify.timeout (AIS-333)
+  deadline_at?: number
+  timeout_seconds?: number
   // approval.request (dangerous command / execute_code) — session-keyed
   command?: string
   description?: string

@@ -33,7 +33,7 @@ vi.mock('@/hermes', () => ({
   getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args)
 }))
 
-const { maybeNotifyUpdateAvailable, checkBackendUpdates, $backendUpdateStatus, applyBackendUpdate, $backendUpdateApply } = await import('./updates')
+const { maybeNotifyUpdateAvailable, checkBackendUpdates, $backendUpdateStatus, applyBackendUpdate, $backendUpdateApply, applyUpdates, $updateApply } = await import('./updates')
 const { setConnection } = await import('./session')
 
 const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus => ({
@@ -197,3 +197,58 @@ describe('applyBackendUpdate recovery', () => {
   })
 })
 
+
+// AIS-331 / SUP-20260914-105316: a resolved `{ ok: false }` from the main
+// process must land the apply state on `error`, not leave the last progress
+// stage (`restart`, "Handing off…") on screen with the overlay unclosable.
+describe('applyUpdates (desktop self-update) hand-off failures', () => {
+  let apply: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    apply = vi.fn()
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { updates: { apply } }
+    })
+    $updateApply.set({ applying: false, stage: 'idle', message: '', percent: null, error: null, command: null, log: [] })
+    vi.useRealTimers()
+  })
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'hermesDesktop')
+  })
+
+  it('lands on the error stage when the main process resolves ok:false', async () => {
+    apply.mockResolvedValue({ ok: false, error: 'apply-failed', message: 'Hermes updater not found (/x/hermes-setup)' })
+
+    const result = await applyUpdates()
+
+    expect(result.ok).toBe(false)
+    const state = $updateApply.get()
+    expect(state.applying).toBe(false)
+    expect(state.stage).toBe('error')
+    expect(state.error).toBe('apply-failed')
+    expect(state.message).toBe('Hermes updater not found (/x/hermes-setup)')
+  })
+
+  it('keeps the manual state for CLI installs', async () => {
+    apply.mockResolvedValue({ ok: true, manual: true, command: 'hermes update --branch stable' })
+
+    await applyUpdates()
+
+    const state = $updateApply.get()
+    expect(state.stage).toBe('manual')
+    expect(state.command).toBe('hermes update --branch stable')
+    expect(state.applying).toBe(false)
+  })
+
+  it('leaves a successful hand-off to the progress stream', async () => {
+    apply.mockResolvedValue({ ok: true, handedOff: true })
+
+    await applyUpdates()
+
+    // The `restart` progress event (sent by the main process) owns the final
+    // state; the resolved result itself must not flip it to an error.
+    expect($updateApply.get().stage).not.toBe('error')
+  })
+})

@@ -50,7 +50,12 @@ auth:
       required: false
       secret: false
     - name: OPENPROJECT_WRITE_PROJECTS
-      prompt: "Writable projects (leave empty for read-only; identifiers, globs or *)"
+      # AIS-330: an empty value is a legitimate read-only setup, but it also
+      # means the server never exports create/update/comment/time-entry
+      # tools — the curated defaults below then silently shrink from 41 to
+      # 28 (SUP-20260914-152536). Say so in the prompt.
+      prompt: "Writable projects (identifiers, globs or * — EMPTY = read-only: no create/update/comment/time-entry tools will be available)"
+      default: ""
       required: false
       secret: false
 
@@ -98,7 +103,10 @@ post_install: |
   registered as mcp_op_<tool> (e.g. mcp_op_list_work_packages).
 
   - Read scope comes from OPENPROJECT_READ_PROJECTS; writes stay disabled until
-    OPENPROJECT_WRITE_PROJECTS lists projects. Every write is preview-then-confirm.
+    OPENPROJECT_WRITE_PROJECTS lists projects (then restart Hermes). Without it
+    the server exports NO create/update/comment/time-entry tools — Hermes logs
+    which configured tools are missing and tells the agent OpenProject is
+    read-only. Every write is preview-then-confirm.
   - Time tracking works like Jira + Tempo: time entries on a work package
     (spent_on + hours as ISO 8601 duration, e.g. PT1H30M).
   - uv/uvx must be on the PATH (same requirement as AtlassianMCP).

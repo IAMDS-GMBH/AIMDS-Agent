@@ -1176,6 +1176,13 @@ export const de
     close: 'Aufgaben schließen',
     search: 'Automatische Aufgaben suchen...',
     loading: 'Lade automatische Aufgaben...',
+    // AIS-332: fehlgeschlagener Cron-Lauf in der Session des Laufs (SUP-20260914-063903).
+    runFailed: {
+      title: 'Dieser Lauf ist fehlgeschlagen.',
+      runNow: 'Jetzt ausführen',
+      running: 'Wird gestartet…',
+      runFailed: 'Die Aufgabe konnte nicht gestartet werden.'
+    },
     states: {
       enabled: 'aktiviert',
       scheduled: 'geplant',
@@ -1986,7 +1993,14 @@ export const de
       shortcut: '⌘/Strg + Enter zum Senden',
       back: 'Zurück',
       skip: 'Überspringen',
-      send: 'Senden'
+      send: 'Senden',
+      // AIS-333: clarify-Frist / Timeout (SUP-20260914-092956)
+      timeRemaining: (mmss: string) => `Zeit zum Antworten: ${mmss}`,
+      timeRemainingSoon: (mmss: string) => `Antwort innerhalb von ${mmss} — danach macht der Agent ohne dich weiter`,
+      timedOutTitle: 'Zeit abgelaufen',
+      timedOutBody: (seconds: number) =>
+        `Innerhalb von ${seconds} s kam keine Antwort, der Agent hat ohne deine Eingabe weitergemacht. Antworte im Chat, wenn du es noch beantworten willst.`,
+      timedOutQuestion: 'Frage'
     },
     tool: {
       code: 'Code',

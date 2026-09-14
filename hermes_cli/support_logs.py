@@ -25,7 +25,24 @@ from hermes_cli.config import load_config
 from hermes_cli.dump import run_dump
 from hermes_constants import display_hermes_home, get_hermes_home
 
-_LOG_FILES = ("desktop.log", "agent.log", "errors.log", "gateway.log", "gui.log")
+# Fixed set shipped in every support bundle. The three update logs were added
+# for AIS-331 (SUP-20260914-105316): a hand-off to the staged updater that left
+# the client on the old version arrived with no trace of what ``hermes update``
+# printed — ``update.log`` is written by ``hermes update`` itself
+# (hermes_cli/main.py), ``hermes-update.log`` by the dashboard's update action
+# (hermes_cli/web_server.py) and ``updater-launch.log`` by the desktop, which
+# routes the staged updater's stdout/stderr there (apps/desktop/electron/
+# update-apply.cjs).
+_LOG_FILES = (
+    "desktop.log",
+    "agent.log",
+    "errors.log",
+    "gateway.log",
+    "gui.log",
+    "update.log",
+    "hermes-update.log",
+    "updater-launch.log",
+)
 _DEFAULT_MAX_LINES_PER_FILE = 1200
 _DEFAULT_TIMEOUT_SECONDS = 45
 _DEFAULT_UPLOAD_URL = "https://suite-support.iamds.com/api/v1/upload"

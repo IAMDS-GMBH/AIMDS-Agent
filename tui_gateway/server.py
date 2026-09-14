@@ -1520,7 +1520,18 @@ def _enable_gateway_prompts() -> None:
 # ── Blocking prompt factory ──────────────────────────────────────────
 
 
-def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
+def _block_with_outcome(
+    event: str, sid: str, payload: dict, timeout: float = 300
+) -> tuple[str, bool, str]:
+    """Emit a blocking prompt and wait for its answer.
+
+    Returns ``(answer, timed_out, request_id)``. ``timed_out`` is True only
+    when the deadline passed without any ``*.respond`` landing — an answered
+    prompt whose answer happens to be ``""`` (or a prompt released by
+    ``_clear_pending``) is *not* a timeout. AIS-333: the desktop clarify used
+    to collapse both into ``""`` and the model saw an "empty answer" while the
+    user simply had not answered yet.
+    """
     rid = uuid.uuid4().hex[:8]
     ev = threading.Event()
     with _prompt_lock:
@@ -1529,13 +1540,21 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
         _pending_prompt_payloads[rid] = (event, dict(payload))
     try:
         _emit(event, sid, payload)
-        ev.wait(timeout=timeout)
+        signalled = ev.wait(timeout=timeout)
     finally:
         with _prompt_lock:
             _pending.pop(rid, None)
             _pending_prompt_payloads.pop(rid, None)
     with _prompt_lock:
-        return _answers.pop(rid, "")
+        answered = rid in _answers
+        answer = _answers.pop(rid, "")
+    timed_out = not signalled and not answered
+    return answer, timed_out, rid
+
+
+def _block(event: str, sid: str, payload: dict, timeout: float = 300) -> str:
+    answer, _timed_out, _rid = _block_with_outcome(event, sid, payload, timeout)
+    return answer
 
 
 def _clear_pending(sid: str | None = None) -> None:
@@ -2968,19 +2987,49 @@ def _agent_cbs(sid: str) -> dict:
             question,
             len(c or []),
         )
-        # clarify.timeout is the single source of truth (the CLI honours the
-        # same key); _block's own 300s default stays for approval/sudo/secret
-        # prompts only (AIS-275 — the two paths used to disagree 120s vs 300s).
+        # One resolution for every surface (AIS-333): clarify.timeout →
+        # agent.clarify_timeout → 600 s. _block's own 300s default stays for
+        # approval/sudo/secret prompts only (AIS-275).
         try:
-            clarify_timeout = float(
-                ((_load_cfg().get("clarify") or {}).get("timeout")) or 120
-            )
+            from tools.clarify_gateway import get_clarify_timeout
+
+            clarify_timeout = float(get_clarify_timeout(_load_cfg()))
         except Exception:
-            clarify_timeout = 120.0
-        return _block(
-            "clarify.request", sid, {"question": q, "choices": c},
+            clarify_timeout = 600.0
+        deadline_at = int((time.time() + clarify_timeout) * 1000)
+        # The deadline travels with the request so the desktop can show a
+        # countdown; clarify.timeout tells it the card expired without an
+        # answer (SUP-20260914-092956: "die Abfrage ist verschwunden").
+        answer, timed_out, rid = _block_with_outcome(
+            "clarify.request",
+            sid,
+            {
+                "question": q,
+                "choices": c,
+                "timeout_seconds": int(clarify_timeout),
+                "deadline_at": deadline_at,
+            },
             timeout=clarify_timeout,
         )
+        if timed_out:
+            logger.info(
+                "[ONBOARDING] clarify.timeout question=%r after %ds",
+                question,
+                int(clarify_timeout),
+            )
+            _emit(
+                "clarify.timeout",
+                sid,
+                {"request_id": rid, "timeout_seconds": int(clarify_timeout)},
+            )
+            return {
+                "user_response": "",
+                "response_state": "timeout",
+                "resolved": False,
+                "reason_code": "clarify_timeout",
+                "timeout_seconds": int(clarify_timeout),
+            }
+        return answer
 
     return {
         "tool_start_callback": lambda tc_id, name, args: _on_tool_start(

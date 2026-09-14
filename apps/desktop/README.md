@@ -46,6 +46,14 @@ The app checks for updates in the background and offers a one-click update when 
 hermes update
 ```
 
+Which channel the in-app update follows depends on the install:
+
+- A release-managed install (`~/.hermes/hermes-agent/.hermes-release.json` present) only knows the `stable` and `preview` channels.
+- A git checkout on a branch follows the branch configured in the app (default `main`).
+- A git checkout on a **detached HEAD** (what the installers produce: checked out at a version tag) is handed to the updater with `--branch stable`, never `main`. Following `main` from there would move the client onto the source repository's main branch — the emergency fallback only — instead of the next release.
+
+If the hand-off to the staged updater fails, the update overlay shows the error and a Retry button; the updater's own output is appended to `~/.hermes/logs/updater-launch.log`, and `hermes update` writes `~/.hermes/logs/update.log`. Both files are part of the support bundle.
+
 ---
 
 ## Requirements

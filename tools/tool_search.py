@@ -1005,18 +1005,53 @@ SOURCE_ALIASES: Dict[str, str] = {
 }
 
 
+def _prefix_source_aliases() -> Dict[str, str]:
+    """Configured ``tool_prefix`` values as server aliases (AIS-330).
+
+    Registered names are ``mcp_<prefix>_<tool>`` (AIS-327), so the model
+    naturally searches for ``mcp_op`` / ``mcp_op_`` / ``op`` when it wants
+    the OpenProject server — none of which is a static SOURCE_ALIASES entry.
+    Such a query fell through to a ranked search capped at the default
+    limit instead of the full server browse, which hid that the server had
+    no write tools at all (SUP-20260914-152536). Prefixes shorter than two
+    characters are ignored (too ambiguous).
+    """
+    try:
+        from tools.mcp_tool import get_mcp_server_prefixes
+        prefixes = get_mcp_server_prefixes()
+    except Exception:
+        return {}
+    out: Dict[str, str] = {}
+    for server, prefix in prefixes.items():
+        norm = re.sub(r"[^a-z0-9]", "", str(prefix or "").lower())
+        if len(norm) < 2:
+            continue
+        out[norm] = server
+        out["mcp" + norm] = server
+    return out
+
+
+def _resolve_source_alias(norm: str) -> str:
+    """Map a normalized query/source key through the static and prefix aliases."""
+    if norm in SOURCE_ALIASES:
+        return re.sub(r"[^a-z0-9]", "", SOURCE_ALIASES[norm].lower())
+    prefix_aliases = _prefix_source_aliases()
+    if norm in prefix_aliases:
+        return re.sub(r"[^a-z0-9]", "", prefix_aliases[norm].lower())
+    return norm
+
+
 def _normalize_source_key(text: str) -> str:
     """Collapse a source/toolset name to bare lowercase alnum for exact comparison.
 
     e.g. "mcp-MSOffice365MCP" and "MSOffice365MCP" both normalize to
     "msoffice365mcp" so a query naming the server matches regardless of the
-    "mcp-" prefix or original casing.
+    "mcp-" prefix or original casing. Configured tool prefixes (``op`` →
+    OpenProjectMCP) resolve the same way.
     """
     raw = text.lower().removeprefix("mcp-")
     norm = re.sub(r"[^a-z0-9]", "", raw)
-    if norm in SOURCE_ALIASES:
-        return re.sub(r"[^a-z0-9]", "", SOURCE_ALIASES[norm].lower())
-    return norm
+    return _resolve_source_alias(norm)
 
 
 def _match_full_source(catalog: List[CatalogEntry], query_lower: str) -> List[CatalogEntry]:
@@ -1025,9 +1060,7 @@ def _match_full_source(catalog: List[CatalogEntry], query_lower: str) -> List[Ca
     When a user/model searches for e.g. "MSOffice365MCP", "office", or "github"
     they are asking to browse that server's *entire* tool catalog.
     """
-    norm_query = re.sub(r"[^a-z0-9]", "", query_lower)
-    if norm_query in SOURCE_ALIASES:
-        norm_query = re.sub(r"[^a-z0-9]", "", SOURCE_ALIASES[norm_query].lower())
+    norm_query = _resolve_source_alias(re.sub(r"[^a-z0-9]", "", query_lower))
     if len(norm_query) < 3:
         return []
     by_source: Dict[str, List[CatalogEntry]] = {}
@@ -1689,10 +1722,12 @@ def dispatch_tool_search(args: Dict[str, Any],
         return json.dumps({"error": "query is required"}, ensure_ascii=False)
 
     raw_limit = args.get("limit")
+    requested_limit: Optional[int] = None
     if raw_limit is None:
         limit = config.search_default_limit
     else:
-        limit = max(1, min(config.max_search_limit, _safe_int(raw_limit, config.search_default_limit)))
+        requested_limit = _safe_int(raw_limit, config.search_default_limit)
+        limit = max(1, min(config.max_search_limit, requested_limit))
 
     kind = str(args.get("kind") or "").strip().lower() or None
     if kind not in (None, "tool", "skill"):
@@ -1736,6 +1771,20 @@ def dispatch_tool_search(args: Dict[str, Any],
         payload["truncated"] = len(hits) < len(source_hits)
         if payload["truncated"]:
             payload["hint"] = "Curated defaults are listed first; search with a task description to find the rest."
+    elif requested_limit is not None and requested_limit > limit:
+        # AIS-330: the cap used to be applied silently. Six searches with
+        # limit 100/200 each came back with exactly 20 hits next to
+        # "total_available: 219", and the model concluded the tool it wanted
+        # did not exist (SUP-20260914-152536). Say that the list is capped
+        # and how to see a whole server instead.
+        payload["limit_applied"] = limit
+        payload["requested_limit"] = requested_limit
+        payload["limit_clamped"] = True
+        payload["hint"] = (
+            f"Results are capped at {limit} per search; absence here does not mean a tool "
+            "does not exist. Name a server (e.g. its tool prefix or 'OpenProjectMCP') to "
+            "browse its whole catalog, or refine the task description."
+        )
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -1778,10 +1827,88 @@ def _resolve_tool_entry(name: str):
             "Use tool_search to find the exact registered tool name."
         )
 
-    return None, None, (
-        f"Tool '{name}' is not registered or found. "
-        "Use tool_search to find the exact registered tool name."
+    return None, None, _describe_missing_tool(name)
+
+
+def _describe_missing_tool(name: str) -> str:
+    """Not-found message that says *why* when an MCP server explains it (AIS-330).
+
+    "Use tool_search" was the only advice, which is wrong twice: when the
+    tool's server is loaded but never exported that tool (OpenProject
+    without write scope — ten identical retries in SUP-20260914-152536), and
+    when the server is configured but not connected at all (MSOffice365MCP
+    with a broken venv — 39 fruitless searches in SUP-20260908-110726). Both
+    facts are known at registration time; put them into the error so the
+    model stops after one call and tells the user.
+    """
+    base = f"Tool '{name}' is not registered or found."
+    generic = base + " Use tool_search to find the exact registered tool name."
+    try:
+        from tools.mcp_tool import (
+            get_mcp_missing_include_tools,
+            get_mcp_server_prefixes,
+            get_mcp_server_registered_tool_names,
+            get_mcp_status,
+            sanitize_mcp_name_component,
+        )
+    except Exception:
+        return generic
+    try:
+        status_rows = get_mcp_status() or []
+    except Exception:
+        status_rows = []
+    status = {str(r.get("name", "")): r for r in status_rows if isinstance(r, dict)}
+    prefixes: Dict[str, str] = {}
+    try:
+        prefixes.update(get_mcp_server_prefixes())
+    except Exception:
+        pass
+    for server in status:
+        prefixes.setdefault(server, sanitize_mcp_name_component(server))
+
+    lowered = name.lower()
+    matched_server = ""
+    matched_head = ""
+    for server, prefix in prefixes.items():
+        p = str(prefix or "").lower()
+        if not p:
+            continue
+        for head in (f"mcp_{p}_", f"{p}_"):
+            if lowered.startswith(head) and len(head) > len(matched_head):
+                matched_server, matched_head = server, head
+    if matched_server:
+        bare = name[len(matched_head):]
+        row = status.get(matched_server) or {}
+        if row and not row.get("connected") and not row.get("disabled"):
+            return (
+                f"{base} MCP server '{matched_server}' is configured but not connected, so none "
+                "of its tools are available in this session. Do not search for or retry its "
+                "tools; tell the user the integration is currently unavailable."
+            )
+        registered = get_mcp_server_registered_tool_names(matched_server)
+        msg = (
+            f"{base} MCP server '{matched_server}' (prefix '{prefixes[matched_server]}') is loaded "
+            f"with {len(registered)} tool(s) but does not expose '{bare}'."
+        )
+        missing = get_mcp_missing_include_tools(matched_server)
+        if any(m.lower().endswith(bare.lower()) for m in missing):
+            msg += (
+                f" '{bare}' is enabled in the Hermes config but the server did not offer it — the "
+                "server was started without that capability (for OpenProject: no "
+                "OPENPROJECT_WRITE_PROJECTS write scope)."
+            )
+        return msg + " Do not retry or search again; tell the user which capability is missing."
+
+    down = sorted(
+        s for s, r in status.items() if not r.get("connected") and not r.get("disabled")
     )
+    if down:
+        return (
+            f"{generic} Note: MCP server(s) {', '.join(down)} are configured but not connected; "
+            "if the tool belongs to one of them it is unavailable right now — tell the user "
+            "instead of searching again."
+        )
+    return generic
 
 
 def dispatch_tool_describe(args: Dict[str, Any],

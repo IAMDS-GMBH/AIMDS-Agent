@@ -1846,6 +1846,77 @@ def _scan_assembled_cron_prompt(
     return assembled
 
 
+
+# ---------------------------------------------------------------------------
+# Cron run supervision (inactivity limit + provider-unreachable short-cut)
+# ---------------------------------------------------------------------------
+
+# ``agent._touch_activity`` text while the conversation loop retries a failed
+# API call (agent/conversation_loop.py): "API error recovery (attempt N/M)".
+_API_RECOVERY_DESC_RE = re.compile(r"API error recovery \(attempt (\d+)/(\d+)\)")
+
+
+def _cron_api_recovery_limit() -> Optional[float]:
+    """Seconds of silence after the *last* API retry before a run is failed.
+
+    AIS-332: with the provider unreachable the agent burns its retries in a
+    few seconds and then blocks in one last rebuilt-client attempt without
+    touching the activity tracker. Override via ``HERMES_CRON_API_RECOVERY_TIMEOUT``
+    (0 = disabled, fall back to the plain inactivity limit).
+    """
+    raw = os.getenv("HERMES_CRON_API_RECOVERY_TIMEOUT", "").strip()
+    if not raw:
+        return 120.0
+    try:
+        value = float(raw)
+    except (ValueError, TypeError):
+        logger.warning(
+            "Invalid HERMES_CRON_API_RECOVERY_TIMEOUT=%r; using default 120s", raw,
+        )
+        return 120.0
+    return value if value > 0 else None
+
+
+def _wait_for_cron_result(
+    agent,
+    future,
+    *,
+    inactivity_limit: Optional[float],
+    poll_interval: float = 5.0,
+    api_recovery_limit: Optional[float] = None,
+):
+    """Wait for ``future`` (the agent run) while watching the activity tracker.
+
+    Returns ``(result, stop_reason)``: ``stop_reason`` is ``None`` when the run
+    finished, ``"inactivity"`` when it went silent for ``inactivity_limit``
+    seconds, or ``"provider_unreachable"`` when the last activity was the final
+    API retry (``API error recovery (attempt M/M)``) and nothing happened for
+    ``api_recovery_limit`` seconds (AIS-332 / SUP-20260914-063903). The caller
+    owns the executor and the agent interrupt.
+    """
+    if inactivity_limit is None and api_recovery_limit is None:
+        return future.result(), None
+
+    while True:
+        done, _ = concurrent.futures.wait({future}, timeout=poll_interval)
+        if done:
+            return future.result(), None
+        idle_secs = 0.0
+        last_desc = ""
+        if hasattr(agent, "get_activity_summary"):
+            try:
+                act = agent.get_activity_summary()
+                idle_secs = float(act.get("seconds_since_activity", 0.0) or 0.0)
+                last_desc = str(act.get("last_activity_desc") or "")
+            except Exception:
+                pass
+        if api_recovery_limit is not None and idle_secs >= api_recovery_limit:
+            match = _API_RECOVERY_DESC_RE.search(last_desc)
+            if match and match.group(1) == match.group(2):
+                return None, "provider_unreachable"
+        if inactivity_limit is not None and idle_secs >= inactivity_limit:
+            return None, "inactivity"
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -2391,36 +2462,48 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # thread used for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
-        _inactivity_timeout = False
+        _stop_reason = None
         try:
-            if _cron_inactivity_limit is None:
-                # Unlimited — just wait for the result.
-                result = _cron_future.result()
-            else:
-                result = None
-                while True:
-                    done, _ = concurrent.futures.wait(
-                        {_cron_future}, timeout=_POLL_INTERVAL,
-                    )
-                    if done:
-                        result = _cron_future.result()
-                        break
-                    # Agent still running — check inactivity.
-                    _idle_secs = 0.0
-                    if hasattr(agent, "get_activity_summary"):
-                        try:
-                            _act = agent.get_activity_summary()
-                            _idle_secs = _act.get("seconds_since_activity", 0.0)
-                        except Exception:
-                            pass
-                    if _idle_secs >= _cron_inactivity_limit:
-                        _inactivity_timeout = True
-                        break
+            result, _stop_reason = _wait_for_cron_result(
+                agent, _cron_future,
+                inactivity_limit=_cron_inactivity_limit,
+                poll_interval=_POLL_INTERVAL,
+                api_recovery_limit=_cron_api_recovery_limit(),
+            )
         except Exception:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
         finally:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
+
+        _inactivity_timeout = _stop_reason == "inactivity"
+        if _stop_reason == "provider_unreachable":
+            # AIS-332 / SUP-20260914-063903: every API retry failed with a
+            # connection error and the final rebuilt-client attempt then sat
+            # silently (DNS down after wake-from-sleep). Waiting out the full
+            # inactivity limit on top (975 s in the reported run) buys nothing
+            # and hides the real cause behind "idle for 975s"; fail now with
+            # the cause the user needs to see.
+            _activity = {}
+            if hasattr(agent, "get_activity_summary"):
+                try:
+                    _activity = agent.get_activity_summary()
+                except Exception:
+                    pass
+            _last_desc = _activity.get("last_activity_desc", "unknown")
+            _secs_ago = _activity.get("seconds_since_activity", 0)
+            logger.error(
+                "Job '%s': provider unreachable — %s, no activity for %.0fs; "
+                "failing the run instead of waiting for the inactivity limit",
+                job_name, _last_desc, _secs_ago,
+            )
+            if hasattr(agent, "interrupt"):
+                agent.interrupt("Cron job aborted (provider unreachable)")
+            raise ConnectionError(
+                "Provider unreachable (network/DNS): the model API could not be "
+                f"reached after {_last_desc}; no activity for {int(_secs_ago)}s. "
+                "Check the network connection and run the job again."
+            )
 
         if _inactivity_timeout:
             # Build diagnostic summary from the agent's activity tracker.
