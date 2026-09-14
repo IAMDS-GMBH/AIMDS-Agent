@@ -10,6 +10,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import logging
 import pytest
 
 
@@ -4954,3 +4955,86 @@ class TestToolPrefix:
             assert mt.get_mcp_server_for_tool("mcp_unknown_x") is None
         finally:
             mt._forget_mcp_tool_server("mcp_op_list_work_packages")
+
+
+class TestMissingIncludeTools:
+    """AIS-330 / SUP-20260914-152536: configured tools the server does not
+    advertise are logged once and exposed for tool_search diagnostics."""
+
+    def _cleanup(self, registered, name):
+        from tools.registry import registry
+        from tools.mcp_tool import _lock, _mcp_missing_include_tools, _mcp_tool_server_names
+        for tool_name in registered:
+            registry.deregister(tool_name)
+        with _lock:
+            _mcp_missing_include_tools.pop(name, None)
+            for tool_name in registered:
+                _mcp_tool_server_names.pop(tool_name, None)
+
+    def test_missing_include_entries_are_logged_and_recorded(self, caplog):
+        from tools.mcp_tool import (
+            _register_server_tools, get_mcp_missing_include_tools,
+            get_mcp_server_registered_tool_names,
+        )
+        # A server name outside the catalog: a catalog entry would merge its
+        # manifest default_enabled list into the include set (AIS-288).
+        server = _make_mock_server(
+            "OPDemo",
+            tools=[_make_mcp_tool("list_projects", "List"), _make_mcp_tool("get_work_package", "Get")],
+        )
+        config = {
+            "tool_prefix": "opd",
+            "tools": {"include": [
+                "list_projects", "mcp_opd_get_work_package", "update_work_package",
+                "create_work_package", "list_resources",
+            ]},
+        }
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+            registered = _register_server_tools("OPDemo", server, config)
+        try:
+            assert sorted(registered) == ["mcp_opd_get_work_package", "mcp_opd_list_projects"]
+            assert get_mcp_missing_include_tools("OPDemo") == ["create_work_package", "update_work_package"]
+            assert get_mcp_server_registered_tool_names("OPDemo") == ["mcp_opd_get_work_package", "mcp_opd_list_projects"]
+            warnings = [r for r in caplog.records if "not advertised by the server" in r.getMessage()]
+            assert len(warnings) == 1
+            msg = warnings[0].getMessage()
+            assert "2 of 5 configured tool(s)" in msg
+            assert "create_work_package, update_work_package" in msg
+            assert "OPENPROJECT_WRITE_PROJECTS" in msg
+        finally:
+            self._cleanup(registered, "OPDemo")
+            from tools.mcp_tool import _mcp_server_prefixes, _prefix_lock
+            with _prefix_lock:
+                _mcp_server_prefixes.pop("OPDemo", None)
+
+    def test_no_warning_when_every_include_is_served(self, caplog):
+        from tools.mcp_tool import _register_server_tools, get_mcp_missing_include_tools
+        server = _make_mock_server("Demo", tools=[_make_mcp_tool("alpha", "A"), _make_mcp_tool("beta", "B")])
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+            registered = _register_server_tools("Demo", server, {"tools": {"include": ["alpha"]}})
+        try:
+            assert registered == ["mcp_Demo_alpha"]
+            assert get_mcp_missing_include_tools("Demo") == []
+            assert not [r for r in caplog.records if "not advertised" in r.getMessage()]
+        finally:
+            self._cleanup(registered, "Demo")
+
+    def test_record_cleared_when_include_list_is_empty(self):
+        from tools.mcp_tool import _lock, _mcp_missing_include_tools, _register_server_tools, get_mcp_missing_include_tools
+        with _lock:
+            _mcp_missing_include_tools["Demo2"] = ["stale"]
+        server = _make_mock_server("Demo2", tools=[_make_mcp_tool("alpha", "A")])
+        registered = _register_server_tools("Demo2", server, {})
+        try:
+            assert get_mcp_missing_include_tools("Demo2") == []
+        finally:
+            self._cleanup(registered, "Demo2")
+
+    def test_prefix_accessor(self):
+        from tools.mcp_tool import _configure_tool_prefix, _mcp_server_prefixes, _prefix_lock, get_mcp_server_prefixes
+        _configure_tool_prefix("PrefixDemo", {"tool_prefix": "pd"}, ["x"])
+        try:
+            assert get_mcp_server_prefixes().get("PrefixDemo") == "pd"
+        finally:
+            with _prefix_lock:
+                _mcp_server_prefixes.pop("PrefixDemo", None)
