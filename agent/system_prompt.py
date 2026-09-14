@@ -247,6 +247,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         jira_guidance = _r.build_jira_guidance(_guidance_names)
         if jira_guidance:
             stable_parts.append(jira_guidance)
+
+        # AIS-327: per-project routing while Jira and OpenProject are both
+        # connected. Gated on the reachable tool names like the blocks above.
+        ticket_routing_guidance = _r.build_ticket_routing_guidance(_guidance_names)
+        if ticket_routing_guidance:
+            stable_parts.append(ticket_routing_guidance)
     # Tool-use enforcement: tells the model to actually call tools instead
     # of describing intended actions.  Controlled by config.yaml
     # agent.tool_use_enforcement:

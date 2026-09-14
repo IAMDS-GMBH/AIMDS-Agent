@@ -1563,3 +1563,180 @@ class TestNamedServerSurvivesKeywordBlobs:
         hits = search_catalog(self._catalog(monkeypatch), "github tempo worklog", limit=4)
         sources = {h.source_name for h in hits}
         assert {"mcp-TempoMCP", "mcp-GithubMCP"} <= sources, [h.name for h in hits]
+
+
+# ---------------------------------------------------------------------------
+# AIS-327: a ~150-tool server with multi-paragraph descriptions (openproject-ce-mcp)
+# ---------------------------------------------------------------------------
+
+_OP_LIST_WP_DESC = """List work packages with structured filters and no free-text query requirement.
+
+project accepts a numeric ID, exact identifier/slug, or project name; the
+parameter is named project, not project_id. There is no generic
+filters=[...] parameter — each filter is its own named argument (version,
+status, assignee, the date filters, etc.), listed below.
+
+open_only=true restricts results to not-closed work packages. overdue_only=true
+restricts results to work packages with due_date before today.
+
+sort_by accepts a list of sort criteria in format "field:direction". The
+paragraph-three-only term is zebrafilter."""
+
+_OP_TOOLS = {
+    "list_projects": "List visible projects with an optional name/identifier filter.",
+    "get_project": "Fetch a compact project summary by id or identifier.",
+    "list_work_packages": _OP_LIST_WP_DESC,
+    "search_work_packages": "Search work packages by free-text query matching subject/ID.\n\nOptional project, status, open_only and assignee_me filters.",
+    "get_work_package": "Fetch a detailed work package summary by id or displayId reference.",
+    "list_my_open_work_packages": "List the current user's open assigned work packages.\n\nselect fields: id, subject, due_date.",
+    "create_work_package": "Prepare or create a work package.\n\nThe tool validates the payload first. Set confirm=true to write.",
+    "create_subtask": "Prepare or create a child work package below an existing parent.",
+    "update_work_package": "Prepare or update a work package.\n\nSet confirm=true to write.",
+    "add_work_package_comment": "Prepare or add a comment to a work package.",
+    "create_work_package_relation": "Prepare or create a relation between work packages.",
+    "delete_work_package": "Prepare or delete a work package.",
+    "bulk_create_work_packages": "Validate and create multiple work packages in one call.",
+    "bulk_update_work_packages": "Validate and update multiple work packages in one call.",
+    "list_time_entries": "List time entries with optional project, work package, user, and date filters.",
+    "create_time_entry": "Prepare or create a time entry.\n\nhours accepts an ISO8601 duration string (e.g., 'PT8H').",
+    "list_versions": "List versions globally or scoped to a specific project.",
+    "list_boards": "List saved OpenProject boards/queries globally or scoped to a project.",
+    "list_meetings": "List meetings globally or scoped to a project.",
+    "add_meeting_agenda_item": "Prepare or create a meeting agenda item.",
+    "copy_project": "Validate and then copy an existing project into a new project.",
+    "cancel_recurring_meeting_occurrence": "Validate and then cancel a not-yet-materialized occurrence.",
+}
+
+_JIRA_TOOLS = {
+    "jira_search": "Search Jira issues using JQL (Jira Query Language).",
+    "jira_get_issue": "Get details of a specific Jira issue including its Epic links.",
+    "jira_create_issue": "Create a new Jira issue with optional Epic link or parent.",
+    "jira_update_issue": "Update an existing Jira issue including changing status.",
+    "jira_get_all_projects": "Get all Jira projects accessible to the current user.",
+    "jira_add_worklog": "Add a worklog entry to a Jira issue.",
+}
+
+
+class TestLargeServerOpenProject:
+    @staticmethod
+    def _register(name, toolset, description):
+        from tools.registry import registry
+        registry.register(name=name, toolset=toolset, schema=_td(name, description)["function"],
+                          handler=lambda a, **k: "{}", description=description)
+
+    def _catalog(self, monkeypatch):
+        import tools.tool_search as ts
+        monkeypatch.setattr(ts, "_get_mcp_server_metadata", lambda: {})
+        monkeypatch.setattr(ts, "_get_dynamic_mcp_keywords_map", lambda: {})
+        monkeypatch.setattr(ts, "_get_dynamic_skill_keywords_map", lambda: {})
+        monkeypatch.setattr(ts, "_manifest_default_tools", lambda source: [
+            "get_current_user", "list_projects", "list_work_packages", "search_work_packages",
+            "list_my_open_work_packages", "create_work_package",
+        ] if source == "mcp-OpenProjectMCP" else [])
+        defs = []
+        for tool, desc in _OP_TOOLS.items():
+            name = f"mcp_op_{tool}"  # short tool_prefix, toolset carries the server name
+            self._register(name, "mcp-OpenProjectMCP", desc)
+            defs.append(_td(name, desc.split("\n")[0]))  # schema carries the abridged text
+        for tool, desc in _JIRA_TOOLS.items():
+            name = f"mcp_AtlassianMCP_{tool}"
+            self._register(name, "mcp-AtlassianMCP", desc)
+            defs.append(_td(name, desc))
+        for tool, desc in {"create_pull_request": "Create a pull request", "list_issues": "List GitHub issues"}.items():
+            name = f"mcp_GithubMCP_{tool}"
+            self._register(name, "mcp-GithubMCP", desc)
+            defs.append(_td(name, desc))
+        return ts.build_catalog(defs)
+
+    def test_generic_name_words_do_not_name_the_server(self, monkeypatch):
+        catalog = self._catalog(monkeypatch)
+        entry = next(e for e in catalog if e.name == "mcp_op_list_work_packages")
+        assert "open" not in entry._server_tokens and "project" not in entry._server_tokens
+        assert {"openproject", "openprojectmcp", "arbeitspakete"} <= entry._server_tokens
+
+    @pytest.mark.parametrize("query", ["open jira issues", "jira project AIS", "alle offenen jira tickets"])
+    def test_jira_queries_stay_with_jira(self, monkeypatch, query):
+        from tools.tool_search import search_catalog
+        names = [h.name for h in search_catalog(self._catalog(monkeypatch), query, limit=3)]
+        assert names and all(n.startswith("mcp_AtlassianMCP_") for n in names), (query, names)
+
+    def test_openproject_queries_find_the_right_tools(self, monkeypatch):
+        from tools.tool_search import search_catalog
+        catalog = self._catalog(monkeypatch)
+        top = lambda q, n=3: [h.name for h in search_catalog(catalog, q, limit=n)]
+        assert top("openproject arbeitspakete suchen")[0] == "mcp_op_search_work_packages"
+        assert "mcp_op_list_my_open_work_packages" in top("meine offenen arbeitspakete")
+        assert top("arbeitspaket erstellen")[0] == "mcp_op_create_work_package"
+        assert "mcp_op_create_time_entry" in top("zeit buchen openproject")
+        assert "mcp_op_add_work_package_comment" in top("openproject kommentar hinzufügen")
+
+    def test_full_registry_description_is_indexed(self, monkeypatch):
+        """The schema carries the abridged description; a term that only
+        appears in paragraph three of the registry text must still match."""
+        from tools.tool_search import search_catalog
+        names = [h.name for h in search_catalog(self._catalog(monkeypatch), "zebrafilter", limit=3)]
+        assert names and names[0] == "mcp_op_list_work_packages"
+
+    def test_browse_lists_manifest_defaults_first(self, monkeypatch):
+        from tools.tool_search import search_catalog
+        names = [h.name for h in search_catalog(self._catalog(monkeypatch), "openproject", limit=8)]
+        assert names[:5] == [
+            "mcp_op_list_projects", "mcp_op_list_work_packages", "mcp_op_search_work_packages",
+            "mcp_op_list_my_open_work_packages", "mcp_op_create_work_package",
+        ]
+        assert len(names) == len(_OP_TOOLS)
+        assert names[5:] == sorted(names[5:])
+        assert all(n.startswith("mcp_op_") for n in names)
+
+    def test_dispatch_reports_source_total_and_truncation(self, monkeypatch):
+        import tools.tool_search as ts
+        catalog = self._catalog(monkeypatch)
+        monkeypatch.setattr(ts, "_cached_catalog", lambda deferrable, skills: catalog)
+        monkeypatch.setattr(ts, "_ensure_mcp_discovery_completed", lambda: None)
+        monkeypatch.setattr(ts, "SOURCE_BROWSE_CAP", 10)
+        defs = [_td(e.name, e.description) for e in catalog]
+        out = json.loads(ts.dispatch_tool_search({"query": "openproject", "limit": 8}, current_tool_defs=defs))
+        assert out["mode"] == "source_browse"
+        assert out["source_total"] == len(_OP_TOOLS)
+        assert out["truncated"] is True and "hint" in out
+        assert out["autoload"] == []
+        ranked = json.loads(ts.dispatch_tool_search({"query": "arbeitspaket erstellen"}, current_tool_defs=defs))
+        assert ranked["mode"] == "ranked" and "source_total" not in ranked
+
+    def test_alias_normalization(self):
+        from tools.tool_search import _normalize_source_key
+        assert _normalize_source_key("arbeitspakete") == "openprojectmcp"
+        assert _normalize_source_key("mcp-OpenProjectMCP") == "openprojectmcp"
+        assert _normalize_source_key("jira") == "atlassianmcp"
+
+
+class TestKeywordBlobUsesFirstLineOnly:
+    def setup_method(self):
+        from tools.mcp_tool import clear_mcp_server_keywords
+        clear_mcp_server_keywords()
+
+    def teardown_method(self):
+        from tools.mcp_tool import clear_mcp_server_keywords
+        clear_mcp_server_keywords()
+
+    def test_multi_paragraph_descriptions_index_the_first_line(self):
+        from tools.mcp_tool import _index_mcp_server_keywords, get_mcp_server_metadata
+
+        class DummyTool:
+            def __init__(self, name, description):
+                self.name = name
+                self.description = description
+
+        class DummyServer:
+            def __init__(self, tools):
+                self._tools = tools
+
+        server = DummyServer([DummyTool("list_work_packages", _OP_LIST_WP_DESC)])
+        _index_mcp_server_keywords("OpenProjectMCP", server, {"command": "uvx", "args": ["openproject-ce-mcp==0.4.0"]},
+                                   ["mcp_op_list_work_packages"])
+        keywords = set(get_mcp_server_metadata()["OpenProjectMCP"]["keywords"])
+        assert {"work", "packages", "structured", "filters"} <= keywords
+        assert "zebrafilter" not in keywords and "overdue" not in keywords
+        # PascalCase parts that are plain English words are not server keywords
+        assert "open" not in keywords and "project" not in keywords
+        assert "openproject" in keywords  # from the uvx package spec

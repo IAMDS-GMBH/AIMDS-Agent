@@ -150,6 +150,15 @@ class CatalogEntry:
     post_install: str = ""
     disabled: bool = False
     manifest_path: Path = field(default_factory=Path)
+    # AIS-327: optional short prefix for the registered tool names
+    # (``mcp_<tool_prefix>_<tool>`` instead of ``mcp_<name>_<tool>``), written
+    # to ``mcp_servers.<name>.tool_prefix`` at install time. Servers with a
+    # large tool surface (openproject-ce-mcp: ~150 tools) save tokens in every
+    # tool_search hit, call and result.
+    tool_prefix: str = ""
+
+
+_TOOL_PREFIX_RE = re.compile(r"^[a-z0-9]{1,8}$")
 
 
 # ─── Manifest loader ─────────────────────────────────────────────────────────
@@ -208,6 +217,12 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         raise CatalogError(f"{path}: 'description' required")
 
     source = str(data.get("source") or "").strip()
+
+    tool_prefix = str(data.get("tool_prefix") or "").strip()
+    if tool_prefix and not _TOOL_PREFIX_RE.match(tool_prefix):
+        raise CatalogError(
+            f"{path}: tool_prefix must match {_TOOL_PREFIX_RE.pattern} (got {tool_prefix!r})"
+        )
 
     transport_raw = data.get("transport") or {}
     if not isinstance(transport_raw, dict):
@@ -314,6 +329,7 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         post_install=str(data.get("post_install") or ""),
         disabled=bool(data.get("disabled", False)),
         manifest_path=path,
+        tool_prefix=tool_prefix,
     )
 
 
@@ -1146,6 +1162,8 @@ def _build_server_config(
                 cfg["auth"] = "oauth"
         if headers:
             cfg["headers"] = headers
+    if entry.tool_prefix:
+        cfg["tool_prefix"] = entry.tool_prefix
     return cfg
 
 

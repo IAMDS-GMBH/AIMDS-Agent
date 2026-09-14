@@ -1885,3 +1885,36 @@ class TestMailSafetyGuidance:
         text = build_mail_safety_guidance({"mcp_EMailMCP_email_trash_message", "mcp_EMailMCP_email_get_audit_log"})
         assert "IMAP mailbox" in text and "mcp_EMailMCP_email_trash_message(message_id, folder)" in text
         assert "Outlook/M365" not in text
+
+
+class TestBuildTicketRoutingGuidance:
+    """AIS-327: per-project routing only while Jira AND OpenProject can write."""
+
+    JIRA = "mcp_AtlassianMCP_jira_create_issue"
+    OP = "mcp_op_create_work_package"
+
+    def test_empty_without_both_systems_or_the_tool(self):
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        assert g(None) == ""
+        assert g({self.JIRA, "ticket_routing", "clarify"}) == ""
+        assert g({self.OP, "ticket_routing", "clarify"}) == ""
+        assert g({self.JIRA, self.OP, "clarify"}) == ""
+        assert g({"mcp_AtlassianMCP_jira_search", "mcp_op_list_work_packages", "ticket_routing"}) == ""
+
+    def test_full_guidance_with_both_systems(self):
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        text = g({self.JIRA, self.OP, "ticket_routing", "clarify", "mcp_TempoMCP_createWorklog", "mcp_op_create_time_entry"})
+        assert text.startswith("# Ticket routing: Jira and OpenProject are both connected")
+        assert "ticket_routing(action='get'" in text
+        assert "`clarify`" in text and "set_default" in text and "from now on always" in text
+        assert "external customer" in text and "never guess" in text
+        assert "mcp_TempoMCP_createWorklog" in text and "mcp_op_create_time_entry" in text
+
+    def test_without_clarify_the_model_must_not_write(self):
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        text = g({self.JIRA, self.OP, "ticket_routing"})
+        assert "do NOT write" in text and "clarify_choices" not in text
+
+    def test_wired_into_run_agent_exports(self):
+        import run_agent
+        assert callable(getattr(run_agent, "build_ticket_routing_guidance", None))

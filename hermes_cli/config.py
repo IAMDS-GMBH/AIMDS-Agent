@@ -2756,6 +2756,17 @@ DEFAULT_CONFIG = {
             # 0 disables; tool_describe / a direct call still load a tool.
             "autoload_top_n": 3,
         },
+        # Compact MCP tool schemas (AIS-327). MCP servers ship multi-paragraph
+        # tool descriptions and Pydantic schemas with `title` / `default: null`
+        # on every property (openproject-ce-mcp: ≈ 1,250 tokens per tool). The
+        # model-facing schema gets the first paragraph(s) up to
+        # `description_max_chars` and slimmed metadata; the unabridged
+        # description stays in the registry (tool_describe, tool_search index).
+        # Per server: `mcp_servers.<name>.compact: false`.
+        "mcp_schema_compact": {
+            "enabled": True,
+            "description_max_chars": 400,
+        },
     },
 
     # Logging — controls file logging to ~/.hermes/logs/.

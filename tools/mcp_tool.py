@@ -90,7 +90,7 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import Any, Coroutine, Dict, List, Optional, Set, Tuple
+from typing import Any, Coroutine, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
@@ -1526,8 +1526,7 @@ class MCPServerTask:
             # notifications. Tools absent from the fresh list are no longer
             # callable, so remove only those stale registry entries first.
             stale_tool_names = old_tool_names - {
-                f"mcp_{sanitize_mcp_name_component(self.name)}_"
-                f"{sanitize_mcp_name_component(tool.name)}"
+                mcp_registered_tool_name(self.name, tool.name)
                 for tool in new_mcp_tools
             }
             for tool_name in stale_tool_names:
@@ -4454,6 +4453,20 @@ _MCP_TOOL_DESCRIPTION_NOTES: Dict[Tuple[str, str], str] = {
     ),
     ("TempoMCP", "editWorklog"): (" Edit an existing Tempo worklog by id."),
     ("TempoMCP", "deleteWorklog"): (" Delete a Tempo worklog by id."),
+    # openproject-ce-mcp (AIS-327): OpenProject tracks time the same way Jira +
+    # Tempo do — time entries on a work package. Name the Tempo counterpart so
+    # timesheet questions land here for OpenProject projects.
+    ("OpenProjectMCP", "list_time_entries"): (
+        " OpenProject counterpart of Tempo retrieveWorklogs: pass user='me' plus "
+        "spent_on_from/spent_on_to (YYYY-MM-DD) for timesheet, hour-total and "
+        "missing-day questions; `hours` is an ISO 8601 duration (PT1H30M)."
+    ),
+    ("OpenProjectMCP", "create_time_entry"): (
+        " OpenProject counterpart of Tempo createWorklog: book time on a work "
+        "package (work_package_id, spent_on YYYY-MM-DD, hours as ISO 8601 e.g. "
+        "PT1H30M, activity from list_time_entry_activities). Preview first, then "
+        "call again with confirm=true."
+    ),
     ("AtlassianMCP", "jira_add_worklog"): (
         " NOTE: always pass an explicit `started` timestamp reflecting when "
         "the work actually began, and derive `time_spent` from the real "
@@ -4525,7 +4538,112 @@ def _lookup_tool_description_note(
     return None
 
 
-def _convert_mcp_schema(server_name: str, mcp_tool, provider: Optional[str] = None) -> dict:
+_COMPACT_DESCRIPTION_DEFAULT_MAX_CHARS = 400
+_COMPACT_ELLIPSIS = " …"
+
+
+def _schema_compact_settings(server_config: Optional[dict] = None) -> Tuple[bool, int]:
+    """``(enabled, description_max_chars)`` from ``tools.mcp_schema_compact``.
+
+    ``mcp_servers.<name>.compact: false`` switches a single server off.
+    Defaults apply when the config cannot be read.
+    """
+    enabled = True
+    max_chars = _COMPACT_DESCRIPTION_DEFAULT_MAX_CHARS
+    try:
+        from hermes_cli.config import load_config
+
+        raw = ((load_config() or {}).get("tools") or {}).get("mcp_schema_compact")
+        if isinstance(raw, bool):
+            enabled = raw
+        elif isinstance(raw, dict):
+            enabled = bool(raw.get("enabled", True))
+            try:
+                max_chars = max(80, int(raw.get("description_max_chars") or max_chars))
+            except (TypeError, ValueError):
+                pass
+    except Exception:
+        pass
+    override = (server_config or {}).get("compact")
+    if isinstance(override, bool):
+        enabled = override
+    return enabled, max_chars
+
+
+def _compact_mcp_description(description: str, max_chars: int = _COMPACT_DESCRIPTION_DEFAULT_MAX_CHARS) -> str:
+    """Abridge a multi-paragraph MCP tool description deterministically.
+
+    Paragraphs are appended while they fit into *max_chars*; the first one
+    always counts. The paragraph that overflows is cut at the last sentence
+    end (else the last word) before the limit, and ``" …"`` marks the cut.
+    Wrapped lines are joined. openproject-ce-mcp ships ~2,500-character
+    descriptions per tool (≈ 625 tokens each); the unabridged text stays in
+    the registry for ``tool_describe`` (AIS-327).
+    """
+    text = str(description or "").strip()
+    if not text:
+        return ""
+    paragraphs = [re.sub(r"\s+", " ", p).strip() for p in re.split(r"\n\s*\n", text)]
+    paragraphs = [p for p in paragraphs if p]
+    if not paragraphs:
+        return ""
+    if len(text) <= max_chars and len(paragraphs) == 1:
+        return paragraphs[0]
+    out = ""
+    truncated = False
+    for para in paragraphs:
+        candidate = f"{out} {para}".strip() if out else para
+        if len(candidate) <= max_chars:
+            out = candidate
+            continue
+        budget = max_chars - len(out) - len(_COMPACT_ELLIPSIS) - (1 if out else 0)
+        if budget >= 40:
+            piece = para[:budget]
+            sentence_end = max(piece.rfind(". "), piece.rfind("! "), piece.rfind("? "))
+            if sentence_end >= 20:
+                piece = piece[: sentence_end + 1]
+            else:
+                piece = piece[: piece.rfind(" ")] if " " in piece else piece
+            out = f"{out} {piece}".strip()
+        truncated = True
+        break
+    if truncated or len(" ".join(paragraphs)) > len(out):
+        out = out.rstrip() + _COMPACT_ELLIPSIS
+    return out
+
+
+def _slim_schema_metadata(node: Any) -> Any:
+    """Drop prompt-irrelevant JSON Schema metadata (AIS-327).
+
+    Pydantic-generated MCP schemas carry ``"title": "Assignee Me"`` and
+    ``"default": null`` on every property — pure token cost for the model.
+    Property/definition *names* (``properties``, ``$defs``, …) are keys of a
+    named map and are never touched, so a parameter called ``title`` survives.
+    ``nullable`` (runtime coercion hint) and ``examples`` are kept.
+    """
+    if isinstance(node, list):
+        return [_slim_schema_metadata(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out: Dict[str, Any] = {}
+    for key, value in node.items():
+        if key == "title":
+            continue
+        if key == "default" and value is None:
+            continue
+        if key in ("properties", "$defs", "definitions", "patternProperties") and isinstance(value, dict):
+            out[key] = {name: _slim_schema_metadata(sub) for name, sub in value.items()}
+            continue
+        out[key] = _slim_schema_metadata(value)
+    return out
+
+
+def _convert_mcp_schema(
+    server_name: str,
+    mcp_tool,
+    provider: Optional[str] = None,
+    server_config: Optional[dict] = None,
+) -> dict:
     """Convert an MCP tool listing to the Hermes registry schema format.
 
     Args:
@@ -4537,24 +4655,34 @@ def _convert_mcp_schema(server_name: str, mcp_tool, provider: Optional[str] = No
                      (e.g. the cloud memory MCP, matched by `provider: iamds`
                      regardless of its config key) — see
                      `_lookup_tool_description_note`.
+        server_config: The ``mcp_servers.<name>`` block (``compact`` override).
 
     Returns:
-        A dict suitable for ``registry.register(schema=...)``.
+        A dict suitable for ``registry.register(schema=...)``. With schema
+        compaction on (default, ``tools.mcp_schema_compact``) ``description``
+        is abridged and ``_full_description`` carries the unabridged text for
+        the registry; callers pop that key before handing the schema out.
     """
     safe_tool_name = sanitize_mcp_name_component(mcp_tool.name)
-    safe_server_name = sanitize_mcp_name_component(server_name)
-    prefixed_name = f"mcp_{safe_server_name}_{safe_tool_name}"
-    description = mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"
+    prefixed_name = f"mcp_{mcp_tool_name_prefix(server_name)}_{safe_tool_name}"
+    full_description = mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"
+    compact_enabled, max_chars = _schema_compact_settings(server_config)
+    description = _compact_mcp_description(full_description, max_chars) if compact_enabled else full_description
     note = _lookup_tool_description_note(server_name, mcp_tool.name, provider=provider)
     if note:
         description = f"{description}{note}"
-    return {
+        full_description = f"{full_description}{note}"
+    parameters = _normalize_mcp_input_schema(getattr(mcp_tool, "inputSchema", None))
+    if compact_enabled:
+        parameters = _slim_schema_metadata(parameters)
+    schema = {
         "name": prefixed_name,
         "description": description,
-        "parameters": _normalize_mcp_input_schema(
-            getattr(mcp_tool, "inputSchema", None)
-        ),
+        "parameters": parameters,
     }
+    if full_description != description:
+        schema["_full_description"] = full_description
+    return schema
 
 
 def _build_utility_schemas(server_name: str) -> List[dict]:
@@ -4563,7 +4691,7 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
     Returns a list of (schema, handler_factory_name) tuples encoded as dicts
     with keys: schema, handler_key.
     """
-    safe_name = sanitize_mcp_name_component(server_name)
+    safe_name = mcp_tool_name_prefix(server_name)
     return [
         {
             "schema": {
@@ -4746,6 +4874,114 @@ def _track_mcp_tool_server(tool_name: str, server_name: str) -> None:
         _mcp_tool_server_names[tool_name] = safe_server_name
 
 
+def get_mcp_server_for_tool(tool_name: str) -> Optional[str]:
+    """Server (sanitized config key) that registered *tool_name*, or None.
+
+    Registered names are ``mcp_<prefix>_<tool>`` where the prefix is the
+    server name *or* its configured ``tool_prefix`` (AIS-327), so the second
+    name segment no longer identifies the server. Use this instead of parsing.
+    """
+    with _lock:
+        return _mcp_tool_server_names.get(str(tool_name or ""))
+
+
+# ---------------------------------------------------------------------------
+# Short tool prefixes (AIS-327)
+# ---------------------------------------------------------------------------
+#
+# ``mcp_servers.<name>.tool_prefix: op`` registers a server's tools as
+# ``mcp_op_<tool>`` instead of ``mcp_<name>_<tool>``. Written by the catalog
+# from the manifest's ``tool_prefix`` (openproject-ce-mcp: ~150 tools, so the
+# prefix shows up in every tool_search hit, call and result). The
+# ``mcp_<x>_`` shape is preserved: deferral, grouping and include/exclude
+# aliasing keep working; the server itself is resolved through
+# ``get_mcp_server_for_tool``.
+
+_mcp_server_prefixes: Dict[str, str] = {}
+_prefix_lock = threading.Lock()
+_TOOL_PREFIX_RE = re.compile(r"^[a-z0-9]{1,8}$")
+# The Suite MCP is addressed by its literal prefix in tools/document_convert.py.
+_TOOL_PREFIX_EXEMPT_SERVERS = frozenset({"AIMDSSuiteMCP"})
+
+
+_MEMORY_BOOTSTRAP_SUFFIXES = ("memory_context", "memory_save", "memory_search")
+
+
+def _prefix_exempt(server_name: str, tool_names: Iterable[str] = ()) -> Optional[str]:
+    """Reason a server may not use a short prefix, or None.
+
+    The primary memory server is addressed as ``mcp_<primary>_memory_*`` by
+    agent/memory_facade.py, agent/memory_dual_write.py and
+    tools/tool_search.py. ``get_primary_mcp_server_name`` falls back to the
+    only/first configured server, so the exemption additionally requires the
+    server to actually ship memory tools — a lone OpenProjectMCP is not a
+    memory server.
+    """
+    if server_name in _TOOL_PREFIX_EXEMPT_SERVERS:
+        return "the Suite MCP is addressed by its full prefix"
+    try:
+        from hermes_cli.config import get_primary_mcp_server_name
+
+        is_primary = bool(server_name) and server_name == get_primary_mcp_server_name()
+    except Exception:
+        is_primary = False
+    if is_primary and any(
+        str(t or "").lower().endswith(_MEMORY_BOOTSTRAP_SUFFIXES) for t in tool_names
+    ):
+        return "the primary memory server is addressed by its full prefix"
+    return None
+
+
+def _configure_tool_prefix(
+    server_name: str, config: Optional[dict], tool_names: Iterable[str] = ()
+) -> str:
+    """Record the name prefix for *server_name* from its config and return it.
+
+    Falls back to the sanitized server name (today's behaviour) when no
+    ``tool_prefix`` is set, when it is malformed, when the server is exempt,
+    or when another server already owns the same prefix.
+    """
+    fallback = sanitize_mcp_name_component(server_name)
+    raw = str((config or {}).get("tool_prefix") or "").strip()
+    with _prefix_lock:
+        if not raw:
+            _mcp_server_prefixes.pop(server_name, None)
+            return fallback
+        if not _TOOL_PREFIX_RE.match(raw):
+            logger.warning(
+                "MCP server '%s': tool_prefix %r must match %s — using '%s'",
+                server_name, raw, _TOOL_PREFIX_RE.pattern, fallback,
+            )
+            _mcp_server_prefixes.pop(server_name, None)
+            return fallback
+        reason = _prefix_exempt(server_name, tool_names)
+        if reason:
+            logger.warning("MCP server '%s': tool_prefix %r ignored — %s", server_name, raw, reason)
+            _mcp_server_prefixes.pop(server_name, None)
+            return fallback
+        owner = next((s for s, p in _mcp_server_prefixes.items() if p == raw and s != server_name), None)
+        if owner:
+            logger.warning(
+                "MCP server '%s': tool_prefix %r already used by '%s' — using '%s'",
+                server_name, raw, owner, fallback,
+            )
+            _mcp_server_prefixes.pop(server_name, None)
+            return fallback
+        _mcp_server_prefixes[server_name] = raw
+        return raw
+
+
+def mcp_tool_name_prefix(server_name: str) -> str:
+    """Name prefix for *server_name*'s tools: its ``tool_prefix`` or the sanitized name."""
+    with _prefix_lock:
+        return _mcp_server_prefixes.get(server_name) or sanitize_mcp_name_component(server_name)
+
+
+def mcp_registered_tool_name(server_name: str, tool_name: str) -> str:
+    """``mcp_<prefix>_<tool>`` as registered for *server_name*."""
+    return f"mcp_{mcp_tool_name_prefix(server_name)}_{sanitize_mcp_name_component(tool_name)}"
+
+
 def _forget_mcp_tool_server(tool_name: str) -> None:
     """Forget MCP server provenance for a deregistered tool."""
     with _lock:
@@ -4759,6 +4995,24 @@ def _forget_mcp_tool_server(tool_name: str) -> None:
 _MCP_DYNAMIC_KEYWORDS_MAP: Dict[str, Set[str]] = {}
 _MCP_SERVER_METADATA: Dict[str, Dict[str, Any]] = {}
 _mcp_keywords_lock = threading.Lock()
+
+# Mirrors tools.tool_search._GENERIC_SERVER_NAME_TOKENS (kept local so this
+# module stays importable without tool_search): PascalCase server-name parts
+# that are plain English words and must not become server keywords.
+_GENERIC_SERVER_NAME_KEYWORDS = frozenset({
+    "mcp", "server", "tools", "tool", "open", "project", "api", "ce",
+})
+
+_KEYWORD_DESCRIPTION_MAX_CHARS = 200
+
+
+def _description_first_line(description: str) -> str:
+    """First non-empty line of a tool description, capped, for keyword indexing."""
+    for line in str(description or "").splitlines():
+        line = line.strip()
+        if line:
+            return line[:_KEYWORD_DESCRIPTION_MAX_CHARS]
+    return ""
 
 
 def clear_mcp_server_keywords(server_name: Optional[str] = None) -> None:
@@ -4802,7 +5056,7 @@ def _index_mcp_server_keywords(
         camel_split_name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name)
         for part in re.split(r"[-_.:/@\s]+", camel_split_name.lower()):
             part_clean = part.strip()
-            if len(part_clean) >= 2 and part_clean not in {"mcp", "server", "tools", "tool"}:
+            if len(part_clean) >= 2 and part_clean not in _GENERIC_SERVER_NAME_KEYWORDS:
                 server_keywords.add(part_clean)
 
         # 2. Configured keywords, aliases, and categories in config.yaml
@@ -4834,11 +5088,17 @@ def _index_mcp_server_keywords(
             if token not in {"npx", "node", "python", "http", "https", "server", "modelcontextprotocol", "mcp"}:
                 server_keywords.add(token)
 
-        # 4. Auto-extracted terms from registered MCP tools
+        # 4. Auto-extracted terms from registered MCP tools.
+        # Only the tool name and the first line of its description: a server
+        # with ~150 tools and multi-paragraph descriptions (openproject-ce-mcp)
+        # otherwise yields thousands of keywords, each mapped to every other
+        # one below (millions of set entries), and the per-entry keyword blob
+        # in tool_search let every English query pass its false-positive
+        # filter (AIS-327).
         if hasattr(server, "_tools"):
             for mcp_tool in getattr(server, "_tools", []):
                 t_name = (getattr(mcp_tool, "name", "") or "").lower()
-                t_desc = (getattr(mcp_tool, "description", "") or "").lower()
+                t_desc = _description_first_line(getattr(mcp_tool, "description", "") or "").lower()
                 for token in re.split(r"[-_.:/@\s]+", f"{t_name} {t_desc}"):
                     clean = token.strip().lower()
                     if len(clean) >= 3 and clean not in {
@@ -4884,8 +5144,7 @@ def get_all_mcp_tools_metadata() -> List[Dict[str, Any]]:
                 tool_name = getattr(mcp_tool, "name", "")
                 if not tool_name:
                     continue
-                safe_server = sanitize_mcp_name_component(server_name)
-                registered_name = f"mcp_{safe_server}_{sanitize_mcp_name_component(tool_name)}"
+                registered_name = mcp_registered_tool_name(server_name, tool_name)
                 desc = getattr(mcp_tool, "description", "") or ""
                 schema = getattr(mcp_tool, "inputSchema", {}) or {}
                 tools_meta.append({
@@ -5056,7 +5315,10 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     )
     include_set = _merge_catalog_default_tools(name, include_set)
 
-    safe_server_name = sanitize_mcp_name_component(name)
+    # AIS-327: ``tool_prefix`` (short name prefix) or the sanitized server name.
+    safe_server_name = _configure_tool_prefix(
+        name, config, [getattr(t, "name", "") for t in getattr(server, "_tools", []) or []]
+    )
 
     def _should_register(tool_name: str) -> bool:
         safe_tool_name = sanitize_mcp_name_component(tool_name)
@@ -5092,8 +5354,14 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
         if not config.get("trusted", False):
             _scan_mcp_description(name, mcp_tool.name, mcp_tool.description or "")
 
-        schema = _convert_mcp_schema(name, mcp_tool, provider=config.get("provider"))
+        schema = _convert_mcp_schema(
+            name, mcp_tool, provider=config.get("provider"), server_config=config
+        )
         tool_name_prefixed = schema["name"]
+        # The registry keeps the unabridged description (AIS-327): tool_describe
+        # and the tool_search index read it; the model-facing schema carries
+        # the compact one.
+        full_description = schema.pop("_full_description", schema["description"])
 
         # Guard against collisions with built-in (non-MCP) tools.
         existing_toolset = registry.get_toolset_for_tool(tool_name_prefixed)
@@ -5115,7 +5383,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             handler=_make_tool_handler(name, mcp_tool.name, server.tool_timeout, provider=config.get("provider")),
             check_fn=_make_check_fn(name),
             is_async=False,
-            description=schema["description"],
+            description=full_description,
         )
         _track_mcp_tool_server(tool_name_prefixed, name)
         registered_names.append(tool_name_prefixed)

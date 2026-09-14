@@ -320,15 +320,18 @@ def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fall
     # Reference Key (issue key, ticket key, case ID, etc.) — for per-issue
     # tools (jira_get_worklog) the key is only in the request, not the reply.
     issue = norm.get("issue")
+    # OpenProject time entries (openproject-ce-mcp `list_time_entries`) carry
+    # `work_package_id` + `spent_on` + `hours` as an ISO 8601 duration
+    # (PT1H30M) — the Tempo-equivalent shape for AIS-327's time tracking parity.
     ref_key = (
-        _pick(norm, "issuekey", "key", "ticketid", "caseid")
+        _pick(norm, "issuekey", "key", "ticketid", "caseid", "workpackageid")
         or (issue if isinstance(issue, str) else (issue or {}).get("key") if isinstance(issue, dict) else None)
         or fallback_ref
         or ""
     )
 
     # Timestamp — a bare date plus a start time is joined into one value.
-    timestamp = _pick(norm, "started", "startdate", "createdat", "created", "date", "updatedat") or ""
+    timestamp = _pick(norm, "started", "startdate", "spenton", "createdat", "created", "date", "updatedat") or ""
     start_time = _pick(norm, "starttime")
     if timestamp and start_time and isinstance(timestamp, str) and isinstance(start_time, str) \
             and re.fullmatch(r"\d{4}-\d{2}-\d{2}", timestamp.strip()) and re.fullmatch(r"\d{2}:\d{2}(:\d{2})?", start_time.strip()):

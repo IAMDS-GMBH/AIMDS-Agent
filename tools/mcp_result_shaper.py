@@ -148,9 +148,18 @@ def is_shapeable_tool(tool_name: str) -> bool:
 
 
 def _server_of(tool_name: str) -> str:
-    # mcp_<Server>_<tool>: the server component is the second segment.
+    # mcp_<prefix>_<tool>: the prefix is the server name or its configured
+    # `tool_prefix` (AIS-327). Ask the registry for the server first so a
+    # `per_server: {OpenProjectMCP: …}` entry also matches `mcp_op_*`; fall
+    # back to the second segment for names the registry does not know.
     parts = str(tool_name or "").split("_", 2)
-    return parts[1] if len(parts) >= 2 and parts[0] == "mcp" else ""
+    segment = parts[1] if len(parts) >= 2 and parts[0] == "mcp" else ""
+    try:
+        from tools.mcp_tool import get_mcp_server_for_tool
+
+        return get_mcp_server_for_tool(tool_name) or segment
+    except Exception:
+        return segment
 
 
 def _tool_matches(tool_name: str, pattern: str) -> bool:

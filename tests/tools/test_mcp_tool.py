@@ -4795,3 +4795,162 @@ class TestDisconnectMcpServer:
              patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp_srv_tool"]):
             assert reconnect_mcp_server("srv") == ["mcp_srv_tool"]
         mock_disconnect.assert_called_once_with("srv")
+
+
+# ---------------------------------------------------------------------------
+# AIS-327: compact schemas + short tool prefixes
+# ---------------------------------------------------------------------------
+
+_LONG_DESC = (
+    "Prepare or create a work package.\n\n"
+    "The tool validates the payload first. Set confirm=true to write.\n"
+    "assignee: 'me' or numeric user id (e.g., 42). Call list_users to find ids. parent: internal id "
+    "(e.g., 952) or display_id (e.g., \"PROJ-51\"), not UI display number to nest the new work package "
+    "under a parent.\n"
+    "estimated_time, remaining_time, duration accept ISO8601 duration strings (e.g., 'PT8H' for 8 hours).\n\n"
+    "target_versions accepts a list of version names/ids to assign multiple target versions at once. "
+    "The paragraph-three-only term is zebrafilter."
+)
+
+_PYDANTIC_SCHEMA = {
+    "type": "object",
+    "title": "create_work_packageArguments",
+    "properties": {
+        "subject": {"type": "string", "title": "Subject"},
+        "assignee": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None, "title": "Assignee"},
+        "title": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None, "title": "Title"},
+        "confirm": {"type": "boolean", "default": False, "title": "Confirm"},
+    },
+    "required": ["subject"],
+}
+
+
+class TestSchemaCompaction:
+    @pytest.fixture(autouse=True)
+    def _compact_on(self, monkeypatch):
+        monkeypatch.setattr("tools.mcp_tool._schema_compact_settings", lambda cfg=None: (
+            (cfg or {}).get("compact", True), 400))
+
+    def test_description_is_abridged_and_full_text_kept(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        schema = _convert_mcp_schema("OpenProjectMCP", _make_mcp_tool("create_work_package", _LONG_DESC, _PYDANTIC_SCHEMA))
+        assert len(schema["description"]) <= 400 + 2
+        assert schema["description"].startswith("Prepare or create a work package. The tool validates the payload first. Set confirm=true")
+        assert schema["description"].endswith("…")
+        assert "zebrafilter" not in schema["description"]
+        assert "zebrafilter" in schema["_full_description"]
+        assert schema["_full_description"].startswith(_LONG_DESC[:40])
+
+    def test_schema_metadata_is_slimmed_but_property_names_survive(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        params = _convert_mcp_schema("OpenProjectMCP", _make_mcp_tool("x", "Short.", _PYDANTIC_SCHEMA))["parameters"]
+        assert "title" not in params  # top-level "...Arguments" title
+        props = params["properties"]
+        assert set(props) == {"subject", "assignee", "title", "confirm"}  # the parameter named "title" stays
+        assert "title" not in props["subject"] and "title" not in props["assignee"]
+        assert "default" not in props["assignee"]           # default: null dropped
+        assert props["confirm"]["default"] is False         # real defaults kept
+        assert props["assignee"].get("nullable") is True    # coercion hint kept
+
+    def test_short_description_unchanged_and_no_full_key(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        schema = _convert_mcp_schema("srv", _make_mcp_tool("x", "Short single paragraph."))
+        assert schema["description"] == "Short single paragraph."
+        assert "_full_description" not in schema
+
+    def test_description_note_survives_compaction(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        schema = _convert_mcp_schema("OpenProjectMCP", _make_mcp_tool("create_time_entry", _LONG_DESC))
+        assert "Tempo createWorklog" in schema["description"]
+        assert "Tempo createWorklog" in schema["_full_description"]
+
+    def test_server_override_disables_compaction(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        schema = _convert_mcp_schema("srv", _make_mcp_tool("x", _LONG_DESC, _PYDANTIC_SCHEMA), server_config={"compact": False})
+        assert schema["description"] == _LONG_DESC
+        assert "_full_description" not in schema
+        assert schema["parameters"]["properties"]["subject"]["title"] == "Subject"
+
+    def test_compact_helper_edge_cases(self):
+        from tools.mcp_tool import _compact_mcp_description
+
+        assert _compact_mcp_description("", 400) == ""
+        assert _compact_mcp_description("One.\n\nTwo.", 400) == "One. Two."
+        long_first = "A" * 500
+        out = _compact_mcp_description(long_first, 100)
+        assert len(out) <= 102 and out.endswith("…")
+
+
+class TestToolPrefix:
+    @pytest.fixture(autouse=True)
+    def _reset(self, monkeypatch):
+        import tools.mcp_tool as mt
+        monkeypatch.setattr(mt, "_mcp_server_prefixes", {})
+        monkeypatch.setattr(mt, "_schema_compact_settings", lambda cfg=None: (False, 400))
+        yield
+
+    def test_prefix_from_config_changes_registered_names(self):
+        import tools.mcp_tool as mt
+
+        assert mt._configure_tool_prefix("OpenProjectMCP", {"tool_prefix": "op"}) == "op"
+        assert mt.mcp_tool_name_prefix("OpenProjectMCP") == "op"
+        assert mt.mcp_registered_tool_name("OpenProjectMCP", "list_work_packages") == "mcp_op_list_work_packages"
+        schema = mt._convert_mcp_schema("OpenProjectMCP", _make_mcp_tool("list_work_packages", "List."))
+        assert schema["name"] == "mcp_op_list_work_packages"
+        utility = {s["schema"]["name"] for s in mt._build_utility_schemas("OpenProjectMCP")}
+        assert "mcp_op_list_resources" in utility
+
+    def test_no_prefix_falls_back_to_server_name(self):
+        import tools.mcp_tool as mt
+
+        assert mt._configure_tool_prefix("my-server", {}) == "my_server"
+        assert mt.mcp_registered_tool_name("my-server", "t") == "mcp_my_server_t"
+
+    def test_malformed_prefix_is_ignored(self):
+        import tools.mcp_tool as mt
+
+        assert mt._configure_tool_prefix("Srv", {"tool_prefix": "Op"}) == "Srv"
+        assert mt._configure_tool_prefix("Srv", {"tool_prefix": "way_too_long"}) == "Srv"
+        assert mt.mcp_tool_name_prefix("Srv") == "Srv"
+
+    def test_prefix_collision_second_server_falls_back(self):
+        import tools.mcp_tool as mt
+
+        assert mt._configure_tool_prefix("A", {"tool_prefix": "op"}) == "op"
+        assert mt._configure_tool_prefix("B", {"tool_prefix": "op"}) == "B"
+        assert mt.mcp_tool_name_prefix("A") == "op" and mt.mcp_tool_name_prefix("B") == "B"
+
+    def test_primary_memory_and_suite_servers_are_exempt(self, monkeypatch):
+        import tools.mcp_tool as mt
+
+        monkeypatch.setattr("hermes_cli.config.get_primary_mcp_server_name", lambda config=None: "IAMDS")
+        assert mt._configure_tool_prefix("IAMDS", {"tool_prefix": "mem"}, ["memory_context", "memory_save"]) == "IAMDS"
+        assert mt._configure_tool_prefix("AIMDSSuiteMCP", {"tool_prefix": "su"}) == "AIMDSSuiteMCP"
+
+    def test_lone_non_memory_server_keeps_its_prefix(self, monkeypatch):
+        """get_primary_mcp_server_name() falls back to the only configured
+        server; a lone OpenProjectMCP is not a memory server and keeps `op`."""
+        import tools.mcp_tool as mt
+
+        monkeypatch.setattr("hermes_cli.config.get_primary_mcp_server_name", lambda config=None: "OpenProjectMCP")
+        assert mt._configure_tool_prefix("OpenProjectMCP", {"tool_prefix": "op"}, ["list_work_packages"]) == "op"
+
+    def test_include_list_with_long_name_still_matches_prefixed_tool(self):
+        from tools.mcp_tool import _tool_filter_aliases
+
+        assert _tool_filter_aliases("mcp_OpenProjectMCP_list_work_packages") & _tool_filter_aliases("mcp_op_list_work_packages")
+
+    def test_get_mcp_server_for_tool_uses_registration_provenance(self):
+        import tools.mcp_tool as mt
+
+        mt._track_mcp_tool_server("mcp_op_list_work_packages", "OpenProjectMCP")
+        try:
+            assert mt.get_mcp_server_for_tool("mcp_op_list_work_packages") == "OpenProjectMCP"
+            assert mt.get_mcp_server_for_tool("mcp_unknown_x") is None
+        finally:
+            mt._forget_mcp_tool_server("mcp_op_list_work_packages")

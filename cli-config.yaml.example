@@ -461,6 +461,24 @@ prompt_caching:
 #     mcp_TempoMCP_retrieveWorklogs: { max_items: 60 }
 #     m365_list_chat_messages: { enabled: false }   # bare suffixes work too
 
+# Compact MCP tool schemas (AIS-327). MCP servers ship multi-paragraph tool
+# descriptions and Pydantic schemas with `title` / `default: null` on every
+# property (openproject-ce-mcp: ≈ 1,250 tokens per tool). The model-facing
+# schema gets the first paragraph(s) up to description_max_chars and slimmed
+# metadata; the unabridged description stays in the registry — tool_describe
+# and the tool_search index read it. Off for one server: `compact: false` on
+# its mcp_servers entry.
+#
+# tools:
+#   mcp_schema_compact:
+#     enabled: true
+#     description_max_chars: 400
+#
+# Short tool-name prefixes: `mcp_servers.<name>.tool_prefix: op` registers a
+# server's tools as mcp_op_<tool> instead of mcp_<name>_<tool> (catalog
+# entries set it in their manifest; OpenProjectMCP ships with `op`). The
+# primary memory server and the Suite MCP keep their full names.
+
 # =============================================================================
 # Auxiliary Models (Advanced — Experimental)
 # =============================================================================
