@@ -118,12 +118,24 @@ def resolve_tool(tool_names: Iterable[str], server: str, suffix: str) -> Optiona
     """Registered name for ``suffix`` on ``server`` (``mcp_<server>_<suffix>``), tolerant of sanitising."""
     wanted = suffix.lower()
     server_l = server.lower()
+    try:
+        from tools.mcp_tool import get_mcp_server_for_tool
+    except Exception:  # pragma: no cover - cron without the tools package
+        get_mcp_server_for_tool = None  # type: ignore[assignment]
     for name in tool_names:
         low = name.lower()
         if not low.startswith("mcp_"):
             continue
-        if low.endswith("_" + wanted) and server_l in low:
+        if not low.endswith("_" + wanted):
+            continue
+        if server_l in low:
             return name
+        # Servers with a short `tool_prefix` (AIS-327): `mcp_op_list_time_entries`
+        # belongs to OpenProjectMCP although the name never says so.
+        if get_mcp_server_for_tool is not None:
+            owner = get_mcp_server_for_tool(name) or ""
+            if owner.lower() == server_l:
+                return name
     return None
 
 

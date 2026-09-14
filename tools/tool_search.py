@@ -422,22 +422,33 @@ def _split_words(text: str) -> str:
     return _CAMEL_BOUNDARY_RE.sub(" ", separated)
 
 
-def _entry_search_text(td: Dict[str, Any], source_name: str = "") -> str:
+def _entry_search_text(td: Dict[str, Any], source_name: str = "", description: Optional[str] = None) -> str:
     """Build the search-text blob for a deferrable tool.
 
     Includes the tool name (with underscores broken into words so BM25 can
     match against query terms), the source/toolset name, description, and
-    parameter names. Schema bodies are excluded.
+    parameter names. Schema bodies are excluded. ``description`` overrides
+    the schema's (possibly abridged) text with the registry's full one.
     """
     fn = td.get("function") or {}
     name = fn.get("name", "")
-    desc = fn.get("description", "") or ""
+    desc = description if description is not None else (fn.get("description", "") or "")
     params = ((fn.get("parameters") or {}).get("properties") or {})
     param_names = " ".join(params.keys())
     # Break snake_case, dotted, dashed, and camelCase names into words for BM25.
     name_words = _split_words(name)
     source_words = _split_words(source_name)
     return f"{name_words} {name_words} {source_words} {desc} {param_names}"
+
+
+def _registry_description(name: str) -> str:
+    """Unabridged description from the registry entry, or "" (AIS-327)."""
+    try:
+        from tools.registry import registry
+        entry = registry.get_entry(name)
+        return str(getattr(entry, "description", "") or "") if entry is not None else ""
+    except Exception:
+        return ""
 
 
 def _classify_source(name: str) -> Tuple[str, str]:
@@ -605,7 +616,10 @@ def build_catalog(
         name = fn.get("name", "")
         if not name:
             continue
-        desc = fn.get("description", "") or ""
+        # The model-facing schema may carry an abridged description (AIS-327,
+        # `tools.mcp_schema_compact`); index the registry's unabridged text so
+        # a term from paragraph three still finds the tool.
+        desc = _registry_description(name) or fn.get("description", "") or ""
         source, source_name = _classify_source(name)
         # `_split_words`, not a hand-rolled replace chain: it also breaks
         # camelCase. Without that, `mcp_TempoMCP_retrieveWorklogs` tokenizes to
@@ -624,10 +638,10 @@ def build_catalog(
                 extra_mcp_tokens = mcp_meta[server_raw].get("keywords", [])
 
         extra_blob = " ".join(extra_mcp_tokens)
-        search_blob = f"{_entry_search_text(td, source_name)} {extra_blob}".strip()
+        search_blob = f"{_entry_search_text(td, source_name, description=desc)} {extra_blob}".strip()
 
         server_key = _normalize_source_key(source_name) if source_name else ""
-        server_tokens = set(_tokenize(source_words)) - {"mcp"}
+        server_tokens = set(_tokenize(source_words)) - _GENERIC_SERVER_NAME_TOKENS
         if server_key:
             server_tokens.add(server_key)
             server_tokens.update(
@@ -703,6 +717,16 @@ _GENERIC_SEARCH_TERMS = frozenset({
     "create", "update", "delete", "tool", "mcp"
 })
 
+# Words a PascalCase server name splits into that must never count as
+# "the query names this server" (AIS-327). "OpenProjectMCP" → open, project,
+# mcp: with those as server tokens every query containing "open" or "project"
+# ("open jira issues", "jira project AIS") earned the +30 source boost, the
+# +5 name boost and a guaranteed result slot for all ~150 OpenProject tools.
+# Aliases (`SOURCE_ALIASES`) and the full normalized name still name it.
+_GENERIC_SERVER_NAME_TOKENS = frozenset({
+    "mcp", "open", "project", "server", "tool", "tools", "api", "ce",
+})
+
 # Action verbs the user types → the verb a tool *name* carries. A typed verb
 # is as strong a signal as a typed name token ("schick … an Martin" means the
 # send tool, not the tool that merely lists Teams). Applied as a name boost in
@@ -733,6 +757,35 @@ _ACTION_VERB_SYNONYMS: Dict[str, Tuple[str, ...]] = {
     "hol": ("download", "get", "fetch"),
     "hole": ("download", "get", "fetch"),
     "holen": ("download", "get", "fetch"),
+    # Ticket / work-package verbs (AIS-327): "Arbeitspakete suchen" must reach
+    # search_work_packages, not whichever sibling shares the most trigrams.
+    # Generic verbs (search, create, list, …) are excluded from the synonym
+    # name boost on purpose; a verb the user *typed* is a different signal.
+    "such": ("search", "find"),
+    "suche": ("search", "find"),
+    "suchen": ("search", "find"),
+    "finde": ("search", "find"),
+    "finden": ("search", "find"),
+    "erstell": ("create", "add"),
+    "erstelle": ("create", "add"),
+    "erstellen": ("create", "add"),
+    "anlegen": ("create", "add"),
+    "lege": ("create", "add"),
+    "liste": ("list",),
+    "auflisten": ("list",),
+    "zeige": ("list", "get", "show"),
+    "zeigen": ("list", "get", "show"),
+    "anzeigen": ("list", "get", "show"),
+    "buche": ("create", "book", "log"),
+    "buchen": ("create", "book", "log"),
+    "kommentiere": ("add", "comment"),
+    "kommentieren": ("add", "comment"),
+    "aktualisiere": ("update", "edit"),
+    "aktualisieren": ("update", "edit"),
+    "ändere": ("update", "edit"),
+    "ändern": ("update", "edit"),
+    "lösche": ("delete", "remove"),
+    "löschen": ("delete", "remove"),
 }
 
 _GERMAN_SYNONYMS: Dict[str, List[str]] = {
@@ -829,11 +882,45 @@ _GERMAN_SYNONYMS: Dict[str, List[str]] = {
     "vector": ["vector", "memory", "search", "hybrid"],
     "aufgabe": ["todo", "task", "job", "kanban", "issue", "jira"],
     "aufgaben": ["todo", "task", "job", "kanban", "issue", "jira"],
-    "ticket": ["issue", "jira", "bug", "task"],
-    "tickets": ["issue", "jira", "bug", "task"],
-    "zeitbuchung": ["worklog", "tempo", "time", "jira"],
-    "zeitbuchungen": ["worklog", "tempo", "time", "jira"],
-    "zeiterfassung": ["worklog", "tempo", "time", "jira"],
+    # "package" reaches the OpenProject work-package tools too (AIS-327);
+    # "issue"/"jira" keep the Jira tools in front while Jira is the working system.
+    "ticket": ["issue", "jira", "bug", "task", "package"],
+    "tickets": ["issue", "jira", "bug", "task", "package"],
+    # "entry": OpenProject books time as time entries on a work package —
+    # the same kind of time tracking as Jira + Tempo (AIS-327).
+    "zeitbuchung": ["worklog", "tempo", "time", "jira", "entry"],
+    "zeitbuchungen": ["worklog", "tempo", "time", "jira", "entry"],
+    "zeiterfassung": ["worklog", "tempo", "time", "jira", "entry"],
+    # OpenProject vocabulary (AIS-327).
+    "arbeitspaket": ["work", "package", "packages", "openproject"],
+    "arbeitspakete": ["work", "package", "packages", "openproject"],
+    "workpackage": ["work", "package", "packages", "openproject"],
+    "workpackages": ["work", "package", "packages", "openproject"],
+    "projekt": ["project", "projects"],
+    "projekte": ["project", "projects"],
+    "meilenstein": ["version", "milestone"],
+    "meilensteine": ["version", "milestone"],
+    "besprechung": ["meeting", "agenda"],
+    "besprechungen": ["meeting", "agenda"],
+    "meeting": ["meeting", "agenda"],
+    "meetings": ["meeting", "agenda"],
+    "kommentar": ["comment", "add"],
+    "kommentieren": ["comment", "add"],
+    "verknüpfung": ["relation", "relations"],
+    "verknuepfung": ["relation", "relations"],
+    "abhängigkeit": ["relation", "relations"],
+    "abhaengigkeit": ["relation", "relations"],
+    "sprint": ["sprint", "sprints", "backlog"],
+    "sprints": ["sprint", "sprints", "backlog"],
+    # "meine offenen Arbeitspakete" → list_my_open_work_packages; "Zeit buchen"
+    # → create_time_entry / createWorklog (AIS-327).
+    "meine": ["my", "mine", "assigned"],
+    "offene": ["open"],
+    "offenen": ["open"],
+    "offen": ["open"],
+    "zeit": ["time", "hours", "entry", "worklog"],
+    "buchen": ["book", "create", "log", "entry", "worklog"],
+    "buche": ["book", "create", "log", "entry", "worklog"],
     "termin": ["calendar", "event", "outlook", "schedule"],
     "termine": ["calendar", "event", "outlook", "schedule"],
     "kalender": ["calendar", "event", "outlook"],
@@ -904,6 +991,14 @@ SOURCE_ALIASES: Dict[str, str] = {
     "github": "GithubMCP",
     "githubmcp": "GithubMCP",
     "git": "GithubMCP",
+    # openproject-ce-mcp catalog entry (AIS-327). "jira" stays with
+    # AtlassianMCP: Jira remains the working system until a project migrates.
+    "openproject": "OpenProjectMCP",
+    "openprojectmcp": "OpenProjectMCP",
+    "workpackage": "OpenProjectMCP",
+    "workpackages": "OpenProjectMCP",
+    "arbeitspaket": "OpenProjectMCP",
+    "arbeitspakete": "OpenProjectMCP",
     "aimds": "AIMDSSuiteMCP",
     "aimdssuite": "AIMDSSuiteMCP",
     "aimdssuitemcp": "AIMDSSuiteMCP",
@@ -941,8 +1036,50 @@ def _match_full_source(catalog: List[CatalogEntry], query_lower: str) -> List[Ca
             by_source.setdefault(entry.source_name, []).append(entry)
     for source_name, entries in by_source.items():
         if _normalize_source_key(source_name) == norm_query:
-            return sorted(entries, key=lambda e: e.name)
+            return _order_source_browse(source_name, entries)
     return []
+
+
+# A server-browse result is capped at this many hits (see search_catalog);
+# for a ~150-tool server the ordering below decides what the model sees.
+SOURCE_BROWSE_CAP = 60
+
+
+def _manifest_default_tools(source_name: str) -> List[str]:
+    """Manifest ``tools.default_enabled`` (in manifest order) for an MCP source, else []."""
+    server = str(source_name or "").removeprefix("mcp-")
+    if not server:
+        return []
+    try:
+        from hermes_cli.mcp_catalog import get_entry
+
+        entry = get_entry(server)
+    except Exception:
+        return []
+    if entry is None or not entry.tools or not entry.tools.default_enabled:
+        return []
+    return [str(t) for t in entry.tools.default_enabled if str(t).strip()]
+
+
+def _order_source_browse(source_name: str, entries: List[CatalogEntry]) -> List[CatalogEntry]:
+    """Curated defaults first (manifest order), then the rest alphabetically.
+
+    A plain alphabetical browse of openproject-ce-mcp's ~150 tools returned
+    add_/bulk_/cancel_/copy_/create_* and hit the cap before a single list_*
+    or search_* tool — the ones a "show me OpenProject" query is after
+    (AIS-327).
+    """
+    defaults = _manifest_default_tools(source_name)
+    if not defaults:
+        return sorted(entries, key=lambda e: e.name)
+    rank: Dict[str, int] = {}
+    for idx, tool in enumerate(defaults):
+        rank.setdefault(tool.lower(), idx)
+    def _key(e: CatalogEntry):
+        lowered = e.name.lower()
+        hit = next((r for t, r in rank.items() if lowered.endswith(f"_{t}") or lowered == t), None)
+        return (0, hit, e.name) if hit is not None else (1, 0, e.name)
+    return sorted(entries, key=_key)
 
 
 def _build_vector(text: str, idf: "Dict[str, float] | None" = None) -> Dict[str, float]:
@@ -995,7 +1132,7 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
     # Fast path: query is an MCP server/toolset name or source alias -> return full tool catalog
     full_source_hits = _match_full_source(catalog, query_raw.lower())
     if full_source_hits:
-        effective_limit = max(limit, min(len(full_source_hits), 60))
+        effective_limit = max(limit, min(len(full_source_hits), SOURCE_BROWSE_CAP))
         return full_source_hits[:effective_limit]
 
     # Vector-first scoring setup
@@ -1162,7 +1299,11 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
         # Source / Server match boost: if query mentions the MCP server or source alias (e.g. tempo, atlassian, github)
         for qt in query_tokens:
             norm_qt = _normalize_source_key(qt)
-            if norm_qt and (norm_qt == _normalize_source_key(entry.source_name) or norm_qt in entry.source_name.lower()):
+            if not norm_qt or norm_qt in _GENERIC_SERVER_NAME_TOKENS:
+                # "open"/"project" are substrings of "mcp-openprojectmcp" but
+                # do not name the server (AIS-327).
+                continue
+            if norm_qt == _normalize_source_key(entry.source_name) or norm_qt in entry.source_name.lower():
                 boost += 30.0
                 break
 
@@ -1577,16 +1718,25 @@ def dispatch_tool_search(args: Dict[str, Any],
     # loading all of those would defeat deferral, so only ranked searches
     # nominate hits for autoload. The executor (agent/deferred_tools.py)
     # performs the load — this function has no session in hand.
-    browsing = bool(_match_full_source(catalog, query.lower()))
+    source_hits = _match_full_source(catalog, query.lower())
+    browsing = bool(source_hits)
     tool_hits = [h for h in hits if h.kind == "tool"]
     autoload = [] if browsing else [h.name for h in tool_hits[: max(0, config.autoload_top_n)]]
-    return json.dumps({
+    payload: Dict[str, Any] = {
         "query": query,
         "mode": "source_browse" if browsing else "ranked",
         "total_available": len(catalog),
         "matches": [_format_search_hit(h) for h in hits],
         "autoload": autoload,
-    }, ensure_ascii=False)
+    }
+    if browsing:
+        # A ~150-tool server does not fit into one browse; say so, so the
+        # model runs a ranked search instead of assuming the list is complete.
+        payload["source_total"] = len(source_hits)
+        payload["truncated"] = len(hits) < len(source_hits)
+        if payload["truncated"]:
+            payload["hint"] = "Curated defaults are listed first; search with a task description to find the rest."
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _resolve_tool_entry(name: str):
@@ -1669,9 +1819,13 @@ def dispatch_tool_describe(args: Dict[str, Any],
     for td in current_tool_defs:
         fn = td.get("function") or {}
         if fn.get("name") == resolved_name:
+            # The schema description may be abridged (AIS-327); describe
+            # returns the registry's unabridged text when there is one.
+            full = _registry_description(resolved_name)
+            schema_desc = fn.get("description", "") or ""
             return json.dumps({
                 "name": resolved_name,
-                "description": fn.get("description", ""),
+                "description": full if len(full) > len(schema_desc) else schema_desc,
                 "parameters": fn.get("parameters", {}),
                 "usage_hint": f"Call tool_call(name='{resolved_name}', arguments={{...}}) to execute this tool.",
             }, ensure_ascii=False)

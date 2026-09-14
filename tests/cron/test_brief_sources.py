@@ -223,3 +223,16 @@ def test_strip_html_for_teams_bodies():
     assert strip_html('<div> <attachment id="1"></attachment> Ich auch nicht!</div>') == "Ich auch nicht!"
     assert strip_html("<p><a href='x'>PR #28</a>&nbsp;bitte</p>") == "PR #28 bitte"
     assert strip_html('ERR loading <a href="https://x/y?client_id=her') == "ERR loading"
+
+
+def test_resolve_tool_finds_short_prefix_names_via_registry(monkeypatch):
+    """AIS-327: `mcp_op_list_time_entries` belongs to OpenProjectMCP although
+    the name never says so — the registry provenance decides."""
+    import cron.brief_sources.base as base
+    import tools.mcp_tool as mt
+
+    monkeypatch.setattr(mt, "get_mcp_server_for_tool",
+                        lambda name: "OpenProjectMCP" if name.startswith("mcp_op_") else None)
+    names = {"mcp_op_list_time_entries", "mcp_AtlassianMCP_jira_search"}
+    assert base.resolve_tool(names, "OpenProjectMCP", "list_time_entries") == "mcp_op_list_time_entries"
+    assert base.resolve_tool(names, "AtlassianMCP", "list_time_entries") is None

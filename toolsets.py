@@ -48,6 +48,9 @@ _HERMES_CORE_TOOLS = [
     # Calendar facts (working days, DACH holidays, target hours) — a query,
     # never something the model types into SQL.
     "workdays",
+    # Which ticket system (Jira / OpenProject) a project uses while both are
+    # connected (AIS-327). Registered only when two families are configured.
+    "ticket_routing",
     # Clarifying questions
     "clarify",
     # Code execution
@@ -231,6 +234,11 @@ TOOLSETS = {
     "workdays": {
         "description": "Working days, DACH public holidays and target hours (Sollzeit) — deterministic calendar data",
         "tools": ["workdays"],
+        "includes": []
+    },
+    "ticket_routing": {
+        "description": "Per-project ticket-system routing (Jira vs. OpenProject) while both are connected",
+        "tools": ["ticket_routing"],
         "includes": []
     },
 

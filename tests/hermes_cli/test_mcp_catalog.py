@@ -2465,3 +2465,64 @@ class TestLocalInstall:
             assert "IAMDS-GMBH/AIMDS-Agent" not in url, f"{manifest} still installs from the private source repository"
             if install.get("type") == "local":
                 assert (root / Path(install["path"]).relative_to("optional-mcps")).is_dir(), manifest
+
+
+class TestVersionPinsAndToolPrefix:
+    """AIS-327: pin policy for the shipped catalog + the `tool_prefix` manifest key."""
+
+    def test_uvx_npx_manifests_pin_exact_versions(self, monkeypatch):
+        """Every shipped uvx/npx manifest carries an exact `pkg==x.y.z` /
+        `pkg@x.y.z` pin (CONTRIBUTING.md#mcp-catalog-version-pinning-policy)."""
+        import re
+
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import _catalog_root, _parse_manifest
+
+        root = _catalog_root()
+        if not root.exists():
+            pytest.skip("optional-mcps/ not present in this checkout")
+        checked = 0
+        for manifest in root.glob("*/manifest.yaml"):
+            entry = _parse_manifest(manifest)
+            if entry.transport.type != "stdio" or entry.transport.command not in ("uvx", "npx"):
+                continue
+            specs = [a for a in entry.transport.args if not a.startswith("-")]
+            assert specs, f"{entry.name}: no package spec in transport.args"
+            pattern = r"==\d+\.\d+\.\d+" if entry.transport.command == "uvx" else r"@\d+\.\d+\.\d+"
+            assert any(re.search(pattern, s) for s in specs), f"{entry.name}: unpinned {specs}"
+            checked += 1
+        assert checked >= 1
+
+    def test_shipped_openproject_entry(self, monkeypatch):
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        entry = _entry("OpenProjectMCP")
+        assert entry.tool_prefix == "op"
+        assert entry.transport.command == "uvx"
+        assert entry.transport.args == ["openproject-ce-mcp==0.4.0"]
+        env = {e.name: e for e in entry.auth.env}
+        assert env["OPENPROJECT_API_TOKEN"].secret and env["OPENPROJECT_API_TOKEN"].required
+        assert env["OPENPROJECT_READ_PROJECTS"].default == "*"
+        assert env["OPENPROJECT_WRITE_PROJECTS"].required is False and env["OPENPROJECT_WRITE_PROJECTS"].default == ""
+        assert entry.tools.default_enabled is not None
+        assert "list_work_packages" in entry.tools.default_enabled
+        assert "create_time_entry" in entry.tools.default_enabled
+        assert "delete_project" not in entry.tools.default_enabled
+
+    def test_tool_prefix_parsed_and_validated(self, catalog_dir):
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        ok = _write_manifest(catalog_dir, "demo", _basic_manifest(tool_prefix="dm"))
+        assert _parse_manifest(ok).tool_prefix == "dm"
+        assert _parse_manifest(_write_manifest(catalog_dir, "plain", _basic_manifest(name="plain"))).tool_prefix == ""
+        for bad in ("Op", "too_long_prefix", "a-b", "x" * 9):
+            path = _write_manifest(catalog_dir, "bad", _basic_manifest(name="bad", tool_prefix=bad))
+            with pytest.raises(CatalogError):
+                _parse_manifest(path)
+
+    def test_build_server_config_writes_tool_prefix(self, catalog_dir):
+        from hermes_cli.mcp_catalog import _build_server_config, _parse_manifest
+
+        entry = _parse_manifest(_write_manifest(catalog_dir, "demo", _basic_manifest(tool_prefix="dm")))
+        assert _build_server_config(entry, None)["tool_prefix"] == "dm"
+        plain = _parse_manifest(_write_manifest(catalog_dir, "plain", _basic_manifest(name="plain")))
+        assert "tool_prefix" not in _build_server_config(plain, None)

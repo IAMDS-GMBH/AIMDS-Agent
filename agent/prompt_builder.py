@@ -2349,6 +2349,76 @@ def build_jira_guidance(valid_tool_names: "set[str] | None" = None) -> str:
     return guidance
 
 
+_JIRA_WRITE_SUFFIXES = (
+    "jira_create_issue", "jira_update_issue", "jira_add_comment",
+    "jira_transition_issue", "jira_add_worklog",
+)
+_OPENPROJECT_WRITE_SUFFIXES = (
+    "create_work_package", "update_work_package", "add_work_package_comment",
+    "create_time_entry",
+)
+
+
+def _resolve_tool_by_suffix(names: "set[str]", suffix: str) -> str | None:
+    """Callable name whose normalized form is *suffix* or ends with ``_<suffix>``."""
+    for name in names:
+        if not isinstance(name, str):
+            continue
+        normalized = _normalize_tool_name_for_match(name)
+        if normalized == suffix or normalized.endswith(f"_{suffix}"):
+            return name
+    return None
+
+
+def build_ticket_routing_guidance(valid_tool_names: "set[str] | None" = None) -> str:
+    """Per-project routing between Jira and OpenProject (AIS-327).
+
+    Injected only while BOTH ticket systems can write (a Jira write tool and
+    an OpenProject write tool are reachable) AND the ``ticket_routing`` core
+    tool is present. With a single system there is nothing to decide, so the
+    block — and the question to the user — disappears on its own once one
+    server is removed.
+    """
+    names = set(valid_tool_names or set())
+    if "ticket_routing" not in names:
+        return ""
+    jira_write = [t for t in (_resolve_tool_by_suffix(names, s) for s in _JIRA_WRITE_SUFFIXES) if t]
+    op_write = [t for t in (_resolve_tool_by_suffix(names, s) for s in _OPENPROJECT_WRITE_SUFFIXES) if t]
+    if not jira_write or not op_write:
+        return ""
+    tempo_create = _resolve_tool_by_suffix(names, "createWorklog") or _resolve_tool_by_suffix(names, "jira_add_worklog")
+    op_time = _resolve_tool_by_suffix(names, "create_time_entry")
+    has_clarify = "clarify" in names
+    time_line = ""
+    if tempo_create or op_time:
+        time_line = (
+            " Time booking follows the same routing — both systems track time the same way: "
+            + (f"Jira projects book via `{tempo_create}`" if tempo_create else "Jira projects book via Tempo")
+            + (f", OpenProject projects via `{op_time}` (time entry on the work package, hours as ISO 8601 e.g. PT1H30M)." if op_time else ".")
+        )
+    ask_line = (
+        "If the result says `ask: true`, ask the user with `clarify` using the returned `clarify_choices`"
+        if has_clarify
+        else "If the result says `ask: true` and you cannot ask the user (no `clarify` tool in this run), "
+             "do NOT write — report that the ticket system for that project is not decided yet"
+    )
+    return (
+        "# Ticket routing: Jira and OpenProject are both connected\n"
+        "Before you create, update, comment on, transition or book time on a ticket / work package, "
+        "identify the project (Jira key, OpenProject identifier or name, or the customer/project the "
+        "user named) and call `ticket_routing(action='get', project=<project>)`. "
+        f"{ask_line} — never guess, and never pick a system just because its tool happens to be loaded. "
+        "Store the answer with `ticket_routing(action='set', project=…, system=…)`; when the user says "
+        "'from now on always Jira/OpenProject', store `ticket_routing(action='set_default', system=…)`. "
+        "As long as both systems are connected and no default is set, ask once per new project; a "
+        "stored per-project mapping is used silently. Never assume everything moved to OpenProject: Jira "
+        "can stay the system for external customer projects, and a per-project mapping always beats the "
+        "default. Read-only questions (search, list, status) do not need routing — use the mapped system "
+        "when one exists, otherwise query both and label which system each result comes from."
+        + time_line
+    )
+
+
 # =========================================================================
 # Context files (SOUL.md, AGENTS.md, .cursorrules)
 # =========================================================================

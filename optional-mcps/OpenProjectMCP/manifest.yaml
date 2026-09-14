@@ -1,0 +1,106 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: OpenProjectMCP
+description: >-
+  Read and manage OpenProject Community Edition projects, work packages,
+  comments, relations, versions, boards, meetings and time entries using
+  openproject-ce-mcp. Every write is preview-then-confirm; project scope is
+  enforced by allowlists.
+source: https://github.com/jtauschl/openproject-ce-mcp
+
+# AIS-327: the server registers ~150 tools. Registered names use the short
+# prefix (`mcp_op_list_work_packages`) instead of `mcp_OpenProjectMCP_...` to
+# save tokens in every tool_search hit, call and result.
+tool_prefix: op
+
+transport:
+  type: stdio
+  command: "uvx"
+  # Pinned exact version (see CONTRIBUTING.md#mcp-catalog-version-pinning-policy).
+  # Unpinned uvx installs upstream's *latest* on every launch; bump
+  # deliberately. See .github/workflows/mcp-catalog-version-check.yml.
+  args:
+    - "openproject-ce-mcp==0.4.0"
+
+auth:
+  type: api_key
+  notes: >-
+    Create the API token in OpenProject under My account -> Access tokens
+    (+ API token, format opapi-...); an administrator must have enabled API
+    tokens under Administration -> API and webhooks. OPENPROJECT_READ_PROJECTS
+    "*" reads every project the token can see; leave OPENPROJECT_WRITE_PROJECTS
+    empty for a read-only setup and list project identifiers (or "*") to allow
+    writes there. Every write tool validates first and only executes when called
+    again with confirm=true. Admin and personal-data writes stay disabled
+    (server defaults). Community Edition only -- Enterprise ships its own MCP.
+  env:
+    - name: OPENPROJECT_BASE_URL
+      prompt: "OpenProject URL (e.g. https://openproject.example.com)"
+      required: true
+      secret: false
+    - name: OPENPROJECT_API_TOKEN
+      prompt: "OpenProject API token (My account -> Access tokens, opapi-...)"
+      required: true
+      secret: true
+    - name: OPENPROJECT_READ_PROJECTS
+      prompt: "Readable projects: comma-separated identifiers/names/globs, or * for all visible"
+      default: "*"
+      required: false
+      secret: false
+    - name: OPENPROJECT_WRITE_PROJECTS
+      prompt: "Writable projects (leave empty for read-only; identifiers, globs or *)"
+      required: false
+      secret: false
+
+# Tool selection at install time (AIS-327): the server exposes ~150 tools.
+# The curated core below is pre-checked in the install checklist; everything
+# else (meetings CRUD, boards CRUD, grids, news, documents, storages, admin
+# user/group management, ...) stays opt-in per user. Order matters: the
+# tool_search server-browse lists these first.
+tools:
+  default_enabled:
+    - get_current_user
+    - list_projects
+    - get_project
+    - get_project_work_package_context
+    - list_types
+    - list_statuses
+    - list_priorities
+    - list_versions
+    - get_version
+    - list_work_packages
+    - search_work_packages
+    - get_work_package
+    - get_work_packages
+    - list_my_open_work_packages
+    - get_work_package_activities
+    - get_work_package_relations
+    - create_work_package
+    - create_subtask
+    - update_work_package
+    - add_work_package_comment
+    - create_work_package_relation
+    - list_work_package_attachments
+    - get_attachment_content
+    - list_time_entry_activities
+    - list_time_entries
+    - create_time_entry
+    - update_time_entry
+    - list_boards
+    - list_meetings
+    - list_views
+    - execute_query
+
+post_install: |
+  OpenProject MCP (openproject-ce-mcp via uvx) has been configured. Tools are
+  registered as mcp_op_<tool> (e.g. mcp_op_list_work_packages).
+
+  - Read scope comes from OPENPROJECT_READ_PROJECTS; writes stay disabled until
+    OPENPROJECT_WRITE_PROJECTS lists projects. Every write is preview-then-confirm.
+  - Time tracking works like Jira + Tempo: time entries on a work package
+    (spent_on + hours as ISO 8601 duration, e.g. PT1H30M).
+  - uv/uvx must be on the PATH (same requirement as AtlassianMCP).
+
+  Start a new Hermes session to load the OpenProject tools.

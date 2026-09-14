@@ -170,3 +170,19 @@ class TestOverrides:
         cfg = shaper.load_shape_config()
         assert cfg.max_items == 7 and cfg.drop_keys == ("foo",)
         assert cfg.for_tool("mcp_S_x").enabled is False
+
+
+class TestShortPrefixServers:
+    def test_per_server_override_applies_to_prefixed_tool_names(self, monkeypatch):
+        """AIS-327: `per_server: {OpenProjectMCP: …}` must shape `mcp_op_*`
+        results — the server is resolved through the registry, not the name."""
+        import tools.mcp_tool as mt
+
+        monkeypatch.setattr(mt, "get_mcp_server_for_tool",
+                            lambda name: "OpenProjectMCP" if name.startswith("mcp_op_") else None)
+        cfg = ShapeConfig(max_items=25, per_server={"OpenProjectMCP": {"max_items": 2}})
+        payload = {"results": [{"id": i} for i in range(10)]}
+        out = json.loads(_shape(payload, tool="mcp_op_list_work_packages", config=cfg))["result"]
+        assert len(out["results"]) == 2
+        other = json.loads(_shape(payload, tool="mcp_Other_list", config=cfg))["result"]
+        assert len(other["results"]) == 10

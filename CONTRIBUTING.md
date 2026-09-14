@@ -856,6 +856,16 @@ Optional catalog MCP servers (`optional-mcps/*/manifest.yaml`) whose `transport.
 - A weekly `mcp-catalog-version-check.yml` workflow compares each pin against the registry's current latest and files/updates a tracking issue (labeled `mcp-catalog-versions`) when a pin is behind or a package is marked deprecated upstream. It does not open PRs or bump pins automatically — bumping is a deliberate, reviewed action, same rationale as excluding source deps from Dependabot below.
 - When bumping a pin, skim the package's changelog for the version range you're skipping, not just the target version's own notes.
 
+### MCP catalog entries with a large tool surface
+
+Servers that expose dozens of tools (openproject-ce-mcp registers ~150) need three things in their manifest (AIS-327):
+
+- `tools.default_enabled` — a curated core in the order the tool_search server-browse should list them; everything else stays opt-in in the install checklist.
+- `tool_prefix` (`^[a-z0-9]{1,8}$`, e.g. `op`) — tools register as `mcp_op_<tool>` instead of `mcp_<Name>_<tool>`. The prefix is written to `mcp_servers.<name>.tool_prefix`; code that needs the server behind a registered name must use `tools.mcp_tool.get_mcp_server_for_tool()` rather than parsing the second name segment.
+- A PascalCase name whose parts are plain English words (`OpenProjectMCP` → `open`, `project`) must be listed in `tools.tool_search._GENERIC_SERVER_NAME_TOKENS` / `tools.mcp_tool._GENERIC_SERVER_NAME_KEYWORDS`, otherwise every query containing that word boosts the whole server. Add a `SOURCE_ALIASES` entry (`openproject`) so the full name still browses it.
+
+Tool descriptions are abridged for the model by `tools.mcp_schema_compact` (first paragraph(s), `title`/`default: null` stripped); the unabridged text stays in the registry for `tool_describe` and the search index. Curated per-tool nudges go into `tools/mcp_tool.py:_MCP_TOOL_DESCRIPTION_NOTES` and survive the abridging.
+
 ---
 
 ## Pull Request Process
