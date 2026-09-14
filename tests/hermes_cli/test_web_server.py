@@ -5226,6 +5226,10 @@ class TestDesktopCronTicker:
         called = threading.Event()
         monkeypatch.setattr(sched, "tick", lambda *a, **k: called.set())
         monkeypatch.setenv("HERMES_DESKTOP", "1")
+        # AIS-332: the ticker waits before its first tick and gates ticks on
+        # the provider host resolving; neither is under test here.
+        monkeypatch.setenv("HERMES_DESKTOP_CRON_FIRST_TICK_DELAY", "0")
+        monkeypatch.setattr("hermes_cli.web_server._provider_host_resolvable", lambda: True)
 
         with self._client():
             assert called.wait(3.0), "expected cron tick under HERMES_DESKTOP=1"

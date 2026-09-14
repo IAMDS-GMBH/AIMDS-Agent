@@ -3,62 +3,49 @@ import { describe, expect, it } from 'vitest'
 import type { CronJob } from '@/types/hermes'
 
 import type { ChatMessage } from './chat-messages'
-import { isCronRunFinished, isCronSessionId } from './cron-run-state'
+import { cronRunOutcome, failedCronRunJob, isCronRunFinished } from './cron-run-state'
 
-const SESSION = 'cron_aimds-morning-brief_20260911_080024'
+const SESSION = 'cron_aimds-morning-brief_20260914_080832'
 
-function message(role: ChatMessage['role'], overrides: Partial<ChatMessage> = {}): ChatMessage {
-  return { id: `${role}-${Math.random()}`, parts: [{ type: 'text', text: role }], role, ...overrides }
+const user: ChatMessage = { id: 'u1', role: 'user', parts: [] }
+const reply: ChatMessage = { id: 'a1', role: 'assistant', parts: [] }
+const pendingReply: ChatMessage = { id: 'a2', role: 'assistant', parts: [], pending: true }
+
+function job(last_status: CronJob['last_status'], extra: Partial<CronJob> = {}): CronJob {
+  return { id: 'aimds-morning-brief', enabled: true, last_run_session_id: SESSION, last_status, ...extra }
 }
 
-function job(overrides: Partial<CronJob> = {}): CronJob {
-  return { id: 'aimds-morning-brief', name: 'Morning Brief', ...overrides } as CronJob
-}
+describe('cronRunOutcome (AIS-332)', () => {
+  it('reports the job status when the job record knows the run', () => {
+    expect(cronRunOutcome(SESSION, [user], [job('ok')])).toBe('ok')
+    expect(cronRunOutcome(SESSION, [user], [job('error')])).toBe('error')
+  })
 
-describe('isCronSessionId', () => {
-  it('matches the scheduler prefix only', () => {
-    expect(isCronSessionId(SESSION)).toBe(true)
-    expect(isCronSessionId('rt-abc123')).toBe(false)
-    expect(isCronSessionId(null)).toBe(false)
-    expect(isCronSessionId(undefined)).toBe(false)
+  it('falls back to the transcript when the job carries no status', () => {
+    expect(cronRunOutcome(SESSION, [user], [job(null)])).toBe('running')
+    expect(cronRunOutcome(SESSION, [user, pendingReply], [job(null)])).toBe('running')
+    expect(cronRunOutcome(SESSION, [user, reply], [job(null)])).toBe('ok')
+    expect(cronRunOutcome(SESSION, [user, reply], null)).toBe('ok')
+  })
+
+  it('isCronRunFinished treats ok and error alike', () => {
+    expect(isCronRunFinished(SESSION, [user], [job('error')])).toBe(true)
+    expect(isCronRunFinished(SESSION, [user], [job('ok')])).toBe(true)
+    expect(isCronRunFinished(SESSION, [user], [job(null)])).toBe(false)
   })
 })
 
-describe('isCronRunFinished', () => {
-  it('treats an empty transcript as in flight', () => {
-    expect(isCronRunFinished(SESSION, [])).toBe(false)
+describe('failedCronRunJob (SUP-20260914-063903)', () => {
+  it('returns the job for a failed run whose transcript holds only the prompt', () => {
+    const failed = job('error', { last_error: 'Provider unreachable (network/DNS)' })
+    expect(failedCronRunJob(SESSION, [user], [failed])).toBe(failed)
   })
 
-  it('treats a transcript that ends with the cron prompt as in flight', () => {
-    expect(isCronRunFinished(SESSION, [message('user')])).toBe(false)
-  })
-
-  it('treats a settled assistant reply as finished', () => {
-    expect(isCronRunFinished(SESSION, [message('user'), message('assistant')])).toBe(true)
-  })
-
-  it('ignores hidden trailing messages and pending assistant placeholders', () => {
-    expect(isCronRunFinished(SESSION, [message('user'), message('assistant'), message('system', { hidden: true })])).toBe(
-      true
-    )
-    expect(isCronRunFinished(SESSION, [message('user'), message('assistant', { pending: true })])).toBe(false)
-  })
-
-  it('trusts the job record when it names this run with a final status', () => {
-    expect(isCronRunFinished(SESSION, [message('user')], [job({ last_run_session_id: SESSION, last_status: 'ok' })])).toBe(
-      true
-    )
-    expect(
-      isCronRunFinished(SESSION, [message('user')], [job({ last_run_session_id: SESSION, last_status: 'error' })])
-    ).toBe(true)
-  })
-
-  it('does not let another run of the same job settle this session', () => {
-    expect(
-      isCronRunFinished(SESSION, [message('user')], [job({ last_run_session_id: 'cron_other_1', last_status: 'ok' })])
-    ).toBe(false)
-    expect(isCronRunFinished(SESSION, [message('user')], [job({ last_run_session_id: SESSION, last_status: null })])).toBe(
-      false
-    )
+  it('is null for ok runs, running runs, replies present, or non-cron sessions', () => {
+    expect(failedCronRunJob(SESSION, [user], [job('ok')])).toBeNull()
+    expect(failedCronRunJob(SESSION, [user], [job(null)])).toBeNull()
+    expect(failedCronRunJob(SESSION, [user, reply], [job('error')])).toBeNull()
+    expect(failedCronRunJob('20260914_111919_e7c4cc', [user], [job('error')])).toBeNull()
+    expect(failedCronRunJob(null, [user], [job('error')])).toBeNull()
   })
 })

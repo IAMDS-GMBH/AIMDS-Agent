@@ -98,14 +98,49 @@ def _count_skills(hermes_home: Path) -> int:
     return count
 
 
-def _count_mcp_servers(config: dict) -> int:
-    """Count configured MCP servers."""
+def _count_mcp_servers(config: dict, hermes_home: "Path | None" = None) -> int:
+    """Count configured MCP servers.
+
+    Reads the same ``mcp_servers`` block ``tools/mcp_tool.py`` loads servers
+    from. When the parsed config carries no such block (typically because
+    ``load_config()`` failed and the caller fell back to ``{}``), the raw
+    ``config.yaml`` under ``hermes_home`` is consulted so the dump does not
+    report ``0`` for an install that has five servers running (AIS-332 /
+    SUP-20260914-063903).
+    """
     # Canonical key is top-level ``mcp_servers``; ``mcp.servers`` is the
     # legacy shape some very old configs still carry.
-    servers = config.get("mcp_servers")
-    if not isinstance(servers, dict):
-        servers = (config.get("mcp") or {}).get("servers", {}) if isinstance(config.get("mcp"), dict) else {}
+    servers = _mcp_servers_block(config)
+    if servers is None and hermes_home is not None:
+        servers = _mcp_servers_block(_read_raw_config(hermes_home))
     return len(servers or {})
+
+
+def _mcp_servers_block(config: dict) -> "dict | None":
+    """Return the ``mcp_servers`` mapping (or legacy ``mcp.servers``), ``None`` if absent."""
+    if not isinstance(config, dict):
+        return None
+    servers = config.get("mcp_servers")
+    if isinstance(servers, dict):
+        return servers
+    legacy = config.get("mcp")
+    if isinstance(legacy, dict) and isinstance(legacy.get("servers"), dict):
+        return legacy["servers"]
+    return None
+
+
+def _read_raw_config(hermes_home: Path) -> dict:
+    """Best-effort ``yaml.safe_load`` of ``<hermes_home>/config.yaml``; ``{}`` on any error."""
+    try:
+        import yaml
+
+        path = Path(hermes_home) / "config.yaml"
+        if not path.is_file():
+            return {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
 
 
 def _cron_summary(hermes_home: Path) -> str:
@@ -241,10 +276,14 @@ def run_dump(args):
 
     commit = _get_git_commit(project_root)
 
+    config_load_error = ""
     try:
         config = load_config()
-    except Exception:
+    except Exception as exc:
+        # Keep going with an empty config, but say so: a silent ``{}`` made a
+        # dump report ``mcp_servers: 0`` next to five running servers (AIS-332).
         config = {}
+        config_load_error = f"{type(exc).__name__}: {exc}"
 
     model, provider = _get_model_and_provider(config)
 
@@ -340,7 +379,9 @@ def run_dump(args):
 
     toolsets = config.get("toolsets", ["hermes-cli"])
     lines.append(f"  toolsets:           {', '.join(toolsets) if toolsets else '(default)'}")
-    lines.append(f"  mcp_servers:        {_count_mcp_servers(config)}")
+    lines.append(f"  mcp_servers:        {_count_mcp_servers(config, hermes_home)}")
+    if config_load_error:
+        lines.append(f"  config_load_error:  {config_load_error}")
     lines.append(f"  memory_provider:    {_memory_provider(config)}")
     lines.append(f"  gateway:            {_gateway_status()}")
 
