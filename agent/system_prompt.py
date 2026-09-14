@@ -253,6 +253,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         ticket_routing_guidance = _r.build_ticket_routing_guidance(_guidance_names)
         if ticket_routing_guidance:
             stable_parts.append(ticket_routing_guidance)
+
+    # AIS-334: a configured-but-unconnected MCP server is availability, not
+    # integration prose — it stays in every posture so the model never hunts
+    # for tools of a server that is down.
+    mcp_status_prompt = _r.build_mcp_status_prompt()
+    if mcp_status_prompt:
+        stable_parts.append(mcp_status_prompt)
     # Tool-use enforcement: tells the model to actually call tools instead
     # of describing intended actions.  Controlled by config.yaml
     # agent.tool_use_enforcement:

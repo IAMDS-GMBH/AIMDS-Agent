@@ -122,6 +122,9 @@ class InstallSpec:
     ref: str = ""  # commit/tag/branch — pinned, never floats (git only)
     bootstrap: List[str] = field(default_factory=list)
     path: str = ""  # checkout-relative directory (local only)
+    # AIS-334: modules that must import from ``<install>/.venv`` after the
+    # bootstrap; a failing import fails the install with a readable line.
+    verify_imports: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -293,6 +296,11 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         bootstrap = install_raw.get("bootstrap") or []
         if not isinstance(bootstrap, list):
             raise CatalogError(f"{path}: install.bootstrap must be a list")
+        verify_imports = install_raw.get("verify_imports") or []
+        if not isinstance(verify_imports, list) or not all(
+            isinstance(m, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", m) for m in verify_imports
+        ):
+            raise CatalogError(f"{path}: install.verify_imports must be a list of module names")
         if i_type == "git":
             url = install_raw.get("url") or ""
             ref = install_raw.get("ref") or ""
@@ -303,6 +311,7 @@ def _parse_manifest(path: Path) -> CatalogEntry:
                 url=url,
                 ref=ref,
                 bootstrap=[str(c) for c in bootstrap],
+                verify_imports=[str(m) for m in verify_imports],
             )
         else:
             local_path = str(install_raw.get("path") or "").strip().replace("\\", "/")
@@ -316,6 +325,7 @@ def _parse_manifest(path: Path) -> CatalogEntry:
                 type=i_type,
                 bootstrap=[str(c) for c in bootstrap],
                 path=local_path.strip("/"),
+                verify_imports=[str(m) for m in verify_imports],
             )
 
     return CatalogEntry(
@@ -505,6 +515,58 @@ def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
             raise CatalogError(
                 f"bootstrap step failed (exit {proc.returncode}): {expanded}"
             )
+
+
+def _install_python(dest: Path) -> Optional[Path]:
+    """Interpreter of the install's virtualenv, or None when there is none."""
+    for candidate in (
+        dest / ".venv" / "bin" / "python",
+        dest / ".venv" / "Scripts" / "python.exe",
+    ):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _verify_install_imports(dest: Path, modules: List[str]) -> None:
+    """Import *modules* inside the install's venv; raise CatalogError if that fails.
+
+    AIS-334: a server whose venv lost a package (``No module named
+    'certifi'`` after a half-wiped reinstall, SUP-20260908-110726) passed the
+    install and only died at the next session start as "Connection lost" —
+    invisible to the user and to the model. Checking the imports right after
+    the bootstrap turns that into an install error with the actual cause.
+    """
+    if not modules:
+        return
+    python = _install_python(dest)
+    if python is None:
+        raise CatalogError(
+            f"install verification failed: no virtualenv interpreter under {dest / '.venv'} "
+            "— the bootstrap did not create it"
+        )
+    code = "import " + ", ".join(modules)
+    proc = subprocess.run(
+        [str(python), "-c", code],
+        cwd=str(dest),
+        capture_output=True,
+        text=True,
+        **_hidden_window_kwargs(),
+    )
+    if proc.returncode != 0:
+        lines = [ln for ln in (proc.stderr or proc.stdout or "").strip().splitlines() if ln.strip()]
+        detail = lines[-1].strip() if lines else f"exit {proc.returncode}"
+        raise CatalogError(
+            f"install verification failed: {detail} (ran `{python} -c \"{code}\"`). The server's "
+            "virtualenv is incomplete; stop Hermes and re-run the install."
+        )
+    print(color(f"  ✓ verified imports: {', '.join(modules)}", Colors.GREEN))
+
+
+def _run_bootstrap_and_verify(dest: Path, install: InstallSpec) -> None:
+    if install.bootstrap:
+        _run_bootstrap(dest, install.bootstrap)
+    _verify_install_imports(dest, install.verify_imports)
 
 
 def _hidden_window_kwargs() -> Dict[str, Any]:
@@ -733,8 +795,7 @@ def _fetch_and_bootstrap(entry: CatalogEntry, dest: Path) -> None:
     if install.type == "local":
         dest.mkdir(parents=True, exist_ok=True)
         _copy_local_install(install, dest)
-        if install.bootstrap:
-            _run_bootstrap(dest, install.bootstrap)
+        _run_bootstrap_and_verify(dest, install)
         return
     git = shutil.which("git")
 
@@ -752,8 +813,7 @@ def _fetch_and_bootstrap(entry: CatalogEntry, dest: Path) -> None:
             )
         print(color(f"  git not found — downloading {archive_url} → {dest}", Colors.CYAN))
         _download_archive_install(archive_url, dest)
-        if install.bootstrap:
-            _run_bootstrap(dest, install.bootstrap)
+        _run_bootstrap_and_verify(dest, install)
         return
 
     print(color(f"  Cloning {install.url} ({install.ref}) → {dest}", Colors.CYAN))
@@ -786,8 +846,7 @@ def _fetch_and_bootstrap(entry: CatalogEntry, dest: Path) -> None:
         if proc.returncode != 0:
             raise CatalogError(f"git checkout {install.ref} failed")
 
-    if install.bootstrap:
-        _run_bootstrap(dest, install.bootstrap)
+    _run_bootstrap_and_verify(dest, install)
 
 
 def _github_archive_url(repo_url: str, ref: str) -> Optional[str]:

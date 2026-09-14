@@ -1899,7 +1899,11 @@ class TestBuildTicketRoutingGuidance:
         assert g({self.JIRA, "ticket_routing", "clarify"}) == ""
         assert g({self.OP, "ticket_routing", "clarify"}) == ""
         assert g({self.JIRA, self.OP, "clarify"}) == ""
-        assert g({"mcp_AtlassianMCP_jira_search", "mcp_op_list_work_packages", "ticket_routing"}) == ""
+        # AIS-330: OpenProject reachable but without a write tool is no longer
+        # silent — the read-only block replaces the routing guidance.
+        assert g({"mcp_AtlassianMCP_jira_search", "mcp_op_list_work_packages", "ticket_routing"}).startswith(
+            "# OpenProject is read-only in this session"
+        )
 
     def test_full_guidance_with_both_systems(self):
         from agent.prompt_builder import build_ticket_routing_guidance as g
@@ -1918,3 +1922,83 @@ class TestBuildTicketRoutingGuidance:
     def test_wired_into_run_agent_exports(self):
         import run_agent
         assert callable(getattr(run_agent, "build_ticket_routing_guidance", None))
+
+
+class TestOpenProjectReadOnlyGuidance:
+    """AIS-330 / SUP-20260914-152536: an OpenProject server without write scope
+    must be named as read-only instead of vanishing from the prompt."""
+
+    def test_read_tools_without_write_tools_yield_read_only_block(self):
+        from agent.prompt_builder import build_ticket_routing_guidance as g, OPENPROJECT_READ_ONLY_GUIDANCE
+        text = g({"mcp_op_list_work_packages", "mcp_op_search_work_packages", "ticket_routing", "clarify"})
+        assert text == OPENPROJECT_READ_ONLY_GUIDANCE
+        assert "OPENPROJECT_WRITE_PROJECTS" in text and "do not search for such tools" in text
+
+    def test_block_does_not_need_the_routing_tool(self):
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        assert g({"mcp_op_get_work_package"}).startswith("# OpenProject is read-only")
+
+    def test_write_tools_present_keep_previous_behaviour(self):
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        assert g({"mcp_op_list_work_packages", "mcp_op_update_work_package"}) == ""
+        text = g({"mcp_op_list_work_packages", "mcp_op_update_work_package",
+                  "mcp_AtlassianMCP_jira_create_issue", "ticket_routing"})
+        assert text.startswith("# Ticket routing: Jira and OpenProject are both connected")
+
+    def test_no_openproject_at_all_stays_empty(self):
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        assert g({"mcp_AtlassianMCP_jira_search", "ticket_routing"}) == ""
+
+
+class TestBuildMcpStatusPrompt:
+    """AIS-334 / SUP-20260908-110726: configured-but-unconnected MCP servers are
+    named in the system prompt so the model stops hunting for their tools."""
+
+    def _patch(self, monkeypatch, rows, discovery_alive=False):
+        import tools.mcp_tool as mt
+        import hermes_cli.mcp_startup as startup
+        monkeypatch.setattr(mt, "get_mcp_status", lambda: rows)
+
+        class _Thread:
+            def is_alive(self):
+                return discovery_alive
+
+        monkeypatch.setattr(startup, "_mcp_discovery_thread", _Thread())
+
+    def test_names_unconnected_enabled_servers_only(self, monkeypatch):
+        from agent.prompt_builder import build_mcp_status_prompt
+        self._patch(monkeypatch, [
+            {"name": "MSOffice365MCP", "connected": False, "disabled": False},
+            {"name": "AIMDSSuiteMCP", "connected": True, "disabled": False},
+            {"name": "OldMCP", "connected": False, "disabled": True},
+        ])
+        text = build_mcp_status_prompt()
+        assert text.startswith("# MCP status")
+        assert "MSOffice365MCP" in text
+        assert "AIMDSSuiteMCP" not in text and "OldMCP" not in text
+        assert "do not search for them" in text and "hermes mcp install" in text
+
+    def test_empty_when_everything_is_connected(self, monkeypatch):
+        from agent.prompt_builder import build_mcp_status_prompt
+        self._patch(monkeypatch, [{"name": "AIMDSSuiteMCP", "connected": True, "disabled": False}])
+        assert build_mcp_status_prompt() == ""
+
+    def test_empty_while_discovery_still_runs(self, monkeypatch):
+        from agent.prompt_builder import build_mcp_status_prompt
+        self._patch(monkeypatch, [{"name": "MSOffice365MCP", "connected": False, "disabled": False}],
+                    discovery_alive=True)
+        assert build_mcp_status_prompt() == ""
+
+    def test_empty_when_status_unavailable(self, monkeypatch):
+        import tools.mcp_tool as mt
+        from agent.prompt_builder import build_mcp_status_prompt
+
+        def _boom():
+            raise RuntimeError("no config")
+
+        monkeypatch.setattr(mt, "get_mcp_status", _boom)
+        assert build_mcp_status_prompt() == ""
+
+    def test_wired_into_run_agent_exports(self):
+        import run_agent
+        assert callable(getattr(run_agent, "build_mcp_status_prompt", None))

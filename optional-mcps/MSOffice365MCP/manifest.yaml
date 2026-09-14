@@ -20,6 +20,10 @@ install:
   bootstrap:
     - "python3 -m venv .venv"
     - ".venv/bin/pip install -r ${INSTALL_DIR}/optional-mcps/MSOffice365MCP/requirements.txt"
+  # AIS-334: prove the venv is usable before the install counts as done —
+  # a partially wiped site-packages ("No module named 'certifi'") used to
+  # surface only as "Connection lost" at the next session start.
+  verify_imports: [mcp, httpx, msal, certifi]
 
 auth:
   type: oauth

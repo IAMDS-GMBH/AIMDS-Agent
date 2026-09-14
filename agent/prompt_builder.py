@@ -1780,6 +1780,49 @@ def build_local_profile_fallback_prompt() -> str:
     )
 
 
+def build_mcp_status_prompt() -> str:
+    """One block naming configured MCP servers that are not connected (AIS-334).
+
+    A failed server only ever showed up in the log ("registered 21 tool(s)
+    from 1 server(s) (1 failed)"); the model was never told. With
+    MSOffice365MCP down it called tool_describe on a bare name, ran 39
+    tool_search rounds and finally reported "a missing tool integration" —
+    which reads as a product bug, not as "your Microsoft 365 connector is
+    broken" (SUP-20260908-110726). Empty while background discovery is still
+    running (a connecting server is not a failed one) and when everything
+    configured is connected or deliberately disabled.
+    """
+    try:
+        from hermes_cli import mcp_startup as _startup
+        thread = getattr(_startup, "_mcp_discovery_thread", None)
+        if thread is not None and thread.is_alive():
+            return ""
+    except Exception:
+        pass
+    try:
+        from tools.mcp_tool import get_mcp_status
+        rows = get_mcp_status() or []
+    except Exception:
+        return ""
+    down = sorted(
+        str(r.get("name") or "")
+        for r in rows
+        if isinstance(r, dict) and r.get("name") and not r.get("connected") and not r.get("disabled")
+    )
+    if not down:
+        return ""
+    return (
+        "# MCP status\n"
+        f"Configured MCP server(s) NOT connected at session start: {', '.join(down)}. "
+        "Their tools are unavailable in this session: do not search for them with tool_search, do "
+        "not retry them, and do not describe the situation as a missing tool integration. If the user "
+        "asks for something one of these servers provides (e.g. MSOffice365MCP for mail, calendar or "
+        "Teams), say that the integration is currently not connected and suggest reconnecting or "
+        "reinstalling it in the MCP settings (`hermes mcp install <name>`), then continue with what "
+        "is possible without it.\n"
+    )
+
+
 def build_workspace_prompt(valid_tool_names: "set[str] | None" = None) -> str:
     """The Obsidian workspace block: where files live and how the vault stays tidy.
 
@@ -2357,6 +2400,21 @@ _OPENPROJECT_WRITE_SUFFIXES = (
     "create_work_package", "update_work_package", "add_work_package_comment",
     "create_time_entry",
 )
+_OPENPROJECT_READ_SUFFIXES = (
+    "list_work_packages", "search_work_packages", "get_work_package",
+    "list_projects", "list_my_open_work_packages",
+)
+
+OPENPROJECT_READ_ONLY_GUIDANCE = (
+    "# OpenProject is read-only in this session\n"
+    "The OpenProject MCP server is loaded, but none of its write tools (create_work_package, "
+    "update_work_package, add_work_package_comment, create_time_entry) is registered: the server "
+    "was configured without a write scope (OPENPROJECT_WRITE_PROJECTS). Do not try to create, "
+    "update, comment on, transition or book time on work packages, and do not search for such "
+    "tools — they do not exist in this session. Tell the user that write access must first be "
+    "enabled in the OpenProject MCP settings (OPENPROJECT_WRITE_PROJECTS, then restart Hermes). "
+    "Read-only questions (search, list, status, details) work normally.\n"
+)
 
 
 def _resolve_tool_by_suffix(names: "set[str]", suffix: str) -> str | None:
@@ -2380,10 +2438,17 @@ def build_ticket_routing_guidance(valid_tool_names: "set[str] | None" = None) ->
     server is removed.
     """
     names = set(valid_tool_names or set())
+    op_write = [t for t in (_resolve_tool_by_suffix(names, s) for s in _OPENPROJECT_WRITE_SUFFIXES) if t]
+    op_read = [t for t in (_resolve_tool_by_suffix(names, s) for s in _OPENPROJECT_READ_SUFFIXES) if t]
+    if op_read and not op_write:
+        # AIS-330: the server is loaded but was configured without a write
+        # scope, so every write tool is absent. Silently returning "" here
+        # left the model routing AIS work to OpenProject and burning ten
+        # retries on a tool that cannot exist (SUP-20260914-152536).
+        return OPENPROJECT_READ_ONLY_GUIDANCE
     if "ticket_routing" not in names:
         return ""
     jira_write = [t for t in (_resolve_tool_by_suffix(names, s) for s in _JIRA_WRITE_SUFFIXES) if t]
-    op_write = [t for t in (_resolve_tool_by_suffix(names, s) for s in _OPENPROJECT_WRITE_SUFFIXES) if t]
     if not jira_write or not op_write:
         return ""
     tempo_create = _resolve_tool_by_suffix(names, "createWorklog") or _resolve_tool_by_suffix(names, "jira_add_worklog")
