@@ -303,6 +303,22 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
         message: result.command ?? 'hermes update',
         command: result.command ?? 'hermes update'
       })
+    } else if (result && result.ok === false) {
+      // The main process resolves (never rejects) apply failures as
+      // `{ ok: false, error, message }`. Ignoring that left the last progress
+      // stage — `restart`, "Handing off to the Hermes updater…" — on screen
+      // with `applying` stuck and the overlay unclosable
+      // (AIS-331 / SUP-20260914-105316 "Er sagt er restartet, restartet aber
+      // nicht"). Land on the error state so the overlay shows the message,
+      // the close button and Retry.
+      const message = result.message || translateNow('updates.applyStatus.failed')
+      $updateApply.set({
+        ...$updateApply.get(),
+        applying: false,
+        stage: 'error',
+        error: result.error || 'apply-failed',
+        message
+      })
     }
 
     return result

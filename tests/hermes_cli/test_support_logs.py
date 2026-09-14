@@ -303,3 +303,23 @@ def test_send_logs_bundles_action_logs(tmp_path, monkeypatch, capsys):
         manifest = json.loads(zf.read("manifest.json"))
         included = {f["name"] for f in manifest["included_files"]}
         assert {"desktop.log", "action-mcp-install.log", "action-doctor.log"} <= included
+
+
+def test_bundle_log_names_ship_update_logs(tmp_path):
+    """AIS-331: the updater's own output belongs in the bundle.
+
+    SUP-20260914-105316 arrived with desktop.log alone — the staged updater
+    had run, relaunched the same 0.7.3 and left no trace of why. update.log,
+    hermes-update.log and updater-launch.log are now part of the fixed set,
+    and action-*.log files (AIS-303) stay appended after it.
+    """
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "action-mcp-install.log").write_text("x\n", encoding="utf-8")
+
+    names = support_logs._bundle_log_names(logs_dir)
+
+    assert names[:5] == ["desktop.log", "agent.log", "errors.log", "gateway.log", "gui.log"]
+    assert {"update.log", "hermes-update.log", "updater-launch.log"} <= set(names)
+    assert names[-1] == "action-mcp-install.log"
+    assert len(names) == len(set(names))

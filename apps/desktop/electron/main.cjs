@@ -61,6 +61,12 @@ const {
   versionFromTag
 } = require('./update-channels.cjs')
 const {
+  UPDATER_LAUNCH_LOG,
+  describeUpdaterLaunchFailure,
+  openUpdaterLogStdio,
+  resolveDetachedCheckoutChannel
+} = require('./update-apply.cjs')
+const {
   isKeycloakCallbackUrl,
   resolveSuiteRootDomain,
   shouldIgnoreLoginLoadFailure
@@ -1478,7 +1484,38 @@ async function resolveHealedBranch(updateRoot, branch) {
 // against the channel, so the apply must too.
 async function resolveApplyBranch(updateRoot) {
   const { branch: configuredBranch } = readDesktopUpdateConfig()
-  return resolveHealedBranch(updateRoot, effectiveUpdateChannel(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH))
+  const marker = readReleaseMarkerForRoot(updateRoot)
+  const channel = effectiveUpdateChannel(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH, marker)
+  // AIS-331 / SUP-20260914-105316: an installer-produced git checkout sits on
+  // a detached HEAD (checked out at a tag). `--branch main` there drags a
+  // 0.7.3 client onto the source repo's main branch — the emergency-fallback
+  // path since AIS-323, and one it cannot follow when origin is unreachable.
+  // Tag channels resolve through the release repository, so hand `stable` to
+  // the updater instead. Release-managed installs are already coerced above.
+  if (!marker && directoryExists(path.join(updateRoot, '.git'))) {
+    const headRef = await currentGitHeadRef(updateRoot)
+    const decision = resolveDetachedCheckoutChannel({ branch: channel, marker, headRef })
+    if (decision.coerced) {
+      rememberLogOnce(
+        `detached-head:${updateRoot}`,
+        `[updates] ${updateRoot} is a detached-HEAD checkout; applying the stable channel instead of "${decision.from}"`
+      )
+      return decision.branch
+    }
+  }
+  return resolveHealedBranch(updateRoot, channel)
+}
+
+// `git rev-parse --abbrev-ref HEAD`: a branch name, the literal "HEAD" when
+// detached, '' when git is unavailable or the command fails (callers must
+// treat '' as "unknown", never as "detached").
+async function currentGitHeadRef(updateRoot) {
+  try {
+    const probe = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
+    return probe.code === 0 ? firstLine(probe.stdout).trim() : ''
+  } catch {
+    return ''
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2042,17 +2079,25 @@ function resolveUpdaterBinary() {
   return fileExists(candidate) ? candidate : null
 }
 
+const MAC_UPDATER_HELPER_TIMEOUT_MS = 15000
+
 function repairMacUpdaterHelper(updater) {
   if (!IS_MAC || !updater) return
 
+  // Bounded: these run synchronously on the main thread between the
+  // "Handing off…" progress event and the actual spawn. `codesign --verify`
+  // can stall on network revocation checks; without a timeout the overlay sat
+  // at 100 % with no way out (AIS-331 / SUP-20260914-105316).
+  const helperOptions = { stdio: 'ignore', timeout: MAC_UPDATER_HELPER_TIMEOUT_MS }
+
   try {
-    execFileSync('/usr/bin/xattr', ['-cr', updater], { stdio: 'ignore' })
+    execFileSync('/usr/bin/xattr', ['-cr', updater], helperOptions)
   } catch (err) {
     rememberLog(`[updates] macOS updater helper quarantine repair skipped: ${err.message}`)
   }
 
   try {
-    execFileSync('/usr/bin/codesign', ['--verify', updater], { stdio: 'ignore' })
+    execFileSync('/usr/bin/codesign', ['--verify', updater], helperOptions)
     return
   } catch {
     // Unsigned or invalid helper. Apply a local ad-hoc signature so Gatekeeper
@@ -2060,7 +2105,7 @@ function repairMacUpdaterHelper(updater) {
   }
 
   try {
-    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', updater], { stdio: 'ignore' })
+    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', updater], helperOptions)
     rememberLog('[updates] repaired macOS updater helper signature')
   } catch (err) {
     rememberLog(`[updates] macOS updater helper signature repair skipped: ${err.message}`)
@@ -2236,48 +2281,92 @@ async function applyUpdates(opts = {}) {
     }
 
     emitUpdateProgress({ stage: 'restart', message: 'Handing off to the Hermes updater…', percent: 100 })
-    repairMacUpdaterHelper(updater)
 
-    const updateRoot = resolveUpdateRoot()
-    const branch = await resolveApplyBranch(updateRoot)
-    const updaterArgs = ['--update', '--branch', branch]
-    const targetApp = IS_MAC ? runningAppBundle() : null
-    if (targetApp) {
-      updaterArgs.push('--target-app', targetApp)
+    // AIS-331 / SUP-20260914-105316: everything from here to the spawn used to
+    // run without a catch. A throw landed in the IPC handler's `.catch` as
+    // `{ ok: false }`, but the progress channel had already announced the
+    // terminal `restart` stage — the overlay stayed on "Handing off…" with no
+    // close button and no error. Any failure past this point now goes out as
+    // an `error` progress event (and into desktop.log) before it propagates.
+    try {
+      repairMacUpdaterHelper(updater)
+
+      const updateRoot = resolveUpdateRoot()
+      const branch = await resolveApplyBranch(updateRoot)
+      const updaterArgs = ['--update', '--branch', branch]
+      const targetApp = IS_MAC ? runningAppBundle() : null
+      if (targetApp) {
+        updaterArgs.push('--target-app', targetApp)
+      }
+      const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
+
+      // Stop our own backend(s) and wait for the venv shim to unlock BEFORE we
+      // spawn the updater. Without this the updater races a still-locked
+      // hermes.exe (held by the backend child / its grandchildren) and the update
+      // bricks. See releaseBackendLockForUpdate for the full failure analysis.
+      await releaseBackendLockForUpdate(updateRoot)
+
+      // The updater's stdout/stderr go to ~/.hermes/logs/updater-launch.log so
+      // a hand-off that changes nothing (the first attempt in
+      // SUP-20260914-105316 relaunched the same 0.7.3) leaves evidence on the
+      // client and in the support bundle. Previously `stdio: 'ignore'`.
+      const updaterLog = openUpdaterLogStdio(path.join(HERMES_HOME, 'logs', UPDATER_LAUNCH_LOG))
+      if (updaterLog.error) {
+        rememberLog(`[updates] updater log unavailable (${updaterLog.error}); updater output will be discarded`)
+      }
+
+      // Detached so the updater outlives this process — it needs us GONE before
+      // `hermes update` will run (the venv shim is locked while we live).
+      let child
+      try {
+        child = spawn(updater, updaterArgs, {
+          cwd: HERMES_HOME,
+          env: {
+            ...process.env,
+            HERMES_HOME,
+            PATH: [path.join(HERMES_HOME, 'node', 'bin'), venvBin, process.env.PATH].filter(Boolean).join(path.delimiter)
+          },
+          detached: true,
+          stdio: updaterLog.stdio,
+          windowsHide: false
+        })
+      } finally {
+        // The child holds its own copy of the descriptor after spawn.
+        updaterLog.close()
+      }
+
+      // ENOENT/EACCES on the binary are reported asynchronously on the child.
+      // Without a listener they were an unhandled 'error' event: nothing
+      // logged, the overlay wedged, and the desktop never quit. Cancel the
+      // pending quit and surface the failure like any other apply error.
+      let launchFailed = false
+      child.once('error', err => {
+        launchFailed = true
+        const message = describeUpdaterLaunchFailure(err, updater)
+        rememberLog(`[updates] hand-off failed: ${message}`)
+        emitUpdateProgress({ stage: 'error', error: 'apply-failed', message, percent: null })
+        handedOff = false
+        updateInFlight = false
+      })
+      child.unref()
+
+      rememberLog(`[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
+
+      // Give the OS a beat to register the new process, then quit. The updater
+      // rebuilds and relaunches us when it's done.
+      handedOff = true
+      setTimeout(() => {
+        if (launchFailed) return
+        app.quit()
+      }, 600)
+
+      return { ok: true, handedOff: true, updater }
+    } catch (error) {
+      const message = error?.message || String(error)
+      rememberLog(`[updates] hand-off failed: ${message}`)
+      emitUpdateProgress({ stage: 'error', error: 'apply-failed', message, percent: null })
+      throw error
     }
-    const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
-
-    // Stop our own backend(s) and wait for the venv shim to unlock BEFORE we
-    // spawn the updater. Without this the updater races a still-locked
-    // hermes.exe (held by the backend child / its grandchildren) and the update
-    // bricks. See releaseBackendLockForUpdate for the full failure analysis.
-    await releaseBackendLockForUpdate(updateRoot)
-
-    // Detached so the updater outlives this process — it needs us GONE before
-    // `hermes update` will run (the venv shim is locked while we live).
-    const child = spawn(updater, updaterArgs, {
-      cwd: HERMES_HOME,
-      env: {
-        ...process.env,
-        HERMES_HOME,
-        PATH: [path.join(HERMES_HOME, 'node', 'bin'), venvBin, process.env.PATH].filter(Boolean).join(path.delimiter)
-      },
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: false
-    })
-    child.unref()
-
-    rememberLog(`[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
-
-    // Give the OS a beat to register the new process, then quit. The updater
-    // rebuilds and relaunches us when it's done.
-    handedOff = true
-    setTimeout(() => {
-      app.quit()
-    }, 600)
-
-    return { ok: true, handedOff: true, updater }
   } finally {
     if (!handedOff) {
       updateInFlight = false
