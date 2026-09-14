@@ -2,14 +2,14 @@
 
 import { type ToolCallMessagePartProps } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type FormEvent, type KeyboardEvent, useCallback, useMemo, useRef, useState } from 'react'
+import { type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Check, HelpCircle, Loader2 } from '@/lib/icons'
+import { Check, Clock, HelpCircle, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
@@ -51,16 +51,126 @@ function RadioDot({ selected }: { selected: boolean }) {
   )
 }
 
+// AIS-333: the clarify tool result once the gateway stopped waiting. Any other
+// settled result (answered, skipped, delivery error) renders through ToolFallback.
+interface ClarifyTimeoutResult {
+  timeoutSeconds: number | null
+  question: string
+}
+
+export function readClarifyTimeout(result: unknown): ClarifyTimeoutResult | null {
+  let row: Record<string, unknown> | null = null
+
+  if (result && typeof result === 'object') {
+    row = result as Record<string, unknown>
+  } else if (typeof result === 'string' && result.trim().startsWith('{')) {
+    try {
+      const parsed: unknown = JSON.parse(result)
+      row = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
+    } catch {
+      row = null
+    }
+  }
+
+  if (!row) {
+    return null
+  }
+
+  const state = typeof row.response_state === 'string' ? row.response_state.toLowerCase() : ''
+  const reason = typeof row.reason_code === 'string' ? row.reason_code.toLowerCase() : ''
+
+  if (state !== 'timeout' && reason !== 'clarify_timeout') {
+    return null
+  }
+
+  const seconds = typeof row.timeout_seconds === 'number' && row.timeout_seconds > 0 ? row.timeout_seconds : null
+
+  return { timeoutSeconds: seconds, question: typeof row.question === 'string' ? row.question : '' }
+}
+
+export function formatCountdown(remainingMs: number): string {
+  const total = Math.max(0, Math.ceil(remainingMs / 1000))
+  const minutes = Math.floor(total / 60)
+  const seconds = total % 60
+
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
+const COUNTDOWN_URGENT_MS = 30_000
+
 export const ClarifyTool = (props: ToolCallMessagePartProps) => {
   const isPending = props.result === undefined
 
   // Once Hermes records an answer, fall back to the standard tool block so
   // the past Q/A renders consistently with every other tool in the thread.
   if (!isPending) {
+    const timedOut = readClarifyTimeout(props.result)
+
+    // AIS-333: an expired question used to collapse into the generic tool
+    // block — the user saw it "disappear" (SUP-20260914-092956). Keep it as
+    // a visible card that says what happened.
+    if (timedOut) {
+      return <ClarifyToolTimedOut question={timedOut.question || readClarifyArgs(props.args).question || ''} timeoutSeconds={timedOut.timeoutSeconds} />
+    }
+
     return <ToolFallback {...props} />
   }
 
   return <ClarifyToolPending {...props} />
+}
+
+function ClarifyToolTimedOut({ question, timeoutSeconds }: { question: string; timeoutSeconds: number | null }) {
+  const { t } = useI18n()
+  const copy = t.assistant.clarify
+
+  return (
+    <div
+      className="relative mb-3 mt-2 grid gap-2 rounded-[0.5rem] border border-dashed border-border/70 bg-card/30 px-3 py-2.5 text-sm"
+      data-slot="clarify-timed-out"
+      role="status"
+    >
+      <div className="flex items-start gap-2.5">
+        <span
+          aria-hidden
+          className="mt-px grid size-6 shrink-0 place-items-center rounded-md bg-accent/60 text-muted-foreground ring-1 ring-inset ring-border/60"
+        >
+          <Clock className="size-3.5" />
+        </span>
+        <div className="flex-1 space-y-1">
+          <div className="font-medium leading-snug text-foreground">{copy.timedOutTitle}</div>
+          <p className="text-[0.8125rem] leading-snug text-muted-foreground">{copy.timedOutBody(timeoutSeconds ?? 0)}</p>
+          {question && (
+            <p className="whitespace-pre-wrap text-[0.8125rem] leading-snug text-foreground/85">
+              <span className="text-muted-foreground">{copy.timedOutQuestion}: </span>
+              {question}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Ticks once a second while a deadline is known; null when there is none.
+function useCountdown(deadlineAt: number | null | undefined): number | null {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!deadlineAt) {
+      return undefined
+    }
+
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+
+    return () => window.clearInterval(timer)
+  }, [deadlineAt])
+
+  if (!deadlineAt) {
+    return null
+  }
+
+  return Math.max(0, deadlineAt - now)
 }
 
 function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
@@ -102,6 +212,10 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   // arrives slightly after the tool block mounts. Show the question (from
   // args) but disable submit until we have the request id from the gateway.
   const ready = Boolean(matchingRequest?.requestId)
+
+  // AIS-333: visible deadline. The gateway stops waiting at deadlineAt and the
+  // agent then continues on its own — the user needs to see that clock.
+  const remainingMs = useCountdown(matchingRequest?.deadlineAt)
 
   const respond = useCallback(
     async (answer: string) => {
@@ -191,6 +305,24 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
           {question || <em className="font-normal text-muted-foreground/70">{copy.loadingQuestion}</em>}
         </span>
       </div>
+
+      {remainingMs !== null && (
+        <div
+          className={cn(
+            'flex items-center gap-1.5 text-[0.6875rem] tabular-nums',
+            remainingMs <= COUNTDOWN_URGENT_MS ? 'font-medium text-destructive' : 'text-muted-foreground/85'
+          )}
+          data-slot="clarify-countdown"
+          data-urgent={remainingMs <= COUNTDOWN_URGENT_MS ? 'true' : undefined}
+        >
+          <Clock aria-hidden className="size-3" />
+          <span>
+            {remainingMs <= COUNTDOWN_URGENT_MS
+              ? copy.timeRemainingSoon(formatCountdown(remainingMs))
+              : copy.timeRemaining(formatCountdown(remainingMs))}
+          </span>
+        </div>
+      )}
 
       {!typing && hasChoices && (
         <div className="grid gap-0.5" role="group">

@@ -716,6 +716,11 @@ agent:
   # primaries (default 3). The OpenAI SDK does its own low-level retries
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
+
+  # Seconds a `clarify` question waits for the user before the agent goes on
+  # without an answer (gateway, desktop and CLI alike). `clarify.timeout`
+  # (top-level section) overrides this. Default 600. AIS-333.
+  # clarify_timeout: 600
   
   # Enable verbose logging
   verbose: false

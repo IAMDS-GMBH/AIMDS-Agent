@@ -89,7 +89,15 @@ def _maybe_persist_blocking_clarify_open_question(
     if not extracted:
         return
     context, needed, reason_code = extracted
-    if reason_code in _CLARIFY_NOISE_REASON_CODES:
+    # AIS-333: a timed-out *onboarding* question is not transport noise — the
+    # profile step it was gathering (work-time profile, language, …) is still
+    # missing and the next session fails on it ("worktime profile unknown",
+    # SUP-20260914-101519). Record it so the agent re-asks instead of moving on.
+    onboarding_timeout = (
+        reason_code == "clarify_timeout"
+        and bool(getattr(agent, "_onboarding_clarify_active", False))
+    )
+    if reason_code in _CLARIFY_NOISE_REASON_CODES and not onboarding_timeout:
         # A timeout, an undelivered prompt or an empty answer is a transport
         # outcome, not a question the user still owes an answer to. Logging
         # it as an open question filled `_open-questions.md` with

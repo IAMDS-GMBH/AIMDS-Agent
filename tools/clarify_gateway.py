@@ -228,23 +228,44 @@ def clear_session(session_key: str) -> int:
 # Config
 # =========================================================================
 
-def get_clarify_timeout() -> int:
-    """Read the clarify response timeout (seconds) from config.
+DEFAULT_CLARIFY_TIMEOUT = 600
 
-    Defaults to 600 (10 minutes) — long enough for the user to type a
-    thoughtful response, short enough that an abandoned prompt eventually
-    unblocks the agent thread instead of pinning the running-agent guard
-    forever.
 
-    Reads ``agent.clarify_timeout`` from config.yaml.
+def get_clarify_timeout(config: "dict | None" = None) -> int:
+    """Resolve the clarify response timeout (seconds) from config.
+
+    Single source of truth for every surface (gateway, TUI/desktop, CLI):
+
+    1. ``clarify.timeout`` — the user-facing key (documented in
+       cli-config.yaml.example),
+    2. ``agent.clarify_timeout`` — the shipped default section
+       (hermes_cli/config.py),
+    3. 600 — ten minutes: long enough for the user to think about a
+       multi-choice onboarding question, short enough that an abandoned prompt
+       eventually unblocks the agent thread.
+
+    AIS-333 / SUP-20260914-092956: the desktop and CLI used to fall back to
+    120 s while the gateway used 600 s, so an onboarding question silently
+    expired while the user was still thinking.
     """
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config() or {}
-        agent_cfg = cfg.get("agent", {}) or {}
-        return int(agent_cfg.get("clarify_timeout", 600))
+        cfg = config
+        if cfg is None:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+        clarify_cfg = cfg.get("clarify") if isinstance(cfg, dict) else None
+        if isinstance(clarify_cfg, dict) and clarify_cfg.get("timeout") not in (None, ""):
+            value = int(float(clarify_cfg.get("timeout")))
+            if value > 0:
+                return value
+        agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else None
+        if isinstance(agent_cfg, dict) and agent_cfg.get("clarify_timeout") not in (None, ""):
+            value = int(float(agent_cfg.get("clarify_timeout")))
+            if value > 0:
+                return value
+        return DEFAULT_CLARIFY_TIMEOUT
     except Exception:
-        return 600
+        return DEFAULT_CLARIFY_TIMEOUT
 
 
 # =========================================================================

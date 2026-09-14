@@ -446,6 +446,9 @@ def _enforce_initial_memory_context_call(
                 }
                 messages.append(_clarify_msg)
                 agent._emit_interim_assistant_message(_clarify_msg)
+                # AIS-333: mark the clarify as an onboarding question so a
+                # timeout is persisted as an open question (agent/tool_executor).
+                agent._onboarding_clarify_active = True
                 try:
                     _synthetic_clarify = SimpleNamespace(
                         tool_calls=[
@@ -478,6 +481,8 @@ def _enforce_initial_memory_context_call(
                         }
                     )
                     break
+                finally:
+                    agent._onboarding_clarify_active = False
 
         agent._initial_onboarding_clarify_enforced = True
     agent._initial_memory_context_enforced = True

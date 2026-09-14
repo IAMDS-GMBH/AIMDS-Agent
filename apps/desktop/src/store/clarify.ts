@@ -7,6 +7,10 @@ export interface ClarifyRequest {
   question: string
   choices: string[] | null
   sessionId: string | null
+  // AIS-333: epoch ms at which the gateway stops waiting (clarify.request
+  // `deadline_at`). Drives the countdown in the inline clarify card.
+  deadlineAt?: number | null
+  timeoutSeconds?: number | null
 }
 
 // Pending clarify requests keyed by the runtime session id that raised them.
