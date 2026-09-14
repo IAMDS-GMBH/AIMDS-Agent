@@ -697,6 +697,28 @@ export const en: Translations = {
       otherProviders: 'Other providers',
       noProviderKeys: 'No provider API keys available.',
       loading: 'Loading providers...',
+      oauth: {
+        connectedTitle: 'Connected accounts',
+        availableTitle: 'Available providers',
+        connected: 'Connected',
+        notConnected: 'Not connected',
+        configured: 'Configured',
+        connect: 'Connect',
+        disconnect: 'Disconnect',
+        disconnecting: 'Disconnecting…',
+        authenticated: 'Authenticated',
+        authenticateVia: {
+          pkce: 'Sign in with your account in the browser',
+          device_code: 'Sign in with a device verification code',
+          loopback: 'Sign in with your account in the browser',
+          external: 'Sign in once with the provider CLI'
+        },
+        apiKeyHint: 'Paste an API key',
+        customHint: 'OpenAI-compatible endpoint URL plus optional API key',
+        disconnected: 'Disconnected account',
+        disconnectedTitle: 'Account disconnected',
+        disconnectFailed: 'Failed to disconnect account'
+      },
       m365: {
         grantForOrg: 'Grant for organization',
         grantForOrgHint: 'Tenant admin: approve Teams chat, presence, shared mailboxes and To Do once for everyone',
@@ -1622,9 +1644,11 @@ export const en: Translations = {
       openai: { short: 'GPT-class models', description: 'Direct access to OpenAI models.' },
       gemini: { short: 'Gemini models', description: 'Direct access to Google Gemini models.' },
       xai: { short: 'Grok models', description: 'Direct access to xAI Grok models.' },
+      groq: { short: 'fast open models', description: 'Direct access to open models served by Groq.' },
       local: {
-        short: 'self-hosted',
-        description: 'Point Hermes at a local or self-hosted OpenAI-compatible endpoint (vLLM, llama.cpp, Ollama, etc).'
+        short: 'your own endpoint',
+        description:
+          'Point Hermes at any OpenAI-compatible endpoint (vLLM, llama.cpp, Ollama, a hosted gateway). Add an API key if the endpoint requires one.'
       }
     },
     backToSignIn: 'Back to sign in',
@@ -1634,6 +1658,7 @@ export const en: Translations = {
     couldNotSave: 'Could not save credential.',
     connecting: 'Connecting',
     update: 'Update',
+    customEndpointKey: 'API key (optional, if the endpoint requires one)',
     flowSubtitles: {
       pkce: 'Opens your browser to sign in, then continues here',
       device_code: 'Opens a verification page in your browser — Hermes connects automatically',

@@ -702,6 +702,9 @@ class EnvVarUpdate(BaseModel):
     key: str
     value: str
     profile: Optional[str] = None
+    # Only used by /api/providers/validate for OPENAI_BASE_URL: optional bearer
+    # key for an authenticated OpenAI-compatible endpoint.
+    api_key: Optional[str] = None
 
 
 class EnvVarDelete(BaseModel):
@@ -3746,12 +3749,19 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     # auto-pick a default without asking the user to type a model name.
     if key == "OPENAI_BASE_URL":
         url = value.rstrip("/") + "/models"
+        # Optional bearer key (AIS-325 "custom endpoint with API key"): an
+        # authenticated gateway only lists its models with the key, and a
+        # rejected key should be reported before anything is saved.
+        api_key = (getattr(body, "api_key", None) or "").strip()
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         try:
             with httpx.Client(timeout=httpx.Timeout(8.0)) as client:
-                resp = client.get(url)
-            return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
+                resp = client.get(url, headers=headers)
         except Exception:
             return {"ok": False, "reachable": False, "message": f"Could not reach {url}."}
+        if api_key and resp.status_code in (401, 403):
+            return {"ok": False, "reachable": True, "message": f"{url} rejected this API key (HTTP {resp.status_code})."}
+        return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
 
     try:
         from hermes_cli.iamds_suite import SUITE_ENVIRONMENTS, probe_suite_endpoint, resolve_suite_endpoint
@@ -5358,7 +5368,7 @@ def _truncate_token(value: Optional[str], visible: int = 6) -> str:
 
 
 def _anthropic_oauth_status() -> Dict[str, Any]:
-    """Status for the "Anthropic API Key" catalog entry.
+    """Status for the "Anthropic (OAuth)" catalog entry.
 
     Two sources, in priority order:
     1. ``~/.hermes/.anthropic_oauth.json`` — Hermes-managed PKCE flow (what
@@ -5455,6 +5465,38 @@ def _claude_code_only_status() -> Dict[str, Any]:
     return {"logged_in": False, "source": None}
 
 
+def _gemini_oauth_status() -> Dict[str, Any]:
+    """Surface the Gemini CLI OAuth store (``~/.hermes/auth/google_oauth.json``).
+
+    Adapts ``hermes_cli.auth.get_gemini_oauth_auth_status`` to the catalog
+    shape. The raw access token never leaves this function — only the
+    truncated preview.
+    """
+    try:
+        from hermes_cli.auth import get_gemini_oauth_auth_status
+        raw = get_gemini_oauth_auth_status()
+    except Exception as e:
+        return {"logged_in": False, "source": None, "error": str(e)}
+    if not raw.get("logged_in"):
+        return {"logged_in": False, "source": None}
+    expires_at = None
+    expires_ms = raw.get("expires_at_ms")
+    if isinstance(expires_ms, (int, float)) and expires_ms > 0:
+        expires_at = (
+            datetime.fromtimestamp(expires_ms / 1000, tz=timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+    return {
+        "logged_in": True,
+        "source": "google_oauth",
+        "source_label": raw.get("email") or raw.get("auth_file") or "Google account",
+        "token_preview": _truncate_token(raw.get("api_key")),
+        "expires_at": expires_at,
+        "has_refresh_token": True,
+    }
+
+
 # Provider catalog. The order matters — it's how we render the UI list.
 # ``cli_command`` is what the dashboard surfaces as the copy-to-clipboard
 # fallback while Phase 2 (in-browser flows) isn't built yet.
@@ -5529,12 +5571,25 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "docs_url": "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth",
         "status_fn": None,  # dispatched via auth.get_xai_oauth_auth_status
     },
-    # ── Anthropic / Claude entries sit at the bottom: the API-key path
-    # first, then the subscription OAuth path (which only works with extra
-    # usage credits on top of a Claude Max plan — see disclaimer in name).
+    {
+        "id": "google-gemini-cli",
+        "name": "Google Gemini (OAuth)",
+        # Same loopback shape as xAI: the backend binds the 127.0.0.1
+        # callback that gemini-cli registered for its OAuth client, the app
+        # opens the Google sign-in, the worker finishes the exchange and
+        # writes ~/.hermes/auth/google_oauth.json like
+        # `hermes auth add google-gemini-cli`.
+        "flow": "loopback",
+        "cli_command": "hermes auth add google-gemini-cli",
+        "docs_url": "https://github.com/google-gemini/gemini-cli",
+        "status_fn": _gemini_oauth_status,
+    },
+    # ── Anthropic / Claude entries: the Hermes-managed claude.ai PKCE login
+    # first, then the credentials imported from the Claude Code CLI
+    # (subscription login; requires extra usage credits on a Claude plan).
     {
         "id": "anthropic",
-        "name": "Anthropic API Key",
+        "name": "Anthropic (OAuth)",
         "flow": "pkce",
         "cli_command": "hermes auth add anthropic",
         "docs_url": "https://docs.claude.com/en/api/getting-started",
@@ -5542,7 +5597,7 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     },
     {
         "id": "claude-code",
-        "name": "Anthropic OAuth: Required Extra Usage Credits to Use Subscription",
+        "name": "Claude Code (OAuth)",
         "flow": "external",
         "cli_command": "claude setup-token",
         "docs_url": "https://docs.claude.com/en/docs/claude-code",
@@ -5698,32 +5753,17 @@ async def list_oauth_providers():
           expires_at       ISO timestamp string or null
           has_refresh_token bool
     """
-    from hermes_cli.config import load_config
-    cfg = load_config()
-    mcp_servers = cfg.get("mcp_servers") or {}
-    enabled_mcp_providers = set()
-    for s_name, s_cfg in mcp_servers.items():
-        if isinstance(s_cfg, dict) and s_cfg.get("enabled", True):
-            p_val = s_cfg.get("provider") or ""
-            if p_val:
-                enabled_mcp_providers.add(str(p_val).lower())
-            args = s_cfg.get("args") or []
-            if "server-github" in " ".join(str(a) for a in args) or s_name.lower() in ("github", "githubmcp"):
-                enabled_mcp_providers.add("github")
-            if s_name.lower() in ("msoffice365mcp", "microsoft365", "m365"):
-                enabled_mcp_providers.add("microsoft")
-
-    mcp_oauth_providers = {"github"}
-
+    # Every non-hidden catalog entry is returned, connected or not, in
+    # catalog order. The settings page splits the list into "connected
+    # accounts" and "available providers", and the desktop onboarding
+    # overlay ("Add provider") needs the unconnected entries to offer them.
+    # (Until AIS-325 only logged-in providers were listed, which left both
+    # surfaces without anything to connect.)
     providers = []
     for p in _OAUTH_PROVIDER_CATALOG:
         if p.get("hidden"):
             continue
         status = _resolve_provider_status(p["id"], p.get("status_fn"))
-        p_id = p["id"]
-
-        if not status.get("logged_in") and p_id != "github" and p_id not in enabled_mcp_providers:
-            continue
 
         providers.append({
             "id": p["id"],
@@ -5771,6 +5811,20 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
         except Exception:
             pass
         _log.info("oauth/disconnect: %s", provider_id)
+        return {"ok": True, "provider": provider_id}
+
+    if provider_id == "google-gemini-cli":
+        try:
+            from agent.google_oauth import clear_credentials
+            clear_credentials()
+        except Exception as e:
+            _log.warning("oauth/disconnect: google-gemini-cli credential file cleanup failed: %s", e)
+        try:
+            from hermes_cli.auth import clear_provider_auth
+            clear_provider_auth("google-gemini-cli")
+        except Exception:
+            pass
+        _log.info("oauth/disconnect: google-gemini-cli")
         return {"ok": True, "provider": provider_id}
 
     if provider_id == "iamds-keycloak":
@@ -5857,7 +5911,7 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
 #     4. On "approved" the background thread has already saved creds; UI
 #        refreshes the providers list.
 #
-#   Loopback PKCE (xAI Grok):
+#   Loopback PKCE (xAI Grok, Google Gemini via the gemini-cli OAuth client):
 #     1. POST /api/providers/oauth/xai-oauth/start
 #          → server binds a 127.0.0.1 callback listener, builds the xAI
 #            authorize URL, spawns a background worker waiting on the redirect
@@ -6539,6 +6593,135 @@ def _xai_loopback_worker(session_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Google Gemini (gemini-cli OAuth client) — loopback PKCE flow
+# ---------------------------------------------------------------------------
+#
+# Mirrors the xAI flow above on top of agent/google_oauth.py's split login:
+# ``begin_browser_flow`` binds the loopback listener and builds the Google
+# authorize URL, ``finish_browser_flow`` waits for the redirect, exchanges the
+# code and persists ~/.hermes/auth/google_oauth.json. The worker then marks
+# google-gemini-cli active in auth.json and mirrors the credential-pool entry
+# that ``hermes auth add google-gemini-cli`` would create.
+_GEMINI_LOOPBACK_TIMEOUT_SECONDS = 300.0
+
+
+def _start_gemini_loopback_flow() -> Dict[str, Any]:
+    """Begin the Gemini loopback PKCE flow; returns the authorize URL."""
+    from agent.google_oauth import GoogleOAuthError, begin_browser_flow
+
+    try:
+        login = begin_browser_flow()
+    except GoogleOAuthError as exc:
+        # Typically: no gemini-cli installed and no HERMES_GEMINI_CLIENT_ID —
+        # surface the install hint verbatim so the app can show it.
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    sid, sess = _new_oauth_session("google-gemini-cli", "loopback")
+    sess["login"] = login
+    sess["expires_at"] = time.time() + _GEMINI_LOOPBACK_TIMEOUT_SECONDS
+    threading.Thread(
+        target=_gemini_loopback_worker, args=(sid,), daemon=True,
+        name=f"oauth-gemini-{sid[:6]}",
+    ).start()
+    return {
+        "session_id": sid,
+        "flow": "loopback",
+        "auth_url": login.auth_url,
+        "expires_in": int(_GEMINI_LOOPBACK_TIMEOUT_SECONDS),
+    }
+
+
+def _add_gemini_oauth_pool_entry(creds: Dict[str, Any]) -> None:
+    """Mirror ``hermes auth add google-gemini-cli``'s credential-pool insert."""
+    try:
+        import uuid
+
+        from agent.credential_pool import (
+            AUTH_TYPE_OAUTH,
+            SOURCE_MANUAL,
+            PooledCredential,
+            load_pool,
+        )
+        source = f"{SOURCE_MANUAL}:dashboard_google_pkce"
+        pool = load_pool("google-gemini-cli")
+        for e in [e for e in pool.entries() if getattr(e, "source", "") == source]:
+            try:
+                pool.remove_entry(getattr(e, "id", ""))
+            except Exception:
+                pass
+        entry = PooledCredential(
+            provider="google-gemini-cli",
+            id=uuid.uuid4().hex[:6],
+            label=str(creds.get("email") or "Google account"),
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=source,
+            access_token=str(creds.get("access_token") or ""),
+            refresh_token=str(creds.get("refresh_token") or "") or None,
+        )
+        pool.add_entry(entry)
+    except Exception as e:
+        _log.warning("google-gemini-cli pool add (dashboard) failed: %s", e)
+
+
+def _gemini_loopback_worker(session_id: str) -> None:
+    """Wait for the Google loopback callback, exchange the code, persist tokens."""
+    from agent.google_oauth import abort_browser_flow, finish_browser_flow
+
+    with _oauth_sessions_lock:
+        sess = _oauth_sessions.get(session_id)
+    if not sess:
+        return
+    login = sess.get("login")
+    if login is None:
+        return
+
+    def _fail(message: str) -> None:
+        with _oauth_sessions_lock:
+            s = _oauth_sessions.get(session_id)
+            if s is not None:
+                s["status"] = "error"
+                s["error_message"] = message
+
+    def _cancelled() -> bool:
+        with _oauth_sessions_lock:
+            return session_id not in _oauth_sessions
+
+    try:
+        creds_obj = finish_browser_flow(login, timeout=_GEMINI_LOOPBACK_TIMEOUT_SECONDS)
+    except Exception as exc:
+        abort_browser_flow(login)
+        if not _cancelled():
+            _fail(f"Google sign-in failed: {exc}")
+        return
+
+    if _cancelled():
+        return
+
+    creds = {
+        "access_token": creds_obj.access_token,
+        "refresh_token": creds_obj.refresh_token,
+        "expires_at_ms": creds_obj.expires_ms,
+        "email": creds_obj.email,
+        "project_id": creds_obj.project_id,
+    }
+    try:
+        from hermes_cli import auth as hauth
+        hauth._mark_google_gemini_cli_active(creds)
+        _add_gemini_oauth_pool_entry(creds)
+    except Exception as exc:
+        _fail(f"Google sign-in succeeded but Hermes could not store it: {exc}")
+        return
+
+    with _oauth_sessions_lock:
+        s = _oauth_sessions.get(session_id)
+        if s is not None:
+            s["status"] = "approved"
+            s.pop("login", None)
+    _log.info("oauth/loopback: google-gemini-cli login completed (session=%s)", session_id)
+
+
+# ---------------------------------------------------------------------------
 # IAMDS LiteLLM — Keycloak loopback PKCE flow
 # ---------------------------------------------------------------------------
 
@@ -7168,6 +7351,10 @@ async def start_oauth_login(provider_id: str, request: Request):
             return await asyncio.get_running_loop().run_in_executor(
                 None, _start_xai_loopback_flow
             )
+        if catalog_entry["flow"] == "loopback" and provider_id == "google-gemini-cli":
+            return await asyncio.get_running_loop().run_in_executor(
+                None, _start_gemini_loopback_flow
+            )
         if catalog_entry["flow"] == "loopback" and provider_id == "iamds-keycloak":
             _suite_env = str(request.query_params.get("env") or "aimds-suite-prod")
             return await asyncio.get_running_loop().run_in_executor(
@@ -7283,6 +7470,20 @@ async def cancel_oauth_session(session_id: str, request: Request):
     # _xai_wait_for_callback times out (up to 5 min). Free it immediately so
     # an orphaned listener can't block a subsequent sign-in attempt.
     if sess.get("flow") == "loopback":
+        # Gemini sessions carry the google_oauth login object: releasing the
+        # listener and firing the ready event unblocks the worker, which then
+        # sees the session gone and exits without persisting anything.
+        login = sess.get("login")
+        if login is not None:
+            try:
+                from agent.google_oauth import abort_browser_flow
+                abort_browser_flow(login)
+            except Exception:
+                pass
+            try:
+                login.ready.set()
+            except Exception:
+                pass
         # The worker is blocked in _xai_wait_for_callback, which polls
         # callback_result rather than the server state. Flag the result as
         # cancelled so that loop returns on its next tick instead of spinning

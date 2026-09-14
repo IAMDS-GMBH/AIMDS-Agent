@@ -30,9 +30,10 @@ import { useI18n } from '@/i18n'
 import { AlertCircle, Check, ChevronRight, ExternalLink, KeyRound, Loader2, ShieldCheck } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding'
+import { $desktopOnboarding, startManualApiKeyEntry, startManualProviderOAuth } from '@/store/onboarding'
 import type { ActionStatusResponse, AimdsSuiteEnvStatus, EnvVarInfo, HermesConfigRecord, McpCatalogEntry, MicrosoftAdminConsentResponse, OAuthProvider } from '@/types/hermes'
 
+import { COMMON_PROVIDERS } from './common-providers'
 import { ProviderKeyRows } from './credential-key-ui'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { LoadingState, Pill, SettingsContent } from './primitives'
@@ -680,7 +681,71 @@ function M365TenantConsentControl({ loggedIn }: { loggedIn: boolean }) {
   )
 }
 
-export function OAuthAccountsPanel() {
+type AccountRow = {
+  flow?: OAuthProvider['flow']
+  hint: string
+  id: string
+  name: string
+  onConnect: () => void
+  status: 'configured' | 'connected' | 'none'
+}
+
+function AccountRowView({
+  disconnecting,
+  onDisconnect,
+  providerId,
+  row
+}: {
+  disconnecting?: boolean
+  onDisconnect?: () => void
+  providerId?: string
+  row: AccountRow
+}) {
+  const { t } = useI18n()
+  const copy = t.settings.providers.oauth
+  const connected = row.status === 'connected'
+
+  return (
+    <div
+      className="flex items-center justify-between gap-4 rounded-[8px] border border-border bg-muted/20 p-3"
+      data-testid={`account-row-${row.id}`}
+    >
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-foreground">{row.name}</span>
+          {connected ? (
+            <Pill tone="primary">{copy.connected}</Pill>
+          ) : row.status === 'configured' ? (
+            <Pill tone="primary">{copy.configured}</Pill>
+          ) : (
+            <Pill tone="muted">{copy.notConnected}</Pill>
+          )}
+        </div>
+        <p className="mt-1 text-xs text-muted-foreground">{row.hint}</p>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        {providerId === 'microsoft' && <M365TenantConsentControl loggedIn={connected} />}
+        {connected && onDisconnect ? (
+          <Button disabled={disconnecting} onClick={onDisconnect} size="xs" variant="outline">
+            {disconnecting ? copy.disconnecting : copy.disconnect}
+          </Button>
+        ) : (
+          <Button onClick={row.onConnect} size="xs" variant="default">
+            {copy.connect}
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Accounts page (AIS-325): every account the backend catalog reports as
+// connected, followed by the short list of common providers that can still
+// be set up (see common-providers.ts). API-key rows reflect the env vars
+// passed in by the parent so a pasted key shows as "configured".
+export function OAuthAccountsPanel({ vars }: { vars?: null | Record<string, EnvVarInfo> } = {}) {
+  const { t } = useI18n()
+  const copy = t.settings.providers.oauth
   const [providers, setProviders] = useState<OAuthProvider[]>([])
   const [loading, setLoading] = useState(true)
   const [disconnecting, setDisconnecting] = useState<null | string>(null)
@@ -691,7 +756,7 @@ export function OAuthAccountsPanel() {
       const all = res.providers || []
       // Respect the backend's own `hidden` flag (e.g. iamds-keycloak, which
       // is surfaced elsewhere) instead of re-implementing an ad-hoc
-      // allowlist here — do NOT filter to GitHub only.
+      // allowlist here.
       setProviders(all.filter(p => !p.hidden))
     } catch (err) {
       console.error('Failed to load OAuth providers', err)
@@ -725,71 +790,96 @@ export function OAuthAccountsPanel() {
     try {
       await disconnectOAuthProvider(id)
       await loadProviders()
-      notify({ kind: 'success', message: 'Disconnected account', title: 'Account disconnected' })
+      notify({ kind: 'success', message: copy.disconnected, title: copy.disconnectedTitle })
     } catch (err) {
-      notifyError(err, 'Failed to disconnect account')
+      notifyError(err, copy.disconnectFailed)
     } finally {
       setDisconnecting(null)
     }
   }
 
-  if (loading || providers.length === 0) {
+  if (loading) {
+    return null
+  }
+
+  const byId = new Map(providers.map(p => [p.id, p]))
+  const connected = providers.filter(p => p.status?.logged_in)
+  const connectedIds = new Set(connected.map(p => p.id))
+
+  const available: AccountRow[] = COMMON_PROVIDERS.flatMap(common => {
+    if (common.kind === 'oauth') {
+      const provider = common.oauthId ? byId.get(common.oauthId) : undefined
+
+      if (!provider || connectedIds.has(provider.id)) {
+        return []
+      }
+
+      return [
+        {
+          flow: provider.flow,
+          hint: copy.authenticateVia[provider.flow] ?? copy.authenticateVia.pkce,
+          id: common.id,
+          name: provider.name || common.name,
+          onConnect: () => startManualProviderOAuth(provider.id),
+          status: 'none' as const
+        }
+      ]
+    }
+
+    const envKey = common.envKey ?? ''
+    const isSet = Boolean(envKey && vars?.[envKey]?.is_set)
+
+    return [
+      {
+        hint: common.kind === 'custom' ? copy.customHint : copy.apiKeyHint,
+        id: common.id,
+        name: common.name,
+        onConnect: () => startManualApiKeyEntry(envKey),
+        status: isSet ? ('configured' as const) : ('none' as const)
+      }
+    ]
+  })
+
+  if (connected.length === 0 && available.length === 0) {
     return null
   }
 
   return (
-    <section className="mb-5 grid gap-2">
-      <SettingsCategoryHeading icon={KeyRound} title="Connected Accounts (OAuth)" />
-      <div className="grid gap-2">
-        {providers.map(p => {
-          const loggedIn = p.status?.logged_in
-
-          return (
-            <div
-              className="flex items-center justify-between gap-4 rounded-[8px] border border-border bg-muted/20 p-3"
-              key={p.id}
-            >
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold text-foreground">{p.name}</span>
-                  {loggedIn ? (
-                    <Pill tone="primary">Connected</Pill>
-                  ) : (
-                    <Pill tone="muted">Not connected</Pill>
-                  )}
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {loggedIn
-                    ? p.status?.source_label || p.status?.token_preview || 'Authenticated'
-                    : `Authenticate using ${p.flow === 'device_code' ? 'device verification code' : 'OAuth'}`}
-                </p>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                {p.id === 'microsoft' && <M365TenantConsentControl loggedIn={Boolean(loggedIn)} />}
-                {loggedIn ? (
-                  <Button
-                    disabled={disconnecting === p.id}
-                    onClick={() => void handleDisconnect(p.id)}
-                    size="xs"
-                    variant="outline"
-                  >
-                    {disconnecting === p.id ? 'Disconnecting…' : 'Disconnect'}
-                  </Button>
-                ) : (
-                  <Button
-                    onClick={() => startManualProviderOAuth(p.id)}
-                    size="xs"
-                    variant="default"
-                  >
-                    Connect
-                  </Button>
-                )}
-              </div>
-            </div>
-          )
-        })}
-      </div>
-    </section>
+    <>
+      {connected.length > 0 ? (
+        <section className="mb-5 grid gap-2" data-testid="connected-accounts">
+          <SettingsCategoryHeading icon={KeyRound} title={copy.connectedTitle} />
+          <div className="grid gap-2">
+            {connected.map(p => (
+              <AccountRowView
+                disconnecting={disconnecting === p.id}
+                key={p.id}
+                onDisconnect={() => void handleDisconnect(p.id)}
+                providerId={p.id}
+                row={{
+                  flow: p.flow,
+                  hint: p.status?.source_label || p.status?.token_preview || copy.authenticated,
+                  id: p.id,
+                  name: p.name,
+                  onConnect: () => startManualProviderOAuth(p.id),
+                  status: 'connected'
+                }}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
+      {available.length > 0 ? (
+        <section className="mb-5 grid gap-2" data-testid="available-providers">
+          <SettingsCategoryHeading icon={KeyRound} title={copy.availableTitle} />
+          <div className="grid gap-2">
+            {available.map(row => (
+              <AccountRowView key={row.id} row={row} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+    </>
   )
 }
 
@@ -1256,7 +1346,7 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
   return (
     <SettingsContent>
       <IamdsAccountPanel onRefreshCreds={() => void refetch()} onWantApiKey={() => onViewChange('keys')} />
-      <OAuthAccountsPanel />
+      <OAuthAccountsPanel vars={vars} />
     </SettingsContent>
   )
 }

@@ -460,13 +460,14 @@ export function completeAimdsSuiteReauth(env: string): Promise<{ ok: boolean }> 
 
 export function validateProviderCredential(
   key: string,
-  value: string
+  value: string,
+  apiKey?: string
 ): Promise<{ ok: boolean; reachable: boolean; message: string; models?: string[] }> {
   return window.hermesDesktop.api<{ ok: boolean; reachable: boolean; message: string; models?: string[] }>({
     ...profileScoped(),
     path: '/api/providers/validate',
     method: 'POST',
-    body: { key, value }
+    body: apiKey ? { key, value, api_key: apiKey } : { key, value }
   })
 }
 

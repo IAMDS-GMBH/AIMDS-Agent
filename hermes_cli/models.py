@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
 from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.model_families import reduce_for_picker
 
 # Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
 # Check (error 1010) don't reject the default ``Python-urllib/*`` signature.
@@ -2462,10 +2463,12 @@ def _credential_fingerprint(provider: str) -> str:
     except Exception:
         pass
 
-    # OAuth / external-file mtimes that change on re-auth
+    # OAuth / external-file mtimes that change on re-auth. ``auth/google_oauth.json``
+    # is the Gemini CLI OAuth store (agent/google_oauth.py) — without it a
+    # Gemini re-auth would keep serving the previous account's cached catalog.
     try:
         from hermes_constants import get_hermes_home
-        for rel in ("auth.json", "credentials.json"):
+        for rel in ("auth.json", "credentials.json", "auth/google_oauth.json"):
             p = get_hermes_home() / rel
             try:
                 parts.append(f"{rel}@{p.stat().st_mtime_ns}")
@@ -2544,6 +2547,16 @@ def cached_provider_model_ids(
 
     Hits the cache when fresh; otherwise calls the live function and
     persists a non-empty result. Always returns a list (never None).
+
+    This is the *picker* path (desktop, web, TUI, ``hermes model``). For the
+    locally detected OAuth providers in
+    :data:`hermes_cli.model_families.PICKER_LATEST_ONLY_PROVIDERS` every
+    returned list is reduced to the newest version per model family — the
+    cache file keeps the raw catalog so a cached entry is reduced on read
+    too. The reduction deliberately does NOT live in
+    :func:`provider_model_ids`, which ``validate_requested_model`` uses for
+    fuzzy auto-correction: a reduced catalog there would rewrite an
+    explicitly configured older model.
     """
     normalized = normalize_provider(provider) or (provider or "")
     if not normalized:
@@ -2570,7 +2583,7 @@ def cached_provider_model_ids(
             or (now - float(entry.get("at", 0))) < ttl_seconds
         )
     ):
-        return list(entry["models"])
+        return reduce_for_picker(normalized, entry["models"])
 
     # Cache miss / stale / forced refresh — call the live path.
     live = provider_model_ids(normalized, force_refresh=force_refresh)
@@ -2581,7 +2594,7 @@ def cached_provider_model_ids(
             "models": list(live),
         }
         _save_provider_models_cache(cache)
-        return list(live)
+        return reduce_for_picker(normalized, live)
 
     # Live fetch returned nothing. If we have a stale entry with the
     # SAME fingerprint, prefer it over an empty result — stale data
@@ -2592,8 +2605,8 @@ def cached_provider_model_ids(
         and isinstance(entry.get("models"), list)
         and entry["models"]
     ):
-        return list(entry["models"])
-    return list(live or [])
+        return reduce_for_picker(normalized, entry["models"])
+    return reduce_for_picker(normalized, live or [])
 
 
 def clear_provider_models_cache(provider: Optional[str] = None) -> None:

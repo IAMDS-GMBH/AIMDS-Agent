@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { FEATURED_OAUTH_IDS } from '@/app/settings/common-providers'
 import { ModelPickerDialog } from '@/components/model-picker'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -26,6 +27,7 @@ import { $desktopBoot, type DesktopBootState } from '@/store/boot'
 import {
   $desktopOnboarding,
   cancelOnboardingFlow,
+  clearPendingApiKeyEntry,
   clearPendingProviderOAuth,
   closeManualOnboarding,
   confirmOnboardingModel,
@@ -36,6 +38,7 @@ import {
   dismissFirstRunOnboarding,
   type OnboardingContext,
   type OnboardingFlow,
+  peekPendingApiKeyEntry,
   peekPendingProviderOAuth,
   recheckExternalSignin,
   refreshOnboarding,
@@ -90,8 +93,14 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
     docsUrl: 'https://console.x.ai/'
   },
   {
+    id: 'groq',
+    name: 'Groq',
+    envKey: 'GROQ_API_KEY',
+    docsUrl: 'https://console.groq.com/keys'
+  },
+  {
     id: 'local',
-    name: 'Local / custom endpoint',
+    name: 'Custom endpoint',
     envKey: 'OPENAI_BASE_URL',
     docsUrl: 'https://github.com/NousResearch/hermes-agent#bring-your-own-endpoint',
     placeholder: 'http://127.0.0.1:8000/v1'
@@ -172,10 +181,11 @@ const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
   'minimax-oauth': { order: 2, title: 'MiniMax' },
   'qwen-oauth': { order: 3, title: 'Qwen Code' },
   'xai-oauth': { order: 4, title: 'xAI Grok' },
-  // Both Anthropic entries sit at the bottom: the API-key path first, then
-  // the subscription OAuth path (only works with extra usage credits).
-  anthropic: { order: 5, title: 'Anthropic API Key' },
-  'claude-code': { order: 6, title: 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription' }
+  // Both Anthropic entries sit at the bottom: the Hermes-managed claude.ai
+  // login first, then the credentials imported from the Claude Code CLI.
+  anthropic: { order: 5, title: 'Anthropic (OAuth)' },
+  'claude-code': { order: 6, title: 'Claude Code (OAuth)' },
+  'google-gemini-cli': { order: 7, title: 'Google Gemini (OAuth)' }
 }
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
@@ -407,7 +417,10 @@ function Header() {
   )
 }
 
-export const FEATURED_ID = 'nous'
+// OAuth providers shown up front in the picker (AIS-325: the same short list
+// the Accounts page advertises). Everything else collapses behind "Other
+// providers".
+export const FEATURED_IDS: readonly string[] = FEATURED_OAUTH_IDS
 const SHOW_ALL_KEY = 'hermes-onboarding-show-all-v1'
 
 const readShowAll = () => {
@@ -441,8 +454,12 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
       <div className="grid gap-3">
         <ApiKeyForm
           canGoBack={hasOauth}
-          onBack={() => setOnboardingMode('oauth')}
-          onSave={(envKey, value, name) => saveOnboardingApiKey(envKey, value, name, ctx)}
+          initialEnvKey={peekPendingApiKeyEntry()}
+          onBack={() => {
+            clearPendingApiKeyEntry()
+            setOnboardingMode('oauth')
+          }}
+          onSave={(envKey, value, name, extra) => saveOnboardingApiKey(envKey, value, name, ctx, extra)}
           options={apiKeyOptions}
         />
         {manual ? null : (
@@ -459,17 +476,27 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   }
 
   const select = (p: OAuthProvider) => void startProviderOAuth(p, ctx)
-  const featured = ordered.find(p => p.id === FEATURED_ID) ?? null
-  const rest = featured ? ordered.filter(p => p.id !== FEATURED_ID) : ordered
-  // Collapse the secondary providers behind a disclosure only when Nous
-  // Portal is present to anchor the choice — otherwise show the full list.
-  const collapsible = Boolean(featured) && rest.length > 0
+
+  const featured = FEATURED_IDS.map(id => ordered.find(p => p.id === id)).filter(
+    (p): p is OAuthProvider => Boolean(p)
+  )
+
+  const rest = ordered.filter(p => !FEATURED_IDS.includes(p.id))
+  // Collapse the secondary providers behind a disclosure only when at least
+  // one featured provider anchors the choice — otherwise show the full list.
+  const collapsible = featured.length > 0 && rest.length > 0
   const showRest = !collapsible || showAll
 
   return (
     <div className="grid gap-2">
       <div className="grid max-h-[60dvh] gap-2 overflow-y-auto p-1">
-        {featured ? <FeaturedProviderRow onSelect={select} provider={featured} /> : null}
+        {featured.map((p, index) =>
+          index === 0 ? (
+            <FeaturedProviderRow key={p.id} onSelect={select} provider={p} />
+          ) : (
+            <ProviderRow key={p.id} onSelect={select} provider={p} />
+          )
+        )}
         {showRest ? (
           <>
             {rest.map(p => (
@@ -630,6 +657,7 @@ export function ProviderRow({
 // surfaces render the identical form.
 export function ApiKeyForm({
   canGoBack,
+  initialEnvKey = null,
   isSet,
   onBack,
   onClear,
@@ -638,25 +666,62 @@ export function ApiKeyForm({
   redactedValue
 }: {
   canGoBack: boolean
+  /** Preselect this option (by env key) — e.g. the Accounts page hand-off. */
+  initialEnvKey?: null | string
   isSet?: (envKey: string) => boolean
   onBack: () => void
   onClear?: (envKey: string) => void
-  onSave: (envKey: string, value: string, name: string) => Promise<{ message?: string; ok: boolean }>
+  onSave: (
+    envKey: string,
+    value: string,
+    name: string,
+    extra?: { apiKey?: string }
+  ) => Promise<{ message?: string; ok: boolean }>
   options?: ApiKeyOption[]
   redactedValue?: (envKey: string) => null | string | undefined
 }) {
   const { t } = useI18n()
-  const [option, setOption] = useState<ApiKeyOption>(options[0])
+
+  const [option, setOption] = useState<ApiKeyOption>(
+    () => options.find(o => o.envKey === initialEnvKey) ?? options[0]
+  )
+
   const [value, setValue] = useState('')
+  // Optional bearer key for the custom-endpoint option only.
+  const [secondary, setSecondary] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
   // `options` can change at runtime when callers filter the catalog (e.g. the
-  // Providers page wiring its search into this grid). Keep the selection valid
-  // by snapping back to the first remaining option when the current one drops.
+  // Providers page wiring its search into this grid) or when the catalog
+  // loads asynchronously (Groq arrives with the backend rows). Honour a
+  // pending preselection once its option appears; otherwise keep the
+  // selection valid by snapping back to the first remaining option.
+  const pendingRef = useRef<null | string>(initialEnvKey)
+
   useEffect(() => {
+    const pending = pendingRef.current
+
+    if (pending) {
+      const match = options.find(o => o.envKey === pending)
+
+      if (match) {
+        pendingRef.current = null
+
+        if (match.envKey !== option.envKey) {
+          setOption(match)
+          setValue('')
+          setSecondary('')
+          setError(null)
+        }
+
+        return
+      }
+    }
+
     if (options.length > 0 && !options.some(o => o.envKey === option.envKey)) {
       setOption(options[0])
       setValue('')
+      setSecondary('')
       setError(null)
     }
   }, [option.envKey, options])
@@ -666,8 +731,10 @@ export function ApiKeyForm({
   const entryRef = useRef<HTMLDivElement>(null)
 
   const pick = (o: ApiKeyOption) => {
+    pendingRef.current = null
     setOption(o)
     setValue('')
+    setSecondary('')
     setError(null)
     requestAnimationFrame(() => {
       entryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -693,10 +760,17 @@ export function ApiKeyForm({
 
     setSaving(true)
     setError(null)
-    const result = await onSave(option.envKey, value, option.name)
+
+    const result = await onSave(
+      option.envKey,
+      value,
+      option.name,
+      isLocal && secondary.trim() ? { apiKey: secondary.trim() } : undefined
+    )
 
     if (result.ok) {
       setValue('')
+      setSecondary('')
     } else {
       setError(result.message ?? t.onboarding.couldNotSave)
     }
@@ -759,6 +833,18 @@ export function ApiKeyForm({
           type={isLocal ? 'text' : 'password'}
           value={value}
         />
+        {isLocal ? (
+          <Input
+            aria-label={t.onboarding.customEndpointKey}
+            autoComplete="off"
+            className="font-mono"
+            onChange={e => setSecondary(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && void submit()}
+            placeholder={t.onboarding.customEndpointKey}
+            type="password"
+            value={secondary}
+          />
+        ) : null}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
       </div>
 
