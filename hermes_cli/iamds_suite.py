@@ -924,6 +924,51 @@ def docling_availability(
 
 # --------------------------------------------------------------------------- re-auth
 
+def rebind_suite_mcp_for_model(target_provider: Optional[str], *, config: Optional[dict] = None) -> List[str]:
+    """Point AIMDSSuiteMCP at the right Suite instance after a model switch.
+
+    A model on a Suite provider → that instance; a 3rd-party model (Claude,
+    Gemini, …) → prod, so the Suite tools never stay stranded on a
+    staging/dev/local endpoint after the user leaves a Suite model. Reconnects
+    only when the MCP host actually changes. Returns the MCP tool names after a
+    reconnect, else ``[]`` (nothing to do / no usable prod credential).
+    """
+    from urllib.parse import urlsplit
+
+    slug = canonical_suite_provider(target_provider) or "aimds-suite-prod"
+    try:
+        ep = resolve_suite_endpoint(slug, config=config, allow_default=True)
+    except ValueError:
+        return []
+    if not ep.base_url or not ep.api_key:
+        # No usable endpoint/key (e.g. no prod key configured) — leave the MCP
+        # as it is rather than tearing down a working connection.
+        return []
+    from hermes_cli.config import SINGLE_MCP_SERVER_NAME
+
+    try:
+        cfg = _load_config_safe(config)
+        servers = cfg.get("mcp_servers") if isinstance(cfg, dict) else None
+        current = (servers or {}).get(SINGLE_MCP_SERVER_NAME) or {}
+        current_host = urlsplit(_norm_url(current.get("url"))).hostname
+        target_host = urlsplit(ep.base_url).hostname
+        if current_host and target_host and current_host == target_host:
+            return []  # already on the right instance — no reconnect churn
+    except Exception:
+        pass
+    try:
+        from tools.mcp_tool import discover_mcp_tools, reload_provider_mcp_servers
+
+        tools = reload_provider_mcp_servers(
+            provider=ep.provider_id, new_base_url=ep.base_url, new_api_key=ep.api_key
+        )
+        discover_mcp_tools()
+        return list(tools or [])
+    except Exception:
+        logger.debug("rebind_suite_mcp_for_model failed", exc_info=True)
+        return []
+
+
 def apply_reauth(provider: str, *, reload_mcp: bool = True, refresh_sessions: bool = True) -> Dict[str, Any]:
     """Make a freshly written key/URL effective without restarting Hermes.
 
@@ -998,6 +1043,7 @@ __all__ = [
     "STATE_UNREACHABLE",
     "all_suite_statuses",
     "apply_reauth",
+    "rebind_suite_mcp_for_model",
     "canonical_suite_provider",
     "clear_suite_auth_failure",
     "is_suite_provider",

@@ -2216,25 +2216,13 @@ def _apply_model_switch(
     if persist_global:
         _persist_model_switch(result)
 
-    # When the active provider is an IAMDS LiteLLM variant, ensure any
-    # MCP servers tagged with ``provider: iamds`` (or a variant slug) use the
-    # correct host and API key.  This fires on every switch to an IAMDS
-    # provider — not only when the provider *changes* — so that a renamed or
-    # freshly-tagged server is repaired even when the user is already on that
-    # provider.
+    # Bind the Suite MCP to the active model: a Suite model → its instance
+    # (prod/staging/dev/local), a 3rd-party model → prod. Reconnects only when
+    # the host changes.
     try:
-        from tools.mcp_tool import (
-            _IAMDS_PROVIDER_SLUGS,
-            discover_mcp_tools,
-            reload_provider_mcp_servers,
-        )
-        if result.target_provider.lower() in _IAMDS_PROVIDER_SLUGS:
-            reload_provider_mcp_servers(
-                provider=result.target_provider,
-                new_base_url=result.base_url or "",
-                new_api_key=result.api_key or "",
-            )
-            discover_mcp_tools()
+        from hermes_cli.iamds_suite import rebind_suite_mcp_for_model
+
+        if rebind_suite_mcp_for_model(result.target_provider):
             _refresh_cached_agent_tools(sid)
     except Exception:
         logger.debug("MCP provider reload failed after model switch", exc_info=True)

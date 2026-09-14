@@ -3511,36 +3511,20 @@ def _apply_model_assignment_sync(
 
         save_config(cfg)
 
-        # When switching the main provider to an IAMDS LiteLLM variant, update
-        # any MCP servers tagged ``provider: iamds`` in config.yaml AND
-        # reconnect them live.  The web server and the in-process tui_gateway
-        # share the same tools.mcp_tool module state (_servers, _mcp_loop), so
-        # reload_provider_mcp_servers() works here exactly as it does in the
-        # gateway's own model-switch hook.  This runs in a worker thread
-        # (asyncio.to_thread), so blocking on the MCP shutdown/reconnect is fine.
+        # Bind the Suite MCP to the active model: a Suite model → its instance,
+        # a 3rd-party model → prod (Suite tools never stranded on a non-prod
+        # endpoint). Shares tools.mcp_tool module state with the tui_gateway.
         mcp_reloaded = False
         mcp_message = ""
         try:
-            from tools.mcp_tool import (
-                _IAMDS_PROVIDER_SLUGS,
-                discover_mcp_tools,
-                reload_provider_mcp_servers,
-            )
-            if provider.strip().lower() in _IAMDS_PROVIDER_SLUGS:
-                from hermes_cli.runtime_provider import resolve_runtime_provider
-                _runtime = resolve_runtime_provider(requested=provider, target_model=model)
-                _new_base_url = _runtime.get("base_url", "") or base_url or ""
-                _new_api_key = _runtime.get("api_key", "") or ""
-                reload_provider_mcp_servers(
-                    provider=provider.strip().lower(),
-                    new_base_url=_new_base_url,
-                    new_api_key=_new_api_key,
-                )
-                discover_mcp_tools()
+            from hermes_cli.iamds_suite import rebind_suite_mcp_for_model
+
+            _mcp_tools = rebind_suite_mcp_for_model(provider)
+            if _mcp_tools:
                 mcp_reloaded = True
                 mcp_message = "MCP server reconnected"
         except Exception:
-            _log.debug("IAMDS MCP reload failed after model assignment", exc_info=True)
+            _log.debug("Suite MCP rebind failed after model assignment", exc_info=True)
 
         # Surface auxiliary slots still pinned to a *different* provider than
         # the new main one. Switching the main model does NOT touch aux pins
