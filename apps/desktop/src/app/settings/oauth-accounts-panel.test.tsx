@@ -5,8 +5,10 @@ import { I18nProvider } from '@/i18n'
 
 // AIS-325: the Accounts page shows every connected account, then the short
 // list of common providers that can still be set up (Anthropic, Gemini,
-// OpenRouter, Groq, custom endpoint). Other catalog entries (Nous, Qwen, …)
-// are not advertised here, and the backend's `hidden` flag is respected.
+// OpenRouter, Groq, custom endpoint) plus the Microsoft 365 account (an
+// account, not a model provider — it carries the tenant consent control).
+// Other catalog entries (Nous, Qwen, …) are not advertised here, and the
+// backend's `hidden` flag is respected.
 
 const listOAuthProviders = vi.fn()
 const disconnectOAuthProvider = vi.fn()
@@ -85,12 +87,11 @@ describe('OAuthAccountsPanel', () => {
 
     const available = within(screen.getByTestId('available-providers'))
     const names = available.getAllByText(/OAuth\)|OpenRouter|Groq|Custom endpoint/).map(el => el.textContent)
-    expect(names).toEqual(['Anthropic (OAuth)', 'Google Gemini (OAuth)', 'OpenRouter', 'Groq', 'Custom endpoint'])
+    expect(names).toEqual(['Anthropic (OAuth)', 'Google Gemini (OAuth)', 'OpenRouter', 'Groq', 'Custom endpoint', 'Microsoft 365 (OAuth)'])
 
     // Not advertised: other catalog entries and hidden ones.
     expect(screen.queryByText('Nous Portal')).toBeNull()
     expect(screen.queryByText('Qwen (via Qwen CLI)')).toBeNull()
-    expect(screen.queryByText('Microsoft 365 (OAuth)')).toBeNull()
     expect(screen.queryByText('IAMDS LiteLLM (Keycloak SSO)')).toBeNull()
 
     // A pasted key shows as configured, the rest as not connected.
