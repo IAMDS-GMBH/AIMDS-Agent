@@ -1660,8 +1660,84 @@ def m365_list_calendars(
     return result
 
 
+def _probe_mailbox_calendar(mail: str) -> Optional[Dict[str, Any]]:
+    """The calendar entry of a mailbox the user can read, or None."""
+    try:
+        cal = _graph_request("GET", f"/users/{mail}/calendar", params={"$select": "id,name,color,canEdit,owner"})
+    except Exception:
+        return None
+    cal = cal if isinstance(cal, dict) else {}
+    if not cal.get("id"):
+        return None
+    owner_raw = cal.get("owner")
+    owner: Dict[str, Any] = owner_raw if isinstance(owner_raw, dict) else {}
+    return {
+        "id": cal.get("id"),
+        "name": owner.get("name") or cal.get("name") or mail,
+        "mailbox": mail,
+        "source_type": "shared_mailbox",
+        "canEdit": bool(cal.get("canEdit", False)),
+        "isDefaultCalendar": False,
+        "owner": owner or {"name": mail, "address": mail},
+    }
+
+
+def _discover_mailbox_calendar(target: str) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    """A calendar name that is not in any listing may be a shared mailbox.
+
+    Try, in order: the directory (display name / mail prefix — needs the
+    admin tier), then ``<name>@<the user's own domain>``. A hit is registered
+    so the next call resolves from the listing; the caller can also pass the
+    address itself. Returns (entry or None, what was tried)."""
+    tried: List[str] = []
+    candidates: List[str] = []
+    q = target.replace("'", "''")
+    try:
+        res = _graph_request(
+            "GET", "/users",
+            params={"$top": 5, "$select": "id,displayName,mail,userPrincipalName",
+                    "$filter": f"startswith(displayName,'{q}') or startswith(mail,'{q}') or startswith(userPrincipalName,'{q}')"},
+        )
+        for u in res.get("value", []) if isinstance(res, dict) else []:
+            mail = str(u.get("mail") or u.get("userPrincipalName") or "").strip().lower()
+            if mail and mail not in candidates:
+                candidates.append(mail)
+        tried.append(f"directory search '{target}': {len(candidates)} match(es)")
+    except Exception as err:
+        tried.append(f"directory search '{target}': {_short_error(err)[:120]}")
+    local_part = "".join(ch for ch in target.lower() if ch.isalnum() or ch in "._-")
+    if local_part:
+        try:
+            upn = _my_identity().get("upn", "")
+            domain = upn.split("@", 1)[1] if "@" in upn else ""
+        except Exception:
+            domain = ""
+        if domain:
+            guess = f"{local_part}@{domain}"
+            if guess not in candidates:
+                candidates.append(guess)
+    for mail in candidates:
+        entry = _probe_mailbox_calendar(mail)
+        tried.append(f"{mail}/calendar: {'ok' if entry else 'not readable'}")
+        if entry:
+            registry = _load_shared_mailboxes()
+            if mail not in registry:
+                registry.append(mail)
+                try:
+                    _save_shared_mailboxes(registry)
+                except OSError:
+                    pass
+            entry["discovered"] = True
+            return entry, tried
+    return None, tried
+
+
 def _resolve_calendar(target: str) -> Tuple[Optional[Dict[str, Any]], Optional[str], Dict[str, Any]]:
-    """(matched calendar, user e-mail, listing) for a calendar name/ID/e-mail."""
+    """(matched calendar, user e-mail, listing) for a calendar name/ID/e-mail.
+
+    Names are matched against every listed calendar; a name nobody lists is
+    then looked up as a mailbox (directory, own domain) so the model does not
+    have to know how the calendar is hosted."""
     target = (target or "").strip()
     if not target:
         return None, None, {}
@@ -1684,6 +1760,11 @@ def _resolve_calendar(target: str) -> Tuple[Optional[Dict[str, Any]], Optional[s
             if c.get("source_type") == "directory_match":
                 continue
             return c, None, listing
+    discovered, tried = _discover_mailbox_calendar(target)
+    listing["tried"] = tried
+    if discovered:
+        listing.setdefault("value", []).append(discovered)
+        return discovered, None, listing
     return None, None, listing
 
 
@@ -1703,11 +1784,13 @@ def _calendar_not_found(target: str, listing: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "error": f"calendar '{target}' not found among the {len(names)} calendars you can reach",
         "available": names,
+        "tried": listing.get("tried", []),
         "sources": listing.get("sources", []),
         "hint": (
-            "If it is a shared mailbox: pass its e-mail address as `calendar`, or register it "
-            "once with m365_list_calendars(add_shared_mailbox='name@tenant') so the name resolves. "
-            "M365 group calendars need Group.Read.All (see sources). Ask the user for the address if unknown."
+            "Not a personal, shared, group or known mailbox calendar. If it lives in a shared mailbox, pass its "
+            "e-mail address as `calendar` (or register it via m365_list_calendars(add_shared_mailbox=…)); if it is "
+            "an M365 group calendar, Group.Read.All is missing (see sources). Ask the user where the calendar lives "
+            "if unknown."
         ),
     }
 

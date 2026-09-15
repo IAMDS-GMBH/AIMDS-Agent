@@ -2117,16 +2117,43 @@ class TestSharedMailboxCalendars:
     def test_unknown_calendar_is_a_structured_error_not_a_graph_400(self, tmp_path):
         registry = tmp_path / "m365_shared_calendars.json"
         side_effect, calls = self._graph()
+        server._MY_IDENTITY_CACHE.clear()
         with patch.object(server, "_shared_calendars_path", return_value=registry), \
                 patch.object(server, "_graph_request", side_effect=side_effect):
-            res = server.m365_get_events(calendar="OFFICEZEITEN", start_time_iso="2026-08-01", end_time_iso="2026-09-14")
+            res = server.m365_get_events(calendar="Nirgendwo", start_time_iso="2026-08-01", end_time_iso="2026-09-14")
             created = server.m365_create_event(subject="x", start_time_iso="2026-09-01T08:00:00",
-                                               end_time_iso="2026-09-01T09:00:00", calendar="OFFICEZEITEN")
-        assert res["error"].startswith("calendar 'OFFICEZEITEN' not found")
+                                               end_time_iso="2026-09-01T09:00:00", calendar="Nirgendwo")
+        assert res["error"].startswith("calendar 'Nirgendwo' not found")
         assert res["available"] == ["Kalender", "INFO | IAMDS"] and "add_shared_mailbox" in res["hint"]
+        assert any("directory search" in t for t in res["tried"])  # it did look before giving up
         assert any(s["source"] == "groups" and s["status"] == "error" for s in res["sources"])
-        assert not any(ep.startswith("/groups/OFFICEZEITEN") for _, ep in calls)
-        assert created["error"].startswith("calendar 'OFFICEZEITEN' not found")
+        assert not any(ep.startswith("/groups/Nirgendwo") for _, ep in calls)
+        assert created["error"].startswith("calendar 'Nirgendwo' not found")
+
+    def test_unlisted_name_is_discovered_as_a_mailbox_in_the_own_domain(self, tmp_path):
+        """The model asks for a calendar by name; the server finds the shared
+        mailbox itself (directory when allowed, else <name>@<own domain>) and
+        remembers it — no user-specific knowledge in prompts needed."""
+        registry = tmp_path / "m365_shared_calendars.json"
+        side_effect, calls = self._graph()
+
+        def with_me(method, endpoint, params=None, json_data=None, **kw):
+            if endpoint == "/me":
+                return {"id": "me", "displayName": "Someone", "userPrincipalName": "someone@iamds.com"}
+            return side_effect(method, endpoint, params=params, json_data=json_data, **kw)
+
+        server._MY_IDENTITY_CACHE.clear()
+        with patch.object(server, "_shared_calendars_path", return_value=registry), \
+                patch.object(server, "_graph_request", side_effect=with_me):
+            res = server.m365_get_events(calendar="OFFICEZEITEN", start_time_iso="2026-08-01", end_time_iso="2026-09-14")
+            assert res["resolved_calendar_name"] == "OFFICEZEITEN"
+            assert res["value"][0]["calendar_name"] == "OFFICEZEITEN"
+            assert server._load_shared_mailboxes() == ["officezeiten@iamds.com"]  # remembered for next time
+            # second call resolves from the registry without a directory lookup
+            calls.clear()
+            server.m365_get_events(calendar="officezeiten", start_time_iso="2026-09-01")
+            assert not any(ep == "/users" for _, ep in calls)
+        server._MY_IDENTITY_CACHE.clear()
 
     def test_create_event_in_shared_mailbox_and_default_calendar_stamp(self, tmp_path):
         registry = tmp_path / "m365_shared_calendars.json"

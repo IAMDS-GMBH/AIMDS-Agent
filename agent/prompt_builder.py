@@ -356,24 +356,14 @@ def build_data_handling_guidance(valid_tool_names: "set[str] | None" = None) -> 
     )
     if has_workdays:
         rungs.append(
-            "Calendar facts — working days, public holidays (DE/AT/CH per state/canton), target hours, "
-            "half days, week models incl. explicit work_weekdays — come from the `workdays` tool; never type "
-            "calendars, weekday counts or holiday dates into SQL or prose, never compute Easter yourself. For "
-            "actual-vs-target comparisons prefer `workdays(action='report')` — one call, clamped to today, all "
-            "math in SQLite; per-day start/end/hours come from `include_days=true`, relative ranges (through last "
-            "week, month to date, last month) from `period=…`, and the Markdown report file from `write='vault'` "
-            "(one canonical file, overwritten in place) — never type weekday or week-number arithmetic into SQL and "
-            "never write the report markdown yourself. Vacation comes from the source-neutral `absences` table "
-            "(`workdays(action='absences')`: booking import, direct user input, vault notes, documents); where the "
-            "user worked (office / home office / travel) from `workdays(action='presence')` (import from any "
-            "calendar whose entries name the user, or direct input). "
-            "The advanced path is `workdays(action='materialize')` + JOIN `workday_calendar` against `mcp_records` "
-            "with `sql`. "
-            "If it answers 'worktime profile unknown', try `workdays(action='estimate_profile')`, present the "
-            "proposal, and confirm with `clarify` — then `workdays(action='configure', …)` saves the profile to "
-            "memory. Never assume a state (not BW, not DE) or a week model. Municipal/partial holidays deduct "
-            "only after user confirmation: on `partial_holidays_unresolved` in a workdays result, ask once "
-            "(municipality/PLZ helps) and persist via configure partial_holidays=[…] or []."
+            "Calendar facts and work-time accounting — working days, public holidays (DE/AT/CH per state/canton), "
+            "target hours, actual-vs-target balances, per-day rows, relative periods, absences, presence and the "
+            "report file — come from the `workdays` tool: read its description, pick the action that answers the "
+            "question in one call, and follow the `hints` in its results. Never type calendars, weekday counts, "
+            "week numbers or holiday dates into SQL or prose, never compute Easter yourself, never write a report "
+            "file the tool can render. Never assume a state or week model: on 'worktime profile unknown' propose "
+            "(estimate_profile) and confirm with `clarify` before configure; municipal/partial holidays deduct "
+            "only after the user confirmed them (`partial_holidays_unresolved`)."
         )
     if has_sql:
         rungs.append(
