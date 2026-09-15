@@ -93,9 +93,112 @@ function describeUpdaterLaunchFailure(error, updater) {
   return `Hermes updater could not be started${target}: ${message}`
 }
 
+// AIS-346 / SUP-20260915-125435: the staged updater (`~/.hermes/hermes-setup`)
+// turned out to be `HermesSetup.dmg` — the installer's self-update had renamed
+// the downloaded *disk image* onto the binary. Every hand-off then died with
+// `spawn ENOEXEC` and the client had no way to update through the GUI. Before
+// the desktop spawns the staged updater it now checks that the file starts
+// with this OS's executable magic; anything else is moved aside so the
+// macOS/Linux in-app update path (`applyUpdatesPosixInApp`) takes over.
+const EXECUTABLE_MAGIC = {
+  win32: { expected: 'Windows PE', heads: [[0x4d, 0x5a]] },
+  darwin: {
+    expected: 'Mach-O',
+    heads: [
+      [0xcf, 0xfa, 0xed, 0xfe],
+      [0xce, 0xfa, 0xed, 0xfe],
+      [0xfe, 0xed, 0xfa, 0xcf],
+      [0xfe, 0xed, 0xfa, 0xce],
+      [0xca, 0xfe, 0xba, 0xbe],
+      [0xbe, 0xba, 0xfe, 0xca]
+    ]
+  },
+  linux: { expected: 'ELF', heads: [[0x7f, 0x45, 0x4c, 0x46]] }
+}
+
+function executableMagicFor(platform) {
+  return EXECUTABLE_MAGIC[platform] || EXECUTABLE_MAGIC.linux
+}
+
+function isNativeExecutableHead(head, platform = process.platform) {
+  const bytes = Buffer.isBuffer(head) ? head : Buffer.from(head || [])
+  return executableMagicFor(platform).heads.some(magic => bytes.length >= magic.length && magic.every((b, i) => bytes[i] === b))
+}
+
+// What a rejected file most likely is, for the log line and the support case.
+function describeForeignHead(head, tail) {
+  const bytes = Buffer.isBuffer(head) ? head : Buffer.from(head || [])
+  if (tail && tail.length >= 4 && tail.subarray(0, 4).toString('latin1') === 'koly') return 'a macOS disk image (.dmg)'
+  if (bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b) return 'a zip archive'
+  if (bytes.length >= 1 && (bytes[0] === 0x3c || bytes[0] === 0x7b)) return 'a text/HTML/JSON document'
+  if (bytes.length === 0) return 'an empty file'
+  return `an unknown file (magic ${Array.from(bytes.subarray(0, 4)).map(b => b.toString(16).padStart(2, '0')).join(' ')})`
+}
+
+// `{ ok: true }` when `file` is a native executable for `platform`, otherwise
+// `{ ok: false, expected, reason }`. Read errors count as "not ok" — a file
+// the desktop cannot even read will not spawn either.
+function inspectUpdaterBinary(file, { fsImpl = fs, platform = process.platform } = {}) {
+  const { expected } = executableMagicFor(platform)
+  let fd
+  try {
+    fd = fsImpl.openSync(file, 'r')
+    const size = fsImpl.fstatSync(fd).size
+    const head = Buffer.alloc(8)
+    const n = fsImpl.readSync(fd, head, 0, head.length, 0)
+    let tail = null
+    if (size >= 512) {
+      // A DMG carries its "koly" trailer in the last 512 bytes.
+      tail = Buffer.alloc(512)
+      fsImpl.readSync(fd, tail, 0, tail.length, size - 512)
+    }
+    const bytes = head.subarray(0, n)
+    if (isNativeExecutableHead(bytes, platform)) return { ok: true, expected }
+    return { ok: false, expected, reason: `${describeForeignHead(bytes, tail)}, not ${expected}` }
+  } catch (err) {
+    return { ok: false, expected, reason: `unreadable: ${err?.message || err}` }
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fsImpl.closeSync(fd)
+      } catch {
+        void 0
+      }
+    }
+  }
+}
+
+// Moves a rejected staged updater aside (`hermes-setup.broken-<timestamp>`) so
+// `resolveUpdaterBinary()` stops finding it. Returns the new path, or null
+// when the rename failed (the caller then just reports the bad file).
+function quarantineUpdaterBinary(file, { fsImpl = fs, now = () => new Date() } = {}) {
+  const stamp = now().toISOString().replace(/[:.]/g, '-')
+  const parked = `${file}.broken-${stamp}`
+  try {
+    fsImpl.renameSync(file, parked)
+    return parked
+  } catch {
+    return null
+  }
+}
+
+// AIS-345: `releases/latest/download/…` answers 404 while the release
+// repository holds only pre-releases (GitHub's "latest" skips them). For the
+// stable channel that is "nothing published yet", not an outage — the update
+// check falls back to the source repository's tags exactly as designed
+// (AIS-318) and must not file a support case for it every 24 h.
+function noStableReleasePublished(error, channel) {
+  const status = error && typeof error === 'object' ? Number(error.status) : NaN
+  return status === 404 && normalizeChannel(channel || '') === 'stable'
+}
+
 module.exports = {
   UPDATER_LAUNCH_LOG,
   describeUpdaterLaunchFailure,
+  inspectUpdaterBinary,
+  isNativeExecutableHead,
+  noStableReleasePublished,
   openUpdaterLogStdio,
+  quarantineUpdaterBinary,
   resolveDetachedCheckoutChannel
 }

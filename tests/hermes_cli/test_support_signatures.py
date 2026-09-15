@@ -136,3 +136,52 @@ def test_signal_summary_is_compact():
     out = sig.signal_summary(digest_signals)
     assert out == [{"id": "boot.port_in_use", "count": 3, "severity": "high", "title": "t", "first": "a", "last": "b", "files": ["desktop.log"]}]
     assert "hint" not in out[0]
+
+
+# AIS-345: the LiteLLM/nginx 403 page is a rejected virtual key, not a Graph
+# consent problem, and the strict-server probe's traceback is expected noise.
+def test_litellm_403_is_not_classified_as_graph_consent():
+    assert sig.classify_text("🔐 AIMDS-Suite 403: the virtual key was rejected by LiteLLM.").id == "litellm.key_rejected"
+    assert sig.classify_text("⚠️  API call failed (attempt 1/3): PermissionDeniedError [HTTP 403]").id == "litellm.key_rejected"
+    assert sig.classify_text("<head><title>403 Forbidden</title></head>") is None
+    assert sig.classify_text('HTTP Request: GET https://graph.microsoft.com/v1.0/me/calendars "HTTP/1.1 403 Forbidden"').id == "graph.403_consent"
+    assert sig.classify_text("AADSTS65001: The user or administrator has not consented").id == "graph.403_consent"
+
+
+def test_digest_suppresses_the_strict_probe_traceback_but_keeps_real_ones(tmp_path):
+    log_dir = tmp_path / "logs"
+    _write(
+        log_dir,
+        "mcp-stderr.log",
+        "\n".join(
+            [
+                "2026-09-15 11:50:00,000 Processing request of type ListToolsRequest",
+                "2026-09-15 11:50:01,000 Tool '__strict_mcpserver_probe__' raised an unexpected exception",
+                "Traceback (most recent call last):",
+                '  File "strict_mcpserver.py", line 44, in call_tool',
+                "ValueError: [validation_error] Unknown argument(s) for tool '__strict_mcpserver_probe__'",
+                "2026-09-15 11:51:00,000 Tool 'm365_list_calendars' raised an unexpected exception",
+                "Traceback (most recent call last):",
+                '  File "server.py", line 10, in call_tool',
+                "KeyError: 'calendar'",
+            ]
+        )
+        + "\n",
+    )
+    digest = sig.build_incident_digest(log_dir, now=NOW)
+    traceback = next(s for s in digest.signals if s["id"] == "python.traceback")
+    assert traceback["count"] == 1
+    assert [h.line_no for h in digest.hits if h.signature == "python.traceback"] == [7]
+
+
+def test_timestamped_desktop_log_lines_are_windowed_like_every_other_log(tmp_path):
+    # AIS-345: the desktop stamps every line it writes so the digest no longer
+    # falls back to "the last 1500 lines" and drags in hours-old boot loops.
+    log_dir = tmp_path / "logs"
+    old = "2026-09-15T08:30:00.000Z [hermes] ERROR:    [Errno 48] error while attempting to bind on address ('127.0.0.1', 9120): address already in use"
+    fresh = "2026-09-15T11:50:00.000Z [hermes] [boot] Hermes backend exited before it became ready (1)."
+    _write(log_dir, "desktop.log", "\n".join([old] * 20 + [fresh]) + "\n")
+    digest = sig.build_incident_digest(log_dir, now=NOW)
+    ids = {s["id"] for s in digest.signals}
+    assert "boot.backend_exited_before_ready" in ids
+    assert "boot.port_in_use" not in ids

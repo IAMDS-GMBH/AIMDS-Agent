@@ -1351,3 +1351,31 @@ def test_update_check_stable_refuses_repointed_tag(capsys):
             _cmd_update_check("stable")
     assert exc.value.code == 1
     assert "does not match the release repository" in capsys.readouterr().out
+
+
+# AIS-345: a 404 on the stable manifest means "no stable release published
+# yet" — resolve from origin, say so, but do not file a support case.
+@pytest.mark.parametrize(
+    "channel, status, expect_incident",
+    [("stable", 404, False), ("preview", 404, True), ("stable", None, True), ("stable", 503, True)],
+)
+def test_resolve_release_target_reports_only_real_outages(channel, status, expect_incident, monkeypatch, capsys):
+    from hermes_cli import main as main_mod
+    from hermes_cli.release_update import ReleaseFeedError
+
+    def _raise(_channel):
+        raise ReleaseFeedError("https://example/hermes-release.json unreachable", status=status)
+
+    incidents = []
+    monkeypatch.setattr("hermes_cli.release_update.fetch_release_feed", _raise)
+    monkeypatch.setattr(main_mod, "_report_update_incident", lambda kind, detail, **kw: incidents.append(kind))
+
+    assert main_mod._resolve_release_target(channel) is None
+    out = capsys.readouterr().out
+    assert f"Resolving the {channel} tag from origin" in out
+    if expect_incident:
+        assert incidents == ["update-fallback-origin-tags"]
+        assert "unavailable" in out
+    else:
+        assert incidents == []
+        assert "No stable release is published" in out

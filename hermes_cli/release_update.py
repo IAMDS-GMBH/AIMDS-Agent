@@ -35,6 +35,7 @@ import re
 import shutil
 import stat
 import tempfile
+import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -109,8 +110,16 @@ FEED_OLDER = "older"
 class ReleaseFeedError(Exception):
     """The release manifest or archive was absent, untrusted, or unusable.
 
-    The message is a concise, user-facing reason.
+    The message is a concise, user-facing reason. ``status`` carries the HTTP
+    status when the server answered (404 on ``releases/latest`` while only
+    pre-releases are published, AIS-345); ``None`` for network failures.
     """
+
+    status: Optional[int] = None
+
+    def __init__(self, message: str, *, status: Optional[int] = None):
+        super().__init__(message)
+        self.status = status
 
 
 @dataclass(frozen=True)
@@ -145,6 +154,8 @@ def _fetch_bytes(url: str, *, timeout: float, max_bytes: int, accept: str = "app
         )
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read(max_bytes + 1)
+    except urllib.error.HTTPError as exc:
+        raise ReleaseFeedError(f"{url} unreachable ({exc})", status=int(exc.code)) from exc
     except Exception as exc:
         raise ReleaseFeedError(f"{url} unreachable ({exc})") from exc
     if len(raw) > max_bytes:

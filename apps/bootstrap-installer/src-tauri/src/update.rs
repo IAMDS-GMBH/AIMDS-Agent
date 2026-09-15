@@ -118,7 +118,20 @@ async fn run_update(app: AppHandle) -> Result<()> {
             if let Err(err) = relaunch_self_updated(&app, &new_binary).await {
                 // Relaunch failing is also non-fatal — the OLD process just
                 // keeps going with the update it already knows how to do.
+                // The staged file is put back to the previous installer so
+                // the desktop's next hand-off does not hit the broken one
+                // (AIS-346).
                 tracing::warn!(%err, "failed to relaunch self-updated installer; continuing with current binary");
+                let restored = crate::self_update::restore_previous();
+                emit_log(
+                    &app,
+                    Some("update"),
+                    LogStream::Stderr,
+                    &format!(
+                        "[update] self-updated installer could not be started ({err}); {}",
+                        if restored { "previous installer restored" } else { "no previous installer to restore" }
+                    ),
+                );
             } else {
                 // Successfully handed off to the new binary; this (stale)
                 // process must stop here rather than racing it.
@@ -473,10 +486,22 @@ async fn relaunch_self_updated(app: &AppHandle, new_binary: &Path) -> Result<()>
         cmd.creation_flags(0x0000_0008);
     }
 
-    cmd.spawn()
+    let mut child = cmd
+        .spawn()
         .with_context(|| format!("spawning self-updated installer {}", new_binary.display()))?;
 
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    // A binary the loader rejects can still "spawn" (execvp falls back to
+    // /bin/sh, which then prints "cannot execute binary file" and exits) —
+    // give it a moment and treat an early exit as a failed relaunch instead
+    // of exiting ourselves and leaving the client without any updater
+    // (AIS-346).
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    if let Ok(Some(status)) = child.try_wait() {
+        return Err(anyhow!(
+            "self-updated installer {} exited immediately with {status}",
+            new_binary.display()
+        ));
+    }
     app.exit(0);
     Ok(())
 }

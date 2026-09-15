@@ -22,6 +22,22 @@
 //! Deliberately NOT implemented (see plan discussion): signature/checksum
 //! verification of the downloaded asset, and any throttling/caching of the
 //! check — it runs on every `--update` invocation.
+//!
+//! AIS-346 (SUP-20260915-125435): the release assets are *installer
+//! packages*, not bare binaries — on macOS `HermesSetup.dmg` is a disk image.
+//! Renaming that image onto `installer_dest()` bricked every macOS client's
+//! GUI update (`spawn ENOEXEC` on the next hand-off). So now:
+//!
+//! * a DMG is mounted and the installer binary is extracted from its
+//!   `*.app/Contents/MacOS/` (`extract_from_dmg`),
+//! * whatever is about to be staged must carry this OS's executable magic
+//!   (Mach-O / ELF / MZ) — anything else is discarded and the old installer
+//!   stays (`ensure_native_executable`),
+//! * the previous installer is kept as `hermes-setup.prev` and restored when
+//!   the relaunch of the new one fails (`restore_previous`),
+//! * the release tag of the staged binary is remembered in a sidecar file so
+//!   a self-updated installer (whose compiled `CARGO_PKG_VERSION` never
+//!   changes) does not download the same release on every update.
 
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
@@ -84,6 +100,185 @@ fn parse_version(v: &str) -> (u64, u64, u64) {
 
 fn is_newer(remote: &str, local: &str) -> bool {
     parse_version(remote) > parse_version(local)
+}
+
+/// Sidecar next to the staged installer that records the release tag it was
+/// taken from (`hermes-setup.release-tag`). `CARGO_PKG_VERSION` is baked in at
+/// build time and does not change when the binary is swapped, so without this
+/// a self-updated installer would fetch the same release again on every run.
+fn staged_tag_path(dest: &Path) -> PathBuf {
+    dest.with_extension("release-tag")
+}
+
+/// Path the previous installer is parked at while a new one is staged.
+fn previous_path(dest: &Path) -> PathBuf {
+    dest.with_extension("prev")
+}
+
+fn read_staged_tag(dest: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(staged_tag_path(dest)).ok()?;
+    let tag = raw.trim();
+    (!tag.is_empty()).then(|| tag.to_string())
+}
+
+/// The version the staged installer effectively has: the compiled version or
+/// the sidecar's release tag, whichever is higher.
+fn effective_local_version(dest: &Path, compiled: &str) -> String {
+    match read_staged_tag(dest) {
+        Some(tag) if is_newer(&tag, compiled) => tag,
+        _ => compiled.to_string(),
+    }
+}
+
+/// The executable magic this OS's loader expects at the start of a binary.
+/// A downloaded *package* (DMG, zip, an HTML error page) never passes.
+fn is_native_executable_for(os: &str, head: &[u8]) -> bool {
+    if head.len() < 4 {
+        return false;
+    }
+    match os {
+        "windows" => head.starts_with(b"MZ"),
+        "macos" => matches!(
+            head[..4],
+            // Mach-O 64/32-bit, both byte orders, and fat/universal binaries.
+            [0xcf, 0xfa, 0xed, 0xfe]
+                | [0xce, 0xfa, 0xed, 0xfe]
+                | [0xfe, 0xed, 0xfa, 0xcf]
+                | [0xfe, 0xed, 0xfa, 0xce]
+                | [0xca, 0xfe, 0xba, 0xbe]
+                | [0xbe, 0xba, 0xfe, 0xca]
+        ),
+        _ => head.starts_with(b"\x7fELF"),
+    }
+}
+
+fn current_os() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    }
+}
+
+/// Refuses to stage anything that is not a native executable for this OS.
+async fn ensure_native_executable(path: &Path) -> Result<()> {
+    let bytes = tokio::fs::read(path)
+        .await
+        .with_context(|| format!("reading {}", path.display()))?;
+    let head: Vec<u8> = bytes.iter().take(8).copied().collect();
+    if is_native_executable_for(current_os(), &head) {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "{} is not a {} executable (magic {:02x?}); refusing to stage it as the installer",
+        path.display(),
+        current_os(),
+        head
+    ))
+}
+
+/// The installer binary inside a mounted DMG: the first Mach-O file under any
+/// `*.app/Contents/MacOS/` directory (the Tauri bundle carries exactly one).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn find_installer_in_bundle_root(root: &Path) -> Option<PathBuf> {
+    let apps = std::fs::read_dir(root).ok()?;
+    let mut bundles: Vec<PathBuf> = apps
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("app") && p.is_dir())
+        .collect();
+    bundles.sort();
+    for bundle in bundles {
+        let macos_dir = bundle.join("Contents").join("MacOS");
+        let Ok(entries) = std::fs::read_dir(&macos_dir) else {
+            continue;
+        };
+        let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
+        files.sort();
+        for file in files {
+            let Ok(mut handle) = std::fs::File::open(&file) else {
+                continue;
+            };
+            use std::io::Read;
+            let mut head = [0u8; 8];
+            let n = handle.read(&mut head).unwrap_or(0);
+            if is_native_executable_for("macos", &head[..n]) {
+                return Some(file);
+            }
+        }
+    }
+    None
+}
+
+/// Mounts `dmg` read-only, copies the installer binary out of its `.app`
+/// bundle to `out`, and detaches the image again (macOS only).
+#[cfg(target_os = "macos")]
+async fn extract_from_dmg(dmg: &Path, out: &Path) -> Result<()> {
+    let mount = paths::bootstrap_cache_dir().join(format!("hermes-setup-dmg-{}", std::process::id()));
+    tokio::fs::create_dir_all(&mount)
+        .await
+        .with_context(|| format!("creating mount point {}", mount.display()))?;
+    let attach = tokio::process::Command::new("/usr/bin/hdiutil")
+        .args(["attach", "-nobrowse", "-readonly", "-noverify", "-noautoopen", "-mountpoint"])
+        .arg(&mount)
+        .arg(dmg)
+        .output()
+        .await
+        .context("running hdiutil attach")?;
+    if !attach.status.success() {
+        let _ = tokio::fs::remove_dir(&mount).await;
+        return Err(anyhow!(
+            "hdiutil attach failed for {}: {}",
+            dmg.display(),
+            String::from_utf8_lossy(&attach.stderr).trim()
+        ));
+    }
+    let result = match find_installer_in_bundle_root(&mount) {
+        Some(binary) => tokio::fs::copy(&binary, out)
+            .await
+            .map(|_| ())
+            .with_context(|| format!("copying {} -> {}", binary.display(), out.display())),
+        None => Err(anyhow!(
+            "{} contains no *.app/Contents/MacOS/ Mach-O binary",
+            dmg.display()
+        )),
+    };
+    let _ = tokio::process::Command::new("/usr/bin/hdiutil")
+        .args(["detach", "-force"])
+        .arg(&mount)
+        .output()
+        .await;
+    let _ = tokio::fs::remove_dir(&mount).await;
+    result
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn extract_from_dmg(dmg: &Path, _out: &Path) -> Result<()> {
+    Err(anyhow!("{} is a macOS disk image; not applicable on this OS", dmg.display()))
+}
+
+/// Puts the previous installer back after a failed relaunch of the new one
+/// (best-effort; the caller logs). Returns `true` when a restore happened.
+pub fn restore_previous() -> bool {
+    let dest = paths::installer_dest();
+    let prev = previous_path(&dest);
+    if !prev.is_file() {
+        return false;
+    }
+    let _ = std::fs::remove_file(&dest);
+    match std::fs::rename(&prev, &dest) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(staged_tag_path(&dest));
+            tracing::warn!(?dest, "restored the previous installer binary");
+            true
+        }
+        Err(err) => {
+            tracing::warn!(%err, ?prev, ?dest, "could not restore the previous installer binary");
+            false
+        }
+    }
 }
 
 /// Picks the download URL for `asset_name` out of a release's asset list.
@@ -212,23 +407,19 @@ async fn download_asset(url: &str, dest_path: &Path) -> Result<()> {
 /// than fail the update on a network hiccup.
 pub async fn check_and_maybe_replace() -> Result<Option<PathBuf>> {
     let release = fetch_newest_release().await?;
+    let dest = paths::installer_dest();
+    let local_version = effective_local_version(&dest, CURRENT_VERSION);
 
-    if !is_newer(&release.tag_name, CURRENT_VERSION) {
+    if !is_newer(&release.tag_name, &local_version) {
         tracing::info!(
             remote = %release.tag_name,
-            local = %CURRENT_VERSION,
+            local = %local_version,
             "installer already up to date; skipping self-update"
         );
         return Ok(None);
     }
 
-    let os = if cfg!(target_os = "windows") {
-        "windows"
-    } else if cfg!(target_os = "macos") {
-        "macos"
-    } else {
-        "linux"
-    };
+    let os = current_os();
     let asset_name = asset_name_for_os(os);
     let asset = pick_asset(&release.assets, asset_name).ok_or_else(|| {
         anyhow!(
@@ -244,9 +435,28 @@ pub async fn check_and_maybe_replace() -> Result<Option<PathBuf>> {
         "newer bootstrap-installer release found; downloading"
     );
 
-    let dest = paths::installer_dest();
     let tmp_download = paths::bootstrap_cache_dir().join(format!("hermes-setup.new-{}", asset.name));
     download_asset(&asset.browser_download_url, &tmp_download).await?;
+
+    // The asset is a package: on macOS a disk image the binary has to be
+    // taken out of; on Windows/Linux the .exe/AppImage *is* the binary.
+    let staged_candidate = if asset.name.to_ascii_lowercase().ends_with(".dmg") {
+        let extracted = paths::bootstrap_cache_dir().join("hermes-setup.new-binary");
+        let _ = tokio::fs::remove_file(&extracted).await;
+        let result = extract_from_dmg(&tmp_download, &extracted).await;
+        let _ = tokio::fs::remove_file(&tmp_download).await;
+        result?;
+        extracted
+    } else {
+        tmp_download
+    };
+
+    // Never stage anything the loader would reject (AIS-346): a DMG, a zip,
+    // an HTML error page … keep the working installer instead.
+    if let Err(err) = ensure_native_executable(&staged_candidate).await {
+        let _ = tokio::fs::remove_file(&staged_candidate).await;
+        return Err(err);
+    }
 
     // Atomic rename over the stable staged path. Safe here (unlike a
     // self-copy from `current_exe()`) because we are not the file we're
@@ -254,13 +464,20 @@ pub async fn check_and_maybe_replace() -> Result<Option<PathBuf>> {
     // running from `dest`, and Windows allows renaming a file that isn't the
     // one backing a running process's mapped image as long as it's a
     // separate temp file being moved on top, not an in-place rewrite of the
-    // open handle's own bytes. If this ever proves unreliable in practice on
-    // Windows, fall back to renaming the old one aside first.
+    // open handle's own bytes. The old binary is parked next to it first so
+    // `restore_previous` can undo the swap when the new one fails to launch.
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    tokio::fs::rename(&tmp_download, &dest)
+    let prev = previous_path(&dest);
+    if dest.exists() {
+        let _ = tokio::fs::remove_file(&prev).await;
+        if let Err(err) = tokio::fs::rename(&dest, &prev).await {
+            tracing::warn!(%err, ?dest, "could not park the previous installer; replacing in place");
+        }
+    }
+    tokio::fs::rename(&staged_candidate, &dest)
         .await
         .with_context(|| format!("staging new installer at {}", dest.display()))?;
 
@@ -270,6 +487,9 @@ pub async fn check_and_maybe_replace() -> Result<Option<PathBuf>> {
         let mut perms = tokio::fs::metadata(&dest).await?.permissions();
         perms.set_mode(0o755);
         tokio::fs::set_permissions(&dest, perms).await?;
+    }
+    if let Err(err) = tokio::fs::write(staged_tag_path(&dest), format!("{}\n", release.tag_name)).await {
+        tracing::warn!(%err, "could not record the staged installer's release tag");
     }
 
     tracing::info!(?dest, version = %release.tag_name, "staged newer installer binary");
@@ -339,6 +559,79 @@ mod tests {
         assert_eq!(found.browser_download_url, "https://example.com/exe");
 
         assert!(pick_asset(&assets, "HermesSetup.AppImage").is_none());
+    }
+
+    #[test]
+    fn native_executable_magic_per_os() {
+        let macho64 = [0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0x00, 0x00, 0x01];
+        let fat = [0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x02];
+        let elf = b"\x7fELF\x02\x01\x01\x00";
+        let mz = b"MZ\x90\x00\x03\x00\x00\x00";
+        // A DMG (koly trailer at the end, arbitrary bytes at the start), a
+        // zip and an HTML error page must never pass for any OS.
+        let dmg_like = [0x78, 0x01, 0x73, 0x0d, 0x62, 0x62, 0x60, 0x60];
+        let zip = b"PK\x03\x04\x14\x00\x00\x00";
+        let html = b"<!DOCTYP";
+
+        assert!(is_native_executable_for("macos", &macho64));
+        assert!(is_native_executable_for("macos", &fat));
+        assert!(!is_native_executable_for("macos", elf));
+        assert!(!is_native_executable_for("macos", &dmg_like));
+        assert!(!is_native_executable_for("macos", zip));
+        assert!(!is_native_executable_for("macos", html));
+
+        assert!(is_native_executable_for("linux", elf));
+        assert!(!is_native_executable_for("linux", &macho64));
+
+        assert!(is_native_executable_for("windows", mz));
+        assert!(!is_native_executable_for("windows", html));
+        assert!(!is_native_executable_for("windows", &[0x4d]));
+    }
+
+    #[test]
+    fn finds_the_mach_o_inside_an_app_bundle() {
+        let root = std::env::temp_dir().join(format!("hermes-selfupdate-bundle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let macos_dir = root.join("Hermes.app").join("Contents").join("MacOS");
+        std::fs::create_dir_all(&macos_dir).unwrap();
+        // A helper script sorts before the binary; it must be skipped.
+        std::fs::write(macos_dir.join("Helper.sh"), b"#!/bin/sh\necho hi\n").unwrap();
+        std::fs::write(macos_dir.join("Hermes-Setup"), [0xcf, 0xfa, 0xed, 0xfe, 0, 0, 0, 0]).unwrap();
+        // Something that is not a bundle at the root is ignored.
+        std::fs::write(root.join("README.txt"), b"drag to Applications").unwrap();
+
+        let found = find_installer_in_bundle_root(&root).expect("binary found");
+        assert_eq!(found, macos_dir.join("Hermes-Setup"));
+
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(find_installer_in_bundle_root(&root).is_none());
+    }
+
+    #[test]
+    fn staged_release_tag_raises_the_local_version() {
+        let dir = std::env::temp_dir().join(format!("hermes-selfupdate-tag-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("hermes-setup");
+        assert_eq!(effective_local_version(&dest, "0.7.4"), "0.7.4");
+
+        std::fs::write(staged_tag_path(&dest), "v0.7.6-rc.3\n").unwrap();
+        assert_eq!(effective_local_version(&dest, "0.7.4"), "v0.7.6-rc.3");
+        // The compiled version wins when it is the higher one (a fresh
+        // install after the sidecar was written by an older stage).
+        assert_eq!(effective_local_version(&dest, "0.8.0"), "0.8.0");
+        assert!(!is_newer("v0.7.6-rc.3", &effective_local_version(&dest, "0.7.4")));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sidecar_and_prev_paths_sit_next_to_the_installer() {
+        let dest = Path::new("/home/x/.hermes/hermes-setup");
+        assert_eq!(staged_tag_path(dest), Path::new("/home/x/.hermes/hermes-setup.release-tag"));
+        assert_eq!(previous_path(dest), Path::new("/home/x/.hermes/hermes-setup.prev"));
+        let exe = Path::new("C:\\hermes\\hermes-setup.exe");
+        assert!(staged_tag_path(exe).to_string_lossy().ends_with("hermes-setup.release-tag"));
     }
 
     #[test]

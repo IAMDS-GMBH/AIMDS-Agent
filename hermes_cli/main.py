@@ -8001,12 +8001,19 @@ def _resolve_release_target(channel: str):
     when its manifest cannot be served the caller resolves the tag from
     ``origin`` as before — announced, never silently.
     """
-    from hermes_cli.release_channels import RELEASE_REPO
+    from hermes_cli.release_channels import CHANNEL_STABLE, RELEASE_REPO, normalize_channel
     from hermes_cli.release_update import ReleaseFeedError, fetch_release_feed
 
     try:
         return fetch_release_feed(channel)
     except ReleaseFeedError as exc:
+        if normalize_channel(channel) == CHANNEL_STABLE and getattr(exc, "status", None) == 404:
+            # AIS-345: `releases/latest` is 404 while only pre-releases are
+            # published — nothing is wrong, the origin tags decide as
+            # designed; no support case for it.
+            print(f"ℹ No stable release is published in {RELEASE_REPO} yet")
+            print(f"  → Resolving the {channel} tag from origin instead.")
+            return None
         print(f"⚠ Release repository {RELEASE_REPO} unavailable ({exc})")
         print(f"  → Resolving the {channel} tag from origin instead.")
         _report_update_incident(

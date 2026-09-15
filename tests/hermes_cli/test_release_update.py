@@ -446,3 +446,21 @@ def test_temp_dir_removed_after_apply(tmp_path, monkeypatch):
 def test_is_source_tree(tmp_path):
     assert release_update.is_source_tree(_install_tree(tmp_path))
     assert not release_update.is_source_tree(tmp_path)
+
+
+def test_fetch_release_feed_stable_404_carries_the_http_status():
+    # AIS-345: `releases/latest` answers 404 while only pre-releases are
+    # published; callers tell that apart from a network failure by `status`.
+    import urllib.error
+
+    not_found = urllib.error.HTTPError(release_update.latest_manifest_url(), 404, "Not Found", {}, None)
+    with patch.object(release_update.urllib.request, "urlopen", side_effect=not_found):
+        with pytest.raises(release_update.ReleaseFeedError) as info:
+            release_update.fetch_release_feed("stable")
+    assert info.value.status == 404
+    assert "404" in str(info.value)
+
+    with patch.object(release_update.urllib.request, "urlopen", side_effect=OSError("reset")):
+        with pytest.raises(release_update.ReleaseFeedError) as info:
+            release_update.fetch_release_feed("stable")
+    assert info.value.status is None
