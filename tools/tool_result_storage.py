@@ -132,6 +132,19 @@ def _build_ingest_hint(tool_name: str, ingest_count: int, *, sql_available: bool
             f"[ingested {int(ingest_count)} rows → mcp_records (tool_name={tool_name!r}, "
             f"tool_use_id={tool_use_id!r}); the `sql` tool is not in this session]"
         )
+    complete = getattr(ingest_count, "complete", None)
+    months = getattr(ingest_count, "months", None) or []
+    incomplete = [str(m.get("month")) for m in months if isinstance(m, dict) and not m.get("complete", True)]
+    if window and (complete is not None or months):
+        if complete is False or incomplete:
+            hint += (
+                f"\n[Completeness: INCOMPLETE for {window[0]}..{window[1]}"
+                + (f" — months not fully fetched: {', '.join(incomplete)}" if incomplete else "")
+                + "; counts over those months are unreliable — re-fetch them (one call per month) before aggregating]"
+            )
+        else:
+            month_counts = ", ".join(f"{m.get('month')}:{m.get('count', 0)}" for m in months if isinstance(m, dict)) if months else ""
+            hint += f"\n[Completeness: complete for {window[0]}..{window[1]}" + (f" ({month_counts})" if month_counts else "") + "]"
     if window:
         hint += (
             f"\n[Freshness: this fetch is authoritative for {window[0]}..{window[1]} — "

@@ -347,3 +347,104 @@ def test_window_pairs_include_calendar_view_arguments():
     from tools.mcp_json_ingestor import _date_window_from_args
 
     assert _date_window_from_args({"start_time_iso": "2026-08-01T00:00:00Z", "end_time_iso": "2026-09-14T23:59:59Z"}) == ("2026-08-01", "2026-09-14")
+
+
+# --------------------------------------------------------------------------- AIS-344 month-by-month + fetch register
+
+
+def test_split_window_args_keeps_value_shapes():
+    from tools.mcp_json_ingestor import split_window_args
+
+    # bare dates (Tempo style)
+    chunks = split_window_args({"startDate": "2026-01-15", "endDate": "2026-03-10", "user": "me"})
+    assert [m for m, _ in chunks] == ["2026-01", "2026-02", "2026-03"]
+    assert chunks[0][1] == {"startDate": "2026-01-15", "endDate": "2026-01-31", "user": "me"}
+    assert chunks[1][1]["startDate"] == "2026-02-01" and chunks[1][1]["endDate"] == "2026-02-28"
+    assert chunks[2][1]["startDate"] == "2026-03-01" and chunks[2][1]["endDate"] == "2026-03-10"
+    # datetimes keep the T…Z shape (Graph calendarView style)
+    chunks = split_window_args({"start_time_iso": "2026-08-01T00:00:00Z", "end_time_iso": "2026-09-14T23:59:59Z"})
+    assert chunks[0][1] == {"start_time_iso": "2026-08-01T00:00:00Z", "end_time_iso": "2026-08-31T23:59:59Z"}
+    assert chunks[1][1] == {"start_time_iso": "2026-09-01T00:00:00Z", "end_time_iso": "2026-09-14T23:59:59Z"}
+    # one month or no window → run as-is
+    assert split_window_args({"startDate": "2026-05-01", "endDate": "2026-05-31"}) == []
+    assert split_window_args({"issue": "X"}) == [] and split_window_args(None) == []
+
+
+def test_completeness_is_read_through_the_envelope():
+    from tools.mcp_json_ingestor import _completeness_from_payload
+
+    assert _completeness_from_payload({"result": {"value": [], "months": [{"month": "2026-05", "count": 3, "complete": True}], "complete": True}}) == (True, [{"month": "2026-05", "count": 3, "complete": True}])
+    assert _completeness_from_payload({"result": json.dumps({"complete": False})}) == (False, None)
+    assert _completeness_from_payload({"value": []}) == (None, None)
+
+
+def test_fetch_register_and_coverage_per_month(tmp_path: Path):
+    from tools.mcp_json_ingestor import fetch_coverage
+
+    db_file = tmp_path / "s.db"
+    payload = {"result": {
+        "value": [{"id": "e1", "subject": "x", "source_key": "group:g-1", "start": {"dateTime": "2026-05-05T00:00:00"}, "end": {"dateTime": "2026-05-06T00:00:00"}},
+                  {"id": "e2", "subject": "y", "source_key": "group:g-1", "start": {"dateTime": "2026-06-02T00:00:00"}, "end": {"dateTime": "2026-06-03T00:00:00"}}],
+        "months": [{"month": "2026-05", "count": 1, "complete": True}, {"month": "2026-06", "count": 1, "complete": False, "error": "429 throttled"},
+                   {"month": "2026-07", "count": 0, "complete": True}],
+        "complete": False,
+    }}
+    res = try_auto_ingest_json(json.dumps(payload), tool_name="mcp_MSOffice365MCP_m365_get_events", tool_use_id="f1",
+                               db_path=db_file, tool_args={"calendar": "OFFICE", "start_time_iso": "2026-05-01", "end_time_iso": "2026-07-31"})
+    assert int(res) == 2 and res.complete is False and res.incomplete_months == ["2026-06"]
+    conn = sqlite3.connect(str(db_file))
+    # reference_key = the stable source key, not the calendar name the model typed
+    assert {r[0] for r in conn.execute("SELECT reference_key FROM mcp_records").fetchall()} == {"group:g-1"}
+    cov = fetch_coverage(conn, "mcp_MSOffice365MCP_%", "2026-04-01", "2026-08-31", "group:g-1")
+    assert [(c["month"], c["status"]) for c in cov] == [
+        ("2026-04", "none"), ("2026-05", "complete"), ("2026-06", "incomplete"), ("2026-07", "complete"), ("2026-08", "none")]
+    assert cov[2]["error"] == "429 throttled"
+
+
+def test_incomplete_month_keeps_earlier_rows(tmp_path: Path):
+    db_file = tmp_path / "s.db"
+    tool = "mcp_MSOffice365MCP_m365_get_events"
+
+    def ev(id_, day):
+        return {"id": id_, "subject": id_, "source_key": "group:g-1", "start": {"dateTime": f"{day}T08:00:00"}, "end": {"dateTime": f"{day}T09:00:00"}}
+
+    # complete May fetch (3 rows)
+    try_auto_ingest_json(json.dumps({"result": {"value": [ev("a", "2026-05-04"), ev("b", "2026-05-11"), ev("c", "2026-05-18")],
+                                                "months": [{"month": "2026-05", "count": 3, "complete": True}], "complete": True}}),
+                         tool_name=tool, tool_use_id="f1", db_path=db_file, tool_args={"calendar": "X", "start_time_iso": "2026-05-01", "end_time_iso": "2026-05-31"})
+    # a later, truncated May fetch (1 row, complete=false) must not wipe the three
+    res = try_auto_ingest_json(json.dumps({"result": {"value": [ev("d", "2026-05-25")],
+                                                      "months": [{"month": "2026-05", "count": 1, "complete": False}], "complete": False}}),
+                               tool_name=tool, tool_use_id="f2", db_path=db_file, tool_args={"calendar": "X", "start_time_iso": "2026-05-01", "end_time_iso": "2026-05-31"})
+    assert res.replaced == 0
+    conn = sqlite3.connect(str(db_file))
+    assert conn.execute("SELECT COUNT(*) FROM mcp_records").fetchone()[0] == 4
+    # a complete re-fetch replaces the month again
+    res = try_auto_ingest_json(json.dumps({"result": {"value": [ev("e", "2026-05-06")],
+                                                      "months": [{"month": "2026-05", "count": 1, "complete": True}], "complete": True}}),
+                               tool_name=tool, tool_use_id="f3", db_path=db_file, tool_args={"calendar": "X", "start_time_iso": "2026-05-01", "end_time_iso": "2026-05-31"})
+    assert res.replaced == 4 and conn.execute("SELECT COUNT(*) FROM mcp_records").fetchone()[0] == 1
+
+
+def test_empty_complete_window_is_registered(tmp_path: Path):
+    from tools.mcp_json_ingestor import fetch_coverage
+
+    db_file = tmp_path / "s.db"
+    res = try_auto_ingest_json(json.dumps({"result": {"value": [], "complete": True}}), tool_name="mcp_X_events", tool_use_id="f0",
+                               db_path=db_file, tool_args={"start": "2026-02-01", "end": "2026-02-28"})
+    assert int(res) == 0 and res.complete is True
+    conn = sqlite3.connect(str(db_file))
+    assert fetch_coverage(conn, "mcp_X_%", "2026-02-01", "2026-02-28")[0]["status"] == "complete"
+
+
+def test_ingest_hint_names_incomplete_months():
+    from tools.mcp_json_ingestor import IngestResult
+    from tools.tool_result_storage import _build_ingest_hint
+
+    res = IngestResult(5, window=("2026-01-01", "2026-03-31"), complete=False,
+                       months=[{"month": "2026-01", "count": 3, "complete": True}, {"month": "2026-02", "count": 2, "complete": False, "error": "429"},
+                               {"month": "2026-03", "count": 0, "complete": True}])
+    hint = _build_ingest_hint("mcp_X_events", res)
+    assert "INCOMPLETE for 2026-01-01..2026-03-31" in hint and "2026-02" in hint and "one call per month" in hint
+    ok = IngestResult(5, window=("2026-01-01", "2026-01-31"), complete=True, months=[{"month": "2026-01", "count": 5, "complete": True}])
+    assert "complete for 2026-01-01..2026-01-31 (2026-01:5)" in _build_ingest_hint("mcp_X_events", ok)

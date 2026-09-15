@@ -3760,6 +3760,134 @@ def _structured_duplicates_text(text_result: str, structured: Any) -> bool:
     return False
 
 
+def _month_chunks(args: Any) -> List[Tuple[str, dict]]:
+    """``[(month, args)]`` when the call's date window spans several months."""
+    try:
+        from tools.mcp_json_ingestor import split_window_args
+
+        return split_window_args(args if isinstance(args, dict) else {})
+    except Exception:
+        return []
+
+
+def _unwrap_result_envelope(text: str) -> Tuple[Any, bool]:
+    """(payload, was_json) for a tool result string; the bridge envelope
+    ``{"result": X}`` is peeled and a JSON-string X parsed."""
+    try:
+        data = json.loads(text)
+    except Exception:
+        return text, False
+    if isinstance(data, dict) and set(data.keys()) == {"result"}:
+        inner = data["result"]
+        if isinstance(inner, str) and inner.strip()[:1] in "{[":
+            try:
+                return json.loads(inner), True
+            except Exception:
+                return inner, True
+        return inner, True
+    return data, True
+
+
+def _call_split_by_month(tool_name: str, chunks: List[Tuple[str, dict]], call_once) -> str:
+    """Run one windowed call per month and merge the answers.
+
+    List payloads are concatenated under their item key (deduplicated by
+    ``id`` when present), delimited-text payloads are joined line by line,
+    and the merged answer carries ``months[{month,count,complete,error?}]``,
+    ``complete`` and ``window`` so the ingestor registers every month and
+    the model sees what is missing. A month that fails is reported, the
+    other months stay valid."""
+    from tools.mcp_result_shaper import ITEM_LIST_KEYS
+
+    merged_items: List[Any] = []
+    seen_ids: set = set()
+    text_parts: List[str] = []
+    months: List[Dict[str, Any]] = []
+    list_key: Optional[str] = None
+    extra: Dict[str, Any] = {}
+    nested_months: List[Dict[str, Any]] = []
+    all_complete = True
+    for month, chunk_args in chunks:
+        try:
+            raw = call_once(chunk_args)
+        except Exception as exc:  # per-month failure is data, not a crash
+            months.append({"month": month, "count": 0, "complete": False, "error": f"{type(exc).__name__}: {_exc_str(exc)}"})
+            all_complete = False
+            continue
+        payload, was_json = _unwrap_result_envelope(raw if isinstance(raw, str) else json.dumps(raw))
+        if isinstance(payload, dict) and payload.get("error") and not any(isinstance(payload.get(k), list) for k in ITEM_LIST_KEYS):
+            months.append({"month": month, "count": 0, "complete": False, "error": str(payload.get("error"))[:300]})
+            all_complete = False
+            continue
+        count = 0
+        if isinstance(payload, list):
+            list_key = list_key or "value"
+            for item in payload:
+                key = item.get("id") if isinstance(item, dict) else None
+                if key is not None and key in seen_ids:
+                    continue
+                if key is not None:
+                    seen_ids.add(key)
+                merged_items.append(item)
+                count += 1
+        elif isinstance(payload, dict):
+            found = next((k for k in ITEM_LIST_KEYS if isinstance(payload.get(k), list)), None)
+            if found:
+                list_key = list_key or found
+                for item in payload[found]:
+                    key = item.get("id") if isinstance(item, dict) else None
+                    if key is not None and key in seen_ids:
+                        continue
+                    if key is not None:
+                        seen_ids.add(key)
+                    merged_items.append(item)
+                    count += 1
+                for k, v in payload.items():
+                    if k in (found, "months", "complete", "window", "count", "pages", "@odata.nextLink", "@odata.context"):
+                        continue
+                    extra.setdefault(k, v)
+            else:
+                text_parts.append(json.dumps(payload, ensure_ascii=False))
+                count = 1
+            server_months = payload.get("months")
+            if isinstance(server_months, list):
+                nested_months.extend(m for m in server_months if isinstance(m, dict))
+            if payload.get("complete") is False:
+                all_complete = False
+        else:
+            text = str(payload).strip()
+            if text and text.lower() not in ("no worklogs found for the specified date range.",):
+                text_parts.append(text)
+                count = len([ln for ln in text.splitlines() if ln.strip()])
+        month_complete = True
+        if isinstance(payload, dict) and payload.get("complete") is False:
+            month_complete = False
+        months.append({"month": month, "count": count, "complete": month_complete})
+    window = {"start": chunks[0][1].get(window_arg_keys_of(chunks[0][1])[0]) if window_arg_keys_of(chunks[0][1]) else None,
+              "end": chunks[-1][1].get(window_arg_keys_of(chunks[-1][1])[1]) if window_arg_keys_of(chunks[-1][1]) else None}
+    if merged_items or list_key:
+        body: Dict[str, Any] = dict(extra)
+        body[list_key or "value"] = merged_items
+        body.update({"months": months, "complete": all_complete, "window": window, "count": len(merged_items),
+                     "split_by_month": True})
+        if nested_months:
+            body["server_months"] = nested_months
+        return json.dumps({"result": body}, ensure_ascii=False)
+    joined = "\n".join(text_parts) if text_parts else "No entries in the requested window."
+    return json.dumps({"result": joined, "months": months, "complete": all_complete, "window": window,
+                       "split_by_month": True}, ensure_ascii=False)
+
+
+def window_arg_keys_of(args: dict) -> Optional[Tuple[str, str]]:
+    try:
+        from tools.mcp_json_ingestor import window_arg_keys
+
+        keys = window_arg_keys(args)
+        return (keys[0], keys[1]) if keys else None
+    except Exception:
+        return None
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, provider: Optional[str] = None):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -3814,8 +3942,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, pr
                 ensure_ascii=False,
             )
 
-        async def _call():
-            clean_args = _clean_mcp_args(server, tool_name, args)
+        async def _call(call_args: Optional[dict] = None):
+            clean_args = _clean_mcp_args(server, tool_name, args if call_args is None else call_args)
             async with server._rpc_lock:
                 result = await server.session.call_tool(tool_name, arguments=clean_args)
             # MCP CallToolResult has .content (list of content blocks) and .isError
@@ -3878,11 +4006,20 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, pr
                 return json.dumps({"result": structured}, ensure_ascii=False)
             return json.dumps({"result": text_result}, ensure_ascii=False)
 
-        def _call_once():
-            return _run_on_mcp_loop(_call, timeout=tool_timeout)
+        def _call_once(call_args: Optional[dict] = None):
+            return _run_on_mcp_loop(lambda: _call(call_args), timeout=tool_timeout)
 
         try:
-            result = _call_once()
+            # Month by month (AIS-344): a date window longer than one calendar
+            # month is fetched per month through the SAME tool — for every MCP
+            # server, whether or not it pages itself — and merged with a
+            # per-month completeness record. One big range never again hides
+            # a server-side cut behind a plausible-looking subset.
+            chunks = _month_chunks(args)
+            if chunks:
+                result = _call_split_by_month(tool_name, chunks, _call_once)
+            else:
+                result = _call_once()
             _reset_server_error(server_name)
             return result
         except InterruptedError:

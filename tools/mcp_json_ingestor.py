@@ -43,7 +43,7 @@ def cleanup_scratch_tables(conn: sqlite3.Connection) -> int:
         system_tables = {
             "sessions", "messages", "schema_version", "state_meta", "mcp_records",
             "compression_locks", "todos", "inbox_entries", "brief_items", "brief_runs",
-            "api_calls", "workday_calendar", "absences"
+            "api_calls", "workday_calendar", "absences", "presence", "mcp_fetches"
         }
         tables = [row[0] for row in cursor.fetchall() if row[0].lower() not in system_tables]
         dropped = 0
@@ -185,6 +185,26 @@ def init_mcp_tables(conn: sqlite3.Connection) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mcp_records_ref ON mcp_records(reference_key)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mcp_records_tool ON mcp_records(tool_name)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mcp_records_ts ON mcp_records(timestamp)")
+        # Fetch register (AIS-344): one row per fetched month (or window) —
+        # which tool fetched which source for which range, how many rows,
+        # and whether the fetch was complete. Consumers prove coverage
+        # from it instead of assuming a range is "loaded".
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS mcp_fetches (
+            tool_use_id TEXT NOT NULL,
+            month TEXT NOT NULL,
+            tool_name TEXT,
+            reference_key TEXT,
+            window_start TEXT,
+            window_end TEXT,
+            rows INTEGER DEFAULT 0,
+            complete INTEGER DEFAULT 1,
+            error TEXT,
+            fetched_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (tool_use_id, month)
+        )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mcp_fetches_tool ON mcp_fetches(tool_name, reference_key, month)")
     try:
         prune_mcp_records(conn)
     except Exception:
@@ -355,8 +375,11 @@ def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fall
     # OpenProject time entries (openproject-ce-mcp `list_time_entries`) carry
     # `work_package_id` + `spent_on` + `hours` as an ISO 8601 duration
     # (PT1H30M) — the Tempo-equivalent shape for AIS-327's time tracking parity.
+    # A stable source identity (``source_key``/``calendar_key`` stamped by the
+    # server: group id, mailbox, calendar id) beats display names — rows of one
+    # calendar share one key however it was addressed (AIS-344).
     ref_key = (
-        _pick(norm, "issuekey", "key", "ticketid", "caseid", "workpackageid", "calendarname")
+        _pick(norm, "sourcekey", "calendarkey", "issuekey", "key", "ticketid", "caseid", "workpackageid", "calendarname")
         or (issue if isinstance(issue, str) else (issue or {}).get("key") if isinstance(issue, dict) else None)
         or fallback_ref
         or ""
@@ -553,21 +576,212 @@ def _date_window_from_args(tool_args: Any) -> Optional[tuple]:
     return None
 
 
+def window_arg_keys(tool_args: Any) -> Optional[Tuple[str, str, str, str]]:
+    """(start_key, end_key, start_value, end_value) with the ORIGINAL key
+    names of the tool call, or None when the args carry no sane window."""
+    if not isinstance(tool_args, dict):
+        return None
+    norm_to_orig = {str(k).lower().replace("_", "").replace("-", ""): k for k in tool_args}
+    for start_key, end_key in _DATE_WINDOW_KEY_PAIRS:
+        s_orig, e_orig = norm_to_orig.get(start_key), norm_to_orig.get(end_key)
+        if s_orig is None or e_orig is None:
+            continue
+        raw_start, raw_end = tool_args.get(s_orig), tool_args.get(e_orig)
+        if raw_start is None or raw_end is None:
+            continue
+        m_start = _ISO_DAY_RE.match(str(raw_start).strip())
+        m_end = _ISO_DAY_RE.match(str(raw_end).strip())
+        if m_start and m_end and m_start.group(1) <= m_end.group(1):
+            return s_orig, e_orig, str(raw_start).strip(), str(raw_end).strip()
+    return None
+
+
+def month_bounds(day: str) -> Tuple[str, str]:
+    """(first day, last day) of the month that contains ``YYYY-MM-DD``."""
+    from calendar import monthrange
+
+    y, m = int(day[:4]), int(day[5:7])
+    return f"{y:04d}-{m:02d}-01", f"{y:04d}-{m:02d}-{monthrange(y, m)[1]:02d}"
+
+
+def _months_between(start_day: str, end_day: str) -> List[str]:
+    out: List[str] = []
+    y, m = int(start_day[:4]), int(start_day[5:7])
+    ey, em = int(end_day[:4]), int(end_day[5:7])
+    while (y, m) <= (ey, em):
+        out.append(f"{y:04d}-{m:02d}")
+        m += 1
+        if m > 12:
+            y, m = y + 1, 1
+    return out
+
+
+def split_window_args(tool_args: Any) -> List[Tuple[str, Dict[str, Any]]]:
+    """Month-by-month copies of a windowed tool call: ``[(month, args)]``.
+
+    Empty when the args carry no window or the window fits in one calendar
+    month — then the call runs as-is. Values keep their shape: a bare date
+    stays a date, a datetime keeps its ``T…`` form and ``Z``/offset suffix,
+    so any server that accepted the original values accepts the chunks.
+    """
+    keys = window_arg_keys(tool_args)
+    if not keys:
+        return []
+    s_key, e_key, s_val, e_val = keys
+    s_day, e_day = s_val[:10], e_val[:10]
+    months = _months_between(s_day, e_day)
+    if len(months) <= 1:
+        return []
+
+    def _fmt(day: str, template: str, end: bool) -> str:
+        if "T" not in template and " " not in template:
+            return day
+        suffix = ""
+        tail = template[10:]
+        for marker in ("Z", "+", "-"):
+            idx = tail.find(marker, 1)
+            if idx != -1:
+                suffix = tail[idx:]
+                break
+        return f"{day}T{'23:59:59' if end else '00:00:00'}{suffix}"
+
+    out: List[Tuple[str, Dict[str, Any]]] = []
+    for month in months:
+        first, last = month_bounds(f"{month}-01")
+        c_start = s_day if month == months[0] else first
+        c_end = e_day if month == months[-1] else last
+        chunk = dict(tool_args)
+        chunk[s_key] = s_val if (month == months[0] and c_start == s_day) else _fmt(c_start, s_val, end=False)
+        chunk[e_key] = e_val if (month == months[-1] and c_end == e_day) else _fmt(c_end, e_val, end=True)
+        out.append((month, chunk))
+    return out
+
+
+def _completeness_from_payload(data: Any) -> Tuple[Optional[bool], Optional[List[Dict[str, Any]]]]:
+    """``complete`` and ``months[]`` as reported by the server or by the
+    month-splitting bridge, looked up through the ``{"result": …}`` envelope."""
+    node = data
+    for _ in range(3):
+        if isinstance(node, dict):
+            months = node.get("months")
+            complete = node.get("complete")
+            if isinstance(months, list) or isinstance(complete, bool):
+                return (complete if isinstance(complete, bool) else None,
+                        [m for m in months if isinstance(m, dict)] if isinstance(months, list) else None)
+            inner = node.get("result")
+            if isinstance(inner, str) and inner.strip()[:1] in "{[":
+                try:
+                    inner = json.loads(inner)
+                except Exception:
+                    return None, None
+            node = inner
+            continue
+        break
+    return None, None
+
+
+def record_fetches(
+    conn: sqlite3.Connection,
+    *,
+    tool_use_id: str,
+    tool_name: str,
+    reference_key: str,
+    window: Optional[tuple],
+    rows: int,
+    complete: Optional[bool],
+    months: Optional[List[Dict[str, Any]]],
+) -> None:
+    """One register row per fetched month (from ``months[]``) or per window."""
+    if not tool_use_id or not window:
+        return
+    entries: List[tuple] = []
+    if months:
+        for m in months:
+            month = str(m.get("month") or "")
+            if not month:
+                continue
+            first, last = month_bounds(f"{month}-01")
+            entries.append((
+                tool_use_id, month, tool_name, reference_key or "",
+                max(first, window[0]), min(last, window[1]),
+                int(m.get("count") or 0), 1 if m.get("complete", True) else 0, str(m.get("error") or "") or None,
+            ))
+    else:
+        for month in _months_between(window[0], window[1]):
+            first, last = month_bounds(f"{month}-01")
+            entries.append((
+                tool_use_id, month, tool_name, reference_key or "",
+                max(first, window[0]), min(last, window[1]),
+                rows, 0 if complete is False else 1, None,
+            ))
+    conn.executemany(
+        "INSERT OR REPLACE INTO mcp_fetches (tool_use_id, month, tool_name, reference_key, window_start, window_end, "
+        "rows, complete, error) VALUES (?,?,?,?,?,?,?,?,?)",
+        entries,
+    )
+
+
+def fetch_coverage(
+    conn: sqlite3.Connection,
+    tool_like: str,
+    start_day: str,
+    end_day: str,
+    reference_key: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Per-month coverage of a source in the fetch register: ``complete``,
+    ``incomplete`` (last fetch of that month was cut or failed) or ``none``."""
+    conditions = ["tool_name LIKE ?", "month BETWEEN ? AND ?"]
+    params: List[Any] = [tool_like, start_day[:7], end_day[:7]]
+    if reference_key:
+        conditions.append("lower(reference_key) = lower(?)")
+        params.append(reference_key)
+    rows = conn.execute(
+        "SELECT month, complete, rows, fetched_at, error FROM mcp_fetches WHERE " + " AND ".join(conditions)
+        + " ORDER BY month, fetched_at",
+        params,
+    ).fetchall()
+    latest: Dict[str, tuple] = {}
+    for month, complete, n, fetched_at, error in rows:
+        latest[month] = (complete, n, fetched_at, error)  # last fetch wins
+    out: List[Dict[str, Any]] = []
+    for month in _months_between(start_day, end_day):
+        if month not in latest:
+            out.append({"month": month, "status": "none"})
+            continue
+        complete, n, fetched_at, error = latest[month]
+        entry: Dict[str, Any] = {"month": month, "status": "complete" if complete else "incomplete",
+                                 "rows": n, "fetched_at": fetched_at}
+        if error:
+            entry["error"] = error
+        out.append(entry)
+    return out
+
+
 class IngestResult(int):
     """int-compatible ingest outcome: value = rows ingested (the historic
-    return), plus window-replacement and cap-eviction metadata (AIS-275)."""
+    return), plus window-replacement and cap-eviction metadata (AIS-275) and
+    completeness (AIS-344)."""
 
     replaced: int = 0
     evicted: int = 0
     window: Optional[tuple] = None
+    complete: Optional[bool] = None
+    months: Optional[List[Dict[str, Any]]] = None
 
     def __new__(cls, ingested: int = 0, replaced: int = 0, evicted: int = 0,
-                window: Optional[tuple] = None):
+                window: Optional[tuple] = None, complete: Optional[bool] = None,
+                months: Optional[List[Dict[str, Any]]] = None):
         obj = super().__new__(cls, ingested)
         obj.replaced = replaced
         obj.evicted = evicted
         obj.window = window
+        obj.complete = complete
+        obj.months = months
         return obj
+
+    @property
+    def incomplete_months(self) -> List[str]:
+        return [str(m.get("month")) for m in (self.months or []) if not m.get("complete", True)]
 
 
 def _isolate_json_document(text: str) -> str:
@@ -636,11 +850,29 @@ def try_auto_ingest_json(
 
     items = _flatten_nested_worklogs(_extract_items(data))
     fallback_ref = _reference_key_from_args(tool_args)
+    complete, months = _completeness_from_payload(data)
+    window = _date_window_from_args(tool_args)
     if not items:
-        return IngestResult(0)
+        # A complete-but-empty window is still a fact worth registering
+        # (the month has no entries); an unrecognised payload is not.
+        if window and complete is True and tool_use_id:
+            try:
+                conn = get_db_connection(db_path)
+                with conn:
+                    record_fetches(conn, tool_use_id=tool_use_id, tool_name=tool_name, reference_key=fallback_ref,
+                                   window=window, rows=0, complete=True, months=months)
+                conn.close()
+            except Exception as exc:
+                logger.debug("fetch register write failed: %s", exc)
+        return IngestResult(0, window=window, complete=complete, months=months)
 
     records = [_extract_fields(item, tool_name, tool_use_id, fallback_ref) for item in items]
-    window = _date_window_from_args(tool_args)
+    # The stable source key the rows carry (source_key/calendar_key) is the
+    # reference the window replace and the register are scoped to.
+    ref_keys = {r[3] for r in records if r[3]}
+    scope_ref = fallback_ref
+    if len(ref_keys) == 1:
+        scope_ref = next(iter(ref_keys))
 
     try:
         conn = get_db_connection(db_path)
@@ -653,29 +885,45 @@ def try_auto_ingest_json(
                 # request-scoped reference (issue key, calendar name) narrows
                 # the replacement to that reference — fetching the
                 # OFFICEZEITEN calendar must not wipe the main calendar's
-                # events in the same window (AIS-339).
-                delete_sql = "DELETE FROM mcp_records WHERE tool_name = ? AND substr(timestamp, 1, 10) BETWEEN ? AND ?"
-                delete_params: List[Any] = [tool_name, window[0], window[1]]
-                if fallback_ref:
-                    delete_sql += " AND lower(reference_key) = lower(?)"
-                    delete_params.append(fallback_ref)
-                cursor = conn.execute(delete_sql, delete_params)
-                replaced = cursor.rowcount or 0
+                # events in the same window (AIS-339). Only months the fetch
+                # reports as complete are replaced (AIS-344): an incomplete
+                # month keeps its earlier rows rather than losing them.
+                ranges: List[Tuple[str, str]] = []
+                if months:
+                    for m in months:
+                        if m.get("complete", True) and m.get("month"):
+                            first, last = month_bounds(f"{m['month']}-01")
+                            ranges.append((max(first, window[0]), min(last, window[1])))
+                elif complete is not False:
+                    ranges.append(window)
+                for r_start, r_end in ranges:
+                    delete_sql = "DELETE FROM mcp_records WHERE tool_name = ? AND substr(timestamp, 1, 10) BETWEEN ? AND ?"
+                    delete_params: List[Any] = [tool_name, r_start, r_end]
+                    if scope_ref:
+                        delete_sql += " AND lower(reference_key) = lower(?)"
+                        delete_params.append(scope_ref)
+                    cursor = conn.execute(delete_sql, delete_params)
+                    replaced += cursor.rowcount or 0
             conn.executemany("""
             INSERT OR REPLACE INTO mcp_records (
                 id, tool_name, tool_use_id, reference_key, timestamp, user_id,
                 duration_seconds, category, comment, raw_data
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, records)
+            if window is not None:
+                record_fetches(conn, tool_use_id=tool_use_id, tool_name=tool_name, reference_key=scope_ref,
+                               window=window, rows=len(records), complete=complete, months=months)
             prune_result = prune_mcp_records(conn)
         logger.info(
-            "Auto-ingested %d MCP records into mcp_records (tool: %s%s)",
+            "Auto-ingested %d MCP records into mcp_records (tool: %s%s%s)",
             len(records), tool_name,
             f", replaced {replaced} rows in window {window[0]}..{window[1]}" if window else "",
+            "" if complete is not False else ", INCOMPLETE",
         )
         return IngestResult(
             len(records), replaced=replaced,
             evicted=getattr(prune_result, "cap_evicted", 0), window=window,
+            complete=complete, months=months,
         )
     except Exception as exc:
         logger.warning("Failed to store MCP records in SQLite: %s", exc)
