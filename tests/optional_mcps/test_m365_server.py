@@ -2175,7 +2175,7 @@ class TestSharedMailboxCalendars:
         server._MY_IDENTITY_CACHE.clear()
         with patch.object(server, "_shared_calendars_path", return_value=registry), \
                 patch.object(server, "_graph_request", side_effect=with_me):
-            res = server.m365_get_events(calendar="OFFICEZEITEN", start_time_iso="2026-08-01", end_time_iso="2026-09-14")
+            res = server.m365_get_events(calendar="OFFICEZEITEN", start_time_iso="2026-08-01", end_time_iso="2026-09-14", only_mine=False)
             assert res["resolved_calendar_name"] == "OFFICEZEITEN"
             assert res["value"][0]["calendar_name"] == "OFFICEZEITEN"
             assert server._load_shared_mailboxes() == ["officezeiten@iamds.com"]  # remembered for next time
@@ -2283,3 +2283,161 @@ class TestSharedMailboxCalendars:
             res = server.m365_list_calendars()
         row = next(s for s in res["sources"] if s["source"] == "shared_mailboxes")
         assert row["status"] == "error" and row["failed"] == ["officezeiten@iamds.com"] and "404" in row["error"]
+
+
+class TestGenericDataLayer:
+    """AIS-344: month-by-month complete windows, involvement annotation,
+    user-first defaults on shared sources, group names, compact listing."""
+
+    @staticmethod
+    def _events_for(month_start: str, n: int, who: str):
+        return [{"id": f"{who}-{month_start}-{i}", "subject": who,
+                 "start": {"dateTime": f"{month_start[:8]}{i + 1:02d}T00:00:00.0000000", "timeZone": "Europe/Berlin"},
+                 "end": {"dateTime": f"{month_start[:8]}{i + 2:02d}T00:00:00.0000000", "timeZone": "Europe/Berlin"},
+                 "isAllDay": True, "organizer": {"emailAddress": {"name": "OFFICE | ACME", "address": "office@acme.test"}},
+                 "attendees": []} for i in range(n)]
+
+    def test_split_by_month(self):
+        chunks = server._split_by_month("2026-01-15T00:00:00", "2026-03-10T23:59:59")
+        assert [c[0] for c in chunks] == ["2026-01", "2026-02", "2026-03"]
+        assert chunks[0][1] == "2026-01-15T00:00:00" and chunks[0][2] == "2026-02-01T00:00:00"
+        assert chunks[1][1] == "2026-02-01T00:00:00" and chunks[2][2] == "2026-03-10T23:59:59"
+        assert server._split_by_month("2026-05-01T00:00:00", "2026-05-31T23:59:59") == [("2026-05", "2026-05-01T00:00:00", "2026-05-31T23:59:59")]
+
+    def test_window_is_fetched_per_month_and_paged_to_completion(self, tmp_path):
+        """A year of a company calendar used to come back as an arbitrary 100
+        events spread over the months (one month right by accident, the next
+        wrong). Now every month is fetched fully and says so."""
+        calls = []
+
+        def graph(method, endpoint, params=None, json_data=None, **kw):
+            calls.append((endpoint, dict(params or {})))
+            if endpoint == "/me/calendars":
+                return {"value": [{"id": "cal-1", "name": "Kalender", "isDefaultCalendar": True}]}
+            if endpoint == "/me":
+                return {"id": "me", "displayName": "Erika Muster", "userPrincipalName": "erika@acme.test"}
+            if endpoint == "/me/calendar/calendarView":
+                month = params["startDateTime"][:7]
+                if month == "2026-01":
+                    return {"value": self._events_for("2026-01-01", 3, "Erika Muster"), "@odata.nextLink": "https://graph/next-jan"}
+                if month == "2026-02":
+                    return {"value": self._events_for("2026-02-01", 2, "Erika Muster") + self._events_for("2026-02-10", 2, "Max Kollege")}
+                return {"value": []}
+            if endpoint == "https://graph/next-jan":
+                return {"value": self._events_for("2026-01-10", 2, "Erika Muster")}
+            return {}
+
+        server._MY_IDENTITY_CACHE.clear()
+        with patch.object(server, "_shared_calendars_path", return_value=tmp_path / "reg.json"), \
+                patch.object(server, "_graph_request", side_effect=graph):
+            server._my_identity()  # identity already known in a real session (login, brief, …)
+            res = server.m365_get_events(start_time_iso="2026-01-01", end_time_iso="2026-03-15")
+        server._MY_IDENTITY_CACHE.clear()
+        assert res["complete"] is True and res["count"] == 9
+        assert [m["month"] for m in res["months"]] == ["2026-01", "2026-02", "2026-03"]
+        assert [m["count"] for m in res["months"]] == [5, 4, 0] and all(m["complete"] for m in res["months"])
+        assert res["pages"] == 4  # jan page1 + jan page2 + feb + mar
+        # every month asked for the whole month (not the model's $top guess)
+        views = [p for ep, p in calls if ep == "/me/calendar/calendarView"]
+        assert [p["startDateTime"] for p in views] == ["2026-01-01T00:00:00", "2026-02-01T00:00:00", "2026-03-01T00:00:00"]
+        assert views[0]["$top"] == server._WINDOW_PAGE_SIZE
+        # own calendar: nothing filtered, but involvement is annotated
+        assert res["only_mine"] is False
+        mine = [e for e in res["value"] if e["involves_me"]]
+        assert len(mine) == 7 and all(e["source_key"] == "calendar:default" for e in res["value"])
+        assert res["value"][0]["participants"] == ["Erika Muster", "OFFICE | ACME"]
+
+    def test_shared_source_defaults_to_own_entries_and_names_colleagues(self, tmp_path):
+        def graph(method, endpoint, params=None, json_data=None, **kw):
+            if endpoint == "/me":
+                return {"id": "me", "displayName": "Erika Muster", "userPrincipalName": "erika@acme.test"}
+            if endpoint == "/me/calendars":
+                return {"value": [{"id": "cal-1", "name": "Kalender", "isDefaultCalendar": True}]}
+            if endpoint == "/me/joinedTeams":
+                return {"value": [{"id": "g-9", "displayName": "OFFICE | ACME", "mail": "office@acme.test"}]}
+            if endpoint == "/groups/g-9/calendar":
+                return {"id": "gcal-9", "name": "Kalender"}
+            if endpoint == "/groups/g-9/calendar/calendarView":
+                return {"value": self._events_for("2026-05-01", 4, "Erika Muster") + self._events_for("2026-05-10", 3, "Max Kollege") + self._events_for("2026-05-20", 1, "Muster & Kollege")}
+            return {}
+
+        server._MY_IDENTITY_CACHE.clear()
+        with patch.object(server, "_shared_calendars_path", return_value=tmp_path / "reg.json"), \
+                patch.object(server, "_graph_request", side_effect=graph):
+            listing = server.m365_list_calendars()
+            res = server.m365_get_events(calendar="OFFICE", start_time_iso="2026-05-01", end_time_iso="2026-05-31")
+            everything = server.m365_get_events(calendar="OFFICE", start_time_iso="2026-05-01", end_time_iso="2026-05-31", only_mine=False)
+        server._MY_IDENTITY_CACHE.clear()
+        # the group calendar carries the group's name, not Graph's "Kalender"
+        grp = next(c for c in listing["value"] if c["source_type"] == "group")
+        assert grp["name"] == "OFFICE | ACME" and grp["calendar_name"] == "Kalender" and grp["calendar_key"] == "group:g-9"
+        assert "color" not in grp and "owner" not in grp
+        assert "OFFICE | ACME [group] office@acme.test" in listing["summary"]
+        # user-first: 4 own + the shared "Muster & Kollege" day (surname match), colleagues reported
+        assert res["only_mine"] is True and res["count"] == 5
+        assert res["others"]["count"] == 3 and res["others"]["names"] == ["Max Kollege", "OFFICE | ACME"]
+        assert "colleagues" in res["others"]["note"]
+        assert all(e["calendar_key"] == "group:g-9" and e["calendar_name"] == "OFFICE | ACME" for e in res["value"])
+        assert everything["count"] == 8 and everything["others"]["count"] == 0
+
+    def test_failing_month_is_reported_not_fatal_but_first_failure_raises(self, tmp_path):
+        def graph(method, endpoint, params=None, json_data=None, **kw):
+            if endpoint == "/me/calendars":
+                return {"value": [{"id": "cal-1", "name": "Kalender", "isDefaultCalendar": True}]}
+            if endpoint == "/me/calendar/calendarView":
+                if params["startDateTime"].startswith("2026-02"):
+                    raise RuntimeError("MS Graph API Error [429]: throttled")
+                return {"value": self._events_for(params["startDateTime"][:10], 1, "Erika Muster")}
+            return {}
+
+        server._MY_IDENTITY_CACHE.clear()
+        with patch.object(server, "_shared_calendars_path", return_value=tmp_path / "reg.json"), \
+                patch.object(server, "_graph_request", side_effect=graph):
+            res = server.m365_get_events(start_time_iso="2026-01-01", end_time_iso="2026-03-31")
+            with pytest.raises(RuntimeError):
+                server.m365_get_events(start_time_iso="2026-02-01", end_time_iso="2026-02-28")
+        server._MY_IDENTITY_CACHE.clear()
+        assert res["complete"] is False and "narrow the window" in res["hint"]
+        feb = next(m for m in res["months"] if m["month"] == "2026-02")
+        assert feb["complete"] is False and "429" in feb["error"]
+        assert [m["complete"] for m in res["months"]] == [True, False, True]
+
+    def test_safety_cap_marks_incomplete(self, tmp_path):
+        def graph(method, endpoint, params=None, json_data=None, **kw):
+            if endpoint == "/me/calendars":
+                return {"value": [{"id": "cal-1", "name": "Kalender", "isDefaultCalendar": True}]}
+            if endpoint == "/me/calendar/calendarView":
+                return {"value": self._events_for("2026-01-01", 3, "A"), "@odata.nextLink": "https://graph/more"}
+            if endpoint == "https://graph/more":
+                return {"value": self._events_for("2026-01-10", 3, "B"), "@odata.nextLink": "https://graph/more2"}
+            return {"value": []}
+
+        server._MY_IDENTITY_CACHE.clear()
+        with patch.object(server, "_shared_calendars_path", return_value=tmp_path / "reg.json"), \
+                patch.object(server, "_graph_request", side_effect=graph):
+            res = server.m365_get_events(start_time_iso="2026-01-01", end_time_iso="2026-01-31", top=4)
+        server._MY_IDENTITY_CACHE.clear()
+        assert res["complete"] is False and res["count"] == 6 and res["months"][0]["complete"] is False
+
+    def test_mail_records_carry_involvement_and_source_key(self):
+        def graph(method, endpoint, params=None, json_data=None, **kw):
+            if endpoint == "/me":
+                return {"id": "me", "displayName": "Erika Muster", "userPrincipalName": "erika@acme.test"}
+            if endpoint == "/me/messages":
+                return {"value": [
+                    {"id": "m1", "subject": "Hi", "from": {"emailAddress": {"name": "Max Kollege", "address": "max@acme.test"}},
+                     "toRecipients": [{"emailAddress": {"name": "Erika Muster", "address": "erika@acme.test"}}], "receivedDateTime": "2026-09-01T08:00:00Z"},
+                    {"id": "m2", "subject": "FYI", "from": {"emailAddress": {"name": "Newsletter", "address": "news@x.test"}},
+                     "toRecipients": [{"emailAddress": {"name": "all", "address": "all@acme.test"}}], "receivedDateTime": "2026-09-01T09:00:00Z"},
+                ]}
+            return {}
+
+        server._MY_IDENTITY_CACHE.clear()
+        with patch.object(server, "_graph_request", side_effect=graph), patch.object(server, "_index_record_mails", lambda *a, **k: None):
+            unknown = server.m365_list_emails(top=5)
+            server._my_identity()
+            res = server.m365_list_emails(top=5)
+        server._MY_IDENTITY_CACHE.clear()
+        assert [m["involves_me"] for m in unknown["value"]] == [None, None]  # identity not fetched for a plain listing
+        assert [m["involves_me"] for m in res["value"]] == [True, False]
+        assert res["value"][0]["participants"] == ["Max Kollege", "Erika Muster"] and res["value"][0]["source_key"] == "mailbox:me"

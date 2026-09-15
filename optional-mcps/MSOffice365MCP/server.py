@@ -1230,9 +1230,13 @@ def m365_list_emails(
     endpoint = "/me/messages" if folder_segment == "inbox" else f"/me/mailFolders/{folder_segment}/messages"
     res = _graph_request("GET", endpoint, params=params, account=account)
     if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
+        source_key = f"mailbox:{str(account).strip().lower()}" if account and "@" in str(account) else "mailbox:me"
         for msg in res["value"]:
             if isinstance(msg, dict):
                 _enrich_timestamps(msg)
+                msg["source_key"] = source_key
+                msg["folder"] = folder_segment
+        _annotate_involvement([m for m in res["value"] if isinstance(m, dict)], "mail", account)
         try:
             _index_record_mails(res["value"], folder=folder_segment, me=_my_identity_cached(account))
         except Exception:
@@ -1494,22 +1498,24 @@ def _is_group_uri_error(err: Exception) -> bool:
 
 
 def _group_entry(group: Dict[str, Any], cal: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Listing row for a Microsoft 365 group calendar. The *group* name is
+    the calendar's name — Graph's own calendar name is the localized default
+    ("Calendar", "Kalender", …), which hid every group calendar behind the
+    same label (AIS-344)."""
     group_id = str(group.get("id") or "")
     group_name = str(group.get("displayName") or group.get("name") or "")
     cal = cal if isinstance(cal, dict) else {}
-    c_name = str(cal.get("name") or "") or group_name
-    if c_name.lower() == "calendar" or not c_name:
-        c_name = group_name
     return {
         "id": cal.get("id") or f"group:{group_id}",
-        "name": c_name,
+        "calendar_key": f"group:{group_id}",
+        "name": group_name or str(cal.get("name") or "") or group_id,
+        "calendar_name": str(cal.get("name") or ""),
         "group_id": group_id,
         "group_name": group_name,
         "mailbox": str(group.get("mail") or "").lower() or None,
         "source_type": "group",
         "canEdit": True,
         "isDefaultCalendar": False,
-        "owner": {"name": group_name, "address": group.get("mail")},
     }
 
 
@@ -1533,6 +1539,42 @@ def _short_error(err: Exception) -> str:
     return text if len(text) <= 400 else text[:400] + "…"
 
 
+_CALENDAR_ROW_KEYS = ("id", "calendar_key", "name", "calendar_name", "source_type", "mailbox", "group_id",
+                      "group_name", "calendar_group_name", "calendar_group_id", "canEdit", "isDefaultCalendar",
+                      "owner_address", "hint", "discovered")
+
+
+def _compact_calendar(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """One short row per calendar: the fields a model needs to pick and
+    address it. Colors, owner objects and etags made 31 rows so wide that
+    the result shaper cut the list at 25 — and the calendar the user asked
+    for sat behind the cut (AIS-344)."""
+    row = dict(entry)
+    stype = str(row.get("source_type") or "personal")
+    if not row.get("calendar_key"):
+        if stype == "group" and row.get("group_id"):
+            row["calendar_key"] = f"group:{row['group_id']}"
+        elif stype in ("shared_mailbox", "directory_match") and row.get("mailbox"):
+            row["calendar_key"] = f"mailbox:{row['mailbox']}"
+        else:
+            row["calendar_key"] = f"calendar:{row.get('id') or ''}"
+    owner = row.get("owner")
+    if isinstance(owner, dict) and owner.get("address") and not row.get("owner_address"):
+        row["owner_address"] = str(owner.get("address")).lower()
+    if not row.get("mailbox") and stype == "personal" and row.get("owner_address") and not row.get("isDefaultCalendar"):
+        row["mailbox"] = None
+    return {k: row[k] for k in _CALENDAR_ROW_KEYS if k in row and row[k] not in (None, "")}
+
+
+def _calendar_summary_line(row: Dict[str, Any]) -> str:
+    bits = [str(row.get("name") or "?"), f"[{row.get('source_type') or 'personal'}]"]
+    if row.get("mailbox"):
+        bits.append(str(row["mailbox"]))
+    elif row.get("owner_address") and row.get("source_type") == "personal" and not row.get("isDefaultCalendar"):
+        bits.append(str(row["owner_address"]))
+    return " ".join(bits)
+
+
 def _collect_calendars(top: int = 50, search: Optional[str] = None) -> Dict[str, Any]:
     """Every calendar the signed-in user can reach, plus one status row per source."""
     calendars: List[Dict[str, Any]] = []
@@ -1544,7 +1586,7 @@ def _collect_calendars(top: int = 50, search: Optional[str] = None) -> Dict[str,
         if any(k in seen_ids for k in ids):
             return False
         seen_ids.update(ids)
-        calendars.append(entry)
+        calendars.append(_compact_calendar(entry))
         return True
 
     # 1. Personal + accepted shared calendars (/me/calendars)
@@ -1702,7 +1744,7 @@ def _collect_calendars(top: int = 50, search: Optional[str] = None) -> Dict[str,
                 "hint": "directory search needs the admin tier; pass the mailbox e-mail address instead",
             })
 
-    return {"value": calendars, "sources": sources}
+    return {"value": calendars, "summary": [_calendar_summary_line(c) for c in calendars], "sources": sources}
 
 
 @mcp.tool()
@@ -1754,6 +1796,10 @@ def m365_list_calendars(
     if changes:
         result["changes"] = changes
     result["registry_file"] = str(_shared_calendars_path())
+    result["hint"] = (
+        "address a calendar in m365_get_events by its name, calendar_key, mailbox or id; group calendars carry "
+        "the group's name; `summary` lists every calendar in one line each"
+    )
     return result
 
 
@@ -1933,65 +1979,304 @@ def _calendar_not_found(target: str, listing: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# ─── Generic data layer: involvement, windowed month-by-month fetch ──────────
+#
+# AIS-344. Two rules for every listing tool, not just calendars:
+#  * user-first — every record says whether the signed-in user is involved
+#    (`involves_me`) and who else is (`participants`); shared sources default
+#    to the user's own entries and report the other people as colleagues;
+#  * month by month, complete — a date window longer than a month is fetched
+#    per calendar month, each month paged to the end, and the result states
+#    per-month completeness instead of a silent `$top` cut.
+
+_INVOLVEMENT_FIELDS: Dict[str, Tuple[str, ...]] = {
+    "event": ("subject", "organizer", "attendees"),
+    "mail": ("from", "sender", "toRecipients", "ccRecipients", "bccRecipients", "replyTo"),
+    "chat": ("members", "from"),
+    "task": ("title", "assignedTo"),
+}
+
+
+def _identity_tokens(account: Optional[str] = None, *, fetch: bool = False) -> Tuple[List[str], str]:
+    """Lower-case tokens that identify the signed-in user (full name, surname,
+    address) and the display name — empty when unknown (then nothing is
+    filtered). ``fetch=True`` resolves the identity via Graph (cached 10 min);
+    otherwise only an already-known identity is used so plain listings add
+    no request."""
+    ident: Dict[str, Any] = {}
+    if fetch:
+        try:
+            ident = _my_identity(account) or {}
+        except Exception:
+            ident = {}
+    if not ident:
+        try:
+            ident = _my_identity_cached(account) or {}
+        except Exception:
+            ident = {}
+    name = str(ident.get("displayName") or "").strip()
+    upn = str(ident.get("upn") or "").strip().lower()
+    tokens: List[str] = []
+    if name:
+        tokens.append(name.lower())
+        parts = [t for t in name.replace(",", " ").split() if len(t) > 2]
+        if len(parts) > 1:
+            tokens.append(parts[-1].lower())  # surname
+    if upn:
+        tokens.append(upn)
+    return [t for t in dict.fromkeys(tokens) if t], name
+
+
+def _people_in(value: Any) -> List[str]:
+    """Names/addresses found in a Graph person-ish value (recipient, attendee,
+    organizer, member, plain string, list of those)."""
+    out: List[str] = []
+    if value is None:
+        return out
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            out.append(text)
+        return out
+    if isinstance(value, list):
+        for item in value:
+            out.extend(_people_in(item))
+        return out
+    if isinstance(value, dict):
+        email = value.get("emailAddress")
+        if isinstance(email, dict):
+            for key in ("name", "address"):
+                if email.get(key):
+                    out.append(str(email[key]))
+            return out
+        user = value.get("user")
+        if isinstance(user, dict):
+            for key in ("displayName", "email", "userPrincipalName"):
+                if user.get(key):
+                    out.append(str(user[key]))
+            return out
+        for key in ("displayName", "name", "email", "address", "userPrincipalName", "mail"):
+            if value.get(key):
+                out.append(str(value[key]))
+    return out
+
+
+def _annotate_involvement(items: List[Dict[str, Any]], kind: str, account: Optional[str] = None, *, fetch: bool = False) -> List[Dict[str, Any]]:
+    """Stamp ``involves_me`` and ``participants`` on every record (in place)."""
+    tokens, _ = _identity_tokens(account, fetch=fetch)
+    fields = _INVOLVEMENT_FIELDS.get(kind, ())
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        people: List[str] = []
+        for field in fields:
+            people.extend(_people_in(item.get(field)))
+        names = [p for p in dict.fromkeys(people) if p and "@" not in p]
+        addresses = [p.lower() for p in people if "@" in p]
+        haystack = " ".join(people).lower()
+        involves = bool(tokens) and any(t in haystack or t in addresses for t in tokens)
+        item["participants"] = names[:20]
+        item["involves_me"] = involves if tokens else None
+    return items
+
+
+def _split_by_month(start_iso: str, end_iso: str) -> List[Tuple[str, str, str]]:
+    """[(month, chunk_start, chunk_end_exclusive)] over ``[start, end]`` in the
+    clean ``YYYY-MM-DDTHH:MM:SS`` form. Single-month windows come back as one
+    chunk with the original bounds so short calls are unchanged."""
+    from datetime import datetime as _dt, timedelta as _td
+
+    def _parse(text: str) -> _dt:
+        t = str(text).strip().replace(" ", "T")
+        if len(t) == 10:
+            t += "T00:00:00"
+        return _dt.fromisoformat(t[:19])
+
+    start, end = _parse(start_iso), _parse(end_iso)
+    if end <= start:
+        return [(start.strftime("%Y-%m"), start_iso, end_iso)]
+    if (start.year, start.month) == (end.year, end.month):
+        return [(start.strftime("%Y-%m"), start_iso, end_iso)]
+    chunks: List[Tuple[str, str, str]] = []
+    cursor = start
+    while cursor <= end:
+        next_month = (cursor.replace(day=1) + _td(days=32)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        chunk_end = min(next_month, end) if next_month < end else end
+        chunks.append((cursor.strftime("%Y-%m"), cursor.strftime("%Y-%m-%dT%H:%M:%S"), chunk_end.strftime("%Y-%m-%dT%H:%M:%S")))
+        if next_month > end:
+            break
+        cursor = next_month
+    return chunks
+
+
+_WINDOW_PAGE_SIZE = 500
+_WINDOW_MAX_ITEMS = 5000
+
+
+def _windowed_fetch(
+    base_endpoint: str,
+    params: Dict[str, Any],
+    start_iso: str,
+    end_iso: str,
+    *,
+    start_param: str = "startDateTime",
+    end_param: str = "endDateTime",
+    max_items: int = _WINDOW_MAX_ITEMS,
+    account: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Fetch a date window month by month, each month paged to the end.
+
+    Returns ``{"value": [...], "months": [{month, count, complete, error?}],
+    "complete": bool, "window": {start, end}, "pages": n}``. A failing month
+    does not poison the others: it is reported as incomplete and the rest
+    stays valid. Items are de-duplicated by ``id`` across chunk borders."""
+    items: List[Dict[str, Any]] = []
+    seen: set = set()
+    months: List[Dict[str, Any]] = []
+    pages = 0
+    complete_all = True
+    for month, c_start, c_end in _split_by_month(start_iso, end_iso):
+        month_params = dict(params)
+        month_params[start_param] = c_start
+        month_params[end_param] = c_end
+        month_params["$top"] = min(_WINDOW_PAGE_SIZE, max(1, max_items))
+        count, complete, error = 0, True, None
+        request_kwargs: Dict[str, Any] = {"account": account} if account else {}
+        try:
+            res = _graph_request("GET", base_endpoint, params=month_params, **request_kwargs)
+            pages += 1
+            while True:
+                for item in (res.get("value") or []) if isinstance(res, dict) else []:
+                    if not isinstance(item, dict):
+                        continue
+                    key = str(item.get("id") or id(item))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    items.append(item)
+                    count += 1
+                next_link = res.get("@odata.nextLink") if isinstance(res, dict) else None
+                if not next_link:
+                    break
+                if len(items) >= max_items:
+                    complete = False
+                    break
+                res = _graph_request("GET", next_link, **request_kwargs)
+                pages += 1
+        except Exception as err:
+            if not months and not items:
+                # The very first request failed: that is a source-level
+                # problem (wrong path, missing consent, group mailbox) the
+                # caller must see, not a partial month.
+                raise
+            complete, error = False, _short_error(err)
+        row: Dict[str, Any] = {"month": month, "count": count, "complete": complete}
+        if error:
+            row["error"] = error
+        months.append(row)
+        complete_all = complete_all and complete
+        if len(items) >= max_items:
+            break
+    return {"value": items, "months": months, "complete": complete_all,
+            "window": {"start": start_iso, "end": end_iso}, "pages": pages}
+
+
+def _apply_only_mine(items: List[Dict[str, Any]], only_mine: bool) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Keep the user's own records; describe the rest as colleagues' entries."""
+    tokens, _ = _identity_tokens(fetch=only_mine)
+    others_names: List[str] = []
+    kept: List[Dict[str, Any]] = []
+    dropped = 0
+    for item in items:
+        if not only_mine or not tokens or item.get("involves_me"):
+            kept.append(item)
+            continue
+        dropped += 1
+        for name in item.get("participants") or []:
+            if name not in others_names:
+                others_names.append(name)
+    others: Dict[str, Any] = {"count": dropped, "names": others_names[:20]}
+    if dropped:
+        others["note"] = (
+            "shared source — other people's entries are colleagues' entries; only entries involving "
+            "you are returned; pass only_mine=false for all"
+        )
+    if not tokens:
+        others["note"] = "signed-in identity unknown — nothing filtered"
+    return kept, others
+
+
 @mcp.tool()
 def m365_get_events(
     calendar: Optional[str] = None,
     start_time_iso: Optional[str] = None,
     end_time_iso: Optional[str] = None,
-    top: int = 20,
+    top: int = 2000,
+    only_mine: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Get events from any Outlook calendar (default, shared by name 'URLAUB'/'Officezeiten', group/team calendars, registered shared mailboxes, calendar ID, or a mailbox e-mail address).
+    """Get events from any Outlook calendar: default, shared, M365 group/team, registered shared mailbox, calendar ID or mailbox address. Date windows are fetched month by month and paged to completion; the result reports per-month completeness (`months`, `complete`). Shared sources default to only_mine=true and describe the other people's entries in `others`.
 
     Args:
-        calendar: Optional calendar name (personal, shared, group or registered shared mailbox), calendar ID, or mailbox e-mail address. Omit for the default calendar.
-        start_time_iso: Optional start date/time (ISO format) for date range filtering.
-        end_time_iso: Optional end date/time (ISO format) for date range filtering.
-        top: Max number of events to return.
+        calendar: Optional calendar name, calendar ID, or mailbox e-mail address. Omit for the default calendar.
+        start_time_iso: Optional window start (ISO). With end_time_iso the window is fetched completely, month by month.
+        end_time_iso: Optional window end (ISO).
+        top: Safety cap on returned events for a window (default 2000, max 5000; `complete=false` when hit). Without a window: max upcoming events (≤ 100).
+        only_mine: Keep only entries involving the signed-in user (organizer, attendee or named in the subject). Default: false for your own calendar, true for shared/group/mailbox calendars — `others` lists who else books there.
     """
     import re as _re_local
 
     target = (calendar or "").strip()
     matched_cal, target_user_email, listing = _resolve_calendar(target)
     matched_cal_name: Optional[str] = None
+    calendar_key = "calendar:default"
+    shared_source = bool(target)
 
     if target_user_email:
         base_path = f"/users/{target_user_email}/calendar"
         matched_cal_name = target_user_email
+        calendar_key = f"mailbox:{target_user_email.lower()}"
     elif matched_cal:
         base_path = _calendar_base_path(matched_cal)
         matched_cal_name = str(matched_cal.get("name") or matched_cal.get("group_name") or target)
+        calendar_key = str(matched_cal.get("calendar_key") or f"calendar:{matched_cal.get('id')}")
+        shared_source = matched_cal.get("source_type") not in (None, "personal") or not matched_cal.get("isDefaultCalendar", False)
+        if matched_cal.get("source_type") == "personal" and matched_cal.get("isDefaultCalendar"):
+            shared_source = False
     elif target and _re_local.match(_GUID_RE_TEXT, target):
         base_path = f"/groups/{target}/calendar"  # a raw group id
         matched_cal_name = target
+        calendar_key = f"group:{target}"
     elif target:
         return _calendar_not_found(target, listing)
     else:
         base_path = "/me/calendar"
 
     params: Dict[str, Any] = {"$select": "id,subject,start,end,location,organizer,attendees,isAllDay,categories,responseStatus"}
-
-    if start_time_iso or end_time_iso:
+    windowed = bool(start_time_iso or end_time_iso)
+    if windowed:
         if start_time_iso and not end_time_iso:
-            s_raw = str(start_time_iso).strip()
-            s_date = s_raw.split("T")[0].split(" ")[0]
+            s_date = str(start_time_iso).strip().split("T")[0].split(" ")[0]
             end_time_iso = f"{s_date}T23:59:59"
         elif end_time_iso and not start_time_iso:
-            e_raw = str(end_time_iso).strip()
-            e_date = e_raw.split("T")[0].split(" ")[0]
+            e_date = str(end_time_iso).strip().split("T")[0].split(" ")[0]
             start_time_iso = f"{e_date}T00:00:00"
-
         start_clean, _ = _normalize_datetime_input(start_time_iso)
         end_clean, _ = _normalize_datetime_input(end_time_iso)
-        params["startDateTime"] = start_clean
-        params["endDateTime"] = end_clean
-        params["$top"] = min(top, 100)
-        endpoint = f"{base_path}/calendarView"
+        cap = min(max(int(top or _WINDOW_MAX_ITEMS), 1), _WINDOW_MAX_ITEMS)
     else:
-        params["$top"] = min(top, 50)
-        endpoint = f"{base_path}/events"
+        params["$top"] = min(max(int(top or 20), 1), 100)
+        cap = params["$top"]
+
+    def _fetch(path: str) -> Dict[str, Any]:
+        if windowed:
+            return _windowed_fetch(f"{path}/calendarView", params, start_clean, end_clean, max_items=cap)
+        got = _graph_request("GET", f"{path}/events", params=params)
+        got = got if isinstance(got, dict) else {"value": []}
+        got.setdefault("complete", not got.get("@odata.nextLink"))
+        return got
 
     try:
-        res = _graph_request("GET", endpoint, params=params)
+        res = _fetch(base_path)
     except Exception as err:
         # ``/users/{mail}`` for a Microsoft 365 group address → retry as group.
         if not (target_user_email and _is_group_uri_error(err)):
@@ -2000,31 +2285,48 @@ def m365_get_events(
         if not entry or entry.get("source_type") != "group":
             raise RuntimeError(f"{err} — '{target_user_email}' is a Microsoft 365 group; {note}") from err
         matched_cal_name = str(entry.get("name") or target_user_email)
-        endpoint = f"{_calendar_base_path(entry)}/{'calendarView' if 'startDateTime' in params else 'events'}"
-        res = _graph_request("GET", endpoint, params=params)
+        calendar_key = str(entry.get("calendar_key") or f"group:{entry.get('group_id')}")
+        res = _fetch(_calendar_base_path(entry))
 
     calendar_label = matched_cal_name or "default"
     if matched_cal_name:
         res["resolved_calendar_name"] = matched_cal_name
+    res["calendar_key"] = calendar_key
 
-    if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
-        for evt in res["value"]:
-            if isinstance(evt, dict):
-                if "start" in evt:
-                    evt["start_local"] = _format_timestamp_local(evt.get("start"))
-                    evt["start_iso_local"], _ = _normalize_datetime_input(
-                        evt.get("start", {}).get("dateTime") if isinstance(evt.get("start"), dict) else evt.get("start")
-                    )
-                if "end" in evt:
-                    evt["end_local"] = _format_timestamp_local(evt.get("end"))
-                    evt["end_iso_local"], _ = _normalize_datetime_input(
-                        evt.get("end", {}).get("dateTime") if isinstance(evt.get("end"), dict) else evt.get("end")
-                    )
-                evt["timezone"] = _get_timezone_name()
-                # Per-row calendar name so the auto-ingested mcp_records rows
-                # can be filtered by calendar (AIS-339).
-                evt["calendar_name"] = calendar_label
-
+    events = [e for e in (res.get("value") or []) if isinstance(e, dict)]
+    for evt in events:
+        if "start" in evt:
+            evt["start_local"] = _format_timestamp_local(evt.get("start"))
+            evt["start_iso_local"], _ = _normalize_datetime_input(
+                evt.get("start", {}).get("dateTime") if isinstance(evt.get("start"), dict) else evt.get("start")
+            )
+        if "end" in evt:
+            evt["end_local"] = _format_timestamp_local(evt.get("end"))
+            evt["end_iso_local"], _ = _normalize_datetime_input(
+                evt.get("end", {}).get("dateTime") if isinstance(evt.get("end"), dict) else evt.get("end")
+            )
+        evt["timezone"] = _get_timezone_name()
+        # Stable identity of the source (group id / mailbox / calendar id) so
+        # ingested rows of the same calendar always share one key, however
+        # the calendar was addressed; the display name rides along.
+        evt["calendar_key"] = calendar_key
+        evt["source_key"] = calendar_key
+        evt["calendar_name"] = calendar_label
+    effective_only_mine = shared_source if only_mine is None else bool(only_mine)
+    # The identity is resolved (one cached /me call) only when it decides
+    # what to return; a plain listing of the user's own calendar stays a
+    # single request.
+    _annotate_involvement(events, "event", fetch=effective_only_mine)
+    kept, others = _apply_only_mine(events, effective_only_mine)
+    res["value"] = kept
+    res["count"] = len(kept)
+    res["only_mine"] = effective_only_mine
+    res["others"] = others
+    if not res.get("complete", True):
+        res["hint"] = (
+            f"window not complete (safety cap {cap} events reached or a month failed) — narrow the window "
+            "(per quarter or month) or raise top; see months[]"
+        )
     return res
 
 
