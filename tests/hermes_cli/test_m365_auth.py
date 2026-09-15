@@ -91,6 +91,8 @@ def test_scope_tiers_nest_and_login_default_is_self():
 def test_tier_for_endpoint():
     assert m365_tier_for_endpoint("/me/messages") == "self"
     assert m365_tier_for_endpoint("/me/chats/1/messages") == "standard"
+    assert m365_tier_for_endpoint("/groups/abc/calendar/calendarView") == "groups"
+    assert m365_tier_for_endpoint("/me/memberOf/microsoft.graph.group") == "self"  # membership listing is gated by the token, not the path
     assert m365_tier_for_endpoint("/users/shared@example.com/mailFolders") == "standard"
     assert m365_tier_for_endpoint("/users") == "admin"
     assert m365_tier_for_endpoint("/sites/root") == "admin"

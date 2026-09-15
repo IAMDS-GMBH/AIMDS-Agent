@@ -498,8 +498,8 @@ class TestRegression_ScopeTiering:
         core = {"Mail.ReadWrite", "Mail.Send", "Calendars.ReadWrite", "Chat.ReadWrite", "Contacts.ReadWrite"}
         assert core.issubset(set(server.BASE_SCOPES))
 
-    def test_all_scopes_is_base_plus_admin(self):
-        assert set(server.ALL_SCOPES) == set(server.BASE_SCOPES) | set(server.ADMIN_SCOPES)
+    def test_all_scopes_is_base_plus_groups_plus_admin(self):
+        assert set(server.ALL_SCOPES) == set(server.BASE_SCOPES) | set(server.GROUP_SCOPES) | set(server.ADMIN_SCOPES)
 
     def test_initiate_login_defaults_to_self_consent_scopes(self):
         """AIS-286: the default sign-in requests only tier 0 so non-admins never
@@ -728,13 +728,42 @@ class TestConsentTiers:
     # scopes whose "Admin consent required" column is Yes.
     ADMIN_CONSENT_REQUIRED = {
         "Chat.ReadWrite", "OnlineMeetings.Read", "Presence.Read", "Mail.ReadWrite.Shared",
-        "Mail.Send.Shared", "Calendars.ReadWrite.Shared", "Tasks.ReadWrite",
+        "Mail.Send.Shared", "Calendars.ReadWrite.Shared", "Tasks.ReadWrite", "Group.Read.All",
         "User.Read.All", "Directory.Read.All",
     }
 
     def test_self_consent_tier_has_no_admin_required_scopes(self):
         assert not (set(server.SELF_CONSENT_SCOPES) & self.ADMIN_CONSENT_REQUIRED)
         assert set(server.ORG_CONSENT_SCOPES) <= self.ADMIN_CONSENT_REQUIRED
+        assert set(server.GROUP_SCOPES) <= self.ADMIN_CONSENT_REQUIRED
+
+    def test_groups_is_its_own_tier_above_standard(self):
+        """AIS-340: Group.Read.All must not join the standard tier — a tenant
+        that consented before it existed would lose the whole standard tier
+        (one unconsented scope fails the silent request as a whole)."""
+        from hermes_cli import m365_auth
+
+        assert "Group.Read.All" not in server.ORG_CONSENT_SCOPES
+        assert server.GROUPS_SCOPES == server.STANDARD_SCOPES + ["Group.Read.All"]
+        assert server.SCOPE_TIER_ORDER == ("admin", "groups", "standard", "self") == m365_auth.M365_SCOPE_TIER_ORDER
+        assert server.SCOPE_TIERS["groups"] == m365_auth.M365_SCOPE_TIERS["groups"] == m365_auth.M365_GROUPS_SCOPES
+        assert server.GROUP_SCOPES == m365_auth.M365_GROUP_SCOPES
+        assert "Group.Read.All" in server.ALL_SCOPES  # the admin-consent URL grants it
+        assert server._tier_for_endpoint("/groups/abc/calendar/calendarView") == "groups"
+        assert "Group.Read.All" in server._consent_hint_for("/groups/abc/calendar")
+
+    def test_tenant_without_group_consent_keeps_the_standard_tier(self):
+        server._GRANTED_TIER_CACHE.clear()
+        acc = {"home_account_id": "acc-3"}
+        app = MagicMock()
+        app.get_accounts.return_value = [acc]
+        app.acquire_token_silent.side_effect = lambda scopes, account=None: (
+            {"access_token": "std"} if scopes in (server.STANDARD_SCOPES, server.SELF_CONSENT_SCOPES) else None
+        )
+        with patch.object(server, "_get_msal_app", return_value=app), patch.object(server, "_save_cache"):
+            assert server._get_access_token() == "std"
+            assert server._GRANTED_TIER_CACHE["acc-3"][0] == "standard"
+        server._GRANTED_TIER_CACHE.clear()
 
     def test_scope_sources_agree(self):
         """manifest.yaml (dashboard/CLI login) == server LOGIN_SCOPES == hermes_cli.m365_auth."""
@@ -756,10 +785,11 @@ class TestConsentTiers:
 
         src = server_path.read_text(encoding="utf-8")
         block = src[src.index("except ImportError:\n    SELF_CONSENT_SCOPES"):src.index("# BASE_SCOPES keeps its historical meaning")]
-        found = {name: re.findall(r'"([A-Za-z.]+)"', block[block.index(name):]) for name in ("SELF_CONSENT_SCOPES", "ORG_CONSENT_SCOPES", "ADMIN_SCOPES")}
+        found = {name: re.findall(r'"([A-Za-z.]+)"', block[block.index(name):]) for name in ("SELF_CONSENT_SCOPES", "ORG_CONSENT_SCOPES", "ADMIN_SCOPES", "GROUP_SCOPES")}
         assert found["SELF_CONSENT_SCOPES"][: len(server.SELF_CONSENT_SCOPES)] == server.SELF_CONSENT_SCOPES
         assert found["ORG_CONSENT_SCOPES"][: len(server.ORG_CONSENT_SCOPES)] == server.ORG_CONSENT_SCOPES
         assert found["ADMIN_SCOPES"][: len(server.ADMIN_SCOPES)] == server.ADMIN_SCOPES
+        assert found["GROUP_SCOPES"][: len(server.GROUP_SCOPES)] == server.GROUP_SCOPES
 
     def test_get_access_token_probes_tiers_in_order_and_caches(self, monkeypatch):
         server._GRANTED_TIER_CACHE.clear()
@@ -775,7 +805,7 @@ class TestConsentTiers:
         app.acquire_token_silent.side_effect = silent
         with patch.object(server, "_get_msal_app", return_value=app), patch.object(server, "_save_cache"):
             assert server._get_access_token() == "tok"
-            assert calls == [tuple(server.ALL_SCOPES), tuple(server.STANDARD_SCOPES), tuple(server.SELF_CONSENT_SCOPES)]
+            assert calls == [tuple(server.ALL_SCOPES), tuple(server.GROUPS_SCOPES), tuple(server.STANDARD_SCOPES), tuple(server.SELF_CONSENT_SCOPES)]
             calls.clear()
             assert server._get_access_token() == "tok"
             # Cached tier is probed first — no failing network redemptions.
@@ -2125,7 +2155,7 @@ class TestSharedMailboxCalendars:
                                                end_time_iso="2026-09-01T09:00:00", calendar="Nirgendwo")
         assert res["error"].startswith("calendar 'Nirgendwo' not found")
         assert res["available"] == ["Kalender", "INFO | IAMDS"] and "add_shared_mailbox" in res["hint"]
-        assert any("directory search" in t for t in res["tried"])  # it did look before giving up
+        assert any(t.startswith("groups 'Nirgendwo'") for t in res["tried"]) and any(t.startswith("directory 'Nirgendwo'") for t in res["tried"])  # it did look before giving up
         assert any(s["source"] == "groups" and s["status"] == "error" for s in res["sources"])
         assert not any(ep.startswith("/groups/Nirgendwo") for _, ep in calls)
         assert created["error"].startswith("calendar 'Nirgendwo' not found")
@@ -2168,6 +2198,81 @@ class TestSharedMailboxCalendars:
             # e-mail addresses still go straight to /users/<mail>
             by_mail = server.m365_get_events(calendar="officezeiten@iamds.com", start_time_iso="2026-09-01")
             assert by_mail["resolved_calendar_name"] == "officezeiten@iamds.com"
+
+    def test_group_mailbox_address_is_retried_on_the_groups_path(self, tmp_path):
+        """Session 20260915_082908: the user's Outlook shows OFFICEZEITEN under
+        'Groups'; /users/<mail>/calendar answers ErrorGroupIsUsedInNonGroupURI.
+        The server resolves the group by mail, reads /groups/{id}/calendar and
+        remembers it — no admin knowledge needed on the model's side."""
+        registry = tmp_path / "m365_shared_calendars.json"
+        calls = []
+
+        def graph(method, endpoint, params=None, json_data=None, **kw):
+            calls.append((method, endpoint))
+            if endpoint == "/users/officezeiten@iamds.com/calendar":
+                raise RuntimeError('MS Graph API Error [403]: {"error":{"code":"ErrorGroupIsUsedInNonGroupURI","message":"Group Shard is used in non-Groups URI."}}')
+            if endpoint == "/users/officezeiten@iamds.com/calendar/calendarView":
+                raise RuntimeError('MS Graph API Error [403]: {"error":{"code":"ErrorGroupIsUsedInNonGroupURI"}}')
+            if endpoint == "/groups":
+                assert "mail eq 'officezeiten@iamds.com'" in params["$filter"]
+                return {"value": [{"id": "g-1", "displayName": "OFFICEZEITEN", "mail": "officezeiten@iamds.com", "groupTypes": ["Unified"]}]}
+            if endpoint == "/groups/g-1/calendar":
+                return {"id": "gcal-1", "name": "Calendar", "owner": {"name": "OFFICEZEITEN"}}
+            if endpoint == "/groups/g-1/calendar/calendarView":
+                return {"value": [{"id": "evt-1", "subject": "Someone", "start": {"dateTime": "2026-09-01T08:00:00"}, "end": {"dateTime": "2026-09-01T17:00:00"}}]}
+            if endpoint == "/me/calendars":
+                return {"value": [{"id": "cal-1", "name": "Kalender"}]}
+            return {}
+
+        server._MY_IDENTITY_CACHE.clear()
+        with patch.object(server, "_shared_calendars_path", return_value=registry), \
+                patch.object(server, "_graph_request", side_effect=graph):
+            res = server.m365_get_events(calendar="officezeiten@iamds.com", start_time_iso="2026-08-01", end_time_iso="2026-09-14")
+            assert res["resolved_calendar_name"] == "OFFICEZEITEN" and res["value"][0]["calendar_name"] == "OFFICEZEITEN"
+            assert ("GET", "/groups/g-1/calendar/calendarView") in calls
+            assert server._load_registry()["groups"] == [{"id": "g-1", "name": "OFFICEZEITEN", "mail": "officezeiten@iamds.com"}]
+            # from now on the name resolves through the listing (registry group → /groups/{id}/calendar)
+            calls.clear()
+            res2 = server.m365_get_events(calendar="OFFICEZEITEN", start_time_iso="2026-09-01")
+            assert res2["resolved_calendar_name"] == "OFFICEZEITEN"
+            assert ("GET", "/groups/g-1/calendar/calendarView") in calls and not any(ep == "/users" for _, ep in calls)
+            listing = server.m365_list_calendars()
+            grp = next(c for c in listing["value"] if c["source_type"] == "group")
+            assert grp["group_id"] == "g-1" and grp["mailbox"] == "officezeiten@iamds.com"
+            # the address alone resolves via the registry too, without touching /users
+            calls.clear()
+            server.m365_create_event(subject="x", start_time_iso="2026-09-01T08:00:00", end_time_iso="2026-09-01T09:00:00", calendar="officezeiten@iamds.com")
+            assert ("POST", "/groups/g-1/calendar/events") in calls
+        server._MY_IDENTITY_CACHE.clear()
+
+    def test_outlook_groups_are_listed_via_memberof_and_scope_gap_is_named(self, tmp_path):
+        registry = tmp_path / "m365_shared_calendars.json"
+
+        def graph(method, endpoint, params=None, json_data=None, **kw):
+            if endpoint == "/me/calendars":
+                return {"value": [{"id": "cal-1", "name": "Kalender"}]}
+            if endpoint == "/me/joinedTeams":
+                return {"value": [{"id": "t-1", "displayName": "AIMDS"}]}
+            if endpoint == "/me/memberOf/microsoft.graph.group":
+                return {"value": [
+                    {"id": "t-1", "displayName": "AIMDS", "groupTypes": ["Unified"]},
+                    {"id": "g-2", "displayName": "OFFICEZEITEN", "mail": "officezeiten@iamds.com", "groupTypes": ["Unified"]},
+                    {"id": "sec-1", "displayName": "Security group", "groupTypes": []},
+                ]}
+            if endpoint == "/groups/t-1/calendar":
+                raise RuntimeError("MS Graph API Error [403]: Authorization_RequestDenied")
+            if endpoint == "/groups/g-2/calendar":
+                return {"id": "gcal-2", "name": "Calendar"}
+            return {}
+
+        with patch.object(server, "_shared_calendars_path", return_value=registry), \
+                patch.object(server, "_graph_request", side_effect=graph):
+            res = server.m365_list_calendars()
+        names = {c["name"]: c for c in res["value"]}
+        assert names["OFFICEZEITEN"]["source_type"] == "group" and names["OFFICEZEITEN"]["mailbox"] == "officezeiten@iamds.com"
+        assert "Security group" not in names  # not a Microsoft 365 group
+        row = next(s for s in res["sources"] if s["source"] == "groups")
+        assert row["status"] == "partial" and row["groups"] == 2 and row["failed"] == 1 and "Group.Read.All" in row["hint"]
 
     def test_registry_failure_is_reported_per_mailbox(self, tmp_path):
         registry = tmp_path / "m365_shared_calendars.json"

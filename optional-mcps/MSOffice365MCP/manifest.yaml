@@ -43,7 +43,9 @@ auth:
     contacts, files). Teams chat, presence, online meetings, shared mailboxes and To Do need a
     one-time approval by a tenant administrator: open "Grant for organization" on the Microsoft 365
     card (or call m365_generate_admin_consent_url) and hand the link to an admin. Nobody has to sign
-    in again afterwards.
+    in again afterwards. Microsoft 365 group calendars (Outlook "Groups", Teams) additionally need
+    Group.Read.All — tenants that approved the app before this permission existed re-run the same
+    approval once; until then group calendars are simply not listed and everything else keeps working.
   # Self-consent tier (AIS-286) — mirrors hermes_cli.m365_auth.M365_LOGIN_SCOPES
   # and server.py's LOGIN_SCOPES; a test pins the three lists to each other.
   # Every login entry point (dashboard button, `hermes mcp install`, chat tool)
@@ -140,6 +142,9 @@ post_install: |
       Teams chat, presence, online meetings, shared mailboxes and To Do need a one-time
       tenant-admin consent: m365_generate_admin_consent_url (or "Grant for organization" on the
       Microsoft 365 card in Settings) gives you the link for an administrator. No re-login needed.
+    - Microsoft 365 group calendars (Outlook "Groups", Teams) need Group.Read.All on top; the same
+      admin link grants it. A tenant that approved the app earlier re-runs the link once; until then
+      group calendars are not listed and nothing else changes.
     - Tenant admins who also want directory-wide user search / SharePoint tools can call
       m365_initiate_login(scope_tier="admin").
     - Didn't sign in during install (non-interactive install, or skipped)? Use the in-chat

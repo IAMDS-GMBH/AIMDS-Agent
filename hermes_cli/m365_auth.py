@@ -57,6 +57,16 @@ M365_ORG_CONSENT_SCOPES: list[str] = [
     "Tasks.ReadWrite",
 ]
 
+# Microsoft 365 group calendars (/groups/{id}/calendar) and group membership
+# (AIS-340). Also "Admin consent required", but kept OUT of the org tier: a
+# tenant whose admin consented before this scope existed must keep its
+# standard-tier features — a silent token request for a tier that contains
+# one unconsented scope fails as a whole. So "groups" is its own tier above
+# standard; tenants re-consent once to gain it, nobody loses anything.
+M365_GROUP_SCOPES: list[str] = [
+    "Group.Read.All",
+]
+
 M365_ADMIN_SCOPES: list[str] = [
     "User.Read.All",
     "Directory.Read.All",
@@ -64,7 +74,8 @@ M365_ADMIN_SCOPES: list[str] = [
 ]
 
 M365_STANDARD_SCOPES: list[str] = M365_SELF_CONSENT_SCOPES + M365_ORG_CONSENT_SCOPES
-M365_ALL_SCOPES: list[str] = M365_STANDARD_SCOPES + M365_ADMIN_SCOPES
+M365_GROUPS_SCOPES: list[str] = M365_STANDARD_SCOPES + M365_GROUP_SCOPES
+M365_ALL_SCOPES: list[str] = M365_GROUPS_SCOPES + M365_ADMIN_SCOPES
 
 # What every login entry point requests by default.
 M365_LOGIN_SCOPES: list[str] = M365_SELF_CONSENT_SCOPES
@@ -72,12 +83,13 @@ M365_LOGIN_SCOPES: list[str] = M365_SELF_CONSENT_SCOPES
 M365_SCOPE_TIERS: dict[str, list[str]] = {
     "self": M365_SELF_CONSENT_SCOPES,
     "standard": M365_STANDARD_SCOPES,
+    "groups": M365_GROUPS_SCOPES,
     "admin": M365_ALL_SCOPES,
 }
 
 # Silent token acquisition probes the widest tier first: once a tenant admin
 # has consented org-wide, every user silently gets the superset.
-M365_SCOPE_TIER_ORDER: tuple[str, ...] = ("admin", "standard", "self")
+M365_SCOPE_TIER_ORDER: tuple[str, ...] = ("admin", "groups", "standard", "self")
 
 # Graph endpoints (path fragments) that need at least the given tier. Used to
 # turn a bare 403 into "which consent step is missing".
@@ -89,12 +101,13 @@ M365_ENDPOINT_TIER_MARKERS: tuple[tuple[str, str], ...] = (
     ("/onlineMeetings", "standard"),
     ("/todo", "standard"),
     ("/communications", "standard"),
+    ("/groups", "groups"),  # M365 group calendars / membership need Group.Read.All (own consent step)
     ("/users/", "standard"),  # delegated /users/{upn}/mailFolders etc. (shared scopes)
 )
 
 
 def m365_scopes_for_tier(tier: Optional[str]) -> list[str]:
-    """Return the scope list for ``tier`` (``self`` | ``standard`` | ``admin``).
+    """Return the scope list for ``tier`` (``self`` | ``standard`` | ``groups`` | ``admin``).
 
     Unknown or empty values fall back to the login default (``self``) so a
     typo can never silently escalate to an admin-consent prompt.
