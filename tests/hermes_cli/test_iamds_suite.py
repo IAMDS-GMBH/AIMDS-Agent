@@ -346,3 +346,59 @@ class TestResolveSuiteNtfy:
         with _patch.object(suite.urllib.request, "urlopen", side_effect=self._urlopen({"info": {"user_id": "u-2"}}, calls)):
             res = suite.resolve_suite_ntfy(config=cfg)
         assert res.user_id == "u-2" and len(calls) == 2
+
+
+# --------------------------------------------------------------------------- rebind_suite_mcp_for_model
+
+def _fake_ep(provider_id, base_url, api_key="sk-x"):
+    return suite.SuiteEndpoint(
+        provider_id=provider_id, label=provider_id, key_env="K", url_env="U",
+        base_url=base_url, base_url_source="env", api_key=api_key,
+    )
+
+
+def _patch_rebind(monkeypatch, *, endpoints, current_mcp_url):
+    """endpoints: {provider_id: SuiteEndpoint}; resolve_suite_endpoint returns them."""
+    monkeypatch.setattr(suite, "resolve_suite_endpoint", lambda slug, **kw: endpoints[suite.canonical_suite_provider(slug) or "aimds-suite-prod"])
+    monkeypatch.setattr(suite, "_load_config_safe", lambda config=None: {"mcp_servers": {"AIMDSSuiteMCP": {"url": current_mcp_url}}})
+    import tools.mcp_tool as mcp_tool
+    calls = {}
+    def _fake_reload(**kw):
+        calls["mcp"] = kw
+        return ["tool_a", "tool_b"]
+    monkeypatch.setattr(mcp_tool, "reload_provider_mcp_servers", _fake_reload)
+    monkeypatch.setattr(mcp_tool, "discover_mcp_tools", lambda: calls.setdefault("discover", True))
+    return calls
+
+
+def test_rebind_suite_model_repoints_to_that_instance(monkeypatch):
+    eps = {"aimds-suite-staging": _fake_ep("aimds-suite-staging", "https://staging.suite.iamds.com/litellm/v1", "sk-staging")}
+    calls = _patch_rebind(monkeypatch, endpoints=eps, current_mcp_url="https://suite.iamds.com/litellm/mcp/")
+    tools = suite.rebind_suite_mcp_for_model("aimds-suite-staging")
+    assert tools == ["tool_a", "tool_b"]
+    assert calls["mcp"]["provider"] == "aimds-suite-staging"
+    assert calls["mcp"]["new_base_url"] == "https://staging.suite.iamds.com/litellm/v1"
+    assert calls["mcp"]["new_api_key"] == "sk-staging"
+
+
+def test_rebind_3rd_party_from_staging_goes_back_to_prod(monkeypatch):
+    eps = {"aimds-suite-prod": _fake_ep("aimds-suite-prod", "https://suite.iamds.com/litellm/v1", "sk-prod")}
+    calls = _patch_rebind(monkeypatch, endpoints=eps, current_mcp_url="https://staging.suite.iamds.com/litellm/mcp/")
+    tools = suite.rebind_suite_mcp_for_model("anthropic")  # 3rd-party → prod
+    assert tools == ["tool_a", "tool_b"]
+    assert calls["mcp"]["provider"] == "aimds-suite-prod"
+    assert calls["mcp"]["new_base_url"] == "https://suite.iamds.com/litellm/v1"
+
+
+def test_rebind_3rd_party_already_prod_is_a_noop(monkeypatch):
+    eps = {"aimds-suite-prod": _fake_ep("aimds-suite-prod", "https://suite.iamds.com/litellm/v1", "sk-prod")}
+    calls = _patch_rebind(monkeypatch, endpoints=eps, current_mcp_url="https://suite.iamds.com/litellm/mcp/")
+    assert suite.rebind_suite_mcp_for_model("google-gemini-cli") == []
+    assert "mcp" not in calls  # same host → no reconnect churn
+
+
+def test_rebind_without_prod_key_leaves_mcp_untouched(monkeypatch):
+    eps = {"aimds-suite-prod": _fake_ep("aimds-suite-prod", "https://suite.iamds.com/litellm/v1", api_key="")}
+    calls = _patch_rebind(monkeypatch, endpoints=eps, current_mcp_url="https://staging.suite.iamds.com/litellm/mcp/")
+    assert suite.rebind_suite_mcp_for_model("anthropic") == []
+    assert "mcp" not in calls
