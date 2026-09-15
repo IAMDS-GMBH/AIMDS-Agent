@@ -39,10 +39,15 @@ PROFILE_KEYS = (
     "region", "weekly_hours", "days_per_week", "work_weekdays", "employment_label", "half_days",
     "employment_start", "employment_end", "part_time_factor",
     "municipality", "plz", "partial_holidays",
-    "worklog_source_tool", "vacation_booking_patterns", "vacation_hour_factor", "notes",
+    "worklog_source_tool", "vacation_booking_patterns", "vacation_hour_factor",
+    "presence_calendar", "presence_match_patterns", "presence_default", "notes",
 )
 TABLE = "workday_calendar"
 ABSENCES_TABLE = "absences"
+PRESENCE_TABLE = "presence"
+PERIODS = ("ytd", "mtd", "this_month", "last_month", "this_week", "last_week", "through_last_week")
+PRESENCE_KINDS = ("office", "homeoffice", "travel")
+DEFAULT_PRESENCE = "homeoffice"  # what a booked working day counts as when nothing else is recorded
 _PROFILE_TTL_SECONDS = 600
 
 CLARIFY_CHOICES = [
@@ -119,25 +124,147 @@ def _parse_profile_text(text: str) -> Dict[str, Any]:
     return out
 
 
+def _normalize_title(value: Any) -> str:
+    """Title as the memory server may hand it back: lowercase, trimmed, and
+    without an upsert marker such as ``Arbeitszeit-Profil (updated)``."""
+    text = " ".join(str(value or "").split()).strip().lower()
+    for suffix in (" (updated)", " (aktualisiert)"):
+        if text.endswith(suffix):
+            text = text[: -len(suffix)].strip()
+    return text
+
+
+def _profile_slug() -> str:
+    from agent.memory_facade import _slugify
+
+    return _slugify(PROFILE_TITLE)
+
+
+def _is_profile_hit(hit: Dict[str, Any]) -> bool:
+    if _normalize_title(hit.get("title")) == PROFILE_TITLE.lower():
+        return True
+    slug = str(hit.get("slug") or "").strip().lower()
+    return bool(slug) and slug == _profile_slug()
+
+
+def _profile_text_from_hit(hit: Dict[str, Any], facade: Any) -> str:
+    """The profile note's body for a search hit.
+
+    Session 20260915_082908 (AIS-337): every ``configure`` since 2026-08-31
+    answered ``saved: true`` and every later session still got ``worktime
+    profile unknown``. The memory MCP's search returns a truncated
+    ``snippet`` (no ``content``/``preview``), and ``facade.read(slug)`` hands
+    back the whole memory object as a JSON string — a single line that
+    ``_parse_profile_text`` cannot read. Take whatever text the hit carries,
+    and when that is not a complete profile, read the note and unwrap the
+    JSON payload's ``content`` before parsing.
+    """
+    text = str(hit.get("content") or hit.get("preview") or hit.get("snippet") or "")
+    if hit.get("content"):
+        return text
+    # preview/snippet are truncated — a 40-char snippet still "parses" (region
+    # + weekly_hours) but drops the worklog/presence patterns; read the note.
+    slug = str(hit.get("slug") or "").strip()
+    if not slug:
+        return text
+    try:
+        raw = facade.read(slug)
+    except Exception as exc:
+        logger.debug("workdays: profile read failed: %s", exc)
+        return text
+    if not raw:
+        return text
+    raw = str(raw)
+    stripped = raw.strip()
+    if stripped.startswith("{"):
+        try:
+            payload = json.loads(stripped)
+            if isinstance(payload, dict):
+                inner = payload.get("content") or payload.get("body") or ""
+                if isinstance(inner, str) and inner.strip():
+                    return inner
+        except Exception:
+            pass
+    return raw
+
+
 def _profile_from_memory() -> Optional[Dict[str, Any]]:
     try:
         facade = _facade()
         if facade.mode == "none":
             return None
-        for hit in facade.search(PROFILE_TITLE, limit=3):
-            title = str(hit.get("title") or "").strip().lower()
-            if title != PROFILE_TITLE.lower():
+        for hit in facade.search(PROFILE_TITLE, limit=5):
+            if not isinstance(hit, dict) or not _is_profile_hit(hit):
                 continue
-            content = str(hit.get("content") or hit.get("preview") or "")
-            if not content and hit.get("slug"):
-                content = str(facade.read(str(hit["slug"])) or "")
-            parsed = _parse_profile_text(content)
+            parsed = _parse_profile_text(_profile_text_from_hit(hit, facade))
             if parsed:
                 parsed["_source"] = f"memory ({facade.mode})"
                 return parsed
     except Exception as exc:
         logger.debug("workdays: profile lookup failed: %s", exc)
     return None
+
+
+_MIRROR_KEY = "worktime_profile"
+
+
+def _mirror_db_path() -> Path:
+    return _default_db_path()
+
+
+def _profile_from_mirror(db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    """The local copy in ``state.db`` (``state_meta.worktime_profile``).
+
+    Memory stays the source of truth; the mirror is what cron runs and
+    sessions without a memory backend read (AIS-337). Never config.yaml.
+    """
+    path = db_path or _mirror_db_path()
+    if not path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(path), timeout=10.0)
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS state_meta (key TEXT PRIMARY KEY, value TEXT)")
+            row = conn.execute("SELECT value FROM state_meta WHERE key = ?", (_MIRROR_KEY,)).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        logger.debug("workdays: profile mirror read failed: %s", exc)
+        return None
+    if not row or not row[0]:
+        return None
+    try:
+        data = json.loads(row[0])
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    profile = {k: v for k, v in data.items() if k in PROFILE_KEYS and v not in (None, "")}
+    if not profile.get("region"):
+        return None
+    profile["_source"] = "state.db mirror"
+    return profile
+
+
+def _save_profile_mirror(profile: Dict[str, Any], db_path: Optional[Path] = None) -> bool:
+    path = db_path or _mirror_db_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(path), timeout=10.0)
+        try:
+            with conn:
+                conn.execute("CREATE TABLE IF NOT EXISTS state_meta (key TEXT PRIMARY KEY, value TEXT)")
+                conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (_MIRROR_KEY, json.dumps({k: v for k, v in profile.items() if k in PROFILE_KEYS}, ensure_ascii=False)),
+                )
+        finally:
+            conn.close()
+        return True
+    except (sqlite3.Error, OSError) as exc:
+        logger.debug("workdays: profile mirror write failed: %s", exc)
+        return False
 
 
 def _profile_from_legacy_config() -> Optional[Dict[str, Any]]:
@@ -162,7 +289,7 @@ def load_profile(force: bool = False) -> Optional[Dict[str, Any]]:
     now = time.time()
     if not force and _profile_cache["profile"] is not None and now - _profile_cache["at"] < _PROFILE_TTL_SECONDS:
         return dict(_profile_cache["profile"])
-    profile = _profile_from_memory() or _profile_from_legacy_config()
+    profile = _profile_from_memory() or _profile_from_mirror() or _profile_from_legacy_config()
     _profile_cache.update({"at": now, "profile": profile})
     return dict(profile) if profile else None
 
@@ -180,7 +307,8 @@ def _profile_text(profile: Dict[str, Any]) -> str:
         lines.append("partial_holidays: " + (", ".join(profile["partial_holidays"]) or "none"))
     for key in ("employment_start", "employment_end", "part_time_factor", "employment_label",
                 "municipality", "plz",
-                "worklog_source_tool", "vacation_booking_patterns", "vacation_hour_factor", "notes"):
+                "worklog_source_tool", "vacation_booking_patterns", "vacation_hour_factor",
+                "presence_calendar", "presence_match_patterns", "presence_default", "notes"):
         if profile.get(key) not in (None, ""):
             lines.append(f"{key}: {profile[key]}")
     lines.append("")
@@ -192,10 +320,19 @@ def _profile_text(profile: Dict[str, Any]) -> str:
 
 
 def save_profile(profile: Dict[str, Any]) -> Dict[str, Any]:
+    mirrored = _save_profile_mirror(profile)
     facade = _facade()
     if facade.mode == "none":
-        _profile_cache.update({"at": time.time(), "profile": dict(profile, _source="parameters (no memory backend)")})
-        return {"saved": False, "backend": "none", "note": "no memory backend available — profile applies to this call only"}
+        source = "state.db mirror" if mirrored else "parameters (no memory backend)"
+        _profile_cache.update({"at": time.time(), "profile": dict(profile, _source=source)})
+        return {
+            "saved": mirrored, "backend": "state.db" if mirrored else "none",
+            "mirror": "state.db" if mirrored else None,
+            "note": (
+                "no memory backend available — profile kept in the local state.db mirror only"
+                if mirrored else "no memory backend available — profile applies to this call only"
+            ),
+        }
     # type "reference", not "profile": the memory server's init skill keeps
     # exactly one profile note per user and merges extras — that would eat
     # this structured note. Lookup is by title, so the type is free.
@@ -208,7 +345,12 @@ def save_profile(profile: Dict[str, Any]) -> Dict[str, Any]:
     )
     if result.ok:
         _profile_cache.update({"at": time.time(), "profile": dict(profile, _source=f"memory ({result.backend})")})
-    return {"saved": bool(result.ok), "backend": result.backend, "ref": getattr(result, "ref", "") or "", "error": getattr(result, "error", None)}
+    elif mirrored:
+        _profile_cache.update({"at": time.time(), "profile": dict(profile, _source="state.db mirror")})
+    return {
+        "saved": bool(result.ok), "backend": result.backend, "ref": getattr(result, "ref", "") or "",
+        "error": getattr(result, "error", None), "mirror": "state.db" if mirrored else None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +415,9 @@ def _resolve(args: Dict[str, Any]) -> Dict[str, Any]:
     take("worklog_source_tool")
     take("vacation_booking_patterns")
     take("vacation_hour_factor", 1.0)
+    take("presence_calendar")
+    take("presence_match_patterns")
+    take("presence_default", DEFAULT_PRESENCE)
     weekday_set = wc.parse_work_weekdays(picked.get("work_weekdays"))
     if weekday_set:
         explicit = picked.get("days_per_week")
@@ -287,8 +432,50 @@ def _resolve(args: Dict[str, Any]) -> Dict[str, Any]:
     return picked
 
 
+def _period_range(period: str, today: date, employment_start: Optional[date] = None) -> tuple:
+    """Deterministic date ranges for relative periods (AIS-338).
+
+    Session 20260915_082908 asked for "through the end of last week" and the
+    model typed the range by hand — and slipped a week. ISO weeks start on
+    Monday; every keyword is resolved from today, never guessed.
+    """
+    key = str(period or "").strip().lower().replace("-", "_")
+    monday = today - timedelta(days=today.weekday())
+    first_of_month = today.replace(day=1)
+    if key == "ytd":
+        start = date(today.year, 1, 1)
+        if employment_start and employment_start > start:
+            start = employment_start
+        return start, today
+    if key == "mtd":
+        return first_of_month, today
+    if key == "this_month":
+        nxt = (first_of_month + timedelta(days=32)).replace(day=1)
+        return first_of_month, nxt - timedelta(days=1)
+    if key == "last_month":
+        last_end = first_of_month - timedelta(days=1)
+        return last_end.replace(day=1), last_end
+    if key == "this_week":
+        return monday, monday + timedelta(days=6)
+    if key == "last_week":
+        return monday - timedelta(days=7), monday - timedelta(days=1)
+    if key == "through_last_week":
+        end = monday - timedelta(days=1)
+        start = date(end.year, 1, 1)
+        if employment_start and employment_start > start:
+            start = employment_start
+        return start, end
+    raise ValueError(f"unknown period '{period}'; one of {', '.join(PERIODS)}")
+
+
 def _range(args: Dict[str, Any]) -> tuple:
     year = args.get("year")
+    if args.get("period"):
+        emp = args.get("employment_start")
+        return _period_range(
+            str(args["period"]), _today(),
+            wc.parse_iso_date(emp, "employment_start") if emp else None,
+        )
     if args.get("start") and args.get("end"):
         return wc.parse_iso_date(args["start"], "start"), wc.parse_iso_date(args["end"], "end")
     if year:
@@ -597,6 +784,15 @@ def _act_configure(args: Dict[str, Any]) -> str:
         if factor <= 0:
             return tool_error("vacation_hour_factor must be > 0", success=False)
         profile["vacation_hour_factor"] = factor
+    if args.get("presence_calendar"):
+        profile["presence_calendar"] = str(args["presence_calendar"]).strip()
+    if args.get("presence_match_patterns"):
+        profile["presence_match_patterns"] = ", ".join(_split_patterns(args["presence_match_patterns"]))
+    if args.get("presence_default"):
+        default_kind = str(args["presence_default"]).strip().lower()
+        if default_kind not in PRESENCE_KINDS:
+            return tool_error(f"presence_default must be one of {', '.join(PRESENCE_KINDS)}", success=False)
+        profile["presence_default"] = default_kind
     half = args.get("half_days")
     profile["half_days"] = list(half) if isinstance(half, list) else list(wc.DEFAULT_HALF_DAYS) if half is None else [s.strip() for s in str(half).split(",") if s.strip()]
     wc._half_day_set(profile["half_days"], [_today().year])  # validates format
@@ -675,6 +871,15 @@ def _open_db(db_path: Optional[Path]) -> sqlite3.Connection:
             day TEXT NOT NULL,
             portion REAL NOT NULL DEFAULT 1.0,
             kind TEXT NOT NULL DEFAULT 'vacation',
+            source TEXT NOT NULL,
+            note TEXT,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (day, kind))"""
+    )
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS {PRESENCE_TABLE} (
+            day TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'office',
             source TEXT NOT NULL,
             note TEXT,
             created_at TEXT NOT NULL,
@@ -831,6 +1036,166 @@ def _act_absences(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
         conn.close()
 
 
+def _presence_summary(conn: sqlite3.Connection, start: Optional[str] = None, end: Optional[str] = None) -> List[Dict[str, Any]]:
+    where, params = "", []
+    if start and end:
+        where, params = "WHERE day BETWEEN ? AND ?", [start, end]
+    rows = conn.execute(
+        f"SELECT substr(day, 1, 7) AS month, kind, COUNT(*), GROUP_CONCAT(DISTINCT source) "
+        f"FROM {PRESENCE_TABLE} {where} GROUP BY 1, 2 ORDER BY 1, 2",
+        params,
+    ).fetchall()
+    return [{"month": m, "kind": k, "days": n, "sources": src} for m, k, n, src in rows]
+
+
+def _like_pattern(value: str) -> str:
+    text = str(value or "").strip()
+    return text if "%" in text else f"%{text}%"
+
+
+def _act_presence(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
+    """Where the user worked — the counterpart of ``absences`` (AIS-341).
+
+    Kinds: office, homeoffice, travel. Days come from any calendar whose
+    entries name the user (import), from the user directly, or from a
+    document. A booked working day with no presence entry and no absence
+    counts as the profile's ``presence_default`` (home office unless the
+    user records home-office days instead of office days) — derived in
+    ``report``, never stored.
+    """
+    op = str(args.get("op") or "list").strip().lower()
+    kind = str(args.get("kind") or "office").strip().lower()
+    if kind not in PRESENCE_KINDS:
+        return tool_error(f"presence kind must be one of {', '.join(PRESENCE_KINDS)}", success=False)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn = _open_db(db_path)
+    try:
+        if op == "list":
+            return json.dumps({"action": "presence", "op": "list", "summary": _presence_summary(conn)}, ensure_ascii=False)
+
+        if op == "add":
+            source = str(args.get("source") or "user").strip()
+            note = str(args.get("note") or "").strip() or None
+            rows: List[tuple] = []
+            for item in args.get("days") or []:
+                if isinstance(item, dict) and (item.get("from") or item.get("to")):
+                    d_from = wc.parse_iso_date(item.get("from"), "days.from")
+                    d_to = wc.parse_iso_date(item.get("to") or item.get("from"), "days.to")
+                    d = d_from
+                    while d <= d_to:
+                        rows.append((d.isoformat(), kind, source, note, now))
+                        d += timedelta(days=1)
+                elif isinstance(item, dict):
+                    rows.append((wc.parse_iso_date(item.get("day"), "days.day").isoformat(), kind, source, note, now))
+                else:
+                    rows.append((wc.parse_iso_date(item, "days").isoformat(), kind, source, note, now))
+            if not rows:
+                return tool_error("op='add' needs days: ['YYYY-MM-DD', …] and/or [{'from': …, 'to': …}]", success=False)
+            _upsert_presence(conn, rows)
+            return json.dumps({"action": "presence", "op": "add", "upserted": len(rows), "kind": kind,
+                               "source": source, "summary": _presence_summary(conn)}, ensure_ascii=False)
+
+        if op == "remove":
+            conditions, params = ["kind = ?"], [kind]
+            days = [wc.parse_iso_date(d, "days").isoformat() for d in args.get("days") or []]
+            if days:
+                conditions.append("day IN (" + ",".join("?" * len(days)) + ")")
+                params += days
+            elif args.get("start") or args.get("year") or args.get("period"):
+                start, end = _range(args)
+                conditions.append("day BETWEEN ? AND ?")
+                params += [start.isoformat(), end.isoformat()]
+            elif args.get("source"):
+                pass
+            else:
+                return tool_error("op='remove' needs days, start/end/year, or source — refusing to wipe the table", success=False)
+            if args.get("source"):
+                conditions.append("source LIKE ?")
+                params.append(str(args["source"]))
+            cur = conn.execute(f"DELETE FROM {PRESENCE_TABLE} WHERE " + " AND ".join(conditions), params)
+            conn.commit()
+            return json.dumps({"action": "presence", "op": "remove", "deleted": cur.rowcount,
+                               "summary": _presence_summary(conn)}, ensure_ascii=False)
+
+        if op == "import_from_calendar":
+            profile = load_profile() or {}
+            calendar = str(args.get("calendar") or profile.get("presence_calendar") or "").strip()
+            patterns = _split_patterns(args.get("match") or profile.get("presence_match_patterns"))
+            if not calendar or not patterns:
+                return json.dumps({
+                    "action": "presence", "op": "import_from_calendar",
+                    "error": "presence calendar and match patterns are not configured",
+                    "missing": [k for k, v in (("calendar", calendar), ("match", patterns)) if not v],
+                    "ask": (
+                        "Ask the user which calendar holds their presence days (a shared office calendar, a team "
+                        "calendar, …) and how their entries are labelled (usually their name); pass calendar=… and "
+                        "match=… (or persist via workdays(action='configure', presence_calendar=…, "
+                        "presence_match_patterns=…)). kind= says what the entries mean (office, homeoffice, travel)."
+                    ),
+                }, ensure_ascii=False)
+            tool_pattern = str(args.get("calendar_source_tool") or "%_events%")
+            canonical = conn.execute(
+                "SELECT reference_key FROM mcp_records WHERE tool_name LIKE ? AND lower(reference_key) = lower(?) LIMIT 1",
+                (tool_pattern, calendar),
+            ).fetchone()
+            calendar = str(canonical[0]) if canonical and canonical[0] else calendar
+            where = "tool_name LIKE ? AND lower(reference_key) = lower(?) AND substr(timestamp, 1, 10) <> ''"
+            params: List[Any] = [tool_pattern, calendar]
+            window = None
+            if args.get("start") or args.get("year") or args.get("period"):
+                start, end = _range(args)
+                window = (start.isoformat(), end.isoformat())
+                where += " AND substr(timestamp, 1, 10) BETWEEN ? AND ?"
+                params += list(window)
+            total, first, last = conn.execute(
+                f"SELECT COUNT(*), MIN(substr(timestamp, 1, 10)), MAX(substr(timestamp, 1, 10)) FROM mcp_records WHERE {where}",
+                params,
+            ).fetchone()
+            match_sql = _like_sql("raw_data", [_like_pattern(p) for p in patterns])
+            days = [r[0] for r in conn.execute(
+                f"SELECT DISTINCT substr(timestamp, 1, 10) FROM mcp_records WHERE {where} AND {match_sql} ORDER BY 1",
+                params + [_like_pattern(p) for p in patterns],
+            ).fetchall()]
+            source = f"calendar:{calendar}"
+            delete_sql = f"DELETE FROM {PRESENCE_TABLE} WHERE kind = ? AND lower(source) = lower(?)"
+            delete_params: List[Any] = [kind, source]
+            if window:
+                delete_sql += " AND day BETWEEN ? AND ?"
+                delete_params += list(window)
+            deleted = conn.execute(delete_sql, delete_params).rowcount or 0
+            _upsert_presence(conn, [(d, kind, source, None, now) for d in days])
+            payload: Dict[str, Any] = {
+                "action": "presence", "op": "import_from_calendar", "calendar": calendar, "match": patterns,
+                "kind": kind, "upserted": len(days), "deleted": deleted,
+                "coverage": {"events": total, "first_day": first, "last_day": last, "window": window},
+                "summary": _presence_summary(conn, *(window or (None, None))),
+            }
+            if not total:
+                payload["hints"] = [
+                    f"no ingested events for calendar '{calendar}' in this window — fetch them first "
+                    f"(e.g. m365_get_events(calendar='{calendar}', start_time_iso=…, end_time_iso=…); results auto-ingest "
+                    "into mcp_records), then rerun this import"
+                ]
+            elif not days:
+                payload["hints"] = [
+                    f"{total} events found but none match {patterns} — check how the user's office entries are labelled"
+                ]
+            return json.dumps(payload, ensure_ascii=False)
+
+        return tool_error("unknown op; one of add, list, remove, import_from_calendar", success=False)
+    finally:
+        conn.close()
+
+
+def _upsert_presence(conn: sqlite3.Connection, rows: List[tuple]) -> None:
+    conn.executemany(
+        f"INSERT INTO {PRESENCE_TABLE} (day, kind, source, note, created_at) VALUES (?,?,?,?,?) "
+        "ON CONFLICT(day, kind) DO UPDATE SET source=excluded.source, note=excluded.note, created_at=excluded.created_at",
+        rows,
+    )
+    conn.commit()
+
+
 def _act_estimate(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
     conn = _open_db(db_path)
     try:
@@ -916,13 +1281,19 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
             "estimate": "workdays(action='estimate_profile') proposes values from ingested data — confirm with the user first.",
         }, ensure_ascii=False)
     today = _today()
-    if args.get("start") or args.get("year"):
+    period = str(args.get("period") or "").strip().lower() or None
+    if period:
+        emp = p.get("employment_start")
+        start, end = _period_range(period, today, wc.parse_iso_date(emp, "employment_start") if emp else None)
+    elif args.get("start") or args.get("year"):
         start, end = _range(args)
     else:
         emp = p.get("employment_start")
         start = wc.parse_iso_date(emp, "employment_start") if emp else date(today.year, 1, 1)
         end = today
     requested = {"start": start.isoformat(), "end": end.isoformat(), "inclusive": True}
+    if period:
+        requested["period"] = period
     clamped = end > today
     if clamped:
         end = today
@@ -1004,8 +1375,16 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
             "WHERE kind = 'vacation' AND day BETWEEN ? AND ? GROUP BY source",
             (s, e),
         ).fetchall()
+        presence_cov = conn.execute(
+            f"SELECT source, kind, COUNT(*), MAX(created_at) FROM {PRESENCE_TABLE} "
+            "WHERE day BETWEEN ? AND ? GROUP BY source, kind",
+            (s, e),
+        ).fetchall()
+        day_rows = _report_day_rows(conn, ist_where, ist_params, s, e,
+                                    presence_default=str(p.get("presence_default") or DEFAULT_PRESENCE))
     finally:
         conn.close()
+    presence_months, presence_total = _presence_counts(day_rows)
 
     hints = []
     if all(c["rows"] == 0 for c in coverage):
@@ -1025,13 +1404,25 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
             "add days directly (op='add'), or extract them from a vault note/document; vacation_credit is 0 until then"
         )
 
+    if not presence_cov and (presence_total["office_days"] or presence_total["homeoffice_days"]):
+        default_kind = str(p.get("presence_default") or DEFAULT_PRESENCE)
+        hints.append(
+            f"no presence recorded for this range — every booked working day counts as '{default_kind}' "
+            "(profile presence_default) until workdays(action='presence', op='import_from_calendar', calendar=…, "
+            "match=…, kind=…) or op='add' fills the presence table"
+        )
+
+    range_payload: Dict[str, Any] = {"start": s, "end": e, "inclusive": True}
+    if period:
+        range_payload["resolved_from"] = period
     payload: Dict[str, Any] = {
         "action": "report",
-        "range": {"start": s, "end": e, "inclusive": True},
+        "range": range_payload,
         "totals": {"target_gross": total[0], "vacation_credit": total[1], "target_net": total[2],
-                   "actual": total[3], "delta": total[4]},
+                   "actual": total[3], "delta": total[4], **presence_total},
         "months": [
-            {"month": m, "target_gross": tg, "vacation_credit": vc, "target_net": tn, "actual": act, "delta": dl}
+            {"month": m, "target_gross": tg, "vacation_credit": vc, "target_net": tn, "actual": act, "delta": dl,
+             **presence_months.get(m, _empty_presence())}
             for m, tg, vc, tn, act, dl in month_rows
         ],
         "assumptions": mat.get("assumptions"),
@@ -1041,23 +1432,321 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
                 {"source": src, "days": n, "portions": pt, "last_updated_at": upd}
                 for src, n, pt, upd in absence_cov
             ],
+            "presence_sources": [
+                {"source": src, "kind": k, "days": n, "last_updated_at": upd}
+                for src, k, n, upd in presence_cov
+            ],
         },
         "formula": FORMULA,
     }
+    if args.get("include_days"):
+        payload["days"] = day_rows
     if clamped:
         payload["clamped_to_today"] = True
         payload["requested_range"] = requested
         payload["target_full_range"] = target_full_range
+    elif period:
+        payload["requested_range"] = requested
     if hints:
         payload["hints"] = hints
     partial_hint = _partial_holidays_hint(p, start, end)
     if partial_hint:
         payload["partial_holidays_unresolved"] = partial_hint
+    write = str(args.get("write") or "").strip().lower()
+    if write:
+        if write != "vault":
+            return tool_error("write must be 'vault' (the only supported target)", success=False)
+        payload["report_file"] = _write_report_to_vault(payload, day_rows, args, period, start, end, requested)
     payload["note"] = "Present results in the user's language."
     return json.dumps(payload, ensure_ascii=False)
 
 
-ACTIONS = ("holidays", "workdays", "target_hours", "days", "report", "estimate_profile", "absences", "materialize", "configure", "profile")
+# ---------------------------------------------------------------------------
+# Report: per-day rows, presence counts, vault rendering (AIS-338 / AIS-341)
+# ---------------------------------------------------------------------------
+
+_STATUS_TOLERANCE_HOURS = 0.25
+
+
+def _report_day_rows(conn: sqlite3.Connection, ist_where: str, ist_params: List[Any], s: str, e: str,
+                     presence_default: str = DEFAULT_PRESENCE) -> List[Dict[str, Any]]:
+    """One row per calendar day — first start, last end, hours, absence,
+    presence — all derived in SQLite from workday_calendar, mcp_records,
+    absences and presence. The model asked for "Start und Ende pro Tag" and
+    had to build that by hand before (AIS-338)."""
+    rows = conn.execute(
+        f"""
+        WITH ist AS (
+            SELECT substr(timestamp, 1, 10) AS day,
+                   SUM(duration_seconds) / 3600.0 AS hours,
+                   COUNT(*) AS bookings,
+                   MIN(CASE WHEN length(timestamp) >= 16 THEN substr(timestamp, 12, 5) END) AS first_start,
+                   MAX(CASE WHEN length(timestamp) >= 16 THEN strftime('%H:%M', datetime(substr(timestamp, 1, 19), '+' || duration_seconds || ' seconds')) END) AS last_end,
+                   GROUP_CONCAT(DISTINCT reference_key) AS refs
+            FROM mcp_records
+            WHERE {ist_where} AND substr(timestamp, 1, 10) BETWEEN ? AND ?
+            GROUP BY 1),
+        ab AS (
+            SELECT day, SUM(portion) AS portion, GROUP_CONCAT(DISTINCT kind) AS kinds
+            FROM {ABSENCES_TABLE} WHERE day BETWEEN ? AND ? GROUP BY day),
+        pr AS (
+            SELECT day, GROUP_CONCAT(DISTINCT kind) AS kinds
+            FROM {PRESENCE_TABLE} WHERE day BETWEEN ? AND ? GROUP BY day)
+        SELECT c.day, c.weekday, c.is_weekend, c.is_holiday, c.holiday_name, c.factor, c.target_hours,
+               i.first_start, i.last_end, ROUND(COALESCE(i.hours, 0), 2), COALESCE(i.bookings, 0), i.refs,
+               ab.portion, ab.kinds, pr.kinds
+        FROM {TABLE} c
+        LEFT JOIN ist i ON i.day = c.day
+        LEFT JOIN ab ON ab.day = c.day
+        LEFT JOIN pr ON pr.day = c.day
+        WHERE c.day BETWEEN ? AND ?
+        ORDER BY c.day""",
+        ist_params + [s, e, s, e, s, e, s, e],
+    ).fetchall()
+    out: List[Dict[str, Any]] = []
+    for (day, weekday, is_weekend, is_holiday, holiday_name, factor, target, first_start, last_end,
+         actual, bookings, refs, ab_portion, ab_kinds, pr_kinds) in rows:
+        ab_portion = float(ab_portion or 0.0)
+        target = float(target or 0.0)
+        target_net = round(max(0.0, target - ab_portion * target), 2) if target else 0.0
+        pr_set = {k for k in str(pr_kinds or "").split(",") if k}
+        recorded = next((k for k in PRESENCE_KINDS if k in pr_set), None)
+        if recorded:
+            presence = recorded
+        elif ab_portion >= 1.0:
+            presence = (str(ab_kinds or "vacation").split(",")[0]) or "vacation"
+        elif actual > 0 and target > 0:
+            presence = presence_default
+        else:
+            presence = "none"
+        if target == 0:
+            status = "off_booked" if actual > 0 else "off"
+        elif ab_portion >= 1.0:
+            status = "absent"
+        elif actual == 0:
+            status = "no_booking"
+        elif actual < target_net - _STATUS_TOLERANCE_HOURS:
+            status = "short"
+        elif actual > target_net + _STATUS_TOLERANCE_HOURS:
+            status = "over"
+        else:
+            status = "ok"
+        row: Dict[str, Any] = {
+            "day": day, "weekday": _DAY_ABBR[int(weekday)], "target_hours": target, "target_net": target_net,
+            "first_start": first_start, "last_end": last_end, "actual": float(actual or 0.0),
+            "bookings": int(bookings or 0), "presence": presence, "status": status,
+        }
+        if is_weekend:
+            row["weekend"] = True
+        if is_holiday and holiday_name:
+            row["holiday"] = holiday_name
+        if factor not in (None, 0, 1) and not is_weekend and not is_holiday:
+            row["factor"] = factor
+        if ab_portion:
+            row["absence"] = {"portion": round(ab_portion, 2), "kind": ab_kinds}
+        if refs:
+            row["references"] = refs
+        out.append(row)
+    return out
+
+
+def _empty_presence() -> Dict[str, int]:
+    return {"office_days": 0, "homeoffice_days": 0, "travel_days": 0, "absence_days": 0}
+
+
+def _presence_counts(day_rows: List[Dict[str, Any]]) -> tuple:
+    months: Dict[str, Dict[str, int]] = {}
+    total = _empty_presence()
+    key_for = {"office": "office_days", "homeoffice": "homeoffice_days", "travel": "travel_days"}
+    for row in day_rows:
+        month = row["day"][:7]
+        bucket = months.setdefault(month, _empty_presence())
+        key = key_for.get(row["presence"])
+        if key is None and row.get("absence") and row["absence"].get("portion", 0) >= 1.0:
+            key = "absence_days"
+        if key:
+            bucket[key] += 1
+            total[key] += 1
+    return months, total
+
+
+_REPORT_LABELS = {
+    "en": {
+        "title": "Working time {period}", "assumptions": "Assumptions", "result": "Result", "days": "Days",
+        "presence": "Presence", "coverage": "Coverage", "method": "Method", "verification": "Verification",
+        "month": "Month", "target_gross": "Target (gross)", "vacation": "Vacation credit", "target_net": "Target (net)",
+        "actual": "Actual", "delta": "Delta", "total": "Total", "day": "Day", "wd": "Wd", "start": "Start",
+        "end": "End", "hours": "Hours", "status": "Status", "office": "Office", "homeoffice": "Home office",
+        "travel": "Travel", "absence": "Absence", "note": "Note",
+        "verified": "Sum of the daily actuals equals the monthly actuals; covered range {start} to {end}.",
+        "regen": "Regenerate with: {call}", "range": "Range", "generated": "Generated",
+    },
+    "de": {
+        "title": "Arbeitszeit {period}", "assumptions": "Annahmen", "result": "Ergebnis", "days": "Tage",
+        "presence": "Präsenz", "coverage": "Datenabdeckung", "method": "Methode", "verification": "Prüfung",
+        "month": "Monat", "target_gross": "Soll (brutto)", "vacation": "Urlaubsgutschrift", "target_net": "Soll (netto)",
+        "actual": "Ist", "delta": "Differenz", "total": "Gesamt", "day": "Tag", "wd": "WT", "start": "Beginn",
+        "end": "Ende", "hours": "Stunden", "status": "Status", "office": "Büro", "homeoffice": "Home-Office",
+        "travel": "Auswärts", "absence": "Abwesenheit", "note": "Hinweis",
+        "verified": "Summe der Tages-Istwerte entspricht den Monats-Istwerten; abgedeckter Zeitraum {start} bis {end}.",
+        "regen": "Neu erzeugen mit: {call}", "range": "Zeitraum", "generated": "Erzeugt",
+    },
+}
+_DAY_LABELS = {"de": {"Mo": "Mo", "Tu": "Di", "We": "Mi", "Th": "Do", "Fr": "Fr", "Sa": "Sa", "Su": "So"}}
+_STATUS_MARK = {"ok": "✅", "over": "🟢", "short": "🟡", "no_booking": "🔴", "absent": "⚠", "off": "", "off_booked": "🟢"}
+
+
+def _report_language() -> str:
+    try:
+        from agent.i18n import get_language
+
+        lang = str(get_language() or "en").lower()
+    except Exception:
+        lang = "en"
+    return lang if lang in _REPORT_LABELS else "en"
+
+
+def _report_period_label(period: Optional[str], start: date, end: date) -> str:
+    """Stable file-name part: a period keyword, a whole year, a whole month,
+    otherwise the explicit dates."""
+    if period:
+        return period.replace("_", "-")
+    if start == date(start.year, 1, 1) and end == date(start.year, 12, 31):
+        return str(start.year)
+    if start.day == 1 and end.month == start.month and end.year == start.year \
+            and (end + timedelta(days=1)).month != end.month:
+        return f"{start.year}-{start.month:02d}"
+    return f"{start.isoformat()}_{end.isoformat()}"
+
+
+def _fmt_h(value: Any) -> str:
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _render_report_markdown(payload: Dict[str, Any], day_rows: List[Dict[str, Any]], args: Dict[str, Any],
+                            period: Optional[str], created: str, title: str, lang: str) -> str:
+    """Markdown following ``_templates/report.md`` (frontmatter keys, sections
+    Assumptions / Result / Method / Verification) — rendered from the SQL
+    results, so the model never types the report itself (AIS-338)."""
+    L = _REPORT_LABELS[lang]
+    today = _today().isoformat()
+    rng = payload["range"]
+    a = payload.get("assumptions") or {}
+    include_days = bool(args.get("include_days"))
+    call_args = {k: v for k, v in args.items() if k in ("period", "start", "end", "year", "include_days", "write") and v not in (None, "")}
+    call = "workdays(action='report', " + ", ".join(f"{k}={v!r}" for k, v in call_args.items()) + ")"
+    lines = [
+        "---",
+        "type: report",
+        f"title: {json.dumps(title, ensure_ascii=False)}",
+        f"created: {created}",
+        f"updated: {today}",
+        "status: generated",
+        f"covers: {rng['start']}/{rng['end']}",
+        f"source: {json.dumps(', '.join(c['pattern'] for c in payload['coverage']['worklog_sources']), ensure_ascii=False)}",
+        "related_to: [\"[[reports/_hub]]\"]",
+        "tags:",
+        "  - report",
+        "  - worktime",
+        "---",
+        "",
+        f"# {title}",
+        "",
+        f"> [!note] {L['assumptions']}",
+        f"> {a.get('region_name') or a.get('region')} · {a.get('weekly_hours')} h/{'Woche' if lang == 'de' else 'week'} · "
+        f"{a.get('days_per_week')} {'Tage' if lang == 'de' else 'days'} ({a.get('hours_per_day')} h/{'Tag' if lang == 'de' else 'day'}) · "
+        f"{'halbe Tage' if lang == 'de' else 'half days'}: {', '.join(a.get('half_days') or []) or '-'} · "
+        f"{L['range']}: {rng['start']} – {rng['end']}",
+        "",
+        f"## {L['result']}",
+        "",
+        f"| {L['month']} | {L['target_gross']} | {L['vacation']} | {L['target_net']} | {L['actual']} | {L['delta']} | {L['office']} | {L['homeoffice']} | {L['travel']} | {L['absence']} |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for m in payload["months"]:
+        lines.append(
+            f"| {m['month']} | {_fmt_h(m['target_gross'])} | {_fmt_h(m['vacation_credit'])} | {_fmt_h(m['target_net'])} | "
+            f"{_fmt_h(m['actual'])} | {_fmt_h(m['delta'])} | {m['office_days']} | {m['homeoffice_days']} | {m['travel_days']} | {m['absence_days']} |"
+        )
+    t = payload["totals"]
+    lines.append(
+        f"| **{L['total']}** | **{_fmt_h(t['target_gross'])}** | **{_fmt_h(t['vacation_credit'])}** | **{_fmt_h(t['target_net'])}** | "
+        f"**{_fmt_h(t['actual'])}** | **{_fmt_h(t['delta'])}** | **{t['office_days']}** | **{t['homeoffice_days']}** | **{t['travel_days']}** | **{t['absence_days']}** |"
+    )
+    if include_days:
+        day_names = _DAY_LABELS.get(lang, {})
+        lines += ["", f"## {L['days']}", "",
+                  f"| {L['day']} | {L['wd']} | {L['start']} | {L['end']} | {L['hours']} | {L['target_net']} | {L['presence']} | {L['status']} | {L['note']} |",
+                  "|---|---|---|---|---:|---:|---|---|---|"]
+        for d in day_rows:
+            if d["status"] == "off" and d["actual"] == 0 and not d.get("holiday"):
+                continue  # plain weekends stay out of the table
+            note = d.get("holiday") or ""
+            if d.get("absence"):
+                note = (note + " · " if note else "") + f"{d['absence']['kind']} {d['absence']['portion']}"
+            presence = L.get(d["presence"], d["presence"]) if d["presence"] != "none" else ""
+            lines.append(
+                f"| {d['day']} | {day_names.get(d['weekday'], d['weekday'])} | {d.get('first_start') or ''} | {d.get('last_end') or ''} | "
+                f"{_fmt_h(d['actual']) if d['actual'] else ''} | {_fmt_h(d['target_net']) if d['target_net'] else ''} | {presence} | "
+                f"{_STATUS_MARK.get(d['status'], '')} {d['status']} | {note} |"
+            )
+    lines += ["", f"## {L['coverage']}", ""]
+    for c in payload["coverage"]["worklog_sources"]:
+        lines.append(f"- `{c['pattern']}`: {c['rows']} rows, {c['first_day'] or '-'} – {c['last_day'] or '-'} ({L['generated'].lower()} {c['last_fetched_at'] or '-'})")
+    for v in payload["coverage"]["vacation_absences"]:
+        lines.append(f"- {L['absence']}: {v['source']} ({v['days']} d, {v['portions']} portions)")
+    for pr in payload["coverage"]["presence_sources"]:
+        lines.append(f"- {L['presence']}: {pr['source']} ({pr['kind']}, {pr['days']} d)")
+    for h in payload.get("hints") or []:
+        lines.append(f"- ⚠ {h}")
+    lines += ["", f"## {L['method']}", "", L["regen"].format(call=f"`{call}`"), "", f"`{FORMULA}`", "",
+              f"## {L['verification']}", "",
+              f"> [!warning] {L['verification']}",
+              f"> {L['verified'].format(start=rng['start'], end=rng['end'])}", ""]
+    return "\n".join(lines)
+
+
+def _write_report_to_vault(payload: Dict[str, Any], day_rows: List[Dict[str, Any]], args: Dict[str, Any],
+                           period: Optional[str], start: date, end: date, requested: Dict[str, Any]) -> Dict[str, Any]:
+    """Overwrite the canonical report file in the vault (``reports/worklog/
+    worktime-<period>.md``, language-neutral name): same path on every rerun,
+    ``created`` kept, ``updated`` bumped — no ``-final``/``-v2`` copies (AIS-338)."""
+    try:
+        from agent.memory_facade import workspace_root
+        root = workspace_root()
+    except Exception as exc:
+        return {"written": False, "error": f"vault lookup failed: {exc}"}
+    if root is None:
+        return {"written": False, "error": "no vault configured (workspace root unknown) — nothing written"}
+    req_start = wc.parse_iso_date(requested["start"], "start")
+    req_end = wc.parse_iso_date(requested["end"], "end")
+    label = _report_period_label(period, req_start, req_end)
+    lang = _report_language()
+    title = _REPORT_LABELS[lang]["title"].format(period=label if period is None else f"{label} ({payload['range']['start']} – {payload['range']['end']})")
+    path = Path(root) / "reports" / "worklog" / f"worktime-{label}.md"
+    created = _today().isoformat()
+    existed = path.exists()
+    if existed:
+        try:
+            import re as _re
+            m = _re.search(r"^created:\s*(\S+)", path.read_text(encoding="utf-8"), _re.M)
+            if m:
+                created = m.group(1)
+        except OSError:
+            pass
+    text = _render_report_markdown(payload, day_rows, args, period, created, title, lang)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        return {"written": False, "path": str(path), "error": str(exc)}
+    return {"written": True, "path": str(path), "overwritten": existed, "language": lang, "bytes": len(text.encode("utf-8"))}
+
+
+ACTIONS = ("holidays", "workdays", "target_hours", "days", "report", "estimate_profile", "absences", "presence", "materialize", "configure", "profile")
 
 
 def execute_workdays(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
@@ -1077,6 +1766,8 @@ def execute_workdays(args: Dict[str, Any], db_path: Optional[Path] = None) -> st
             return _act_estimate(args, db_path=db_path)
         if action == "absences":
             return _act_absences(args, db_path=db_path)
+        if action == "presence":
+            return _act_presence(args, db_path=db_path)
         if action == "materialize":
             return _act_materialize(args, db_path=db_path)
         if action == "configure":
@@ -1100,10 +1791,17 @@ WORKDAYS_SCHEMA = {
         "counts or holiday dates into SQL or prose, never compute Easter yourself.\n"
         "Actions: 'report' (THE one-call actual-vs-target balance up to today: target, actual from ingested worklogs "
         "in mcp_records via the profile's worklog_source_tool pattern, vacation credit from the absences table, "
-        "delta — all math in SQLite), 'estimate_profile' (propose a week model from ingested worklog data when the "
+        "delta, office/home-office days — all math in SQLite; include_days=true adds one row per day with first "
+        "start, last end, hours, presence and status; period='ytd'|'mtd'|'this_month'|'last_month'|'this_week'|"
+        "'last_week'|'through_last_week' resolves relative ranges deterministically; write='vault' renders the "
+        "canonical Markdown report into the vault (reports/worklog/worktime-<period>.md, overwritten in place) — "
+        "never write that file yourself), 'estimate_profile' (propose a week model from ingested worklog data when the "
         "profile is unknown — present the proposal and let the user CONFIRM before configure; region is never "
         "estimated), 'absences' (source-neutral vacation/sick store in state.db: op=add/list/remove/"
         "import_from_bookings — days can come from booking tickets, the user directly, a vault note, or a document), "
+        "'presence' (office/homeoffice/travel days: op=add/list/remove/import_from_calendar — days from ingested "
+        "calendar events (calendar=… + match=… patterns naming the user, kind=what those entries mean); a booked "
+        "working day without presence entry or absence counts as the profile's presence_default in report), "
         "'target_hours' (per-month working days + target hours, default), 'days' (the same plus EVERY calendar day "
         "of the range in one call — ask once for the whole range, never month by month), 'workdays', 'holidays', "
         "'materialize' (writes table workday_calendar into ~/.hermes/state.db for manual sql JOINs — advanced path), "
@@ -1119,6 +1817,13 @@ WORKDAYS_SCHEMA = {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": list(ACTIONS), "description": "What to compute (default target_hours)."},
+            "period": {"type": "string", "enum": list(PERIODS), "description": "Relative range resolved from today (ISO weeks, Monday first): ytd, mtd, this_month, last_month, this_week, last_week, through_last_week (1 Jan … last Sunday). Instead of start/end."},
+            "write": {"type": "string", "enum": ["vault"], "description": "report only: also render the Markdown report into the vault (reports/worklog/worktime-<period>.md, one canonical file overwritten on rerun, headings in display.language)."},
+            "calendar": {"type": "string", "description": "presence import: name of the ingested calendar (mcp_records.reference_key of the calendar tool's rows); profile default presence_calendar."},
+            "match": {"type": "string", "description": "presence import: comma-separated LIKE patterns that mark the user's own entries (subject/attendees/organizer), usually their name; profile default presence_match_patterns."},
+            "presence_calendar": {"type": "string", "description": "configure: calendar whose entries record where the user works (used by presence import)."},
+            "presence_match_patterns": {"type": "string", "description": "configure: comma-separated patterns naming the user in that calendar."},
+            "presence_default": {"type": "string", "enum": list(PRESENCE_KINDS), "description": "configure: what a booked working day counts as when no presence entry exists (default homeoffice; 'office' when the user records home-office days instead)."},
             "start": {"type": "string", "description": "Range start, YYYY-MM-DD (inclusive)."},
             "end": {"type": "string", "description": "Range end, YYYY-MM-DD (inclusive)."},
             "year": {"type": "integer", "description": "Whole year instead of start/end."},
@@ -1131,10 +1836,10 @@ WORKDAYS_SCHEMA = {
             "worklog_source_tool": {"type": "string", "description": "SQL LIKE pattern (comma-separated for several) matching mcp_records.tool_name rows that are the user's time bookings — any worklog tool, not vendor-specific. Needed for report/estimate."},
             "vacation_booking_patterns": {"type": "string", "description": "LIKE pattern(s) on mcp_records.reference_key for vacation bookings (the ticket workaround; may differ per year — patterns are additive)."},
             "vacation_hour_factor": {"type": "number", "description": "Credit hours per booked vacation hour for absences import (default 1.0; e.g. 8.0 when 1h booked = one 8h day)."},
-            "op": {"type": "string", "enum": ["add", "list", "remove", "import_from_bookings"], "description": "absences only: what to do (default list)."},
+            "op": {"type": "string", "enum": ["add", "list", "remove", "import_from_bookings", "import_from_calendar"], "description": "absences / presence: what to do (default list). import_from_bookings = absences, import_from_calendar = presence."},
             "days": {"type": "array", "items": {}, "description": "absences add/remove: 'YYYY-MM-DD' strings, {day, portion} objects, or {from, to} ranges (ranges expand to working days only)."},
             "portion": {"type": "number", "description": "absences add: fraction of a day per entry, 0 < portion <= 1 (default 1.0)."},
-            "kind": {"type": "string", "description": "absences: vacation (default), sick, or other."},
+            "kind": {"type": "string", "description": "absences: vacation (default), sick, or other. presence: office (default), homeoffice, or travel."},
             "source": {"type": "string", "description": "absences: where the days came from, e.g. 'user', 'document:<id>', 'vault:<note>' (default user)."},
             "note": {"type": "string", "description": "absences add: free-text note stored with the entries."},
             "half_days": {"type": "array", "items": {"type": "string"}, "description": "MM-DD or YYYY-MM-DD days counted as half a working day (profile default: 12-24, 12-31)."},
@@ -1144,7 +1849,7 @@ WORKDAYS_SCHEMA = {
             "partial_holidays": {"type": "array", "items": {"type": "string"}, "description": "Names of the region's municipal/partial holidays that APPLY to this user (deducted like statutory once confirmed); [] = user confirmed none apply. Never set without asking the user."},
             "employment_start": {"type": "string", "description": "YYYY-MM-DD; days before it carry no target time."},
             "employment_end": {"type": "string", "description": "YYYY-MM-DD; days after it carry no target time."},
-            "include_days": {"type": "boolean", "description": "Also return one entry per calendar day."},
+            "include_days": {"type": "boolean", "description": "Also return one entry per calendar day (report: with first start, last end, hours, presence, status)."},
             "notes": {"type": "string", "description": "configure only: free-text note stored with the profile."},
         },
     },

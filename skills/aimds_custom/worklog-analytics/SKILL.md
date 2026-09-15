@@ -20,7 +20,8 @@ This skill defines the binding standard for aggregating, analysing and documenti
 - **Municipal/partial holidays** (e.g. Augsburger Friedensfest — city of Augsburg only, not all of Bavaria; Fronleichnam only in catholic municipalities of SN/TH) deduct ONLY after the user confirmed them: when a workdays result carries `partial_holidays_unresolved`, ask once whether they apply at the user's location (municipality/PLZ helps — Augsburg = PLZ 86150–86199), then persist via `workdays(action='configure', partial_holidays=[…])` — or `partial_holidays=[]` if none apply. Configure merges with the stored profile, so passing just this key is safe.
 
 ### Step 0b: Preferred path — one-call report
-- For actual-vs-target questions call `workdays(action='report', start=…, end=…)` first: it materializes the calendar, aggregates actuals from `mcp_records` via the profile's `worklog_source_tool`, credits vacation from the `absences` table, and computes delta — all in SQLite, clamped to today (a full-year request additionally returns `target_full_range`). Follow its `hints` when data is missing or stale. Only fall back to the manual JOIN below for custom breakdowns.
+- For actual-vs-target questions call `workdays(action='report', …)` first: it materializes the calendar, aggregates actuals from `mcp_records` via the profile's `worklog_source_tool`, credits vacation from `absences`, counts presence days, and computes delta — all in SQLite, clamped to today. The tool description lists what the report can do (relative periods, per-day rows with first start / last end, the rendered vault file); its `hints` say what is missing or stale. Use those instead of hand-written date arithmetic or a self-written report file.
+- `absences` and `presence` are source-neutral stores: whatever the user has — booking tickets, a shared or group calendar, a mailbox, a document, or a plain list — fetch it with the MCP tools you have (results auto-ingest into `mcp_records`), then import it; the tool answers with what it still needs (calendar, patterns, kind) and the profile keeps the answer for next time.
 
 ### Step 1: Fetch raw data
 - Fetch the raw data via the appropriate MCP tools (e.g. `atlassian-jira_get_worklog`, Jira search or time-tracking data).
@@ -110,7 +111,7 @@ DROP TABLE IF EXISTS temp_worklogs;
 
 ### Step 6: Structured output & vault synchronisation
 - Present the result to the user as a clean Markdown table.
-- Save the report from `_templates/report.md` to `reports/worklog/<topic>-<year>.md` (e.g. `reports/worklog/arbeitszeit-2026.md`); overwrite the same file on every rerun and bump `updated:`.
+- Let the tool write the report: `workdays(action='report', …, write='vault')` renders `reports/worklog/worktime-<period>.md` from `_templates/report.md`, overwrites the same file on every rerun and bumps `updated:`. Only for custom breakdowns the tool cannot express, write `reports/worklog/<topic>-<period>.md` yourself following the same rules.
 - Link it from the topic hub in `projects/` via `related_to`.
 - Never write to `journal/`, never create `_v2`/`FINAL` copies.
 - Frontmatter per `_conventions.md`: `type: report`, `title`, `created`, `updated`, `status`, `covers`, `source`, `related_to`, `tags`.
