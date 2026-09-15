@@ -1,6 +1,5 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
-import type { DesktopSupportLogSendResult } from '@/global'
 
 import { DisableFeedbackPromptsDialog } from '@/components/disable-feedback-prompts-dialog'
 import { Button } from '@/components/ui/button'
@@ -15,6 +14,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import type { DesktopSupportLogSendResult } from '@/global'
 import { useI18n } from '@/i18n'
 import { AlertCircle, CheckCircle2, Globe, HelpCircle, ImageIcon, X } from '@/lib/icons'
 import { $feedbackPromptsEnabled, enableFeedbackPrompts } from '@/store/feedback-prompts'
@@ -253,6 +253,7 @@ export function ReportIssueDialog({
     if (!open) {return}
     const desktop = window.hermesDesktop
     const fn = desktop?.reportIssue
+
     if (!fn) {return}
     let cancelled = false
     setPreviewLoading(true)
@@ -266,6 +267,7 @@ export function ReportIssueDialog({
       .finally(() => {
         if (!cancelled) {setPreviewLoading(false)}
       })
+
     return () => {
       cancelled = true
     }

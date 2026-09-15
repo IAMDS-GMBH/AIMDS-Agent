@@ -692,19 +692,21 @@ class TestShapingOrder:
         import sqlite3
         from hermes_cli.config import get_hermes_home
 
+        # AIS-344: 40 compact rows stay whole (≤ max_items_extended and under
+        # the byte budget); 150 rows exceed the extended cap and are cut to 25.
         payload = json.dumps({
             "@odata.context": "x",
-            "value": [{"id": f"r{i}", "key": "PROJ-2", "timeSpentSeconds": 60, "comment": "c"} for i in range(40)],
+            "value": [{"id": f"r{i}", "key": "PROJ-2", "timeSpentSeconds": 60, "comment": "c"} for i in range(150)],
         })
         result = maybe_persist_tool_result(
             content=payload, tool_name="mcp_TimeMCP_getWorklogs", tool_use_id="tc_shape_40", env=None,
         )
         body = json.loads(result.split("\n\n[ingested")[0])
         assert "@odata.context" not in body
-        assert len(body["value"]) == 25 and body["_shaped"]["total"] == 40
+        assert len(body["value"]) == 25 and body["_shaped"]["total"] == 150
         assert "tool_use_id='tc_shape_40'" in body["_shaped"]["full_rows"]
         conn = sqlite3.connect(str(get_hermes_home() / "state.db"))
-        assert conn.execute("SELECT COUNT(*) FROM mcp_records WHERE tool_use_id='tc_shape_40'").fetchone()[0] == 40
+        assert conn.execute("SELECT COUNT(*) FROM mcp_records WHERE tool_use_id='tc_shape_40'").fetchone()[0] == 150
 
     def test_shaping_is_deterministic_across_calls(self):
         import json
