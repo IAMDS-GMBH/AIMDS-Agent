@@ -280,3 +280,70 @@ def test_openproject_time_entries_map_like_tempo_worklogs(tmp_path: Path):
         ("501", "17", "2026-09-14", 5400, "Johannes Huchler"),
         ("502", "WSA-3", "2026-09-15", 28800, "Johannes Huchler"),
     ]
+
+
+def test_graph_calendar_events_get_timestamp_duration_and_calendar(tmp_path: Path):
+    """AIS-339 (session 20260915_082908): m365_get_events rows landed with an
+    empty timestamp, no duration and no reference — a per-day JOIN against
+    workday_calendar was impossible. Graph events carry ``start``/``end``
+    dicts plus the server's ``start_iso_local``; the calendar name is
+    stamped per event (or taken from the ``calendar`` argument)."""
+    db_file = tmp_path / "state.db"
+    payload = json.dumps({
+        "resolved_calendar_name": "OFFICEZEITEN",
+        "value": [
+            {"id": "evt-1", "subject": "Johannes Huchler", "isAllDay": False, "categories": [],
+             "start": {"dateTime": "2026-09-01T08:00:00.0000000", "timeZone": "Europe/Berlin"},
+             "end": {"dateTime": "2026-09-01T17:00:00.0000000", "timeZone": "Europe/Berlin"},
+             "organizer": {"emailAddress": {"name": "Johannes Huchler", "address": "j@x.de"}},
+             "start_iso_local": "2026-09-01T08:00:00", "end_iso_local": "2026-09-01T17:00:00",
+             "calendar_name": "OFFICEZEITEN"},
+            {"id": "evt-2", "subject": "Urlaub Max", "isAllDay": True, "categories": ["URLAUB"],
+             "start": {"dateTime": "2026-09-02T00:00:00.0000000", "timeZone": "UTC"},
+             "end": {"dateTime": "2026-09-03T00:00:00.0000000", "timeZone": "UTC"},
+             "organizer": {"emailAddress": {"name": "Max Muster"}}},
+        ],
+    })
+    count = try_auto_ingest_json(
+        payload, tool_name="mcp_MSOffice365MCP_m365_get_events", tool_use_id="tc_ev", db_path=db_file,
+        tool_args={"calendar": "OFFICEZEITEN", "start_time_iso": "2026-09-01T00:00:00Z", "end_time_iso": "2026-09-14T23:59:59Z"},
+    )
+    assert int(count) == 2 and count.window == ("2026-09-01", "2026-09-14")
+    rows = sqlite3.connect(str(db_file)).execute(
+        "SELECT id, reference_key, timestamp, duration_seconds, user_id, category FROM mcp_records ORDER BY id"
+    ).fetchall()
+    assert rows == [
+        ("evt-1", "OFFICEZEITEN", "2026-09-01T08:00:00", 9 * 3600, "Johannes Huchler", "event"),
+        ("evt-2", "OFFICEZEITEN", "2026-09-02T00:00:00", 24 * 3600, "Max Muster", "URLAUB"),
+    ]
+
+
+def test_calendar_window_refetch_is_scoped_to_that_calendar(tmp_path: Path):
+    db_file = tmp_path / "state.db"
+
+    def _event(id_, day, calendar=None):
+        item = {"id": id_, "subject": id_, "start": {"dateTime": f"{day}T08:00:00"}, "end": {"dateTime": f"{day}T09:00:00"}}
+        if calendar:
+            item["calendar_name"] = calendar
+        return item
+
+    args_main = {"calendar": "Kalender", "start_time_iso": "2026-09-01", "end_time_iso": "2026-09-30"}
+    args_office = {"calendar": "OFFICEZEITEN", "start_time_iso": "2026-09-01", "end_time_iso": "2026-09-30"}
+    tool = "mcp_MSOffice365MCP_m365_get_events"
+    try_auto_ingest_json(json.dumps({"value": [_event("m1", "2026-09-01", "Kalender")]}), tool_name=tool,
+                         tool_use_id="a", db_path=db_file, tool_args=args_main)
+    try_auto_ingest_json(json.dumps({"value": [_event("o1", "2026-09-02", "OFFICEZEITEN")]}), tool_name=tool,
+                         tool_use_id="b", db_path=db_file, tool_args=args_office)
+    # Re-fetching OFFICEZEITEN replaces only OFFICEZEITEN rows in the window.
+    res = try_auto_ingest_json(json.dumps({"value": [_event("o2", "2026-09-03")]}), tool_name=tool,
+                               tool_use_id="c", db_path=db_file, tool_args=args_office)
+    assert int(res) == 1 and res.replaced == 1
+    rows = sqlite3.connect(str(db_file)).execute(
+        "SELECT id, reference_key FROM mcp_records ORDER BY id").fetchall()
+    assert rows == [("m1", "Kalender"), ("o2", "OFFICEZEITEN")]  # o2 took the calendar from the request
+
+
+def test_window_pairs_include_calendar_view_arguments():
+    from tools.mcp_json_ingestor import _date_window_from_args
+
+    assert _date_window_from_args({"start_time_iso": "2026-08-01T00:00:00Z", "end_time_iso": "2026-09-14T23:59:59Z"}) == ("2026-08-01", "2026-09-14")

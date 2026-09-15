@@ -2021,3 +2021,133 @@ class TestBriefSnapshot:
         assert res["window"] == {"start": "2026-09-08T00:00:00", "end": "2026-09-08T23:59:59", "timezone": "Europe/Berlin"}
         assert res["events"] == [] and res["errors"] == []
         assert any(c[1] == "/me/calendars/cal-office/calendarView" for c in fake.calls)
+
+
+class TestSharedMailboxCalendars:
+    """AIS-340 (session 20260915_082908): the OFFICEZEITEN calendar is a
+    shared mailbox — not discoverable via /me/calendars, calendar groups or
+    joined teams; group failures were swallowed silently and an unknown name
+    fell back to /groups/<name> → Graph 400 ErrorInvalidIdMalformed."""
+
+    @staticmethod
+    def _graph(registry_ok=True):
+        calls = []
+
+        def side_effect(method, endpoint, params=None, json_data=None, **kw):
+            calls.append((method, endpoint))
+            if endpoint == "/me/calendars":
+                return {"value": [{"id": "cal-1", "name": "Kalender", "isDefaultCalendar": True},
+                                  {"id": "cal-2", "name": "INFO | IAMDS", "canEdit": False}]}
+            if endpoint == "/me/calendarGroups":
+                raise RuntimeError("MS Graph API Error [403]: calendarGroups denied")
+            if endpoint == "/me/joinedTeams":
+                return {"value": [{"id": "t1", "displayName": "AIMDS"}, {"id": "t2", "displayName": "EVN"}]}
+            if endpoint.startswith("/groups/") and endpoint.endswith("/calendar"):
+                raise RuntimeError("MS Graph API Error [403]: Authorization_RequestDenied")
+            if endpoint == "/users/officezeiten@iamds.com/calendar":
+                if not registry_ok:
+                    raise RuntimeError("MS Graph API Error [404]: mailbox gone")
+                return {"id": "cal-office", "name": "Calendar", "canEdit": True,
+                        "owner": {"name": "OFFICEZEITEN", "address": "officezeiten@iamds.com"}}
+            if endpoint == "/users/officezeiten@iamds.com/calendar/calendarView":
+                return {"value": [{"id": "evt-1", "subject": "Johannes Huchler",
+                                   "start": {"dateTime": "2026-09-01T08:00:00.0000000", "timeZone": "Europe/Berlin"},
+                                   "end": {"dateTime": "2026-09-01T17:00:00.0000000", "timeZone": "Europe/Berlin"}}]}
+            if endpoint == "/users/officezeiten@iamds.com/calendar/events":
+                return {"id": "new-evt"}
+            if endpoint == "/users":
+                raise RuntimeError("MS Graph API Error [403]: needs User.Read.All")
+            return {}
+
+        return side_effect, calls
+
+    def test_list_reports_every_source_and_the_registered_mailbox(self, tmp_path):
+        registry = tmp_path / "m365_shared_calendars.json"
+        registry.write_text('{"shared_mailboxes": ["officezeiten@iamds.com"]}', encoding="utf-8")
+        side_effect, calls = self._graph()
+        with patch.object(server, "_shared_calendars_path", return_value=registry), \
+                patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_list_calendars(search="OFFICEZEITEN")
+        names = {c["name"]: c for c in res["value"]}
+        assert names["OFFICEZEITEN"]["source_type"] == "shared_mailbox"
+        assert names["OFFICEZEITEN"]["mailbox"] == "officezeiten@iamds.com"
+        sources = {s["source"]: s for s in res["sources"]}
+        assert sources["personal"] == {"source": "personal", "status": "ok", "count": 2}
+        assert sources["calendar_groups"]["status"] == "error" and "403" in sources["calendar_groups"]["error"]
+        assert sources["groups"]["status"] == "error" and sources["groups"]["failed"] == 2 and "Group.Read.All" in sources["groups"]["hint"]
+        assert sources["shared_mailboxes"] == {"source": "shared_mailboxes", "status": "ok", "count": 1, "registered": ["officezeiten@iamds.com"]}
+        assert sources["directory_search"]["status"] == "error" and "admin tier" in sources["directory_search"]["hint"]
+        assert res["registry_file"] == str(registry)
+        # one status row per source — 2 group failures are not 2 rows
+        assert [s["source"] for s in res["sources"]] == ["personal", "calendar_groups", "groups", "shared_mailboxes", "directory_search"]
+
+    def test_add_and_remove_shared_mailbox_persist_in_the_registry(self, tmp_path):
+        registry = tmp_path / "m365_shared_calendars.json"
+        side_effect, calls = self._graph()
+        with patch.object(server, "_shared_calendars_path", return_value=registry), \
+                patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_list_calendars(add_shared_mailbox="OfficeZeiten@iamds.com")
+            assert res["changes"]["added_shared_mailbox"] == {"mailbox": "officezeiten@iamds.com", "name": "OFFICEZEITEN"}
+            assert server._load_shared_mailboxes() == ["officezeiten@iamds.com"]
+            assert any(c["source_type"] == "shared_mailbox" for c in res["value"])
+            res = server.m365_list_calendars(remove_shared_mailbox="officezeiten@iamds.com")
+            assert res["changes"]["removed_shared_mailbox"] == "officezeiten@iamds.com"
+            assert server._load_shared_mailboxes() == []
+            hint = next(s for s in res["sources"] if s["source"] == "shared_mailboxes")["hint"]
+            assert "add_shared_mailbox" in hint
+        assert server.m365_list_calendars.__wrapped__ if hasattr(server.m365_list_calendars, "__wrapped__") else True
+        bad = None
+        with patch.object(server, "_shared_calendars_path", return_value=registry), \
+                patch.object(server, "_graph_request", side_effect=side_effect):
+            bad = server.m365_list_calendars(add_shared_mailbox="OFFICEZEITEN")
+        assert "e-mail address" in bad["error"]
+
+    def test_get_events_resolves_the_shared_mailbox_by_name(self, tmp_path):
+        registry = tmp_path / "m365_shared_calendars.json"
+        registry.write_text('{"shared_mailboxes": ["officezeiten@iamds.com"]}', encoding="utf-8")
+        side_effect, calls = self._graph()
+        with patch.object(server, "_shared_calendars_path", return_value=registry), \
+                patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_get_events(calendar="OFFICEZEITEN", start_time_iso="2026-08-01", end_time_iso="2026-09-14")
+        assert res["resolved_calendar_name"] == "OFFICEZEITEN"
+        assert res["value"][0]["calendar_name"] == "OFFICEZEITEN" and res["value"][0]["start_iso_local"] == "2026-09-01T08:00:00"
+        assert ("GET", "/users/officezeiten@iamds.com/calendar/calendarView") in calls
+        assert not any(ep.startswith("/groups/OFFICEZEITEN") for _, ep in calls)
+
+    def test_unknown_calendar_is_a_structured_error_not_a_graph_400(self, tmp_path):
+        registry = tmp_path / "m365_shared_calendars.json"
+        side_effect, calls = self._graph()
+        with patch.object(server, "_shared_calendars_path", return_value=registry), \
+                patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_get_events(calendar="OFFICEZEITEN", start_time_iso="2026-08-01", end_time_iso="2026-09-14")
+            created = server.m365_create_event(subject="x", start_time_iso="2026-09-01T08:00:00",
+                                               end_time_iso="2026-09-01T09:00:00", calendar="OFFICEZEITEN")
+        assert res["error"].startswith("calendar 'OFFICEZEITEN' not found")
+        assert res["available"] == ["Kalender", "INFO | IAMDS"] and "add_shared_mailbox" in res["hint"]
+        assert any(s["source"] == "groups" and s["status"] == "error" for s in res["sources"])
+        assert not any(ep.startswith("/groups/OFFICEZEITEN") for _, ep in calls)
+        assert created["error"].startswith("calendar 'OFFICEZEITEN' not found")
+
+    def test_create_event_in_shared_mailbox_and_default_calendar_stamp(self, tmp_path):
+        registry = tmp_path / "m365_shared_calendars.json"
+        registry.write_text('{"shared_mailboxes": ["officezeiten@iamds.com"]}', encoding="utf-8")
+        side_effect, calls = self._graph()
+        with patch.object(server, "_shared_calendars_path", return_value=registry), \
+                patch.object(server, "_graph_request", side_effect=side_effect):
+            created = server.m365_create_event(subject="Büro", start_time_iso="2026-09-01T08:00:00",
+                                               end_time_iso="2026-09-01T17:00:00", calendar="officezeiten")
+            assert created == {"id": "new-evt"}
+            assert ("POST", "/users/officezeiten@iamds.com/calendar/events") in calls
+            # e-mail addresses still go straight to /users/<mail>
+            by_mail = server.m365_get_events(calendar="officezeiten@iamds.com", start_time_iso="2026-09-01")
+            assert by_mail["resolved_calendar_name"] == "officezeiten@iamds.com"
+
+    def test_registry_failure_is_reported_per_mailbox(self, tmp_path):
+        registry = tmp_path / "m365_shared_calendars.json"
+        registry.write_text('["officezeiten@iamds.com"]', encoding="utf-8")  # legacy plain list
+        side_effect, _ = self._graph(registry_ok=False)
+        with patch.object(server, "_shared_calendars_path", return_value=registry), \
+                patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_list_calendars()
+        row = next(s for s in res["sources"] if s["source"] == "shared_mailboxes")
+        assert row["status"] == "error" and row["failed"] == ["officezeiten@iamds.com"] and "404" in row["error"]

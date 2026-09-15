@@ -1392,61 +1392,125 @@ def m365_download_email_attachments(
     return result
 
 
-@mcp.tool()
-def m365_list_calendars(top: int = 20) -> Dict[str, Any]:
-    """List all available Outlook calendars (personal, shared, calendar groups, and M365 group/team calendars like URLAUB and OFFICEZEITEN)."""
-    calendars = []
-    seen_ids = set()
+# ─── Calendars: personal, calendar groups, M365 groups, shared mailboxes ─────
+#
+# AIS-340 (session 20260915_082908): the OFFICEZEITEN calendar is a shared
+# mailbox — none of the three sources below could list it, every per-source
+# failure was swallowed (24 team calendars silently 403'd), and an unknown
+# name fell back to ``/groups/<name>`` → Graph 400 "The Id is invalid".
+# Shared mailboxes are registered once (their e-mail address) and validated
+# through ``/users/{mail}/calendar`` (Calendars.Read.Shared), and every
+# source reports its own status so a missing scope is visible.
 
-    # 1. Personal calendars (/me/calendars)
+_SHARED_CALENDARS_FILE = "m365_shared_calendars.json"
+_GUID_RE_TEXT = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+
+
+def _shared_calendars_path() -> Path:
+    return _get_token_cache_path().parent / _SHARED_CALENDARS_FILE
+
+
+def _load_shared_mailboxes() -> List[str]:
+    path = _shared_calendars_path()
     try:
-        params = {"$top": min(top, 50), "$select": "id,name,color,canEdit,isDefaultCalendar,owner"}
-        res = _graph_request("GET", "/me/calendars", params=params)
-        for c in res.get("value", []):
-            cid = c.get("id")
-            if cid and cid not in seen_ids:
-                seen_ids.add(cid)
-                c["source_type"] = "personal"
-                calendars.append(c)
+        if not path.is_file():
+            return []
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
     except Exception:
-        pass
+        return []
+    items = data.get("shared_mailboxes") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        return []
+    out: List[str] = []
+    for item in items:
+        addr = str(item.get("mailbox") if isinstance(item, dict) else item or "").strip().lower()
+        if addr and "@" in addr and addr not in out:
+            out.append(addr)
+    return out
 
-    # 2. Calendar Groups (/me/calendarGroups)
+
+def _save_shared_mailboxes(addresses: List[str]) -> None:
+    path = _shared_calendars_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"shared_mailboxes": sorted(set(addresses))}, indent=2), encoding="utf-8")
+
+
+def _short_error(err: Exception) -> str:
+    text = str(err)
+    return text if len(text) <= 400 else text[:400] + "…"
+
+
+def _collect_calendars(top: int = 50, search: Optional[str] = None) -> Dict[str, Any]:
+    """Every calendar the signed-in user can reach, plus one status row per source."""
+    calendars: List[Dict[str, Any]] = []
+    seen_ids: set = set()
+    sources: List[Dict[str, Any]] = []
+
+    def _add(entry: Dict[str, Any], *keys: str) -> bool:
+        ids = [k for k in keys if k]
+        if any(k in seen_ids for k in ids):
+            return False
+        seen_ids.update(ids)
+        calendars.append(entry)
+        return True
+
+    # 1. Personal + accepted shared calendars (/me/calendars)
+    try:
+        params = {"$top": min(max(int(top), 1), 50), "$select": "id,name,color,canEdit,isDefaultCalendar,owner"}
+        res = _graph_request("GET", "/me/calendars", params=params)
+        n = 0
+        for c in res.get("value", []) if isinstance(res, dict) else []:
+            cid = c.get("id")
+            if cid:
+                c["source_type"] = "personal"
+                n += _add(c, cid)
+        sources.append({"source": "personal", "status": "ok", "count": n})
+    except Exception as err:
+        sources.append({"source": "personal", "status": "error", "count": 0, "error": _short_error(err)})
+
+    # 2. Calendar groups (/me/calendarGroups)
     try:
         groups_res = _graph_request("GET", "/me/calendarGroups")
-        for cg in groups_res.get("value", []):
-            cg_id = cg.get("id")
-            cg_name = cg.get("name")
+        n, first_err = 0, None
+        for cg in groups_res.get("value", []) if isinstance(groups_res, dict) else []:
+            cg_id, cg_name = cg.get("id"), cg.get("name")
             if not cg_id:
                 continue
             try:
-                cals_res = _graph_request("GET", f"/me/calendarGroups/{cg_id}/calendars", params={"$select": "id,name,color,canEdit,isDefaultCalendar,owner"})
-                for c in cals_res.get("value", []):
+                cals_res = _graph_request(
+                    "GET", f"/me/calendarGroups/{cg_id}/calendars",
+                    params={"$select": "id,name,color,canEdit,isDefaultCalendar,owner"},
+                )
+                for c in cals_res.get("value", []) if isinstance(cals_res, dict) else []:
                     cid = c.get("id")
-                    if cid and cid not in seen_ids:
-                        seen_ids.add(cid)
+                    if cid:
                         c["source_type"] = "calendar_group"
                         c["calendar_group_name"] = cg_name
                         c["calendar_group_id"] = cg_id
-                        calendars.append(c)
-            except Exception:
-                pass
-    except Exception:
-        pass
+                        n += _add(c, cid)
+            except Exception as err:
+                first_err = first_err or _short_error(err)
+        row: Dict[str, Any] = {"source": "calendar_groups", "status": "ok" if not first_err else "partial", "count": n}
+        if first_err:
+            row["error"] = first_err
+        sources.append(row)
+    except Exception as err:
+        sources.append({"source": "calendar_groups", "status": "error", "count": 0, "error": _short_error(err)})
 
-    # 3. M365 Group / Team Calendars (/me/joinedTeams)
+    # 3. M365 group / team calendars (/me/joinedTeams → /groups/{id}/calendar)
     try:
         teams_res = _graph_request("GET", "/me/joinedTeams")
-        for t in teams_res.get("value", []):
-            group_id = t.get("id")
-            group_name = t.get("displayName")
+        teams = teams_res.get("value", []) if isinstance(teams_res, dict) else []
+        n, failed, first_err = 0, 0, None
+        for t in teams:
+            group_id, group_name = t.get("id"), t.get("displayName")
             if not group_id:
                 continue
             try:
                 grp_cal = _graph_request("GET", f"/groups/{group_id}/calendar", params={"$select": "id,name,color,owner"})
-                cid = grp_cal.get("id")
-                c_name = grp_cal.get("name") or group_name
-                if c_name.lower() == "calendar":
+                cid = grp_cal.get("id") if isinstance(grp_cal, dict) else None
+                c_name = (grp_cal.get("name") if isinstance(grp_cal, dict) else None) or group_name
+                if str(c_name).lower() == "calendar":
                     c_name = group_name
                 entry = {
                     "id": cid or f"group:{group_id}",
@@ -1458,18 +1522,194 @@ def m365_list_calendars(top: int = 20) -> Dict[str, Any]:
                     "isDefaultCalendar": False,
                     "owner": {"name": group_name, "address": t.get("mail")},
                 }
-                gid_key = f"group:{group_id}"
-                if gid_key not in seen_ids and cid not in seen_ids:
-                    seen_ids.add(gid_key)
-                    if cid:
-                        seen_ids.add(cid)
-                    calendars.append(entry)
-            except Exception:
-                pass
-    except Exception:
-        pass
+                n += _add(entry, f"group:{group_id}", cid or "")
+            except Exception as err:
+                failed += 1
+                first_err = first_err or _short_error(err)
+        row = {"source": "groups", "status": "ok" if not failed else ("partial" if n else "error"),
+               "count": n, "teams": len(teams)}
+        if failed:
+            row["failed"] = failed
+            row["error"] = first_err
+            row["hint"] = (
+                "group calendars need Group.Read.All (org-wide admin consent); until granted, "
+                "team calendars are not listed"
+            )
+        sources.append(row)
+    except Exception as err:
+        sources.append({"source": "groups", "status": "error", "count": 0, "error": _short_error(err)})
 
-    return {"value": calendars}
+    # 4. Registered shared mailboxes (/users/{mail}/calendar — Calendars.Read.Shared)
+    mailboxes = _load_shared_mailboxes()
+    n, first_err, failed = 0, None, []
+    for mail in mailboxes:
+        try:
+            cal = _graph_request("GET", f"/users/{mail}/calendar", params={"$select": "id,name,color,canEdit,owner"})
+            cal = cal if isinstance(cal, dict) else {}
+            owner_raw = cal.get("owner")
+            owner: Dict[str, Any] = owner_raw if isinstance(owner_raw, dict) else {}
+            entry = {
+                "id": cal.get("id") or f"mailbox:{mail}",
+                "name": owner.get("name") or cal.get("name") or mail,
+                "mailbox": mail,
+                "source_type": "shared_mailbox",
+                "canEdit": bool(cal.get("canEdit", False)),
+                "isDefaultCalendar": False,
+                "owner": owner or {"name": mail, "address": mail},
+            }
+            n += _add(entry, f"mailbox:{mail}", cal.get("id") or "")
+        except Exception as err:
+            failed.append(mail)
+            first_err = first_err or _short_error(err)
+    row = {"source": "shared_mailboxes", "status": "ok" if not failed else ("partial" if n else "error"),
+           "count": n, "registered": mailboxes}
+    if failed:
+        row["failed"] = failed
+        row["error"] = first_err
+    if not mailboxes:
+        row["hint"] = (
+            "shared mailbox calendars (e.g. OFFICEZEITEN) are not discoverable — register the mailbox "
+            "address once: m365_list_calendars(add_shared_mailbox='name@tenant')"
+        )
+    sources.append(row)
+
+    # 5. Optional directory search for a name (best effort — needs User.Read.All / admin tier)
+    if search and str(search).strip():
+        q = str(search).strip().replace("'", "''")
+        try:
+            res = _graph_request(
+                "GET", "/users",
+                params={
+                    "$top": 10,
+                    "$select": "id,displayName,mail,userPrincipalName",
+                    "$filter": f"startswith(displayName,'{q}') or startswith(mail,'{q}') or startswith(userPrincipalName,'{q}')",
+                },
+            )
+            matches = []
+            for u in res.get("value", []) if isinstance(res, dict) else []:
+                mail = (u.get("mail") or u.get("userPrincipalName") or "").lower()
+                if not mail:
+                    continue
+                matches.append({"name": u.get("displayName"), "mailbox": mail})
+                _add({
+                    "id": f"mailbox:{mail}", "name": u.get("displayName") or mail, "mailbox": mail,
+                    "source_type": "directory_match", "canEdit": False, "isDefaultCalendar": False,
+                    "owner": {"name": u.get("displayName"), "address": mail},
+                    "hint": "register with m365_list_calendars(add_shared_mailbox=…) to list it permanently",
+                }, f"mailbox:{mail}")
+            sources.append({"source": "directory_search", "status": "ok", "count": len(matches), "query": search})
+        except Exception as err:
+            sources.append({
+                "source": "directory_search", "status": "error", "count": 0, "query": search,
+                "error": _short_error(err),
+                "hint": "directory search needs the admin tier; pass the mailbox e-mail address instead",
+            })
+
+    return {"value": calendars, "sources": sources}
+
+
+@mcp.tool()
+def m365_list_calendars(
+    top: int = 20,
+    search: Optional[str] = None,
+    add_shared_mailbox: Optional[str] = None,
+    remove_shared_mailbox: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List every reachable Outlook calendar: personal, shared-with-me, calendar groups, M365 group/team calendars and registered shared mailboxes (e.g. URLAUB, OFFICEZEITEN); `sources` shows per-source status and missing scopes.
+
+    Args:
+        top: Max personal calendars to return.
+        search: Optional name to look up in the directory as well (finds shared mailboxes by display name; needs the admin tier).
+        add_shared_mailbox: E-mail address of a shared mailbox whose calendar should be listed from now on (validated via Graph, stored locally).
+        remove_shared_mailbox: E-mail address to drop from the registered shared mailboxes.
+    """
+    changes: Dict[str, Any] = {}
+    if add_shared_mailbox and str(add_shared_mailbox).strip():
+        mail = str(add_shared_mailbox).strip().lower()
+        if "@" not in mail:
+            return {"error": f"add_shared_mailbox needs an e-mail address, got '{add_shared_mailbox}'"}
+        try:
+            cal = _graph_request("GET", f"/users/{mail}/calendar", params={"$select": "id,name,owner"})
+        except Exception as err:
+            return {
+                "error": f"cannot read the calendar of '{mail}': {_short_error(err)}",
+                "hint": "the mailbox must exist and be shared with you (Calendars.Read.Shared)",
+            }
+        registry = _load_shared_mailboxes()
+        if mail not in registry:
+            registry.append(mail)
+            _save_shared_mailboxes(registry)
+        cal_dict: Dict[str, Any] = cal if isinstance(cal, dict) else {}
+        owner_raw = cal_dict.get("owner")
+        owner_dict: Dict[str, Any] = owner_raw if isinstance(owner_raw, dict) else {}
+        changes["added_shared_mailbox"] = {"mailbox": mail, "name": owner_dict.get("name") or cal_dict.get("name") or mail}
+    if remove_shared_mailbox and str(remove_shared_mailbox).strip():
+        mail = str(remove_shared_mailbox).strip().lower()
+        registry = _load_shared_mailboxes()
+        if mail in registry:
+            registry.remove(mail)
+            _save_shared_mailboxes(registry)
+            changes["removed_shared_mailbox"] = mail
+        else:
+            changes["removed_shared_mailbox"] = None
+
+    result = _collect_calendars(top=top, search=search)
+    if changes:
+        result["changes"] = changes
+    result["registry_file"] = str(_shared_calendars_path())
+    return result
+
+
+def _resolve_calendar(target: str) -> Tuple[Optional[Dict[str, Any]], Optional[str], Dict[str, Any]]:
+    """(matched calendar, user e-mail, listing) for a calendar name/ID/e-mail."""
+    target = (target or "").strip()
+    if not target:
+        return None, None, {}
+    if "@" in target:
+        return None, target, {}
+    listing = _collect_calendars(top=50)
+    target_lower = target.lower()
+    for c in listing.get("value", []):
+        if str(c.get("id") or "") == target:
+            return c, None, listing
+    for c in listing.get("value", []):
+        c_name = str(c.get("name") or "").lower()
+        g_name = str(c.get("group_name") or "").lower()
+        mailbox = str(c.get("mailbox") or "").lower()
+        if (
+            (c_name and (target_lower in c_name or c_name in target_lower))
+            or (g_name and target_lower in g_name)
+            or (mailbox and (target_lower == mailbox or mailbox.startswith(target_lower + "@")))
+        ):
+            if c.get("source_type") == "directory_match":
+                continue
+            return c, None, listing
+    return None, None, listing
+
+
+def _calendar_base_path(matched_cal: Dict[str, Any]) -> str:
+    stype = matched_cal.get("source_type")
+    if stype == "shared_mailbox" and matched_cal.get("mailbox"):
+        return f"/users/{matched_cal['mailbox']}/calendar"
+    if stype == "group" and matched_cal.get("group_id"):
+        return f"/groups/{matched_cal['group_id']}/calendar"
+    if stype == "calendar_group" and matched_cal.get("calendar_group_id") and matched_cal.get("id"):
+        return f"/me/calendarGroups/{matched_cal['calendar_group_id']}/calendars/{matched_cal['id']}"
+    return f"/me/calendars/{matched_cal.get('id')}"
+
+
+def _calendar_not_found(target: str, listing: Dict[str, Any]) -> Dict[str, Any]:
+    names = [str(c.get("name") or "") for c in listing.get("value", []) if c.get("source_type") != "directory_match"]
+    return {
+        "error": f"calendar '{target}' not found among the {len(names)} calendars you can reach",
+        "available": names,
+        "sources": listing.get("sources", []),
+        "hint": (
+            "If it is a shared mailbox (e.g. OFFICEZEITEN): pass its e-mail address as `calendar`, or register it "
+            "once with m365_list_calendars(add_shared_mailbox='name@tenant') so the name resolves. "
+            "M365 group calendars need Group.Read.All (see sources). Ask the user for the address if unknown."
+        ),
+    }
 
 
 @mcp.tool()
@@ -1479,54 +1719,31 @@ def m365_get_events(
     end_time_iso: Optional[str] = None,
     top: int = 20,
 ) -> Dict[str, Any]:
-    """Get events from any Outlook calendar (default, shared by name 'URLAUB'/'Officezeiten', group/team calendars, calendar ID, or user email).
+    """Get events from any Outlook calendar (default, shared by name 'URLAUB'/'Officezeiten', group/team calendars, registered shared mailboxes, calendar ID, or a mailbox e-mail address).
 
     Args:
-        calendar: Optional calendar name (e.g. 'URLAUB', 'Officezeiten'), calendar ID, or user email address. Omit for default calendar.
+        calendar: Optional calendar name (e.g. 'URLAUB', 'OFFICEZEITEN'), calendar ID, or mailbox e-mail address. Omit for the default calendar.
         start_time_iso: Optional start date/time (ISO format) for date range filtering.
         end_time_iso: Optional end date/time (ISO format) for date range filtering.
         top: Max number of events to return.
     """
-    target = (calendar or "").strip()
-    matched_cal: Optional[Dict[str, Any]] = None
-    matched_cal_name: Optional[str] = None
-    target_user_email: Optional[str] = None
+    import re as _re_local
 
-    if target:
-        if "@" in target:
-            target_user_email = target
-        else:
-            cals = m365_list_calendars(top=50)
-            if "value" in cals and isinstance(cals["value"], list):
-                target_lower = target.lower()
-                for c in cals["value"]:
-                    c_id = str(c.get("id") or "")
-                    c_name = str(c.get("name") or "")
-                    g_name = str(c.get("group_name") or "")
-                    if (
-                        c_id == target
-                        or target_lower in c_name.lower()
-                        or c_name.lower() in target_lower
-                        or (g_name and target_lower in g_name.lower())
-                    ):
-                        matched_cal = c
-                        matched_cal_name = c_name or g_name
-                        break
+    target = (calendar or "").strip()
+    matched_cal, target_user_email, listing = _resolve_calendar(target)
+    matched_cal_name: Optional[str] = None
 
     if target_user_email:
         base_path = f"/users/{target_user_email}/calendar"
+        matched_cal_name = target_user_email
     elif matched_cal:
-        stype = matched_cal.get("source_type")
-        if stype == "group" and matched_cal.get("group_id"):
-            base_path = f"/groups/{matched_cal['group_id']}/calendar"
-        elif stype == "calendar_group" and matched_cal.get("calendar_group_id") and matched_cal.get("id"):
-            base_path = f"/me/calendarGroups/{matched_cal['calendar_group_id']}/calendars/{matched_cal['id']}"
-        elif matched_cal.get("id"):
-            base_path = f"/me/calendars/{matched_cal['id']}"
-        else:
-            base_path = f"/me/calendars/{target}"
+        base_path = _calendar_base_path(matched_cal)
+        matched_cal_name = str(matched_cal.get("name") or matched_cal.get("group_name") or target)
+    elif target and _re_local.match(_GUID_RE_TEXT, target):
+        base_path = f"/groups/{target}/calendar"  # a raw group id
+        matched_cal_name = target
     elif target:
-        base_path = f"/me/calendars/{target}"
+        return _calendar_not_found(target, listing)
     else:
         base_path = "/me/calendar"
 
@@ -1552,18 +1769,9 @@ def m365_get_events(
         params["$top"] = min(top, 50)
         endpoint = f"{base_path}/events"
 
-    try:
-        res = _graph_request("GET", endpoint, params=params)
-    except Exception as err:
-        if target and not target_user_email and not matched_cal:
-            try:
-                fallback_ep = f"/groups/{target}/calendar/calendarView" if (start_time_iso and end_time_iso) else f"/groups/{target}/events"
-                res = _graph_request("GET", fallback_ep, params=params)
-            except Exception:
-                raise err
-        else:
-            raise err
+    res = _graph_request("GET", endpoint, params=params)
 
+    calendar_label = matched_cal_name or "default"
     if matched_cal_name:
         res["resolved_calendar_name"] = matched_cal_name
 
@@ -1581,6 +1789,9 @@ def m365_get_events(
                         evt.get("end", {}).get("dateTime") if isinstance(evt.get("end"), dict) else evt.get("end")
                     )
                 evt["timezone"] = _get_timezone_name()
+                # Per-row calendar name so the auto-ingested mcp_records rows
+                # can be filtered by calendar (AIS-339).
+                evt["calendar_name"] = calendar_label
 
     return res
 
@@ -1639,51 +1850,13 @@ def m365_create_event(
         payload["categories"] = categories
 
     target = (calendar or "").strip()
-    target_cal_id: Optional[str] = None
-    target_user_email: Optional[str] = None
-
-    if target:
-        if "@" in target:
-            target_user_email = target
-        else:
-            cals = m365_list_calendars(top=50)
-            if "value" in cals and isinstance(cals["value"], list):
-                target_lower = target.lower()
-                for c in cals["value"]:
-                    c_id = str(c.get("id") or "")
-                    c_name = str(c.get("name") or "")
-                    if c_id == target or target_lower in c_name.lower() or c_name.lower() in target_lower:
-                        target_cal_id = c_id
-                        break
-            if not target_cal_id:
-                target_cal_id = target
-
+    matched_cal, target_user_email, listing = _resolve_calendar(target)
     if target_user_email:
         endpoint = f"/users/{target_user_email}/calendar/events"
+    elif matched_cal:
+        endpoint = f"{_calendar_base_path(matched_cal)}/events"
     elif target:
-        cals = m365_list_calendars(top=50)
-        matched_cal: Optional[Dict[str, Any]] = None
-        if "value" in cals and isinstance(cals["value"], list):
-            target_lower = target.lower()
-            for c in cals["value"]:
-                c_id = str(c.get("id") or "")
-                c_name = str(c.get("name") or "")
-                g_name = str(c.get("group_name") or "")
-                if c_id == target or target_lower in c_name.lower() or c_name.lower() in target_lower or (g_name and target_lower in g_name.lower()):
-                    matched_cal = c
-                    break
-        if matched_cal:
-            stype = matched_cal.get("source_type")
-            if stype == "group" and matched_cal.get("group_id"):
-                endpoint = f"/groups/{matched_cal['group_id']}/events"
-            elif stype == "calendar_group" and matched_cal.get("calendar_group_id") and matched_cal.get("id"):
-                endpoint = f"/me/calendarGroups/{matched_cal['calendar_group_id']}/calendars/{matched_cal['id']}/events"
-            elif matched_cal.get("id"):
-                endpoint = f"/me/calendars/{matched_cal['id']}/events"
-            else:
-                endpoint = f"/me/calendars/{target}/events"
-        else:
-            endpoint = f"/me/calendars/{target}/events"
+        return _calendar_not_found(target, listing)
     else:
         endpoint = "/me/calendar/events"
 

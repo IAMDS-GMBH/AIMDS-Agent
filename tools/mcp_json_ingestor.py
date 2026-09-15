@@ -302,6 +302,38 @@ def _pick(norm: Dict[str, Any], *names: str) -> Any:
     return None
 
 
+def _graph_datetime(value: Any) -> str:
+    """``{"dateTime": "2026-08-04T10:00:00.0000000", "timeZone": …}`` → ISO text
+    (fractional seconds dropped); plain strings pass through; else ``""``."""
+    if isinstance(value, dict):
+        value = value.get("dateTime") or value.get("datetime") or ""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return re.sub(r"(\d{2}:\d{2}:\d{2})\.\d+", r"\1", text)
+
+
+def _seconds_between(start: str, end: str) -> int:
+    from datetime import datetime
+
+    def _parse(text: str):
+        text = str(text or "").strip().replace(" ", "T")
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            return datetime.fromisoformat(text)
+        except ValueError:
+            return None
+
+    a, b = _parse(start), _parse(end)
+    if a is None or b is None:
+        return 0
+    if (a.tzinfo is None) != (b.tzinfo is None):
+        a, b = a.replace(tzinfo=None), b.replace(tzinfo=None)
+    seconds = int((b - a).total_seconds())
+    return seconds if seconds > 0 else 0
+
+
 def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fallback_ref: str = "") -> Tuple:
     """Extract structured fields from a single item dict.
 
@@ -324,23 +356,35 @@ def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fall
     # `work_package_id` + `spent_on` + `hours` as an ISO 8601 duration
     # (PT1H30M) — the Tempo-equivalent shape for AIS-327's time tracking parity.
     ref_key = (
-        _pick(norm, "issuekey", "key", "ticketid", "caseid", "workpackageid")
+        _pick(norm, "issuekey", "key", "ticketid", "caseid", "workpackageid", "calendarname")
         or (issue if isinstance(issue, str) else (issue or {}).get("key") if isinstance(issue, dict) else None)
         or fallback_ref
         or ""
     )
 
     # Timestamp — a bare date plus a start time is joined into one value.
-    timestamp = _pick(norm, "started", "startdate", "spenton", "createdat", "created", "date", "updatedat") or ""
+    # Calendar events (Microsoft Graph) carry ``start: {dateTime, timeZone}``
+    # plus the server's ``start_iso_local``; before AIS-339 they landed with
+    # an empty timestamp, so no per-day JOIN was possible.
+    timestamp = _pick(norm, "started", "startdate", "spenton", "startisolocal", "createdat", "created", "date", "updatedat") or ""
+    event_start = _graph_datetime(norm.get("start"))
+    event_end = _graph_datetime(norm.get("end")) or _pick(norm, "endisolocal")
+    if event_start and not _pick(norm, "started", "startdate", "spenton", "startisolocal"):
+        timestamp = event_start
+    if isinstance(timestamp, dict):
+        timestamp = _graph_datetime(timestamp) or ""
     start_time = _pick(norm, "starttime")
     if timestamp and start_time and isinstance(timestamp, str) and isinstance(start_time, str) \
             and re.fullmatch(r"\d{4}-\d{2}-\d{2}", timestamp.strip()) and re.fullmatch(r"\d{2}:\d{2}(:\d{2})?", start_time.strip()):
         timestamp = f"{timestamp.strip()}T{start_time.strip()}"
 
     # User / Author
-    author = _pick(norm, "author", "user", "assignee", "worker", "authoraccountid", "username")
+    author = _pick(norm, "author", "user", "assignee", "worker", "authoraccountid", "username", "organizer")
     if isinstance(author, dict):
-        user_id = author.get("displayName") or author.get("name") or author.get("emailAddress") or ""
+        email = author.get("emailAddress")
+        if isinstance(email, dict):  # Graph organizer: {"emailAddress": {"name", "address"}}
+            email = email.get("name") or email.get("address")
+        user_id = author.get("displayName") or author.get("name") or email or ""
     else:
         user_id = str(author or "")
 
@@ -354,11 +398,17 @@ def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fall
             duration = int(round(float(str(hours).replace(",", ".")) * 3600)) if hours is not None else 0
         except ValueError:
             duration = _parse_duration(hours)
+        if not duration and event_start and event_end:
+            duration = _seconds_between(event_start, str(event_end))
 
     # Category / Type / Status
-    category = _pick(norm, "category", "type", "status", "casestatus") or "default"
+    category = _pick(norm, "category", "categories", "type", "status", "casestatus") or "default"
     if isinstance(category, dict):
         category = category.get("name") or category.get("value") or "default"
+    elif isinstance(category, list):  # Graph ``categories: [...]``
+        category = ", ".join(str(c) for c in category) or "default"
+    if event_start and category == "default":
+        category = "all_day" if norm.get("isallday") else "event"
 
     # Comment / Description / Summary
     comment = _pick(norm, "comment", "summary", "description") or ""
@@ -457,7 +507,7 @@ def _flatten_nested_worklogs(items: List[Dict[str, Any]]) -> List[Dict[str, Any]
 def _reference_key_from_args(tool_args: Any) -> str:
     if not isinstance(tool_args, dict):
         return ""
-    for key in ("issue_key", "issueKey", "issue", "key", "ticket", "ticket_id", "case_id"):
+    for key in ("issue_key", "issueKey", "issue", "key", "ticket", "ticket_id", "case_id", "calendar"):
         val = tool_args.get(key)
         if isinstance(val, str) and val.strip():
             return val.strip()
@@ -469,6 +519,7 @@ _DATE_WINDOW_KEY_PAIRS = (
     ("datefrom", "dateto"),
     ("from", "to"),
     ("start", "end"),
+    ("starttimeiso", "endtimeiso"),  # m365_get_events / calendarView (AIS-339)
 )
 _ISO_DAY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
 
@@ -598,12 +649,17 @@ def try_auto_ingest_json(
             if window is not None:
                 # This fetch is authoritative for its requested window: drop
                 # the same tool's rows in that range first so stale entries
-                # (moved/deleted upstream) do not survive the re-fetch.
-                cursor = conn.execute(
-                    "DELETE FROM mcp_records WHERE tool_name = ? "
-                    "AND substr(timestamp, 1, 10) BETWEEN ? AND ?",
-                    (tool_name, window[0], window[1]),
-                )
+                # (moved/deleted upstream) do not survive the re-fetch. A
+                # request-scoped reference (issue key, calendar name) narrows
+                # the replacement to that reference — fetching the
+                # OFFICEZEITEN calendar must not wipe the main calendar's
+                # events in the same window (AIS-339).
+                delete_sql = "DELETE FROM mcp_records WHERE tool_name = ? AND substr(timestamp, 1, 10) BETWEEN ? AND ?"
+                delete_params: List[Any] = [tool_name, window[0], window[1]]
+                if fallback_ref:
+                    delete_sql += " AND lower(reference_key) = lower(?)"
+                    delete_params.append(fallback_ref)
+                cursor = conn.execute(delete_sql, delete_params)
                 replaced = cursor.rowcount or 0
             conn.executemany("""
             INSERT OR REPLACE INTO mcp_records (

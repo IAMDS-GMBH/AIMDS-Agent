@@ -90,7 +90,7 @@ class TestConfigure:
 
         monkeypatch.setattr(wt, "_facade", lambda: _Facade())
         out = _run(action="configure", region="bayern", weekly_hours=40, days_per_week=5, half_days=["12-24", "12-31"], notes="Firma: 24.12./31.12. halbe Tage")
-        assert out["memory"] == {"saved": True, "backend": "vault", "ref": "profile/arbeitszeit-profil.md", "error": None}
+        assert out["memory"] == {"saved": True, "backend": "vault", "ref": "profile/arbeitszeit-profil.md", "error": None, "mirror": "state.db"}
         assert saved["title"] == wt.PROFILE_TITLE and saved["type"] == "reference" and "worktime" in saved["tags"]  # not a second `profile` note
         assert "region: DE-BY" in saved["content"] and "half_days: 12-24, 12-31" in saved["content"]
         # the saved profile is used right away, no second lookup
@@ -101,11 +101,86 @@ class TestConfigure:
         out = _run(action="configure", weekly_hours=40)
         assert out.get("success") is False and "ask the user" in out["error"]
 
-    def test_no_memory_backend_keeps_the_profile_for_this_call_only(self, monkeypatch):
+    def test_no_memory_backend_keeps_the_profile_in_the_local_mirror(self, monkeypatch):
         monkeypatch.setattr(wt, "_facade", lambda: SimpleNamespace(mode="none"))
         out = _run(action="configure", region="AT-W")
-        assert out["memory"]["saved"] is False and out["memory"]["backend"] == "none"
+        # AIS-337: without a memory backend the profile still survives in state.db
+        assert out["memory"]["saved"] is True and out["memory"]["backend"] == "state.db"
+        assert out["memory"]["mirror"] == "state.db"
         assert _run(action="holidays", year=2026)["region"] == "AT-W"
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        prof = _run(action="profile")
+        assert prof["profile"]["region"] == "AT-W" and prof["source"] == "state.db mirror"
+
+    def test_mirror_write_failure_falls_back_to_call_only(self, monkeypatch):
+        monkeypatch.setattr(wt, "_facade", lambda: SimpleNamespace(mode="none"))
+        monkeypatch.setattr(wt, "_save_profile_mirror", lambda profile, db_path=None: False)
+        out = _run(action="configure", region="AT-W")
+        assert out["memory"]["saved"] is False and out["memory"]["backend"] == "none"
+
+
+class TestProfileRoundTrip:
+    """AIS-337 (session 20260915_082908): configure said `saved: true` since
+    2026-08-31, every later session got `worktime profile unknown`. The
+    memory MCP's search returns a truncated `snippet` (no `content`), and
+    `read(slug)` returns the whole memory object as a JSON string."""
+
+    class _Facade:
+        mode = "mcp"
+
+        def __init__(self, title="Arbeitszeit-Profil", slug="arbeitszeit-profil", read_json=True):
+            self.title, self.slug, self.read_json = title, slug, read_json
+            self.text = wt._profile_text({"region": "DE-BY", "weekly_hours": 40, "days_per_week": 5,
+                                          "worklog_source_tool": "mcp_TempoMCP_%"})
+            self.reads = []
+
+        def search(self, query, *, limit=5):
+            noise = {"title": "Hermes workdays tool: DACH holidays", "slug": "hermes-workdays-tool", "snippet": "Built 2026-08-29 …"}
+            hit = {"title": self.title, "slug": self.slug, "snippet": self.text[:40] + "…", "type": "reference"}
+            return [noise, hit]
+
+        def read(self, slug):
+            self.reads.append(slug)
+            if self.read_json:
+                return json.dumps({"slug": slug, "title": self.title, "content": self.text, "priority": 8})
+            return self.text
+
+    def _fresh(self, monkeypatch, facade):
+        monkeypatch.undo()
+        monkeypatch.setattr(wt, "_facade", lambda: facade)
+        monkeypatch.setattr(wt, "_profile_from_legacy_config", lambda: None)
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+
+    def test_snippet_hit_is_completed_by_reading_the_json_payload(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        facade = self._Facade()
+        self._fresh(monkeypatch, facade)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        profile = wt._profile_from_memory()
+        assert profile["region"] == "DE-BY" and profile["weekly_hours"] == 40.0
+        assert profile["worklog_source_tool"] == "mcp_TempoMCP_%" and profile["_source"] == "memory (mcp)"
+        assert facade.reads == ["arbeitszeit-profil"]
+
+    def test_updated_title_suffix_and_plain_text_read_still_match(self, monkeypatch, tmp_path):
+        facade = self._Facade(title="Arbeitszeit-Profil (updated)", slug="arbeitszeit-profil-updated", read_json=False)
+        self._fresh(monkeypatch, facade)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        assert wt._profile_from_memory()["region"] == "DE-BY"
+
+    def test_unrelated_hits_are_ignored(self, monkeypatch, tmp_path):
+        facade = self._Facade(title="Arbeitszeit-Notizen", slug="arbeitszeit-notizen")
+        self._fresh(monkeypatch, facade)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        assert wt._profile_from_memory() is None
+
+    def test_load_profile_prefers_memory_then_mirror_then_legacy(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        assert wt.load_profile(force=True) is None
+        assert wt._save_profile_mirror({"region": "CH-ZH", "weekly_hours": 42, "days_per_week": 5})
+        assert wt.load_profile(force=True)["_source"] == "state.db mirror"
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: {"region": "AT", "weekly_hours": 38.5, "days_per_week": 5, "_source": "memory (mcp)"})
+        assert wt.load_profile(force=True)["region"] == "AT"
 
 
 class TestActions:
@@ -320,8 +395,10 @@ class TestReport:
         json.loads(wt.execute_workdays({"action": "absences", "op": "import_from_bookings"}, db_path=db))
         out = json.loads(wt.execute_workdays(
             {"action": "report", "start": "2026-01-01", "end": "2026-01-31"}, db_path=db))
-        assert out["totals"] == {"target_gross": 160.0, "vacation_credit": 8.0, "target_net": 152.0,
-                                 "actual": 12.0, "delta": -140.0}
+        assert {k: out["totals"][k] for k in ("target_gross", "vacation_credit", "target_net", "actual", "delta")} == {
+            "target_gross": 160.0, "vacation_credit": 8.0, "target_net": 152.0, "actual": 12.0, "delta": -140.0}
+        # 2026-01-06 is Heilige Drei Könige in BY: booked, but no target → not a home-office day
+        assert out["totals"]["homeoffice_days"] == 1 and out["totals"]["office_days"] == 0 and out["totals"]["absence_days"] == 1
         assert out["months"][0]["month"] == "2026-01"
         assert out["coverage"]["worklog_sources"][0]["rows"] == 3
         assert "clamped_to_today" not in out
@@ -502,3 +579,192 @@ class TestPartialHolidays:
         assert out["profile"]["work_weekdays"] == ["mo", "tu", "we"]
         assert out["profile"]["worklog_source_tool"] == "my_tool_%"
         assert out["profile"]["partial_holidays"] == ["Augsburger Friedensfest"]
+
+
+class TestPeriods:
+    def test_relative_periods_resolve_from_today(self, monkeypatch):
+        from datetime import date as _date
+        monkeypatch.setattr(wt, "_today", lambda: _date(2026, 9, 15))  # Tuesday, KW38
+        pr = wt._period_range
+        assert pr("through_last_week", _date(2026, 9, 15)) == (_date(2026, 1, 1), _date(2026, 9, 13))
+        assert pr("last_week", _date(2026, 9, 15)) == (_date(2026, 9, 7), _date(2026, 9, 13))
+        assert pr("this_week", _date(2026, 9, 15)) == (_date(2026, 9, 14), _date(2026, 9, 20))
+        assert pr("mtd", _date(2026, 9, 15)) == (_date(2026, 9, 1), _date(2026, 9, 15))
+        assert pr("last_month", _date(2026, 9, 15)) == (_date(2026, 8, 1), _date(2026, 8, 31))
+        assert pr("this_month", _date(2026, 9, 15)) == (_date(2026, 9, 1), _date(2026, 9, 30))
+        assert pr("ytd", _date(2026, 9, 15), _date(2026, 3, 1)) == (_date(2026, 3, 1), _date(2026, 9, 15))
+        with pytest.raises(ValueError):
+            pr("gestern", _date(2026, 9, 15))
+        out = _run(action="target_hours", period="last_week", **BY)
+        assert out["range"] == {"start": "2026-09-07", "end": "2026-09-13", "inclusive": True}
+
+
+class TestReportDays:
+    def _seed(self, db, monkeypatch, today=None):
+        from datetime import date as _date
+        profile = dict(BY, worklog_source_tool="mcp_MyTimeMCP_%", vacation_booking_patterns="VAC-1",
+                       vacation_hour_factor=8.0, _source="memory (mcp)")
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: profile)
+        monkeypatch.setattr(wt, "_today", lambda: today or _date(2026, 9, 15))
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        _seed_mcp(db, [
+            # Tue 2026-09-01: 08:00 + 4h, 12:30 + 4.75h → 08:00 … 17:15, 8.75 h
+            ("w1", "mcp_MyTimeMCP_getWorklogs", "u", "EXT-95", "2026-09-01T08:00:00", "", 4 * 3600, "", "", "{}"),
+            ("w2", "mcp_MyTimeMCP_getWorklogs", "u", "EXT-95", "2026-09-01T12:30:00", "", int(4.75 * 3600), "", "", "{}"),
+            # Wed 2026-09-02: short day
+            ("w3", "mcp_MyTimeMCP_getWorklogs", "u", "AIS-1", "2026-09-02T09:00:00", "", 4 * 3600, "", "", "{}"),
+            # Sat 2026-09-12: booked on a weekend
+            ("w4", "mcp_MyTimeMCP_getWorklogs", "u", "AIS-1", "2026-09-12T10:00:00", "", 3600, "", "", "{}"),
+            # vacation booking Thu 2026-09-03 (1h = 8h)
+            ("vc", "mcp_MyTimeMCP_getWorklogs", "u", "VAC-1", "2026-09-03T08:00:00", "", 3600, "", "", "{}"),
+        ])
+
+    def test_day_rows_carry_start_end_hours_status_and_presence(self, tmp_path, monkeypatch):
+        db = tmp_path / "s.db"
+        self._seed(db, monkeypatch)
+        json.loads(wt.execute_workdays({"action": "absences", "op": "import_from_bookings"}, db_path=db))
+        json.loads(wt.execute_workdays({"action": "presence", "op": "add", "days": ["2026-09-01"], "source": "user"}, db_path=db))
+        out = json.loads(wt.execute_workdays(
+            {"action": "report", "start": "2026-09-01", "end": "2026-09-13", "include_days": True}, db_path=db))
+        by_day = {d["day"]: d for d in out["days"]}
+        assert len(out["days"]) == 13
+        d1 = by_day["2026-09-01"]
+        assert (d1["weekday"], d1["first_start"], d1["last_end"], d1["actual"]) == ("Tu", "08:00", "17:15", 8.75)
+        assert d1["status"] == "over" and d1["presence"] == "office" and d1["references"] == "EXT-95"
+        d2 = by_day["2026-09-02"]
+        assert d2["status"] == "short" and d2["presence"] == "homeoffice" and d2["last_end"] == "13:00"
+        d3 = by_day["2026-09-03"]
+        assert d3["status"] == "absent" and d3["presence"] == "vacation" and d3["absence"]["portion"] == 1.0
+        d4 = by_day["2026-09-04"]
+        assert d4["status"] == "no_booking" and d4["presence"] == "none"
+        sat = by_day["2026-09-12"]
+        assert sat["weekend"] is True and sat["status"] == "off_booked" and sat["weekday"] == "Sa"
+        assert by_day["2026-09-13"]["status"] == "off"
+        m = out["months"][0]
+        assert (m["office_days"], m["homeoffice_days"], m["absence_days"], m["travel_days"]) == (1, 1, 1, 0)
+        assert out["totals"]["office_days"] == 1 and out["totals"]["homeoffice_days"] == 1
+        assert "days" not in json.loads(wt.execute_workdays(
+            {"action": "report", "start": "2026-09-01", "end": "2026-09-13"}, db_path=db))
+
+    def test_period_report_resolves_the_range_and_names_it(self, tmp_path, monkeypatch):
+        db = tmp_path / "s.db"
+        self._seed(db, monkeypatch)
+        out = json.loads(wt.execute_workdays({"action": "report", "period": "through_last_week"}, db_path=db))
+        assert out["range"] == {"start": "2026-01-01", "end": "2026-09-13", "inclusive": True, "resolved_from": "through_last_week"}
+        assert out["requested_range"]["period"] == "through_last_week"
+
+    def test_write_vault_overwrites_one_canonical_file(self, tmp_path, monkeypatch):
+        db = tmp_path / "s.db"
+        self._seed(db, monkeypatch)
+        vault = tmp_path / "vault"
+        (vault / "reports").mkdir(parents=True)
+        monkeypatch.setattr("agent.memory_facade.workspace_root", lambda: vault)
+        monkeypatch.setenv("HERMES_LANGUAGE", "de")
+        json.loads(wt.execute_workdays({"action": "absences", "op": "import_from_bookings"}, db_path=db))
+        out = json.loads(wt.execute_workdays(
+            {"action": "report", "period": "mtd", "include_days": True, "write": "vault"}, db_path=db))
+        rf = out["report_file"]
+        assert rf["written"] is True and rf["overwritten"] is False and rf["language"] == "de"
+        path = Path(rf["path"])
+        assert path == vault / "reports" / "worklog" / "arbeitszeit-mtd.md"
+        text = path.read_text(encoding="utf-8")
+        assert text.startswith("---\ntype: report\n") and "created: 2026-09-15" in text and "updated: 2026-09-15" in text
+        assert "## Ergebnis" in text and "## Tage" in text and "| 2026-09-01 | Di | 08:00 | 17:15 | 8.75 |" in text
+        assert "workdays(action='report', period='mtd', include_days=True, write='vault')" in text
+        assert "-final" not in path.name and "-korrigiert" not in path.name
+        # rerun: same file, created kept, updated bumped
+        path.write_text(text.replace("created: 2026-09-15", "created: 2026-09-01"), encoding="utf-8")
+        monkeypatch.setattr(wt, "_today", lambda: __import__("datetime").date(2026, 9, 16))
+        out2 = json.loads(wt.execute_workdays(
+            {"action": "report", "period": "mtd", "include_days": True, "write": "vault"}, db_path=db))
+        assert Path(out2["report_file"]["path"]) == path and out2["report_file"]["overwritten"] is True
+        text2 = path.read_text(encoding="utf-8")
+        assert "created: 2026-09-01" in text2 and "updated: 2026-09-16" in text2
+        assert sorted(p.name for p in (vault / "reports" / "worklog").iterdir()) == ["arbeitszeit-mtd.md"]
+
+    def test_write_without_vault_reports_the_gap(self, tmp_path, monkeypatch):
+        db = tmp_path / "s.db"
+        self._seed(db, monkeypatch)
+        monkeypatch.setattr("agent.memory_facade.workspace_root", lambda: None)
+        out = json.loads(wt.execute_workdays({"action": "report", "period": "mtd", "write": "vault"}, db_path=db))
+        assert out["report_file"]["written"] is False and "no vault" in out["report_file"]["error"]
+        assert json.loads(wt.execute_workdays({"action": "report", "period": "mtd", "write": "pdf"}, db_path=db))["success"] is False
+
+    def test_report_period_label(self):
+        from datetime import date as _date
+        assert wt._report_period_label("through_last_week", _date(2026, 1, 1), _date(2026, 9, 13)) == "through-last-week"
+        assert wt._report_period_label(None, _date(2026, 1, 1), _date(2026, 12, 31)) == "2026"
+        assert wt._report_period_label(None, _date(2026, 9, 1), _date(2026, 9, 30)) == "2026-09"
+        assert wt._report_period_label(None, _date(2026, 8, 1), _date(2026, 9, 14)) == "2026-08-01_2026-09-14"
+
+
+class TestPresence:
+    def _seed_events(self, db, monkeypatch):
+        profile = dict(BY, worklog_source_tool="mcp_MyTimeMCP_%", _source="memory (mcp)")
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: profile)
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        _seed_mcp(db, [
+            ("e1", "mcp_MSOffice365MCP_m365_get_events", "c", "OFFICEZEITEN", "2026-09-01T08:00:00", "Johannes Huchler",
+             9 * 3600, "event", "Johannes Huchler Büro", '{"subject": "Johannes Huchler", "calendar_name": "OFFICEZEITEN"}'),
+            ("e2", "mcp_MSOffice365MCP_m365_get_events", "c", "OFFICEZEITEN", "2026-09-02T08:00:00", "Max Muster",
+             9 * 3600, "event", "Max", '{"subject": "Max Muster", "calendar_name": "OFFICEZEITEN"}'),
+            ("e3", "mcp_MSOffice365MCP_m365_get_events", "c", "Kalender", "2026-09-03T08:00:00", "Johannes Huchler",
+             3600, "event", "Daily", '{"subject": "IAMDS Daily", "organizer": {"emailAddress": {"name": "Johannes Huchler"}}}'),
+            ("w1", "mcp_MyTimeMCP_getWorklogs", "u", "AIS-1", "2026-09-02T09:00:00", "", 8 * 3600, "", "", "{}"),
+        ])
+
+    def test_import_from_calendar_marks_only_matching_days_of_that_calendar(self, tmp_path, monkeypatch):
+        db = tmp_path / "s.db"
+        self._seed_events(db, monkeypatch)
+        out = json.loads(wt.execute_workdays({
+            "action": "presence", "op": "import_from_calendar", "calendar": "officezeiten",
+            "match": "Johannes Huchler, Johannes", "start": "2026-09-01", "end": "2026-09-30"}, db_path=db))
+        assert out["upserted"] == 1 and out["coverage"]["events"] == 2 and out["coverage"]["first_day"] == "2026-09-01"
+        assert out["calendar"] == "OFFICEZEITEN"  # canonical casing from the ingested rows
+        assert out["summary"] == [{"month": "2026-09", "kind": "office", "days": 1, "sources": "calendar:OFFICEZEITEN"}]
+        rep = json.loads(wt.execute_workdays(
+            {"action": "report", "start": "2026-09-01", "end": "2026-09-04", "include_days": True}, db_path=db))
+        by_day = {d["day"]: d for d in rep["days"]}
+        assert by_day["2026-09-01"]["presence"] == "office" and by_day["2026-09-02"]["presence"] == "homeoffice"
+        assert rep["totals"]["office_days"] == 1 and rep["totals"]["homeoffice_days"] == 1
+        assert rep["coverage"]["presence_sources"][0]["source"] == "calendar:OFFICEZEITEN"
+        # reimport replaces the calendar-derived rows, never user-added ones
+        json.loads(wt.execute_workdays({"action": "presence", "op": "add", "days": ["2026-09-04"], "kind": "travel"}, db_path=db))
+        again = json.loads(wt.execute_workdays({
+            "action": "presence", "op": "import_from_calendar", "calendar": "OFFICEZEITEN",
+            "match": "Johannes", "start": "2026-09-01", "end": "2026-09-30"}, db_path=db))
+        assert again["deleted"] == 1 and again["upserted"] == 1
+        assert {(r["kind"], r["days"]) for r in again["summary"]} == {("office", 1), ("travel", 1)}
+
+    def test_import_without_events_or_config_explains_what_to_do(self, tmp_path, monkeypatch):
+        db = tmp_path / "s.db"
+        self._seed_events(db, monkeypatch)
+        out = json.loads(wt.execute_workdays({"action": "presence", "op": "import_from_calendar"}, db_path=db))
+        assert out["missing"] == ["calendar", "match"] and "configure" in out["ask"]
+        out = json.loads(wt.execute_workdays({
+            "action": "presence", "op": "import_from_calendar", "calendar": "URLAUB", "match": "Johannes"}, db_path=db))
+        assert out["upserted"] == 0 and "m365_get_events(calendar='URLAUB'" in out["hints"][0]
+        out = json.loads(wt.execute_workdays({
+            "action": "presence", "op": "import_from_calendar", "calendar": "OFFICEZEITEN", "match": "Nobody"}, db_path=db))
+        assert out["upserted"] == 0 and "none match" in out["hints"][0]
+
+    def test_presence_profile_keys_roundtrip_and_default_the_import(self, tmp_path, monkeypatch):
+        db = tmp_path / "s.db"
+        self._seed_events(db, monkeypatch)
+        text = wt._profile_text({"region": "DE-BY", "weekly_hours": 40, "days_per_week": 5,
+                                 "presence_calendar": "OFFICEZEITEN", "presence_match_patterns": "Johannes Huchler, Johannes"})
+        parsed = wt._parse_profile_text(text)
+        assert parsed["presence_calendar"] == "OFFICEZEITEN" and parsed["presence_match_patterns"] == "Johannes Huchler, Johannes"
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: dict(parsed, worklog_source_tool="mcp_MyTimeMCP_%", _source="memory (mcp)"))
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        out = json.loads(wt.execute_workdays({"action": "presence", "op": "import_from_calendar"}, db_path=db))
+        assert out["calendar"] == "OFFICEZEITEN" and out["upserted"] == 1
+
+    def test_remove_refuses_to_wipe_and_add_validates_kind(self, tmp_path):
+        db = tmp_path / "s.db"
+        assert json.loads(wt.execute_workdays({"action": "presence", "op": "remove"}, db_path=db))["success"] is False
+        assert json.loads(wt.execute_workdays({"action": "presence", "op": "add", "days": ["2026-09-01"], "kind": "beach"}, db_path=db))["success"] is False
+        out = json.loads(wt.execute_workdays({"action": "presence", "op": "add", "days": [{"from": "2026-09-01", "to": "2026-09-03"}]}, db_path=db))
+        assert out["upserted"] == 3
+        out = json.loads(wt.execute_workdays({"action": "presence", "op": "remove", "days": ["2026-09-02"]}, db_path=db))
+        assert out["deleted"] == 1 and out["summary"][0]["days"] == 2
