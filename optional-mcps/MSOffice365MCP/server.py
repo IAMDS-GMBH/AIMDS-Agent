@@ -37,10 +37,14 @@ GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 #   ORG_CONSENT_SCOPES   tier 1 — "Admin consent required": a tenant admin grants
 #                        them once org-wide (m365_generate_admin_consent_url);
 #                        afterwards acquire_token_silent hands them to every user.
+#   GROUP_SCOPES         tier 1b — Microsoft 365 group calendars/membership
+#                        (Group.Read.All); its own consent step so tenants
+#                        consented before it keep their standard tier.
 #   ADMIN_SCOPES         tier 2 — directory-wide / org-wide write, admins only.
 try:
     from hermes_cli.m365_auth import (
         M365_ADMIN_SCOPES as ADMIN_SCOPES,
+        M365_GROUP_SCOPES as GROUP_SCOPES,
         M365_ORG_CONSENT_SCOPES as ORG_CONSENT_SCOPES,
         M365_SELF_CONSENT_SCOPES as SELF_CONSENT_SCOPES,
     )
@@ -67,6 +71,9 @@ except ImportError:
         "Directory.Read.All",
         "Sites.ReadWrite.All",
     ]
+    GROUP_SCOPES = [
+        "Group.Read.All",
+    ]
 
 # BASE_SCOPES keeps its historical meaning "everything a regular user needs"
 # (tiers 0+1); ALL_SCOPES adds the admin tier. LOGIN_SCOPES is what a fresh
@@ -74,15 +81,16 @@ except ImportError:
 # "Need admin approval" wall. Tier 1 arrives silently after org consent.
 BASE_SCOPES = SELF_CONSENT_SCOPES + ORG_CONSENT_SCOPES
 STANDARD_SCOPES = BASE_SCOPES
-ALL_SCOPES = BASE_SCOPES + ADMIN_SCOPES
+GROUPS_SCOPES = STANDARD_SCOPES + GROUP_SCOPES
+ALL_SCOPES = GROUPS_SCOPES + ADMIN_SCOPES
 LOGIN_SCOPES = SELF_CONSENT_SCOPES
 
 # Backwards-compatible alias: callers importing SCOPES directly get the full
 # superset (the admin-consent URL grants everything at once).
 SCOPES = ALL_SCOPES
 
-SCOPE_TIERS = {"self": SELF_CONSENT_SCOPES, "standard": STANDARD_SCOPES, "admin": ALL_SCOPES}
-SCOPE_TIER_ORDER = ("admin", "standard", "self")
+SCOPE_TIERS = {"self": SELF_CONSENT_SCOPES, "standard": STANDARD_SCOPES, "groups": GROUPS_SCOPES, "admin": ALL_SCOPES}
+SCOPE_TIER_ORDER = ("admin", "groups", "standard", "self")
 _GRANTED_TIER_TTL_SECONDS = 600.0
 # home_account_id -> (tier, monotonic timestamp). Without this cache every
 # Graph call would pay two failing network redemptions before the working tier.
@@ -359,7 +367,7 @@ except ImportError:
         ep = endpoint or ""
         if ep.startswith("/users/") and ep.count("/") >= 3:
             return "standard"
-        for marker, tier in (("/users", "admin"), ("/sites", "admin"), ("/chats", "standard"), ("/presence", "standard"), ("/onlineMeetings", "standard"), ("/todo", "standard"), ("/communications", "standard")):
+        for marker, tier in (("/users", "admin"), ("/sites", "admin"), ("/chats", "standard"), ("/presence", "standard"), ("/onlineMeetings", "standard"), ("/todo", "standard"), ("/communications", "standard"), ("/groups", "groups")):
             if marker in ep:
                 return tier
         return "self"
@@ -436,9 +444,11 @@ def _acquire_silent_by_tier(app: msal.PublicClientApplication, acc: Dict[str, An
     """Silently acquire a token for ``acc``, widest consent tier first.
 
     Order: the tier that worked last time for this account (cached for
-    ``_GRANTED_TIER_TTL_SECONDS``), then admin → standard → self. Once a tenant
-    admin has consented org-wide, ``admin``/``standard`` succeed for every user
-    without any prompt; before that, ``self`` keeps mail/calendar/files working.
+    ``_GRANTED_TIER_TTL_SECONDS``), then admin → groups → standard → self. Once
+    a tenant admin has consented org-wide, the wider tiers succeed for every
+    user without any prompt; before that, ``self`` keeps mail/calendar/files
+    working. ``groups`` sits between admin and standard so a tenant that
+    consented before Group.Read.All existed keeps its standard tier (AIS-340).
     """
     key = str(acc.get("home_account_id") or acc.get("username") or "")
     now = time.monotonic()
@@ -547,6 +557,13 @@ def _consent_hint_for(endpoint: str) -> str:
             " (needs the admin tier: directory-wide read / SharePoint. Only a tenant "
             "administrator can sign in with scope_tier='admin' via m365_initiate_login, "
             "or grant it org-wide once: " + _build_admin_consent_url() + ")"
+        )
+    if tier == "groups":
+        return (
+            " (Microsoft 365 group calendars and membership need Group.Read.All — org-wide admin consent. "
+            "Ask a tenant administrator to open this URL once (also re-consents tenants that approved the app "
+            "before this permission existed); afterwards every user gets it silently, no re-login needed: "
+            + _build_admin_consent_url() + ")"
         )
     if tier == "standard":
         return (
@@ -980,13 +997,14 @@ def m365_initiate_login(request_admin_scopes: bool = False, scope_tier: Optional
             admins, because org-level permissions arrive silently after a one-time
             tenant admin consent (m365_generate_admin_consent_url). "standard" adds
             Teams chat / presence / online meetings / shared mailboxes / To Do and
-            shows "Need admin approval" to non-admins. "admin" adds directory-wide
-            user search and SharePoint; only tenant administrators can complete it.
+            shows "Need admin approval" to non-admins. "groups" adds Microsoft 365
+            group calendars (Group.Read.All). "admin" adds directory-wide user
+            search and SharePoint; only tenant administrators can complete it.
         request_admin_scopes: Legacy alias for scope_tier="admin".
     """
     tier = (scope_tier or "").strip().lower() or ("admin" if request_admin_scopes else "self")
     if tier not in SCOPE_TIERS:
-        return {"error": f"Unknown scope_tier '{scope_tier}'. Use one of: self, standard, admin."}
+        return {"error": f"Unknown scope_tier '{scope_tier}'. Use one of: self, standard, groups, admin."}
     app = _get_msal_app()
     scopes = SCOPE_TIERS[tier]
     flow = app.initiate_device_flow(scopes=scopes)
@@ -1410,29 +1428,104 @@ def _shared_calendars_path() -> Path:
     return _get_token_cache_path().parent / _SHARED_CALENDARS_FILE
 
 
-def _load_shared_mailboxes() -> List[str]:
+def _load_registry() -> Dict[str, Any]:
     path = _shared_calendars_path()
     try:
         if not path.is_file():
-            return []
+            return {"shared_mailboxes": [], "groups": []}
         data = json.loads(path.read_text(encoding="utf-8") or "{}")
     except Exception:
-        return []
-    items = data.get("shared_mailboxes") if isinstance(data, dict) else data
-    if not isinstance(items, list):
-        return []
-    out: List[str] = []
-    for item in items:
+        return {"shared_mailboxes": [], "groups": []}
+    if isinstance(data, list):  # legacy: a plain list of addresses
+        data = {"shared_mailboxes": data}
+    if not isinstance(data, dict):
+        return {"shared_mailboxes": [], "groups": []}
+    mailboxes: List[str] = []
+    for item in data.get("shared_mailboxes") or []:
         addr = str(item.get("mailbox") if isinstance(item, dict) else item or "").strip().lower()
-        if addr and "@" in addr and addr not in out:
-            out.append(addr)
-    return out
+        if addr and "@" in addr and addr not in mailboxes:
+            mailboxes.append(addr)
+    groups: List[Dict[str, str]] = []
+    seen = set()
+    for item in data.get("groups") or []:
+        if not isinstance(item, dict) or not item.get("id") or item["id"] in seen:
+            continue
+        seen.add(item["id"])
+        groups.append({"id": str(item["id"]), "name": str(item.get("name") or ""), "mail": str(item.get("mail") or "").lower()})
+    return {"shared_mailboxes": mailboxes, "groups": groups}
+
+
+def _save_registry(registry: Dict[str, Any]) -> None:
+    path = _shared_calendars_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "shared_mailboxes": sorted(set(registry.get("shared_mailboxes") or [])),
+        "groups": registry.get("groups") or [],
+    }, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _load_shared_mailboxes() -> List[str]:
+    return _load_registry()["shared_mailboxes"]
 
 
 def _save_shared_mailboxes(addresses: List[str]) -> None:
-    path = _shared_calendars_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"shared_mailboxes": sorted(set(addresses))}, indent=2), encoding="utf-8")
+    registry = _load_registry()
+    registry["shared_mailboxes"] = list(addresses)
+    _save_registry(registry)
+
+
+def _register_group(group: Dict[str, Any]) -> None:
+    registry = _load_registry()
+    if any(g["id"] == str(group.get("id")) for g in registry["groups"]):
+        return
+    registry["groups"].append({"id": str(group.get("id")), "name": str(group.get("name") or group.get("displayName") or ""),
+                               "mail": str(group.get("mail") or "").lower()})
+    try:
+        _save_registry(registry)
+    except OSError:
+        pass
+
+
+def _is_group_uri_error(err: Exception) -> bool:
+    """Graph answers ``/users/{mail}/…`` for a Microsoft 365 group mailbox with
+    403 ``ErrorGroupIsUsedInNonGroupURI`` — the address belongs to a group,
+    so the calendar lives under ``/groups/{id}``."""
+    return "ErrorGroupIsUsedInNonGroupURI" in str(err)
+
+
+def _group_entry(group: Dict[str, Any], cal: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    group_id = str(group.get("id") or "")
+    group_name = str(group.get("displayName") or group.get("name") or "")
+    cal = cal if isinstance(cal, dict) else {}
+    c_name = str(cal.get("name") or "") or group_name
+    if c_name.lower() == "calendar" or not c_name:
+        c_name = group_name
+    return {
+        "id": cal.get("id") or f"group:{group_id}",
+        "name": c_name,
+        "group_id": group_id,
+        "group_name": group_name,
+        "mailbox": str(group.get("mail") or "").lower() or None,
+        "source_type": "group",
+        "canEdit": True,
+        "isDefaultCalendar": False,
+        "owner": {"name": group_name, "address": group.get("mail")},
+    }
+
+
+def _find_group(mail: Optional[str] = None, name: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Microsoft 365 groups by mail address or display-name prefix (Group.Read.All)."""
+    filters = []
+    if mail:
+        m = str(mail).replace("'", "''")
+        filters.append(f"mail eq '{m}'")
+    if name:
+        n = str(name).replace("'", "''")
+        filters.append(f"startswith(displayName,'{n}') or startswith(mail,'{n}')")
+    if not filters:
+        return []
+    res = _graph_request("GET", "/groups", params={"$select": "id,displayName,mail,groupTypes", "$filter": " or ".join(f"({f})" for f in filters), "$top": 10})
+    return [g for g in (res.get("value", []) if isinstance(res, dict) else []) if isinstance(g, dict) and g.get("id")]
 
 
 def _short_error(err: Exception) -> str:
@@ -1497,47 +1590,51 @@ def _collect_calendars(top: int = 50, search: Optional[str] = None) -> Dict[str,
     except Exception as err:
         sources.append({"source": "calendar_groups", "status": "error", "count": 0, "error": _short_error(err)})
 
-    # 3. M365 group / team calendars (/me/joinedTeams → /groups/{id}/calendar)
+    # 3. Microsoft 365 group calendars: Teams (/me/joinedTeams), Outlook
+    #    groups (/me/memberOf, groupTypes Unified — OWA lists them under
+    #    "Groups") and groups remembered by an earlier lookup. Reading
+    #    /groups/{id}/calendar needs Group.Read.All (org-consent tier).
+    groups: Dict[str, Dict[str, Any]] = {}
+    group_errors: List[str] = []
     try:
         teams_res = _graph_request("GET", "/me/joinedTeams")
-        teams = teams_res.get("value", []) if isinstance(teams_res, dict) else []
-        n, failed, first_err = 0, 0, None
-        for t in teams:
-            group_id, group_name = t.get("id"), t.get("displayName")
-            if not group_id:
-                continue
-            try:
-                grp_cal = _graph_request("GET", f"/groups/{group_id}/calendar", params={"$select": "id,name,color,owner"})
-                cid = grp_cal.get("id") if isinstance(grp_cal, dict) else None
-                c_name = (grp_cal.get("name") if isinstance(grp_cal, dict) else None) or group_name
-                if str(c_name).lower() == "calendar":
-                    c_name = group_name
-                entry = {
-                    "id": cid or f"group:{group_id}",
-                    "name": c_name,
-                    "group_id": group_id,
-                    "group_name": group_name,
-                    "source_type": "group",
-                    "canEdit": True,
-                    "isDefaultCalendar": False,
-                    "owner": {"name": group_name, "address": t.get("mail")},
-                }
-                n += _add(entry, f"group:{group_id}", cid or "")
-            except Exception as err:
-                failed += 1
-                first_err = first_err or _short_error(err)
-        row = {"source": "groups", "status": "ok" if not failed else ("partial" if n else "error"),
-               "count": n, "teams": len(teams)}
-        if failed:
-            row["failed"] = failed
-            row["error"] = first_err
-            row["hint"] = (
-                "group calendars need Group.Read.All (org-wide admin consent); until granted, "
-                "team calendars are not listed"
-            )
-        sources.append(row)
+        for t in teams_res.get("value", []) if isinstance(teams_res, dict) else []:
+            if t.get("id"):
+                groups[str(t["id"])] = {"id": t["id"], "displayName": t.get("displayName"), "mail": t.get("mail"), "via": "teams"}
     except Exception as err:
-        sources.append({"source": "groups", "status": "error", "count": 0, "error": _short_error(err)})
+        group_errors.append(f"joinedTeams: {_short_error(err)}")
+    try:
+        member_res = _graph_request("GET", "/me/memberOf/microsoft.graph.group", params={"$select": "id,displayName,mail,groupTypes", "$top": 999})
+        for g in member_res.get("value", []) if isinstance(member_res, dict) else []:
+            if g.get("id") and "Unified" in (g.get("groupTypes") or []) and str(g["id"]) not in groups:
+                groups[str(g["id"])] = {"id": g["id"], "displayName": g.get("displayName"), "mail": g.get("mail"), "via": "memberOf"}
+    except Exception as err:
+        group_errors.append(f"memberOf: {_short_error(err)}")
+    for g in _load_registry()["groups"]:
+        groups.setdefault(g["id"], {"id": g["id"], "displayName": g.get("name"), "mail": g.get("mail"), "via": "registry"})
+    n, failed, first_err = 0, 0, None
+    for group_id, g in groups.items():
+        try:
+            grp_cal = _graph_request("GET", f"/groups/{group_id}/calendar", params={"$select": "id,name,color,owner"})
+            entry = _group_entry(g, grp_cal if isinstance(grp_cal, dict) else None)
+            n += _add(entry, f"group:{group_id}", str(entry.get("id") or ""))
+        except Exception as err:
+            failed += 1
+            first_err = first_err or _short_error(err)
+    row = {"source": "groups", "status": "ok" if not (failed or group_errors) else ("partial" if n else "error"),
+           "count": n, "groups": len(groups)}
+    if group_errors:
+        row["listing_errors"] = group_errors
+    if failed:
+        row["failed"] = failed
+        row["error"] = first_err
+    if failed or group_errors:
+        row["hint"] = (
+            "Microsoft 365 group calendars (Teams and Outlook groups) need Group.Read.All — a one-time org-wide "
+            "admin consent (m365_generate_admin_consent_url; tenants that approved the app earlier re-consent once). "
+            "Until granted, group calendars are not listed; everything else keeps working"
+        )
+    sources.append(row)
 
     # 4. Registered shared mailboxes (/users/{mail}/calendar — Calendars.Read.Shared)
     mailboxes = _load_shared_mailboxes()
@@ -1660,37 +1757,44 @@ def m365_list_calendars(
     return result
 
 
-def _probe_mailbox_calendar(mail: str) -> Optional[Dict[str, Any]]:
-    """The calendar entry of a mailbox the user can read, or None."""
-    try:
-        cal = _graph_request("GET", f"/users/{mail}/calendar", params={"$select": "id,name,color,canEdit,owner"})
-    except Exception:
-        return None
-    cal = cal if isinstance(cal, dict) else {}
-    if not cal.get("id"):
-        return None
-    owner_raw = cal.get("owner")
-    owner: Dict[str, Any] = owner_raw if isinstance(owner_raw, dict) else {}
-    return {
-        "id": cal.get("id"),
-        "name": owner.get("name") or cal.get("name") or mail,
-        "mailbox": mail,
-        "source_type": "shared_mailbox",
-        "canEdit": bool(cal.get("canEdit", False)),
-        "isDefaultCalendar": False,
-        "owner": owner or {"name": mail, "address": mail},
-    }
-
-
 def _discover_mailbox_calendar(target: str) -> Tuple[Optional[Dict[str, Any]], List[str]]:
-    """A calendar name that is not in any listing may be a shared mailbox.
+    """A calendar name that is not in any listing may be a Microsoft 365
+    group (OWA: "Groups") or a shared mailbox.
 
-    Try, in order: the directory (display name / mail prefix — needs the
-    admin tier), then ``<name>@<the user's own domain>``. A hit is registered
-    so the next call resolves from the listing; the caller can also pass the
-    address itself. Returns (entry or None, what was tried)."""
+    Try, in order: groups by name or mail (Group.Read.All), the user
+    directory (admin tier), then ``<name>@<the user's own domain>`` — first
+    as a mailbox, and when Graph says the address is a group, as a group.
+    A hit is remembered so the next call resolves from the listing.
+    Returns (entry or None, what was tried)."""
     tried: List[str] = []
     candidates: List[str] = []
+    local_part = "".join(ch for ch in target.lower() if ch.isalnum() or ch in "._-")
+    domain = ""
+    try:
+        upn = _my_identity().get("upn", "")
+        domain = upn.split("@", 1)[1] if "@" in upn else ""
+    except Exception:
+        domain = ""
+    guess = f"{local_part}@{domain}" if local_part and domain else ""
+
+    # 1. Microsoft 365 groups by name / mail
+    try:
+        found = _find_group(mail=guess or None, name=target)
+        tried.append(f"groups '{target}': {len(found)} match(es)")
+        for g in found:
+            try:
+                cal = _graph_request("GET", f"/groups/{g['id']}/calendar", params={"$select": "id,name,color,owner"})
+            except Exception as err:
+                tried.append(f"group {g.get('displayName')}: {_short_error(err)[:120]}")
+                continue
+            _register_group(g)
+            entry = _group_entry(g, cal if isinstance(cal, dict) else None)
+            entry["discovered"] = True
+            return entry, tried
+    except Exception as err:
+        tried.append(f"groups '{target}': {_short_error(err)[:120]}")
+
+    # 2. Directory (shared mailboxes are user objects)
     q = target.replace("'", "''")
     try:
         res = _graph_request(
@@ -1702,34 +1806,63 @@ def _discover_mailbox_calendar(target: str) -> Tuple[Optional[Dict[str, Any]], L
             mail = str(u.get("mail") or u.get("userPrincipalName") or "").strip().lower()
             if mail and mail not in candidates:
                 candidates.append(mail)
-        tried.append(f"directory search '{target}': {len(candidates)} match(es)")
+        tried.append(f"directory '{target}': {len(candidates)} match(es)")
     except Exception as err:
-        tried.append(f"directory search '{target}': {_short_error(err)[:120]}")
-    local_part = "".join(ch for ch in target.lower() if ch.isalnum() or ch in "._-")
-    if local_part:
-        try:
-            upn = _my_identity().get("upn", "")
-            domain = upn.split("@", 1)[1] if "@" in upn else ""
-        except Exception:
-            domain = ""
-        if domain:
-            guess = f"{local_part}@{domain}"
-            if guess not in candidates:
-                candidates.append(guess)
+        tried.append(f"directory '{target}': {_short_error(err)[:120]}")
+
+    # 3. <name>@<own domain>
+    if guess and guess not in candidates:
+        candidates.append(guess)
     for mail in candidates:
-        entry = _probe_mailbox_calendar(mail)
-        tried.append(f"{mail}/calendar: {'ok' if entry else 'not readable'}")
+        entry, note = _probe_address(mail)
+        tried.append(f"{mail}: {note}")
         if entry:
-            registry = _load_shared_mailboxes()
-            if mail not in registry:
-                registry.append(mail)
-                try:
-                    _save_shared_mailboxes(registry)
-                except OSError:
-                    pass
             entry["discovered"] = True
             return entry, tried
     return None, tried
+
+
+def _probe_address(mail: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Calendar entry for an address — a shared mailbox, or the group Graph
+    says it belongs to. Registers what it finds."""
+    try:
+        cal = _graph_request("GET", f"/users/{mail}/calendar", params={"$select": "id,name,color,canEdit,owner"})
+    except Exception as err:
+        if not _is_group_uri_error(err):
+            return None, f"not readable ({_short_error(err)[:80]})"
+        try:
+            found = _find_group(mail=mail)
+        except Exception as err2:
+            return None, f"is a Microsoft 365 group, lookup failed ({_short_error(err2)[:100]})"
+        for g in found:
+            try:
+                gcal = _graph_request("GET", f"/groups/{g['id']}/calendar", params={"$select": "id,name,color,owner"})
+            except Exception as err3:
+                return None, f"group {g.get('displayName')}: {_short_error(err3)[:100]}"
+            _register_group(g)
+            return _group_entry(g, gcal if isinstance(gcal, dict) else None), "ok (group)"
+        return None, "is a Microsoft 365 group, but not found via /groups"
+    cal = cal if isinstance(cal, dict) else {}
+    if not cal.get("id"):
+        return None, "not readable"
+    owner_raw = cal.get("owner")
+    owner: Dict[str, Any] = owner_raw if isinstance(owner_raw, dict) else {}
+    registry = _load_shared_mailboxes()
+    if mail not in registry:
+        registry.append(mail)
+        try:
+            _save_shared_mailboxes(registry)
+        except OSError:
+            pass
+    return {
+        "id": cal.get("id"),
+        "name": owner.get("name") or cal.get("name") or mail,
+        "mailbox": mail,
+        "source_type": "shared_mailbox",
+        "canEdit": bool(cal.get("canEdit", False)),
+        "isDefaultCalendar": False,
+        "owner": owner or {"name": mail, "address": mail},
+    }, "ok"
 
 
 def _resolve_calendar(target: str) -> Tuple[Optional[Dict[str, Any]], Optional[str], Dict[str, Any]]:
@@ -1742,6 +1875,11 @@ def _resolve_calendar(target: str) -> Tuple[Optional[Dict[str, Any]], Optional[s
     if not target:
         return None, None, {}
     if "@" in target:
+        # A registered group is addressed by its mail too (OWA "Groups").
+        mail = target.lower()
+        for g in _load_registry()["groups"]:
+            if g.get("mail") == mail:
+                return _group_entry({"id": g["id"], "displayName": g.get("name"), "mail": mail}), None, {}
         return None, target, {}
     listing = _collect_calendars(top=50)
     target_lower = target.lower()
@@ -1787,10 +1925,10 @@ def _calendar_not_found(target: str, listing: Dict[str, Any]) -> Dict[str, Any]:
         "tried": listing.get("tried", []),
         "sources": listing.get("sources", []),
         "hint": (
-            "Not a personal, shared, group or known mailbox calendar. If it lives in a shared mailbox, pass its "
-            "e-mail address as `calendar` (or register it via m365_list_calendars(add_shared_mailbox=…)); if it is "
-            "an M365 group calendar, Group.Read.All is missing (see sources). Ask the user where the calendar lives "
-            "if unknown."
+            "Not a personal, shared, group or known mailbox calendar. Pass its e-mail address as `calendar` "
+            "(a Microsoft 365 group — OWA lists those under 'Groups' — or a shared mailbox; both resolve from the "
+            "address), or register a mailbox via m365_list_calendars(add_shared_mailbox=…). Group calendars need "
+            "Group.Read.All (see sources / tried). Ask the user where the calendar lives if unknown."
         ),
     }
 
@@ -1852,7 +1990,18 @@ def m365_get_events(
         params["$top"] = min(top, 50)
         endpoint = f"{base_path}/events"
 
-    res = _graph_request("GET", endpoint, params=params)
+    try:
+        res = _graph_request("GET", endpoint, params=params)
+    except Exception as err:
+        # ``/users/{mail}`` for a Microsoft 365 group address → retry as group.
+        if not (target_user_email and _is_group_uri_error(err)):
+            raise
+        entry, note = _probe_address(target_user_email)
+        if not entry or entry.get("source_type") != "group":
+            raise RuntimeError(f"{err} — '{target_user_email}' is a Microsoft 365 group; {note}") from err
+        matched_cal_name = str(entry.get("name") or target_user_email)
+        endpoint = f"{_calendar_base_path(entry)}/{'calendarView' if 'startDateTime' in params else 'events'}"
+        res = _graph_request("GET", endpoint, params=params)
 
     calendar_label = matched_cal_name or "default"
     if matched_cal_name:
@@ -1943,7 +2092,15 @@ def m365_create_event(
     else:
         endpoint = "/me/calendar/events"
 
-    return _graph_request("POST", endpoint, json_data=payload)
+    try:
+        return _graph_request("POST", endpoint, json_data=payload)
+    except Exception as err:
+        if not (target_user_email and _is_group_uri_error(err)):
+            raise
+        entry, note = _probe_address(target_user_email)
+        if not entry or entry.get("source_type") != "group":
+            raise RuntimeError(f"{err} — '{target_user_email}' is a Microsoft 365 group; {note}") from err
+        return _graph_request("POST", f"{_calendar_base_path(entry)}/events", json_data=payload)
 
 
 
