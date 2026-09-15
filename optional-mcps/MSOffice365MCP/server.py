@@ -1394,8 +1394,8 @@ def m365_download_email_attachments(
 
 # ─── Calendars: personal, calendar groups, M365 groups, shared mailboxes ─────
 #
-# AIS-340 (session 20260915_082908): the OFFICEZEITEN calendar is a shared
-# mailbox — none of the three sources below could list it, every per-source
+# AIS-340 (session 20260915_082908): a group calendar the user asked for was a
+# shared mailbox — none of the three sources below could list it, every per-source
 # failure was swallowed (24 team calendars silently 403'd), and an unknown
 # name fell back to ``/groups/<name>`` → Graph 400 "The Id is invalid".
 # Shared mailboxes are registered once (their e-mail address) and validated
@@ -1568,7 +1568,7 @@ def _collect_calendars(top: int = 50, search: Optional[str] = None) -> Dict[str,
         row["error"] = first_err
     if not mailboxes:
         row["hint"] = (
-            "shared mailbox calendars (e.g. OFFICEZEITEN) are not discoverable — register the mailbox "
+            "shared mailbox calendars are not discoverable via Graph — register the mailbox "
             "address once: m365_list_calendars(add_shared_mailbox='name@tenant')"
         )
     sources.append(row)
@@ -1615,7 +1615,7 @@ def m365_list_calendars(
     add_shared_mailbox: Optional[str] = None,
     remove_shared_mailbox: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """List every reachable Outlook calendar: personal, shared-with-me, calendar groups, M365 group/team calendars and registered shared mailboxes (e.g. URLAUB, OFFICEZEITEN); `sources` shows per-source status and missing scopes.
+    """List every reachable Outlook calendar: personal, shared-with-me, calendar groups, M365 group/team calendars and registered shared mailboxes; `sources` shows per-source status and missing scopes.
 
     Args:
         top: Max personal calendars to return.
@@ -1705,7 +1705,7 @@ def _calendar_not_found(target: str, listing: Dict[str, Any]) -> Dict[str, Any]:
         "available": names,
         "sources": listing.get("sources", []),
         "hint": (
-            "If it is a shared mailbox (e.g. OFFICEZEITEN): pass its e-mail address as `calendar`, or register it "
+            "If it is a shared mailbox: pass its e-mail address as `calendar`, or register it "
             "once with m365_list_calendars(add_shared_mailbox='name@tenant') so the name resolves. "
             "M365 group calendars need Group.Read.All (see sources). Ask the user for the address if unknown."
         ),
@@ -1722,7 +1722,7 @@ def m365_get_events(
     """Get events from any Outlook calendar (default, shared by name 'URLAUB'/'Officezeiten', group/team calendars, registered shared mailboxes, calendar ID, or a mailbox e-mail address).
 
     Args:
-        calendar: Optional calendar name (e.g. 'URLAUB', 'OFFICEZEITEN'), calendar ID, or mailbox e-mail address. Omit for the default calendar.
+        calendar: Optional calendar name (personal, shared, group or registered shared mailbox), calendar ID, or mailbox e-mail address. Omit for the default calendar.
         start_time_iso: Optional start date/time (ISO format) for date range filtering.
         end_time_iso: Optional end date/time (ISO format) for date range filtering.
         top: Max number of events to return.

@@ -666,12 +666,12 @@ class TestReportDays:
         rf = out["report_file"]
         assert rf["written"] is True and rf["overwritten"] is False and rf["language"] == "de"
         path = Path(rf["path"])
-        assert path == vault / "reports" / "worklog" / "arbeitszeit-mtd.md"
+        assert path == vault / "reports" / "worklog" / "worktime-mtd.md"  # language-neutral file name
         text = path.read_text(encoding="utf-8")
         assert text.startswith("---\ntype: report\n") and "created: 2026-09-15" in text and "updated: 2026-09-15" in text
         assert "## Ergebnis" in text and "## Tage" in text and "| 2026-09-01 | Di | 08:00 | 17:15 | 8.75 |" in text
         assert "workdays(action='report', period='mtd', include_days=True, write='vault')" in text
-        assert "-final" not in path.name and "-korrigiert" not in path.name
+        assert "-final" not in path.name and "-v2" not in path.name
         # rerun: same file, created kept, updated bumped
         path.write_text(text.replace("created: 2026-09-15", "created: 2026-09-01"), encoding="utf-8")
         monkeypatch.setattr(wt, "_today", lambda: __import__("datetime").date(2026, 9, 16))
@@ -680,7 +680,7 @@ class TestReportDays:
         assert Path(out2["report_file"]["path"]) == path and out2["report_file"]["overwritten"] is True
         text2 = path.read_text(encoding="utf-8")
         assert "created: 2026-09-01" in text2 and "updated: 2026-09-16" in text2
-        assert sorted(p.name for p in (vault / "reports" / "worklog").iterdir()) == ["arbeitszeit-mtd.md"]
+        assert sorted(p.name for p in (vault / "reports" / "worklog").iterdir()) == ["worktime-mtd.md"]
 
     def test_write_without_vault_reports_the_gap(self, tmp_path, monkeypatch):
         db = tmp_path / "s.db"
@@ -759,6 +759,28 @@ class TestPresence:
         wt._profile_cache.update({"at": 0.0, "profile": None})
         out = json.loads(wt.execute_workdays({"action": "presence", "op": "import_from_calendar"}, db_path=db))
         assert out["calendar"] == "OFFICEZEITEN" and out["upserted"] == 1
+
+    def test_presence_default_is_configurable_for_users_who_record_home_office(self, tmp_path, monkeypatch):
+        """Generic: a user whose calendar tracks home-office days sets
+        presence_default='office' — unmarked booked days are office days then."""
+        db = tmp_path / "s.db"
+        self._seed_events(db, monkeypatch)
+        base = dict(BY, worklog_source_tool="mcp_MyTimeMCP_%", presence_default="office", _source="memory (mcp)")
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: base)
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        json.loads(wt.execute_workdays({
+            "action": "presence", "op": "import_from_calendar", "calendar": "OFFICEZEITEN", "match": "Johannes",
+            "kind": "homeoffice", "start": "2026-09-01", "end": "2026-09-30"}, db_path=db))
+        rep = json.loads(wt.execute_workdays(
+            {"action": "report", "start": "2026-09-01", "end": "2026-09-04", "include_days": True}, db_path=db))
+        by_day = {d["day"]: d for d in rep["days"]}
+        assert by_day["2026-09-01"]["presence"] == "homeoffice"  # recorded
+        assert by_day["2026-09-02"]["presence"] == "office"      # booked, unmarked → profile default
+        assert rep["totals"]["office_days"] == 1 and rep["totals"]["homeoffice_days"] == 1
+        bad = _run(action="configure", region="DE-BY", presence_default="beach")
+        assert bad["success"] is False
+        ok = _run(action="configure", region="DE-BY", presence_default="office", presence_calendar="Team", presence_match_patterns="Me")
+        assert ok["profile"]["presence_default"] == "office"
 
     def test_remove_refuses_to_wipe_and_add_validates_kind(self, tmp_path):
         db = tmp_path / "s.db"

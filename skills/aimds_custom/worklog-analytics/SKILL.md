@@ -21,10 +21,10 @@ This skill defines the binding standard for aggregating, analysing and documenti
 
 ### Step 0b: Preferred path — one-call report
 - For actual-vs-target questions call `workdays(action='report', start=…, end=…)` first: it materializes the calendar, aggregates actuals from `mcp_records` via the profile's `worklog_source_tool`, credits vacation from the `absences` table, counts office/home-office days from the `presence` table, and computes delta — all in SQLite, clamped to today (a full-year request additionally returns `target_full_range`). Follow its `hints` when data is missing or stale. Only fall back to the manual JOIN below for custom breakdowns.
-- Relative ranges ("bis Ende letzter Woche", "diesen Monat") are `period='through_last_week' | 'mtd' | 'ytd' | 'last_month' | 'this_month' | 'last_week' | 'this_week'` — never compute week numbers or weekday names yourself.
-- "Start und Ende pro Tag": `include_days=true` returns one row per calendar day (weekday, holiday, target, first start, last end, hours, bookings, absence, presence, status). Present that table; do not rebuild it with `strftime` in SQL.
-- The Markdown report file is written by the tool: `write='vault'` renders `reports/worklog/arbeitszeit-<period>.md` from the vault template and overwrites the same file on every rerun (`created` kept, `updated` bumped). Never write a second `-final`/`-korrigiert` copy yourself — rerun the report instead.
-- Office vs. home office: office days come from a calendar (e.g. group calendar `OFFICEZEITEN` where entries carry the user's name). Fetch the events once (`m365_get_events(calendar='OFFICEZEITEN', start_time_iso=…, end_time_iso=…)` — they auto-ingest), then `workdays(action='presence', op='import_from_calendar', calendar='OFFICEZEITEN', match='<Name>, <Vorname>')`; persist the two values via `configure(presence_calendar=…, presence_match_patterns=…)`. A booked working day without office entry or absence counts as home office; travel days are added with `op='add', kind='travel'`.
+- Relative ranges ("through the end of last week", "this month so far") are `period='through_last_week' | 'mtd' | 'ytd' | 'last_month' | 'this_month' | 'last_week' | 'this_week'` — never compute week numbers or weekday names yourself.
+- "Start and end per day": `include_days=true` returns one row per calendar day (weekday, holiday, target, first start, last end, hours, bookings, absence, presence, status). Present that table; do not rebuild it with `strftime` in SQL.
+- The Markdown report file is written by the tool: `write='vault'` renders `reports/worklog/worktime-<period>.md` (headings in `display.language`) and overwrites the same file on every rerun (`created` kept, `updated` bumped). Never write a second `-final`/`-v2` copy yourself — rerun the report instead.
+- Where the user worked (office / home office / travel): presence days come from any calendar whose entries carry the user's name (a shared office calendar, a team calendar, …). Fetch the events once (`m365_get_events(calendar='<name or mailbox address>', start_time_iso=…, end_time_iso=…)` — they auto-ingest), then `workdays(action='presence', op='import_from_calendar', calendar='<name>', match='<the user\'s name patterns>', kind='office'|'homeoffice'|'travel')`; persist via `configure(presence_calendar=…, presence_match_patterns=…, presence_default=…)`. A booked working day without presence entry or absence counts as `presence_default` (home office unless the user records home-office days instead of office days); single days are added with `op='add', kind=…`.
 
 ### Step 1: Fetch raw data
 - Fetch the raw data via the appropriate MCP tools (e.g. `atlassian-jira_get_worklog`, Jira search or time-tracking data).
@@ -114,7 +114,7 @@ DROP TABLE IF EXISTS temp_worklogs;
 
 ### Step 6: Structured output & vault synchronisation
 - Present the result to the user as a clean Markdown table.
-- Save the report from `_templates/report.md` to `reports/worklog/<topic>-<year>.md` (e.g. `reports/worklog/arbeitszeit-2026.md`); overwrite the same file on every rerun and bump `updated:`.
+- Let the tool write the report: `workdays(action='report', …, write='vault')` renders `reports/worklog/worktime-<period>.md` from `_templates/report.md`, overwrites the same file on every rerun and bumps `updated:`. Only for custom breakdowns the tool cannot express, write `reports/worklog/<topic>-<period>.md` yourself following the same rules.
 - Link it from the topic hub in `projects/` via `related_to`.
 - Never write to `journal/`, never create `_v2`/`FINAL` copies.
 - Frontmatter per `_conventions.md`: `type: report`, `title`, `created`, `updated`, `status`, `covers`, `source`, `related_to`, `tags`.

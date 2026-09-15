@@ -40,13 +40,14 @@ PROFILE_KEYS = (
     "employment_start", "employment_end", "part_time_factor",
     "municipality", "plz", "partial_holidays",
     "worklog_source_tool", "vacation_booking_patterns", "vacation_hour_factor",
-    "presence_calendar", "presence_match_patterns", "notes",
+    "presence_calendar", "presence_match_patterns", "presence_default", "notes",
 )
 TABLE = "workday_calendar"
 ABSENCES_TABLE = "absences"
 PRESENCE_TABLE = "presence"
 PERIODS = ("ytd", "mtd", "this_month", "last_month", "this_week", "last_week", "through_last_week")
-PRESENCE_KINDS = ("office", "travel")
+PRESENCE_KINDS = ("office", "homeoffice", "travel")
+DEFAULT_PRESENCE = "homeoffice"  # what a booked working day counts as when nothing else is recorded
 _PROFILE_TTL_SECONDS = 600
 
 CLARIFY_CHOICES = [
@@ -307,7 +308,7 @@ def _profile_text(profile: Dict[str, Any]) -> str:
     for key in ("employment_start", "employment_end", "part_time_factor", "employment_label",
                 "municipality", "plz",
                 "worklog_source_tool", "vacation_booking_patterns", "vacation_hour_factor",
-                "presence_calendar", "presence_match_patterns", "notes"):
+                "presence_calendar", "presence_match_patterns", "presence_default", "notes"):
         if profile.get(key) not in (None, ""):
             lines.append(f"{key}: {profile[key]}")
     lines.append("")
@@ -416,6 +417,7 @@ def _resolve(args: Dict[str, Any]) -> Dict[str, Any]:
     take("vacation_hour_factor", 1.0)
     take("presence_calendar")
     take("presence_match_patterns")
+    take("presence_default", DEFAULT_PRESENCE)
     weekday_set = wc.parse_work_weekdays(picked.get("work_weekdays"))
     if weekday_set:
         explicit = picked.get("days_per_week")
@@ -433,8 +435,9 @@ def _resolve(args: Dict[str, Any]) -> Dict[str, Any]:
 def _period_range(period: str, today: date, employment_start: Optional[date] = None) -> tuple:
     """Deterministic date ranges for relative periods (AIS-338).
 
-    Session 20260915_082908 asked for "bis Ende letzter Woche" and the model
-    typed the range by hand — and slipped a week. ISO weeks start on Monday.
+    Session 20260915_082908 asked for "through the end of last week" and the
+    model typed the range by hand — and slipped a week. ISO weeks start on
+    Monday; every keyword is resolved from today, never guessed.
     """
     key = str(period or "").strip().lower().replace("-", "_")
     monday = today - timedelta(days=today.weekday())
@@ -785,6 +788,11 @@ def _act_configure(args: Dict[str, Any]) -> str:
         profile["presence_calendar"] = str(args["presence_calendar"]).strip()
     if args.get("presence_match_patterns"):
         profile["presence_match_patterns"] = ", ".join(_split_patterns(args["presence_match_patterns"]))
+    if args.get("presence_default"):
+        default_kind = str(args["presence_default"]).strip().lower()
+        if default_kind not in PRESENCE_KINDS:
+            return tool_error(f"presence_default must be one of {', '.join(PRESENCE_KINDS)}", success=False)
+        profile["presence_default"] = default_kind
     half = args.get("half_days")
     profile["half_days"] = list(half) if isinstance(half, list) else list(wc.DEFAULT_HALF_DAYS) if half is None else [s.strip() for s in str(half).split(",") if s.strip()]
     wc._half_day_set(profile["half_days"], [_today().year])  # validates format
@@ -1046,12 +1054,14 @@ def _like_pattern(value: str) -> str:
 
 
 def _act_presence(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
-    """Office / travel days — the counterpart of ``absences`` (AIS-341).
+    """Where the user worked — the counterpart of ``absences`` (AIS-341).
 
-    Office days come from a calendar (OFFICEZEITEN entries naming the user),
-    the user directly, or a document; a working day with bookings and
-    neither an office entry nor an absence is a home-office day (derived in
-    ``report``, never stored).
+    Kinds: office, homeoffice, travel. Days come from any calendar whose
+    entries name the user (import), from the user directly, or from a
+    document. A booked working day with no presence entry and no absence
+    counts as the profile's ``presence_default`` (home office unless the
+    user records home-office days instead of office days) — derived in
+    ``report``, never stored.
     """
     op = str(args.get("op") or "list").strip().lower()
     kind = str(args.get("kind") or "office").strip().lower()
@@ -1117,9 +1127,10 @@ def _act_presence(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
                     "error": "presence calendar and match patterns are not configured",
                     "missing": [k for k, v in (("calendar", calendar), ("match", patterns)) if not v],
                     "ask": (
-                        "Ask the user which calendar holds the office days (e.g. OFFICEZEITEN) and how their entries "
-                        "are labelled (e.g. 'Johannes Huchler, Johannes'); pass calendar=… and match=… (or persist via "
-                        "workdays(action='configure', presence_calendar=…, presence_match_patterns=…))."
+                        "Ask the user which calendar holds their presence days (a shared office calendar, a team "
+                        "calendar, …) and how their entries are labelled (usually their name); pass calendar=… and "
+                        "match=… (or persist via workdays(action='configure', presence_calendar=…, "
+                        "presence_match_patterns=…)). kind= says what the entries mean (office, homeoffice, travel)."
                     ),
                 }, ensure_ascii=False)
             tool_pattern = str(args.get("calendar_source_tool") or "%_events%")
@@ -1369,7 +1380,8 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
             "WHERE day BETWEEN ? AND ? GROUP BY source, kind",
             (s, e),
         ).fetchall()
-        day_rows = _report_day_rows(conn, ist_where, ist_params, s, e)
+        day_rows = _report_day_rows(conn, ist_where, ist_params, s, e,
+                                    presence_default=str(p.get("presence_default") or DEFAULT_PRESENCE))
     finally:
         conn.close()
     presence_months, presence_total = _presence_counts(day_rows)
@@ -1392,11 +1404,12 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
             "add days directly (op='add'), or extract them from a vault note/document; vacation_credit is 0 until then"
         )
 
-    if presence_total["office_days"] == 0 and presence_total["homeoffice_days"] > 0:
+    if not presence_cov and (presence_total["office_days"] or presence_total["homeoffice_days"]):
+        default_kind = str(p.get("presence_default") or DEFAULT_PRESENCE)
         hints.append(
-            "no office days recorded for this range — every booked working day counts as home office until "
-            "workdays(action='presence', op='import_from_calendar', calendar=…, match=…) or op='add' fills the "
-            "presence table"
+            f"no presence recorded for this range — every booked working day counts as '{default_kind}' "
+            "(profile presence_default) until workdays(action='presence', op='import_from_calendar', calendar=…, "
+            "match=…, kind=…) or op='add' fills the presence table"
         )
 
     range_payload: Dict[str, Any] = {"start": s, "end": e, "inclusive": True}
@@ -1455,7 +1468,8 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
 _STATUS_TOLERANCE_HOURS = 0.25
 
 
-def _report_day_rows(conn: sqlite3.Connection, ist_where: str, ist_params: List[Any], s: str, e: str) -> List[Dict[str, Any]]:
+def _report_day_rows(conn: sqlite3.Connection, ist_where: str, ist_params: List[Any], s: str, e: str,
+                     presence_default: str = DEFAULT_PRESENCE) -> List[Dict[str, Any]]:
     """One row per calendar day — first start, last end, hours, absence,
     presence — all derived in SQLite from workday_calendar, mcp_records,
     absences and presence. The model asked for "Start und Ende pro Tag" and
@@ -1496,14 +1510,13 @@ def _report_day_rows(conn: sqlite3.Connection, ist_where: str, ist_params: List[
         target = float(target or 0.0)
         target_net = round(max(0.0, target - ab_portion * target), 2) if target else 0.0
         pr_set = {k for k in str(pr_kinds or "").split(",") if k}
-        if "office" in pr_set:
-            presence = "office"
-        elif "travel" in pr_set:
-            presence = "travel"
+        recorded = next((k for k in PRESENCE_KINDS if k in pr_set), None)
+        if recorded:
+            presence = recorded
         elif ab_portion >= 1.0:
             presence = (str(ab_kinds or "vacation").split(",")[0]) or "vacation"
         elif actual > 0 and target > 0:
-            presence = "homeoffice"
+            presence = presence_default
         else:
             presence = "none"
         if target == 0:
@@ -1699,8 +1712,8 @@ def _render_report_markdown(payload: Dict[str, Any], day_rows: List[Dict[str, An
 def _write_report_to_vault(payload: Dict[str, Any], day_rows: List[Dict[str, Any]], args: Dict[str, Any],
                            period: Optional[str], start: date, end: date, requested: Dict[str, Any]) -> Dict[str, Any]:
     """Overwrite the canonical report file in the vault (``reports/worklog/
-    arbeitszeit-<period>.md``): same path on every rerun, ``created`` kept,
-    ``updated`` bumped — no ``-final``/``-korrigiert`` copies (AIS-338)."""
+    worktime-<period>.md``, language-neutral name): same path on every rerun,
+    ``created`` kept, ``updated`` bumped — no ``-final``/``-v2`` copies (AIS-338)."""
     try:
         from agent.memory_facade import workspace_root
         root = workspace_root()
@@ -1713,7 +1726,7 @@ def _write_report_to_vault(payload: Dict[str, Any], day_rows: List[Dict[str, Any
     label = _report_period_label(period, req_start, req_end)
     lang = _report_language()
     title = _REPORT_LABELS[lang]["title"].format(period=label if period is None else f"{label} ({payload['range']['start']} – {payload['range']['end']})")
-    path = Path(root) / "reports" / "worklog" / f"arbeitszeit-{label}.md"
+    path = Path(root) / "reports" / "worklog" / f"worktime-{label}.md"
     created = _today().isoformat()
     existed = path.exists()
     if existed:
@@ -1781,14 +1794,14 @@ WORKDAYS_SCHEMA = {
         "delta, office/home-office days — all math in SQLite; include_days=true adds one row per day with first "
         "start, last end, hours, presence and status; period='ytd'|'mtd'|'this_month'|'last_month'|'this_week'|"
         "'last_week'|'through_last_week' resolves relative ranges deterministically; write='vault' renders the "
-        "canonical Markdown report into the vault (reports/worklog/arbeitszeit-<period>.md, overwritten in place) — "
+        "canonical Markdown report into the vault (reports/worklog/worktime-<period>.md, overwritten in place) — "
         "never write that file yourself), 'estimate_profile' (propose a week model from ingested worklog data when the "
         "profile is unknown — present the proposal and let the user CONFIRM before configure; region is never "
         "estimated), 'absences' (source-neutral vacation/sick store in state.db: op=add/list/remove/"
         "import_from_bookings — days can come from booking tickets, the user directly, a vault note, or a document), "
-        "'presence' (office/travel days: op=add/list/remove/import_from_calendar — office days from ingested calendar "
-        "events (calendar=… + match=… patterns naming the user); a booked working day without office entry or absence "
-        "counts as home office in report), "
+        "'presence' (office/homeoffice/travel days: op=add/list/remove/import_from_calendar — days from ingested "
+        "calendar events (calendar=… + match=… patterns naming the user, kind=what those entries mean); a booked "
+        "working day without presence entry or absence counts as the profile's presence_default in report), "
         "'target_hours' (per-month working days + target hours, default), 'days' (the same plus EVERY calendar day "
         "of the range in one call — ask once for the whole range, never month by month), 'workdays', 'holidays', "
         "'materialize' (writes table workday_calendar into ~/.hermes/state.db for manual sql JOINs — advanced path), "
@@ -1805,11 +1818,12 @@ WORKDAYS_SCHEMA = {
         "properties": {
             "action": {"type": "string", "enum": list(ACTIONS), "description": "What to compute (default target_hours)."},
             "period": {"type": "string", "enum": list(PERIODS), "description": "Relative range resolved from today (ISO weeks, Monday first): ytd, mtd, this_month, last_month, this_week, last_week, through_last_week (1 Jan … last Sunday). Instead of start/end."},
-            "write": {"type": "string", "enum": ["vault"], "description": "report only: also render the Markdown report into the vault (reports/worklog/arbeitszeit-<period>.md, one canonical file overwritten on rerun)."},
-            "calendar": {"type": "string", "description": "presence import: name of the ingested calendar (mcp_records.reference_key, e.g. 'OFFICEZEITEN'); profile default presence_calendar."},
-            "match": {"type": "string", "description": "presence import: comma-separated LIKE patterns that mark the user's office entries (subject/attendees), e.g. 'Johannes Huchler, Johannes'; profile default presence_match_patterns."},
-            "presence_calendar": {"type": "string", "description": "configure: calendar holding the office days (used by presence import)."},
+            "write": {"type": "string", "enum": ["vault"], "description": "report only: also render the Markdown report into the vault (reports/worklog/worktime-<period>.md, one canonical file overwritten on rerun, headings in display.language)."},
+            "calendar": {"type": "string", "description": "presence import: name of the ingested calendar (mcp_records.reference_key of the calendar tool's rows); profile default presence_calendar."},
+            "match": {"type": "string", "description": "presence import: comma-separated LIKE patterns that mark the user's own entries (subject/attendees/organizer), usually their name; profile default presence_match_patterns."},
+            "presence_calendar": {"type": "string", "description": "configure: calendar whose entries record where the user works (used by presence import)."},
             "presence_match_patterns": {"type": "string", "description": "configure: comma-separated patterns naming the user in that calendar."},
+            "presence_default": {"type": "string", "enum": list(PRESENCE_KINDS), "description": "configure: what a booked working day counts as when no presence entry exists (default homeoffice; 'office' when the user records home-office days instead)."},
             "start": {"type": "string", "description": "Range start, YYYY-MM-DD (inclusive)."},
             "end": {"type": "string", "description": "Range end, YYYY-MM-DD (inclusive)."},
             "year": {"type": "integer", "description": "Whole year instead of start/end."},
@@ -1825,7 +1839,7 @@ WORKDAYS_SCHEMA = {
             "op": {"type": "string", "enum": ["add", "list", "remove", "import_from_bookings", "import_from_calendar"], "description": "absences / presence: what to do (default list). import_from_bookings = absences, import_from_calendar = presence."},
             "days": {"type": "array", "items": {}, "description": "absences add/remove: 'YYYY-MM-DD' strings, {day, portion} objects, or {from, to} ranges (ranges expand to working days only)."},
             "portion": {"type": "number", "description": "absences add: fraction of a day per entry, 0 < portion <= 1 (default 1.0)."},
-            "kind": {"type": "string", "description": "absences: vacation (default), sick, or other. presence: office (default) or travel."},
+            "kind": {"type": "string", "description": "absences: vacation (default), sick, or other. presence: office (default), homeoffice, or travel."},
             "source": {"type": "string", "description": "absences: where the days came from, e.g. 'user', 'document:<id>', 'vault:<note>' (default user)."},
             "note": {"type": "string", "description": "absences add: free-text note stored with the entries."},
             "half_days": {"type": "array", "items": {"type": "string"}, "description": "MM-DD or YYYY-MM-DD days counted as half a working day (profile default: 12-24, 12-31)."},
