@@ -74,7 +74,10 @@ const {
 const {
   UPDATER_LAUNCH_LOG,
   describeUpdaterLaunchFailure,
+  inspectUpdaterBinary,
+  noStableReleasePublished,
   openUpdaterLogStdio,
+  quarantineUpdaterBinary,
   resolveDetachedCheckoutChannel
 } = require('./update-apply.cjs')
 const {
@@ -781,7 +784,13 @@ function rememberLog(chunk) {
     hermesLog.splice(0, hermesLog.length - 300)
   }
 
-  desktopLogBuffer += `${lines.join('\n')}\n`
+  // On disk every line carries a timestamp (AIS-345): the support digest
+  // windows timestamped logs to the last hour, while an untimestamped
+  // desktop.log could only be read as "the last 1500 lines" — which surfaced
+  // boot failures from hours earlier as the signals of a fresh report. The
+  // in-memory copy (renderer diagnostics) keeps the bare `[hermes] …` form.
+  const stamp = new Date().toISOString()
+  desktopLogBuffer += `${lines.map(line => `${stamp} ${line}`).join('\n')}\n`
 
   if (desktopLogBuffer.length >= DESKTOP_LOG_BUFFER_MAX_CHARS) {
     if (desktopLogFlushTimer) {
@@ -1773,18 +1782,24 @@ async function checkUpdates() {
       // The release repo may still be empty (or unreachable) while the checkout
       // keeps its git history: fall back to the git check so the install is
       // never stuck without updates.
-      rememberLogOnce(`release-fallback:${code}`, `[updates] release manifest check failed (${code}): ${message}; falling back to git`)
-      void reportAutoIncident({
-        kind: 'update-check-fallback-git',
-        summary: `desktop update check: release repository unavailable (${code}); falling back to git`,
-        detail: message,
-        contextType: 'update_failure',
-        installType: 'update',
-        clientVersion: app.getVersion(),
-        hermesHome: HERMES_HOME,
-        runCli: runSupportLogUpload,
-        log: rememberLog
-      })
+      if (noStableReleasePublished(error, branch)) {
+        // AIS-345: only pre-releases published so far — expected, not an
+        // outage; no support case for it.
+        rememberLogOnce(`release-fallback:no-stable`, `[updates] no stable release is published in the release repository yet (HTTP 404); falling back to git`)
+      } else {
+        rememberLogOnce(`release-fallback:${code}`, `[updates] release manifest check failed (${code}): ${message}; falling back to git`)
+        void reportAutoIncident({
+          kind: 'update-check-fallback-git',
+          summary: `desktop update check: release repository unavailable (${code}); falling back to git`,
+          detail: message,
+          contextType: 'update_failure',
+          installType: 'update',
+          clientVersion: app.getVersion(),
+          hermesHome: HERMES_HOME,
+          runCli: runSupportLogUpload,
+          log: rememberLog
+        })
+      }
     }
   }
 
@@ -1818,18 +1833,25 @@ async function checkUpdates() {
       manifest = await fetchReleaseManifest(branch)
     } catch (error) {
       const code = error?.code === 'rate-limited' ? 'rate-limited' : 'fetch-failed'
-      rememberLogOnce(`release-target:${branch}:${code}`, `[updates] release repository unavailable (${code}): ${error?.message || error}; resolving ${branch} from ${remote}`)
-      void reportAutoIncident({
-        kind: 'update-check-fallback-origin-tags',
-        summary: `desktop update check: release repository unavailable (${code}); resolving ${branch} from the source repository`,
-        detail: String(error?.message || error),
-        contextType: 'update_failure',
-        installType: 'update',
-        clientVersion: app.getVersion(),
-        hermesHome: HERMES_HOME,
-        runCli: runSupportLogUpload,
-        log: rememberLog
-      })
+      if (noStableReleasePublished(error, branch)) {
+        // AIS-345: `releases/latest` is 404 while only pre-releases exist.
+        // The tags of the source repository decide, as designed — logged
+        // once, no support case (every stable client hit this every 24 h).
+        rememberLogOnce(`release-target:${branch}:no-stable`, `[updates] no stable release is published in the release repository yet (HTTP 404); resolving ${branch} from ${remote}`)
+      } else {
+        rememberLogOnce(`release-target:${branch}:${code}`, `[updates] release repository unavailable (${code}): ${error?.message || error}; resolving ${branch} from ${remote}`)
+        void reportAutoIncident({
+          kind: 'update-check-fallback-origin-tags',
+          summary: `desktop update check: release repository unavailable (${code}); resolving ${branch} from the source repository`,
+          detail: String(error?.message || error),
+          contextType: 'update_failure',
+          installType: 'update',
+          clientVersion: app.getVersion(),
+          hermesHome: HERMES_HOME,
+          runCli: runSupportLogUpload,
+          log: rememberLog
+        })
+      }
     }
 
     let tagName
@@ -2087,7 +2109,32 @@ let updateInFlight = false
 function resolveUpdaterBinary() {
   const name = IS_WINDOWS ? 'hermes-setup.exe' : 'hermes-setup'
   const candidate = path.join(HERMES_HOME, name)
-  return fileExists(candidate) ? candidate : null
+  if (!fileExists(candidate)) return null
+
+  // AIS-346 / SUP-20260915-125435: the staged file was a HermesSetup.dmg the
+  // installer's self-update had renamed onto the binary; every hand-off then
+  // failed with `spawn ENOEXEC`. A staged updater that is not a native
+  // executable is moved aside and reported, and the caller proceeds as if
+  // none were staged (macOS/Linux: in-app update; Windows: manual command).
+  const verdict = inspectUpdaterBinary(candidate)
+  if (verdict.ok) return candidate
+  const parked = quarantineUpdaterBinary(candidate)
+  rememberLog(
+    `[updates] staged updater ${candidate} is ${verdict.reason}; ` +
+      `${parked ? `moved aside to ${parked}` : 'could not be moved aside'} — not using it for the hand-off`
+  )
+  void reportAutoIncident({
+    kind: 'updater-binary-invalid',
+    summary: `desktop update: staged updater is ${verdict.reason}`,
+    detail: `${candidate}${parked ? ` moved to ${parked}` : ' (rename failed)'}; expected ${verdict.expected}`,
+    contextType: 'update_error',
+    installType: 'update',
+    clientVersion: app.getVersion(),
+    hermesHome: HERMES_HOME,
+    runCli: runSupportLogUpload,
+    log: rememberLog
+  })
+  return null
 }
 
 const MAC_UPDATER_HELPER_TIMEOUT_MS = 15000

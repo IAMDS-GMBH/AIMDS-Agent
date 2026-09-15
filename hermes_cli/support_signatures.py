@@ -127,8 +127,16 @@ SIGNATURES: tuple[Signature, ...] = (
         "medium",
     ),
     Signature(
+        "litellm.key_rejected",
+        r"AIMDS-Suite 403|virtual key was rejected|PermissionDeniedError \[HTTP 403\]|Non-retryable error \(HTTP 403\)",
+        "AIMDS-Suite virtual key rejected (HTTP 403)",
+        "LiteLLM refused the client's virtual key (expired or wrong environment): re-authenticate via Settings → Providers → AIMDS-Suite (Keycloak SSO) and check the provider host.",
+        "medium",
+    ),
+    Signature(
         "graph.403_consent",
-        r"AADSTS65001|consent_required|Graph[^\n]*403|403[^\n]*(?:Forbidden|Graph|consent)",
+        # Only Graph: LiteLLM/nginx 403 pages carry no Graph marker (AIS-345).
+        r"AADSTS65001|consent_required|graph\.microsoft\.com[^\n]*403|403[^\n]*(?:Graph|consent)",
         "Microsoft Graph consent missing",
         "The tenant has not consented to the required Graph scopes; the M365 consent tier in the hit names the scope.",
         "medium",
@@ -172,6 +180,19 @@ SIGNATURES: tuple[Signature, ...] = (
 
 SIGNATURE_IDS: tuple[str, ...] = tuple(s.id for s in SIGNATURES)
 _BY_ID = {s.id: s for s in SIGNATURES}
+
+# Hits that are expected noise when one of the preceding lines matches: the
+# strict-server probe deliberately calls a tool that does not exist, and
+# openproject_ce_mcp answers with a traceback on stderr (AIS-345).
+_SUPPRESSED_AFTER: dict[str, re.Pattern[str]] = {
+    "python.traceback": re.compile(r"__strict_mcpserver_probe__"),
+}
+_SUPPRESS_LOOKBACK = 1
+
+
+def _suppressed(signature_id: str, previous: list[str]) -> bool:
+    pattern = _SUPPRESSED_AFTER.get(signature_id)
+    return pattern is not None and any(pattern.search(line) for line in previous[-_SUPPRESS_LOOKBACK:])
 
 
 @dataclass
@@ -363,10 +384,14 @@ def build_incident_digest(
         # Classify once up front so a hit that lands inside another hit's
         # context window still gets its marker.
         hit_ids: dict[int, str] = {}
+        previous: list[str] = []
         for no, line, _ in recent:
             matched = _classify_line(line)
-            if matched is not None:
+            if matched is not None and not _suppressed(matched.id, previous):
                 hit_ids[no] = matched.id
+            previous.append(line)
+            if len(previous) > _SUPPRESS_LOOKBACK:
+                del previous[0]
         file_lines: list[str] = []
         repeats: dict[str, int] = {}
         skipped_by_key: dict[str, list[int]] = {}

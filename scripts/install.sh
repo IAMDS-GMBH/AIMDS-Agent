@@ -1661,7 +1661,12 @@ clone_repo() {
                 git remote set-branches origin "$BRANCH" 2>/dev/null || true
                 git fetch origin "$BRANCH"
                 git checkout "$BRANCH"
-                git pull --ff-only origin "$BRANCH"
+                # Fast-forward onto exactly what was just fetched. `git pull`
+                # re-resolves the branch through the remote's fetch refspecs and
+                # on some desktop checkouts died with "Cannot fast-forward to
+                # multiple branches" (AIS-345, SUP-20260915-105241); FETCH_HEAD
+                # is the single head the fetch above produced.
+                git merge --ff-only FETCH_HEAD
             fi
 
             if [ -n "$autostash_ref" ]; then
