@@ -126,6 +126,47 @@ def primary_memory_context_registered() -> Optional[str]:
     return None
 
 
+def _unwrap_mcp_result(raw: Any) -> Any:
+    """The MCP bridge returns every server answer as ``{"result": <object or
+    JSON string>}`` (``tools/mcp_tool.py``); the memory server's own payload
+    (``results``, ``slug``, ``content``) sits inside. Peel the envelope(s) and
+    parse JSON strings so callers see the server object. Non-JSON text is
+    returned unchanged. AIS-344: search/read/save silently missed for two
+    weeks because they read the envelope as if it were the payload.
+    """
+    payload: Any = raw
+    if isinstance(payload, (bytes, bytearray)):
+        payload = payload.decode("utf-8", errors="replace")
+    if isinstance(payload, str):
+        text = payload.strip()
+        if text.startswith("<untrusted_tool_result"):
+            start, end = text.find(">"), text.rfind("</untrusted_tool_result>")
+            if start != -1 and end > start:
+                text = text[start + 1:end].strip()
+        if not text or text[0] not in "{[":
+            return payload
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return payload
+    for _ in range(4):
+        if isinstance(payload, dict) and set(payload.keys()) == {"result"}:
+            inner = payload["result"]
+            if isinstance(inner, str):
+                stripped = inner.strip()
+                if stripped[:1] in "{[":
+                    try:
+                        inner = json.loads(stripped)
+                    except Exception:
+                        return inner
+                else:
+                    return inner
+            payload = inner
+            continue
+        break
+    return payload
+
+
 def resolve_mode(valid_tool_names: Optional[set] = None) -> str:
     """Decide the backend for a session (or, without tool names, for the process)."""
     forced = str(_memory_backend_config().get("backend") or "auto").strip().lower()
@@ -247,18 +288,17 @@ class MemoryFacade:
         try:
             from agent.memory_dual_write import tool_result_indicates_success
 
-            return tool_result_indicates_success(result)
+            payload = _unwrap_mcp_result(result)
+            probe = json.dumps(payload, ensure_ascii=False) if isinstance(payload, (dict, list)) else str(result)
+            return tool_result_indicates_success(probe)
         except Exception:
             return bool(result)
 
     @staticmethod
     def _slug_from(result: Any) -> str:
-        try:
-            payload = json.loads(str(result))
-            if isinstance(payload, dict):
-                return str(payload.get("slug") or "")
-        except Exception:
-            pass
+        payload = _unwrap_mcp_result(result)
+        if isinstance(payload, dict):
+            return str(payload.get("slug") or payload.get("ref") or "")
         return ""
 
     # ---- save ------------------------------------------------------------
@@ -367,7 +407,7 @@ class MemoryFacade:
             if tool:
                 try:
                     result = self._call(tool, {"query": query, "limit": limit})
-                    payload = json.loads(str(result))
+                    payload = _unwrap_mcp_result(result)
                     items = payload.get("results") if isinstance(payload, dict) else payload
                     if isinstance(items, list):
                         return [i for i in items if isinstance(i, dict)][:limit]
@@ -402,7 +442,16 @@ class MemoryFacade:
             tool = self._tool("memory_read")
             if tool:
                 try:
-                    return str(self._call(tool, {"slug": ref}))
+                    raw = self._call(tool, {"slug": ref})
+                    payload = _unwrap_mcp_result(raw)
+                    if isinstance(payload, dict):
+                        if payload.get("error") and not payload.get("content"):
+                            return None
+                        body = payload.get("content") or payload.get("body") or payload.get("text")
+                        if isinstance(body, str):
+                            return body
+                        return json.dumps(payload, ensure_ascii=False)
+                    return str(raw)
                 except Exception as exc:
                     logger.debug("memory_facade: MCP read failed: %s", exc)
         root = workspace_root()
@@ -586,6 +635,7 @@ __all__ = [
     "SaveResult",
     "primary_memory_context_registered",
     "resolve_mode",
+    "_unwrap_mcp_result",
     "summarize_session_into_memory",
     "workspace_root",
 ]

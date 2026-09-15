@@ -173,6 +173,24 @@ class TestProfileRoundTrip:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         assert wt._profile_from_memory() is None
 
+    def test_negative_lookup_is_cached_briefly_only(self, monkeypatch, tmp_path):
+        """AIS-344: a failed lookup used to be cached for 10 min, hiding a
+        save that happened seconds later."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        calls = {"n": 0}
+
+        def lookup():
+            calls["n"] += 1
+            return None
+
+        monkeypatch.setattr(wt, "_profile_from_memory", lookup)
+        monkeypatch.setattr(wt, "_profile_from_legacy_config", lambda: None)
+        wt._profile_cache.update({"at": 0.0, "profile": None, "checked": False})
+        assert wt.load_profile() is None and wt.load_profile() is None
+        assert calls["n"] == 1  # negative result cached …
+        wt._profile_cache["at"] -= wt._PROFILE_NEGATIVE_TTL_SECONDS + 1
+        assert wt.load_profile() is None and calls["n"] == 2  # … but only briefly
+
     def test_load_profile_prefers_memory_then_mirror_then_legacy(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         wt._profile_cache.update({"at": 0.0, "profile": None})

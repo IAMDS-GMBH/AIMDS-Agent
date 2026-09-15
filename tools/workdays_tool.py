@@ -49,6 +49,9 @@ PERIODS = ("ytd", "mtd", "this_month", "last_month", "this_week", "last_week", "
 PRESENCE_KINDS = ("office", "homeoffice", "travel")
 DEFAULT_PRESENCE = "homeoffice"  # what a booked working day counts as when nothing else is recorded
 _PROFILE_TTL_SECONDS = 600
+# A missing profile is re-checked soon: a lookup that failed for a transient
+# reason (backend down, envelope bug) must not hide a working save for 10 min.
+_PROFILE_NEGATIVE_TTL_SECONDS = 30
 
 CLARIFY_CHOICES = [
     "Bayern (DE-BY)",
@@ -150,14 +153,13 @@ def _is_profile_hit(hit: Dict[str, Any]) -> bool:
 def _profile_text_from_hit(hit: Dict[str, Any], facade: Any) -> str:
     """The profile note's body for a search hit.
 
-    Session 20260915_082908 (AIS-337): every ``configure`` since 2026-08-31
-    answered ``saved: true`` and every later session still got ``worktime
-    profile unknown``. The memory MCP's search returns a truncated
-    ``snippet`` (no ``content``/``preview``), and ``facade.read(slug)`` hands
-    back the whole memory object as a JSON string — a single line that
-    ``_parse_profile_text`` cannot read. Take whatever text the hit carries,
-    and when that is not a complete profile, read the note and unwrap the
-    JSON payload's ``content`` before parsing.
+    Session 20260915_082908 (AIS-337/AIS-344): every ``configure`` since
+    2026-08-31 answered ``saved: true`` and every later session still got
+    ``worktime profile unknown``. Root cause was the MCP bridge envelope
+    (``{"result": …}``) that ``MemoryFacade`` did not unwrap — fixed there.
+    This helper stays defensive: search hits may carry only a truncated
+    ``snippet``; read the note by slug and accept either the plain body or a
+    JSON object with ``content``.
     """
     text = str(hit.get("content") or hit.get("preview") or hit.get("snippet") or "")
     if hit.get("content"):
@@ -287,10 +289,14 @@ def _profile_from_legacy_config() -> Optional[Dict[str, Any]]:
 
 def load_profile(force: bool = False) -> Optional[Dict[str, Any]]:
     now = time.time()
-    if not force and _profile_cache["profile"] is not None and now - _profile_cache["at"] < _PROFILE_TTL_SECONDS:
-        return dict(_profile_cache["profile"])
+    cached = _profile_cache["profile"]
+    age = now - float(_profile_cache.get("at") or 0.0)
+    if not force and cached is not None and age < _PROFILE_TTL_SECONDS:
+        return dict(cached)
+    if not force and cached is None and _profile_cache.get("checked") and age < _PROFILE_NEGATIVE_TTL_SECONDS:
+        return None
     profile = _profile_from_memory() or _profile_from_mirror() or _profile_from_legacy_config()
-    _profile_cache.update({"at": now, "profile": profile})
+    _profile_cache.update({"at": now, "profile": profile, "checked": True})
     return dict(profile) if profile else None
 
 
