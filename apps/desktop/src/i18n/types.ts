@@ -28,6 +28,11 @@ export interface Translations {
     detailsLabel: string
     detailsPlaceholder: string
     attachSession: string
+    fullLogs?: string
+    previewTitle?: string
+    previewLoading?: string
+    previewNoSignals?: string
+    previewFiles?: string
     submit: string
     submitting: string
     successTitle: string

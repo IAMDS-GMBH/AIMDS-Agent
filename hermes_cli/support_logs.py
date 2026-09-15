@@ -22,6 +22,7 @@ from typing import Any
 
 from agent.redact import redact_sensitive_text
 from hermes_cli.config import load_config
+from hermes_cli.support_signatures import build_incident_digest, signal_summary
 from hermes_cli.dump import run_dump
 from hermes_constants import display_hermes_home, get_hermes_home
 
@@ -33,6 +34,10 @@ from hermes_constants import display_hermes_home, get_hermes_home
 # (hermes_cli/web_server.py) and ``updater-launch.log`` by the desktop, which
 # routes the staged updater's stdout/stderr there (apps/desktop/electron/
 # update-apply.cjs).
+# ``bootstrap-installer.log`` (the staged installer / updater, apps/desktop/
+# electron/bootstrap-runner.cjs) and ``mcp-stderr.log`` (every MCP server's
+# stderr) were missing until AIS-344: the Windows case SUP-20260915-101006
+# ("update failed the first time") arrived without the updater's own log.
 _LOG_FILES = (
     "desktop.log",
     "agent.log",
@@ -42,8 +47,40 @@ _LOG_FILES = (
     "update.log",
     "hermes-update.log",
     "updater-launch.log",
+    "bootstrap-installer.log",
+    "mcp-stderr.log",
 )
 _DEFAULT_MAX_LINES_PER_FILE = 1200
+# Focused bundle (AIS-344, B2): the payload is reduced *before* it is sent —
+# the incident digest carries every signature hit with context, the logs that
+# matter for the reported category ship a short tail, everything else stays
+# home. ``--full-logs`` restores the old "1200 lines of everything" bundle.
+# Keys: dialog categories (apps/desktop/src/components/report-issue-dialog.tsx),
+# CLI categories and context types — the context type wins when it is known.
+_FOCUSED_TAIL_LINES = 200
+_DIGEST_FILE = "incident-digest.txt"
+_UPDATE_LOGS: tuple[str, ...] = ("update.log", "bootstrap-installer.log", "updater-launch.log", "hermes-update.log", "desktop.log")
+_CATEGORY_LOGS: dict[str, tuple[str, ...]] = {
+    "installation_update": _UPDATE_LOGS,
+    "install_failure": ("bootstrap-installer.log", "desktop.log", "update.log"),
+    "update_failure": _UPDATE_LOGS,
+    "update_error": _UPDATE_LOGS,
+    "install_error": ("bootstrap-installer.log", "desktop.log", "update.log"),
+    "boot_error": ("desktop.log", "update.log", "updater-launch.log", "errors.log"),
+    "mcp_tools": ("agent.log", "errors.log", "mcp-stderr.log"),
+    "chat_issue": ("agent.log", "errors.log"),
+    "chat_session": ("agent.log", "errors.log"),
+    "llm_timeout": ("agent.log", "errors.log", "gateway.log"),
+    "llm-timeout": ("agent.log", "errors.log", "gateway.log"),
+    "wrong-response": ("agent.log", "errors.log"),
+    "agent-stuck": ("agent.log", "errors.log", "gateway.log"),
+    "connection_error": ("agent.log", "gateway.log", "errors.log"),
+    "performance": ("agent.log", "desktop.log", "errors.log"),
+    "ui_bug": ("desktop.log", "gui.log", "errors.log"),
+    "ui-bug": ("desktop.log", "gui.log", "errors.log"),
+    "other": ("agent.log", "errors.log", "desktop.log"),
+}
+_DEFAULT_CATEGORY_LOGS: tuple[str, ...] = _CATEGORY_LOGS["other"]
 _DEFAULT_TIMEOUT_SECONDS = 45
 _DEFAULT_UPLOAD_URL = "https://suite-support.iamds.com/api/v1/upload"
 
@@ -278,19 +315,59 @@ def _support_config() -> dict[str, Any]:
     return support if isinstance(support, dict) else {}
 
 
+def _relevant_log_names(category: str, context_type: str) -> tuple[str, ...]:
+    """Logs that ship a tail in a focused bundle for this category/context."""
+    for key in (str(context_type or "").strip().lower(), str(category or "").strip().lower()):
+        if key in _CATEGORY_LOGS and key not in ("manual",):
+            return _CATEGORY_LOGS[key]
+    return _DEFAULT_CATEGORY_LOGS
+
+
 def _collect_payload(
-    args: Any = None, *, include_dump: bool = True, max_lines_per_file: int = _DEFAULT_MAX_LINES_PER_FILE
+    args: Any = None,
+    *,
+    include_dump: bool = True,
+    max_lines_per_file: int = _DEFAULT_MAX_LINES_PER_FILE,
+    full_logs: bool | None = None,
 ) -> tuple[dict[str, str | bytes], dict[str, Any]]:
     hermes_home = get_hermes_home()
     log_dir = hermes_home / "logs"
     files: dict[str, str | bytes] = {}
     included_files: list[dict[str, Any]] = []
+    if full_logs is None:
+        full_logs = bool(getattr(args, "full_logs", False))
+    category_arg = getattr(args, "category", None) or "other"
+    context_arg = getattr(args, "context_type", None) or ""
+    relevant = _relevant_log_names(category_arg, context_arg)
+
+    # Digest first: signature hits + context from the recent part of every
+    # log (timestamped logs: last hour; desktop.log: last boot section).
+    digest_signals: list[dict[str, Any]] = []
+    try:
+        digest = build_incident_digest(
+            log_dir,
+            log_names=_bundle_log_names(log_dir),
+            redact=lambda line: redact_sensitive_text(line, force=True).rstrip("\n"),
+        )
+        files[_DIGEST_FILE] = digest.text
+        digest_signals = signal_summary(digest.signals)
+        included_files.append(
+            {"name": _DIGEST_FILE, "lines": digest.text.count("\n"), "bytes": len(digest.text.encode("utf-8")), "role": "digest"}
+        )
+    except Exception as exc:  # the digest must never block a report
+        files[_DIGEST_FILE] = f"# Incident digest unavailable: {exc}\n"
 
     for filename in _bundle_log_names(log_dir):
         path = log_dir / filename
         if not path.exists() or not path.is_file():
             continue
-        lines = _read_last_lines(path, max_lines_per_file)
+        focused_tail = not full_logs and (filename in relevant or filename.startswith("action-"))
+        if not full_logs and not focused_tail:
+            # Not relevant for this category: its signature hits are already
+            # in the digest; the raw tail stays home.
+            continue
+        line_budget = min(max_lines_per_file, _FOCUSED_TAIL_LINES) if focused_tail else max_lines_per_file
+        lines = _read_last_lines(path, line_budget)
         if not lines:
             continue
         redacted = "".join(redact_sensitive_text(line, force=True) for line in lines)
@@ -300,6 +377,7 @@ def _collect_payload(
                 "name": filename,
                 "lines": len(lines),
                 "bytes": len(redacted.encode("utf-8")),
+                "role": "full" if full_logs else "focused",
             }
         )
 
@@ -447,6 +525,11 @@ def _collect_payload(
             "severity": getattr(args, "severity", None) or "medium",
             "summary": getattr(args, "summary", None) or getattr(args, "reason", "manual"),
             "user_description": getattr(args, "user_description", None) or "",
+            # AIS-344: deterministic diagnosis from the log signatures — the
+            # support tool can show it before anyone opens a file.
+            "signals": digest_signals,
+            "digest_file": _DIGEST_FILE if _DIGEST_FILE in files else "",
+            "log_scope": "full" if full_logs else "focused",
         },
         "session_context": {
             "session_id": session_id_val,
@@ -588,12 +671,15 @@ def run_send_logs(args) -> int:
     )
     max_lines = int(getattr(args, "max_lines", _DEFAULT_MAX_LINES_PER_FILE) or _DEFAULT_MAX_LINES_PER_FILE)
     include_dump = bool(getattr(args, "include_dump", True))
+    full_logs = bool(getattr(args, "full_logs", False))
     reason = str(getattr(args, "reason", "manual") or "manual").strip()
     json_mode = bool(getattr(args, "json", False))
 
     bundle_path: Path | None = None
     try:
-        files, metadata = _collect_payload(args, include_dump=include_dump, max_lines_per_file=max_lines)
+        files, metadata = _collect_payload(
+            args, include_dump=include_dump, max_lines_per_file=max_lines, full_logs=full_logs
+        )
         if len(files) <= 1:  # only manifest.json
             payload = {"ok": False, "error": "No log content available to upload."}
             if json_mode:
@@ -605,6 +691,27 @@ def run_send_logs(args) -> int:
         keep_path = getattr(args, "output", None)
         bundle_path = _write_bundle(files, keep_path=keep_path)
         support_case_id = metadata.get("support_case_id", "") if isinstance(metadata, dict) else ""
+        issue_details = metadata.get("issue_details", {}) if isinstance(metadata, dict) else {}
+        if bool(getattr(args, "dry_run", False)):
+            # Preview for the report dialog (AIS-344): what would be sent —
+            # signals and the file list with sizes — without uploading.
+            payload = {
+                "ok": True,
+                "dry_run": True,
+                "bundle_path": str(bundle_path),
+                "bundle_bytes": bundle_path.stat().st_size,
+                "files": metadata.get("files", []),
+                "signals": issue_details.get("signals", []),
+                "log_scope": issue_details.get("log_scope", ""),
+                "includes_dump": include_dump,
+            }
+            if json_mode:
+                print(json.dumps(payload))
+            else:
+                print(f"Dry run — bundle: {payload['bundle_path']} ({payload['bundle_bytes']} bytes, {payload['log_scope']} logs)")
+                for sig in payload["signals"]:
+                    print(f"  {sig['id']} ×{sig['count']} [{sig['severity']}] {sig['title']}")
+            return 0
         upload = _upload_bundle(
             upload_url=upload_url,
             api_key=api_key,
@@ -621,6 +728,8 @@ def run_send_logs(args) -> int:
             "job_id": upload.get("job_id"),
             "support_case_id": upload.get("support_case_id"),
             "files": metadata.get("files", []),
+            "signals": issue_details.get("signals", []),
+            "log_scope": issue_details.get("log_scope", ""),
             "includes_dump": include_dump,
             "status_code": upload["status_code"],
             "elapsed_ms": upload["elapsed_ms"],
@@ -632,7 +741,9 @@ def run_send_logs(args) -> int:
         else:
             ref = f" (reference: {payload['reference_id']})" if payload.get("reference_id") else ""
             print(f"Support logs uploaded{ref}.")
-            print(f"Bundle: {payload['bundle_path']} ({payload['bundle_bytes']} bytes)")
+            print(f"Bundle: {payload['bundle_path']} ({payload['bundle_bytes']} bytes, {payload['log_scope']} logs)")
+            for sig in payload["signals"]:
+                print(f"  signal: {sig['id']} ×{sig['count']} [{sig['severity']}] {sig['title']}")
         return 0
     except urllib.error.HTTPError as exc:
         body = ""

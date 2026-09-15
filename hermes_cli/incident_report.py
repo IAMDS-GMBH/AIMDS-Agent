@@ -106,8 +106,33 @@ def recently_reported(kind: str, *, window_seconds: int = DEFAULT_WINDOW_SECONDS
 
 def _remember(kind: str, case_id: str, summary: str) -> None:
     state = _load_state()
-    state[kind] = {"reported_at": time.time(), "case_id": case_id, "summary": summary[:200]}
+    state[kind] = {"reported_at": time.time(), "case_id": case_id, "summary": summary[:200], "occurrences_since_report": 0}
     _save_state(state)
+
+
+def _count_occurrence(kind: str) -> int:
+    """Rate-limited repeat: count it so the next report carries the number."""
+    state = _load_state()
+    entry = state.get(kind)
+    if not isinstance(entry, dict):
+        return 0
+    try:
+        count = int(entry.get("occurrences_since_report", 0)) + 1
+    except (TypeError, ValueError):
+        count = 1
+    entry["occurrences_since_report"] = count
+    _save_state(state)
+    return count
+
+
+def occurrences_since_report(kind: str) -> int:
+    entry = _load_state().get(kind)
+    if not isinstance(entry, dict):
+        return 0
+    try:
+        return int(entry.get("occurrences_since_report", 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _upload(args: SimpleNamespace) -> dict[str, Any]:
@@ -165,7 +190,8 @@ def report_incident(
         logger.info("[incident] %s not reported (support.auto_report is off)", kind)
         return None
     if recently_reported(kind):
-        logger.info("[incident] %s already reported within the last 24 h — not reported again", kind)
+        count = _count_occurrence(kind)
+        logger.info("[incident] %s already reported within the last 24 h — not reported again (%d since)", kind, count)
         return None
     args = SimpleNamespace(
         reason=kind,
@@ -205,6 +231,7 @@ def report_incident(
 __all__ = [
     "CATEGORY_INSTALLATION_UPDATE",
     "auto_report_enabled",
+    "occurrences_since_report",
     "recently_reported",
     "report_incident",
     "state_path",

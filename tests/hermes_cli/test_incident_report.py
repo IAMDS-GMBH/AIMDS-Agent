@@ -112,3 +112,26 @@ def test_corrupt_state_file_is_ignored(monkeypatch, home):
     monkeypatch.setattr(ir, "_upload", _uploader([]))
     assert ir.report_incident("k", "s") == "SUP-20260911-120000"
     assert json.loads(ir.state_path().read_text(encoding="utf-8"))["k"]["case_id"]
+
+
+def test_rate_limited_repeats_are_counted_for_the_next_report(monkeypatch, home, caplog):
+    """AIS-344: a boot failure that repeats within the 24 h window is not
+    lost — the state counts it and the count is readable for the next case."""
+    calls: list = []
+    monkeypatch.setattr(ir, "_upload", _uploader(calls))
+    caplog.set_level("INFO", logger="hermes.incident")
+    assert ir.report_incident("boot-failure-port-in-use", "desktop boot failed") == "SUP-20260911-120000"
+    assert ir.occurrences_since_report("boot-failure-port-in-use") == 0
+    assert ir.report_incident("boot-failure-port-in-use", "again") is None
+    assert ir.report_incident("boot-failure-port-in-use", "and again") is None
+    assert ir.occurrences_since_report("boot-failure-port-in-use") == 2
+    assert len(calls) == 1
+    assert any("(2 since)" in r.getMessage() for r in caplog.records)
+    state = json.loads(ir.state_path().read_text(encoding="utf-8"))
+    assert state["boot-failure-port-in-use"]["occurrences_since_report"] == 2
+    # A fresh report resets the counter.
+    state["boot-failure-port-in-use"]["reported_at"] = time.time() - ir.DEFAULT_WINDOW_SECONDS - 1
+    ir.state_path().write_text(json.dumps(state), encoding="utf-8")
+    assert ir.report_incident("boot-failure-port-in-use", "next day") == "SUP-20260911-120000"
+    assert ir.occurrences_since_report("boot-failure-port-in-use") == 0
+    assert ir.occurrences_since_report("never-seen") == 0

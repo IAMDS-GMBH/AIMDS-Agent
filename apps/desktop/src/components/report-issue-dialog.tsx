@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
+import type { DesktopSupportLogSendResult } from '@/global'
 
 import { DisableFeedbackPromptsDialog } from '@/components/disable-feedback-prompts-dialog'
 import { Button } from '@/components/ui/button'
@@ -60,6 +61,11 @@ export function ReportIssueDialog({
     detailsLabel: 'Details / Beschreibung',
     detailsPlaceholder: 'Was ist passiert? Welche Schritte führen zum Fehler?',
     attachSession: 'Chat-Verlauf und Diagnose-Logs anhängen',
+    fullLogs: 'Vollständige Logs mitsenden (statt fokussiertem Auszug)',
+    previewTitle: 'Was gesendet wird',
+    previewLoading: 'Diagnose wird vorbereitet…',
+    previewNoSignals: 'Keine bekannten Fehlermuster in den aktuellen Logs erkannt.',
+    previewFiles: 'Dateien',
     submit: 'Problem absenden',
     submitting: 'Wird gesendet…',
     successTitle: 'Problem erfolgreich gemeldet!',
@@ -103,6 +109,9 @@ export function ReportIssueDialog({
   const [summary, setSummary] = useState(defaultSummary)
   const [description, setDescription] = useState('')
   const [includeSession, setIncludeSession] = useState(Boolean(sessionId))
+  const [fullLogs, setFullLogs] = useState(false)
+  const [preview, setPreview] = useState<DesktopSupportLogSendResult | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [loading, setLoading] = useState(false)
   const [translating, setTranslating] = useState(false)
@@ -238,6 +247,30 @@ export function ReportIssueDialog({
     }
   }
 
+  // AIS-344: show the user what the bundle will carry — the signals the
+  // incident digest found and the file list with sizes — before sending.
+  useEffect(() => {
+    if (!open) {return}
+    const desktop = window.hermesDesktop
+    const fn = desktop?.reportIssue
+    if (!fn) {return}
+    let cancelled = false
+    setPreviewLoading(true)
+    fn({ category, contextType, dryRun: true, fullLogs, installType, reason: 'preview' } as any)
+      .then(res => {
+        if (!cancelled) {setPreview(res && res.ok ? res : null)}
+      })
+      .catch(() => {
+        if (!cancelled) {setPreview(null)}
+      })
+      .finally(() => {
+        if (!cancelled) {setPreviewLoading(false)}
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, category, contextType, fullLogs, installType])
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
@@ -264,7 +297,8 @@ export function ReportIssueDialog({
         contextType,
         installType,
         reason: 'user_issue_report',
-        attachments: attachments.map(a => a.dataUrl)
+        attachments: attachments.map(a => a.dataUrl),
+        fullLogs
       } as any)
 
       if (res.ok) {
@@ -480,6 +514,48 @@ export function ReportIssueDialog({
                   />
                   {copy.attachSession}
                 </label>
+              )}
+
+              <label className="flex items-center gap-2 cursor-pointer text-xs text-muted-foreground">
+                <input
+                  checked={fullLogs}
+                  className="rounded border-input text-primary focus:ring-primary"
+                  onChange={e => setFullLogs(e.target.checked)}
+                  type="checkbox"
+                />
+                {copy.fullLogs || 'Vollständige Logs mitsenden (statt fokussiertem Auszug)'}
+              </label>
+
+              {(previewLoading || preview) && (
+                <div className="rounded-lg border border-border/60 bg-muted/20 p-2.5 text-xs">
+                  <div className="font-medium text-foreground">{copy.previewTitle || 'Was gesendet wird'}</div>
+                  {previewLoading && !preview && (
+                    <div className="mt-1 text-muted-foreground">{copy.previewLoading || 'Diagnose wird vorbereitet…'}</div>
+                  )}
+                  {preview && (
+                    <>
+                      {(preview.signals || []).length === 0 ? (
+                        <div className="mt-1 text-muted-foreground">{copy.previewNoSignals || 'Keine bekannten Fehlermuster in den aktuellen Logs erkannt.'}</div>
+                      ) : (
+                        <ul className="mt-1 space-y-0.5 text-muted-foreground">
+                          {(preview.signals || []).slice(0, 6).map(sig => (
+                            <li key={sig.id}>
+                              <span className="font-mono text-foreground">{sig.id}</span> ×{sig.count} · {sig.title}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {(preview.files || []).length > 0 && (
+                        <div className="mt-1.5 text-[0.7rem] text-muted-foreground">
+                          {copy.previewFiles || 'Dateien'}:{' '}
+                          {(preview.files || [])
+                            .map(f => `${f.path} (${Math.max(1, Math.round((f.size_bytes || 0) / 1024))} KB)`)
+                            .join(', ')}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
               )}
 
               <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/20 p-2.5 text-xs">

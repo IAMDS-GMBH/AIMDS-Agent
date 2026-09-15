@@ -323,3 +323,146 @@ def test_bundle_log_names_ship_update_logs(tmp_path):
     assert {"update.log", "hermes-update.log", "updater-launch.log"} <= set(names)
     assert names[-1] == "action-mcp-install.log"
     assert len(names) == len(set(names))
+
+
+def _fake_upload(monkeypatch, captured):
+    class _Resp:
+        status = 202
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"reference_id":"SUP-2"}'
+
+    def _fake_urlopen(req, timeout=0):
+        captured["data"] = req.data
+        return _Resp()
+
+    monkeypatch.setattr(support_logs.urllib.request, "urlopen", _fake_urlopen)
+
+
+def _focused_home(tmp_path, monkeypatch):
+    """AIS-344 fixture: a home whose logs carry today's restart port race."""
+    hermes_home = tmp_path / ".hermes"
+    logs_dir = hermes_home / "logs"
+    logs_dir.mkdir(parents=True)
+    (logs_dir / "desktop.log").write_text(
+        "[hermes] [boot] Resolving Hermes backend\n"
+        "[hermes] ERROR: [Errno 48] address already in use 127.0.0.1:9120\n"
+        "[hermes] Hermes backend exited before it became ready (1).\n"
+        "[hermes] [boot] Resolving Hermes backend\n"
+        "[hermes] Hermes backend is ready\n",
+        encoding="utf-8",
+    )
+    (logs_dir / "agent.log").write_text("".join(f"2026-09-15 11:00:{i:02d} INFO agent line {i}\n" for i in range(300)), encoding="utf-8")
+    (logs_dir / "gateway.log").write_text("gateway noise token=sk-abcdefghijklmnopqrstuv\n" * 5, encoding="utf-8")
+    (logs_dir / "bootstrap-installer.log").write_text("[updater] Web UI build failed — serving stale dist as fallback\n", encoding="utf-8")
+    (logs_dir / "mcp-stderr.log").write_text("MCP server MSOffice365MCP failed to start: boom\n", encoding="utf-8")
+    monkeypatch.setattr(support_logs, "get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(support_logs, "display_hermes_home", lambda: "~/.hermes")
+    monkeypatch.setattr(support_logs, "_support_config", lambda: {})
+    monkeypatch.setattr(support_logs, "_capture_dump_text", lambda: "dump\n")
+    return hermes_home
+
+
+def test_bundle_log_names_include_installer_and_mcp_stderr(tmp_path):
+    """AIS-344: SUP-20260915-101006 arrived without the updater's own log."""
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    names = support_logs._bundle_log_names(logs_dir)
+    assert {"bootstrap-installer.log", "mcp-stderr.log"} <= set(names)
+
+
+def test_focused_bundle_ships_digest_signals_and_category_relevant_tails(tmp_path, monkeypatch, capsys):
+    """AIS-344 (B2): reduce before sending — digest + metadata + dump +
+    200-line tails of the logs that matter for the category; the rest stays
+    home because their hits are already in the digest."""
+    _focused_home(tmp_path, monkeypatch)
+    captured = {}
+    _fake_upload(monkeypatch, captured)
+
+    assert support_logs.run_send_logs(_parse(["--json", "--category", "installation_update"])) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["log_scope"] == "focused"
+    assert [s["id"] for s in payload["signals"]][:2] == ["boot.port_in_use", "boot.backend_exited_before_ready"]
+
+    with zipfile.ZipFile(io.BytesIO(captured["data"])) as zf:
+        names = set(zf.namelist())
+        assert "incident-digest.txt" in names
+        # Update category → update logs + desktop.log ship; agent/gateway do not.
+        assert {"logs/desktop.log", "logs/bootstrap-installer.log"} <= names
+        assert "logs/agent.log" not in names
+        assert "logs/gateway.log" not in names
+        digest = zf.read("incident-digest.txt").decode("utf-8")
+        assert "boot.port_in_use ×1 [high]" in digest
+        assert "update.web_build_failed ×1" in digest
+        assert "mcp.server_start_failed ×1" in digest
+        assert "sk-abcdefghijklmnopqrstuv" not in digest
+        metadata = json.loads(zf.read("metadata.json"))
+        details = metadata["issue_details"]
+        assert details["digest_file"] == "incident-digest.txt"
+        assert details["log_scope"] == "focused"
+        assert details["signals"][0]["id"] == "boot.port_in_use"
+        assert details["signals"][0]["count"] == 1
+        assert {f["path"] for f in metadata["files"]} >= {"incident-digest.txt", "logs/desktop.log"}
+        manifest = json.loads(zf.read("manifest.json"))
+        roles = {f["name"]: f.get("role") for f in manifest["included_files"]}
+        assert roles["incident-digest.txt"] == "digest"
+        assert roles["desktop.log"] == "focused"
+
+
+def test_focused_bundle_caps_relevant_tails_at_200_lines_and_mcp_category_ships_mcp_stderr(tmp_path, monkeypatch, capsys):
+    _focused_home(tmp_path, monkeypatch)
+    captured = {}
+    _fake_upload(monkeypatch, captured)
+    assert support_logs.run_send_logs(_parse(["--json", "--category", "mcp_tools"])) == 0
+    capsys.readouterr()
+    with zipfile.ZipFile(io.BytesIO(captured["data"])) as zf:
+        names = set(zf.namelist())
+        assert {"logs/agent.log", "logs/mcp-stderr.log"} <= names
+        assert "logs/desktop.log" not in names
+        agent_log = zf.read("logs/agent.log").decode("utf-8")
+        assert agent_log.count("\n") == 200
+        assert "agent line 299" in agent_log and "agent line 50" not in agent_log
+
+
+def test_context_type_wins_over_category_for_log_selection():
+    assert support_logs._relevant_log_names("other", "boot_error")[0] == "desktop.log"
+    assert support_logs._relevant_log_names("mcp_tools", "") == support_logs._CATEGORY_LOGS["mcp_tools"]
+    assert support_logs._relevant_log_names("unknown-category", "manual") == support_logs._DEFAULT_CATEGORY_LOGS
+
+
+def test_full_logs_flag_restores_every_log_tail(tmp_path, monkeypatch, capsys):
+    _focused_home(tmp_path, monkeypatch)
+    captured = {}
+    _fake_upload(monkeypatch, captured)
+    assert support_logs.run_send_logs(_parse(["--json", "--category", "installation_update", "--full-logs"])) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["log_scope"] == "full"
+    with zipfile.ZipFile(io.BytesIO(captured["data"])) as zf:
+        names = set(zf.namelist())
+        assert {"logs/desktop.log", "logs/agent.log", "logs/gateway.log", "logs/mcp-stderr.log", "incident-digest.txt"} <= names
+        assert zf.read("logs/agent.log").decode("utf-8").count("\n") == 300
+        gateway = zf.read("logs/gateway.log").decode("utf-8")
+        assert "sk-abcdefghijklmnopqrstuv" not in gateway
+        metadata = json.loads(zf.read("metadata.json"))
+        assert metadata["issue_details"]["log_scope"] == "full"
+
+
+def test_dry_run_previews_signals_and_files_without_uploading(tmp_path, monkeypatch, capsys):
+    _focused_home(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(support_logs.urllib.request, "urlopen", lambda *a, **k: calls.append(a))
+    out_path = tmp_path / "preview.zip"
+    assert support_logs.run_send_logs(_parse(["--json", "--dry-run", "--category", "installation_update", "--output", str(out_path)])) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True and payload["dry_run"] is True
+    assert calls == []
+    assert payload["signals"][0]["id"] == "boot.port_in_use"
+    assert any(f["path"] == "incident-digest.txt" for f in payload["files"])
+    assert all("size_bytes" in f for f in payload["files"])
+    assert out_path.exists() and payload["bundle_bytes"] == out_path.stat().st_size

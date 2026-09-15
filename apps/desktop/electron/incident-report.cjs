@@ -65,8 +65,26 @@ function recentlyReported(hermesHome, kind, now = Date.now() / 1000) {
 
 function remember(hermesHome, kind, caseId, summary) {
   const state = readState(hermesHome)
-  state[kind] = { reported_at: Date.now() / 1000, case_id: caseId || '', summary: String(summary || '').slice(0, 200) }
+  state[kind] = { reported_at: Date.now() / 1000, case_id: caseId || '', summary: String(summary || '').slice(0, 200), occurrences_since_report: 0 }
   writeState(hermesHome, state)
+}
+
+// A rate-limited repeat is counted, so the next report (after the 24 h window)
+// can say "seen N more times since" instead of losing the frequency (AIS-344).
+function countOccurrence(hermesHome, kind) {
+  const state = readState(hermesHome)
+  const entry = state[kind]
+  if (!entry || typeof entry !== 'object') return 0
+  const count = (Number(entry.occurrences_since_report) || 0) + 1
+  entry.occurrences_since_report = count
+  writeState(hermesHome, state)
+  return count
+}
+
+function occurrencesSinceReport(hermesHome, kind) {
+  const entry = readState(hermesHome)[kind]
+  if (!entry || typeof entry !== 'object') return 0
+  return Number(entry.occurrences_since_report) || 0
 }
 
 // --- minimal stored ZIP (no zip library in Electron's main process) ----------
@@ -209,13 +227,24 @@ async function uploadMinimalIncident({
   clientType = 'hermes-desktop',
   clientVersion = '',
   env = process.env,
-  uploadUrl = null
+  uploadUrl = null,
+  extraFiles = {},
+  signals = []
 }) {
   const now = new Date()
   const caseId = caseIdNow(now)
   const context =
     `kind: ${kind}\nsummary: ${summary}\ndetail: ${detail}\nclient: ${clientType} ${clientVersion}\n` +
     `os: ${os.platform()} ${os.release()} (${os.arch()})\nnode: ${process.version}\ntimestamp: ${now.toISOString()}\n`
+  // Extra text files (AIS-344): e.g. `desktop-log-tail.txt` = the last boot
+  // section of desktop.log, so a boot failure without a working venv still
+  // ships the lines that matter.
+  const extras = {}
+  for (const [name, raw] of Object.entries(extraFiles || {})) {
+    if (typeof raw !== 'string' || !raw.trim()) continue
+    const safeName = String(name).replace(/[^a-zA-Z0-9_.-]/g, '_')
+    extras[safeName] = raw
+  }
   const metadata = {
     schema_version: '1.1.0',
     support_case_id: caseId,
@@ -226,14 +255,25 @@ async function uploadMinimalIncident({
     environment: env.HERMES_ENV || 'production',
     timestamp: now.toISOString(),
     client_info: { client_type: clientType, client_version: clientVersion || 'unknown', os: `${os.type()} ${os.release()} (${os.arch()})`, user_id: os.userInfo().username },
-    issue_details: { category: CATEGORY, severity, summary: String(summary).slice(0, 200), user_description: detail },
+    issue_details: {
+      category: CATEGORY,
+      severity,
+      summary: String(summary).slice(0, 200),
+      user_description: detail,
+      signals: Array.isArray(signals) ? signals.slice(0, 10) : [],
+      digest_file: '',
+      log_scope: 'minimal'
+    },
     context_type: contextType,
     install_type: installType,
     lifecycle: { retention_days: 14, max_size_kb: 25600 },
-    files: [{ path: 'incident-context.txt', mime_type: 'text/plain', size_bytes: Buffer.byteLength(context), content_category: 'log' }]
+    files: [
+      { path: 'incident-context.txt', mime_type: 'text/plain', size_bytes: Buffer.byteLength(context), content_category: 'log' },
+      ...Object.entries(extras).map(([name, raw]) => ({ path: name, mime_type: 'text/plain', size_bytes: Buffer.byteLength(raw), content_category: 'log' }))
+    ]
   }
   const manifest = { schema: 1, created_at: now.toISOString(), client: clientType, support_case_id: caseId, metadata }
-  const zip = buildZip({ 'metadata.json': JSON.stringify(metadata, null, 2), 'manifest.json': JSON.stringify(manifest, null, 2), 'incident-context.txt': context })
+  const zip = buildZip({ 'metadata.json': JSON.stringify(metadata, null, 2), 'manifest.json': JSON.stringify(manifest, null, 2), 'incident-context.txt': context, ...extras })
   const url = uploadUrl || env.SUPPORT_UPLOAD_URL || DEFAULT_UPLOAD_URL
   const key = env.SUPPORT_API_KEY || 'anonymous'
   const response = await postMultipart(url, {
@@ -248,7 +288,7 @@ async function uploadMinimalIncident({
 // reportIncident: log + gate + rate limit + CLI-first upload + minimal fallback.
 // `runCli(payload)` is main.cjs' runSupportLogUpload (full bundle through the
 // installed Hermes); it may be absent or fail when the venv does not exist.
-async function reportIncident({ kind, summary, detail = '', severity = 'medium', contextType, installType, clientType = 'hermes-desktop', clientVersion = '', hermesHome, runCli = null, log = () => {}, env = process.env, uploadUrl = null }) {
+async function reportIncident({ kind, summary, detail = '', severity = 'medium', contextType, installType, clientType = 'hermes-desktop', clientVersion = '', hermesHome, runCli = null, log = () => {}, env = process.env, uploadUrl = null, extraFiles = {}, signals = [] }) {
   const slug = String(kind || 'incident')
     .trim()
     .toLowerCase()
@@ -259,8 +299,13 @@ async function reportIncident({ kind, summary, detail = '', severity = 'medium',
     return { ok: false, skipped: 'disabled' }
   }
   if (hermesHome && recentlyReported(hermesHome, slug)) {
-    log(`[incident] ${slug} already reported within the last 24 h — not reported again`)
-    return { ok: false, skipped: 'rate-limited' }
+    const count = countOccurrence(hermesHome, slug)
+    log(`[incident] ${slug} already reported within the last 24 h — not reported again (${count} since)`)
+    return { ok: false, skipped: 'rate-limited', occurrences: count }
+  }
+  const since = hermesHome ? occurrencesSinceReport(hermesHome, slug) : 0
+  if (since > 0) {
+    detail = `${detail ? `${detail}\n` : ''}seen ${since} more time(s) since the last report`
   }
   let caseId = ''
   if (typeof runCli === 'function') {
@@ -277,7 +322,7 @@ async function reportIncident({ kind, summary, detail = '', severity = 'medium',
   }
   if (!caseId) {
     try {
-      const minimal = await uploadMinimalIncident({ kind: slug, summary, detail, severity, contextType, installType, clientType, clientVersion, env, uploadUrl })
+      const minimal = await uploadMinimalIncident({ kind: slug, summary, detail, severity, contextType, installType, clientType, clientVersion, env, uploadUrl, extraFiles, signals })
       caseId = minimal.caseId
     } catch (err) {
       log(`[incident] ${slug} could not be reported to support: ${err.message}`)
@@ -295,7 +340,9 @@ module.exports = {
   STATE_FILENAME,
   autoReportEnabled,
   buildZip,
+  countOccurrence,
   crc32,
+  occurrencesSinceReport,
   recentlyReported,
   remember,
   reportIncident,

@@ -92,6 +92,10 @@ declare global {
         contextType?: string
         reason?: string
         attachments?: Array<string | { name?: string; data?: string; mimeType?: string }>
+        /** Ship full log tails instead of the focused bundle (AIS-344). */
+        fullLogs?: boolean
+        /** Build the bundle and return its signals/files without uploading. */
+        dryRun?: boolean
       }) => Promise<DesktopSupportLogSendResult>
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
@@ -188,6 +192,23 @@ export interface DesktopVersionInfo {
   releaseTag?: string
 }
 
+export interface DesktopSupportSignal {
+  id: string
+  count: number
+  severity: string
+  title: string
+  first?: string | null
+  last?: string | null
+  files?: string[]
+}
+
+export interface DesktopSupportBundleFile {
+  path: string
+  mime_type?: string
+  size_bytes?: number
+  content_category?: string
+}
+
 export interface DesktopSupportLogSendResult {
   ok: boolean
   error?: string
@@ -195,6 +216,12 @@ export interface DesktopSupportLogSendResult {
   referenceId?: string
   status_code?: number
   elapsed_ms?: number
+  /** AIS-344: what the bundle carried (also returned by a dry run). */
+  dry_run?: boolean
+  bundle_bytes?: number
+  files?: DesktopSupportBundleFile[]
+  signals?: DesktopSupportSignal[]
+  log_scope?: 'focused' | 'full' | 'minimal' | string
 }
 
 export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
