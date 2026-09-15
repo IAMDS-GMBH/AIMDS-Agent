@@ -5038,3 +5038,56 @@ class TestMissingIncludeTools:
         finally:
             with _prefix_lock:
                 _mcp_server_prefixes.pop("PrefixDemo", None)
+
+
+class TestMonthByMonthCalls:
+    """AIS-344: a windowed call spanning several months runs once per month
+    through the same MCP tool, whatever the server — merged with per-month
+    completeness so a server-side cut can never hide behind one big range."""
+
+    def test_list_payloads_are_merged_with_month_records(self):
+        from tools import mcp_tool as mt
+
+        chunks = mt._month_chunks({"calendar": "OFFICE", "start_time_iso": "2026-01-01T00:00:00Z", "end_time_iso": "2026-03-15T23:59:59Z"})
+        assert [m for m, _ in chunks] == ["2026-01", "2026-02", "2026-03"]
+        seen = []
+
+        def call_once(args):
+            seen.append(args["start_time_iso"][:10])
+            month = args["start_time_iso"][:7]
+            if month == "2026-02":
+                raise RuntimeError("throttled")
+            n = {"2026-01": 2, "2026-03": 1}[month]
+            return json.dumps({"result": {"value": [{"id": f"{month}-{i}", "subject": "x"} for i in range(n)],
+                                          "resolved_calendar_name": "OFFICE", "complete": True,
+                                          "months": [{"month": month, "count": n, "complete": True}]}})
+
+        out = json.loads(mt._call_split_by_month("mcp_MSOffice365MCP_m365_get_events", chunks, call_once))["result"]
+        assert seen == ["2026-01-01", "2026-02-01", "2026-03-01"]
+        assert [e["id"] for e in out["value"]] == ["2026-01-0", "2026-01-1", "2026-03-0"]
+        assert out["complete"] is False and out["split_by_month"] is True and out["count"] == 3
+        assert [(m["month"], m["count"], m["complete"]) for m in out["months"]] == [("2026-01", 2, True), ("2026-02", 0, False), ("2026-03", 1, True)]
+        assert "throttled" in out["months"][1]["error"]
+        assert out["resolved_calendar_name"] == "OFFICE"  # non-list fields survive
+        assert out["window"] == {"start": "2026-01-01T00:00:00Z", "end": "2026-03-15T23:59:59Z"}
+
+    def test_delimited_text_payloads_are_joined(self):
+        from tools import mcp_tool as mt
+
+        chunks = mt._month_chunks({"startDate": "2026-01-01", "endDate": "2026-02-28"})
+
+        def call_once(args):
+            if args["startDate"].startswith("2026-02"):
+                return json.dumps({"result": "No worklogs found for the specified date range."})
+            return json.dumps({"result": "TempoWorklogId: 1 | IssueKey: A-1 | Date: 2026-01-05 | Hours: 8.00\nTempoWorklogId: 2 | IssueKey: A-1 | Date: 2026-01-06 | Hours: 4.00"})
+
+        out = json.loads(mt._call_split_by_month("mcp_TempoMCP_retrieveWorklogs", chunks, call_once))
+        assert out["result"].count("TempoWorklogId") == 2 and out["complete"] is True
+        assert [(m["month"], m["count"]) for m in out["months"]] == [("2026-01", 2), ("2026-02", 0)]
+
+    def test_error_payload_marks_the_month_incomplete(self):
+        from tools import mcp_tool as mt
+
+        chunks = mt._month_chunks({"from": "2026-03-01", "to": "2026-04-30"})
+        out = json.loads(mt._call_split_by_month("mcp_X_list", chunks, lambda a: json.dumps({"error": "boom"}) if a["from"].startswith("2026-04") else json.dumps({"result": [{"id": 1}]})))["result"]
+        assert out["count"] == 1 and out["complete"] is False and out["months"][1]["error"] == "boom"

@@ -6,7 +6,7 @@ const os = require('node:os')
 const path = require('node:path')
 const zlib = require('node:zlib')
 
-const { autoReportEnabled, buildZip, crc32, recentlyReported, remember, reportIncident, statePath, uploadMinimalIncident } = require('./incident-report.cjs')
+const { autoReportEnabled, buildZip, countOccurrence, crc32, occurrencesSinceReport, recentlyReported, remember, reportIncident, statePath, uploadMinimalIncident } = require('./incident-report.cjs')
 
 function mkHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-incident-test-'))
@@ -150,6 +150,72 @@ test('reportIncident prefers the CLI bundle, falls back to the minimal upload, a
     const off = await reportIncident({ kind: 'other', summary: 'x', hermesHome: home, uploadUrl: url, env: { HERMES_SUPPORT_AUTO_REPORT: '0' }, log: l => logs.push(l) })
     assert.equal(off.skipped, 'disabled')
     assert.equal(received.length, 1)
+  } finally {
+    server.close()
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+// AIS-344 (B2/B3): the minimal report ships the last boot section of
+// desktop.log and the classified signal; rate-limited repeats are counted.
+test('uploadMinimalIncident ships extra files and signals in the minimal bundle', async () => {
+  const received = []
+  const { server, url } = await startFakeSupportServer(received)
+  try {
+    const tail = '[hermes] [boot] Resolving Hermes backend\n[hermes] ERROR: [Errno 48] address already in use\n'
+    const result = await uploadMinimalIncident({
+      kind: 'boot-failure-port-in-use',
+      summary: 'desktop boot failed after 5 attempt(s): Backend port already in use',
+      detail: 'ERROR: [Errno 48] address already in use',
+      severity: 'high',
+      contextType: 'boot_error',
+      installType: 'update',
+      env: {},
+      uploadUrl: url,
+      extraFiles: { 'desktop-log-tail.txt': tail, 'ignored.txt': '   ', 'weird name!.txt': 'x' },
+      signals: [{ id: 'boot.port_in_use', count: 1, severity: 'high', title: 'Backend port already in use' }]
+    })
+    assert.equal(result.ok, true)
+    const entries = readZip(received[0].zip)
+    assert.equal(entries['desktop-log-tail.txt'], tail)
+    assert.equal(entries['weird_name_.txt'], 'x')
+    assert.ok(!('ignored.txt' in entries), 'blank extras are dropped')
+    const metadata = JSON.parse(entries['metadata.json'])
+    assert.equal(metadata.context_type, 'boot_error')
+    assert.deepEqual(metadata.issue_details.signals, [{ id: 'boot.port_in_use', count: 1, severity: 'high', title: 'Backend port already in use' }])
+    assert.equal(metadata.issue_details.log_scope, 'minimal')
+    assert.deepEqual(metadata.files.map(f => f.path).sort(), ['desktop-log-tail.txt', 'incident-context.txt', 'weird_name_.txt'])
+  } finally {
+    server.close()
+  }
+})
+
+test('reportIncident counts rate-limited repeats and carries the count into the next report', async () => {
+  const home = mkHome()
+  const received = []
+  const { server, url } = await startFakeSupportServer(received)
+  try {
+    const cliCalls = []
+    const runCli = async payload => (cliCalls.push(payload), { ok: true, reference_id: 'SUP-CLI-9' })
+    const base = { kind: 'boot-failure-port-in-use', summary: 'boot failed', contextType: 'boot_error', hermesHome: home, uploadUrl: url, env: {}, runCli }
+    assert.equal((await reportIncident(base)).ok, true)
+    assert.equal(occurrencesSinceReport(home, 'boot-failure-port-in-use'), 0)
+    const second = await reportIncident(base)
+    const third = await reportIncident(base)
+    assert.equal(second.skipped, 'rate-limited')
+    assert.equal(third.occurrences, 2)
+    assert.equal(occurrencesSinceReport(home, 'boot-failure-port-in-use'), 2)
+    assert.equal(cliCalls.length, 1)
+    // Window expired → the next report mentions the repeats and resets the count.
+    const statePath_ = statePath(home)
+    const state = JSON.parse(fs.readFileSync(statePath_, 'utf8'))
+    state['boot-failure-port-in-use'].reported_at -= 25 * 60 * 60
+    fs.writeFileSync(statePath_, JSON.stringify(state))
+    assert.equal((await reportIncident({ ...base, detail: 'EADDRINUSE' })).ok, true)
+    assert.equal(cliCalls.length, 2)
+    assert.match(cliCalls[1].userDescription, /EADDRINUSE\nseen 2 more time\(s\) since the last report/)
+    assert.equal(occurrencesSinceReport(home, 'boot-failure-port-in-use'), 0)
+    assert.equal(countOccurrence(home, 'never-seen'), 0)
   } finally {
     server.close()
     fs.rmSync(home, { recursive: true, force: true })

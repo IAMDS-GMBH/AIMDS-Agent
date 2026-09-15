@@ -44,6 +44,18 @@ def build_support_parser(subparsers, *, cmd_support: Callable) -> None:
     send_logs.add_argument("--attachment", action="append", default=[], help="File path or image to attach to the support bundle (can be specified multiple times)")
     send_logs.add_argument("--output", default=None, help="Keep bundle zip at this path instead of temp cleanup")
     send_logs.add_argument("--no-dump", dest="include_dump", action="store_false", help="Skip hermes dump text")
+    send_logs.add_argument(
+        "--full-logs",
+        dest="full_logs",
+        action="store_true",
+        help="Ship --max-lines of every log instead of the focused bundle (incident digest + category-relevant tails)",
+    )
+    send_logs.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="Build the bundle and print its signals and file list without uploading",
+    )
     send_logs.add_argument("--json", action="store_true", help="Emit JSON result")
     send_logs.set_defaults(include_dump=True)
 

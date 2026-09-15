@@ -173,6 +173,24 @@ class TestProfileRoundTrip:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         assert wt._profile_from_memory() is None
 
+    def test_negative_lookup_is_cached_briefly_only(self, monkeypatch, tmp_path):
+        """AIS-344: a failed lookup used to be cached for 10 min, hiding a
+        save that happened seconds later."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        calls = {"n": 0}
+
+        def lookup():
+            calls["n"] += 1
+            return None
+
+        monkeypatch.setattr(wt, "_profile_from_memory", lookup)
+        monkeypatch.setattr(wt, "_profile_from_legacy_config", lambda: None)
+        wt._profile_cache.update({"at": 0.0, "profile": None, "checked": False})
+        assert wt.load_profile() is None and wt.load_profile() is None
+        assert calls["n"] == 1  # negative result cached …
+        wt._profile_cache["at"] -= wt._PROFILE_NEGATIVE_TTL_SECONDS + 1
+        assert wt.load_profile() is None and calls["n"] == 2  # … but only briefly
+
     def test_load_profile_prefers_memory_then_mirror_then_legacy(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         wt._profile_cache.update({"at": 0.0, "profile": None})
@@ -740,10 +758,12 @@ class TestPresence:
         db = tmp_path / "s.db"
         self._seed_events(db, monkeypatch)
         out = json.loads(wt.execute_workdays({"action": "presence", "op": "import_from_calendar"}, db_path=db))
-        assert out["missing"] == ["calendar", "match"] and "configure" in out["ask"]
+        assert out["missing"] == ["calendar"] and "configure" in out["ask"]
+        assert {c["key"] for c in out["available_calendars"]} == {"OFFICEZEITEN", "Kalender"}
         out = json.loads(wt.execute_workdays({
             "action": "presence", "op": "import_from_calendar", "calendar": "URLAUB", "match": "Johannes"}, db_path=db))
-        assert out["upserted"] == 0 and "m365_get_events(calendar='URLAUB'" in out["hints"][0]
+        assert out["upserted"] == 0 and "no ingested events for a calendar matching 'URLAUB'" in out["hints"][0]
+        assert any(c["key"] == "OFFICEZEITEN" for c in out["available_calendars"])
         out = json.loads(wt.execute_workdays({
             "action": "presence", "op": "import_from_calendar", "calendar": "OFFICEZEITEN", "match": "Nobody"}, db_path=db))
         assert out["upserted"] == 0 and "none match" in out["hints"][0]
@@ -790,3 +810,78 @@ class TestPresence:
         assert out["upserted"] == 3
         out = json.loads(wt.execute_workdays({"action": "presence", "op": "remove", "days": ["2026-09-02"]}, db_path=db))
         assert out["deleted"] == 1 and out["summary"][0]["days"] == 2
+
+
+class TestPresenceGenericLayer:
+    """AIS-344: user-first default (involves_me), calendar resolution by name /
+    key / address, colleagues reported, multi-day events, register coverage."""
+
+    ROWS = [
+        # group calendar rows as the M365 server stamps them now: stable key + display name + involvement
+        ("o1", "mcp_MSOffice365MCP_m365_get_events", "f1", "group:g-1", "2026-05-05T00:00:00", "OFFICE | ACME", 86400, "all_day", "Erika Muster",
+         '{"subject": "Erika Muster", "calendar_key": "group:g-1", "calendar_name": "OFFICE | ACME", "isAllDay": true, "start_iso_local": "2026-05-05T00:00:00", "end_iso_local": "2026-05-06T00:00:00", "involves_me": true, "participants": ["Erika Muster", "OFFICE | ACME"], "organizer": {"emailAddress": {"name": "OFFICE | ACME", "address": "office@acme.test"}}}'),
+        ("o2", "mcp_MSOffice365MCP_m365_get_events", "f1", "group:g-1", "2026-05-12T00:00:00", "OFFICE | ACME", 172800, "all_day", "Erika Muster",
+         '{"subject": "Muster & Kollege", "calendar_key": "group:g-1", "calendar_name": "OFFICE | ACME", "isAllDay": true, "start_iso_local": "2026-05-12T00:00:00", "end_iso_local": "2026-05-14T00:00:00", "involves_me": true, "participants": ["Muster & Kollege", "OFFICE | ACME"], "organizer": {"emailAddress": {"name": "OFFICE | ACME", "address": "office@acme.test"}}}'),
+        ("o3", "mcp_MSOffice365MCP_m365_get_events", "f1", "group:g-1", "2026-05-19T00:00:00", "OFFICE | ACME", 86400, "all_day", "Max Kollege",
+         '{"subject": "Max Kollege", "calendar_key": "group:g-1", "calendar_name": "OFFICE | ACME", "isAllDay": true, "start_iso_local": "2026-05-19T00:00:00", "end_iso_local": "2026-05-20T00:00:00", "involves_me": false, "participants": ["Max Kollege", "OFFICE | ACME"], "organizer": {"emailAddress": {"name": "OFFICE | ACME", "address": "office@acme.test"}}}'),
+        ("o4", "mcp_MSOffice365MCP_m365_get_events", "f1", "group:g-1", "2026-06-02T00:00:00", "OFFICE | ACME", 86400, "all_day", "Erika Muster",
+         '{"subject": "Erika Muster", "calendar_key": "group:g-1", "calendar_name": "OFFICE | ACME", "isAllDay": true, "start_iso_local": "2026-06-02T00:00:00", "end_iso_local": "2026-06-03T00:00:00", "involves_me": true, "participants": ["Erika Muster"], "organizer": {"emailAddress": {"name": "OFFICE | ACME", "address": "office@acme.test"}}}'),
+    ]
+
+    def _seed(self, db, monkeypatch):
+        profile = dict(BY, worklog_source_tool="mcp_MyTimeMCP_%", _source="memory (mcp)")
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: profile)
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+        _seed_mcp(db, self.ROWS)
+        from tools.mcp_json_ingestor import record_fetches
+        conn = sqlite3.connect(str(db))
+        record_fetches(conn, tool_use_id="f1", tool_name="mcp_MSOffice365MCP_m365_get_events", reference_key="group:g-1",
+                       window=("2026-05-01", "2026-06-30"), rows=4, complete=False,
+                       months=[{"month": "2026-05", "count": 3, "complete": True}, {"month": "2026-06", "count": 1, "complete": False, "error": "429"}])
+        conn.commit(); conn.close()
+
+    def _import(self, db, **extra):
+        return json.loads(wt.execute_workdays({"action": "presence", "op": "import_from_calendar", "start": "2026-05-01", "end": "2026-06-30", **extra}, db_path=db))
+
+    def test_involves_me_is_the_default_and_calendar_resolves_by_name_key_or_address(self, tmp_path, monkeypatch):
+        db = tmp_path / "s.db"
+        self._seed(db, monkeypatch)
+        by_name = self._import(db, calendar="office")          # substring of the display name
+        by_key = self._import(db, calendar="group:g-1")        # stable key
+        by_mail = self._import(db, calendar="office@acme.test")  # organizer address
+        for out in (by_name, by_key, by_mail):
+            assert out["calendar"] == "OFFICE | ACME" and out["calendar_key"] == "group:g-1"
+            assert out["match"] == "involves_me" and out["matched_events"] == 3
+            # 05-05, 05-12 + 05-13 (two-day all-day event), 06-02
+            assert out["upserted"] == 4
+        # the shared calendar's own organizer ("OFFICE | ACME") is not a colleague
+        assert by_name["others"] == {"count": 1, "names": ["Max Kollege"],
+                                     "note": "shared calendar: entries of other people are colleagues' presence and are not counted"}
+        summary = {(r["month"], r["days"]) for r in by_name["summary"]}
+        assert summary == {("2026-05", 3), ("2026-06", 1)}
+
+    def test_coverage_gaps_come_from_the_fetch_register(self, tmp_path, monkeypatch):
+        db = tmp_path / "s.db"
+        self._seed(db, monkeypatch)
+        out = self._import(db, calendar="OFFICE | ACME")
+        assert [(m["month"], m["status"]) for m in out["coverage"]["months"]] == [("2026-05", "complete"), ("2026-06", "incomplete")]
+        assert out["coverage"]["gaps"] == ["2026-06"] and out["unverified_months"] == ["2026-06"]
+        assert any("2026-06" in h and "one call per month" in h for h in out["hints"])
+        # the report repeats the gap for the presence source
+        rep = json.loads(wt.execute_workdays({"action": "report", "start": "2026-05-01", "end": "2026-06-30"}, db_path=db))
+        assert rep["coverage"]["unverified_months"] == {"calendar:group:g-1": ["2026-06"]}
+        assert any("unverified months for calendar:group:g-1: 2026-06" in h for h in rep["hints"])
+
+    def test_match_patterns_widen_and_missing_involvement_is_explained(self, tmp_path, monkeypatch):
+        db = tmp_path / "s.db"
+        self._seed(db, monkeypatch)
+        out = self._import(db, calendar="OFFICE", match="Kollege")
+        assert out["matched_events"] == 2 and out["upserted"] == 3  # Muster & Kollege (2 days) + Max Kollege
+        assert out["others"]["names"] == ["Erika Muster"]
+        # rows without the involves_me flag (a foreign calendar MCP) need match=
+        conn = sqlite3.connect(str(db))
+        conn.execute("UPDATE mcp_records SET raw_data = replace(raw_data, '\"involves_me\": true', '\"involves_me\": null')")
+        conn.execute("UPDATE mcp_records SET raw_data = replace(raw_data, '\"involves_me\": false', '\"involves_me\": null')")
+        conn.commit(); conn.close()
+        out = self._import(db, calendar="OFFICE")
+        assert out["upserted"] == 0 and any("no involves_me flag" in h for h in out["hints"])

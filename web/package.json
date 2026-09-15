@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "typecheck": "tsc -p . --noEmit"
+    "typecheck": "tsc -b --noEmit"
   },
   "dependencies": {
     "@nous-research/ui": "0.18.2",

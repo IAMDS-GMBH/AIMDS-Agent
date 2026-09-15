@@ -203,3 +203,80 @@ class TestToolSurface:
         assert found["count"] >= 1 and found["results"][0]["title"] == "Prefers tables"
         read = json.loads(vault_memory_tool({"action": "read", "slug": out["ref"]}))
         assert "markdown tables" in read["content"]
+
+
+class TestMcpBridgeEnvelope:
+    """AIS-344: the MCP bridge wraps every server answer as ``{"result": …}``
+    (object or JSON string). The facade read the envelope as the payload, so
+    search found nothing, read returned the envelope text and save never got
+    a slug — the workdays profile was "unknown" for two weeks although every
+    configure said saved."""
+
+    NAMES = {
+        "mcp_AIMDSSuiteMCP_mcp_memory_memory_context",
+        "mcp_AIMDSSuiteMCP_mcp_memory_memory_save",
+        "mcp_AIMDSSuiteMCP_mcp_memory_memory_search",
+        "mcp_AIMDSSuiteMCP_mcp_memory_memory_read",
+    }
+
+    def _facade(self, monkeypatch, handler):
+        import run_agent
+        monkeypatch.setattr(run_agent, "handle_function_call", handler)
+        return mf.MemoryFacade.for_agent(_agent(set(self.NAMES)))
+
+    def test_unwrap_peels_envelopes_and_json_strings(self):
+        u = mf._unwrap_mcp_result
+        assert u('{"result": {"results": [{"slug": "a"}]}}') == {"results": [{"slug": "a"}]}
+        assert u(json.dumps({"result": json.dumps({"content": "region: DE-BY"})})) == {"content": "region: DE-BY"}
+        assert u('{"result": "plain text answer"}') == "plain text answer"
+        assert u('<untrusted_tool_result source="x"> {"result": {"slug": "s"}} </untrusted_tool_result>') == {"slug": "s"}
+        assert u("not json") == "not json"
+        assert u('{"slug": "direct"}') == {"slug": "direct"}
+
+    def test_search_read_and_save_see_through_the_envelope(self, workspace, monkeypatch):
+        note = "region: DE-BY\nweekly_hours: 40\ndays_per_week: 5"
+        calls = []
+
+        def handler(name, args, task_id, **kw):
+            calls.append((name, args))
+            if name.endswith("memory_search"):
+                return json.dumps({"result": {"count": 1, "results": [
+                    {"slug": "arbeitszeit-profil", "title": "Arbeitszeit-Profil", "snippet": note[:20] + "…", "type": "reference"}]}})
+            if name.endswith("memory_read"):
+                return json.dumps({"result": json.dumps({"slug": args["slug"], "title": "Arbeitszeit-Profil", "content": note, "priority": 8})})
+            if name.endswith("memory_save"):
+                return json.dumps({"result": {"created": False, "saved": True, "slug": "arbeitszeit-profil"}})
+            return "{}"
+
+        facade = self._facade(monkeypatch, handler)
+        hits = facade.search("Arbeitszeit-Profil", limit=5)
+        assert hits and hits[0]["slug"] == "arbeitszeit-profil"
+        assert facade.read("arbeitszeit-profil") == note
+        res = facade.save(title="Arbeitszeit-Profil", content=note, type="reference")
+        assert res.ok and res.backend == mf.MODE_MCP and res.ref == "arbeitszeit-profil"
+
+    def test_plain_payloads_without_envelope_still_work(self, workspace, monkeypatch):
+        def handler(name, args, task_id, **kw):
+            if name.endswith("memory_search"):
+                return json.dumps({"results": [{"slug": "x", "title": "X", "content": "body"}]})
+            if name.endswith("memory_read"):
+                return "raw markdown body"
+            return json.dumps({"saved": True, "slug": "x"})
+
+        facade = self._facade(monkeypatch, handler)
+        assert facade.search("X")[0]["slug"] == "x"
+        assert facade.read("x") == "raw markdown body"
+        assert facade.save(title="X", content="body").ref == "x"
+
+    def test_error_inside_the_envelope_is_a_failed_save(self, workspace, monkeypatch):
+        def handler(name, args, task_id, **kw):
+            if name.endswith("memory_save"):
+                return json.dumps({"result": {"error": "quota exceeded"}})
+            if name.endswith("memory_read"):
+                return json.dumps({"result": {"error": "not found"}})
+            return json.dumps({"result": {"results": []}})
+
+        facade = self._facade(monkeypatch, handler)
+        res = facade.save(title="X", content="body")
+        assert res.backend == mf.MODE_VAULT  # fell through to the vault
+        assert facade.read("missing") is None or "not found" not in str(facade.read("missing") or "")

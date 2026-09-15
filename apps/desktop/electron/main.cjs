@@ -28,6 +28,17 @@ const { execFileSync, spawn } = require('node:child_process')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { reportIncident: reportAutoIncident } = require('./incident-report.cjs')
+const {
+  SPAWN_ATTEMPTS: BACKEND_SPAWN_ATTEMPTS,
+  isPortRaceText,
+  pickPort: pickPortExcluding,
+  readBackendRecord,
+  spawnBackoffMs,
+  stopProcessAndWait,
+  waitForPortRelease,
+  writeBackendRecord
+} = require('./backend-port.cjs')
+const { classifyBootFailure, lastBootSection, lastSignatureLine } = require('./boot-signatures.cjs')
 const { buildSessionWindowUrl, createSessionWindowRegistry } = require('./session-windows.cjs')
 const {
   badgeOverlaySvgDataUrl,
@@ -2357,7 +2368,9 @@ async function applyUpdates(opts = {}) {
       handedOff = true
       setTimeout(() => {
         if (launchFailed) return
-        app.quit()
+        // Stop our backend and wait for it to exit before quitting so the
+        // relaunch never races the old listener on the same port (AIS-344 B1).
+        void stopPrimaryBackendAndWait().finally(() => app.quit())
       }, 600)
 
       return { ok: true, handedOff: true, updater }
@@ -2562,7 +2575,9 @@ fi
   child.unref()
   rememberLog(`[updates] launched mac swap+relaunch: ${scriptPath} (${rebuiltApp} -> ${targetApp})`)
 
-  setTimeout(() => app.quit(), 600)
+  setTimeout(() => {
+    void stopPrimaryBackendAndWait().finally(() => app.quit())
+  }, 600)
   return { ok: true, handedOff: true, rebuiltApp, targetApp }
 }
 
@@ -3306,11 +3321,80 @@ function isPortAvailable(port) {
   })
 }
 
-async function pickPort() {
-  for (let port = PORT_FLOOR; port <= PORT_CEILING; port += 1) {
-    if (await isPortAvailable(port)) return port
+// `exclude` = ports that failed with EADDRINUSE in this boot (AIS-344 B1): the
+// probe keeps reporting them free while a child of the old backend holds the
+// listen fd, so a retry must never re-pick them.
+async function pickPort(exclude = new Set()) {
+  return pickPortExcluding({ isPortAvailable, floor: PORT_FLOOR, ceiling: PORT_CEILING, exclude })
+}
+
+// AIS-344 (B3): boot failures report themselves. The signature is classified
+// from the desktop's own recent log (the venv may be unusable), the kind is
+// `boot-failure-<signature>` so different causes get different cases and
+// their own 24 h rate limit, and the minimal report ships the last boot
+// section of desktop.log. Delayed boots (ready only after ≥2 attempts) send a
+// low-severity `boot-recovered-<signature>` so a port race is visible before
+// users report "hangs after restart". Never blocking; `support.auto_report:
+// false` / HERMES_SUPPORT_AUTO_REPORT=0 switch it off as before.
+function desktopLogTailForIncident() {
+  try {
+    const raw = fs.readFileSync(DESKTOP_LOG_PATH, 'utf8')
+    return lastBootSection(raw.split(/\r?\n/), 300).join('\n')
+  } catch {
+    return lastBootSection(hermesLog, 300).join('\n')
   }
-  throw new Error(`No free localhost port in ${PORT_FLOOR}-${PORT_CEILING}`)
+}
+
+function reportBootIncident({ kind, severity, summary, detail, signature }) {
+  void reportAutoIncident({
+    kind,
+    summary,
+    detail,
+    severity,
+    contextType: 'boot_error',
+    clientVersion: app.getVersion(),
+    hermesHome: HERMES_HOME,
+    runCli: runSupportLogUpload,
+    log: rememberLog,
+    extraFiles: { 'desktop-log-tail.txt': desktopLogTailForIncident() },
+    signals: [{ id: signature.id, count: 1, severity, title: signature.title }]
+  }).catch(error => rememberLog(`[incident] boot report failed: ${error?.message || error}`))
+}
+
+function reportBootFailure(attempts, error) {
+  const text = `${error?.message || ''}\n${recentHermesLog()}`
+  const signature = classifyBootFailure(text)
+  reportBootIncident({
+    kind: `boot-failure-${signature.slug}`,
+    severity: 'high',
+    summary: `desktop boot failed after ${attempts} attempt(s): ${signature.title}`,
+    detail: lastSignatureLine(text),
+    signature
+  })
+}
+
+function reportBootRecovered(attempts, lastError) {
+  const text = `${lastError?.message || ''}\n${recentHermesLog()}`
+  const signature = classifyBootFailure(text)
+  reportBootIncident({
+    kind: `boot-recovered-${signature.slug}`,
+    severity: 'low',
+    summary: `desktop boot recovered on attempt ${attempts}: ${signature.title}`,
+    detail: lastSignatureLine(text),
+    signature
+  })
+}
+
+// Stop the primary backend and wait for it to exit (≤5 s) — used by both
+// update hand-offs before app.quit(). Fire-and-forget SIGTERM left the old
+// listener alive into the relaunch on macOS/Linux (the Windows path already
+// tree-kills via releaseBackendLock).
+async function stopPrimaryBackendAndWait() {
+  const proc = hermesProcess
+  if (!proc) return { exited: true, forced: false, waited_ms: 0 }
+  const result = await stopProcessAndWait(proc, { log: rememberLog })
+  rememberLog(`[boot] backend stopped before quit (exited=${result.exited}, forced=${result.forced}, ${result.waited_ms}ms)`)
+  return result
 }
 
 function fetchJson(url, token, options = {}) {
@@ -5792,31 +5876,59 @@ async function startHermes() {
     // backend exits before ready. Re-picking the port on each attempt
     // self-heals — the retry either finds the port released or moves on to
     // the next free one.
-    const BACKEND_SPAWN_ATTEMPTS = 3
-    const BACKEND_SPAWN_RETRY_DELAY_MS = 2000
+    //
+    // AIS-344 (B1): ports that failed are excluded from the next pick, the
+    // attempts back off 2/3/4/5 s, and before the first attempt we wait (≤10 s)
+    // for the port the previous backend used (~/.hermes/desktop-backend.json)
+    // to be released — SIGTERM-ing a stale backend PID that is still alive.
+    // Boot failures and delayed boots report themselves (B3).
+    const failedPorts = new Set()
     let lastSpawnError = null
+    let lastPortRace = false
+    await waitForPreviousBackendPort()
     for (let spawnAttempt = 1; spawnAttempt <= BACKEND_SPAWN_ATTEMPTS; spawnAttempt += 1) {
       try {
-        return await spawnLocalBackendOnce(spawnAttempt)
+        const connection = await spawnLocalBackendOnce(spawnAttempt)
+        if (spawnAttempt > 1) reportBootRecovered(spawnAttempt, lastSpawnError)
+        return connection
       } catch (error) {
         lastSpawnError = error
         const failureText = `${error?.message || ''}\n${recentHermesLog()}`
-        const portRace = /address already in use|EADDRINUSE/i.test(failureText)
-        if (!portRace || spawnAttempt === BACKEND_SPAWN_ATTEMPTS) {
+        lastPortRace = isPortRaceText(failureText)
+        if (lastPortRace && error?.backendPort) failedPorts.add(error.backendPort)
+        if (!lastPortRace || spawnAttempt === BACKEND_SPAWN_ATTEMPTS) {
+          reportBootFailure(spawnAttempt, error)
           throw error
         }
+        const delayMs = spawnBackoffMs(spawnAttempt)
         rememberLog(
-          `[boot] Backend bind race detected (attempt ${spawnAttempt}/${BACKEND_SPAWN_ATTEMPTS}) — ` +
-          `retrying with a fresh port in ${BACKEND_SPAWN_RETRY_DELAY_MS}ms`
+          `[boot] Backend bind race detected (attempt ${spawnAttempt}/${BACKEND_SPAWN_ATTEMPTS}, port ${error?.backendPort || '?'}) — ` +
+          `retrying on another port in ${delayMs}ms`
         )
-        await new Promise(resolve => setTimeout(resolve, BACKEND_SPAWN_RETRY_DELAY_MS))
+        await new Promise(resolve => setTimeout(resolve, delayMs))
       }
     }
+    reportBootFailure(BACKEND_SPAWN_ATTEMPTS, lastSpawnError)
     throw lastSpawnError
+
+    async function waitForPreviousBackendPort() {
+      const record = readBackendRecord(HERMES_HOME)
+      if (!record) return
+      try {
+        const outcome = await waitForPortRelease({ record, isPortAvailable, log: rememberLog })
+        if (!outcome.skipped) {
+          rememberLog(`[boot] previous backend port ${record.port}: released=${outcome.released} after ${outcome.waited_ms}ms` +
+            (outcome.terminated_pid ? ` (terminated pid ${outcome.terminated_pid})` : ''))
+          if (!outcome.released) failedPorts.add(record.port)
+        }
+      } catch (error) {
+        rememberLog(`[boot] port release wait failed: ${error?.message || error}`)
+      }
+    }
 
     async function spawnLocalBackendOnce(spawnAttempt) {
     await advanceBootProgress('backend.port', 'Finding an open local port', 16)
-    const port = await pickPort()
+    const port = await pickPort(failedPorts)
     const token = crypto.randomBytes(32).toString('base64url')
     const dashboardArgs = ['dashboard', '--no-open', '--host', '127.0.0.1', '--port', String(port)]
     // Pin the desktop's chosen profile via the global --profile flag. This is
@@ -5863,6 +5975,7 @@ async function startHermes() {
 
     hermesProcess.stdout.on('data', rememberLog)
     hermesProcess.stderr.on('data', rememberLog)
+    writeBackendRecord(HERMES_HOME, { port, pid: hermesProcess.pid })
     let backendReady = false
     let rejectBackendStart = null
     const backendStartFailed = new Promise((_resolve, reject) => {
@@ -5900,17 +6013,22 @@ async function startHermes() {
           },
           { allowDecrease: true }
         )
-        rejectBackendStart?.(
-          new Error(
-            `Hermes backend exited before it became ready (${signal || code}). Log: ${DESKTOP_LOG_PATH}\n${recentHermesLog()}`
-          )
+        const startError = new Error(
+          `Hermes backend exited before it became ready (${signal || code}). Log: ${DESKTOP_LOG_PATH}\n${recentHermesLog()}`
         )
+        startError.backendPort = port
+        rejectBackendStart?.(startError)
       }
     })
 
     const baseUrl = `http://127.0.0.1:${port}`
     await advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
-    await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
+    try {
+      await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
+    } catch (error) {
+      if (error && typeof error === 'object' && !error.backendPort) error.backendPort = port
+      throw error
+    }
     backendReady = true
     updateBootProgress({
       phase: 'backend.ready',
@@ -6792,6 +6910,15 @@ async function runSupportLogUpload(rawPayload = {}) {
   }
   if (typeof payload.contextType === 'string' && payload.contextType.trim()) {
     args.push('--context-type', payload.contextType.trim())
+  }
+  // AIS-344: the bundle is focused by default (digest + category-relevant
+  // tails); the dialog's "full logs" switch restores 1200 lines of everything.
+  if (payload.fullLogs === true) {
+    args.push('--full-logs')
+  }
+  // Preview for the dialog: signals + file list, no upload.
+  if (payload.dryRun === true) {
+    args.push('--dry-run')
   }
 
   const tempFilesToClean = []

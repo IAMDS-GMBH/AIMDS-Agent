@@ -1657,6 +1657,12 @@ DEFAULT_CONFIG = {
     "mcp_results": {
         "enabled": True,
         "max_items": 25,
+        # Lists longer than max_items stay whole while they have at most
+        # max_items_extended entries AND serialise below list_byte_budget
+        # bytes (short listings such as calendars/folders); bigger lists
+        # cut at max_items, the full rows are in mcp_records (AIS-344).
+        "max_items_extended": 100,
+        "list_byte_budget": 8000,
         "max_string_chars": 1200,
         "max_depth": 6,
         "drop_keys": ["@odata.*", "etag", "changeKey", "@removed"],

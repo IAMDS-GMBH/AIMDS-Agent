@@ -49,6 +49,9 @@ PERIODS = ("ytd", "mtd", "this_month", "last_month", "this_week", "last_week", "
 PRESENCE_KINDS = ("office", "homeoffice", "travel")
 DEFAULT_PRESENCE = "homeoffice"  # what a booked working day counts as when nothing else is recorded
 _PROFILE_TTL_SECONDS = 600
+# A missing profile is re-checked soon: a lookup that failed for a transient
+# reason (backend down, envelope bug) must not hide a working save for 10 min.
+_PROFILE_NEGATIVE_TTL_SECONDS = 30
 
 CLARIFY_CHOICES = [
     "Bayern (DE-BY)",
@@ -150,14 +153,13 @@ def _is_profile_hit(hit: Dict[str, Any]) -> bool:
 def _profile_text_from_hit(hit: Dict[str, Any], facade: Any) -> str:
     """The profile note's body for a search hit.
 
-    Session 20260915_082908 (AIS-337): every ``configure`` since 2026-08-31
-    answered ``saved: true`` and every later session still got ``worktime
-    profile unknown``. The memory MCP's search returns a truncated
-    ``snippet`` (no ``content``/``preview``), and ``facade.read(slug)`` hands
-    back the whole memory object as a JSON string — a single line that
-    ``_parse_profile_text`` cannot read. Take whatever text the hit carries,
-    and when that is not a complete profile, read the note and unwrap the
-    JSON payload's ``content`` before parsing.
+    Session 20260915_082908 (AIS-337/AIS-344): every ``configure`` since
+    2026-08-31 answered ``saved: true`` and every later session still got
+    ``worktime profile unknown``. Root cause was the MCP bridge envelope
+    (``{"result": …}``) that ``MemoryFacade`` did not unwrap — fixed there.
+    This helper stays defensive: search hits may carry only a truncated
+    ``snippet``; read the note by slug and accept either the plain body or a
+    JSON object with ``content``.
     """
     text = str(hit.get("content") or hit.get("preview") or hit.get("snippet") or "")
     if hit.get("content"):
@@ -287,10 +289,14 @@ def _profile_from_legacy_config() -> Optional[Dict[str, Any]]:
 
 def load_profile(force: bool = False) -> Optional[Dict[str, Any]]:
     now = time.time()
-    if not force and _profile_cache["profile"] is not None and now - _profile_cache["at"] < _PROFILE_TTL_SECONDS:
-        return dict(_profile_cache["profile"])
+    cached = _profile_cache["profile"]
+    age = now - float(_profile_cache.get("at") or 0.0)
+    if not force and cached is not None and age < _PROFILE_TTL_SECONDS:
+        return dict(cached)
+    if not force and cached is None and _profile_cache.get("checked") and age < _PROFILE_NEGATIVE_TTL_SECONDS:
+        return None
     profile = _profile_from_memory() or _profile_from_mirror() or _profile_from_legacy_config()
-    _profile_cache.update({"at": now, "profile": profile})
+    _profile_cache.update({"at": now, "profile": profile, "checked": True})
     return dict(profile) if profile else None
 
 
@@ -1118,73 +1124,217 @@ def _act_presence(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
                                "summary": _presence_summary(conn)}, ensure_ascii=False)
 
         if op == "import_from_calendar":
-            profile = load_profile() or {}
-            calendar = str(args.get("calendar") or profile.get("presence_calendar") or "").strip()
-            patterns = _split_patterns(args.get("match") or profile.get("presence_match_patterns"))
-            if not calendar or not patterns:
-                return json.dumps({
-                    "action": "presence", "op": "import_from_calendar",
-                    "error": "presence calendar and match patterns are not configured",
-                    "missing": [k for k, v in (("calendar", calendar), ("match", patterns)) if not v],
-                    "ask": (
-                        "Ask the user which calendar holds their presence days (a shared office calendar, a team "
-                        "calendar, …) and how their entries are labelled (usually their name); pass calendar=… and "
-                        "match=… (or persist via workdays(action='configure', presence_calendar=…, "
-                        "presence_match_patterns=…)). kind= says what the entries mean (office, homeoffice, travel)."
-                    ),
-                }, ensure_ascii=False)
-            tool_pattern = str(args.get("calendar_source_tool") or "%_events%")
-            canonical = conn.execute(
-                "SELECT reference_key FROM mcp_records WHERE tool_name LIKE ? AND lower(reference_key) = lower(?) LIMIT 1",
-                (tool_pattern, calendar),
-            ).fetchone()
-            calendar = str(canonical[0]) if canonical and canonical[0] else calendar
-            where = "tool_name LIKE ? AND lower(reference_key) = lower(?) AND substr(timestamp, 1, 10) <> ''"
-            params: List[Any] = [tool_pattern, calendar]
-            window = None
-            if args.get("start") or args.get("year") or args.get("period"):
-                start, end = _range(args)
-                window = (start.isoformat(), end.isoformat())
-                where += " AND substr(timestamp, 1, 10) BETWEEN ? AND ?"
-                params += list(window)
-            total, first, last = conn.execute(
-                f"SELECT COUNT(*), MIN(substr(timestamp, 1, 10)), MAX(substr(timestamp, 1, 10)) FROM mcp_records WHERE {where}",
-                params,
-            ).fetchone()
-            match_sql = _like_sql("raw_data", [_like_pattern(p) for p in patterns])
-            days = [r[0] for r in conn.execute(
-                f"SELECT DISTINCT substr(timestamp, 1, 10) FROM mcp_records WHERE {where} AND {match_sql} ORDER BY 1",
-                params + [_like_pattern(p) for p in patterns],
-            ).fetchall()]
-            source = f"calendar:{calendar}"
-            delete_sql = f"DELETE FROM {PRESENCE_TABLE} WHERE kind = ? AND lower(source) = lower(?)"
-            delete_params: List[Any] = [kind, source]
-            if window:
-                delete_sql += " AND day BETWEEN ? AND ?"
-                delete_params += list(window)
-            deleted = conn.execute(delete_sql, delete_params).rowcount or 0
-            _upsert_presence(conn, [(d, kind, source, None, now) for d in days])
-            payload: Dict[str, Any] = {
-                "action": "presence", "op": "import_from_calendar", "calendar": calendar, "match": patterns,
-                "kind": kind, "upserted": len(days), "deleted": deleted,
-                "coverage": {"events": total, "first_day": first, "last_day": last, "window": window},
-                "summary": _presence_summary(conn, *(window or (None, None))),
-            }
-            if not total:
-                payload["hints"] = [
-                    f"no ingested events for calendar '{calendar}' in this window — fetch them first "
-                    f"(e.g. m365_get_events(calendar='{calendar}', start_time_iso=…, end_time_iso=…); results auto-ingest "
-                    "into mcp_records), then rerun this import"
-                ]
-            elif not days:
-                payload["hints"] = [
-                    f"{total} events found but none match {patterns} — check how the user's office entries are labelled"
-                ]
-            return json.dumps(payload, ensure_ascii=False)
+            return _presence_import_from_calendar(conn, args, kind, now, db_path)
 
         return tool_error("unknown op; one of add, list, remove, import_from_calendar", success=False)
     finally:
         conn.close()
+
+
+def _event_calendars(conn: sqlite3.Connection, tool_pattern: str) -> List[Dict[str, Any]]:
+    """Calendars that have ingested events: stable key, display name, rows, range."""
+    rows = conn.execute(
+        "SELECT reference_key, MAX(json_extract(raw_data, '$.calendar_name')), COUNT(*), "
+        "MIN(substr(timestamp, 1, 10)), MAX(substr(timestamp, 1, 10)) FROM mcp_records "
+        "WHERE tool_name LIKE ? AND substr(timestamp, 1, 10) <> '' GROUP BY reference_key ORDER BY 3 DESC",
+        (tool_pattern,),
+    ).fetchall()
+    return [{"key": k or "", "name": n or "", "rows": c, "first_day": f, "last_day": l} for k, n, c, f, l in rows]
+
+
+def _resolve_event_calendar(conn: sqlite3.Connection, tool_pattern: str, wanted: str) -> Optional[str]:
+    """The stored reference_key for a calendar named by key, display name,
+    substring or mailbox address — generic over every calendar-ish MCP."""
+    wanted_l = wanted.lower().strip()
+    cals = _event_calendars(conn, tool_pattern)
+    for c in cals:  # exact key / name
+        if c["key"].lower() == wanted_l or c["name"].lower() == wanted_l:
+            return c["key"]
+    for c in cals:  # key suffix (mailbox:addr, group:id) or substring of the name
+        if c["key"].lower().endswith(":" + wanted_l) or (wanted_l and wanted_l in c["name"].lower()) or (wanted_l and wanted_l in c["key"].lower()):
+            return c["key"]
+    if "@" in wanted_l:  # organizer/owner address inside the rows (either JSON spacing)
+        row = conn.execute(
+            "SELECT reference_key FROM mcp_records WHERE tool_name LIKE ? AND (lower(raw_data) LIKE ? OR lower(raw_data) LIKE ?) "
+            "GROUP BY reference_key ORDER BY COUNT(*) DESC LIMIT 1",
+            (tool_pattern, f'%"address":"{wanted_l}"%', f'%"address": "{wanted_l}"%'),
+        ).fetchone()
+        if row and row[0]:
+            return str(row[0])
+    return None
+
+
+def _expand_event_days(start_iso: str, end_iso: str, all_day: Any) -> List[str]:
+    """Calendar days an event covers: all-day events end at 00:00 of the
+    day after (exclusive); timed events count their start day."""
+    s_day = str(start_iso or "")[:10]
+    if not s_day:
+        return []
+    if not all_day:
+        return [s_day]
+    e_day = str(end_iso or "")[:10] or s_day
+    try:
+        d, e = date.fromisoformat(s_day), date.fromisoformat(e_day)
+    except ValueError:
+        return [s_day]
+    if e <= d:
+        return [s_day]
+    out: List[str] = []
+    while d < e:
+        out.append(d.isoformat())
+        d += timedelta(days=1)
+    return out
+
+
+def _presence_import_from_calendar(conn: sqlite3.Connection, args: Dict[str, Any], kind: str, now: str,
+                                   db_path: Optional[Path]) -> str:
+    """Office/home-office/travel days from ingested calendar events.
+
+    User-first (AIS-344): without ``match`` the rows the calendar tool marked
+    as ``involves_me`` count; ``match`` patterns widen or replace that.
+    Other people's entries are reported as colleagues (``others``), the
+    fetch register says which months are proven complete, and multi-day
+    all-day events count every day they cover.
+    """
+    from tools.mcp_json_ingestor import fetch_coverage
+
+    profile = load_profile() or {}
+    calendar = str(args.get("calendar") or profile.get("presence_calendar") or "").strip()
+    patterns = _split_patterns(args.get("match") or profile.get("presence_match_patterns"))
+    tool_pattern = str(args.get("calendar_source_tool") or "%_events%")
+    available = _event_calendars(conn, tool_pattern)
+    if not calendar:
+        return json.dumps({
+            "action": "presence", "op": "import_from_calendar",
+            "error": "presence calendar not configured",
+            "missing": ["calendar"],
+            "available_calendars": available[:20],
+            "ask": (
+                "Ask the user which calendar records where they work (a shared office calendar, a team calendar, …); "
+                "pass calendar=<name, key or mailbox address> — or persist it via workdays(action='configure', "
+                "presence_calendar=…). kind= says what the entries mean (office, homeoffice, travel)."
+            ),
+        }, ensure_ascii=False)
+    window = None
+    if args.get("start") or args.get("year") or args.get("period"):
+        start, end = _range(args)
+        window = (start.isoformat(), end.isoformat())
+    resolved = _resolve_event_calendar(conn, tool_pattern, calendar)
+    if not resolved:
+        return json.dumps({
+            "action": "presence", "op": "import_from_calendar", "calendar": calendar, "upserted": 0, "deleted": 0,
+            "coverage": {"events": 0, "window": window},
+            "available_calendars": available[:20],
+            "hints": [
+                f"no ingested events for a calendar matching '{calendar}'"
+                + (" — fetch them first (the calendar tool's results auto-ingest into mcp_records; one call per "
+                   "month for long ranges), then rerun this import" if not available else
+                   " — the ingested calendars are listed in available_calendars; pass one of their names, keys or "
+                   "addresses, or fetch the wanted calendar first")
+            ],
+        }, ensure_ascii=False)
+    calendar_key = resolved
+    where = "tool_name LIKE ? AND lower(reference_key) = lower(?) AND substr(timestamp, 1, 10) <> ''"
+    params: List[Any] = [tool_pattern, calendar_key]
+    if window:
+        where += " AND substr(timestamp, 1, 10) BETWEEN ? AND ?"
+        params += list(window)
+    rows = conn.execute(
+        f"SELECT substr(timestamp, 1, 10), json_extract(raw_data, '$.start_iso_local'), json_extract(raw_data, '$.end_iso_local'), "
+        f"json_extract(raw_data, '$.isAllDay'), json_extract(raw_data, '$.involves_me'), json_extract(raw_data, '$.participants'), "
+        f"json_extract(raw_data, '$.subject'), raw_data FROM mcp_records WHERE {where} ORDER BY 1",
+        params,
+    ).fetchall()
+    display_name = next((c["name"] for c in available if c["key"] == calendar_key), "") or calendar
+    total = len(rows)
+    has_involvement = any(inv is not None for _, _, _, _, inv, _, _, _ in rows)
+    like_patterns = [_like_pattern(p).lower() for p in patterns]
+    mine_days: Dict[str, str] = {}
+    others: Dict[str, int] = {}
+    matched_events = 0
+    for day, s_iso, e_iso, all_day, involves, participants_json, subject, raw in rows:
+        raw_l = str(raw or "").lower()
+        by_pattern = any(_sql_like(raw_l, pat) for pat in like_patterns) if like_patterns else False
+        by_identity = bool(involves) and not like_patterns
+        if by_pattern or by_identity:
+            matched_events += 1
+            for d in _expand_event_days(s_iso or day, e_iso, all_day):
+                mine_days.setdefault(d, str(subject or ""))
+            continue
+        names: List[str] = []
+        try:
+            names = [str(n) for n in (json.loads(participants_json) if participants_json else []) if n]
+        except Exception:
+            names = []
+        if not names and subject:
+            names = [str(subject)]
+        for n in names[:5]:
+            if n.strip().lower() in (display_name.lower(), calendar.lower()):
+                continue  # the shared calendar's own organizer name is not a colleague
+            others[n] = others.get(n, 0) + 1
+    if window:
+        mine_days = {d: subj for d, subj in mine_days.items() if window[0] <= d <= window[1]}
+    source = f"calendar:{calendar_key}"
+    delete_sql = f"DELETE FROM {PRESENCE_TABLE} WHERE kind = ? AND lower(source) = lower(?)"
+    delete_params: List[Any] = [kind, source]
+    if window:
+        delete_sql += " AND day BETWEEN ? AND ?"
+        delete_params += list(window)
+    deleted = conn.execute(delete_sql, delete_params).rowcount or 0
+    _upsert_presence(conn, [(d, kind, source, subj or None, now) for d, subj in sorted(mine_days.items())])
+    coverage_months = fetch_coverage(conn, tool_pattern, *(window or ((min((r[0] for r in rows), default="") or "1970-01-01"), (max((r[0] for r in rows), default="") or "1970-01-01"))), calendar_key) if (window or rows) else []
+    gaps = [m for m in coverage_months if m["status"] != "complete"]
+    payload: Dict[str, Any] = {
+        "action": "presence", "op": "import_from_calendar",
+        "calendar": display_name, "calendar_key": calendar_key,
+        "match": patterns or ("involves_me" if has_involvement else []),
+        "kind": kind, "upserted": len(mine_days), "deleted": deleted, "matched_events": matched_events,
+        "coverage": {
+            "events": total, "first_day": min((r[0] for r in rows), default=None), "last_day": max((r[0] for r in rows), default=None),
+            "window": window, "months": coverage_months,
+            "gaps": [m["month"] for m in gaps],
+        },
+        "others": {
+            "count": sum(others.values()),
+            "names": [n for n, _ in sorted(others.items(), key=lambda kv: -kv[1])[:20]],
+        },
+        "summary": _presence_summary(conn, *(window or (None, None))),
+    }
+    if others:
+        payload["others"]["note"] = (
+            "shared calendar: entries of other people are colleagues' presence and are not counted"
+        )
+    hints: List[str] = []
+    if not total:
+        hints.append(
+            f"no ingested events for calendar '{display_name}' in this window — fetch them first "
+            f"(one call per month for long ranges; results auto-ingest into mcp_records), then rerun this import"
+        )
+    elif not matched_events:
+        hints.append(
+            f"{total} events found but none match "
+            + (f"{patterns}" if patterns else "the signed-in user (involves_me)")
+            + " — pass match=<the user's name patterns> if their entries are labelled differently"
+        )
+    if not has_involvement and not patterns and total:
+        hints.append("these events carry no involves_me flag (the calendar tool does not annotate them) — pass match=…")
+    if gaps:
+        hints.append(
+            "months without a complete fetch (counts there are unverified): " + ", ".join(m["month"] for m in gaps)
+            + " — re-fetch those months (one call per month), then rerun this import"
+        )
+        payload["unverified_months"] = [m["month"] for m in gaps]
+    if hints:
+        payload["hints"] = hints
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _sql_like(text: str, pattern: str) -> bool:
+    """Python twin of SQL LIKE with % wildcards (case-insensitive)."""
+    import re as _re
+
+    regex = "^" + ".*".join(_re.escape(part) for part in pattern.lower().split("%")) + "$"
+    return _re.match(regex, text, _re.S) is not None
 
 
 def _upsert_presence(conn: sqlite3.Connection, rows: List[tuple]) -> None:
@@ -1404,6 +1554,35 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
             "add days directly (op='add'), or extract them from a vault note/document; vacation_credit is 0 until then"
         )
 
+    try:
+        from tools.mcp_json_ingestor import fetch_coverage as _fetch_coverage
+        conn = _open_db(db_path)
+        try:
+            gap_months: Dict[str, List[str]] = {}
+            for pat in src_patterns:
+                cov = _fetch_coverage(conn, pat, s, e)
+                if any(m["status"] != "none" for m in cov):
+                    missing = [m["month"] for m in cov if m["status"] != "complete"]
+                    if missing:
+                        gap_months[pat] = missing
+            for src, _k, _n, _upd in presence_cov:
+                if str(src).startswith("calendar:"):
+                    cov = _fetch_coverage(conn, "%_events%", s, e, str(src)[len("calendar:"):])
+                    if any(m["status"] != "none" for m in cov):
+                        missing = [m["month"] for m in cov if m["status"] != "complete"]
+                        if missing:
+                            gap_months[str(src)] = missing
+        finally:
+            conn.close()
+    except Exception:
+        gap_months = {}
+    if gap_months:
+        for src, missing in gap_months.items():
+            hints.append(
+                f"unverified months for {src}: {', '.join(missing)} — no complete fetch registered; re-fetch those "
+                "months (one call per month) before trusting their numbers"
+            )
+
     if not presence_cov and (presence_total["office_days"] or presence_total["homeoffice_days"]):
         default_kind = str(p.get("presence_default") or DEFAULT_PRESENCE)
         hints.append(
@@ -1436,6 +1615,7 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
                 {"source": src, "kind": k, "days": n, "last_updated_at": upd}
                 for src, k, n, upd in presence_cov
             ],
+            "unverified_months": gap_months,
         },
         "formula": FORMULA,
     }
@@ -1800,8 +1980,10 @@ WORKDAYS_SCHEMA = {
         "estimated), 'absences' (source-neutral vacation/sick store in state.db: op=add/list/remove/"
         "import_from_bookings — days can come from booking tickets, the user directly, a vault note, or a document), "
         "'presence' (office/homeoffice/travel days: op=add/list/remove/import_from_calendar — days from ingested "
-        "calendar events (calendar=… + match=… patterns naming the user, kind=what those entries mean); a booked "
-        "working day without presence entry or absence counts as the profile's presence_default in report), "
+        "calendar events; without match= the entries involving the signed-in user count (involves_me), match=… "
+        "widens; calendar= accepts name, key, substring or mailbox address; other people's entries are reported as "
+        "colleagues in `others`; coverage.gaps names months without a complete fetch; kind=what the entries mean; "
+        "a booked working day without presence entry or absence counts as the profile's presence_default in report), "
         "'target_hours' (per-month working days + target hours, default), 'days' (the same plus EVERY calendar day "
         "of the range in one call — ask once for the whole range, never month by month), 'workdays', 'holidays', "
         "'materialize' (writes table workday_calendar into ~/.hermes/state.db for manual sql JOINs — advanced path), "

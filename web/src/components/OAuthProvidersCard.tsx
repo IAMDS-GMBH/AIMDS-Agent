@@ -7,7 +7,7 @@ import {
   Terminal,
   Settings2,
 } from "lucide-react";
-import { api, type OAuthProvider } from "@/lib/api";
+import { api, getMicrosoftAdminConsentUrl, type OAuthProvider } from "@/lib/api";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { CopyButton } from "@nous-research/ui/ui/components/command-block";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -129,7 +129,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   const openM365AdminConsent = async () => {
     setBusyId("microsoft-consent");
     try {
-      const res = await api.getMicrosoftAdminConsentUrl();
+      const res = await getMicrosoftAdminConsentUrl();
       window.open(res.url, "_blank", "noopener,noreferrer");
       try {
         await navigator.clipboard.writeText(res.url);
