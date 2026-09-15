@@ -365,6 +365,11 @@ def build_data_handling_guidance(valid_tool_names: "set[str] | None" = None) -> 
             "(estimate_profile) and confirm with `clarify` before configure; municipal/partial holidays deduct "
             "only after the user confirmed them (`partial_holidays_unresolved`)."
         )
+    rungs.append(
+        "Personal data is user-first: start with what is assigned to or involves the user, widen only on "
+        "request; other people's entries in a shared source (calendar, mailbox, board) are colleagues' entries, "
+        "not errors. Fetch long ranges month by month and trust only months a result reports as complete."
+    )
     if has_sql:
         rungs.append(
             "Large or structured tool results are auto-ingested into SQLite `mcp_records` "

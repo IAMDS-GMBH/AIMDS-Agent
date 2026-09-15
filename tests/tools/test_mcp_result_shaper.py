@@ -186,3 +186,37 @@ class TestShortPrefixServers:
         assert len(out["results"]) == 2
         other = json.loads(_shape(payload, tool="mcp_Other_list", config=cfg))["result"]
         assert len(other["results"]) == 10
+
+
+class TestListByteBudget:
+    """AIS-344: a listing of 31 compact rows must not be cut at 25 — the
+    calendar the user asked for sat behind the cut. Big rows still cap."""
+
+    def test_short_lists_survive_beyond_max_items(self):
+        from tools.mcp_result_shaper import DEFAULT_SHAPE_CONFIG, _cap_item_lists
+
+        rows = [{"id": f"c{i}", "name": f"Calendar {i}", "source_type": "group"} for i in range(31)]
+        out = _cap_item_lists({"value": rows}, DEFAULT_SHAPE_CONFIG, "t1", True)
+        assert len(out["value"]) == 31 and "_shaped" not in out
+
+    def test_fat_lists_still_cap_at_max_items(self):
+        from tools.mcp_result_shaper import DEFAULT_SHAPE_CONFIG, _cap_item_lists
+
+        rows = [{"id": f"c{i}", "blob": "x" * 600} for i in range(31)]
+        out = _cap_item_lists({"value": rows}, DEFAULT_SHAPE_CONFIG, "t1", True)
+        assert len(out["value"]) == 25 and out["_shaped"]["total"] == 31
+
+    def test_long_lists_cap_even_when_tiny(self):
+        from tools.mcp_result_shaper import DEFAULT_SHAPE_CONFIG, _cap_item_lists
+
+        rows = [{"id": i} for i in range(150)]
+        out = _cap_item_lists(rows, DEFAULT_SHAPE_CONFIG, "t1", True)
+        assert len(out["items"]) == 25 and out["_shaped"]["total"] == 150
+
+    def test_budget_is_configurable(self):
+        from tools.mcp_result_shaper import DEFAULT_SHAPE_CONFIG, _apply_overrides, _cap_item_lists
+
+        cfg = _apply_overrides(DEFAULT_SHAPE_CONFIG, {"max_items_extended": 30, "list_byte_budget": 100})
+        rows = [{"id": f"c{i}", "name": f"Calendar {i}"} for i in range(31)]
+        out = _cap_item_lists({"value": rows}, cfg, "t1", True)
+        assert len(out["value"]) == 25

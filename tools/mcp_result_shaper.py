@@ -52,6 +52,12 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_ITEMS = 25
+# A list longer than max_items survives whole while it is short in bytes
+# (AIS-344): 31 compact calendar rows are a listing, not a data dump — the
+# cut at 25 hid the two rows the user was looking for. Big rows still cap
+# at max_items; the full rows are in mcp_records either way.
+DEFAULT_MAX_ITEMS_EXTENDED = 100
+DEFAULT_LIST_BYTE_BUDGET = 8_000
 DEFAULT_MAX_STRING_CHARS = 1_200
 DEFAULT_MAX_DEPTH = 6
 DEFAULT_DROP_KEYS: Tuple[str, ...] = ("@odata.*", "etag", "changeKey", "@removed")
@@ -76,6 +82,10 @@ _ROWS_HINT = "sql: SELECT raw_data FROM mcp_records WHERE tool_use_id='{tool_use
 class ShapeConfig:
     enabled: bool = True
     max_items: int = DEFAULT_MAX_ITEMS
+    # 0 = no extension (an explicit max_items is a hard cap); the shipped
+    # default config enables the byte-budgeted extension below.
+    max_items_extended: int = 0
+    list_byte_budget: int = DEFAULT_LIST_BYTE_BUDGET
     max_string_chars: int = DEFAULT_MAX_STRING_CHARS
     max_depth: int = DEFAULT_MAX_DEPTH
     drop_keys: Tuple[str, ...] = DEFAULT_DROP_KEYS
@@ -97,19 +107,21 @@ class ShapeConfig:
         return _apply_overrides(self, overrides)
 
 
-DEFAULT_SHAPE_CONFIG = ShapeConfig()
+DEFAULT_SHAPE_CONFIG = ShapeConfig(max_items_extended=DEFAULT_MAX_ITEMS_EXTENDED)
 
 
 def _apply_overrides(base: ShapeConfig, overrides: Dict[str, Any]) -> ShapeConfig:
     kwargs: Dict[str, Any] = {}
     if "enabled" in overrides:
         kwargs["enabled"] = bool(overrides["enabled"])
-    for name in ("max_items", "max_string_chars", "max_depth"):
+    for name in ("max_items", "max_items_extended", "list_byte_budget", "max_string_chars", "max_depth"):
         if name in overrides:
             try:
                 kwargs[name] = max(0, int(overrides[name]))
             except (TypeError, ValueError):
                 pass
+    if "max_items" in kwargs and "max_items_extended" not in kwargs:
+        kwargs["max_items_extended"] = 0  # an explicit cap is a cap
     if "drop_keys" in overrides:
         raw = overrides["drop_keys"]
         if isinstance(raw, (list, tuple)):
@@ -240,8 +252,16 @@ def _cap_item_lists(data: Any, cfg: ShapeConfig, tool_use_id: str, rows_ingested
             block["full_rows"] = _ROWS_HINT.format(tool_use_id=tool_use_id)
         return block
 
+    def _keep_whole(items: list) -> bool:
+        """Short lists stay whole even beyond max_items (byte budget)."""
+        if len(items) <= cfg.max_items:
+            return True
+        if not cfg.max_items_extended or len(items) > max(cfg.max_items_extended, cfg.max_items):
+            return False
+        return len(dumps_stable(items).encode("utf-8")) <= cfg.list_byte_budget
+
     if isinstance(data, list):
-        if len(data) > cfg.max_items:
+        if not _keep_whole(data):
             return {"items": data[: cfg.max_items], SHAPED_KEY: _block(len(data), cfg.max_items)}
         return data
 
@@ -256,7 +276,7 @@ def _cap_item_lists(data: Any, cfg: ShapeConfig, tool_use_id: str, rows_ingested
     out = dict(data)
     for key in ITEM_LIST_KEYS:
         val = out.get(key)
-        if isinstance(val, list) and len(val) > cfg.max_items:
+        if isinstance(val, list) and not _keep_whole(val):
             out[key] = val[: cfg.max_items]
             shaped_blocks[key] = _block(len(val), cfg.max_items)
     if shaped_blocks:
