@@ -18,8 +18,8 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { api } from "@/lib/api";
-import type { EnvVarInfo } from "@/lib/api";
+import { api, getAimdsSuiteStatus } from "@/lib/api";
+import type { AimdsSuiteEnvStatus, EnvVarInfo } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
@@ -350,11 +350,11 @@ function IamdsKeycloakSsoSection({ onSuccess }: { onSuccess: () => void }) {
   const sessionRef = useRef<string | null>(null);
   // AIS-286: backend-derived tri-state for the production environment; the
   // SSO button stays visible so an expired key can always be renewed.
-  const [suiteStatus, setSuiteStatus] = useState<api.AimdsSuiteEnvStatus | null>(null);
+  const [suiteStatus, setSuiteStatus] = useState<AimdsSuiteEnvStatus | null>(null);
 
   const loadSuiteStatus = useCallback(async () => {
     try {
-      const res = await api.getAimdsSuiteStatus(true);
+      const res = await getAimdsSuiteStatus(true);
       if (!isMounted.current) return;
       setSuiteStatus(res.environments.find((e) => e.id === "aimds-suite-prod") ?? null);
     } catch {
