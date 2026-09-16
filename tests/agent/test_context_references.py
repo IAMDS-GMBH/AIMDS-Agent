@@ -226,6 +226,29 @@ def test_binary_file_yields_actionable_block_not_a_dead_warning(sample_repo: Pat
     assert str(sample_repo / "blob.bin") in result.message
 
 
+def test_document_attachment_block_names_read_file_and_metadata_tools(sample_repo: Path):
+    """AIS-349 / SUP-20260916-130011: a .docx attachment must point the model at
+    read_file (Docling inside) and the metadata tools — not at "your tools"."""
+    from agent.context_references import preprocess_context_references
+
+    docx = sample_repo / "Besprechung.docx"
+    docx.write_bytes(b"PK\x03\x04\x00\x00fake-docx")
+
+    result = preprocess_context_references(
+        "Fasse @file:Besprechung.docx zusammen",
+        cwd=sample_repo,
+        context_length=100_000,
+    )
+
+    assert result.expanded and not result.warnings
+    message = result.message
+    assert str(docx) in message and "unchanged" in message
+    assert "`read_file(" in message and "Docling" in message
+    assert "read_metadata" in message and "storage_meta" in message
+    assert "terminal commands" in message
+    assert "not supported" not in message.lower()
+
+
 def test_soft_budget_warns_and_hard_budget_refuses(sample_repo: Path):
     from agent.context_references import preprocess_context_references
 

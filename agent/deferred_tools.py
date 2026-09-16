@@ -185,6 +185,26 @@ def is_loaded(agent, name: str) -> bool:
     return name in _loaded(agent)
 
 
+# AIS-349 (SUP-20260916-130011): tools that are useless without a sibling.
+# `storage_get_document` / `storage_meta` take an ingest id that only
+# `storage_ingest_upload` produces — a search for "docling" loaded the first
+# two and the model had nothing it could call. Keyed by name suffix so the
+# server prefix (`mcp_<Server>_<tool_prefix>_`) does not matter.
+_COMPANION_SUFFIXES: dict[str, tuple[str, ...]] = {
+    "storage_get_document": ("storage_ingest_upload",),
+    "storage_meta": ("storage_ingest_upload",),
+}
+
+
+def companion_tool_names(name: str) -> list[str]:
+    """Sibling tools that must be loaded alongside ``name`` (same server prefix)."""
+    for suffix, siblings in _COMPANION_SUFFIXES.items():
+        if name.endswith(suffix):
+            prefix = name[: -len(suffix)]
+            return [prefix + sibling for sibling in siblings]
+    return []
+
+
 def load_deferred_tool(
     agent,
     name: str,
@@ -243,6 +263,10 @@ def load_deferred_tool(
     except Exception:
         pass
     logger.info("[AIS-161] loaded deferred tool %s into session (%s)", resolved, reason)
+    for companion in companion_tool_names(resolved):
+        if companion not in valid:
+            # Never capped: the companion is what makes the loaded tool usable.
+            load_deferred_tool(agent, companion, reason=f"companion of {resolved}")
     return resolved
 
 

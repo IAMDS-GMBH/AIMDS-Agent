@@ -301,6 +301,32 @@ class _Response:
         return self._body
 
 
+class TestFrontmatterMetadata:
+    def test_split_keeps_scalars_only_and_returns_the_body(self):
+        text = "---\ntitle: Plan\nauthor: \"Anna\"\npages: 3\ntags:\n  - a\nempty:\n---\n# Doc\n"
+        metadata, body = dc._split_frontmatter(text)
+        assert metadata == {"title": "Plan", "author": "Anna", "pages": "3"}
+        assert body == "# Doc\n"
+        assert dc._split_frontmatter("# Doc\n") == ({}, "# Doc\n")
+
+    def test_split_is_bounded(self):
+        block = "\n".join(f"key{i}: {'v' * 300}" for i in range(80))
+        metadata, _ = dc._split_frontmatter(f"---\n{block}\n---\nbody\n")
+        assert 0 < len(metadata) <= dc._METADATA_MAX_KEYS
+        assert all(len(v) <= dc._METADATA_MAX_VALUE_CHARS for v in metadata.values())
+        assert len(json.dumps(metadata)) <= dc._METADATA_MAX_BYTES + 2 * dc._METADATA_MAX_VALUE_CHARS
+
+    def test_local_fallback_says_why_the_suite_was_skipped(self, tmp_path):
+        """AIS-349: the model must be able to tell the user why Docling did not run."""
+        src = _docx(tmp_path / "plan.docx")
+        result = dc.convert_document(src)
+        assert result.backend != dc.BACKEND_SUITE
+        assert result.suite_state == suite.DOCLING_NOT_CONFIGURED
+        assert result.suite_reason
+        again = dc.convert_document(src)
+        assert again.cached and again.suite_reason == result.suite_reason
+
+
 class TestSuiteBackend:
     def test_tools_present_matches_by_suffix(self, monkeypatch):
         assert not dc.suite_tools_present()
@@ -323,7 +349,8 @@ class TestSuiteBackend:
         src = _docx(tmp_path / "plan.docx")
         result = dc.convert_document(src)
         assert result.backend == dc.BACKEND_SUITE
-        assert result.markdown == "# Doc\n\nSuite text\n"  # frontmatter stripped
+        assert result.markdown == "# Doc\n\nSuite text\n"  # frontmatter stripped …
+        assert result.metadata == {"title": "x"}  # … but kept as metadata (AIS-349)
         assert posted["url"].endswith("/customer-storage/upload")
         assert posted["headers"]["Authorization"] == "Bearer sk-test-key-0123456789"
         assert posted["filename"] == "plan.docx"
@@ -332,6 +359,7 @@ class TestSuiteBackend:
         # cached on second call — no further tool calls
         again = dc.convert_document(src)
         assert again.cached and again.backend == dc.BACKEND_SUITE and len(calls) == 3
+        assert again.metadata == {"title": "x"}
 
     def test_full_flow_signs_with_the_active_environment_key(self, monkeypatch, tmp_path):
         _prod_key(monkeypatch, select_model=False)

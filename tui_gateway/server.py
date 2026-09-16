@@ -6572,8 +6572,17 @@ def _attachment_ref_path(session: dict, target: Path) -> str:
         return str(target.resolve())
 
 
+#: Where chat attachments are materialised inside the session workspace (the
+#: Vault): visible, one folder per day, the original byte-for-byte. AIS-349 —
+#: they used to hide in `.hermes/desktop-attachments/`, a place no prompt ever
+#: mentioned, so the model could not tell the user where the original was.
+DESKTOP_ATTACHMENTS_SUBDIR = Path("documents") / "attachments"
+
+
 def _desktop_attachment_dir(session: dict) -> Path:
-    root = Path(_session_cwd(session)).resolve() / ".hermes" / "desktop-attachments"
+    import datetime as _dt
+
+    root = Path(_session_cwd(session)).resolve() / DESKTOP_ATTACHMENTS_SUBDIR / _dt.date.today().isoformat()
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -6653,10 +6662,11 @@ def _stage_session_file_attachment(
       1. The path resolves to a file already INSIDE the session workspace — use
          it as-is (no copy, ``uploaded=False``).
       2. The path resolves to a gateway-visible file OUTSIDE the workspace — copy
-         it into ``.hermes/desktop-attachments/`` so the ``@file:`` ref resolves.
+         it into ``documents/attachments/<date>/`` so the ``@file:`` ref resolves.
       3. The path doesn't exist on the gateway (the common remote case: it's a
          path on the CLIENT's disk) — decode the uploaded ``data_url`` bytes and
-         write them into ``.hermes/desktop-attachments/``.
+         write them into ``documents/attachments/<date>/`` (AIS-349: visible in
+         the Vault, the original unchanged).
 
     Returns ``(stored_path, uploaded)``.
     """

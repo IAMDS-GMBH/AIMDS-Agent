@@ -158,6 +158,7 @@ from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock
     build_jira_guidance,
     build_ticket_routing_guidance,
     build_mail_safety_guidance,
+    build_document_guidance,
     build_teams_send_guidance,
     load_soul_md,
 )

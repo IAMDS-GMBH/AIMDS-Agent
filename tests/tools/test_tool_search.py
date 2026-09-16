@@ -1113,6 +1113,30 @@ class TestDynamicMCPKeywordIndexing:
             names = [r.name for r in search_catalog(catalog, query, limit=3)]
             assert names and names[0] == "mcp_MSOffice365MCP_m365_download_chat_files", (query, names)
 
+    def test_docling_query_surfaces_the_suite_storage_tools(self):
+        """'verwende doch docling' → the AIMDSSuiteMCP storage tools that front
+        Docling, ingest included (AIS-349, SUP-20260916-130011)."""
+        from tools.tool_search import build_catalog, search_catalog
+
+        def _tool(name, desc):
+            return {"type": "function", "function": {"name": name, "description": desc, "parameters": {}}}
+
+        tool_defs = [
+            _tool("mcp_AIMDSSuiteMCP_mcp_customer_storage_ingest_upload", "Prepare an upload into the customer storage; the file is ingested and converted to Markdown"),
+            _tool("mcp_AIMDSSuiteMCP_mcp_customer_storage_get_document", "Get an ingested document as Markdown or text"),
+            _tool("mcp_AIMDSSuiteMCP_mcp_customer_storage_meta", "Metadata of an ingested document"),
+            _tool("mcp_AIMDSSuiteMCP_mcp_memory_memory_context", "Memory context for the session"),
+            _tool("mcp_MSOffice365MCP_m365_list_emails", "List emails from Outlook"),
+            _tool("terminal", "Run a shell command"),
+        ]
+        catalog = build_catalog(tool_defs)
+        for query in ("verwende doch docling dazu", "docling", "dokument mit docling konvertieren"):
+            names = [r.name for r in search_catalog(catalog, query, limit=3)]
+            storage = [n for n in names if "_storage_" in n]
+            assert len(storage) >= 2, (query, names)
+            assert "mcp_AIMDSSuiteMCP_mcp_memory_memory_context" not in names[:2], (query, names)
+            assert "terminal" not in names[:2], (query, names)
+
     def test_office_file_tool_synonyms_beat_m365(self):
         """'excel' / 'pptx' / 'docx' must surface the local office tools, not
         only the M365 MCP server (AIS-139)."""

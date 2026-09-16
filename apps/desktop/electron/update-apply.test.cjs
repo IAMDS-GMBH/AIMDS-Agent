@@ -9,7 +9,8 @@ const {
   UPDATER_LAUNCH_LOG,
   describeUpdaterLaunchFailure,
   openUpdaterLogStdio,
-  resolveDetachedCheckoutChannel
+  resolveDetachedCheckoutChannel,
+  describeNoReleaseError
 } = require('./update-apply.cjs')
 
 test('resolveDetachedCheckoutChannel: detached HEAD git checkout on main → stable', () => {
@@ -169,4 +170,17 @@ test('noStableReleasePublished: 404 on the stable channel only', () => {
   const limited = Object.assign(new Error('rate limit'), { code: 'rate-limited', status: 403 })
   assert.equal(noStableReleasePublished(limited, 'stable'), false)
   assert.equal(noStableReleasePublished(null, 'stable'), false)
+  // AIS-350: the preview feed answered but holds no release with a manifest yet.
+  const empty = Object.assign(new Error('no preview release with a hermes-release.json asset found'), { code: 'fetch-failed', noRelease: true })
+  assert.equal(noStableReleasePublished(empty, 'preview'), true)
+  assert.equal(noStableReleasePublished(Object.assign(new Error('x'), { code: 'fetch-failed', noRelease: false }), 'preview'), false)
+  // A body error on a 2xx keeps its status and is still an outage.
+  const notJson = Object.assign(new Error('response from …/hermes-release.json is not JSON'), { code: 'fetch-failed', status: 200 })
+  assert.equal(noStableReleasePublished(notJson, 'stable'), false)
+})
+
+test('describeNoReleaseError names the cause for the benign log line', () => {
+  assert.equal(describeNoReleaseError(Object.assign(new Error('x'), { status: 404 })), 'HTTP 404')
+  assert.equal(describeNoReleaseError(Object.assign(new Error('x'), { noRelease: true })), 'no release with a manifest')
+  assert.equal(describeNoReleaseError(new Error('boom')), 'boom')
 })

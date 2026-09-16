@@ -2136,6 +2136,33 @@ def build_ai_attribution_guidance(valid_tool_names: "set[str] | None" = None) ->
     )
 
 
+def build_document_guidance(valid_tool_names: "set[str] | None" = None) -> str:
+    """Documents are source material: keep the original, work on the converted copy.
+
+    AIS-349 (SUP-20260916-130011): a SharePoint .docx was downloaded and
+    converted, yet the model reached for the terminal and, asked to "use
+    docling", could not find it — Docling runs inside ``read_file`` and the
+    Suite's storage tools are deferred. States the capabilities (no recipe)
+    for every source — chat attachment, mail, Teams, SharePoint. Injected only
+    when ``read_file`` is in the toolset.
+    """
+    names = set(valid_tool_names or set())
+    if "read_file" not in names:
+        return ""
+    return (
+        "# Documents: keep the original, work on the converted copy\n"
+        "Files the user attaches in chat or that arrive from mail, Teams or SharePoint are source material. "
+        "The original stays unchanged in the Vault (chat attachments under `documents/attachments/<date>/`, "
+        "Microsoft 365 downloads under `documents/m365_attachments/`) — say where it is kept when you file or "
+        "convert one. Read Office files (docx/xlsx/pptx/odt/ods/odp) and PDFs with `read_file(<path>)`: they "
+        "come back as Markdown, converted by the AIMDS-Suite Docling when it is reachable and locally otherwise "
+        "(the result names the converter and, when the Suite was skipped, why). Document metadata (author, "
+        "dates, pages): `office_word(action=read_metadata)` for .docx or the AIMDS-Suite `storage_meta` tool — "
+        "find them with `tool_search` when they are not listed. Never parse a document with terminal commands "
+        "or ad-hoc scripts."
+    )
+
+
 def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str:
     """Instruct the model how to send a Teams message to a *person* without
     guessing: resolve the chat with the tool (never from memory), never send
