@@ -45,8 +45,32 @@ function shouldIgnoreLoginLoadFailure({ settled, redirectHandled }) {
   return Boolean(settled || redirectHandled)
 }
 
+/**
+ * Authorization URL for the Keycloak login window (authorization code + PKCE).
+ *
+ * `forceLogin` adds OIDC `prompt=login` (AIS-348): Keycloak then skips its
+ * cookie authenticator and shows the credentials form even while an SSO
+ * session is alive. Without it a "Re-authenticate" click on a Suite provider
+ * row only flashed a window — the shared `defaultSession` cookie made
+ * Keycloak answer with an immediate 302 to the callback, so the user never
+ * actually re-authenticated.
+ */
+function buildKeycloakAuthUrl({ authBaseUrl, realm, redirectUri, codeChallenge, forceLogin = false }) {
+  const params = new URLSearchParams({
+    client_id: 'hermes-app',
+    response_type: 'code',
+    scope: 'openid',
+    redirect_uri: redirectUri,
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256'
+  })
+  if (forceLogin) params.set('prompt', 'login')
+  return `${authBaseUrl}/realms/${realm}/protocol/openid-connect/auth?${params}`
+}
+
 module.exports = {
   SUITE_URL_SUFFIXES,
+  buildKeycloakAuthUrl,
   isKeycloakCallbackUrl,
   resolveSuiteRootDomain,
   shouldIgnoreLoginLoadFailure

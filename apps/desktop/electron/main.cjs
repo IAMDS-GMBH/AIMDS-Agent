@@ -81,6 +81,7 @@ const {
   resolveDetachedCheckoutChannel
 } = require('./update-apply.cjs')
 const {
+  buildKeycloakAuthUrl,
   isKeycloakCallbackUrl,
   resolveSuiteRootDomain,
   shouldIgnoreLoginLoadFailure
@@ -4808,9 +4809,11 @@ async function exchangeKeycloakCode(tokenUrl, code, redirectUri, codeVerifier) {
  * @param {string} baseUrl      IAMDS ecosystem base URL
  * @param {string} realm        Keycloak realm name (default: "aimds")
  * @param {string} redirectUri  OAuth redirect URI (default: {baseUrl}/oauth/oidc/callback)
+ * @param {{ forceLogin?: boolean }} [options]  `forceLogin` sends `prompt=login`
+ *   so Keycloak shows the credentials form even with a live SSO cookie (AIS-348)
  * @returns {Promise<{ apiKey: string, baseUrl: string }>}
  */
-function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
+function openKeycloakLoginWindow(baseUrl, realm, redirectUri, options = {}) {
   return new Promise((resolve, reject) => {
     if (!app.isReady()) {
       reject(new Error('Desktop is not ready to start a Keycloak login.'))
@@ -4825,15 +4828,13 @@ function openKeycloakLoginWindow(baseUrl, realm, redirectUri) {
 
     const { codeVerifier, codeChallenge } = generatePkcePair()
 
-    const authParams = new URLSearchParams({
-      client_id: 'hermes-app',
-      response_type: 'code',
-      scope: 'openid',
-      redirect_uri: effectiveRedirectUri,
-      code_challenge: codeChallenge,
-      code_challenge_method: 'S256'
+    const authUrl = buildKeycloakAuthUrl({
+      authBaseUrl,
+      realm: effectiveRealm,
+      redirectUri: effectiveRedirectUri,
+      codeChallenge,
+      forceLogin: Boolean(options.forceLogin)
     })
-    const authUrl = `${authBaseUrl}/realms/${effectiveRealm}/protocol/openid-connect/auth?${authParams}`
 
     let settled = false
     // Set the moment the callback redirect is intercepted: from then on the
@@ -6452,11 +6453,11 @@ ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) =
   return { ok: true, connected: baseUrl ? await hasLiveOauthSession(baseUrl) : false }
 })
 
-ipcMain.handle('hermes:providers:keycloak-login', async (_event, { baseUrl, realm, redirectUri } = {}) => {
+ipcMain.handle('hermes:providers:keycloak-login', async (_event, { baseUrl, realm, redirectUri, forceLogin } = {}) => {
   if (!baseUrl || typeof baseUrl !== 'string') {
     throw new Error('keycloak-login: baseUrl is required')
   }
-  const result = await openKeycloakLoginWindow(baseUrl.trim(), realm, redirectUri)
+  const result = await openKeycloakLoginWindow(baseUrl.trim(), realm, redirectUri, { forceLogin: Boolean(forceLogin) })
   return { ok: true, ...result }
 })
 ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {

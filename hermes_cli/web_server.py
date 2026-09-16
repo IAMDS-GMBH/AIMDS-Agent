@@ -6868,6 +6868,9 @@ def _start_iamds_keycloak_loopback_flow(env: str = "aimds-suite-prod") -> Dict[s
             "code_challenge": challenge,
             "code_challenge_method": "S256",
             "state": state,
+            # AIS-348: "Re-authenticate" must show the credentials form even
+            # while the browser still holds a Keycloak SSO session.
+            "prompt": "login",
         })
         authorize_url = f"{auth_endpoint}?{qs}"
     except Exception:
