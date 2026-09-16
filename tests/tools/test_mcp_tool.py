@@ -5091,3 +5091,50 @@ class TestMonthByMonthCalls:
         chunks = mt._month_chunks({"from": "2026-03-01", "to": "2026-04-30"})
         out = json.loads(mt._call_split_by_month("mcp_X_list", chunks, lambda a: json.dumps({"error": "boom"}) if a["from"].startswith("2026-04") else json.dumps({"result": [{"id": 1}]})))["result"]
         assert out["count"] == 1 and out["complete"] is False and out["months"][1]["error"] == "boom"
+
+    def test_double_wrapped_group_calendar_is_merged_not_blobbed(self):
+        """AIS-354: the M365 group calendar answers ``{"result": {"result":
+        {"value": […]}}}``. One peel left a dict without an item key, the
+        month was counted as ONE text record and twelve of them were joined
+        into NDJSON the ingestor could not read — a 300k-char calendar year
+        became a single mcp_records row reported as "complete (1 per month)"."""
+        from tools import mcp_tool as mt
+
+        chunks = mt._month_chunks({"calendar": "URLAUB | IAMDS", "start_time_iso": "2026-11-01T00:00:00Z", "end_time_iso": "2026-12-31T23:59:59Z"})
+
+        def call_once(args):
+            month = args["start_time_iso"][:7]
+            n = {"2026-11": 3, "2026-12": 2}[month]
+            inner = {"resolved_calendar_name": "Kalender",
+                     "value": [{"id": f"{month}-{i}", "subject": "Urlaub Johannes Huchler"} for i in range(n)]}
+            return json.dumps({"result": json.dumps({"result": inner})})
+
+        out = json.loads(mt._call_split_by_month("mcp_MSOffice365MCP_m365_get_events", chunks, call_once))["result"]
+        assert [e["id"] for e in out["value"]] == ["2026-11-0", "2026-11-1", "2026-11-2", "2026-12-0", "2026-12-1"]
+        assert out["complete"] is True and out["count"] == 5
+        assert [(m["month"], m["count"], m["complete"]) for m in out["months"]] == [("2026-11", 3, True), ("2026-12", 2, True)]
+
+    def test_dict_without_item_list_marks_the_month_incomplete(self):
+        """A month whose answer has no recognisable list is not "1 record"."""
+        from tools import mcp_tool as mt
+
+        chunks = mt._month_chunks({"from": "2026-01-01", "to": "2026-02-28"})
+
+        def call_once(args):
+            if args["from"].startswith("2026-01"):
+                return json.dumps({"result": {"odd": {"shape": True}}})
+            return json.dumps({"result": [{"id": "feb"}]})
+
+        out = json.loads(mt._call_split_by_month("mcp_X_list", chunks, call_once))["result"]
+        assert out["count"] == 1 and out["complete"] is False
+        jan = out["months"][0]
+        assert jan["count"] == 0 and jan["complete"] is False and "not recognised" in jan["error"]
+
+    def test_unwrap_peels_nested_result_envelopes(self):
+        from tools import mcp_tool as mt
+
+        assert mt._unwrap_result_envelope(json.dumps({"result": json.dumps({"result": {"value": [1]}})})) == ({"value": [1]}, True)
+        assert mt._unwrap_result_envelope(json.dumps({"result": "No worklogs found."})) == ("No worklogs found.", True)
+        assert mt._unwrap_result_envelope("plain text") == ("plain text", False)
+        # a dict with more than the envelope key is the payload itself
+        assert mt._unwrap_result_envelope(json.dumps({"result": {"x": 1}, "complete": True})) == ({"result": {"x": 1}, "complete": True}, True)

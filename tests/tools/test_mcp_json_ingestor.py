@@ -448,3 +448,55 @@ def test_ingest_hint_names_incomplete_months():
     assert "INCOMPLETE for 2026-01-01..2026-03-31" in hint and "2026-02" in hint and "one call per month" in hint
     ok = IngestResult(5, window=("2026-01-01", "2026-01-31"), complete=True, months=[{"month": "2026-01", "count": 5, "complete": True}])
     assert "complete for 2026-01-01..2026-01-31 (2026-01:5)" in _build_ingest_hint("mcp_X_events", ok)
+
+
+# ---------------------------------------------------------------------------
+# AIS-354: NDJSON payloads and blob-row visibility
+# ---------------------------------------------------------------------------
+
+def test_ndjson_result_string_yields_one_row_per_event(tmp_path: Path):
+    """The split-by-month bridge joined per-month answers with newlines; the
+    ingestor must read every document instead of storing one blob row."""
+    from tools.mcp_json_ingestor import _extract_items, get_db_connection
+
+    def month_doc(month, n):
+        return json.dumps({"result": {"resolved_calendar_name": "Kalender", "value": [
+            {"id": f"{month}-{i}", "subject": "Urlaub Johannes Huchler",
+             "start_iso_local": f"{month}-0{i + 1}T00:00:00", "end_iso_local": f"{month}-0{i + 2}T00:00:00"}
+            for i in range(n)]}})
+
+    joined = "\n".join([month_doc("2026-11", 3), month_doc("2026-12", 2)])
+    payload = {"result": joined, "complete": True,
+               "months": [{"month": "2026-11", "count": 3, "complete": True}, {"month": "2026-12", "count": 2, "complete": True}]}
+    assert len(_extract_items(payload)) == 5
+
+    db_file = tmp_path / "s.db"
+    res = try_auto_ingest_json(json.dumps(payload), tool_name="mcp_MSOffice365MCP_m365_get_events", tool_use_id="cal1",
+                               db_path=db_file, tool_args={"calendar": "URLAUB | IAMDS", "start_time_iso": "2026-11-01T00:00:00Z", "end_time_iso": "2026-12-31T23:59:59Z"})
+    assert int(res) == 5 and res.blob is False
+    conn = get_db_connection(db_file)
+    assert conn.execute("SELECT COUNT(*) FROM mcp_records WHERE tool_use_id = 'cal1'").fetchone()[0] == 5
+    conn.close()
+
+
+def test_ndjson_requires_every_line_to_parse():
+    from tools.mcp_json_ingestor import _parse_ndjson_documents
+
+    assert _parse_ndjson_documents('{"a": 1}\n{"b": 2}') == [{"a": 1}, {"b": 2}]
+    assert _parse_ndjson_documents('{"a": 1}') == []           # single document is not NDJSON
+    assert _parse_ndjson_documents('{"a": 1}\nnot json') == []
+    assert _parse_ndjson_documents("k: v | k2: v2\nk: v | k2: v2") == []
+
+
+def test_large_unrecognised_document_is_flagged_as_blob(tmp_path: Path):
+    db_file = tmp_path / "s.db"
+    big = {"result": {"odd": {"shape": True, "filler": "x" * 5000}}}
+    res = try_auto_ingest_json(json.dumps(big), tool_name="mcp_X_get_events", tool_use_id="blob1", db_path=db_file)
+    assert int(res) == 1 and res.blob is True
+    small = {"result": {"odd": {"shape": True}}}
+    res = try_auto_ingest_json(json.dumps(small), tool_name="mcp_X_get_events", tool_use_id="blob2", db_path=db_file)
+    assert int(res) == 1 and res.blob is False
+    # one large but real record (it carries a timestamp) is not a blob
+    issue = {"result": {"key": "PROJ-9", "created": "2026-03-01T08:00:00Z", "description": "y" * 5000}}
+    res = try_auto_ingest_json(json.dumps(issue), tool_name="mcp_X_get_issue", tool_use_id="blob3", db_path=db_file)
+    assert int(res) == 1 and res.blob is False

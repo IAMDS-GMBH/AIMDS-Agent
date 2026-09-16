@@ -3772,19 +3772,27 @@ def _month_chunks(args: Any) -> List[Tuple[str, dict]]:
 
 def _unwrap_result_envelope(text: str) -> Tuple[Any, bool]:
     """(payload, was_json) for a tool result string; the bridge envelope
-    ``{"result": X}`` is peeled and a JSON-string X parsed."""
+    ``{"result": X}`` is peeled and a JSON-string X parsed.
+
+    Peeling repeats while the payload is again a bare ``{"result": …}``: a
+    server that wraps its own answer (the M365 group calendar returns
+    ``{"result": {"result": {"value": […]}}}``) otherwise keeps its item list
+    one level too deep, and every month of a split call collapsed into a
+    text blob counted as one record (AIS-354)."""
     try:
         data = json.loads(text)
     except Exception:
         return text, False
-    if isinstance(data, dict) and set(data.keys()) == {"result"}:
+    for _ in range(4):
+        if not (isinstance(data, dict) and set(data.keys()) == {"result"}):
+            break
         inner = data["result"]
         if isinstance(inner, str) and inner.strip()[:1] in "{[":
             try:
-                return json.loads(inner), True
+                inner = json.loads(inner)
             except Exception:
                 return inner, True
-        return inner, True
+        data = inner
     return data, True
 
 
@@ -3847,8 +3855,16 @@ def _call_split_by_month(tool_name: str, chunks: List[Tuple[str, dict]], call_on
                         continue
                     extra.setdefault(k, v)
             else:
+                # A dict without a recognisable item list is not a record set.
+                # Counting it as one row hid a whole calendar year behind
+                # "complete (1 per month)" (AIS-354): keep the text so the
+                # model still sees the answer, but report the month as not
+                # fetched so nobody aggregates over it.
                 text_parts.append(json.dumps(payload, ensure_ascii=False))
-                count = 1
+                months.append({"month": month, "count": 0, "complete": False,
+                               "error": "payload not recognised as a record list (no item key)"})
+                all_complete = False
+                continue
             server_months = payload.get("months")
             if isinstance(server_months, list):
                 nested_months.extend(m for m in server_months if isinstance(m, dict))
