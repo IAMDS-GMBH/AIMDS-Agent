@@ -9,6 +9,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 
 const {
+  buildKeycloakAuthUrl,
   isKeycloakCallbackUrl,
   resolveSuiteRootDomain,
   shouldIgnoreLoginLoadFailure
@@ -40,4 +41,29 @@ test('shouldIgnoreLoginLoadFailure: a cancelled SSO redirect is not a login fail
   assert.equal(shouldIgnoreLoginLoadFailure({ settled: false, redirectHandled: true }), true)
   // Already resolved/rejected → nothing left to report.
   assert.equal(shouldIgnoreLoginLoadFailure({ settled: true, redirectHandled: false }), true)
+})
+
+test('buildKeycloakAuthUrl: prompt=login only when a fresh login is forced (AIS-348)', () => {
+  const base = {
+    authBaseUrl: 'https://suite.iamds.com/auth',
+    realm: 'aimds',
+    redirectUri: 'hermes://callback',
+    codeChallenge: 'chal'
+  }
+  const plain = new URL(buildKeycloakAuthUrl(base))
+  assert.equal(plain.origin + plain.pathname, 'https://suite.iamds.com/auth/realms/aimds/protocol/openid-connect/auth')
+  assert.equal(plain.searchParams.get('client_id'), 'hermes-app')
+  assert.equal(plain.searchParams.get('response_type'), 'code')
+  assert.equal(plain.searchParams.get('scope'), 'openid')
+  assert.equal(plain.searchParams.get('redirect_uri'), 'hermes://callback')
+  assert.equal(plain.searchParams.get('code_challenge'), 'chal')
+  assert.equal(plain.searchParams.get('code_challenge_method'), 'S256')
+  assert.equal(plain.searchParams.get('prompt'), null)
+
+  // "Re-authenticate" on a Suite provider row: Keycloak must show the
+  // credentials form even while its SSO cookie is alive.
+  const forced = new URL(buildKeycloakAuthUrl({ ...base, forceLogin: true }))
+  assert.equal(forced.searchParams.get('prompt'), 'login')
+  assert.equal(forced.searchParams.get('code_challenge'), 'chal')
+  assert.equal(forced.searchParams.get('redirect_uri'), 'hermes://callback')
 })

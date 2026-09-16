@@ -439,6 +439,8 @@ export function keycloakLogin(params: {
   baseUrl: string
   realm?: string
   redirectUri?: string
+  /** Send OIDC `prompt=login`: a fresh credentials prompt even with a live SSO cookie (AIS-348). */
+  forceLogin?: boolean
 }): Promise<{ ok: boolean; apiKey: string; baseUrl: string }> {
   return window.hermesDesktop.keycloakLogin(params)
 }

@@ -53,13 +53,41 @@ pub fn try_deliver_keycloak_callback_url(raw_uri: &str) -> bool {
         return false;
     }
     let payload = parse_callback_payload(&url);
-    if let Ok(mut guard) = keycloak_callback_state().lock() {
-        if let Some(tx) = guard.take() {
-            let _ = tx.send(payload);
-        }
+    if !deliver_keycloak_payload(payload) {
+        // SUP-20260916-081052: a callback with nobody waiting used to vanish
+        // without a trace — the login window had outlived its waiter.
+        tracing::warn!("Keycloak callback arrived but no login is waiting; ignoring");
     }
     true
 }
+
+/// Hand a payload (auth code or `__KEYCLOAK_ERROR__:…`) to the in-flight
+/// login waiter. Returns false when no login is waiting.
+fn deliver_keycloak_payload(payload: String) -> bool {
+    let Ok(mut guard) = keycloak_callback_state().lock() else {
+        return false;
+    };
+    match guard.take() {
+        Some(tx) => tx.send(payload).is_ok(),
+        None => false,
+    }
+}
+
+fn clear_keycloak_waiter() {
+    if let Ok(mut guard) = keycloak_callback_state().lock() {
+        let _ = guard.take();
+    }
+}
+
+/// Payload delivered when the user closes the login window.
+const LOGIN_WINDOW_CLOSED_PAYLOAD: &str =
+    "__KEYCLOAK_ERROR__:Login window closed before authentication completed.";
+
+/// Safety net only — the normal exits are the callback or the user closing the
+/// window. The old 5-minute limit fired during a first login (one-time password
+/// + "update password" step) and left the window open with nobody listening:
+/// the intercepted callback was dropped silently (SUP-20260916-081052).
+const LOGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 fn parse_callback_payload(url: &Url) -> String {
     if let Some(err) = url
@@ -141,33 +169,37 @@ pub async fn keycloak_login(
     .title("Sign in with Keycloak")
     .build()
     .map_err(|e| {
-        if let Ok(mut guard) = keycloak_callback_state().lock() {
-            let _ = guard.take();
-        }
+        clear_keycloak_waiter();
         format!("Failed to create Keycloak login window: {e}")
     })?;
 
-    // Wait up to 5 minutes for the auth code.
-    let code_or_error = tokio::time::timeout(
-        std::time::Duration::from_secs(300),
-        rx,
-    )
-    .await
-    .map_err(|_| {
-        if let Ok(mut guard) = keycloak_callback_state().lock() {
-            let _ = guard.take();
+    // Closing the window is a cancellation — not a silent wait until the
+    // safety timeout with the callback still being intercepted.
+    webview.on_window_event(|event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            let _ = deliver_keycloak_payload(LOGIN_WINDOW_CLOSED_PAYLOAD.to_string());
         }
-        "Keycloak authentication timed out after 5 minutes".to_string()
-    })?
-    .map_err(|_| "Keycloak authentication was cancelled".to_string())?;
+    });
+
+    let waited = tokio::time::timeout(LOGIN_TIMEOUT, rx).await;
+
+    // Whatever happened, the window must not outlive its waiter: an orphaned
+    // window still intercepts hermes://callback and the code is lost.
+    let _ = webview.close();
+
+    let code_or_error = match waited {
+        Ok(Ok(payload)) => payload,
+        Ok(Err(_)) => return Err("Keycloak authentication was cancelled".to_string()),
+        Err(_) => {
+            clear_keycloak_waiter();
+            return Err("Keycloak authentication timed out after 30 minutes".to_string());
+        }
+    };
 
     if let Some(err) = code_or_error.strip_prefix("__KEYCLOAK_ERROR__:") {
         return Err(format!("Keycloak authentication error: {err}"));
     }
     let code = code_or_error;
-
-    // Close the login window.
-    let _ = webview.close();
 
     tracing::info!("Keycloak auth code received, exchanging for token");
     let api_key = exchange_code_for_key(&base, &realm, &client_id, &code, &redirect_uri, &code_verifier).await?;
@@ -429,6 +461,21 @@ mod tests {
     fn parse_callback_payload_extracts_code() {
         let url = Url::parse("hermes://callback?code=abc123").unwrap();
         assert_eq!(parse_callback_payload(&url), "abc123");
+    }
+
+    #[test]
+    fn deliver_keycloak_payload_reports_whether_a_login_was_waiting() {
+        // Nobody waiting → false (SUP-20260916-081052; now logged instead of silent).
+        clear_keycloak_waiter();
+        assert!(!deliver_keycloak_payload("orphan-code".to_string()));
+
+        let (tx, mut rx) = oneshot::channel::<String>();
+        *keycloak_callback_state().lock().unwrap() = Some(tx);
+        assert!(deliver_keycloak_payload(LOGIN_WINDOW_CLOSED_PAYLOAD.to_string()));
+        let payload = rx.try_recv().unwrap();
+        assert!(payload.starts_with("__KEYCLOAK_ERROR__:"));
+        // The sender is consumed: a second delivery finds nobody.
+        assert!(keycloak_callback_state().lock().unwrap().is_none());
     }
 
     #[test]

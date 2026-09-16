@@ -318,7 +318,9 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
       }
 
       const redirectUri = DEFAULT_REDIRECT_URI || 'hermes://callback'
-      const result = await keycloakLogin({ baseUrl: rootDomain, realm: DEFAULT_REALM, redirectUri })
+      // A click on the provider row must produce a real login, not a silent
+      // reuse of the browser's SSO session (AIS-348).
+      const result = await keycloakLogin({ baseUrl: rootDomain, realm: DEFAULT_REALM, redirectUri, forceLogin: true })
 
       // Persist the URL for this environment first so the key and the host
       // are stored as a pair, then the key, then make both effective.
@@ -521,6 +523,7 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
         baseUrl: rootDomain,
         realm: DEFAULT_REALM,
         redirectUri,
+        forceLogin: true,
       })
 
       await setEnvVar(targetKey, result.apiKey)
