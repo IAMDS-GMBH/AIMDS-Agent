@@ -109,6 +109,11 @@ class ConvertResult:
     cached: bool = False
     suite_state: str = ""
     warnings: List[str] = field(default_factory=list)
+    #: Scalar fields of the Docling frontmatter (title, author, dates, pages…),
+    #: bounded — AIS-349: the model asked for "metadata" and we had thrown it away.
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    #: Why the Suite backend was skipped when a local backend converted the file.
+    suite_reason: str = ""
 
 
 # --------------------------------------------------------------------------- classification
@@ -182,6 +187,7 @@ def _cache_lookup(resolved: Path, stat: os.stat_result) -> Optional[ConvertResul
         markdown = md_path.read_text(encoding="utf-8")
     except (OSError, ValueError, TypeError):
         return None
+    metadata = meta.get("metadata")
     return ConvertResult(
         markdown=markdown,
         backend=str(meta.get("backend") or ""),
@@ -189,10 +195,21 @@ def _cache_lookup(resolved: Path, stat: os.stat_result) -> Optional[ConvertResul
         source=str(resolved),
         cached=True,
         suite_state=str(meta.get("suite_state") or ""),
+        metadata=dict(metadata) if isinstance(metadata, dict) else {},
+        suite_reason=str(meta.get("suite_reason") or ""),
     )
 
 
-def _cache_store(resolved: Path, stat: os.stat_result, markdown: str, backend: str, suite_state: str) -> str:
+def _cache_store(
+    resolved: Path,
+    stat: os.stat_result,
+    markdown: str,
+    backend: str,
+    suite_state: str,
+    *,
+    metadata: Optional[Dict[str, Any]] = None,
+    suite_reason: str = "",
+) -> str:
     key = _cache_key(resolved)
     base = cache_dir()
     base.mkdir(parents=True, exist_ok=True)
@@ -206,6 +223,8 @@ def _cache_store(resolved: Path, stat: os.stat_result, markdown: str, backend: s
         "size": stat.st_size,
         "backend": backend,
         "suite_state": suite_state,
+        "suite_reason": suite_reason,
+        "metadata": dict(metadata or {}),
         "converted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     (base / f"{key}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -318,6 +337,41 @@ def _strip_frontmatter(text: str) -> str:
     return _FRONTMATTER_RE.sub("", text, count=1)
 
 
+_METADATA_MAX_KEYS = 40
+_METADATA_MAX_VALUE_CHARS = 200
+_METADATA_MAX_BYTES = 1024
+_FRONTMATTER_SCALAR_RE = re.compile(r"^([A-Za-z0-9_][A-Za-z0-9_.\- ]{0,63}):\s*(.*?)\s*$")
+
+
+def _split_frontmatter(text: str) -> tuple[Dict[str, Any], str]:
+    """``(metadata, body)`` for Markdown with a YAML frontmatter block.
+
+    Only top-level scalar ``key: value`` lines are kept (nested maps, lists and
+    block scalars are skipped), values are clipped, the whole dict is bounded
+    to ~1 KB — deterministic, no YAML parser, never raises (AIS-349).
+    """
+    match = _FRONTMATTER_RE.match(text)
+    if not match:
+        return {}, text
+    block = match.group(0)
+    body = text[len(block):]
+    metadata: Dict[str, Any] = {}
+    for line in block.splitlines()[1:-1]:
+        scalar = _FRONTMATTER_SCALAR_RE.match(line)
+        if not scalar:
+            continue
+        key, value = scalar.group(1).strip(), scalar.group(2).strip().strip("\"'")
+        if not value or value in ("|", ">", "[]", "{}", "null", "~"):
+            continue
+        metadata[key] = value[:_METADATA_MAX_VALUE_CHARS]
+        if len(metadata) >= _METADATA_MAX_KEYS:
+            break
+        if len(json.dumps(metadata, ensure_ascii=False)) > _METADATA_MAX_BYTES:
+            metadata.pop(key)
+            break
+    return metadata, body
+
+
 def _document_text(payload: Any) -> str:
     if isinstance(payload, str):
         return payload
@@ -378,8 +432,8 @@ def _upload_file(upload_url: str, resolved: Path, api_key: str, provider: str) -
     return upload_id
 
 
-def _convert_via_suite(resolved: Path, stat: os.stat_result, config: Optional[dict]) -> tuple[str, str]:
-    """Return ``(markdown, suite_state)``; raises :class:`_SuiteUnavailable`."""
+def _convert_via_suite(resolved: Path, stat: os.stat_result, config: Optional[dict]) -> tuple[str, str, Dict[str, Any]]:
+    """Return ``(markdown, suite_state, metadata)``; raises :class:`_SuiteUnavailable`."""
     from hermes_cli.iamds_suite import resolve_suite_endpoint
 
     gate = suite_availability(config)
@@ -409,10 +463,11 @@ def _convert_via_suite(resolved: Path, stat: os.stat_result, config: Optional[di
 
     _call_suite_tool(_SUITE_INGEST_TOOL, {"upload_id": upload_id})
     document = _call_suite_tool(_SUITE_GET_DOCUMENT_TOOL, {"id": f"upload:{upload_id}", "format": "markdown"})
-    text = _strip_frontmatter(_document_text(document)).strip()
+    metadata, body = _split_frontmatter(_document_text(document))
+    text = body.strip()
     if not text:
         raise _SuiteUnavailable("empty", "Suite returned no text for the document")
-    return text + "\n", gate.state
+    return text + "\n", gate.state, metadata
 
 
 # --------------------------------------------------------------------------- local backend
@@ -600,31 +655,34 @@ def convert_document(path: str | os.PathLike[str], *, config: Optional[dict] = N
 
     reasons: List[str] = []
     suite_state = ""
+    suite_reason = ""
     warnings: List[str] = []
     for backend in order:
         if backend == CONVERTER_SUITE:
             try:
-                markdown, suite_state = _convert_via_suite(resolved, stat, config)
+                markdown, suite_state, metadata = _convert_via_suite(resolved, stat, config)
             except _SuiteUnavailable as exc:
-                suite_state = exc.state
+                suite_state, suite_reason = exc.state, exc.reason
                 reasons.append(f"suite: {exc.state} — {exc.reason}")
                 _log_suite_state_once(exc.state, exc.reason)
                 continue
             except Exception as exc:  # noqa: BLE001 — never let the Suite path break a read
-                suite_state = "error"
-                reasons.append(f"suite: {type(exc).__name__}: {str(exc)[:200]}")
+                suite_state, suite_reason = "error", f"{type(exc).__name__}: {str(exc)[:200]}"
+                reasons.append(f"suite: {suite_reason}")
                 logger.warning("[AIS-294] Suite document conversion failed for %s: %s", resolved.name, exc)
                 continue
-            cache_path = _cache_store(resolved, stat, markdown, BACKEND_SUITE, suite_state)
-            return ConvertResult(markdown, BACKEND_SUITE, cache_path, str(resolved), suite_state=suite_state)
+            cache_path = _cache_store(resolved, stat, markdown, BACKEND_SUITE, suite_state, metadata=metadata)
+            return ConvertResult(markdown, BACKEND_SUITE, cache_path, str(resolved), suite_state=suite_state, metadata=metadata)
         else:
             try:
                 markdown, used, warnings = _convert_locally(resolved)
             except Exception as exc:  # noqa: BLE001
                 reasons.append(f"local: {exc}")
                 continue
-            cache_path = _cache_store(resolved, stat, markdown, used, suite_state)
-            return ConvertResult(markdown, used, cache_path, str(resolved), suite_state=suite_state, warnings=warnings)
+            cache_path = _cache_store(resolved, stat, markdown, used, suite_state, suite_reason=suite_reason)
+            return ConvertResult(
+                markdown, used, cache_path, str(resolved), suite_state=suite_state, suite_reason=suite_reason, warnings=warnings
+            )
 
     raise DocumentConvertError(
         f"Could not convert '{path}' to text: " + "; ".join(reasons), reasons, suite_state=suite_state

@@ -1379,3 +1379,22 @@ def test_resolve_release_target_reports_only_real_outages(channel, status, expec
     else:
         assert incidents == []
         assert "No stable release is published" in out
+
+
+# AIS-350: the preview feed answered but holds no release with a manifest yet —
+# "nothing published", not an outage.
+def test_resolve_release_target_empty_preview_feed_is_not_an_outage(monkeypatch, capsys):
+    from hermes_cli import main as main_mod
+    from hermes_cli.release_update import ReleaseFeedError
+
+    def _raise(_channel):
+        raise ReleaseFeedError("no preview release found in IAMDS-GMBH/AIMDS-Agent-Releases", no_release=True)
+
+    incidents = []
+    monkeypatch.setattr("hermes_cli.release_update.fetch_release_feed", _raise)
+    monkeypatch.setattr(main_mod, "_report_update_incident", lambda kind, detail, **kw: incidents.append(kind))
+
+    assert main_mod._resolve_release_target("preview") is None
+    out = capsys.readouterr().out
+    assert incidents == []
+    assert "No preview release is published" in out and "Resolving the preview tag from origin" in out

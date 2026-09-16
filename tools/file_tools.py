@@ -949,10 +949,16 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             result_dict["converted_from"] = resolved_str
             result_dict["converter"] = _converted.backend
             result_dict["cache_path"] = _converted.cache_path
+            if getattr(_converted, "metadata", None):
+                result_dict["metadata"] = _converted.metadata
             if _converted.warnings:
                 result_dict["converter_warnings"] = _converted.warnings
             if _converted.suite_state and _converted.backend != "suite-docling":
                 result_dict["suite_docling"] = _converted.suite_state
+                # AIS-349: the state alone ("not_configured", "tools_missing")
+                # left the model unable to tell the user *why* Docling was skipped.
+                if getattr(_converted, "suite_reason", ""):
+                    result_dict["suite_docling_reason"] = _converted.suite_reason
 
         # ── Character-count guard ─────────────────────────────────────
         # We're model-agnostic so we can't count tokens; characters are
@@ -1563,7 +1569,7 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read text files with line numbers. Use offset/limit for large files. Office files (docx/xlsx/pptx/odt/ods/odp) and PDFs are returned as Markdown automatically — never parse them with terminal commands.",
+    "description": "Read text files with line numbers. Use offset/limit for large files. Office files (docx/xlsx/pptx/odt/ods/odp) and PDFs are returned as Markdown automatically (AIMDS-Suite Docling when reachable, local converters otherwise; the result names the converter and any Docling frontmatter as `metadata`) — never parse them with terminal commands. Document metadata beyond that: `office_word(action=read_metadata)` for .docx or the AIMDS-Suite `storage_meta` tool.",
     "parameters": {
         "type": "object",
         "properties": {

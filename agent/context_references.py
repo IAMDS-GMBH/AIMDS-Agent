@@ -509,6 +509,20 @@ def _human_bytes(n: int) -> str:
     return f"{size:.1f} GB"
 
 
+# Office/PDF suffixes `read_file` converts to Markdown (mirror of
+# tools.document_convert.DOCUMENT_EXTENSIONS, used when that import fails).
+_DOCUMENT_SUFFIXES = {".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".pdf"}
+
+
+def _is_convertible_document(path: Path) -> bool:
+    try:
+        from tools.document_convert import is_convertible_document
+
+        return bool(is_convertible_document(path))
+    except Exception:
+        return path.suffix.lower() in _DOCUMENT_SUFFIXES
+
+
 def _binary_reference_block(ref: ContextReference, path: Path) -> str:
     mime, _ = mimetypes.guess_type(path.name)
     mime = mime or "application/octet-stream"
@@ -516,11 +530,25 @@ def _binary_reference_block(ref: ContextReference, path: Path) -> str:
         size = _human_bytes(path.stat().st_size)
     except OSError:
         size = "unknown size"
-    return (
+    head = (
         f"📎 {ref.raw} ({mime}, {size}) — binary file, not inlined as text. "
-        f"It is available on disk at `{path}`. Use your tools to work with it "
-        f"(read or convert it, extract its text, or view/render it as needed); "
-        f"do not tell the user the file type is unsupported."
+        f"The original is kept unchanged on disk at `{path}`. "
+    )
+    if _is_convertible_document(path):
+        # AIS-349 (SUP-20260916-130011): "use your tools" left the model to
+        # improvise with the terminal and it never learned that Docling runs
+        # inside read_file. Name the capabilities, not a recipe.
+        return head + (
+            "Read it with `read_file(<that path>)`: Office files (docx/xlsx/pptx/odt/ods/odp) and PDFs "
+            "come back as Markdown, converted by the AIMDS-Suite Docling when it is reachable and locally "
+            "otherwise (the result names the converter). For document metadata (author, dates, pages) use "
+            "`office_word(action=read_metadata)` on a .docx or the AIMDS-Suite `storage_meta` tool. "
+            "Never parse a document with terminal commands or ad-hoc scripts; do not tell the user the "
+            "file type is unsupported."
+        )
+    return head + (
+        "Use your tools to work with it (read or convert it, extract its text, or view/render it as "
+        "needed); do not tell the user the file type is unsupported."
     )
 
 

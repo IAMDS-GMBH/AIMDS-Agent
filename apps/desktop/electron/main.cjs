@@ -77,6 +77,7 @@ const {
   inspectUpdaterBinary,
   noStableReleasePublished,
   openUpdaterLogStdio,
+  describeNoReleaseError,
   quarantineUpdaterBinary,
   resolveDetachedCheckoutChannel
 } = require('./update-apply.cjs')
@@ -1640,6 +1641,7 @@ async function fetchGitHubJson(url, { timeoutMs = GITHUB_JSON_TIMEOUT_MS, etag }
     if (text.length > GITHUB_JSON_MAX_BYTES) {
       const error = new Error(`response from ${url} exceeds ${GITHUB_JSON_MAX_BYTES} bytes`)
       error.code = 'fetch-failed'
+      error.status = response.status
       throw error
     }
     let body
@@ -1648,6 +1650,7 @@ async function fetchGitHubJson(url, { timeoutMs = GITHUB_JSON_TIMEOUT_MS, etag }
     } catch {
       const error = new Error(`response from ${url} is not JSON`)
       error.code = 'fetch-failed'
+      error.status = response.status
       throw error
     }
     return { status: response.status, etag: response.headers.get('etag') || '', body }
@@ -1693,8 +1696,11 @@ async function fetchReleaseManifest(channel) {
     const releases = await fetchGitHubJsonCached(`https://api.github.com/repos/IAMDS-GMBH/AIMDS-Agent-Releases/releases?per_page=30`)
     const selected = selectReleaseFromApi(releases, normalized)
     if (!selected) {
+      // AIS-350: the feed answered — the repository simply holds no preview
+      // release with a manifest yet. Same class as the stable 404 (AIS-345).
       const error = new Error('no preview release with a hermes-release.json asset found')
       error.code = 'fetch-failed'
+      error.noRelease = true
       throw error
     }
     releaseTag = selected.tag
@@ -1784,9 +1790,9 @@ async function checkUpdates() {
       // keeps its git history: fall back to the git check so the install is
       // never stuck without updates.
       if (noStableReleasePublished(error, branch)) {
-        // AIS-345: only pre-releases published so far — expected, not an
-        // outage; no support case for it.
-        rememberLogOnce(`release-fallback:no-stable`, `[updates] no stable release is published in the release repository yet (HTTP 404); falling back to git`)
+        // AIS-345 / AIS-350: nothing published for this channel so far —
+        // expected, not an outage; no support case for it.
+        rememberLogOnce(`release-fallback:no-stable`, `[updates] no ${branch} release is published in the release repository yet (${describeNoReleaseError(error)}); falling back to git`)
       } else {
         rememberLogOnce(`release-fallback:${code}`, `[updates] release manifest check failed (${code}): ${message}; falling back to git`)
         void reportAutoIncident({
@@ -1835,10 +1841,11 @@ async function checkUpdates() {
     } catch (error) {
       const code = error?.code === 'rate-limited' ? 'rate-limited' : 'fetch-failed'
       if (noStableReleasePublished(error, branch)) {
-        // AIS-345: `releases/latest` is 404 while only pre-releases exist.
-        // The tags of the source repository decide, as designed — logged
-        // once, no support case (every stable client hit this every 24 h).
-        rememberLogOnce(`release-target:${branch}:no-stable`, `[updates] no stable release is published in the release repository yet (HTTP 404); resolving ${branch} from ${remote}`)
+        // AIS-345 / AIS-350: `releases/latest` is 404 while only pre-releases
+        // exist, or the preview feed holds no manifest yet. The tags of the
+        // source repository decide, as designed — logged once, no support
+        // case (every stable client hit this every 24 h).
+        rememberLogOnce(`release-target:${branch}:no-stable`, `[updates] no ${branch} release is published in the release repository yet (${describeNoReleaseError(error)}); resolving ${branch} from ${remote}`)
       } else {
         rememberLogOnce(`release-target:${branch}:${code}`, `[updates] release repository unavailable (${code}): ${error?.message || error}; resolving ${branch} from ${remote}`)
         void reportAutoIncident({

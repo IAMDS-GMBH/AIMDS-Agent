@@ -797,6 +797,16 @@ _GERMAN_SYNONYMS: Dict[str, List[str]] = {
     "word": ["word", "docx", "document"],
     "docx": ["word", "docx", "document"],
     "dokument": ["word", "docx", "document"],
+    # AIS-349 (SUP-20260916-130011): "docling" is the Suite's document
+    # converter behind AIMDSSuiteMCP's storage_* tools — no tool carries the
+    # word, so the query has to reach "storage"/"ingest"/"document". Not a
+    # server alias on purpose: a bare "docling" must rank, not browse.
+    "docling": ["docling", "storage", "ingest", "upload", "document", "convert", "markdown", "metadata"],
+    "metadaten": ["metadata", "meta", "document", "storage"],
+    "metadata": ["metadata", "meta", "document", "storage"],
+    "konvertieren": ["convert", "document", "markdown", "storage", "ingest"],
+    "konvertiere": ["convert", "document", "markdown", "storage", "ingest"],
+    "umwandeln": ["convert", "document", "markdown", "storage", "ingest"],
     # No stemming in the tokenizer: "file" must reach `download_chat_files`
     # and "files" must reach `download_drive_file` (AIS-289).
     "file": ["file", "files"],

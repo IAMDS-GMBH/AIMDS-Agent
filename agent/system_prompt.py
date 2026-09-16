@@ -244,6 +244,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         if teams_send_guidance:
             stable_parts.append(teams_send_guidance)
 
+        # AIS-349: documents from any source — original kept, read via
+        # read_file (Docling), metadata tools named, no terminal parsing.
+        document_guidance = _r.build_document_guidance(_guidance_names)
+        if document_guidance:
+            stable_parts.append(document_guidance)
+
         jira_guidance = _r.build_jira_guidance(_guidance_names)
         if jira_guidance:
             stable_parts.append(jira_guidance)

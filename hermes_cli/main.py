@@ -8007,11 +8007,13 @@ def _resolve_release_target(channel: str):
     try:
         return fetch_release_feed(channel)
     except ReleaseFeedError as exc:
-        if normalize_channel(channel) == CHANNEL_STABLE and getattr(exc, "status", None) == 404:
-            # AIS-345: `releases/latest` is 404 while only pre-releases are
-            # published — nothing is wrong, the origin tags decide as
-            # designed; no support case for it.
-            print(f"ℹ No stable release is published in {RELEASE_REPO} yet")
+        stable_404 = normalize_channel(channel) == CHANNEL_STABLE and getattr(exc, "status", None) == 404
+        if stable_404 or getattr(exc, "no_release", False):
+            # AIS-345 / AIS-350: `releases/latest` is 404 while only
+            # pre-releases are published, or the preview feed holds no release
+            # yet — nothing is wrong, the origin tags decide as designed; no
+            # support case for it.
+            print(f"ℹ No {normalize_channel(channel)} release is published in {RELEASE_REPO} yet")
             print(f"  → Resolving the {channel} tag from origin instead.")
             return None
         print(f"⚠ Release repository {RELEASE_REPO} unavailable ({exc})")

@@ -2002,3 +2002,24 @@ class TestBuildMcpStatusPrompt:
     def test_wired_into_run_agent_exports(self):
         import run_agent
         assert callable(getattr(run_agent, "build_mcp_status_prompt", None))
+
+
+class TestDocumentGuidance:
+    """AIS-349: the document rules are gated on read_file and name the
+    capabilities (read_file → Docling, metadata tools, original kept)."""
+
+    def test_gated_on_read_file(self):
+        from agent.prompt_builder import build_document_guidance
+
+        assert build_document_guidance(None) == ""
+        assert build_document_guidance({"terminal", "office_word"}) == ""
+
+    def test_names_the_capabilities(self):
+        from agent.prompt_builder import build_document_guidance
+
+        text = build_document_guidance({"read_file", "terminal"})
+        assert text.startswith("# Documents")
+        assert "`read_file(<path>)`" in text and "Docling" in text
+        assert "read_metadata" in text and "storage_meta" in text
+        assert "documents/attachments/" in text and "documents/m365_attachments/" in text
+        assert "Never parse a document with terminal commands" in text

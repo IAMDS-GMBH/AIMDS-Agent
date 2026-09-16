@@ -116,10 +116,14 @@ class ReleaseFeedError(Exception):
     """
 
     status: Optional[int] = None
+    #: The feed answered but holds no release for the channel yet (AIS-350) —
+    #: "nothing published", not an outage, like the stable 404.
+    no_release: bool = False
 
-    def __init__(self, message: str, *, status: Optional[int] = None):
+    def __init__(self, message: str, *, status: Optional[int] = None, no_release: bool = False):
         super().__init__(message)
         self.status = status
+        self.no_release = no_release
 
 
 @dataclass(frozen=True)
@@ -276,7 +280,7 @@ def fetch_release_feed(
 
     release = fetch_release_via_api(normalized, timeout=timeout, repo=repo)
     if not release:
-        raise ReleaseFeedError(f"no {normalized} release found in {repo}")
+        raise ReleaseFeedError(f"no {normalized} release found in {repo}", no_release=True)
     tag = str(release.get("tag_name") or "")
     assets = {
         str(a.get("name") or ""): a

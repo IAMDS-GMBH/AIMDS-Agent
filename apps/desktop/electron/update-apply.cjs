@@ -188,8 +188,19 @@ function quarantineUpdaterBinary(file, { fsImpl = fs, now = () => new Date() } =
 // check falls back to the source repository's tags exactly as designed
 // (AIS-318) and must not file a support case for it every 24 h.
 function noStableReleasePublished(error, channel) {
-  const status = error && typeof error === 'object' ? Number(error.status) : NaN
+  if (!error || typeof error !== 'object') return false
+  // AIS-350: the preview feed answered but no release carries a manifest yet
+  // (`fetchReleaseManifest` marks that case) — same class as the stable 404.
+  if (error.noRelease === true) return true
+  const status = Number(error.status)
   return status === 404 && normalizeChannel(channel || '') === 'stable'
+}
+
+// Short cause for the benign "nothing published yet" log line.
+function describeNoReleaseError(error) {
+  if (error && typeof error === 'object' && error.noRelease === true) return 'no release with a manifest'
+  const status = error && typeof error === 'object' ? Number(error.status) : NaN
+  return Number.isFinite(status) ? `HTTP ${status}` : String(error?.message || error)
 }
 
 module.exports = {
@@ -197,6 +208,7 @@ module.exports = {
   describeUpdaterLaunchFailure,
   inspectUpdaterBinary,
   isNativeExecutableHead,
+  describeNoReleaseError,
   noStableReleasePublished,
   openUpdaterLogStdio,
   quarantineUpdaterBinary,
