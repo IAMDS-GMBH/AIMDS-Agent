@@ -20,6 +20,7 @@ import { $cronJobs } from '@/store/cron'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { forgetSessionPreviews } from '@/store/preview'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $currentCwd,
@@ -52,7 +53,13 @@ import {
   workspaceCwdForNewSession
 } from '@/store/session'
 import { reportBackendContract } from '@/store/updates'
-import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo, UsageStats } from '@/types/hermes'
+import type {
+  SessionCreateResponse,
+  SessionInfo,
+  SessionResumeResponse,
+  SessionRuntimeInfo,
+  UsageStats
+} from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../types'
@@ -198,15 +205,7 @@ function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    | 'branch'
-    | 'cwd'
-    | 'fast'
-    | 'model'
-    | 'personality'
-    | 'provider'
-    | 'reasoningEffort'
-    | 'serviceTier'
-    | 'yolo'
+    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
   >
 >
 
@@ -457,12 +456,7 @@ export function useSessionActions({
   }, [navigate, selectedStoredSessionId])
 
   const resumeSession = useCallback(
-    async (
-      storedSessionId: string,
-      replaceRoute = false,
-      profileOverride?: string,
-      forceFullResume = false
-    ) => {
+    async (storedSessionId: string, replaceRoute = false, profileOverride?: string, forceFullResume = false) => {
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
 
@@ -902,9 +896,11 @@ export function useSessionActions({
 
         await deleteSession(storedSessionId, removed?.profile)
         clearQueuedPrompts(storedSessionId)
+        forgetSessionPreviews(storedSessionId)
 
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)
+          forgetSessionPreviews(closingRuntimeId)
         }
       } catch (err) {
         if (removed) {

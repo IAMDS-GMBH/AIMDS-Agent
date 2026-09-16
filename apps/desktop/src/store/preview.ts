@@ -54,12 +54,33 @@ export interface FilePreviewTab {
   target: PreviewTarget
 }
 
+/** The file/url tabs one chat had open, plus which rail tab it was looking at. */
+export interface SessionFilePreviewTabs {
+  activeTabId: RightRailTabId
+  tabs: FilePreviewTab[]
+}
+
+type FilePreviewTabsBySession = Record<string, SessionFilePreviewTabs>
+
 const REGISTRY_STORAGE_KEY = 'hermes.desktop.sessionPreviews.v1'
+const FILE_TABS_STORAGE_KEY = 'hermes.desktop.filePreviewTabs.v1'
 const MAX_RECORDS_PER_SESSION = 12
+const MAX_FILE_TABS_PER_SESSION = 24
 const MAX_SESSIONS = 120
 
 export const $previewTarget = atom<PreviewTarget | null>(null)
+/** File/url tabs of the chat currently shown. Swapped in and out per session
+ * by the listener below, so a tab opened in one chat never lingers in another
+ * (AIS-355). */
 export const $filePreviewTabs = atom<FilePreviewTab[]>([])
+/** Every chat's file tabs, keyed like the session preview registry. */
+export const $filePreviewTabsBySession = atom<FilePreviewTabsBySession>(loadFilePreviewTabsBySession())
+/** The id the preview stores file their per-chat state under: the stored id of
+ * a resumed chat, else the live id, else '' for a draft that has no id yet. */
+export const $previewSessionKey = computed(
+  [$selectedStoredSessionId, $activeSessionId],
+  (stored, active) => stored || active || ''
+)
 export const $filePreviewTarget = computed([$filePreviewTabs, $rightRailActiveTabId], (tabs, activeTabId) => {
   if (!activeTabId.startsWith('file:')) {
     return null
@@ -73,6 +94,49 @@ export const $previewServerRestartStatus = computed($previewServerRestart, resta
 export const $sessionPreviewRegistry = atom<SessionPreviewRegistry>(loadSessionPreviewRegistry())
 
 $sessionPreviewRegistry.subscribe(persistSessionPreviewRegistry)
+$filePreviewTabsBySession.subscribe(persistFilePreviewTabsBySession)
+
+let restoringFilePreviewTabs = false
+
+// Mirror the visible tabs (and the tab in focus) into the per-chat record as
+// they change, so switching away can never lose them.
+$filePreviewTabs.listen(tabs => {
+  if (!restoringFilePreviewTabs) {
+    rememberFilePreviewTabs(currentPreviewSessionId(), tabs, $rightRailActiveTabId.get())
+  }
+})
+
+$rightRailActiveTabId.listen(activeTabId => {
+  if (restoringFilePreviewTabs) {
+    return
+  }
+
+  const key = currentPreviewSessionId()
+  const entry = $filePreviewTabsBySession.get()[key]
+
+  if (entry && entry.activeTabId !== activeTabId) {
+    $filePreviewTabsBySession.set({ ...$filePreviewTabsBySession.get(), [key]: { ...entry, activeTabId } })
+  }
+})
+
+// Chat switch: the previous chat's tabs are already mirrored; show the next
+// chat's tabs (or none). A draft that just received its id keeps its tabs —
+// they were opened in this very conversation, only the key changed.
+$previewSessionKey.listen((next, previous) => {
+  if (previous === '' && next !== '' && !$filePreviewTabsBySession.get()[next]) {
+    const draft = $filePreviewTabsBySession.get()['']
+
+    if (draft) {
+      const { '': _draft, ...rest } = $filePreviewTabsBySession.get()
+
+      $filePreviewTabsBySession.set({ ...rest, [next]: draft })
+    }
+
+    return
+  }
+
+  restoreFilePreviewTabs(next)
+})
 
 function isSamePreviewTarget(a: PreviewTarget | null, b: PreviewTarget | null): boolean {
   if (a === b) {
@@ -254,7 +318,147 @@ function pruneRegistry(registry: SessionPreviewRegistry): SessionPreviewRegistry
 }
 
 function currentPreviewSessionId(): string {
-  return $selectedStoredSessionId.get() || $activeSessionId.get() || ''
+  return $previewSessionKey.get()
+}
+
+function isFilePreviewTab(value: unknown): value is FilePreviewTab {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const r = value as Record<string, unknown>
+
+  return typeof r.id === 'string' && (r.id.startsWith('file:') || r.id.startsWith('url:')) && isPreviewTarget(r.target)
+}
+
+function loadFilePreviewTabsBySession(): FilePreviewTabsBySession {
+  if (typeof window === 'undefined') {
+    return {}
+  }
+
+  try {
+    const raw = window.localStorage.getItem(FILE_TABS_STORAGE_KEY)
+
+    if (!raw) {
+      return {}
+    }
+
+    const parsed = JSON.parse(raw) as unknown
+
+    if (!parsed || typeof parsed !== 'object') {
+      return {}
+    }
+
+    const out: FilePreviewTabsBySession = {}
+
+    for (const [sessionId, entry] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!sessionId || !entry || typeof entry !== 'object') {
+        continue
+      }
+
+      const { activeTabId, tabs } = entry as Record<string, unknown>
+
+      if (!Array.isArray(tabs)) {
+        continue
+      }
+
+      const valid = tabs.filter(isFilePreviewTab).slice(0, MAX_FILE_TABS_PER_SESSION)
+
+      if (valid.length > 0) {
+        out[sessionId] = {
+          activeTabId: typeof activeTabId === 'string' ? (activeTabId as RightRailTabId) : RIGHT_RAIL_PREVIEW_TAB_ID,
+          tabs: valid
+        }
+      }
+    }
+
+    return out
+  } catch {
+    return {}
+  }
+}
+
+function persistFilePreviewTabsBySession(bySession: FilePreviewTabsBySession) {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  try {
+    // Tabs whose content only lives in memory (a pasted screenshot, text
+    // fetched from a remote backend) cannot be re-read after a reload, and the
+    // bytes would blow the localStorage quota — they stay session-only.
+    const lean = Object.entries(bySession)
+      .map(([sessionId, entry]) => {
+        const tabs = entry.tabs.filter(tab => !tab.target.dataUrl && !tab.target.text)
+
+        const activeStillOpen =
+          entry.activeTabId === RIGHT_RAIL_PREVIEW_TAB_ID || tabs.some(tab => tab.id === entry.activeTabId)
+
+        return [
+          sessionId,
+          { activeTabId: activeStillOpen ? entry.activeTabId : RIGHT_RAIL_PREVIEW_TAB_ID, tabs }
+        ] as const
+      })
+      .filter(([sessionId, entry]) => sessionId && entry.tabs.length > 0)
+      .slice(-MAX_SESSIONS)
+
+    window.localStorage.setItem(FILE_TABS_STORAGE_KEY, JSON.stringify(Object.fromEntries(lean)))
+  } catch {
+    // Per-chat tabs are a convenience; storage failures are nonfatal.
+  }
+}
+
+function rememberFilePreviewTabs(key: string, tabs: readonly FilePreviewTab[], activeTabId: RightRailTabId) {
+  const current = $filePreviewTabsBySession.get()
+
+  if (tabs.length === 0) {
+    if (key in current) {
+      const { [key]: _gone, ...rest } = current
+
+      $filePreviewTabsBySession.set(rest)
+    }
+
+    return
+  }
+
+  $filePreviewTabsBySession.set({ ...current, [key]: { activeTabId, tabs: tabs.slice(-MAX_FILE_TABS_PER_SESSION) } })
+}
+
+function restoreFilePreviewTabs(key: string) {
+  const entry = $filePreviewTabsBySession.get()[key]
+  const tabs = entry?.tabs ?? []
+
+  restoringFilePreviewTabs = true
+
+  try {
+    $filePreviewTabs.set(tabs)
+  } finally {
+    restoringFilePreviewTabs = false
+  }
+
+  const wanted = entry?.activeTabId
+  const wantedStillOpen = wanted === RIGHT_RAIL_PREVIEW_TAB_ID || tabs.some(tab => tab.id === wanted)
+
+  selectRightRailTab(wanted && wantedStillOpen ? wanted : (tabs[0]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID))
+}
+
+/** A chat was deleted: drop its file tabs and its live-preview records. */
+export function forgetSessionPreviews(sessionId: string | null | undefined) {
+  const id = sessionId?.trim()
+
+  if (!id) {
+    return
+  }
+
+  const { [id]: _tabs, ...restTabs } = $filePreviewTabsBySession.get()
+  const { [id]: _records, ...restRecords } = $sessionPreviewRegistry.get()
+
+  $filePreviewTabsBySession.set(restTabs)
+  $sessionPreviewRegistry.set(restRecords)
+
+  if (id === currentPreviewSessionId()) {
+    $filePreviewTabs.set([])
+  }
 }
 
 function recordId(sessionId: string, target: PreviewTarget): string {
@@ -439,6 +643,7 @@ export function clearSessionPreviewRegistry() {
   $sessionPreviewRegistry.set({})
   setPreviewTarget(null)
   $filePreviewTabs.set([])
+  $filePreviewTabsBySession.set({})
   selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
 }
 
