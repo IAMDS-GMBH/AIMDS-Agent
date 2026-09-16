@@ -123,7 +123,13 @@ export const en: Translations = {
       backendStopped: 'Backend stopped',
       desktopBootFailed: 'Desktop boot failed',
       gatewaySignInRequired: 'Gateway sign-in required',
-      ipcBridgeUnavailable: 'Desktop IPC bridge is unavailable.'
+      ipcBridgeUnavailable: 'Desktop IPC bridge is unavailable.',
+      startupTimedOut: 'Hermes did not finish starting in time.'
+    },
+    hints: {
+      backendSlowStart: 'The Hermes backend is still starting — the first start after an update can take a moment.',
+      macosDocumentsPermission:
+        'macOS is asking for access to your Documents folder — please click “Allow” so Hermes can open its workspace.'
     },
     failure: {
       title: "Hermes couldn't start",

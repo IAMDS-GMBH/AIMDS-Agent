@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
   openSessionWindow: sessionId => ipcRenderer.invoke('hermes:window:openSession', sessionId),
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
+  // AIS-352: last primary-backend exit, for a renderer that mounted after it.
+  getBackendExit: () => ipcRenderer.invoke('hermes:backend-exit:get'),
   getConnectionConfig: profile => ipcRenderer.invoke('hermes:connection-config:get', profile),
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),
   applyConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:apply', payload),

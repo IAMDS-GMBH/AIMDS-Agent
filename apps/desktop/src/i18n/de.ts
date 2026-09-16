@@ -124,7 +124,13 @@ export const de
       backendStopped: 'Backend gestoppt',
       desktopBootFailed: 'Desktop-Start fehlgeschlagen',
       gatewaySignInRequired: 'Gateway-Anmeldung erforderlich',
-      ipcBridgeUnavailable: 'Desktop-IPC-Bridge nicht verfügbar.'
+      ipcBridgeUnavailable: 'Desktop-IPC-Bridge nicht verfügbar.',
+      startupTimedOut: 'Hermes ist nicht rechtzeitig fertig gestartet.'
+    },
+    hints: {
+      backendSlowStart: 'Das Hermes-Backend startet noch – der erste Start nach einem Update kann etwas dauern.',
+      macosDocumentsPermission:
+        'macOS fragt nach Zugriff auf deinen Ordner „Dokumente“ – bitte auf „Erlauben“ klicken, damit Hermes seinen Arbeitsbereich öffnen kann.'
     },
     failure: {
       title: 'Hermes konnte nicht gestartet werden',

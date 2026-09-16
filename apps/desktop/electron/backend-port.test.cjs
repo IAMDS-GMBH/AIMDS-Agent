@@ -143,6 +143,37 @@ test('waitForPortRelease skips a record without port or naming our own process',
   assert.equal(own.skipped, true)
 })
 
+// AIS-352: the 2026-09-16 boot storm — the retry found the record of the
+// backend THIS process had just spawned (still blocked on a macOS dialog) and
+// SIGTERMed it after 2 s. Our own live backend is never a stale one.
+test('waitForPortRelease never terminates our own live backend', async () => {
+  const signals = []
+  const logs = []
+  const own = await waitForPortRelease({
+    record: { port: 9120, pid: 4242 },
+    ownPid: 1,
+    ownBackendPid: 4242,
+    isPortAvailable: async () => false,
+    isPidAlive: () => true,
+    terminate: pid => (signals.push(pid), true),
+    log: line => logs.push(line)
+  })
+  assert.equal(own.skipped, true)
+  assert.equal(own.own_backend, true)
+  assert.deepEqual(signals, [])
+  assert.ok(logs.some(l => l.includes('our own starting backend')))
+  // A different pid on the same port is still treated as stale.
+  const stale = await waitForPortRelease({
+    record: { port: 9120, pid: 4243 },
+    ownPid: 1,
+    ownBackendPid: 4242,
+    isPortAvailable: async () => true,
+    isPidAlive: () => false
+  })
+  assert.equal(stale.skipped, false)
+  assert.equal(stale.released, true)
+})
+
 function fakeProcess({ exitOnTerm = true, delayMs = 0 } = {}) {
   const proc = new EventEmitter()
   proc.exitCode = null

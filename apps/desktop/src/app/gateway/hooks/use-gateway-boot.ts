@@ -35,6 +35,29 @@ import {
 } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
+// AIS-352: the initial boot() had no watchdog — while startHermes() kept
+// retrying (or sat behind a macOS permission dialog) nothing ever set
+// boot.error, so the fullscreen CONNECTING overlay had no way out. Longer than
+// the main process's own local readiness deadline (180 s) plus the spawn
+// retries, so a slow-but-healthy boot is never cut short from here.
+export const BOOT_WATCHDOG_MS = 240_000
+
+function withBootWatchdog<T>(promise: Promise<T>, ms: number, message: () => string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message())), ms)
+    promise.then(
+      value => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      error => {
+        clearTimeout(timer)
+        reject(error)
+      }
+    )
+  })
+}
+
 interface GatewayBootOptions {
   handleGatewayEvent: (event: RpcEvent) => void
   onConnectionReady: (
@@ -312,9 +335,23 @@ export function useGatewayBoot({
       })
     })
 
+    // AIS-352: `hermes:backend-exit` is fire-and-forget and startHermes() begins
+    // on did-finish-load — before this effect subscribed — so an exit during
+    // the first seconds was lost. Ask for the last one once.
+    void desktop
+      .getBackendExit?.()
+      .then(exit => {
+        if (!cancelled && exit && !bootCompleted && !gatewayOpen()) {
+          failDesktopBoot(translateNow('boot.errors.backgroundExitedDuringStartup'))
+        }
+      })
+      .catch(() => undefined)
+
     async function boot() {
       try {
-        const conn = await desktop.getConnection()
+        const conn = await withBootWatchdog(desktop.getConnection(), BOOT_WATCHDOG_MS, () =>
+          translateNow('boot.errors.startupTimedOut')
+        )
 
         if (cancelled) {
           return

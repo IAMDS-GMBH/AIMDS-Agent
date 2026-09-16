@@ -169,7 +169,7 @@ function scrambledTail(resolvedCount: number): string {
 }
 
 export function GatewayConnectingOverlay() {
-  const { locale } = useI18n()
+  const { locale, t } = useI18n()
   const gatewayState = useStore($gatewayState)
   const boot = useStore($desktopBoot)
   const tipMode = useStore($tipMode)
@@ -328,6 +328,17 @@ export function GatewayConnectingOverlay() {
   }, [gatewayState])
 
   const connecting = gatewayState !== 'open' && !boot.error
+
+  // AIS-352: while the main process waits on a macOS permission dialog or a
+  // slow first start, say so instead of cycling the team messages — the user
+  // has to act (click "Allow") or at least knows why nothing happens.
+  const stageHint =
+    boot.phase === 'backend.permission'
+      ? t.boot.hints.macosDocumentsPermission
+      : boot.phase === 'backend.wait.slow'
+        ? t.boot.hints.backendSlowStart
+        : null
+
   const startupConnect = !previewing && (boot.running || boot.phase !== 'renderer.ready')
   // Latches once we've actually shown the overlay, so the brief frame where
   // gatewayState flips to "open" (connecting -> false) before the exit phase
@@ -502,7 +513,7 @@ export function GatewayConnectingOverlay() {
         <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-(--ui-stroke-secondary)">
           <div className="h-full bg-(--theme-primary) transition-all duration-300 ease-out" style={{ width: `${progressPct}%` }} />
         </div>
-        <p className="mt-2 text-xs text-(--ui-text-secondary)">{currentMessage}</p>
+        <p className="mt-2 text-xs text-(--ui-text-secondary)">{stageHint ?? currentMessage}</p>
       </div>
     </div>
   )
