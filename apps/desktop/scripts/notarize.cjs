@@ -73,12 +73,44 @@ exports.default = async function notarize(context) {
     return
   }
 
+  // AIS-353: the release pipeline holds an Apple ID + app-specific password +
+  // team id (the Tauri installer's credentials) — notarize with those.
+  const appleId = String(process.env.APPLE_ID || '').trim()
+  const applePassword = String(process.env.APPLE_PASSWORD || '').trim()
+  const teamId = String(process.env.APPLE_TEAM_ID || '').trim()
+  if (appleId && applePassword && teamId) {
+    const zipPath = path.join(appOutDir, `${appName}.zip`)
+    try {
+      await run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, zipPath])
+      await run('xcrun', [
+        'notarytool', 'submit', zipPath,
+        '--apple-id', appleId, '--password', applePassword, '--team-id', teamId,
+        '--wait'
+      ])
+      await run('xcrun', ['stapler', 'staple', '-v', appPath])
+    } finally {
+      try {
+        fs.rmSync(zipPath, { force: true })
+      } catch {
+        // Best-effort cleanup.
+      }
+    }
+    return
+  }
+
   const keyId = String(process.env.APPLE_API_KEY_ID || '').trim()
   const issuer = String(process.env.APPLE_API_ISSUER || '').trim()
   const rawApiKey = process.env.APPLE_API_KEY
   if (!rawApiKey || !keyId || !issuer) {
+    if (process.env.HERMES_REQUIRE_NOTARIZATION === '1') {
+      // A release build must never ship unnotarized by accident (AIS-353).
+      throw new Error(
+        'Notarization is required (HERMES_REQUIRE_NOTARIZATION=1) but no credentials are configured: ' +
+          'set APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID, or APPLE_API_KEY + APPLE_API_KEY_ID + APPLE_API_ISSUER, or APPLE_NOTARY_PROFILE.'
+      )
+    }
     console.log(
-      'Skipping notarization: APPLE_API_KEY, APPLE_API_KEY_ID, and APPLE_API_ISSUER are not fully configured.'
+      'Skipping notarization: no Apple ID, App Store Connect API key or notary profile is configured.'
     )
     return
   }

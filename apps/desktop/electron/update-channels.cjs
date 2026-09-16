@@ -32,6 +32,9 @@ const RELEASE_MANIFEST_ASSET = 'hermes-release.json'
 const RELEASE_MARKER_FILE = '.hermes-release.json'
 const COMMIT_SHA_RE = /^[0-9a-f]{40}$/
 const SHA256_RE = /^[0-9a-f]{64}$/
+// AIS-353: prebuilt desktop app per platform — keep in sync with
+// hermes_cli/release_update.py (_DESKTOP_ASSET_RE) and scripts/release_manifest_desktop.py.
+const DESKTOP_ASSET_RE = /^Hermes-(\d+\.\d+\.\d+(?:-rc\.\d+)?)-((?:mac|win|linux)-(?:arm64|x64|ia32))\.zip$/
 
 function normalizeChannel(name) {
   const value = String(name || '').trim()
@@ -261,6 +264,31 @@ function validateReleaseManifest(obj, { channel, releaseRepo = RELEASE_REPO, rel
 
   if (Number.isNaN(Date.parse(builtAt))) return fail(`built_at '${builtAt}' is not an ISO 8601 timestamp`)
 
+  // AIS-353: optional prebuilt desktop apps. Absent on releases that predate
+  // the field; malformed entries fail the manifest like any other field.
+  const desktop = {}
+  if (obj.desktop !== undefined && obj.desktop !== null) {
+    if (typeof obj.desktop !== 'object' || Array.isArray(obj.desktop)) return fail("manifest field 'desktop' is not an object")
+    for (const [platform, entry] of Object.entries(obj.desktop)) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return fail(`desktop asset '${platform}' is not an object`)
+      const nameMatch = DESKTOP_ASSET_RE.exec(String(entry.name || ''))
+      if (!nameMatch || nameMatch[1] !== version || nameMatch[2] !== platform) {
+        return fail(`desktop asset '${platform}' has an unexpected name '${String(entry.name)}'`)
+      }
+      if (!SHA256_RE.test(String(entry.sha256 || ''))) return fail(`desktop asset '${platform}' sha256 is not 64 lowercase hex characters`)
+      if (typeof entry.size !== 'number' || !Number.isInteger(entry.size) || entry.size <= 0) {
+        return fail(`desktop asset '${platform}' size is not a positive integer`)
+      }
+      desktop[platform] = {
+        platform,
+        name: entry.name,
+        sha256: entry.sha256,
+        size: entry.size,
+        url: releaseDownloadUrl(tag, entry.name, releaseRepo)
+      }
+    }
+  }
+
   const packageUrl = releaseDownloadUrl(tag, sourceArchive, releaseRepo)
   let parsedUrl
   try {
@@ -285,7 +313,8 @@ function validateReleaseManifest(obj, { channel, releaseRepo = RELEASE_REPO, rel
       built_at: builtAt,
       build_id: isNonEmptyString(obj.build_id) ? obj.build_id : builtAt,
       channel: normalized,
-      package_url: packageUrl
+      package_url: packageUrl,
+      desktop
     }
   }
 }

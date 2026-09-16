@@ -347,3 +347,40 @@ test('selectReleaseFromApi: drafts skipped, stable skips prereleases, highest ta
   assert.equal(selectReleaseFromApi([], 'preview'), null)
   assert.equal(selectReleaseFromApi(releases, 'main'), null)
 })
+
+// AIS-353: the prebuilt desktop apps are an optional, validated map.
+test('validateReleaseManifest: desktop assets are optional, resolved to download URLs, and validated', () => {
+  const plain = validateReleaseManifest(manifest(), { channel: 'stable' })
+  assert.deepEqual(plain.manifest.desktop, {})
+
+  const withDesktop = validateReleaseManifest(
+    manifest({
+      desktop: {
+        'mac-arm64': { name: 'Hermes-0.7.6-mac-arm64.zip', sha256: 'b'.repeat(64), size: 123456 },
+        'win-x64': { name: 'Hermes-0.7.6-win-x64.zip', sha256: 'c'.repeat(64), size: 654321 }
+      }
+    }),
+    { channel: 'stable' }
+  )
+  assert.equal(withDesktop.ok, true, withDesktop.error)
+  assert.equal(withDesktop.manifest.desktop['mac-arm64'].url, releaseDownloadUrl('v0.7.6', 'Hermes-0.7.6-mac-arm64.zip'))
+  assert.equal(withDesktop.manifest.desktop['win-x64'].size, 654321)
+
+  const wrongVersion = validateReleaseManifest(
+    manifest({ desktop: { 'mac-arm64': { name: 'Hermes-9.9.9-mac-arm64.zip', sha256: 'b'.repeat(64), size: 1 } } }),
+    { channel: 'stable' }
+  )
+  assert.equal(wrongVersion.ok, false)
+  assert.match(wrongVersion.error, /unexpected name/)
+  const wrongPlatform = validateReleaseManifest(
+    manifest({ desktop: { 'win-x64': { name: 'Hermes-0.7.6-mac-arm64.zip', sha256: 'b'.repeat(64), size: 1 } } }),
+    { channel: 'stable' }
+  )
+  assert.equal(wrongPlatform.ok, false)
+  const badHash = validateReleaseManifest(
+    manifest({ desktop: { 'mac-arm64': { name: 'Hermes-0.7.6-mac-arm64.zip', sha256: 'zz', size: 1 } } }),
+    { channel: 'stable' }
+  )
+  assert.match(badHash.error, /sha256/)
+  assert.equal(validateReleaseManifest(manifest({ desktop: [] }), { channel: 'stable' }).ok, false)
+})

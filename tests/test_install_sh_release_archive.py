@@ -91,3 +91,23 @@ def test_install_scripts_agree_on_the_preserve_set(sh: str, ps1: str) -> None:
     ps_set = set(re.findall(r'"([^"]+)"', re.search(r"return @\((.*?)\) -contains \$Name", ps_fn, re.S).group(1)))
     assert sh_set == ps_set
     assert {"venv", ".venv", "node_modules", ".git", ".env", ".worktrees", ".hermes-release.json"} <= sh_set
+
+
+# AIS-353: release-managed installs take the pipeline-signed desktop app.
+def test_install_sh_prefers_the_prebuilt_desktop_app(sh: str) -> None:
+    assert "install_prebuilt_desktop() {" in sh
+    assert "release_json_desktop_asset" in sh and 'get("desktop")' in sh
+    assert "ditto -x -k" in sh, "only ditto keeps the bundle's symlinks and signature"
+    assert '"format": "hermes-prebuilt-desktop-v1"' in sh
+    body = sh[sh.index("install_desktop() {") :]
+    assert body.index("if install_prebuilt_desktop; then") < body.index("check_node"), "the asset path runs before any build tooling"
+    # the ad-hoc re-sign stays on the local-build path only
+    assert 'codesign --force --deep --sign - "$app"' in sh
+
+
+def test_install_ps1_prefers_the_prebuilt_desktop_app(ps1: str) -> None:
+    assert "function Install-PrebuiltDesktop {" in ps1
+    assert "Get-FileHash -Algorithm SHA256" in ps1
+    assert "hermes-prebuilt-desktop-v1" in ps1
+    body = ps1[ps1.index("function Install-Desktop {") :]
+    assert "if (Install-PrebuiltDesktop) { return }" in body[:400]

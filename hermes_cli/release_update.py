@@ -38,10 +38,10 @@ import tempfile
 import urllib.error
 import urllib.request
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Dict, Optional
 from urllib.parse import urlsplit
 
 from hermes_cli.release_channels import (
@@ -65,6 +65,12 @@ MANIFEST_FORMAT = "hermes-release-v1"
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+#: AIS-353: prebuilt desktop app per platform, `Hermes-<version>-<os>-<arch>.zip`
+#: (electron-builder artifactName). Keep in sync with
+#: scripts/release_manifest_desktop.py and apps/desktop/electron/update-channels.cjs.
+_DESKTOP_ASSET_RE = re.compile(
+    r"^Hermes-(?P<version>\d+\.\d+\.\d+(?:-rc\.\d+)?)-(?P<platform>(?:mac|win|linux)-(?:arm64|x64|ia32))\.zip$"
+)
 
 # A manifest is a handful of short scalars; anything larger is not one.
 _MANIFEST_MAX_BYTES = 64 * 1024
@@ -127,6 +133,17 @@ class ReleaseFeedError(Exception):
 
 
 @dataclass(frozen=True)
+class DesktopAsset:
+    """One prebuilt, signed desktop app of a release (AIS-353)."""
+
+    platform: str
+    name: str
+    sha256: str
+    size: int
+    url: str
+
+
+@dataclass(frozen=True)
 class ReleaseFeed:
     """A validated release manifest, safe to act on."""
 
@@ -138,6 +155,9 @@ class ReleaseFeed:
     size: int
     build_id: str
     channel: str
+    #: Prebuilt desktop apps by platform key (``mac-arm64``, ``win-x64`` …);
+    #: empty for releases that predate AIS-353.
+    desktop: Dict[str, DesktopAsset] = field(default_factory=dict)
 
 
 def is_source_tree(project_root: Path) -> bool:
@@ -257,7 +277,35 @@ def validate_manifest(
         size=size,
         build_id=str(manifest.get("build_id") or built_at),
         channel=normalized,
+        desktop=_parse_desktop_assets(manifest, version=version, tag=tag, repo=repo),
     )
+
+
+def _parse_desktop_assets(manifest: dict, *, version: str, tag: str, repo: str) -> Dict[str, DesktopAsset]:
+    """The optional ``desktop`` map (AIS-353); absent ⇒ empty, malformed ⇒ error."""
+    raw = manifest.get("desktop")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ReleaseFeedError("manifest field 'desktop' is not an object")
+    assets: Dict[str, DesktopAsset] = {}
+    for platform, entry in raw.items():
+        if not isinstance(entry, dict):
+            raise ReleaseFeedError(f"desktop asset {platform!r} is not an object")
+        name = entry.get("name")
+        match = _DESKTOP_ASSET_RE.match(name) if isinstance(name, str) else None
+        if not match or match.group("version") != version or match.group("platform") != platform:
+            raise ReleaseFeedError(f"desktop asset {platform!r} has an unexpected name {name!r}")
+        sha256 = entry.get("sha256")
+        if not isinstance(sha256, str) or not _SHA256_RE.match(sha256):
+            raise ReleaseFeedError(f"desktop asset {platform!r} sha256 is not 64 lowercase hex characters")
+        size = entry.get("size")
+        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+            raise ReleaseFeedError(f"desktop asset {platform!r} size is not a positive integer")
+        assets[platform] = DesktopAsset(
+            platform=platform, name=name, sha256=sha256, size=size, url=release_download_url(tag, name, repo=repo)
+        )
+    return assets
 
 
 def fetch_release_feed(
@@ -326,12 +374,18 @@ def classify_feed(feed: ReleaseFeed, *, marker: Optional[dict], current_version:
 # =========================================================================
 
 def _download_verified_archive(feed: ReleaseFeed, dest: Path, timeout: int) -> None:
-    """Stream the archive to ``dest``, hashing as we go. Raises on mismatch."""
+    """Stream the source archive to ``dest``, hashing as we go. Raises on mismatch."""
+    download_verified(feed.package_url, sha256=feed.sha256, size=feed.size, dest=dest, timeout=timeout)
+
+
+def download_verified(url: str, *, sha256: str, size: int, dest: Path, timeout: int) -> None:
+    """Stream ``url`` to ``dest`` and verify size and sha256 (AIS-353: shared by
+    the source archive and the prebuilt desktop asset). Raises on mismatch."""
     digest = hashlib.sha256()
     total = 0
     try:
         request = urllib.request.Request(
-            feed.package_url, headers={"User-Agent": "hermes-agent/update"}
+            url, headers={"User-Agent": "hermes-agent/update"}
         )
         with urllib.request.urlopen(request, timeout=timeout) as resp:
             with open(dest, "wb") as fh:
@@ -349,12 +403,12 @@ def _download_verified_archive(feed: ReleaseFeed, dest: Path, timeout: int) -> N
     except Exception as exc:
         raise ReleaseFeedError(f"archive download failed ({exc})") from exc
 
-    if feed.size and total != feed.size:
-        raise ReleaseFeedError(f"archive size mismatch (expected {feed.size} bytes, got {total})")
+    if size and total != size:
+        raise ReleaseFeedError(f"archive size mismatch (expected {size} bytes, got {total})")
     actual = digest.hexdigest()
-    if actual != feed.sha256:
+    if actual != sha256:
         raise ReleaseFeedError(
-            f"archive sha256 mismatch (expected {feed.sha256}, got {actual})"
+            f"archive sha256 mismatch (expected {sha256}, got {actual})"
         )
 
 
@@ -513,6 +567,8 @@ def apply_release_update(
 
 __all__ = [
     "ARCHIVE_TIMEOUT",
+    "DesktopAsset",
+    "download_verified",
     "FEED_NEWER",
     "FEED_OLDER",
     "FEED_SAME",

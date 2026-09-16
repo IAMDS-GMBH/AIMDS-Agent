@@ -48,12 +48,20 @@ function tryExec(cmd, opts) {
 }
 
 function fromCI() {
-  const sha = process.env.GITHUB_SHA
+  // AIS-353: the release pipeline builds the desktop app itself and pins it
+  // to the release tag + channel (HERMES_BUILD_PIN_*, same variables the
+  // Tauri installer build uses) so the packaged app knows its release.
+  const pinnedTag = process.env.HERMES_BUILD_PIN_TAG || ""
+  const tag = /^v\d+\.\d+\.\d+(?:-rc\.\d+)?$/.test(pinnedTag) ? pinnedTag : null
+  const channel = tag ? process.env.HERMES_BUILD_PIN_BRANCH || null : null
+  const sha = process.env.HERMES_BUILD_PIN_COMMIT || process.env.GITHUB_SHA
   if (!sha) return null
-  const branch = process.env.GITHUB_REF_NAME || process.env.GITHUB_HEAD_REF || null
+  const branch = channel || process.env.GITHUB_REF_NAME || process.env.GITHUB_HEAD_REF || null
   return {
     commit: sha,
     branch: branch,
+    tag,
+    channel,
     dirty: false, // CI builds from a checkout-of-ref by definition
     source: "ci"
   }

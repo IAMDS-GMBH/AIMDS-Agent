@@ -279,3 +279,34 @@ unzip -l "$TMPDIR/hermes-pkg/hermes-source-0.7.6-rc.1.zip" | grep -E '\.github/|
 (cd "$TMPDIR/hermes-pkg" && shasum -a 256 -c hermes-source-0.7.6-rc.1.zip.sha256)
 git status --short   # empty: the version stamp was reverted
 ```
+
+
+## Prebuilt, signed desktop app (AIS-353)
+
+Until AIS-353 every client built `apps/desktop` itself (`npm run pack`) and
+ad-hoc-signed the result. Each update therefore produced a new code identity,
+and macOS forgot every permission (Documents access, microphone, firewall)
+after every update. Release channels now ship the desktop app from the
+pipeline:
+
+- `build-desktop` (macOS + Windows) builds `apps/desktop` with the release
+  version, signs it with the Developer ID certificate (`CSC_LINK` from
+  `APPLE_CERTIFICATE`) and notarizes it via `APPLE_ID` / `APPLE_PASSWORD` /
+  `APPLE_TEAM_ID` (`apps/desktop/scripts/notarize.cjs`; missing credentials
+  fail the release unless `skip_signing=true`). Windows executables are
+  Authenticode-signed with the same Azure Artifact Signing step as the
+  installer. Assets: `Hermes-<version>-mac-arm64.zip`, `Hermes-<version>-win-x64.zip`
+  (+ `.sha256` sidecars).
+- `publish-release-assets` records them in `hermes-release.json` under
+  `desktop.<platform>` (`scripts/release_manifest_desktop.py`); older clients
+  ignore the field.
+- `install.sh` / `install.ps1` (`install_prebuilt_desktop`,
+  `Install-PrebuiltDesktop`) and `hermes update`
+  (`hermes_cli/desktop_asset.py`) download the asset for the platform, verify
+  sha256 and size, unpack it into `apps/desktop/release/<dir>/` and write
+  `.prebuilt-desktop.json`; `hermes desktop --build-only` then skips the
+  rebuild, so the signature is never replaced. git/main installs, Linux and
+  any failure fall back to the local build.
+- The bundle identifier is `com.iamds.hermes` (was the upstream
+  `com.nousresearch.hermes`): permissions granted to the old identity have to
+  be granted once more, then they persist across releases.

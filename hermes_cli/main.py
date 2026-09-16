@@ -4813,6 +4813,12 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     True if the expected build artifact doesn't exist (e.g. first run after
     ``hermes update`` that pulled new source but hasn't built yet).
     """
+    # AIS-353: a release-managed install carries the pipeline-signed desktop
+    # app. Rebuilding it locally would replace the Developer-ID signature with
+    # an ad-hoc one (and macOS would forget every permission again).
+    if not source_mode and _prebuilt_desktop_is_current(project_root):
+        return False
+
     # If there's no build output at all, we definitely need to build
     if source_mode:
         if not _desktop_dist_exists(desktop_dir):
@@ -4840,6 +4846,51 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
 
     current_hash = _compute_desktop_content_hash(project_root)
     return current_hash != saved_hash
+
+
+def _prebuilt_desktop_is_current(project_root: Path) -> bool:
+    """True when the desktop app on disk is the signed asset of the installed release (AIS-353)."""
+    try:
+        from hermes_cli.desktop_asset import prebuilt_desktop_current
+        from hermes_cli.release_marker import read_release_marker
+
+        marker = read_release_marker(project_root)
+        return bool(marker) and prebuilt_desktop_current(project_root, marker.get("tag"))
+    except Exception as exc:  # noqa: BLE001 — never block a build decision
+        logger.debug("prebuilt desktop check failed: %s", exc)
+        return False
+
+
+def _install_prebuilt_desktop_after_release(feed, channel: str) -> None:
+    """AIS-353: after a release update, swap in the release's signed desktop app.
+
+    Only for installs that have a desktop app; a CLI-only install is not made
+    to download ~150 MB. Every failure falls back to the local build (the
+    post-update pipeline's ``hermes desktop --build-only``) and is reported.
+    """
+    desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+    if _desktop_packaged_executable(desktop_dir) is None and not _desktop_dist_exists(desktop_dir):
+        return
+    from hermes_cli.desktop_asset import desktop_platform_key, install_desktop_asset
+    from hermes_cli.release_update import ReleaseFeedError
+
+    key = desktop_platform_key()
+    if not key or key not in feed.desktop:
+        print(f"  ℹ {feed.tag} ships no prebuilt desktop app for this platform ({key or sys.platform}); building it locally")
+        return
+    print(f"→ Installing the signed desktop app of {feed.tag} ({key}, sha256 verified)...")
+    try:
+        installed = install_desktop_asset(feed, PROJECT_ROOT)
+    except ReleaseFeedError as exc:
+        print(f"  ⚠ Prebuilt desktop app not installed: {exc}")
+        print("    Falling back to the local desktop build.")
+        _report_update_incident(
+            "update-desktop-asset-failed",
+            f"installing the prebuilt desktop app of {feed.tag} failed: {exc}",
+            channel=channel,
+        )
+        return
+    print(f"  ✓ Signed desktop app installed at {installed}")
 
 
 def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None:
@@ -5780,6 +5831,8 @@ def _cmd_update_via_release(
         sha256=feed.sha256,
         build_id=feed.build_id,
     )
+    # AIS-353: the signed desktop app of this release replaces the local build.
+    _install_prebuilt_desktop_after_release(feed, channel)
     try:
         _run_post_update_pipeline(
             gateway_mode=gateway_mode,
