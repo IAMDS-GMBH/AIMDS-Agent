@@ -132,6 +132,11 @@ def _build_ingest_hint(tool_name: str, ingest_count: int, *, sql_available: bool
             f"[ingested {int(ingest_count)} rows → mcp_records (tool_name={tool_name!r}, "
             f"tool_use_id={tool_use_id!r}); the `sql` tool is not in this session]"
         )
+    if getattr(ingest_count, "blob", False):
+        hint += (
+            "\n[Ingest: payload not recognised as a record list — stored as ONE blob row; "
+            "SQL counts/sums over it are meaningless. Re-fetch one month at a time or read raw_data.]"
+        )
     complete = getattr(ingest_count, "complete", None)
     months = getattr(ingest_count, "months", None) or []
     incomplete = [str(m.get("month")) for m in months if isinstance(m, dict) and not m.get("complete", True)]

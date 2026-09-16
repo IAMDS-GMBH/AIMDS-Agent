@@ -720,3 +720,14 @@ class TestShapingOrder:
     def test_non_mcp_tool_result_is_not_shaped(self):
         content = '{"@odata.context": "x", "value": []}'
         assert maybe_persist_tool_result(content=content, tool_name="terminal", tool_use_id="tc_term", env=None) == content
+
+
+def test_ingest_hint_names_a_blob_row():
+    """AIS-354: a payload stored as one blob row must say so instead of
+    inviting SQL aggregates over it."""
+    from tools.mcp_json_ingestor import IngestResult
+    from tools.tool_result_storage import _build_ingest_hint
+
+    hint = _build_ingest_hint("mcp_MSOffice365MCP_m365_get_events", IngestResult(1, blob=True), tool_use_id="c1")
+    assert "[ingested 1 rows" in hint and "ONE blob row" in hint
+    assert "blob" not in _build_ingest_hint("mcp_MSOffice365MCP_m365_get_events", IngestResult(5), tool_use_id="c2")

@@ -254,6 +254,29 @@ def _parse_delimited_lines(text: str) -> List[Dict[str, Any]]:
     return parsed
 
 
+def _parse_ndjson_documents(text: str) -> List[Any]:
+    """One parsed JSON document per non-empty line, or ``[]`` unless every
+    line parses. The month-splitting bridge joins per-month answers it could
+    not merge with newlines; before AIS-354 that NDJSON failed ``json.loads``
+    and a 100k-character calendar year landed as ONE blob row."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return []
+    docs: List[Any] = []
+    for line in lines:
+        if line[:1] not in "{[":
+            return []
+        try:
+            docs.append(json.loads(line))
+        except Exception:
+            return []
+    return docs
+
+
+# A single fallback row longer than this is reported as a blob (AIS-354).
+_BLOB_ROW_CHARS = 4000
+
+
 def _extract_items(data: Any) -> List[Dict[str, Any]]:
     """Extract a list of item dictionaries from arbitrary JSON input."""
     if isinstance(data, list):
@@ -275,6 +298,13 @@ def _extract_items(data: Any) -> List[Dict[str, Any]]:
                 parsed_res = json.loads(res)
                 return _extract_items(parsed_res)
             except Exception:
+                # Several JSON documents, one per line (split-by-month join).
+                ndjson_docs = _parse_ndjson_documents(res)
+                if ndjson_docs:
+                    merged: List[Dict[str, Any]] = []
+                    for doc in ndjson_docs:
+                        merged.extend(_extract_items(doc))
+                    return merged
                 # Not JSON — many servers answer in delimited plain text.
                 delimited = _parse_delimited_lines(res)
                 if delimited:
@@ -767,16 +797,20 @@ class IngestResult(int):
     window: Optional[tuple] = None
     complete: Optional[bool] = None
     months: Optional[List[Dict[str, Any]]] = None
+    # True when the payload was not recognised as a record list and the whole
+    # document went into ONE row (AIS-354) — SQL aggregates over it are noise.
+    blob: bool = False
 
     def __new__(cls, ingested: int = 0, replaced: int = 0, evicted: int = 0,
                 window: Optional[tuple] = None, complete: Optional[bool] = None,
-                months: Optional[List[Dict[str, Any]]] = None):
+                months: Optional[List[Dict[str, Any]]] = None, blob: bool = False):
         obj = super().__new__(cls, ingested)
         obj.replaced = replaced
         obj.evicted = evicted
         obj.window = window
         obj.complete = complete
         obj.months = months
+        obj.blob = blob
         return obj
 
     @property
@@ -867,6 +901,9 @@ def try_auto_ingest_json(
         return IngestResult(0, window=window, complete=complete, months=months)
 
     records = [_extract_fields(item, tool_name, tool_use_id, fallback_ref) for item in items]
+    # `_extract_items` falls back to the document itself when it finds no
+    # item list: one large row without a timestamp is that blob, not a record.
+    blob = len(records) == 1 and not records[0][4] and len(content_strip) > _BLOB_ROW_CHARS
     # The stable source key the rows carry (source_key/calendar_key) is the
     # reference the window replace and the register are scoped to.
     ref_keys = {r[3] for r in records if r[3]}
@@ -923,7 +960,7 @@ def try_auto_ingest_json(
         return IngestResult(
             len(records), replaced=replaced,
             evicted=getattr(prune_result, "cap_evicted", 0), window=window,
-            complete=complete, months=months,
+            complete=complete, months=months, blob=blob,
         )
     except Exception as exc:
         logger.warning("Failed to store MCP records in SQLite: %s", exc)
