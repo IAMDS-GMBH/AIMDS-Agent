@@ -135,10 +135,18 @@ async function waitForPortRelease({
   graceMs = 2000,
   pollMs = 250,
   ownPid = process.pid,
+  ownBackendPid = null,
   log = () => {}
 }) {
   if (!record || !record.port) return { skipped: true, released: true, waited_ms: 0, terminated_pid: null }
   if (record.pid && record.pid === ownPid) return { skipped: true, released: true, waited_ms: 0, terminated_pid: null }
+  // AIS-352: the record may name OUR OWN live backend (a boot chain that is
+  // still starting it). Never SIGTERM that one — the caller waits for its
+  // readiness instead. Only a backend nobody in this process owns is stale.
+  if (record.pid && ownBackendPid && record.pid === ownBackendPid) {
+    log(`[boot] port ${record.port} belongs to our own starting backend (pid ${record.pid}) — not touching it`)
+    return { skipped: true, released: true, waited_ms: 0, terminated_pid: null, own_backend: true }
+  }
 
   const started = now()
   let terminatedPid = null

@@ -34,7 +34,8 @@ test('desktop background child processes opt into hidden Windows consoles', () =
   requireHiddenChildOptions(source, 'spawn(command, args')
   requireHiddenChildOptions(source, "spawn('curl'")
   requireHiddenChildOptions(source, 'spawn(backend.command, backend.args')
-  requireHiddenChildOptions(source, 'hermesProcess = spawn(backend.command, backend.args')
+  // AIS-352: the primary backend is spawned into `child` first (the handlers compare identities).
+  requireHiddenChildOptions(source, 'const child = spawn(backend.command, backend.args')
   requireHiddenChildOptions(source, "spawn(py, ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary']")
 })
 

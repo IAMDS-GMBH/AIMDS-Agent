@@ -139,6 +139,11 @@ export interface Translations {
       desktopBootFailed: string
       gatewaySignInRequired: string
       ipcBridgeUnavailable: string
+      startupTimedOut: string
+    }
+    hints: {
+      backendSlowStart: string
+      macosDocumentsPermission: string
     }
     failure: {
       title: string

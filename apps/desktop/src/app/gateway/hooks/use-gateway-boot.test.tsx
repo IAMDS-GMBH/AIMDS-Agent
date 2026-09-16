@@ -95,6 +95,7 @@ function fakeDesktop() {
     })),
     onBootProgress: vi.fn(() => () => undefined),
     onBackendExit: vi.fn(() => () => undefined),
+    getBackendExit: vi.fn(async (): Promise<{ code: number | null; signal: string | null } | null> => null),
     onPowerResume: vi.fn(() => () => undefined),
     onWindowStateChanged: vi.fn(() => () => undefined),
     touchBackend: vi.fn(async () => undefined),
@@ -263,5 +264,52 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($gatewayState.get()).toBe('open')
     expect($desktopBoot.get().error).toBeNull()
+  })
+})
+
+describe('useGatewayBoot initial-boot dead ends (AIS-352)', () => {
+  it('a getConnection that never settles fails after the watchdog instead of sitting on CONNECTING forever', async () => {
+    const desktop = fakeDesktop()
+    desktop.getConnection = vi.fn(() => new Promise(() => undefined))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($desktopBoot.get().error).toBeNull()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(239_000)
+    })
+    expect($desktopBoot.get().error).toBeNull()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000)
+    })
+    expect($desktopBoot.get().error).toBeTruthy()
+  })
+
+  it('a backend exit that happened before the hook mounted is replayed into a boot error', async () => {
+    const desktop = fakeDesktop()
+    desktop.getConnection = vi.fn(() => new Promise(() => undefined))
+    desktop.getBackendExit = vi.fn(async () => ({ code: 1, signal: null }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect(desktop.getBackendExit).toHaveBeenCalled()
+    expect($desktopBoot.get().error).toBeTruthy()
+  })
+
+  it('a replayed exit is ignored once the gateway is open', async () => {
+    const desktop = fakeDesktop()
+    desktop.getBackendExit = vi.fn(async () => ({ code: 1, signal: null }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    await flushAsync()
+
+    expect($gatewayState.get()).toBe('open')
   })
 })

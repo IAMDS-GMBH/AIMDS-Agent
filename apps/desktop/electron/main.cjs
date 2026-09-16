@@ -39,6 +39,14 @@ const {
   writeBackendRecord
 } = require('./backend-port.cjs')
 const { classifyBootFailure, lastBootSection, lastSignatureLine } = require('./boot-signatures.cjs')
+const {
+  LOCAL_READY_TIMEOUT_MS,
+  REMOTE_READY_TIMEOUT_MS,
+  shouldClearConnectionState,
+  slowBootMessage,
+  waitForBackendReady
+} = require('./boot-guard.cjs')
+const { ensureVaultAccess } = require('./vault-access.cjs')
 const { buildSessionWindowUrl, createSessionWindowRegistry } = require('./session-windows.cjs')
 const {
   badgeOverlaySvgDataUrl,
@@ -674,6 +682,11 @@ let desktopLogBuffer = ''
 let desktopLogFlushTimer = null
 let desktopLogFlushPromise = Promise.resolve()
 let nativeThemeListenerInstalled = false
+// AIS-352: last primary-backend exit, replayable via hermes:backend-exit:get.
+// `hermes:backend-exit` itself is fire-and-forget and startHermes() begins on
+// did-finish-load — before the renderer's hook subscribes — so an early exit
+// used to be lost and the overlay sat on CONNECTING forever.
+let lastBackendExit = null
 let bootProgressState = {
   error: null,
   fakeMode: BOOT_FAKE_MODE,
@@ -4100,21 +4113,16 @@ function closePreviewWatchers() {
   }
 }
 
-async function waitForHermes(baseUrl, token) {
-  const deadline = Date.now() + 45_000
-  let lastError = null
-
-  while (Date.now() < deadline) {
-    try {
-      await fetchJson(`${baseUrl}/api/status`, token)
-      return
-    } catch (error) {
-      lastError = error
-      await new Promise(resolve => setTimeout(resolve, 500))
-    }
-  }
-
-  throw new Error(`Hermes backend did not become ready: ${lastError?.message || 'timeout'}`)
+// AIS-352: 45 s was too short for the first start after an update (bytecode
+// compile, macOS permission dialogs). The local deadline is minutes now and
+// the caller learns every 10 s that the wait is still on; a remote gateway
+// keeps the short deadline. See boot-guard.cjs.
+async function waitForHermes(baseUrl, token, { timeoutMs = REMOTE_READY_TIMEOUT_MS, onSlow } = {}) {
+  await waitForBackendReady({
+    probe: () => fetchJson(`${baseUrl}/api/status`, token),
+    timeoutMs,
+    onSlow
+  })
 }
 
 function getWindowButtonPosition() {
@@ -4143,6 +4151,12 @@ function sendBackendExit(payload) {
   const { webContents } = mainWindow
   if (!webContents || webContents.isDestroyed()) return
   webContents.send('hermes:backend-exit', payload)
+}
+
+// AIS-352: remember the exit for a renderer that subscribes later.
+function recordBackendExit(payload) {
+  lastBackendExit = { ...payload, at: Date.now() }
+  sendBackendExit(payload)
 }
 
 function sendClosePreviewRequested() {
@@ -5789,7 +5803,8 @@ async function spawnPoolBackend(profile, entry) {
   })
 
   const baseUrl = `http://127.0.0.1:${port}`
-  await Promise.race([waitForHermes(baseUrl, token), startFailed])
+  // AIS-352: a pool backend is a local spawn too — same generous deadline.
+  await Promise.race([waitForHermes(baseUrl, token, { timeoutMs: LOCAL_READY_TIMEOUT_MS }), startFailed])
   ready = true
 
   return {
@@ -5940,6 +5955,7 @@ async function startHermes() {
     const failedPorts = new Set()
     let lastSpawnError = null
     let lastPortRace = false
+    await ensureWorkspaceAccess()
     await waitForPreviousBackendPort()
     for (let spawnAttempt = 1; spawnAttempt <= BACKEND_SPAWN_ATTEMPTS; spawnAttempt += 1) {
       try {
@@ -5966,11 +5982,44 @@ async function startHermes() {
     reportBootFailure(BACKEND_SPAWN_ATTEMPTS, lastSpawnError)
     throw lastSpawnError
 
+    // AIS-352: touch the Vault from the main process first. On macOS the first
+    // access to ~/Documents blocks on the TCC dialog; when the Python backend
+    // hit it first, the readiness wait expired and the retry killed the
+    // backend — and with it the dialog. The main process is never killed, so
+    // the dialog stays until answered and the child inherits the grant.
+    async function ensureWorkspaceAccess() {
+      await advanceBootProgress('backend.vault', 'Checking access to the Hermes workspace', 12)
+      const access = await ensureVaultAccess({
+        dir: hermesWorkingDirectoryPath(),
+        log: rememberLog,
+        onSlow: () =>
+          updateBootProgress({
+            phase: 'backend.permission',
+            message: 'macOS is asking for permission to access your Documents folder — click "Allow" so Hermes can open its workspace',
+            progress: 12,
+            running: true,
+            error: null
+          })
+      })
+      if (!access.ok) {
+        const error = new Error(access.message)
+        error.code = 'vault-access-denied'
+        throw error
+      }
+    }
+
     async function waitForPreviousBackendPort() {
       const record = readBackendRecord(HERMES_HOME)
       if (!record) return
       try {
-        const outcome = await waitForPortRelease({ record, isPortAvailable, log: rememberLog })
+        const outcome = await waitForPortRelease({
+          record,
+          isPortAvailable,
+          log: rememberLog,
+          // AIS-352: never mistake the backend this process is starting for a stale one.
+          ownBackendPid: hermesProcess?.pid ?? null
+        })
+        if (outcome.own_backend) return
         if (!outcome.skipped) {
           rememberLog(`[boot] previous backend port ${record.port}: released=${outcome.released} after ${outcome.waited_ms}ms` +
             (outcome.terminated_pid ? ` (terminated pid ${outcome.terminated_pid})` : ''))
@@ -6003,7 +6052,7 @@ async function startHermes() {
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}` + (spawnAttempt > 1 ? ` (attempt ${spawnAttempt})` : ''))
 
-    hermesProcess = spawn(backend.command, backend.args, hiddenWindowsChildOptions({
+    const child = spawn(backend.command, backend.args, hiddenWindowsChildOptions({
       cwd: hermesCwd,
       env: {
         ...process.env,
@@ -6028,15 +6077,23 @@ async function startHermes() {
       stdio: ['ignore', 'pipe', 'pipe']
     }))
 
-    hermesProcess.stdout.on('data', rememberLog)
-    hermesProcess.stderr.on('data', rememberLog)
-    writeBackendRecord(HERMES_HOME, { port, pid: hermesProcess.pid })
+    hermesProcess = child
+    lastBackendExit = null
+    child.stdout.on('data', rememberLog)
+    child.stderr.on('data', rememberLog)
+    writeBackendRecord(HERMES_HOME, { port, pid: child.pid })
     let backendReady = false
     let rejectBackendStart = null
     const backendStartFailed = new Promise((_resolve, reject) => {
       rejectBackendStart = reject
     })
-    hermesProcess.once('error', error => {
+    // AIS-352: the handlers below used to null `connectionPromise` for ANY
+    // child exit — including a superseded attempt's — which let a concurrent
+    // getConnection() start a second boot chain that then fought this one for
+    // the port. Only the current child may touch shared state, and the
+    // single-flight promise is cleared by the chain itself (its .catch) while
+    // the boot is in flight, or here once the backend had been ready.
+    child.once('error', error => {
       rememberLog(`Hermes backend failed to start: ${error.message}`)
       updateBootProgress(
         {
@@ -6047,16 +6104,22 @@ async function startHermes() {
         },
         { allowDecrease: true }
       )
-      hermesProcess = null
-      connectionPromise = null
-      sendBackendExit({ code: null, signal: null, error: error.message })
+      if (shouldClearConnectionState({ exitingChild: child, currentChild: hermesProcess })) {
+        hermesProcess = null
+        if (backendReady) connectionPromise = null
+        recordBackendExit({ code: null, signal: null, error: error.message })
+      }
       rejectBackendStart?.(error)
     })
-    hermesProcess.once('exit', (code, signal) => {
+    child.once('exit', (code, signal) => {
       rememberLog(`Hermes backend exited (${signal || code})`)
+      if (!shouldClearConnectionState({ exitingChild: child, currentChild: hermesProcess })) {
+        rememberLog(`[boot] ignoring exit of superseded backend pid ${child.pid}`)
+        return
+      }
       hermesProcess = null
-      connectionPromise = null
-      sendBackendExit({ code, signal })
+      if (backendReady) connectionPromise = null
+      recordBackendExit({ code, signal })
       if (!backendReady) {
         const message = `Hermes backend exited before it became ready (${signal || code}).`
         updateBootProgress(
@@ -6079,9 +6142,23 @@ async function startHermes() {
     const baseUrl = `http://127.0.0.1:${port}`
     await advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
     try {
-      await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
+      await Promise.race([
+        waitForHermes(baseUrl, token, {
+          timeoutMs: LOCAL_READY_TIMEOUT_MS,
+          onSlow: elapsed =>
+            updateBootProgress({ phase: 'backend.wait.slow', message: slowBootMessage(elapsed), progress: 90, running: true, error: null })
+        }),
+        backendStartFailed
+      ])
     } catch (error) {
       if (error && typeof error === 'object' && !error.backendPort) error.backendPort = port
+      // AIS-352: a child that is alive but never became ready must not be left
+      // behind for the next boot chain to mistake for a stale backend.
+      if (hermesProcess === child && !child.killed && child.exitCode === null) {
+        rememberLog(`[boot] backend pid ${child.pid} never became ready — stopping it before giving up`)
+        await stopProcessAndWait(child, { log: rememberLog })
+        if (hermesProcess === child) hermesProcess = null
+      }
       throw error
     }
     backendReady = true
@@ -6436,6 +6513,7 @@ ipcMain.handle('hermes:bootstrap:cancel', async () => {
   return { ok: false, cancelled: false }
 })
 ipcMain.handle('hermes:boot-progress:get', async () => bootProgressState)
+ipcMain.handle('hermes:backend-exit:get', async () => lastBackendExit)
 ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
 ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
