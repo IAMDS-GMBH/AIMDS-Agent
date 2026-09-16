@@ -145,6 +145,7 @@ describe('preview store', () => {
       source: '/work/a.ts',
       url: 'file:///work/a.ts'
     }
+
     const fileB: PreviewTarget = {
       kind: 'file',
       label: 'b.json',
