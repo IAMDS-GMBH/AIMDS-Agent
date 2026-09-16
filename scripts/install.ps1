@@ -4037,7 +4037,78 @@ function Clear-ElectronBuildCache {
     return $removed
 }
 
+function Install-PrebuiltDesktop {
+    # AIS-353: release channels ship the pipeline-signed desktop app as
+    # Hermes-<version>-win-<arch>.zip (the unpacked app, exe Authenticode-signed).
+    # A release-managed install takes it instead of building apps/desktop
+    # locally. Returns $true when the app is in place, $false to fall back to
+    # the local build (git/main installs, no asset, any failure).
+    $markerPath = Join-Path $InstallDir $ReleaseMarkerFile
+    if (-not (Test-Path $markerPath)) { return $false }
+    $tag = ""
+    try { $tag = [string]((Get-Content $markerPath -Raw | ConvertFrom-Json).tag) } catch { return $false }
+    if (-not $tag) { return $false }
+    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+    $key = "win-$arch"
+    $targetName = if ($arch -eq 'arm64') { 'win-arm64-unpacked' } else { 'win-unpacked' }
+    $releaseDir = Join-Path (Join-Path $InstallDir "apps\desktop") "release"
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("hermes-desktop-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+    try {
+        $manifestUrl = "https://github.com/$ReleaseRepo/releases/download/$tag/$ReleaseManifestAsset"
+        $manifest = Invoke-RestMethod -Uri $manifestUrl -Headers @{ 'User-Agent' = 'hermes-agent/install' } -ErrorAction Stop
+        $entry = $null
+        if ($manifest.desktop) { $entry = $manifest.desktop.PSObject.Properties[$key] }
+        if (-not $entry) {
+            Write-Info "Release $tag ships no prebuilt desktop app for $key; building it locally"
+            return $false
+        }
+        $name = [string]$entry.Value.name
+        $expected = ([string]$entry.Value.sha256).ToLower()
+        if ($name -notmatch "^Hermes-.+-$key\.zip$" -or $expected.Length -ne 64) {
+            Write-Warn "Unexpected desktop asset $name; building the desktop app locally"
+            return $false
+        }
+        $zip = Join-Path $tmp $name
+        Write-Info "Downloading the signed desktop app $name ($tag) ..."
+        Invoke-WebRequest -Uri "https://github.com/$ReleaseRepo/releases/download/$tag/$name" -OutFile $zip -UseBasicParsing -ErrorAction Stop
+        $actual = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLower()
+        if ($actual -ne $expected) {
+            Write-Err "Checksum mismatch for $name (expected $expected, got $actual); building the desktop app locally"
+            return $false
+        }
+        $staging = Join-Path $tmp "unpacked"
+        Expand-Archive -Path $zip -DestinationPath $staging -Force
+        if (-not (Test-Path (Join-Path $staging "Hermes.exe"))) {
+            Write-Warn "$name does not contain Hermes.exe; building the desktop app locally"
+            return $false
+        }
+        New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
+        $target = Join-Path $releaseDir $targetName
+        if (Test-Path $target) { Remove-Item -Recurse -Force $target }
+        Move-Item -Path $staging -Destination $target
+        $marker = [ordered]@{
+            format = 'hermes-prebuilt-desktop-v1'
+            tag = $tag
+            platform = $key
+            name = $name
+            sha256 = $expected
+            installed_at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss+00:00')
+        }
+        ($marker | ConvertTo-Json) | Set-Content -Path (Join-Path $releaseDir ".prebuilt-desktop.json") -Encoding UTF8
+        Write-Success "Installed the signed desktop app $name (no local build, signature kept)"
+        return $true
+    } catch {
+        Write-Warn "Prebuilt desktop app not installed ($($_.Exception.Message)); building the desktop app locally"
+        return $false
+    } finally {
+        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    }
+}
+
 function Install-Desktop {
+    # AIS-353: release-managed installs take the pipeline-signed app.
+    if (Install-PrebuiltDesktop) { return }
     # Build apps/desktop into a launchable Hermes.exe. Only called from
     # Stage-Desktop, which is itself only included in the manifest when
     # -IncludeDesktop was passed to install.ps1.

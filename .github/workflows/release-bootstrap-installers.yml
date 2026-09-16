@@ -290,7 +290,7 @@ jobs:
             gh release create "$TAG" --target "$target" "${flags[@]}"
           fi
           shopt -s nullglob globstar
-          files=("$ASSET_DIR"/**/HermesSetup* "$ASSET_DIR"/**/hermes-source-* "$ASSET_DIR"/**/hermes-release.json)
+          files=("$ASSET_DIR"/**/HermesSetup* "$ASSET_DIR"/**/hermes-source-* "$ASSET_DIR"/**/hermes-release.json "$ASSET_DIR"/**/Hermes-*.zip "$ASSET_DIR"/**/Hermes-*.zip.sha256)
           if [ ${#files[@]} -eq 0 ]; then
             echo "::error::No assets found under $ASSET_DIR to mirror"
             exit 1
@@ -790,10 +790,237 @@ jobs:
           path: ${{ runner.temp }}/source-package/*
           if-no-files-found: error
 
+  # AIS-353: the desktop app used to be built on every client and ad-hoc
+  # signed there, so macOS forgot every permission (Documents access,
+  # microphone, firewall) after each update. Release channels now ship this
+  # pipeline-signed, notarized build as a release asset; install.sh/.ps1 and
+  # `hermes update` install it instead of building locally (git/main installs
+  # keep the local build).
+  build-desktop:
+    name: Build desktop app (${{ matrix.os }})
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, self-hosted-windows]
+
+    steps:
+      - name: Enforce main workflow ref (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        shell: bash
+        run: |
+          echo "::error::Run workflow_dispatch from refs/heads/main so Azure OIDC subject matches main."
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_BUMP: ${{ github.event.inputs.version_bump }}
+        run: |
+          set -euo pipefail
+          # Same rules as "Resolve installer version" in build-installers so
+          # both artifacts carry one version.
+          if [ -n "${INPUT_VERSION:-}" ]; then
+            clean="${INPUT_VERSION#v}"
+            if [[ ! "$clean" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+              echo "::error::Invalid version '$INPUT_VERSION'. Use X.Y.Z or X.Y.Z-rc.N"
+              exit 1
+            fi
+          else
+            current="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 | sed 's/^v//')"
+            current="${current:-0.0.0}"
+            IFS='.' read -r major minor patch <<< "$current"
+            bump="${INPUT_BUMP:-patch}"
+            case "$bump" in
+              patch)   patch=$((patch + 1)) ;;
+              minor)   minor=$((minor + 1)); patch=0 ;;
+              major|breaking) major=$((major + 1)); minor=0; patch=0 ;;
+              *)
+                echo "::error::Invalid version_bump '$bump' (use patch|minor|major|breaking)"
+                exit 1
+                ;;
+            esac
+            base="${major}.${minor}.${patch}"
+            last_rc="$(git tag -l "v${base}-rc.*" | sed -E 's/.*-rc\.([0-9]+)$/\1/' | sort -n | tail -1)"
+            clean="${base}-rc.$(( ${last_rc:-0} + 1 ))"
+          fi
+          echo "version=$clean" >> "$GITHUB_OUTPUT"
+          echo "Desktop app version: $clean"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7.0.0 # v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Sync package versions from the release version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: python scripts/set_version.py "$RELEASE_VERSION"
+
+      - name: Resolve build pins (tag + channel into the install stamp)
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v${RELEASE_VERSION#v}"
+          channel="stable"
+          case "$tag" in *-rc.*) channel="preview" ;; esac
+          {
+            echo "HERMES_BUILD_PIN_TAG=$tag"
+            echo "HERMES_BUILD_PIN_BRANCH=$channel"
+            echo "HERMES_BUILD_PIN_COMMIT=$GITHUB_SHA"
+          } >> "$GITHUB_ENV"
+          echo "Resolved pins: tag=$tag, channel=$channel, commit=$GITHUB_SHA"
+
+      - name: Export Apple signing credentials (macOS, skip_signing=false)
+        if: runner.os == 'macOS' && inputs.skip_signing != true
+        shell: bash
+        env:
+          _APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          _APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          _APPLE_ID: ${{ secrets.APPLE_ID }}
+          _APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          _APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for v in _APPLE_CERTIFICATE _APPLE_CERTIFICATE_PASSWORD _APPLE_ID _APPLE_PASSWORD _APPLE_TEAM_ID; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::secret ${v#_} is missing — the desktop app must be signed and notarized (or run with skip_signing=true)"
+              exit 1
+            fi
+          done
+          {
+            # electron-builder reads the base64 .p12 from CSC_LINK; notarize.cjs
+            # uses the Apple-ID path (same secrets the Tauri installer uses).
+            echo "CSC_LINK=$_APPLE_CERTIFICATE"
+            echo "CSC_KEY_PASSWORD=$_APPLE_CERTIFICATE_PASSWORD"
+            echo "APPLE_ID=$_APPLE_ID"
+            echo "APPLE_PASSWORD=$_APPLE_PASSWORD"
+            echo "APPLE_TEAM_ID=$_APPLE_TEAM_ID"
+            echo "HERMES_REQUIRE_NOTARIZATION=1"
+          } >> "$GITHUB_ENV"
+          echo "Apple signing credentials exported."
+
+      - name: Build, sign and notarize desktop app (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ inputs.skip_signing != true }}
+        run: npm run dist:mac -- zip
+        working-directory: apps/desktop
+
+      - name: Verify macOS signature and notarization
+        if: runner.os == 'macOS' && inputs.skip_signing != true
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(ls -d apps/desktop/release/mac*/Hermes.app | head -1)"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          if ! codesign -dv "$app" 2>&1 | grep -q "Authority=Developer ID Application"; then
+            echo "::error::Hermes.app is not signed with a Developer ID certificate"
+            exit 1
+          fi
+          xcrun stapler validate "$app"
+          spctl --assess --type exec --verbose=2 "$app"
+
+      - name: Build desktop app (Windows, unpacked)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: npm run pack
+        working-directory: apps/desktop
+
+      - name: Azure login (OIDC, Windows)
+        if: runner.os == 'Windows' && github.ref == 'refs/heads/main' && inputs.skip_signing != true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign Windows desktop executables with Azure Artifact Signing
+        if: runner.os == 'Windows' && github.ref == 'refs/heads/main' && inputs.skip_signing != true
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_CERTIFICATE_PROFILE }}
+          files-folder: ${{ github.workspace }}\apps\desktop\release\win-unpacked
+          files-folder-filter: exe
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify Windows desktop signature
+        if: runner.os == 'Windows' && github.ref == 'refs/heads/main' && inputs.skip_signing != true
+        shell: powershell
+        run: |
+          $sig = Get-AuthenticodeSignature -FilePath "apps/desktop/release/win-unpacked/Hermes.exe"
+          Write-Host "Hermes.exe: $($sig.Status) ($($sig.SignerCertificate.Subject))"
+          if ($sig.Status -ne 'Valid') { throw "Hermes.exe signature status is '$($sig.Status)' (expected 'Valid')" }
+
+      - name: Collect macOS desktop asset
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts
+          shopt -s nullglob
+          zips=(apps/desktop/release/Hermes-*-mac-*.zip)
+          if [ ${#zips[@]} -eq 0 ]; then
+            echo "::error::electron-builder produced no Hermes-<version>-mac-<arch>.zip"
+            exit 1
+          fi
+          cp -v "${zips[@]}" release-artifacts/
+          ls -la release-artifacts
+
+      - name: Collect Windows desktop asset
+        if: runner.os == 'Windows'
+        shell: powershell
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+          $src = "apps/desktop/release/win-unpacked"
+          if (-not (Test-Path "$src/Hermes.exe")) { throw "no unpacked Windows app at $src" }
+          New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
+          $zip = "release-artifacts/Hermes-$env:RELEASE_VERSION-win-$arch.zip"
+          Compress-Archive -Path "$src/*" -DestinationPath $zip -CompressionLevel Optimal
+          Get-Item $zip | Format-List Name, Length
+
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-${{ runner.os }}-${{ steps.version.outputs.version }}
+          path: release-artifacts/*
+          if-no-files-found: error
+
   publish-release-assets:
     name: Publish Release Assets
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true'
-    needs: [build-installers, build-source-package]
+    needs: [build-installers, build-source-package, build-desktop]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1035,6 +1262,24 @@ jobs:
         with:
           path: release-assets
 
+      - name: Record the desktop assets in the release manifest (AIS-353)
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          manifests=(release-assets/*/hermes-release.json)
+          assets=(release-assets/*/Hermes-*.zip)
+          if [ ${#manifests[@]} -ne 1 ]; then
+            echo "::error::expected exactly one hermes-release.json among the artifacts, found ${#manifests[@]}"
+            exit 1
+          fi
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "::error::no Hermes-<version>-<os>-<arch>.zip desktop assets among the artifacts"
+            exit 1
+          fi
+          python3 scripts/release_manifest_desktop.py "${manifests[0]}" "${assets[@]}"
+          cat "${manifests[0]}"
+
       - name: Upload installers and source package to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1045,6 +1290,7 @@ jobs:
           shopt -s nullglob
           files=(release-assets/**/HermesSetup.dmg release-assets/**/HermesSetup.exe release-assets/**/HermesSetup.AppImage release-assets/**/HermesSetup.deb release-assets/**/HermesSetup.rpm release-assets/**/HermesSetup-debug.dmg release-assets/**/HermesSetup-debug.exe)
           files+=(release-assets/**/hermes-source-*.zip release-assets/**/hermes-source-*.zip.sha256 release-assets/**/hermes-release.json)
+          files+=(release-assets/**/Hermes-*.zip release-assets/**/Hermes-*.zip.sha256)
           if [ ${#files[@]} -eq 0 ]; then
             files=(release-assets/**/*.dmg release-assets/**/*.exe release-assets/**/*.AppImage release-assets/**/*.deb release-assets/**/*.rpm)
           fi
@@ -1119,7 +1365,7 @@ jobs:
             gh release create "$TAG" --target "$target" "${flags[@]}"
           fi
           shopt -s nullglob globstar
-          files=("$ASSET_DIR"/**/HermesSetup* "$ASSET_DIR"/**/hermes-source-* "$ASSET_DIR"/**/hermes-release.json)
+          files=("$ASSET_DIR"/**/HermesSetup* "$ASSET_DIR"/**/hermes-source-* "$ASSET_DIR"/**/hermes-release.json "$ASSET_DIR"/**/Hermes-*.zip "$ASSET_DIR"/**/Hermes-*.zip.sha256)
           if [ ${#files[@]} -eq 0 ]; then
             echo "::error::No assets found under $ASSET_DIR to mirror"
             exit 1

@@ -1433,6 +1433,112 @@ sha256_of_file() {
     fi
 }
 
+# AIS-353: release channels ship the pipeline-signed, notarized desktop app
+# as Hermes-<version>-<os>-<arch>.zip. A release-managed install takes it
+# instead of building apps/desktop locally — the local build is ad-hoc signed,
+# so macOS forgot every permission (Documents, microphone, firewall) on each
+# update. Returns 1 whenever the asset cannot be used; the caller then builds
+# locally exactly as before.
+desktop_platform_key() {
+    local arch
+    arch="$(uname -m 2>/dev/null || echo unknown)"
+    case "$arch" in
+        arm64|aarch64) arch="arm64" ;;
+        x86_64|amd64) arch="x64" ;;
+        *) return 1 ;;
+    esac
+    case "$OS" in
+        macos) echo "mac-$arch" ;;
+        *) return 1 ;;
+    esac
+}
+
+# <manifest> <platform> → "name sha256 size" of the desktop asset, or nothing.
+release_json_desktop_asset() {
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - "$1" "$2" <<'PY' 2>/dev/null
+import json, sys
+try:
+    entry = (json.load(open(sys.argv[1], encoding="utf-8")).get("desktop") or {}).get(sys.argv[2])
+    if isinstance(entry, dict) and entry.get("name") and entry.get("sha256") and entry.get("size"):
+        print(entry["name"], str(entry["sha256"]).lower(), entry["size"])
+except Exception:
+    pass
+PY
+}
+
+install_prebuilt_desktop() {
+    local desktop_dir="$INSTALL_DIR/apps/desktop"
+    [ -f "$INSTALL_DIR/$RELEASE_MARKER_FILE" ] || return 1
+    local tag key
+    tag="$(release_json_field "$INSTALL_DIR/$RELEASE_MARKER_FILE" tag)"
+    [ -n "$tag" ] || return 1
+    key="$(desktop_platform_key)" || return 1
+    local tmp
+    tmp="$(mktemp -d 2>/dev/null || echo "/tmp/hermes-desktop.$$")"
+    mkdir -p "$tmp"
+    local manifest="$tmp/hermes-release.json"
+    if ! curl -fsSL --retry 3 -o "$manifest" "https://github.com/$RELEASE_REPO/releases/download/$tag/$RELEASE_MANIFEST_ASSET"; then
+        log_warn "Could not fetch the manifest of $tag; building the desktop app locally"
+        rm -rf "$tmp"
+        return 1
+    fi
+    local entry name sha size
+    entry="$(release_json_desktop_asset "$manifest" "$key")"
+    if [ -z "$entry" ]; then
+        log_info "Release $tag ships no prebuilt desktop app for $key; building it locally"
+        rm -rf "$tmp"
+        return 1
+    fi
+    read -r name sha size <<EOF
+$entry
+EOF
+    case "$name" in
+        Hermes-*-"$key".zip) ;;
+        *)
+            log_warn "Unexpected desktop asset name $name; building the desktop app locally"
+            rm -rf "$tmp"
+            return 1
+            ;;
+    esac
+    log_info "Downloading the signed desktop app $name ($tag) ..."
+    if ! curl -fL --retry 3 --progress-bar -o "$tmp/$name" "https://github.com/$RELEASE_REPO/releases/download/$tag/$name"; then
+        log_warn "Desktop asset download failed; building the desktop app locally"
+        rm -rf "$tmp"
+        return 1
+    fi
+    local actual
+    actual="$(sha256_of_file "$tmp/$name" || true)"
+    if [ -z "$actual" ] || [ "$actual" != "$sha" ]; then
+        log_error "Checksum mismatch for $name (expected $sha, got ${actual:-none}); building the desktop app locally"
+        rm -rf "$tmp"
+        return 1
+    fi
+    log_success "Desktop asset verified (sha256 $sha)"
+    local target="$desktop_dir/release/mac-arm64"
+    [ "$key" = "mac-x64" ] && target="$desktop_dir/release/mac"
+    mkdir -p "$desktop_dir/release" "$tmp/unpacked"
+    # ditto keeps the bundle's symlinks, resource forks and thereby its
+    # Developer-ID signature intact; unzip/python would not.
+    if ! ditto -x -k "$tmp/$name" "$tmp/unpacked"; then
+        log_warn "Could not unpack $name; building the desktop app locally"
+        rm -rf "$tmp"
+        return 1
+    fi
+    if [ ! -x "$tmp/unpacked/Hermes.app/Contents/MacOS/Hermes" ]; then
+        log_warn "$name does not contain Hermes.app; building the desktop app locally"
+        rm -rf "$tmp"
+        return 1
+    fi
+    rm -rf "$target"
+    mv "$tmp/unpacked" "$target"
+    printf '{\n  "format": "hermes-prebuilt-desktop-v1",\n  "tag": "%s",\n  "platform": "%s",\n  "name": "%s",\n  "sha256": "%s",\n  "installed_at": "%s"\n}\n' \
+        "$tag" "$key" "$name" "$sha" "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" > "$desktop_dir/release/.prebuilt-desktop.json"
+    rm -rf "$tmp"
+    log_success "Installed the signed desktop app $name (no local build, signature kept)"
+    return 0
+}
+
 # Top-level entries that belong to the install, not to the archive. Same set
 # as hermes_cli/release_update.py PRESERVE_ENTRIES.
 release_preserve_entry() {
@@ -4938,6 +5044,12 @@ DESKTOP_ELECTRON_FALLBACK_MIRROR="https://npmmirror.com/mirrors/electron/"
 # first-launch bootstrap never requests (it must not rebuild itself).
 install_desktop() {
     local desktop_dir="$INSTALL_DIR/apps/desktop"
+
+    # AIS-353: a release-managed install takes the pipeline-signed app; only
+    # git/main installs (and platforms without an asset) build locally.
+    if install_prebuilt_desktop; then
+        return 0
+    fi
 
     # The desktop stage only runs when a build is explicitly requested
     # (--include-desktop / 'desktop' stage), so a missing toolchain is a hard

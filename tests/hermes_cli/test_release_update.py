@@ -464,3 +464,36 @@ def test_fetch_release_feed_stable_404_carries_the_http_status():
         with pytest.raises(release_update.ReleaseFeedError) as info:
             release_update.fetch_release_feed("stable")
     assert info.value.status is None
+
+
+# AIS-353: the optional `desktop` map with the prebuilt, signed desktop apps.
+def test_desktop_assets_are_optional_and_resolved_to_download_urls():
+    assert _validate(_manifest()).desktop == {}
+    feed = _validate(
+        _manifest(
+            desktop={
+                "mac-arm64": {"name": "Hermes-1.2.3-mac-arm64.zip", "sha256": "b" * 64, "size": 123456},
+                "win-x64": {"name": "Hermes-1.2.3-win-x64.zip", "sha256": "c" * 64, "size": 654321},
+            }
+        )
+    )
+    assert set(feed.desktop) == {"mac-arm64", "win-x64"}
+    mac = feed.desktop["mac-arm64"]
+    assert mac.url == release_download_url("v1.2.3", "Hermes-1.2.3-mac-arm64.zip")
+    assert mac.sha256 == "b" * 64 and mac.size == 123456 and mac.platform == "mac-arm64"
+
+
+@pytest.mark.parametrize(
+    "desktop, message",
+    [
+        ([], "'desktop' is not an object"),
+        ({"mac-arm64": "x"}, "not an object"),
+        ({"mac-arm64": {"name": "Hermes-9.9.9-mac-arm64.zip", "sha256": "b" * 64, "size": 1}}, "unexpected name"),
+        ({"win-x64": {"name": "Hermes-1.2.3-mac-arm64.zip", "sha256": "b" * 64, "size": 1}}, "unexpected name"),
+        ({"mac-arm64": {"name": "Hermes-1.2.3-mac-arm64.zip", "sha256": "zz", "size": 1}}, "sha256"),
+        ({"mac-arm64": {"name": "Hermes-1.2.3-mac-arm64.zip", "sha256": "b" * 64, "size": 0}}, "size"),
+    ],
+)
+def test_malformed_desktop_assets_fail_the_manifest(desktop, message):
+    with pytest.raises(ReleaseFeedError, match=message):
+        _validate(_manifest(desktop=desktop))

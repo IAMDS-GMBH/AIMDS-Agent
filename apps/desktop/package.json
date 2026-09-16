@@ -129,7 +129,7 @@
   },
   "build": {
     "electronVersion": "40.9.3",
-    "appId": "com.nousresearch.hermes",
+    "appId": "com.iamds.hermes",
     "productName": "Hermes",
     "executableName": "Hermes",
     "artifactName": "Hermes-${version}-${os}-${arch}.${ext}",
