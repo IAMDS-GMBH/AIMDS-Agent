@@ -5,9 +5,9 @@ manifest_version: 1
 name: OpenProjectMCP
 description: >-
   Read and manage OpenProject Community Edition projects, work packages,
-  comments, relations, versions, boards, meetings and time entries using
-  openproject-ce-mcp. Every write is preview-then-confirm; project scope is
-  enforced by allowlists.
+  comments, relations, versions, boards, meetings, wiki pages and time
+  entries using openproject-ce-mcp. Every write is preview-then-confirm;
+  project scope is enforced by allowlists.
 source: https://github.com/jtauschl/openproject-ce-mcp
 
 # AIS-327: the server registers ~150 tools. Registered names use the short
@@ -89,6 +89,10 @@ tools:
     - create_work_package_relation
     - list_work_package_attachments
     - get_attachment_content
+    - get_wiki_page
+    - list_work_package_wiki_links
+    - create_work_package_wiki_link
+    - delete_work_package_wiki_link
     - list_time_entry_activities
     - list_time_entries
     - create_time_entry
@@ -109,6 +113,10 @@ post_install: |
     read-only. Every write is preview-then-confirm.
   - Time tracking works like Jira + Tempo: time entries on a work package
     (spent_on + hours as ISO 8601 duration, e.g. PT1H30M).
+  - Wiki pages: OpenProject's REST API only exposes a page's id/title/project
+    (no list endpoint, no body text) — get_wiki_page reflects that. The
+    work-package wiki-link tools (list/create/delete) require OpenProject
+    17.6+.
   - uv/uvx must be on the PATH (same requirement as AtlassianMCP).
 
   Start a new Hermes session to load the OpenProject tools.
