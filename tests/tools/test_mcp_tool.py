@@ -1435,6 +1435,164 @@ class TestToolsetInjection:
 
 
 # ---------------------------------------------------------------------------
+# Boot-time AIMDSSuiteMCP host reconciliation (AIS-378 / SUP-20260918-124330)
+# ---------------------------------------------------------------------------
+
+class TestSuiteMcpBootReconcile:
+    """model.provider resolves live on every LLM call, but AIMDSSuiteMCP's
+    connection URL is a persisted config.yaml value nothing re-derived at
+    boot -- see tools.mcp_tool._reconcile_suite_mcp_url."""
+
+    def test_discover_corrects_stale_suite_url_on_first_call(self):
+        """The test that would have caught the original bug: a stale
+        AIMDSSuiteMCP URL gets corrected on the very first discover_mcp_tools()
+        call, with no fresh in-session /model switch involved."""
+        from tools.mcp_tool import MCPServerTask
+        from tools.registry import ToolRegistry
+
+        mock_tools = [_make_mcp_tool("memory_context", "Memory context")]
+        mock_session = MagicMock()
+        mock_registry = ToolRegistry()
+        fresh_servers = {}
+
+        async def fake_connect(name, config):
+            server = MCPServerTask(name)
+            server.session = mock_session
+            server._tools = mock_tools
+            return server
+
+        configs = [
+            {"AIMDSSuiteMCP": {"url": "https://staging.suite.iamds.com/litellm/mcp/"}},
+            {"AIMDSSuiteMCP": {"url": "https://suite.iamds.com/litellm/mcp/"}},
+        ]
+        load_calls = {"n": 0}
+
+        def fake_load_mcp_config():
+            idx = min(load_calls["n"], len(configs) - 1)
+            load_calls["n"] += 1
+            return configs[idx]
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._servers", fresh_servers), \
+             patch("tools.mcp_tool._load_mcp_config", side_effect=fake_load_mcp_config), \
+             patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+             patch("tools.registry.registry", mock_registry), \
+             patch(
+                 "hermes_cli.iamds_suite.rebind_suite_mcp_for_model",
+                 return_value=["mcp_AIMDSSuiteMCP_mcp_memory_memory_context"],
+             ) as mock_rebind:
+            from tools.mcp_tool import discover_mcp_tools
+            result = discover_mcp_tools()
+
+        mock_rebind.assert_called_once()
+        assert mock_rebind.call_args.kwargs.get("reload_tools") is False
+        # Re-read after a successful rebind, so registration sees the fix.
+        assert load_calls["n"] == 2
+        assert any("memory_context" in name for name in result)
+
+    def test_discover_skips_reconcile_without_suite_server(self):
+        """No AIMDSSuiteMCP key in the server config -> the reconcile helper
+        must not even attempt to resolve model.provider. Guards the fast
+        bail-out that keeps non-Suite installs (and the pre-existing
+        TestToolsetInjection tests above) on a zero-cost path."""
+        from tools.mcp_tool import MCPServerTask
+        from tools.registry import ToolRegistry
+
+        mock_tools = [_make_mcp_tool("list_files", "List files")]
+        mock_session = MagicMock()
+        mock_registry = ToolRegistry()
+        fresh_servers = {}
+
+        async def fake_connect(name, config):
+            server = MCPServerTask(name)
+            server.session = mock_session
+            server._tools = mock_tools
+            return server
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._servers", fresh_servers), \
+             patch("tools.mcp_tool._load_mcp_config", return_value={"fs": {"command": "npx"}}), \
+             patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+             patch("tools.registry.registry", mock_registry), \
+             patch("hermes_cli.iamds_suite.rebind_suite_mcp_for_model") as mock_rebind:
+            from tools.mcp_tool import discover_mcp_tools
+            discover_mcp_tools()
+
+        mock_rebind.assert_not_called()
+
+    def test_discover_reconcile_failure_is_non_fatal(self):
+        """A reconcile-path exception must not prevent other configured
+        servers from connecting and registering their tools."""
+        from tools.mcp_tool import MCPServerTask
+        from tools.registry import ToolRegistry
+
+        mock_tools = [_make_mcp_tool("ping", "Ping")]
+        mock_session = MagicMock()
+        mock_registry = ToolRegistry()
+        fresh_servers = {}
+
+        async def fake_connect(name, config):
+            server = MCPServerTask(name)
+            server.session = mock_session
+            server._tools = mock_tools
+            return server
+
+        fake_config = {
+            "AIMDSSuiteMCP": {"url": "https://staging.suite.iamds.com/litellm/mcp/"},
+            "good": {"command": "npx"},
+        }
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._servers", fresh_servers), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
+             patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+             patch("tools.registry.registry", mock_registry), \
+             patch(
+                 "hermes_cli.iamds_suite.rebind_suite_mcp_for_model",
+                 side_effect=RuntimeError("boom"),
+             ):
+            from tools.mcp_tool import discover_mcp_tools
+            result = discover_mcp_tools()
+
+        assert any("good_ping" in name for name in result)
+
+    def test_discover_no_reconnect_when_already_correct(self):
+        """rebind_suite_mcp_for_model returning [] (already on the right
+        host/path) must not trigger a second _load_mcp_config() re-read."""
+        from tools.mcp_tool import MCPServerTask
+        from tools.registry import ToolRegistry
+
+        mock_tools = [_make_mcp_tool("ping", "Ping")]
+        mock_session = MagicMock()
+        mock_registry = ToolRegistry()
+        fresh_servers = {}
+
+        async def fake_connect(name, config):
+            server = MCPServerTask(name)
+            server.session = mock_session
+            server._tools = mock_tools
+            return server
+
+        fake_config = {"AIMDSSuiteMCP": {"url": "https://suite.iamds.com/litellm/mcp/"}}
+        load_calls = {"n": 0}
+
+        def fake_load_mcp_config():
+            load_calls["n"] += 1
+            return fake_config
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._servers", fresh_servers), \
+             patch("tools.mcp_tool._load_mcp_config", side_effect=fake_load_mcp_config), \
+             patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+             patch("tools.registry.registry", mock_registry), \
+             patch("hermes_cli.iamds_suite.rebind_suite_mcp_for_model", return_value=[]):
+            from tools.mcp_tool import discover_mcp_tools
+            discover_mcp_tools()
+
+        assert load_calls["n"] == 1
+
+
+# ---------------------------------------------------------------------------
 # Graceful fallback
 # ---------------------------------------------------------------------------
 
