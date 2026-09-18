@@ -2225,7 +2225,7 @@ def _apply_model_switch(
         if rebind_suite_mcp_for_model(result.target_provider):
             _refresh_cached_agent_tools(sid)
     except Exception:
-        logger.debug("MCP provider reload failed after model switch", exc_info=True)
+        logger.warning("MCP provider reload failed after model switch", exc_info=True)
 
     return {
         "value": result.new_model,

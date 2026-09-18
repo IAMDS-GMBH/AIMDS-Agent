@@ -3483,6 +3483,57 @@ def _persist_iamds_mcp_config(
         )
 
 
+# Guards config.yaml rewrites from _reconcile_suite_mcp_url so a background
+# discovery thread and an explicit reload can't race each other. Deliberately
+# separate from `_lock` (used for the `_servers` registry below) and always
+# acquired outside any `_lock` block, since reload_provider_mcp_servers takes
+# `_lock` internally -- acquiring both in the other order would deadlock.
+_suite_reconcile_lock = threading.Lock()
+
+
+def _reconcile_suite_mcp_url(servers: Dict[str, dict]) -> bool:
+    """Correct a stale AIMDSSuiteMCP URL against the current ``model.provider``.
+
+    AIMDSSuiteMCP's connection URL is a persisted, static ``config.yaml``
+    value -- unlike the LLM host, which ``resolve_suite_endpoint`` recomputes
+    live on every call, nothing re-derives this URL at boot. If a session
+    last left it pointed at a non-prod instance and the next process boots
+    with ``model.provider`` already back on prod (no fresh in-session
+    ``/model`` switch to trigger ``hermes_cli.iamds_suite``'s own rebind),
+    the stale URL just sits there, silently used for every Suite MCP tool
+    call (memory, kb_search, storage, ntfy, ...). See AIS-378 /
+    SUP-20260918-124330.
+
+    Called on every ``discover_mcp_tools()`` invocation rather than gated
+    behind a once-per-process flag: Hermes runs as several processes sharing
+    one ``config.yaml`` (desktop UI, TUI gateway, cron scheduler), so a
+    process-local flag would permanently miss a provider change written by a
+    different process. The cost when nothing needs fixing is a dict lookup
+    plus ``rebind_suite_mcp_for_model``'s own cheap URL-comparison fast path
+    -- negligible next to the network work this function's caller is about
+    to do anyway.
+
+    Returns True if the URL was rewritten (the caller should re-read its
+    server config before registering).
+    """
+    from hermes_cli.config import SINGLE_MCP_SERVER_NAME
+
+    if SINGLE_MCP_SERVER_NAME not in servers:
+        return False
+    with _suite_reconcile_lock:
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.iamds_suite import rebind_suite_mcp_for_model
+
+            cfg = load_config() or {}
+            provider = (cfg.get("model") or {}).get("provider")
+            rebound = rebind_suite_mcp_for_model(provider, config=cfg, reload_tools=False)
+            return bool(rebound)
+        except Exception:
+            logger.warning("AIMDSSuiteMCP boot-time reconcile failed", exc_info=True)
+            return False
+
+
 def reload_provider_mcp_servers(
     provider: str,
     new_base_url: str,
@@ -3635,7 +3686,13 @@ def reload_provider_mcp_servers(
         return register_mcp_servers(updated_cfgs)
     except RuntimeError as exc:
         if "not running" in str(exc).lower() or "unavailable" in str(exc).lower():
-            logger.debug(
+            # This is a materially different outcome from a clean rebind: the
+            # corrected URL/key IS persisted to disk, but the live connection
+            # in THIS process was NOT swapped, so it keeps using the stale
+            # session until restart -- worth an info-level trace since it's
+            # the exact transient that makes a model-switch action look like
+            # it succeeded while nothing actually changed in-process.
+            logger.info(
                 "MCP provider reload: live reconnect skipped (loop not running): %s",
                 exc,
             )
@@ -5970,6 +6027,9 @@ def discover_mcp_tools() -> List[str]:
     if not servers:
         logger.debug("No MCP servers configured")
         return []
+
+    if _reconcile_suite_mcp_url(servers):
+        servers = _load_mcp_config()
 
     with _lock:
         new_server_names = [

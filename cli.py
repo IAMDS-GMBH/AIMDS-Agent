@@ -6789,7 +6789,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if mcp_tools:
                 _cprint(f"    🔄 MCP servers reconnected ({len(mcp_tools)} tool(s))")
         except Exception as exc:
-            logger.debug("MCP provider reload failed: %s", exc)
+            logger.warning("MCP provider reload failed: %s", exc)
 
     def _handle_model_picker_selection(self, persist_global: bool = False) -> None:
         state = self._model_picker_state
@@ -7059,7 +7059,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if mcp_tools:
                 _cprint(f"    🔄 MCP servers reconnected ({len(mcp_tools)} tool(s))")
         except Exception as exc:
-            logger.debug("MCP provider reload failed: %s", exc)
+            logger.warning("MCP provider reload failed: %s", exc)
 
     def _handle_codex_runtime(self, cmd_original: str) -> None:
         """Handle /codex-runtime — toggle the codex app-server runtime opt-in.

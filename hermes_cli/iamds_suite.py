@@ -924,14 +924,31 @@ def docling_availability(
 
 # --------------------------------------------------------------------------- re-auth
 
-def rebind_suite_mcp_for_model(target_provider: Optional[str], *, config: Optional[dict] = None) -> List[str]:
+def rebind_suite_mcp_for_model(
+    target_provider: Optional[str],
+    *,
+    config: Optional[dict] = None,
+    reload_tools: bool = True,
+) -> List[str]:
     """Point AIMDSSuiteMCP at the right Suite instance after a model switch.
 
     A model on a Suite provider → that instance; a 3rd-party model (Claude,
     Gemini, …) → prod, so the Suite tools never stay stranded on a
     staging/dev/local endpoint after the user leaves a Suite model. Reconnects
-    only when the MCP host actually changes. Returns the MCP tool names after a
-    reconnect, else ``[]`` (nothing to do / no usable prod credential).
+    only when the MCP URL actually differs from where AIMDSSuiteMCP should be
+    for ``target_provider`` — compares the full normalized URL (host AND
+    path), matching what ``_mcp_status_for``'s ``url_matches`` already checks,
+    not just the hostname (a right-host/wrong-path config used to be a no-op
+    here while the status card already flagged it as mismatched). Returns the
+    MCP tool names after a reconnect, else ``[]`` (nothing to do / no usable
+    prod credential).
+
+    ``reload_tools=False`` skips the trailing ``discover_mcp_tools()`` call.
+    Used by ``tools.mcp_tool.discover_mcp_tools()`` itself when reconciling at
+    boot: that caller is about to call ``register_mcp_servers()`` on the
+    freshly-corrected config right after, making the inner call redundant —
+    and calling it with the default here would recurse into that same
+    ``discover_mcp_tools()``.
     """
     from urllib.parse import urlsplit
 
@@ -945,27 +962,40 @@ def rebind_suite_mcp_for_model(target_provider: Optional[str], *, config: Option
         # as it is rather than tearing down a working connection.
         return []
     from hermes_cli.config import SINGLE_MCP_SERVER_NAME
+    from tools.mcp_tool import _build_iamds_mcp_url
 
+    # _build_iamds_mcp_url always appends a trailing slash while _norm_url
+    # strips one — normalize both sides through _norm_url so a cosmetic
+    # trailing-slash difference never looks like a real mismatch (that would
+    # force a reconnect on every single boot once this runs there too).
+    expected_url = _norm_url(_build_iamds_mcp_url(ep.base_url))
+    current_url = ""
     try:
         cfg = _load_config_safe(config)
         servers = cfg.get("mcp_servers") if isinstance(cfg, dict) else None
         current = (servers or {}).get(SINGLE_MCP_SERVER_NAME) or {}
-        current_host = urlsplit(_norm_url(current.get("url"))).hostname
-        target_host = urlsplit(ep.base_url).hostname
-        if current_host and target_host and current_host == target_host:
-            return []  # already on the right instance — no reconnect churn
+        current_url = _norm_url(current.get("url"))
+        if current_url and expected_url and current_url == expected_url:
+            return []  # already on the right instance/path — no reconnect churn
     except Exception:
         pass
+    logger.info(
+        "AIMDSSuiteMCP repointing %s -> %s (model.provider=%s)",
+        urlsplit(current_url).hostname if current_url else current_url,
+        urlsplit(expected_url).hostname if expected_url else expected_url,
+        target_provider,
+    )
     try:
         from tools.mcp_tool import discover_mcp_tools, reload_provider_mcp_servers
 
         tools = reload_provider_mcp_servers(
             provider=ep.provider_id, new_base_url=ep.base_url, new_api_key=ep.api_key
         )
-        discover_mcp_tools()
+        if reload_tools:
+            discover_mcp_tools()
         return list(tools or [])
     except Exception:
-        logger.debug("rebind_suite_mcp_for_model failed", exc_info=True)
+        logger.warning("rebind_suite_mcp_for_model failed", exc_info=True)
         return []
 
 
