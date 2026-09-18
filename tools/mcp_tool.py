@@ -420,13 +420,33 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     return env
 
 
+# AIS-330 (prompt_builder.OPENPROJECT_READ_ONLY_GUIDANCE) proactively warns
+# the model when an OpenProject server's write scope is empty and no write
+# tools are registered at all. That guidance never fires for a *partial*
+# scope (some projects allowed, not this one) since the write tools ARE
+# present — the model only learns about the restriction from this exact
+# runtime error string, so the fix pointer is attached here instead.
+_OPENPROJECT_WRITE_SCOPE_HINT = (
+    " (this is expected: this OpenProject server's write scope doesn't include this project — "
+    "add its identifier, or `*` for all projects, to OPENPROJECT_WRITE_PROJECTS and restart Hermes "
+    "to enable writes here. Do not work around this by calling the OpenProject REST API directly.)"
+)
+
+
 def _sanitize_error(text: str) -> str:
     """Strip credential-like patterns from error text before returning to LLM.
 
     Replaces tokens, keys, and other secrets with [REDACTED] to prevent
-    accidental credential exposure in tool error responses.
+    accidental credential exposure in tool error responses. Also appends a
+    one-line fix pointer when the error is OpenProject's own
+    OPENPROJECT_WRITE_PROJECTS scope-denial message (see
+    _OPENPROJECT_WRITE_SCOPE_HINT), so the model doesn't have to infer the
+    fix from the raw exception text alone.
     """
-    return _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+    cleaned = _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+    if "OPENPROJECT_WRITE_PROJECTS" in cleaned and "add its identifier" not in cleaned:
+        cleaned = cleaned + _OPENPROJECT_WRITE_SCOPE_HINT
+    return cleaned
 
 
 def _exc_str(exc: BaseException) -> str:
@@ -2107,7 +2127,15 @@ class MCPServerTask:
         connection drops unexpectedly (unless shutdown was requested).
         """
         self._config = config
-        self.tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
+        # A blank `timeout:` key in config.yaml (present but null) makes
+        # plain dict.get() return None instead of the default -- the key
+        # exists, it's just empty. _safe_numeric coerces that (and any other
+        # invalid value) back to the default instead of letting `None`
+        # reach _run_on_mcp_loop, where it means "no ceiling at all" (a
+        # genuine unbounded hang, not just a long wait).
+        self.tool_timeout = _safe_numeric(
+            config.get("timeout", _DEFAULT_TOOL_TIMEOUT), _DEFAULT_TOOL_TIMEOUT, float
+        )
         self._auth_type = (config.get("auth") or "").lower().strip()
 
         # Set up sampling handler if enabled and SDK types are available
@@ -3021,24 +3049,36 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     if future is None:
         raise RuntimeError("MCP event loop unavailable (failed to schedule)")
     start_time = time.monotonic()
-    deadline = None if timeout is None else start_time + timeout
+    if timeout is None:
+        # Defense in depth: `timeout=None` must never mean "no ceiling" here.
+        # That was a genuine unbounded-hang path -- a blank `timeout:` config
+        # key resolves to None (see MCPServerTask.run's tool_timeout), and
+        # this loop's only exit conditions besides that were the future
+        # completing or a user interrupt. Callers should be fixed at the
+        # source (coerce to a real number before calling), but this is the
+        # single choke point every MCP call goes through, so it gets a hard
+        # ceiling regardless of how a caller got to timeout=None.
+        logger.warning(
+            "_run_on_mcp_loop called with timeout=None; using default ceiling of %.0fs",
+            _DEFAULT_TOOL_TIMEOUT,
+        )
+        timeout = _DEFAULT_TOOL_TIMEOUT
+    deadline = start_time + timeout
 
     while True:
         if is_interrupted():
             future.cancel()
             raise InterruptedError("User sent a new message")
 
-        wait_timeout = 0.1
-        if deadline is not None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                future.cancel()
-                elapsed = time.monotonic() - start_time
-                raise TimeoutError(
-                    f"MCP call timed out after {elapsed:.1f}s "
-                    f"(configured timeout: {float(timeout):.1f}s)"
-                )
-            wait_timeout = min(wait_timeout, remaining)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            future.cancel()
+            elapsed = time.monotonic() - start_time
+            raise TimeoutError(
+                f"MCP call timed out after {elapsed:.1f}s "
+                f"(configured timeout: {float(timeout):.1f}s)"
+            )
+        wait_timeout = min(0.1, remaining)
 
         try:
             return future.result(timeout=wait_timeout)

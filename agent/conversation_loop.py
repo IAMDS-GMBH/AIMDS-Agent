@@ -61,7 +61,11 @@ from agent.model_metadata import (
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.cache_insights import LARGE_CACHE_WRITE_TOKENS
-from agent.prompt_builder import _resolve_memory_context_tool_name, _resolve_memory_save_tool_name
+from agent.prompt_builder import (
+    _resolve_memory_context_tool_name,
+    _resolve_memory_save_tool_name,
+    _resolve_memory_search_tool_name,
+)
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.retry_utils import jittered_backoff
 from agent.session_bootstrap import (
@@ -88,6 +92,15 @@ _PERSONAL_CONTEXT_QUERY_PATTERNS: List[re.Pattern] = [
     # German / Spanish seeds (non-exhaustive, additive heuristic)
     re.compile(r"\b(wer bin ich|was wei[ßs]t du [üu]ber mich|mein profil|meine pr[äa]ferenzen)\b", re.I),
     re.compile(r"\b(qu[ií]en soy|qu[eé] sabes de m[ií]|mi perfil|mis preferencias)\b", re.I),
+    # French / Italian seeds — same "non-exhaustive, additive heuristic" as
+    # above. This list cannot be exhaustive across languages/dialects (a
+    # hardcoded phrase list structurally can't be); it's a best-effort
+    # backstop only. The real coverage for arbitrary phrasing/dialect comes
+    # from the model itself via the memory-vault prompt guidance
+    # (build_memory_vault_guidance), which understands intent regardless of
+    # exact wording — see test_personal_context_query_detector_known_limit_dialect.
+    re.compile(r"\b(qui suis-je|que sais-tu de moi|mon profil|mes pr[ée]f[ée]rences)\b", re.I),
+    re.compile(r"\b(chi sono|cosa sai di me|il mio profilo|le mie preferenze)\b", re.I),
     # Memory, vault, and rules query triggers
     re.compile(r"\b(was steht im (memory|vault)|welche regeln|regeln im (memory|vault)|memory (vault|mcp)|vault (mcp|memory)|my rules|user rules)\b", re.I),
 ]
@@ -141,45 +154,51 @@ def _has_recent_successful_memory_context(
     return False
 
 
-def _enforce_personal_query_memory_context_call(
+def _personal_query_memory_search_args(tool_name: str, original_user_message: str) -> Dict[str, Any]:
+    """Best-effort args for a memory_search call triggered by a personal query.
+
+    Only sends ``query`` when the registered tool schema actually declares
+    that parameter; falls back to ``{}`` (still a valid call for a
+    zero-arg-tolerant search tool) if the schema can't be resolved.
+    """
+    query = str(original_user_message or "").strip()[:200]
+    if not query:
+        return {}
+    try:
+        from tools.registry import registry
+
+        schema = registry.get_schema(tool_name) or {}
+    except Exception:
+        return {"query": query}
+    params = schema.get("parameters") or schema.get("input_schema") or {}
+    props = params.get("properties") if isinstance(params, dict) else None
+    if isinstance(props, dict) and "query" not in props:
+        return {}
+    return {"query": query}
+
+
+def _force_synthetic_tool_call(
     agent: Any,
     *,
     messages: List[Dict[str, Any]],
-    conversation_history: List[Dict[str, Any]],
-    original_user_message: str,
     effective_task_id: str,
+    tool_name: str,
+    call_args: Dict[str, Any],
+    call_id_prefix: str,
+    audit_trigger_reason: str,
+    audit_error_reason: str,
+    original_user_message: str,
 ) -> None:
-    """Force memory_context on personal profile/history questions after first turn."""
-    if not conversation_history:
-        return
-    if not getattr(agent, "_enforce_context_for_personal_queries", True):
-        return
-    if not _is_personal_context_query(original_user_message):
-        return
+    """Inject and execute a synthetic tool call, auditing and logging the outcome.
 
-    valid_tools = set(getattr(agent, "valid_tool_names", []) or [])
-    tool_name = _resolve_memory_context_tool_name(valid_tools)
-    base_event = {
-        "status": "skip",
-        "query": str(original_user_message or "")[:240],
-        "session_id": str(getattr(agent, "session_id", "") or ""),
-        "task_id": str(effective_task_id or ""),
-        "turn_id": str(getattr(agent, "_current_turn_id", "") or ""),
-    }
-    if not tool_name:
-        append_memory_context_audit_event({**base_event, "reason_code": "skip_tool_unavailable"})
-        return
-
-    freshness_turns = max(1, int(getattr(agent, "_personal_query_freshness_turns", 3) or 3))
-    if _has_recent_successful_memory_context(
-        messages=messages,
-        tool_name=tool_name,
-        freshness_turns=freshness_turns,
-    ):
-        append_memory_context_audit_event({**base_event, "reason_code": "skip_recent_context_fresh"})
-        return
-
-    call_id = f"memory-context-personal-{uuid.uuid4().hex[:12]}"
+    Shared by the personal-query memory_context and memory_search forcing
+    paths below — the previous exception handler here swallowed a failed
+    forced call into a synthetic tool message with no logging at all, which
+    left silent-failure investigations (see the mcp_tool timeout hang this
+    guard can trip on) with no trace in agent.log.
+    """
+    call_id = f"{call_id_prefix}-{uuid.uuid4().hex[:12]}"
+    arguments = json.dumps(call_args, ensure_ascii=False)
     assistant_tool_msg = {
         "role": "assistant",
         "content": "",
@@ -187,10 +206,7 @@ def _enforce_personal_query_memory_context_call(
             {
                 "id": call_id,
                 "type": "function",
-                "function": {
-                    "name": tool_name,
-                    "arguments": json.dumps({}, ensure_ascii=False),
-                },
+                "function": {"name": tool_name, "arguments": arguments},
             }
         ],
     }
@@ -201,20 +217,15 @@ def _enforce_personal_query_memory_context_call(
                 SimpleNamespace(
                     id=call_id,
                     type="function",
-                    function=SimpleNamespace(name=tool_name, arguments=json.dumps({}, ensure_ascii=False)),
+                    function=SimpleNamespace(name=tool_name, arguments=arguments),
                 )
             ]
         )
-        agent._execute_tool_calls(
-            synthetic_assistant,
-            messages,
-            effective_task_id,
-            0,
-        )
+        agent._execute_tool_calls(synthetic_assistant, messages, effective_task_id, 0)
         append_memory_context_audit_event(
             {
                 "status": "trigger",
-                "reason_code": "trigger_personal_query_stale_context",
+                "reason_code": audit_trigger_reason,
                 "query": str(original_user_message or "")[:240],
                 "session_id": str(getattr(agent, "session_id", "") or ""),
                 "task_id": str(effective_task_id or ""),
@@ -223,13 +234,20 @@ def _enforce_personal_query_memory_context_call(
             }
         )
     except Exception as exc:
+        logger.warning(
+            "Forced %s call failed (session=%s, task=%s): %s",
+            tool_name,
+            str(getattr(agent, "session_id", "") or ""),
+            str(effective_task_id or ""),
+            exc,
+        )
         messages.append(
             {
                 "role": "tool",
                 "name": tool_name,
                 "tool_call_id": call_id,
                 "content": json.dumps(
-                    {"error": f"Personal-query memory_context call failed: {exc}"},
+                    {"error": f"Forced {tool_name} call failed: {exc}"},
                     ensure_ascii=False,
                 ),
             }
@@ -237,7 +255,7 @@ def _enforce_personal_query_memory_context_call(
         append_memory_context_audit_event(
             {
                 "status": "error",
-                "reason_code": "error_personal_query_forced_call_failed",
+                "reason_code": audit_error_reason,
                 "query": str(original_user_message or "")[:240],
                 "session_id": str(getattr(agent, "session_id", "") or ""),
                 "task_id": str(effective_task_id or ""),
@@ -246,6 +264,90 @@ def _enforce_personal_query_memory_context_call(
                 "error": str(exc)[:300],
             }
         )
+
+
+def _enforce_personal_query_memory_context_call(
+    agent: Any,
+    *,
+    messages: List[Dict[str, Any]],
+    conversation_history: List[Dict[str, Any]],
+    original_user_message: str,
+    effective_task_id: str,
+) -> None:
+    """Force memory_context AND memory_search on personal profile/history questions.
+
+    Runs on the first turn too, not just turn >= 2 — every reported support
+    case for this pattern ("wer bin ich" style questions getting a thin
+    answer) was the FIRST message of a fresh session, which this guard used
+    to skip outright via an early ``if not conversation_history: return``.
+    ``_enforce_initial_memory_context_call`` may already have fired a plain
+    memory_context call earlier this same turn; the freshness check below
+    naturally no-ops the memory_context half here when that just happened.
+
+    The memory_search half is new and independent: a generic memory_context
+    blob is not expected to answer a specific follow-up (e.g. work hours),
+    so a personal query should also trigger a targeted search rather than
+    relying on the context blob alone.
+    """
+    if not getattr(agent, "_enforce_context_for_personal_queries", True):
+        return
+    if not _is_personal_context_query(original_user_message):
+        return
+
+    valid_tools = set(getattr(agent, "valid_tool_names", []) or [])
+    base_event = {
+        "status": "skip",
+        "query": str(original_user_message or "")[:240],
+        "session_id": str(getattr(agent, "session_id", "") or ""),
+        "task_id": str(effective_task_id or ""),
+        "turn_id": str(getattr(agent, "_current_turn_id", "") or ""),
+    }
+    freshness_turns = max(1, int(getattr(agent, "_personal_query_freshness_turns", 3) or 3))
+
+    context_tool_name = _resolve_memory_context_tool_name(valid_tools)
+    if not context_tool_name:
+        append_memory_context_audit_event({**base_event, "reason_code": "skip_tool_unavailable"})
+    elif _has_recent_successful_memory_context(
+        messages=messages,
+        tool_name=context_tool_name,
+        freshness_turns=freshness_turns,
+    ):
+        append_memory_context_audit_event({**base_event, "reason_code": "skip_recent_context_fresh"})
+    else:
+        _force_synthetic_tool_call(
+            agent,
+            messages=messages,
+            effective_task_id=effective_task_id,
+            tool_name=context_tool_name,
+            call_args={},
+            call_id_prefix="memory-context-personal",
+            audit_trigger_reason="trigger_personal_query_stale_context",
+            audit_error_reason="error_personal_query_forced_call_failed",
+            original_user_message=original_user_message,
+        )
+
+    search_tool_name = _resolve_memory_search_tool_name(valid_tools)
+    if not search_tool_name:
+        append_memory_context_audit_event({**base_event, "reason_code": "skip_search_tool_unavailable"})
+        return
+    if _has_recent_successful_memory_context(
+        messages=messages,
+        tool_name=search_tool_name,
+        freshness_turns=freshness_turns,
+    ):
+        append_memory_context_audit_event({**base_event, "reason_code": "skip_recent_search_fresh"})
+        return
+    _force_synthetic_tool_call(
+        agent,
+        messages=messages,
+        effective_task_id=effective_task_id,
+        tool_name=search_tool_name,
+        call_args=_personal_query_memory_search_args(search_tool_name, original_user_message),
+        call_id_prefix="memory-search-personal",
+        audit_trigger_reason="trigger_personal_query_memory_search",
+        audit_error_reason="error_personal_query_memory_search_failed",
+        original_user_message=original_user_message,
+    )
 
 
 def _initial_memory_context_args(agent: Any, tool_name: str) -> Dict[str, Any]:
@@ -357,6 +459,13 @@ def _enforce_initial_memory_context_call(
             0,
         )
     except Exception as exc:
+        logger.warning(
+            "Forced initial %s call failed (session=%s, task=%s): %s",
+            tool_name,
+            str(getattr(agent, "session_id", "") or ""),
+            str(effective_task_id or ""),
+            exc,
+        )
         messages.append(
             {
                 "role": "tool",

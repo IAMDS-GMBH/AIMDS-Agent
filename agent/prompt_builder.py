@@ -1764,6 +1764,12 @@ def _resolve_memory_save_tool_name(valid_tool_names: "set[str] | None") -> str |
     return _resolve_memory_tool_name(valid_tool_names, "memory_save")
 
 
+def _resolve_memory_search_tool_name(valid_tool_names: "set[str] | None") -> str | None:
+    """Return the callable memory_search tool name from active tools (see
+    :func:`_resolve_memory_tool_name` for the naming patterns supported)."""
+    return _resolve_memory_tool_name(valid_tool_names, "memory_search")
+
+
 def build_local_profile_fallback_prompt() -> str:
     """Return a brief guidance block when MCP memory is unavailable but USER.md is active.
 
@@ -1930,6 +1936,11 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
         "files, notes and documents belong in the workspace folders. Do not push working files into the vault and do not keep facts only in a file.\n"
         f"When the user shares or confirms durable preferences, rules, instructions, or contacts, {save_hint} so the vault stays up to date.\n"
         "Use memory read/list/search tools for explicit retrieval or editing tasks.\n"
+        f"PERSONAL QUESTIONS, ANY LANGUAGE OR PHRASING: when the user asks about themselves — who they are, what you know "
+        "about them, their role, work hours, preferences, or history, in any language, dialect, or phrasing — and what "
+        f"`{tool_name}` already loaded does not answer it, call the memory search tool with a targeted query before answering. "
+        "Do not answer a personal question from the generic context blob alone just because no more specific trigger recognized "
+        "the wording; you understand intent regardless of dialect even when a keyword-based safety net does not.\n"
         f"MEMORY HYGIENE: when `{tool_name}` reports maintenance hints — no active_contexts configured (its "
         "context_hint), stale memories, or duplicates — surface that ONCE to the user and offer to fix it: "
         "setting `profile.hints.active_contexts` shrinks every future session's rules payload (tag genuinely "
@@ -2431,6 +2442,18 @@ _OPENPROJECT_WRITE_SUFFIXES = (
 _OPENPROJECT_READ_SUFFIXES = (
     "list_work_packages", "search_work_packages", "get_work_package",
     "list_projects", "list_my_open_work_packages",
+)
+
+MCP_PERMISSION_BYPASS_GUIDANCE = (
+    "# MCP permission/scope errors: report, never bypass\n"
+    "When a dedicated MCP tool call fails with a permission-denied, scope, or read-only-style error, that "
+    "boundary was configured on purpose. Stop, report the exact error and the likely fix to the user "
+    "(e.g. which config value to change and that the app needs a restart), and do not try to route around "
+    "it by calling `bash`/`curl`/raw HTTP with a credential you can read from config, environment "
+    "variables, or memory — even one you found yourself, even for a task the user clearly wants done. A "
+    "credential handed to the dedicated tool path is redacted from history and audited; the same "
+    "credential inlined into a shell command is neither, and generating that shell command is itself a "
+    "step you should not take instead of surfacing the limitation.\n"
 )
 
 OPENPROJECT_READ_ONLY_GUIDANCE = (

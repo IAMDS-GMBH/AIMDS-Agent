@@ -20,6 +20,18 @@ def test_personal_context_query_detector_ignores_regular_project_question():
     assert not _is_personal_context_query("How do I run the backend tests?")
 
 
+def test_personal_context_query_detector_known_limit_dialect():
+    """Documents a known, accepted gap: a hardcoded phrase list can't cover
+    every dialect/phrasing. Support cases SUP-20260918-094851/094912's exact
+    text (Bavarian) matches neither the seed regexes nor the space-bounded
+    fallback ("bin i" != "bin ich", "woast" != "weißt", "mi?" has no
+    trailing space for the " mi " fallback token). Coverage for this case
+    comes from the memory-vault prompt guidance instead (agent/prompt_builder.py
+    build_memory_vault_guidance) — the model understands intent regardless
+    of dialect even where this regex backstop cannot."""
+    assert not _is_personal_context_query("Wer bin i und wos woast du üba mi? List oise auf")
+
+
 def test_has_recent_successful_memory_context_uses_freshness_window():
     msgs = [
         {"role": "tool", "name": "memory_context", "content": '{"error":"x"}'},

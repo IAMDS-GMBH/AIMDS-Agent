@@ -1049,6 +1049,18 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             # case where a model accidentally inlines a secret into a tool
             # call (e.g. `terminal(command="curl -H 'Authorization: Bearer
             # sk-...'")`). (#19798)
+            #
+            # This value is replayed back to the model as its own prior tool
+            # call on every later API call (see
+            # anthropic_adapter._convert_assistant_message, which re-sources
+            # tool_use.input from this exact persisted+redacted arguments
+            # string rather than the raw response, specifically so a real
+            # secret never gets echoed back onto the wire). That makes
+            # redact_sensitive_text's syntax-preserving behavior load-bearing
+            # here, not just cosmetic: if redaction ever corrupts the
+            # surrounding shell/JSON syntax, the model is shown its own tool
+            # call as broken and will keep reproducing that corruption in new
+            # tool calls, believing it to be correct.
             if isinstance(tc_dict["function"]["arguments"], str):
                 from agent.redact import redact_sensitive_text
                 tc_dict["function"]["arguments"] = redact_sensitive_text(

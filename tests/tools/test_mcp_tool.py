@@ -900,6 +900,49 @@ class TestRunOnMCPLoopInterrupts:
             mcp_mod._mcp_loop = old_loop
             mcp_mod._mcp_thread = old_thread
 
+    def test_timeout_none_still_bounded(self, monkeypatch):
+        """Defense in depth: timeout=None must never mean "no ceiling" --
+        that was a genuine unbounded-hang path (a blank `timeout:` config
+        key resolves to None). Monkeypatch the fallback ceiling short so
+        this test doesn't have to wait out the real default."""
+        import tools.mcp_tool as mcp_mod
+
+        monkeypatch.setattr(mcp_mod, "_DEFAULT_TOOL_TIMEOUT", 0.2)
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+
+        cancelled = threading.Event()
+
+        async def _slow_call():
+            try:
+                await asyncio.sleep(5)
+                return "done"
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        old_loop = mcp_mod._mcp_loop
+        old_thread = mcp_mod._mcp_thread
+        mcp_mod._mcp_loop = loop
+        mcp_mod._mcp_thread = thread
+
+        try:
+            with pytest.raises(TimeoutError, match="MCP call timed out"):
+                mcp_mod._run_on_mcp_loop(_slow_call(), timeout=None)
+
+            deadline = time.time() + 2
+            while time.time() < deadline and not cancelled.is_set():
+                time.sleep(0.05)
+            assert cancelled.is_set()
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)
+            loop.close()
+            mcp_mod._mcp_loop = old_loop
+            mcp_mod._mcp_thread = old_thread
+
 
 # ---------------------------------------------------------------------------
 # Tool registration (discovery + register)
@@ -1663,6 +1706,25 @@ class TestSanitizeError:
         assert "token=" not in result
         assert result.count("[REDACTED]") == 3
 
+    def test_openproject_write_scope_error_gets_fix_pointer(self):
+        """A partial OPENPROJECT_WRITE_PROJECTS scope (some projects allowed,
+        not this one) triggers no proactive prompt guidance since write
+        tools ARE present -- the model only learns about the restriction
+        from this exact runtime string, so the fix pointer is attached here."""
+        from tools.mcp_tool import _sanitize_error
+        result = _sanitize_error(
+            "[permission_denied] OpenProject writes to this project are "
+            "disabled by OPENPROJECT_WRITE_PROJECTS."
+        )
+        assert "OPENPROJECT_WRITE_PROJECTS" in result
+        assert "add its identifier" in result
+        assert "restart Hermes" in result
+
+    def test_unrelated_error_unchanged(self):
+        from tools.mcp_tool import _sanitize_error
+        result = _sanitize_error("connection refused")
+        assert result == "connection refused"
+
 
 # ---------------------------------------------------------------------------
 # HTTP config
@@ -2211,6 +2273,39 @@ class TestConfigurableTimeouts:
                 )
                 await server._ready.wait()
                 assert server.tool_timeout == 180
+                server._shutdown_event.set()
+                await task
+
+        asyncio.run(_test())
+
+    def test_null_timeout_falls_back_to_default(self):
+        """A blank `timeout:` key in config.yaml (present but null) must
+        resolve to the default, not None -- None reaching _run_on_mcp_loop
+        used to mean "no ceiling at all" (a genuine unbounded hang)."""
+        from tools.mcp_tool import MCPServerTask, _DEFAULT_TOOL_TIMEOUT
+
+        target_server = None
+        original_run_stdio = MCPServerTask._run_stdio
+
+        async def patched_run_stdio(self_srv, config):
+            if target_server is not self_srv:
+                return await original_run_stdio(self_srv, config)
+            self_srv.session = MagicMock()
+            self_srv._tools = []
+            self_srv._ready.set()
+            await self_srv._shutdown_event.wait()
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("test_srv")
+            target_server = server
+
+            with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio):
+                task = asyncio.ensure_future(
+                    server.run({"command": "test", "timeout": None})
+                )
+                await server._ready.wait()
+                assert server.tool_timeout == _DEFAULT_TOOL_TIMEOUT
                 server._shutdown_event.set()
                 await task
 

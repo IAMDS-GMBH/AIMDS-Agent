@@ -31,6 +31,7 @@ should PASS once block ordering is preserved on replay.
 """
 
 import json
+import shlex
 from types import SimpleNamespace
 
 import pytest
@@ -308,6 +309,77 @@ class TestInterleavedReplayCredentialRedaction:
             ("thinking", "sig-BBB"),
             ("tool_use", "toolu_2"),
         ]
+
+
+class TestInterleavedReplayShellSyntaxPreservation:
+    """The redact -> persist -> replay chain must not hand the model a
+    syntactically-broken copy of its own prior tool call.
+
+    A real session had the agent generate `TOKEN=$(cat ... | head -1)` /
+    `Authorization: Bearer $TOKEN` shell for a tool call. The redaction
+    regexes corrupted it before storage (unbalanced parens/quotes), and the
+    replay fast path above (which deliberately re-sources tool_use.input
+    from the persisted/redacted arguments rather than the raw response, to
+    keep real secrets off the wire) then fed that corruption back to the
+    model as its own history on every later turn -- which is why the model
+    kept reproducing the broken idiom in brand-new scripts instead of just
+    seeing it once. This test spans the whole chain: redact -> persist ->
+    replay, since that's what the isolated units missed.
+    """
+
+    def test_replayed_tool_use_input_stays_shell_valid(self):
+        from agent.redact import redact_sensitive_text
+
+        raw_command = (
+            "TOKEN=$(cat ~/.config/op_admin_token | head -1)\n"
+            'curl -X PATCH -H "Authorization: Bearer $TOKEN" '
+            "https://suite.iamds.com/api/v3/work_packages/123"
+        )
+        # Mirrors build_assistant_message's #19798 redaction of persisted
+        # tool-call arguments.
+        redacted_args = redact_sensitive_text(json.dumps({"command": raw_command}))
+
+        ordered = [
+            {
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "terminal",
+                "input": {"command": raw_command},
+            },
+        ]
+        assistant_msg = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "toolu_1",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": redacted_args},
+                },
+            ],
+            "anthropic_content_blocks": ordered,
+        }
+        messages = [
+            {"role": "user", "content": "Close the ticket."},
+            assistant_msg,
+            {"role": "tool", "tool_call_id": "toolu_1", "content": "failed"},
+        ]
+
+        _system, anthropic_messages = convert_messages_to_anthropic(
+            messages, base_url=None, model="claude-opus-4-8",
+        )
+        assistant_out = [m for m in anthropic_messages if m.get("role") == "assistant"]
+        blocks = assistant_out[-1]["content"]
+        tool_uses = {b["id"]: b for b in blocks if b.get("type") == "tool_use"}
+        replayed_cmd = tool_uses["toolu_1"]["input"]["command"]
+
+        # No literal secret here (just $(...) / $VAR references), so
+        # redaction should leave the command byte-for-byte unchanged --
+        # and, critically, still valid shell the model can trust as its own.
+        assert replayed_cmd == raw_command
+        shlex.split(replayed_cmd)  # must not raise
+        assert "$(cat" in replayed_cmd
+        assert "$TOKEN" in replayed_cmd
 
 
 if __name__ == "__main__":

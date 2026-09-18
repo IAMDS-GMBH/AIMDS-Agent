@@ -1,6 +1,7 @@
 """Tests for agent.redact -- secret masking in logs and output."""
 
 import logging
+import shlex
 
 import pytest
 
@@ -142,6 +143,71 @@ class TestAuthHeaders:
         text = "authorization: bearer mytoken123456789012345678"
         result = redact_sensitive_text(text)
         assert "mytoken12345" not in result
+
+
+class TestShellSyntaxPreservation:
+    """Regression: redaction must mask only the secret value, never corrupt
+    the surrounding shell/text syntax it appears in. A real session had the
+    agent generate `TOKEN=$(cat ... | head -1)` / `Authorization: Bearer
+    $TOKEN` shell, which the old regexes mangled into unbalanced parens and
+    unterminated quotes -- and that corruption then got replayed back to the
+    model as its own history, compounding across many tool calls."""
+
+    def test_command_substitution_assignment_not_corrupted(self):
+        text = "TOKEN=$(cat ~/.config/op_admin_token | head -1)"
+        result = redact_sensitive_text(text)
+        assert result == text
+        assert result.count("(") == result.count(")")
+
+    def test_quoted_command_substitution_not_corrupted(self):
+        text = 'TOKEN="$(cat ~/.config/op_admin_token | head -1)"'
+        result = redact_sensitive_text(text)
+        assert result == text
+
+    def test_bearer_variable_reference_preserved(self):
+        text = 'curl -X PATCH -H "Authorization: Bearer $TOKEN" \\'
+        result = redact_sensitive_text(text)
+        assert result == text
+        assert "$TOKEN" in result
+        assert result.endswith('" \\')
+
+    def test_bearer_literal_still_redacted_inside_single_quotes(self):
+        text = "curl -H 'Authorization: Bearer sk-proj-abc123def456ghi789jkl012'"
+        result = redact_sensitive_text(text)
+        assert "abc123def456" not in result
+        assert result.endswith("'")
+
+    def test_env_assignment_with_trailing_unpaired_paren(self):
+        # A regex value-capture can over-run into surrounding syntax the
+        # value itself didn't open (e.g. a closing paren from an enclosing
+        # function call) -- that paren must survive, unmasked.
+        text = "AUTH_TOKEN=abcdefghijklmnop)"
+        result = redact_sensitive_text(text)
+        assert result == "AUTH_TOKEN=***)"
+
+    def test_full_production_script_stays_syntactically_valid(self):
+        script = (
+            "TOKEN=$(cat ~/.config/op_admin_token | head -1)\n"
+            "curl -X PATCH https://suite.iamds.com/api/v3/work_packages/123 \\\n"
+            '  -H "Authorization: Bearer $TOKEN" \\\n'
+            '  -H "Content-Type: application/json" \\\n'
+            "  -d '{\"status\": \"closed\"}'\n"
+        )
+        result = redact_sensitive_text(script)
+        assert result == script
+        shlex.split(result)  # must not raise (it did before this fix)
+        assert result.count("(") == result.count(")")
+        assert result.count('"') % 2 == 0
+        assert result.count("'") % 2 == 0
+
+    def test_redaction_is_idempotent(self):
+        script = (
+            "TOKEN=$(cat ~/.config/op_admin_token | head -1)\n"
+            'curl -H "Authorization: Bearer $TOKEN" -H "X-Api-Key: sk-proj-abc123def456ghi789jkl012"\n'
+        )
+        once = redact_sensitive_text(script)
+        twice = redact_sensitive_text(once)
+        assert twice == once
 
 
 class TestTelegramTokens:

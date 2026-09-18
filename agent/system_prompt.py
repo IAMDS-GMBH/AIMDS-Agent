@@ -34,6 +34,7 @@ from agent.prompt_builder import (
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
+    MCP_PERMISSION_BYPASS_GUIDANCE,
     MEMORY_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PLATFORM_HINTS,
@@ -155,6 +156,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # `clarify` tool to be active.
     if "clarify" in agent.valid_tool_names:
         stable_parts.append(CONFIRMATION_REQUIRED_ENFORCEMENT)
+
+    # Universal: a permission/scope error from ANY dedicated MCP tool must be
+    # surfaced to the user, never routed around via terminal+credential. Not
+    # gated on a specific server — the failure mode (grab a token, shell out)
+    # is the same regardless of which tool's boundary was hit. Only needs
+    # some tool to exist at all (mirrors STEER_CHANNEL_NOTE's gating below).
+    if agent.valid_tool_names:
+        stable_parts.append(MCP_PERMISSION_BYPASS_GUIDANCE)
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
