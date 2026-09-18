@@ -420,13 +420,33 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     return env
 
 
+# AIS-330 (prompt_builder.OPENPROJECT_READ_ONLY_GUIDANCE) proactively warns
+# the model when an OpenProject server's write scope is empty and no write
+# tools are registered at all. That guidance never fires for a *partial*
+# scope (some projects allowed, not this one) since the write tools ARE
+# present — the model only learns about the restriction from this exact
+# runtime error string, so the fix pointer is attached here instead.
+_OPENPROJECT_WRITE_SCOPE_HINT = (
+    " (this is expected: this OpenProject server's write scope doesn't include this project — "
+    "add its identifier, or `*` for all projects, to OPENPROJECT_WRITE_PROJECTS and restart Hermes "
+    "to enable writes here. Do not work around this by calling the OpenProject REST API directly.)"
+)
+
+
 def _sanitize_error(text: str) -> str:
     """Strip credential-like patterns from error text before returning to LLM.
 
     Replaces tokens, keys, and other secrets with [REDACTED] to prevent
-    accidental credential exposure in tool error responses.
+    accidental credential exposure in tool error responses. Also appends a
+    one-line fix pointer when the error is OpenProject's own
+    OPENPROJECT_WRITE_PROJECTS scope-denial message (see
+    _OPENPROJECT_WRITE_SCOPE_HINT), so the model doesn't have to infer the
+    fix from the raw exception text alone.
     """
-    return _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+    cleaned = _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+    if "OPENPROJECT_WRITE_PROJECTS" in cleaned and "add its identifier" not in cleaned:
+        cleaned = cleaned + _OPENPROJECT_WRITE_SCOPE_HINT
+    return cleaned
 
 
 def _exc_str(exc: BaseException) -> str:

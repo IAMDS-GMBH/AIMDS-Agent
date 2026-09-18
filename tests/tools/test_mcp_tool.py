@@ -1706,6 +1706,25 @@ class TestSanitizeError:
         assert "token=" not in result
         assert result.count("[REDACTED]") == 3
 
+    def test_openproject_write_scope_error_gets_fix_pointer(self):
+        """A partial OPENPROJECT_WRITE_PROJECTS scope (some projects allowed,
+        not this one) triggers no proactive prompt guidance since write
+        tools ARE present -- the model only learns about the restriction
+        from this exact runtime string, so the fix pointer is attached here."""
+        from tools.mcp_tool import _sanitize_error
+        result = _sanitize_error(
+            "[permission_denied] OpenProject writes to this project are "
+            "disabled by OPENPROJECT_WRITE_PROJECTS."
+        )
+        assert "OPENPROJECT_WRITE_PROJECTS" in result
+        assert "add its identifier" in result
+        assert "restart Hermes" in result
+
+    def test_unrelated_error_unchanged(self):
+        from tools.mcp_tool import _sanitize_error
+        result = _sanitize_error("connection refused")
+        assert result == "connection refused"
+
 
 # ---------------------------------------------------------------------------
 # HTTP config

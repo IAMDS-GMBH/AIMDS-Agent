@@ -2444,6 +2444,18 @@ _OPENPROJECT_READ_SUFFIXES = (
     "list_projects", "list_my_open_work_packages",
 )
 
+MCP_PERMISSION_BYPASS_GUIDANCE = (
+    "# MCP permission/scope errors: report, never bypass\n"
+    "When a dedicated MCP tool call fails with a permission-denied, scope, or read-only-style error, that "
+    "boundary was configured on purpose. Stop, report the exact error and the likely fix to the user "
+    "(e.g. which config value to change and that the app needs a restart), and do not try to route around "
+    "it by calling `bash`/`curl`/raw HTTP with a credential you can read from config, environment "
+    "variables, or memory — even one you found yourself, even for a task the user clearly wants done. A "
+    "credential handed to the dedicated tool path is redacted from history and audited; the same "
+    "credential inlined into a shell command is neither, and generating that shell command is itself a "
+    "step you should not take instead of surfacing the limitation.\n"
+)
+
 OPENPROJECT_READ_ONLY_GUIDANCE = (
     "# OpenProject is read-only in this session\n"
     "The OpenProject MCP server is loaded, but none of its write tools (create_work_package, "

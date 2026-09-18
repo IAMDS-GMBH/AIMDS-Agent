@@ -170,6 +170,24 @@ class TestTodoPersistenceGuidance:
         assert "canonical place to store user todo tasks" in stable
 
 
+class TestMcpPermissionBypassGuidance:
+    """Universal rule against bypassing an MCP tool's permission/scope error
+    with a raw terminal+credential workaround — see
+    agent/prompt_builder.py::MCP_PERMISSION_BYPASS_GUIDANCE. Not gated on any
+    specific server/tool: the failure mode (grab a credential, shell out
+    instead of surfacing the error) is the same regardless of which tool's
+    boundary was hit."""
+
+    def test_emitted_for_any_tool_set(self):
+        stable = _stable_prompt(_make_agent(valid_tool_names=["read_file"]))
+        assert "# MCP permission/scope errors: report, never bypass" in stable
+        assert "do not try to route around" in stable
+
+    def test_absent_with_no_tools(self):
+        stable = _stable_prompt(_make_agent(valid_tool_names=[]))
+        assert "MCP permission/scope errors" not in stable
+
+
 class TestConfirmationRequiredEnforcement:
     """Universal (non-model-gated) clarify enforcement for confirmation_required
     tool results — see agent/prompt_builder.py::CONFIRMATION_REQUIRED_ENFORCEMENT.
