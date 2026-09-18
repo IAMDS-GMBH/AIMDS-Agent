@@ -2107,7 +2107,15 @@ class MCPServerTask:
         connection drops unexpectedly (unless shutdown was requested).
         """
         self._config = config
-        self.tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
+        # A blank `timeout:` key in config.yaml (present but null) makes
+        # plain dict.get() return None instead of the default -- the key
+        # exists, it's just empty. _safe_numeric coerces that (and any other
+        # invalid value) back to the default instead of letting `None`
+        # reach _run_on_mcp_loop, where it means "no ceiling at all" (a
+        # genuine unbounded hang, not just a long wait).
+        self.tool_timeout = _safe_numeric(
+            config.get("timeout", _DEFAULT_TOOL_TIMEOUT), _DEFAULT_TOOL_TIMEOUT, float
+        )
         self._auth_type = (config.get("auth") or "").lower().strip()
 
         # Set up sampling handler if enabled and SDK types are available
@@ -3021,24 +3029,36 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     if future is None:
         raise RuntimeError("MCP event loop unavailable (failed to schedule)")
     start_time = time.monotonic()
-    deadline = None if timeout is None else start_time + timeout
+    if timeout is None:
+        # Defense in depth: `timeout=None` must never mean "no ceiling" here.
+        # That was a genuine unbounded-hang path -- a blank `timeout:` config
+        # key resolves to None (see MCPServerTask.run's tool_timeout), and
+        # this loop's only exit conditions besides that were the future
+        # completing or a user interrupt. Callers should be fixed at the
+        # source (coerce to a real number before calling), but this is the
+        # single choke point every MCP call goes through, so it gets a hard
+        # ceiling regardless of how a caller got to timeout=None.
+        logger.warning(
+            "_run_on_mcp_loop called with timeout=None; using default ceiling of %.0fs",
+            _DEFAULT_TOOL_TIMEOUT,
+        )
+        timeout = _DEFAULT_TOOL_TIMEOUT
+    deadline = start_time + timeout
 
     while True:
         if is_interrupted():
             future.cancel()
             raise InterruptedError("User sent a new message")
 
-        wait_timeout = 0.1
-        if deadline is not None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                future.cancel()
-                elapsed = time.monotonic() - start_time
-                raise TimeoutError(
-                    f"MCP call timed out after {elapsed:.1f}s "
-                    f"(configured timeout: {float(timeout):.1f}s)"
-                )
-            wait_timeout = min(wait_timeout, remaining)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            future.cancel()
+            elapsed = time.monotonic() - start_time
+            raise TimeoutError(
+                f"MCP call timed out after {elapsed:.1f}s "
+                f"(configured timeout: {float(timeout):.1f}s)"
+            )
+        wait_timeout = min(0.1, remaining)
 
         try:
             return future.result(timeout=wait_timeout)

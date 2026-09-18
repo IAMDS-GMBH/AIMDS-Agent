@@ -2485,6 +2485,27 @@ def _probe_config_health(cfg: dict) -> str:
                 "`display.personality` is set but `agent.personalities` is empty/null; "
                 "personality overlay will be skipped."
             )
+
+    # Same "bare key -> None" trap, one level deeper: a blank `timeout:` (or
+    # `connect_timeout:`) under a specific MCP server's config resolves to
+    # None just like a top-level bare key does, but the top-level scan above
+    # never sees it since it only walks cfg.items(). Left uncaught, this was
+    # a real unbounded-hang path (see tools.mcp_tool._run_on_mcp_loop).
+    mcp_servers_cfg = cfg.get("mcpServers")
+    if isinstance(mcp_servers_cfg, dict):
+        for server_name, server_cfg in mcp_servers_cfg.items():
+            if not isinstance(server_cfg, dict):
+                continue
+            null_keys = sorted(
+                k for k in ("timeout", "connect_timeout") if k in server_cfg and server_cfg[k] is None
+            )
+            if null_keys:
+                keys = ", ".join(f"`{k}`" for k in null_keys)
+                warnings.append(
+                    f"mcpServers.{server_name} has empty {keys}. "
+                    f"Remove the line(s) or set a numeric value — an empty timeout "
+                    f"silently falls back to a default instead of disabling the timeout."
+                )
     return " ".join(warnings).strip()
 
 
