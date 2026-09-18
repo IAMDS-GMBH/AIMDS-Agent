@@ -9,6 +9,7 @@ from agent.conversation_loop import (
     _build_onboarding_context_line_from_recent_memory_context,
     _apply_onboarding_clarify_context,
     _enforce_initial_memory_context_call,
+    _enforce_personal_query_memory_context_call,
     _memory_context_payload_needs_workspace_hydration,
     _resume_onboarding_clarify_if_needed,
     _has_memory_save_after_onboarding_answers,
@@ -72,6 +73,89 @@ def test_enforce_initial_memory_context_call_injects_tool_round(monkeypatch):
     assert messages[2]["name"] == "mcp_IAMDS_mcp_memory_memory_context"
     assert len(emitted) == 0
     assert getattr(agent, "_initial_memory_context_enforced", False) is True
+
+
+def test_enforce_personal_query_memory_context_call_fires_on_first_turn():
+    """Regression: every reported "wer bin ich" support case was the first
+    message of a fresh session, where this guard used to no-op entirely
+    (`if not conversation_history: return`). It must now also force a
+    memory_search call, not just memory_context, so specifics not in the
+    generic context blob (e.g. work hours) get a real chance to surface."""
+    captured_calls = []
+
+    def _mock_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count):
+        tc = assistant_message.tool_calls[0]
+        captured_calls.append((tc.function.name, json.loads(tc.function.arguments)))
+        messages.append(
+            {
+                "role": "tool",
+                "name": tc.function.name,
+                "tool_call_id": tc.id,
+                "content": '{"result": "ok"}',
+            }
+        )
+
+    agent = SimpleNamespace(
+        valid_tool_names={"memory_context", "memory_search"},
+        _execute_tool_calls=_mock_execute_tool_calls,
+    )
+    query_text = "Wer bin ich und was weißt du über mich?"
+    messages = [{"role": "user", "content": query_text}]
+
+    _enforce_personal_query_memory_context_call(
+        agent,
+        messages=messages,
+        conversation_history=[],  # first turn
+        original_user_message=query_text,
+        effective_task_id="t1",
+    )
+
+    assert [name for name, _ in captured_calls] == ["memory_context", "memory_search"]
+    search_args = captured_calls[1][1]
+    assert search_args.get("query", "").startswith("Wer bin ich")
+
+
+def test_enforce_personal_query_memory_context_call_skips_non_personal_query():
+    def _mock_execute_tool_calls(*_args, **_kwargs):
+        raise AssertionError("should not be called for a non-personal query")
+
+    agent = SimpleNamespace(
+        valid_tool_names={"memory_context", "memory_search"},
+        _execute_tool_calls=_mock_execute_tool_calls,
+    )
+    messages = [{"role": "user", "content": "How do I run the backend tests?"}]
+
+    _enforce_personal_query_memory_context_call(
+        agent,
+        messages=messages,
+        conversation_history=[],
+        original_user_message="How do I run the backend tests?",
+        effective_task_id="t1",
+    )
+
+    assert len(messages) == 1
+
+
+def test_enforce_personal_query_memory_context_call_logs_warning_on_failure(caplog):
+    def _mock_execute_tool_calls(*_args, **_kwargs):
+        raise RuntimeError("mcp call timed out")
+
+    agent = SimpleNamespace(
+        valid_tool_names={"memory_context"},
+        _execute_tool_calls=_mock_execute_tool_calls,
+    )
+    messages = [{"role": "user", "content": "Wer bin ich?"}]
+
+    with caplog.at_level("WARNING", logger="agent.conversation_loop"):
+        _enforce_personal_query_memory_context_call(
+            agent,
+            messages=messages,
+            conversation_history=[],
+            original_user_message="Wer bin ich?",
+            effective_task_id="t1",
+        )
+
+    assert any("Forced" in r.message and "failed" in r.message for r in caplog.records)
 
 
 def test_enforce_initial_memory_context_call_skips_non_first_turn(monkeypatch):
