@@ -248,6 +248,73 @@ def _mask_token(token: str) -> str:
     return mask_secret(token, head=6, tail=4, floor=18)
 
 
+# A captured "value" that is actually a shell reference (`$(cmd)`, `${VAR}`,
+# `` `cmd` ``, `$UPPER_VAR`) rather than a literal secret. The optional
+# leading quote matters: for `TOKEN="$(cat x)"` the ENV-assignment regex's
+# backreference can't cross the embedded whitespace, so it backtracks the
+# quote-capture group to empty and the "value" it captures starts with the
+# quote character itself (`"$(cat`).
+#
+# Deliberate tradeoff: only ALL-CAPS `$VAR` names count as references, so a
+# literal secret shaped like `$ecretpw...` is still masked by the fallback
+# path below. A literal secret shaped like `$ABC123...` would not be masked
+# by *this* rule alone — acceptable, since such shapes are still caught by
+# the vendor-prefix/JWT/Telegram patterns, and the alternative (always
+# masking bare `$TOKEN`) is exactly the literal that broke a real production
+# script (see agent/redact.py history / issue tracker for the incident).
+_SHELL_EXPANSION_VALUE_RE = re.compile(r"^['\"]?(?:\$\(|\$\{|`|\$[A-Z_][A-Z0-9_]*)")
+
+_BRACKET_PAIRS = {"(": ")", "{": "}", "[": "]"}
+_BRACKET_CLOSERS = {v: k for k, v in _BRACKET_PAIRS.items()}
+
+
+def _split_unpaired_tail(value: str) -> "tuple[str, str]":
+    """Split off trailing syntax `value` did not itself open.
+
+    Best-effort, not a full shell parser: walks `value` tracking bracket
+    nesting and quote state, and splits at the first unpaired closing
+    bracket, an unclosed quote the value opened, an unclosed bracket the
+    value opened, or a trailing line-continuation backslash. Returns
+    ``(core, tail)`` where `core` is safe to mask and `tail` must be
+    re-appended after masking unchanged. When `value` is already balanced,
+    returns ``(value, "")``.
+
+    This exists because regex value-capture groups (``\\S+``-style) can
+    over-capture a delimiter the *surrounding* text owns (an unbalanced
+    ``)`` closing a `$(...)` the regex didn't recognize, a closing quote
+    the regex's own quote-group didn't consume) — masking that delimiter
+    away corrupts the shell/text around the secret instead of just the
+    secret itself.
+    """
+    stack: list = []
+    quote_char = None
+    for i, ch in enumerate(value):
+        if quote_char is not None:
+            if ch == quote_char:
+                quote_char = None
+            continue
+        if ch in ("'", '"', "`"):
+            quote_char = ch
+            continue
+        if ch in _BRACKET_PAIRS:
+            stack.append(ch)
+            continue
+        if ch in _BRACKET_CLOSERS:
+            if stack and stack[-1] == _BRACKET_CLOSERS[ch]:
+                stack.pop()
+            else:
+                return value[:i], value[i:]
+    if quote_char is not None:
+        idx = value.index(quote_char)
+        return value[:idx], value[idx:]
+    if stack:
+        idx = value.index(stack[0])
+        return value[:idx], value[idx:]
+    if value.endswith("\\"):
+        return value[:-1], value[-1:]
+    return value, ""
+
+
 def _redact_query_string(query: str) -> str:
     """Redact sensitive parameter values in a URL query string.
 
@@ -363,13 +430,27 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         if "=" in text:
             def _redact_env(m):
                 name, quote, value = m.group(1), m.group(2), m.group(3)
-                return f"{name}={quote}{_mask_token(value)}{quote}"
+                if _SHELL_EXPANSION_VALUE_RE.match(value):
+                    # A reference (`$(...)`, `$VAR`, ...), not a literal secret —
+                    # leave the whole assignment untouched so we don't corrupt
+                    # surrounding shell syntax the regex over-captured.
+                    return m.group(0)
+                if quote:
+                    # Already properly delimited by the quotes the regex
+                    # itself consumed — nothing to split off.
+                    return f"{name}={quote}{_mask_token(value)}{quote}"
+                core, tail = _split_unpaired_tail(value)
+                if not core:
+                    return m.group(0)
+                return f"{name}={_mask_token(core)}{tail}"
             text = _ENV_ASSIGN_RE.sub(_redact_env, text)
 
         # JSON fields: "apiKey": "***"  (skip for code files — false positives)
         if ":" in text and '"' in text:
             def _redact_json(m):
                 key, value = m.group(1), m.group(2)
+                if _SHELL_EXPANSION_VALUE_RE.match(value):
+                    return m.group(0)
                 return f'{key}: "{_mask_token(value)}"'
             text = _JSON_FIELD_RE.sub(_redact_json, text)
 
@@ -377,10 +458,15 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # case-insensitive, so "uthorization" is the cheapest substring gate that
     # covers both "Authorization" and "authorization" without a casefold().
     if "uthorization" in text or "UTHORIZATION" in text:
-        text = _AUTH_HEADER_RE.sub(
-            lambda m: m.group(1) + _mask_token(m.group(2)),
-            text,
-        )
+        def _redact_auth_header(m):
+            prefix, value = m.group(1), m.group(2)
+            if _SHELL_EXPANSION_VALUE_RE.match(value):
+                return m.group(0)
+            core, tail = _split_unpaired_tail(value)
+            if not core:
+                return m.group(0)
+            return prefix + _mask_token(core) + tail
+        text = _AUTH_HEADER_RE.sub(_redact_auth_header, text)
 
     # Telegram bot tokens — pattern requires ":<token>" with digits prefix
     if ":" in text:
