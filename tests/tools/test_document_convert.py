@@ -546,3 +546,51 @@ class TestCache:
         result = dc.convert_document(src)
         assert Path(result.cache_path).parent == (tmp_path / "cache")
         assert list((tmp_path / "vault" / "documents").glob("*.md")) == []
+
+    def test_content_hash_cache_hits_across_different_paths(self, tmp_path):
+        # AIS-384: a re-downloaded SharePoint file always lands at a fresh
+        # temp path (path-keyed cache misses), but byte-identical content
+        # must still be a cache hit — no second conversion.
+        (tmp_path / "downloads" / "run1").mkdir(parents=True)
+        first_src = _docx(tmp_path / "downloads" / "run1" / "Guide.docx", ("Same content",))
+        first = dc.convert_document(first_src)
+        assert not first.cached
+
+        second_src = tmp_path / "downloads" / "run2" / "Guide.docx"
+        second_src.parent.mkdir(parents=True)
+        second_src.write_bytes(first_src.read_bytes())
+
+        second = dc.convert_document(second_src)
+        assert second.cached
+        assert second.markdown == first.markdown
+        assert second.backend == first.backend
+
+        # And the path-keyed cache was backfilled: a third read of the same
+        # second path is now a plain path-hit too.
+        third = dc.convert_document(second_src)
+        assert third.cached
+
+    def test_content_hash_cache_skipped_for_oversized_files(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(dc, "_DEFAULT_MAX_UPLOAD_BYTES", 10)
+        src = _docx(tmp_path / "a.docx", ("Version one",))
+        assert src.stat().st_size > 10
+        first = dc.convert_document(src)
+        assert not first.cached
+        # Different path, identical bytes -- without a content hash (file
+        # over the bound) this must NOT be a cross-path cache hit.
+        other = tmp_path / "b.docx"
+        other.write_bytes(src.read_bytes())
+        second = dc.convert_document(other)
+        assert not second.cached
+
+    def test_content_hash_lookup_ignored_when_use_cache_is_false(self, tmp_path):
+        (tmp_path / "downloads" / "run1").mkdir(parents=True)
+        first_src = _docx(tmp_path / "downloads" / "run1" / "Guide.docx", ("Same content",))
+        dc.convert_document(first_src)
+
+        second_src = tmp_path / "downloads" / "run2" / "Guide.docx"
+        second_src.parent.mkdir(parents=True)
+        second_src.write_bytes(first_src.read_bytes())
+
+        result = dc.convert_document(second_src, use_cache=False)
+        assert not result.cached

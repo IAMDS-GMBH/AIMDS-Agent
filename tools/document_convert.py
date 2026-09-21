@@ -25,6 +25,11 @@ Two backends, tried in the order configured by ``documents.converter``
 Results are cached under ``~/.hermes/cache/document_convert/`` keyed by the
 resolved source path and invalidated on mtime/size change, so a re-read of a
 document costs no conversion and the Vault stays free of generated sidecars.
+A secondary index keyed by the sha256 of the source bytes (AIS-384) catches
+the case a path-key miss on its own can't: a fresh SharePoint/OneDrive
+download always lands at a new temp path, but re-downloading the same
+document produces byte-identical content, so it converts once and every
+later download of it (own path, but same bytes) is a cache hit.
 """
 
 from __future__ import annotations
@@ -243,6 +248,78 @@ def _cache_store(
     }
     (base / f"{key}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return str(md_path)
+
+
+def _content_hash(resolved: Path, stat: os.stat_result) -> Optional[str]:
+    """sha256 of the file bytes, bounded to the Suite upload ceiling — a
+    SharePoint/OneDrive download always lands at a fresh temp path with a
+    fresh mtime, so the path-keyed cache above misses even when the bytes
+    are byte-for-byte identical to a document already converted under a
+    different path (AIS-384). Hashing a file this size costs a few ms,
+    trivial next to the conversion (a potentially 120s Suite round trip)
+    it lets a re-download skip.
+    """
+    if stat.st_size > _DEFAULT_MAX_UPLOAD_BYTES:
+        return None
+    h = hashlib.sha256()
+    try:
+        with open(resolved, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def _content_cache_paths(content_hash: str) -> tuple[Path, Path]:
+    base = cache_dir()
+    return base / f"content-{content_hash}.json", base / f"content-{content_hash}.md"
+
+
+def _content_cache_lookup(content_hash: str) -> Optional[ConvertResult]:
+    meta_path, md_path = _content_cache_paths(content_hash)
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        markdown = md_path.read_text(encoding="utf-8")
+    except (OSError, ValueError, TypeError):
+        return None
+    metadata = meta.get("metadata")
+    return ConvertResult(
+        markdown=markdown,
+        backend=str(meta.get("backend") or ""),
+        cache_path=str(md_path),
+        source=str(meta.get("source") or ""),
+        cached=True,
+        suite_state=str(meta.get("suite_state") or ""),
+        metadata=dict(metadata) if isinstance(metadata, dict) else {},
+        suite_reason=str(meta.get("suite_reason") or ""),
+    )
+
+
+def _content_cache_store(
+    content_hash: str,
+    resolved: Path,
+    markdown: str,
+    backend: str,
+    suite_state: str,
+    *,
+    metadata: Optional[Dict[str, Any]] = None,
+    suite_reason: str = "",
+) -> None:
+    meta_path, md_path = _content_cache_paths(content_hash)
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = md_path.with_suffix(".md.tmp")
+    tmp.write_text(markdown, encoding="utf-8")
+    os.replace(tmp, md_path)
+    meta = {
+        "source": str(resolved),
+        "backend": backend,
+        "suite_state": suite_state,
+        "suite_reason": suite_reason,
+        "metadata": dict(metadata or {}),
+        "converted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- suite backend
@@ -663,10 +740,26 @@ def convert_document(path: str | os.PathLike[str], *, config: Optional[dict] = N
     except OSError as exc:
         raise DocumentConvertError(f"Cannot read '{path}': {exc.strerror or exc}") from exc
 
+    content_hash: Optional[str] = None
     if use_cache:
         hit = _cache_lookup(resolved, stat)
         if hit is not None:
             return hit
+        content_hash = _content_hash(resolved, stat)
+        if content_hash is not None:
+            content_hit = _content_cache_lookup(content_hash)
+            if content_hit is not None:
+                # Backfill the path-keyed cache so the next read of this
+                # exact path is a plain path-hit too.
+                cache_path = _cache_store(
+                    resolved, stat, content_hit.markdown, content_hit.backend, content_hit.suite_state,
+                    metadata=content_hit.metadata, suite_reason=content_hit.suite_reason,
+                )
+                return ConvertResult(
+                    content_hit.markdown, content_hit.backend, cache_path, str(resolved), cached=True,
+                    suite_state=content_hit.suite_state, metadata=content_hit.metadata,
+                    suite_reason=content_hit.suite_reason,
+                )
 
     mode = converter_mode(config)
     order = {CONVERTER_AUTO: (CONVERTER_SUITE, CONVERTER_LOCAL), CONVERTER_SUITE: (CONVERTER_SUITE,), CONVERTER_LOCAL: (CONVERTER_LOCAL,)}[mode]
@@ -690,6 +783,8 @@ def convert_document(path: str | os.PathLike[str], *, config: Optional[dict] = N
                 logger.warning("[AIS-294] Suite document conversion failed for %s: %s", resolved.name, exc)
                 continue
             cache_path = _cache_store(resolved, stat, markdown, BACKEND_SUITE, suite_state, metadata=metadata)
+            if content_hash is not None:
+                _content_cache_store(content_hash, resolved, markdown, BACKEND_SUITE, suite_state, metadata=metadata)
             return ConvertResult(markdown, BACKEND_SUITE, cache_path, str(resolved), suite_state=suite_state, metadata=metadata)
         else:
             try:
@@ -698,6 +793,8 @@ def convert_document(path: str | os.PathLike[str], *, config: Optional[dict] = N
                 reasons.append(f"local: {exc}")
                 continue
             cache_path = _cache_store(resolved, stat, markdown, used, suite_state, suite_reason=suite_reason)
+            if content_hash is not None:
+                _content_cache_store(content_hash, resolved, markdown, used, suite_state, suite_reason=suite_reason)
             return ConvertResult(
                 markdown, used, cache_path, str(resolved), suite_state=suite_state, suite_reason=suite_reason, warnings=warnings
             )
