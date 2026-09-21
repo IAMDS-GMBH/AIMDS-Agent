@@ -411,6 +411,31 @@ def office_word_tool(args: dict, **kwargs) -> str:
         resolved, err = _resolve_for_read(path)
         if err:
             return tool_error(err)
+        if fmt in {"html", "htm"} and Path(resolved).suffix.lower() in {".md", ".markdown"}:
+            # AIS-384: .md -> HTML converts in-process via the core `markdown`
+            # library (mirrors tools/send_message_tool.py) instead of
+            # shelling out to convert.py's docx-input pandoc/LibreOffice
+            # path -- there's no docx to convert from here, and this keeps
+            # the SharePoint "author in Markdown, publish HTML" flow to one
+            # dependency-free step.
+            output_path_local = str(Path(resolved).with_suffix(f".{fmt}"))
+            _, err = _resolve_for_write(output_path_local)
+            if err:
+                return tool_error(err)
+            try:
+                import markdown as _md
+            except ImportError:
+                return tool_error("the 'markdown' package is required for .md -> html conversion")
+            md_text = Path(resolved).read_text(encoding="utf-8")
+            body = _md.markdown(md_text, extensions=["fenced_code", "tables"])
+            html = (
+                "<!doctype html>\n"
+                '<html lang="en">\n<head><meta charset="utf-8"></head>\n<body>\n'
+                + body
+                + "\n</body>\n</html>\n"
+            )
+            Path(output_path_local).write_text(html, encoding="utf-8")
+            return tool_result({"success": True, "output_path": output_path_local, "format": fmt})
         _, err = _resolve_for_write(str(Path(resolved).with_suffix(".pdf")))
         if err:
             return tool_error(err)

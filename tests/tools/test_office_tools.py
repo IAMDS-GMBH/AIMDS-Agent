@@ -60,6 +60,53 @@ def test_word_action_alias_convert_pdf_requires_path() -> None:
     assert "convert requires path" in result["error"]
 
 
+# --------------------------------------------------------------------------- AIS-384: .md -> HTML
+
+def test_convert_markdown_to_html_runs_in_process(workspace: Path) -> None:
+    """The SharePoint 'author in Markdown, publish HTML' flow needs this
+    conversion to work without pandoc/LibreOffice or the office extra --
+    verify it doesn't shell out via _run_script at all."""
+    md_path = workspace / "guide.md"
+    md_path.write_text("# Title\n\nSome **bold** text.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n", encoding="utf-8")
+
+    called = {"ran_script": False}
+
+    def _fail_if_called(*args, **kwargs):
+        called["ran_script"] = True
+        raise AssertionError("should not shell out for .md -> html")
+
+    import tools.office_tools as ot
+    original = ot._run_script
+    ot._run_script = _fail_if_called
+    try:
+        result = _parse(office_tools.office_word_tool({"action": "convert", "path": str(md_path), "format": "html"}))
+    finally:
+        ot._run_script = original
+
+    assert called["ran_script"] is False
+    assert result["success"] is True
+    out_path = Path(result["output_path"])
+    assert out_path.exists()
+    html = out_path.read_text(encoding="utf-8")
+    assert "<!doctype html>" in html
+    assert "<h1>Title</h1>" in html
+    assert "<strong>bold</strong>" in html
+    assert "<table>" in html  # the "tables" extension is enabled
+
+
+def test_convert_docx_to_html_still_uses_the_script_path(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-Markdown sources (e.g. an actual .docx) must keep going through
+    convert.py -- the in-process branch only applies to .md/.markdown input."""
+    docx_path = workspace / "doc.docx"
+    docx_path.write_bytes(b"not a real docx, just needs to exist")
+
+    calls = []
+    monkeypatch.setattr(office_tools, "_run_script", lambda *a, **k: calls.append(a) or '{"success": true}')
+    result = _parse(office_tools.office_word_tool({"action": "convert", "path": str(docx_path), "format": "html"}))
+    assert len(calls) == 1
+    assert result["success"] is True
+
+
 @pytest.mark.parametrize(
     ("handler", "action"),
     [

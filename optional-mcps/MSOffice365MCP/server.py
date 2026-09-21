@@ -15,7 +15,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 import msal
@@ -631,7 +631,18 @@ def _graph_upload(method: str, endpoint_or_url: str, data: bytes, content_type: 
     with httpx.Client(timeout=120.0) as client:
         response = client.request(method, url, headers=headers, content=data)
         if response.is_error:
-            raise RuntimeError(f"MS Graph API Error [{response.status_code}]: {response.text}")
+            # Unlike _graph_request, this never surfaced a consent hint on a
+            # 403 -- the expected first failure for a self-tier-only login
+            # hitting a SharePoint upload (Sites.ReadWrite.All is admin-tier).
+            # Skip it for an absolute, pre-authenticated uploadUrl (chunked
+            # upload continuation calls): a tier hint keyed off that URL's
+            # host would be nonsense.
+            hint = ""
+            if not endpoint_or_url.startswith("http") and (
+                response.status_code == 403 or "Authorization_RequestDenied" in response.text
+            ):
+                hint = _consent_hint_for(endpoint_or_url)
+            raise RuntimeError(f"MS Graph API Error [{response.status_code}]: {response.text}{hint}")
         if response.status_code == 204 or not response.content:
             return {"success": True}
         return response.json()
@@ -812,27 +823,41 @@ def _enrich_teams_message(
     return msg
 
 
-def _upload_file_to_onedrive(file_path: str, folder: str = _ONEDRIVE_ATTACHMENTS_FOLDER) -> Dict[str, Any]:
-    """Upload a local file to the signed-in user's OneDrive and return the created driveItem
-    (id, name, webUrl, ...), used as the basis for a Teams chat file attachment reference."""
-    path = _resolve_attachment_path(file_path)
+def _upload_local_file_to_drive_path(
+    path: Path, item_path: str, *, conflict_behavior: Optional[str] = None
+) -> Dict[str, Any]:
+    """Upload a local file to an arbitrary Graph drive item path and return
+    the created driveItem (id, name, webUrl, ...).
+
+    ``item_path`` is the Graph address of the *target item*, minus the
+    trailing ``/content`` -- e.g. ``/me/drive/root:/Folder/name.ext:``
+    (OneDrive) or ``/sites/{site}/drives/{drive}/root:/Folder/name.ext:``
+    (SharePoint document library). Drive-agnostic core shared by
+    :func:`_upload_file_to_onedrive` and the SharePoint upload tool.
+
+    ``conflict_behavior=None`` preserves the exact historical OneDrive
+    semantics: no query param on the simple PUT (Graph's own default,
+    "replace"), and "rename" in the chunked upload session payload. A
+    non-``None`` value is applied to *both* paths.
+    """
     file_size = path.stat().st_size
     content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    safe_folder = quote(folder.strip("/"), safe="")
-    safe_filename = quote(path.name, safe="")
-    item_path = f"/me/drive/root:/{safe_folder}/{safe_filename}:"
+
+    content_url = f"{item_path}/content"
+    if conflict_behavior:
+        content_url += f"?@microsoft.graph.conflictBehavior={quote(conflict_behavior, safe='')}"
 
     if file_size <= _ONEDRIVE_SIMPLE_UPLOAD_MAX_BYTES:
-        return _graph_upload("PUT", f"{item_path}/content", path.read_bytes(), content_type)
+        return _graph_upload("PUT", content_url, path.read_bytes(), content_type)
 
     session = _graph_request(
         "POST",
         f"{item_path}/createUploadSession",
-        json_data={"item": {"@microsoft.graph.conflictBehavior": "rename", "name": path.name}},
+        json_data={"item": {"@microsoft.graph.conflictBehavior": conflict_behavior or "rename", "name": path.name}},
     )
     upload_url = session.get("uploadUrl")
     if not upload_url:
-        raise RuntimeError(f"Failed to create OneDrive upload session for '{path.name}': {session}")
+        raise RuntimeError(f"Failed to create upload session for '{path.name}': {session}")
 
     result: Optional[Dict[str, Any]] = None
     with path.open("rb") as fh, httpx.Client(timeout=120.0) as client:
@@ -851,14 +876,24 @@ def _upload_file_to_onedrive(file_path: str, folder: str = _ONEDRIVE_ATTACHMENTS
             )
             if resp.is_error:
                 raise RuntimeError(
-                    f"OneDrive chunked upload for '{path.name}' failed [{resp.status_code}]: {resp.text}"
+                    f"Chunked upload for '{path.name}' failed [{resp.status_code}]: {resp.text}"
                 )
             offset += chunk_len
             if resp.status_code in (200, 201) and resp.content:
                 result = resp.json()
     if result is None:
-        raise RuntimeError(f"OneDrive chunked upload for '{path.name}' did not complete")
+        raise RuntimeError(f"Chunked upload for '{path.name}' did not complete")
     return result
+
+
+def _upload_file_to_onedrive(file_path: str, folder: str = _ONEDRIVE_ATTACHMENTS_FOLDER) -> Dict[str, Any]:
+    """Upload a local file to the signed-in user's OneDrive and return the created driveItem
+    (id, name, webUrl, ...), used as the basis for a Teams chat file attachment reference."""
+    path = _resolve_attachment_path(file_path)
+    safe_folder = quote(folder.strip("/"), safe="")
+    safe_filename = quote(path.name, safe="")
+    item_path = f"/me/drive/root:/{safe_folder}/{safe_filename}:"
+    return _upload_local_file_to_drive_path(path, item_path)
 
 
 def _build_mail_attachment(file_path: str) -> Dict[str, Any]:
@@ -3172,6 +3207,16 @@ def _share_token(url: str) -> str:
     return f"u!{b64}"
 
 
+# Mirrors tools/document_convert.py's DOCUMENT_EXTENSIONS -- kept as a local
+# copy since this MCP server runs out-of-process and can't import from the
+# main Hermes package. Used only to self-describe a download result, so a
+# stale/partial copy degrades to "no hint" rather than breaking anything.
+_DOCLING_CONVERTIBLE_SUFFIXES = frozenset({
+    ".docx", ".xlsx", ".pptx", ".pdf", ".odt", ".ods", ".odp",
+    ".doc", ".xls", ".ppt", ".html", ".htm",
+})
+
+
 @mcp.tool()
 def m365_download_drive_file(
     file_id: str,
@@ -3212,7 +3257,7 @@ def m365_download_drive_file(
         out_file.parent.mkdir(parents=True, exist_ok=True)
 
     out_file.write_bytes(content_bytes)
-    return {
+    result: Dict[str, Any] = {
         "success": True,
         "file_id": (meta.get("id") if isinstance(meta, dict) else None) or ident,
         "source": source,
@@ -3220,6 +3265,9 @@ def m365_download_drive_file(
         "size_bytes": len(content_bytes),
         "saved_path": str(out_file),
     }
+    if Path(name).suffix.lower() in _DOCLING_CONVERTIBLE_SUFFIXES:
+        result["next"] = "read_file(saved_path) -- returns this document as Markdown"
+    return result
 
 
 
@@ -3364,6 +3412,34 @@ def m365_list_contacts(top: int = 20, search: Optional[str] = None) -> Dict[str,
     return res
 
 
+def _resolve_sharepoint_target(site_id: str, drive_id: Optional[str]) -> Tuple[str, str]:
+    """Resolve a pasted site URL to a real site id, and a missing drive id to
+    the site's default document library -- collapses the model's sites ->
+    drives -> files id chase to one hop.
+    """
+    site_id = str(site_id or "").strip()
+    if not site_id:
+        raise ValueError("site_id is required")
+    if site_id.startswith("http"):
+        parsed = urlparse(site_id)
+        host = parsed.netloc
+        server_relative_path = parsed.path or "/"
+        site = _graph_request("GET", f"/sites/{host}:{server_relative_path}")
+        resolved_site_id = site.get("id") if isinstance(site, dict) else None
+        if not resolved_site_id:
+            raise ValueError(f"Could not resolve SharePoint site from URL: {site_id}")
+        site_id = resolved_site_id
+
+    resolved_drive_id = str(drive_id or "").strip()
+    if not resolved_drive_id:
+        drive = _graph_request("GET", f"/sites/{site_id}/drive")
+        resolved_drive_id = drive.get("id") if isinstance(drive, dict) else ""
+        if not resolved_drive_id:
+            raise ValueError(f"Could not resolve the default document library for site: {site_id}")
+
+    return site_id, resolved_drive_id
+
+
 @mcp.tool()
 def m365_list_sharepoint_sites(search: Optional[str] = None, top: int = 10) -> Dict[str, Any]:
     """List or search SharePoint sites in the tenant.
@@ -3414,6 +3490,87 @@ def m365_search_sharepoint_files(site_id: str, query: str) -> Dict[str, Any]:
             if isinstance(item, dict):
                 _enrich_timestamps(item)
     return res
+
+
+@mcp.tool()
+def m365_upload_sharepoint_file(
+    site_id: str,
+    file_path: str,
+    drive_id: Optional[str] = None,
+    folder_id: Optional[str] = None,
+    folder_path: Optional[str] = None,
+    conflict_behavior: str = "rename",
+) -> Dict[str, Any]:
+    """Upload a local file into a SharePoint document library.
+
+    Never guess site_id/drive_id/folder_id -- resolve them first with
+    m365_list_sharepoint_sites / m365_list_sharepoint_drives (or pass a
+    SharePoint site URL as site_id and/or omit drive_id to use the site's
+    default document library, both resolved automatically). Pass at most
+    one of folder_id or folder_path; omit both to upload to the library root.
+
+    conflict_behavior defaults to "rename" -- a migration into a shared
+    library must never silently overwrite a colleague's file. Pass
+    conflict_behavior="replace" only when the user explicitly asked to
+    overwrite an existing file.
+
+    Requires admin-consented scopes (Sites.ReadWrite.All) -- if this fails,
+    call m365_initiate_login(request_admin_scopes=True) first (only
+    meaningful if the signed-in account has tenant admin rights).
+    """
+    if folder_id and folder_path:
+        return {"error": "pass folder_id or folder_path, not both"}
+    path = _resolve_attachment_path(file_path)
+    resolved_site_id, resolved_drive_id = _resolve_sharepoint_target(site_id, drive_id)
+    safe_filename = quote(path.name, safe="")
+    if folder_id:
+        item_path = f"/sites/{resolved_site_id}/drives/{resolved_drive_id}/items/{folder_id}:/{safe_filename}:"
+    elif folder_path:
+        # safe="/" preserves the path separators for a nested folder_path
+        # (e.g. "Guides/2026") while still percent-encoding each segment.
+        safe_folder = quote(folder_path.strip("/"), safe="/")
+        item_path = f"/sites/{resolved_site_id}/drives/{resolved_drive_id}/root:/{safe_folder}/{safe_filename}:"
+    else:
+        item_path = f"/sites/{resolved_site_id}/drives/{resolved_drive_id}/root:/{safe_filename}:"
+    result = _upload_local_file_to_drive_path(path, item_path, conflict_behavior=conflict_behavior)
+    if isinstance(result, dict):
+        _enrich_timestamps(result)
+    return result
+
+
+@mcp.tool()
+def m365_create_sharepoint_folder(
+    site_id: str,
+    folder_name: str,
+    drive_id: Optional[str] = None,
+    parent_folder_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create a folder in a SharePoint document library.
+
+    Pass a SharePoint site URL as site_id and/or omit drive_id to use the
+    site's default document library, both resolved automatically. Fails
+    with a 409 if a folder with that name already exists at the target
+    location (deliberate -- a re-run should list the existing folder, not
+    silently create "Guides 1", "Guides 2", ...).
+
+    Requires admin-consented scopes (Sites.ReadWrite.All) -- if this fails,
+    call m365_initiate_login(request_admin_scopes=True) first (only
+    meaningful if the signed-in account has tenant admin rights).
+    """
+    resolved_site_id, resolved_drive_id = _resolve_sharepoint_target(site_id, drive_id)
+    endpoint = (
+        f"/sites/{resolved_site_id}/drives/{resolved_drive_id}/items/{parent_folder_id}/children"
+        if parent_folder_id
+        else f"/sites/{resolved_site_id}/drives/{resolved_drive_id}/root/children"
+    )
+    result = _graph_request(
+        "POST",
+        endpoint,
+        json_data={"name": folder_name, "folder": {}, "@microsoft.graph.conflictBehavior": "fail"},
+    )
+    if isinstance(result, dict):
+        _enrich_timestamps(result)
+    return result
 
 
 # ─── Teams Channels & Activity Feed Tools ───────────────────────────────────

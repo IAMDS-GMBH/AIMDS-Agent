@@ -160,6 +160,7 @@ from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock
     build_mail_safety_guidance,
     build_document_guidance,
     build_teams_send_guidance,
+    build_sharepoint_guidance,
     load_soul_md,
 )
 from agent.process_bootstrap import _get_proxy_from_env  # noqa: F401

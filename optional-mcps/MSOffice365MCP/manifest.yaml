@@ -104,6 +104,8 @@ tools:
     - m365_list_sharepoint_drives
     - m365_list_sharepoint_files
     - m365_search_sharepoint_files
+    - m365_upload_sharepoint_file
+    - m365_create_sharepoint_folder
     - m365_list_chat_messages
     - m365_list_joined_teams
     - m365_list_team_channels
@@ -156,4 +158,4 @@ post_install: |
     - Outlook Mail & Contacts (m365_send_email, m365_list_emails, m365_get_email, m365_list_contacts) — m365_send_email accepts local file paths via `attachments` (inline, ~3 MB limit).
     - Outlook Calendar (m365_list_events, m365_create_event)
     - Teams (m365_find_chat, m365_send_chat_message(to=...), m365_get_chat_style, m365_download_chat_files(link|to|chat_id), m365_list_chats, m365_get_chat_members, m365_get_or_create_direct_chat) — needs the org-consent tier; m365_send_chat_message resolves the recipient by name/email, renders Markdown to Teams HTML and accepts local file paths via `attachments` (auto-uploaded to OneDrive and linked as a file card).
-    - OneDrive & SharePoint (m365_list_drive_files, m365_search_drive_files, m365_get_drive_file, m365_list_sharepoint_sites, m365_list_sharepoint_drives, m365_list_sharepoint_files, m365_search_sharepoint_files) — SharePoint needs the admin tier.
+    - OneDrive & SharePoint (m365_list_drive_files, m365_search_drive_files, m365_get_drive_file, m365_list_sharepoint_sites, m365_list_sharepoint_drives, m365_list_sharepoint_files, m365_search_sharepoint_files, m365_upload_sharepoint_file, m365_create_sharepoint_folder) — SharePoint needs the admin tier. Author content as Markdown first, convert (office_word action=from_markdown for .docx, or action=convert format=html), then upload — never hand off a binary directly.
