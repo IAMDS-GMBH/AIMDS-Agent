@@ -9,6 +9,12 @@ Dockerfile  text eol=lf
 *.dockerfile text eol=lf
 docker/entrypoint.sh text eol=lf
 
+# Enforce LF for HTML entry points (AIS-393): on a Windows checkout without
+# this, a CRLF-converted index.html made Vite/rolldown's HTML plugin choke
+# on an embedded <script type="module"> block ("SyntaxError: Invalid or
+# unexpected token") — self-hosted-windows desktop build, rc10.
+*.html      text eol=lf
+
 # Source package (AIS-311/AIS-322, scripts/build_source_package.sh): `git
 # archive` honours export-ignore, so everything listed here stays out of the
 # public hermes-source-<version>.zip. Rule: the archive carries only what the
