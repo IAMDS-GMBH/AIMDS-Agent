@@ -3524,7 +3524,7 @@ def _apply_model_assignment_sync(
                 mcp_reloaded = True
                 mcp_message = "MCP server reconnected"
         except Exception:
-            _log.debug("Suite MCP rebind failed after model assignment", exc_info=True)
+            _log.warning("Suite MCP rebind failed after model assignment", exc_info=True)
 
         # Surface auxiliary slots still pinned to a *different* provider than
         # the new main one. Switching the main model does NOT touch aux pins

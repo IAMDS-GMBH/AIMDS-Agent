@@ -402,3 +402,77 @@ def test_rebind_without_prod_key_leaves_mcp_untouched(monkeypatch):
     calls = _patch_rebind(monkeypatch, endpoints=eps, current_mcp_url="https://staging.suite.iamds.com/litellm/mcp/")
     assert suite.rebind_suite_mcp_for_model("anthropic") == []
     assert "mcp" not in calls
+
+
+def test_rebind_reload_tools_false_skips_discovery(monkeypatch):
+    """The boot-time reconcile path (tools.mcp_tool.discover_mcp_tools calling
+    this with reload_tools=False) must not trigger the inner discover_mcp_tools
+    call -- that's the direct anti-recursion assertion (AIS-378)."""
+    eps = {"aimds-suite-staging": _fake_ep("aimds-suite-staging", "https://staging.suite.iamds.com/litellm/v1", "sk-staging")}
+    calls = _patch_rebind(monkeypatch, endpoints=eps, current_mcp_url="https://suite.iamds.com/litellm/mcp/")
+    tools = suite.rebind_suite_mcp_for_model("aimds-suite-staging", reload_tools=False)
+    assert tools == ["tool_a", "tool_b"]
+    assert "mcp" in calls  # the reload itself still happened
+    assert "discover" not in calls
+
+
+def test_rebind_reload_tools_default_still_discovers(monkeypatch):
+    """Pins the four existing in-session /model-switch call sites' behavior,
+    which all rely on the default reload_tools=True."""
+    eps = {"aimds-suite-staging": _fake_ep("aimds-suite-staging", "https://staging.suite.iamds.com/litellm/v1", "sk-staging")}
+    calls = _patch_rebind(monkeypatch, endpoints=eps, current_mcp_url="https://suite.iamds.com/litellm/mcp/")
+    tools = suite.rebind_suite_mcp_for_model("aimds-suite-staging")
+    assert tools == ["tool_a", "tool_b"]
+    assert calls.get("discover") is True
+
+
+def test_rebind_failure_logs_warning(monkeypatch, caplog):
+    eps = {"aimds-suite-staging": _fake_ep("aimds-suite-staging", "https://staging.suite.iamds.com/litellm/v1", "sk-staging")}
+    _patch_rebind(monkeypatch, endpoints=eps, current_mcp_url="https://suite.iamds.com/litellm/mcp/")
+    import tools.mcp_tool as mcp_tool
+
+    def _boom(**kw):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(mcp_tool, "reload_provider_mcp_servers", _boom)
+    with caplog.at_level("WARNING", logger="hermes_cli.iamds_suite"):
+        result = suite.rebind_suite_mcp_for_model("aimds-suite-staging")
+    assert result == []
+    assert any("rebind_suite_mcp_for_model failed" in r.message for r in caplog.records)
+
+
+def test_rebind_noop_paths_are_silent(monkeypatch, caplog):
+    """Regression guard: bumping the failure log to WARNING must not turn the
+    two benign no-op paths (already correct, no usable key) into log spam."""
+    eps = {"aimds-suite-prod": _fake_ep("aimds-suite-prod", "https://suite.iamds.com/litellm/v1", "sk-prod")}
+    _patch_rebind(monkeypatch, endpoints=eps, current_mcp_url="https://suite.iamds.com/litellm/mcp/")
+    with caplog.at_level("WARNING", logger="hermes_cli.iamds_suite"):
+        assert suite.rebind_suite_mcp_for_model("google-gemini-cli") == []
+    assert not any(r.levelname == "WARNING" for r in caplog.records)
+
+    caplog.clear()
+    eps2 = {"aimds-suite-prod": _fake_ep("aimds-suite-prod", "https://suite.iamds.com/litellm/v1", api_key="")}
+    _patch_rebind(monkeypatch, endpoints=eps2, current_mcp_url="https://staging.suite.iamds.com/litellm/mcp/")
+    with caplog.at_level("WARNING", logger="hermes_cli.iamds_suite"):
+        assert suite.rebind_suite_mcp_for_model("anthropic") == []
+    assert not any(r.levelname == "WARNING" for r in caplog.records)
+
+
+def test_rebind_trailing_slash_only_difference_is_a_noop(monkeypatch):
+    """_build_iamds_mcp_url always appends a trailing slash; _norm_url strips
+    one -- a cosmetic-only difference must not force a reconnect (that would
+    become 'reconnect on every boot' once this runs there too)."""
+    eps = {"aimds-suite-prod": _fake_ep("aimds-suite-prod", "https://suite.iamds.com/litellm/v1", "sk-prod")}
+    calls = _patch_rebind(monkeypatch, endpoints=eps, current_mcp_url="https://suite.iamds.com/litellm/mcp")
+    assert suite.rebind_suite_mcp_for_model("google-gemini-cli") == []
+    assert "mcp" not in calls
+
+
+def test_rebind_path_only_mismatch_now_triggers_reconnect(monkeypatch):
+    """Same host, different path -- previously a no-op under the old
+    hostname-only comparison, now correctly detected (AIS-378 Step 4)."""
+    eps = {"aimds-suite-prod": _fake_ep("aimds-suite-prod", "https://suite.iamds.com/litellm/v1", "sk-prod")}
+    calls = _patch_rebind(monkeypatch, endpoints=eps, current_mcp_url="https://suite.iamds.com/some/other/path")
+    tools = suite.rebind_suite_mcp_for_model("google-gemini-cli")
+    assert tools == ["tool_a", "tool_b"]
+    assert calls["mcp"]["provider"] == "aimds-suite-prod"
