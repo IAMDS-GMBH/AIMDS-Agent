@@ -22,6 +22,23 @@ const STATE_FILENAME = 'incident-reports.json'
 const WINDOW_SECONDS = 24 * 60 * 60
 const CATEGORY = 'installation_update'
 
+// AIS-384: both upload paths used to file EVERY automatic incident under the
+// hardcoded CATEGORY constant regardless of contextType -- so a boot failure
+// (contextType: 'boot_error') was filed as 'installation_update', which is
+// what support triage actually filters on. Mirrors
+// hermes_cli/incident_report.py's _CATEGORY_FOR_CONTEXT.
+const CATEGORY_FOR_CONTEXT_TYPE = {
+  boot_error: 'boot_error',
+  install_failure: 'install_failure',
+  install_error: 'install_error',
+  update_error: CATEGORY,
+  update_failure: CATEGORY
+}
+
+function categoryForContextType(contextType) {
+  return CATEGORY_FOR_CONTEXT_TYPE[contextType] || CATEGORY
+}
+
 function autoReportEnabled(env = process.env) {
   const raw = String(env.HERMES_SUPPORT_AUTO_REPORT || '')
     .trim()
@@ -256,7 +273,7 @@ async function uploadMinimalIncident({
     timestamp: now.toISOString(),
     client_info: { client_type: clientType, client_version: clientVersion || 'unknown', os: `${os.type()} ${os.release()} (${os.arch()})`, user_id: os.userInfo().username },
     issue_details: {
-      category: CATEGORY,
+      category: categoryForContextType(contextType),
       severity,
       summary: String(summary).slice(0, 200),
       user_description: detail,
@@ -310,7 +327,7 @@ async function reportIncident({ kind, summary, detail = '', severity = 'medium',
   let caseId = ''
   if (typeof runCli === 'function') {
     try {
-      const result = await runCli({ reason: slug, category: CATEGORY, severity, summary: String(summary).slice(0, 200), userDescription: detail, clientType, clientVersion, contextType, installType })
+      const result = await runCli({ reason: slug, category: categoryForContextType(contextType), severity, summary: String(summary).slice(0, 200), userDescription: detail, clientType, clientVersion, contextType, installType })
       if (result && result.ok) {
         caseId = String(result.reference_id || result.referenceId || result.support_case_id || '')
       } else {
@@ -336,10 +353,12 @@ async function reportIncident({ kind, summary, detail = '', severity = 'medium',
 
 module.exports = {
   CATEGORY,
+  CATEGORY_FOR_CONTEXT_TYPE,
   DEFAULT_UPLOAD_URL,
   STATE_FILENAME,
   autoReportEnabled,
   buildZip,
+  categoryForContextType,
   countOccurrence,
   crc32,
   occurrencesSinceReport,

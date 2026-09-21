@@ -15,14 +15,20 @@ import urllib.error
 import urllib.request
 import uuid
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 from agent.redact import redact_sensitive_text
 from hermes_cli.config import load_config
-from hermes_cli.support_signatures import build_incident_digest, signal_summary
+from hermes_cli.support_signatures import (
+    build_incident_digest,
+    line_timestamp,
+    select_session_lines,
+    signal_summary,
+    within_window,
+)
 from hermes_cli.dump import run_dump
 from hermes_constants import display_hermes_home, get_hermes_home
 
@@ -83,6 +89,18 @@ _CATEGORY_LOGS: dict[str, tuple[str, ...]] = {
 _DEFAULT_CATEGORY_LOGS: tuple[str, ...] = _CATEGORY_LOGS["other"]
 _DEFAULT_TIMEOUT_SECONDS = 45
 _DEFAULT_UPLOAD_URL = "https://suite-support.iamds.com/api/v1/upload"
+
+# Precision fallback ladder (AIS-384, SUP-20260918-131539): session_id was
+# captured into metadata.json but never used to filter log content, and the
+# blind last-N-by-position tail could ship weeks-stale content for a sparsely
+# written file (measured: gateway.log is ~0.008% session-tagged, and its
+# blind 200-line tail spanned ~4 weeks). Every log below reliably carries a
+# `[session_id]` tag on at least some lines (hermes_logging.py); mcp-stderr.log
+# does not and is deliberately excluded from Tier 1.
+_SESSION_SCOPED_LOGS = frozenset({"agent.log", "errors.log", "gateway.log", "gui.log"})
+_MIN_SESSION_LINES = 20
+_RECENT_WINDOW_MINUTES = 120
+_SCAN_LINES = 5000
 
 
 def normalize_upload_url(url: str) -> str:
@@ -257,7 +275,8 @@ def _bundle_log_names(log_dir: Path) -> list[str]:
     return names
 
 
-def _read_last_lines(path: Path, count: int) -> list[str]:
+def _tail_lines(path: Path, count: int) -> list[str]:
+    """Raw last *count* lines of *path* by file position -- no filtering."""
     if count <= 0:
         return []
     try:
@@ -302,6 +321,59 @@ def _read_last_lines(path: Path, count: int) -> list[str]:
     return out[-count:]
 
 
+def _read_last_lines(
+    path: Path,
+    count: int,
+    *,
+    session_id: str = "",
+    scan_lines: int = _SCAN_LINES,
+    now: datetime | None = None,
+) -> tuple[list[str], str]:
+    """Last *count* lines of *path*, precision-scoped when possible.
+
+    Returns ``(lines, scope)``. With no ``session_id``/``now`` (the plain
+    positional call), behaves exactly like the old blind tail, ``scope="tail"``.
+    Otherwise applies the fallback ladder: a known session_id on a
+    session-scoped file tries to keep only that session's lines first
+    (``scope="session"``); when that doesn't apply or yields too little, a
+    wall-clock window anchored on *now* (``scope="time_window"``); when the
+    file has no parseable timestamp at all, today's blind tail
+    (``scope="tail"``, or ``scope="boot_section"`` for desktop.log, which has
+    no timestamps by design). The budget is always applied *after*
+    filtering, against a *pre-capped* scan window -- never pre-tail-then-filter,
+    which would silently go empty whenever the relevant content is older than
+    the last *count* physical lines.
+    """
+    if count <= 0:
+        return [], "tail"
+    if not session_id and now is None:
+        return _tail_lines(path, count), "tail"
+
+    filename = path.name
+    scanned = _tail_lines(path, max(scan_lines, count))
+    if not scanned:
+        return [], "tail"
+
+    if session_id and filename in _SESSION_SCOPED_LOGS:
+        scoped = select_session_lines(scanned, session_id)
+        if scoped is not None and len(scoped) >= _MIN_SESSION_LINES:
+            return scoped[-count:], "session"
+
+    # desktop.log has no per-line timestamps, so it falls through to the
+    # blind tail below like everything else with no parseable timestamp --
+    # deliberately NOT last_boot_section(): _within_window's own no-timestamp
+    # fallback avoids it too, for exactly the same reason (see its comment
+    # above) -- narrowing to only the last boot marker hides the failed boot
+    # attempts *before* the one that finally worked, which is the restart-hang
+    # evidence a bundle needs to show.
+    if now is not None and any(line_timestamp(line) is not None for line in scanned):
+        window_hits = within_window(scanned, timedelta(minutes=_RECENT_WINDOW_MINUTES), now)
+        windowed = [line for _, line, _ in window_hits]
+        return windowed[-count:], "time_window"
+
+    return scanned[-count:], "tail"
+
+
 def _capture_dump_text() -> str:
     stream = io.StringIO()
     with contextlib.redirect_stdout(stream):
@@ -323,12 +395,57 @@ def _relevant_log_names(category: str, context_type: str) -> tuple[str, ...]:
     return _DEFAULT_CATEGORY_LOGS
 
 
+def _resolve_session_id(args: Any) -> tuple[str, dict[str, Any] | None, dict[str, str | bytes]]:
+    """Resolve the reporting session id and parse ``session.json`` if given.
+
+    Hoisted out of the log-collection loop so the session id is known
+    *before* the per-file tails are built -- it's the primary key the
+    precision fallback ladder in ``_read_last_lines`` scopes on.
+    """
+    extra_files: dict[str, str | bytes] = {}
+    session_data: dict[str, Any] | None = None
+    session_json_input = getattr(args, "session_json", None) or ""
+    if session_json_input:
+        raw_text = ""
+        p = Path(session_json_input).expanduser()
+        if p.exists() and p.is_file():
+            try:
+                raw_text = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                pass
+        else:
+            raw_text = session_json_input
+
+        if raw_text:
+            try:
+                session_data = json.loads(raw_text)
+                extra_files["session.json"] = json.dumps(session_data, indent=2, ensure_ascii=False) + "\n"
+            except json.JSONDecodeError:
+                extra_files["session.json"] = raw_text
+
+    session_id_val = getattr(args, "session_id", "") or (session_data.get("session_id") if session_data else "") or ""
+    return session_id_val, session_data, extra_files
+
+
+def _tail_provenance_header(filename: str, scope: str, *, scanned: int, kept: int) -> str:
+    scope_label = {
+        "session": "this session",
+        "time_window": f"last {_RECENT_WINDOW_MINUTES}min",
+        "tail": "last lines (unscoped)",
+    }.get(scope, scope)
+    return (
+        f"# hermes support: logs/{filename} -- scope={scope} ({scope_label}), "
+        f"kept {kept} of {scanned} scanned; re-send with --full-logs for the unfiltered bundle\n"
+    )
+
+
 def _collect_payload(
     args: Any = None,
     *,
     include_dump: bool = True,
     max_lines_per_file: int = _DEFAULT_MAX_LINES_PER_FILE,
     full_logs: bool | None = None,
+    now: datetime | None = None,
 ) -> tuple[dict[str, str | bytes], dict[str, Any]]:
     hermes_home = get_hermes_home()
     log_dir = hermes_home / "logs"
@@ -339,6 +456,10 @@ def _collect_payload(
     category_arg = getattr(args, "category", None) or "other"
     context_arg = getattr(args, "context_type", None) or ""
     relevant = _relevant_log_names(category_arg, context_arg)
+    now = now or datetime.now(timezone.utc)
+
+    session_id_val, session_data, session_extra_files = _resolve_session_id(args)
+    files.update(session_extra_files)
 
     # Digest first: signature hits + context from the recent part of every
     # log (timestamped logs: last hour; desktop.log: last boot section).
@@ -348,6 +469,7 @@ def _collect_payload(
             log_dir,
             log_names=_bundle_log_names(log_dir),
             redact=lambda line: redact_sensitive_text(line, force=True).rstrip("\n"),
+            now=now,
         )
         files[_DIGEST_FILE] = digest.text
         digest_signals = signal_summary(digest.signals)
@@ -367,17 +489,22 @@ def _collect_payload(
             # in the digest; the raw tail stays home.
             continue
         line_budget = min(max_lines_per_file, _FOCUSED_TAIL_LINES) if focused_tail else max_lines_per_file
-        lines = _read_last_lines(path, line_budget)
+        if full_logs:
+            lines, scope = _tail_lines(path, line_budget), "tail"
+        else:
+            lines, scope = _read_last_lines(path, line_budget, session_id=session_id_val, now=now)
         if not lines:
             continue
         redacted = "".join(redact_sensitive_text(line, force=True) for line in lines)
-        files[f"logs/{filename}"] = redacted
+        header = "" if full_logs else _tail_provenance_header(filename, scope, scanned=_SCAN_LINES, kept=len(lines))
+        files[f"logs/{filename}"] = header + redacted
         included_files.append(
             {
                 "name": filename,
                 "lines": len(lines),
                 "bytes": len(redacted.encode("utf-8")),
                 "role": "full" if full_logs else "focused",
+                "scope": "full" if full_logs else scope,
             }
         )
 
@@ -433,26 +560,6 @@ def _collect_payload(
             except OSError:
                 pass
 
-    session_data: dict[str, Any] | None = None
-    session_json_input = getattr(args, "session_json", None) or ""
-    if session_json_input:
-        raw_text = ""
-        p = Path(session_json_input).expanduser()
-        if p.exists() and p.is_file():
-            try:
-                raw_text = p.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                pass
-        else:
-            raw_text = session_json_input
-
-        if raw_text:
-            try:
-                session_data = json.loads(raw_text)
-                files["session.json"] = json.dumps(session_data, indent=2, ensure_ascii=False) + "\n"
-            except json.JSONDecodeError:
-                files["session.json"] = raw_text
-
     cfg = load_config()
     support_cfg = cfg.get("support", {}) if isinstance(cfg.get("support"), dict) else {}
     model_used = (cfg.get("model") or {}).get("default") or "AIMDS-Suite-Auto"
@@ -463,7 +570,7 @@ def _collect_payload(
     mcp_servers = list((cfg.get("mcp_servers") or {}).keys())
     active_skills = list((cfg.get("skills") or {}).get("inline") or [])
 
-    now_utc = datetime.now(timezone.utc)
+    now_utc = now
     support_case_id = f"SUP-{now_utc.strftime('%Y%m%d-%H%M%S')}"
 
     files_manifest: list[dict[str, Any]] = []
@@ -493,7 +600,6 @@ def _collect_payload(
             }
         )
 
-    session_id_val = getattr(args, "session_id", "") or (session_data.get("session_id") if session_data else "")
     session_title_val = session_data.get("title") if session_data else ""
     session_turn_count = session_data.get("message_count") if session_data else 0
 

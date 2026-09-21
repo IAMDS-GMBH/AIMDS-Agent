@@ -35,7 +35,10 @@ __all__ = [
     "build_incident_digest",
     "classify_text",
     "last_boot_section",
+    "line_timestamp",
+    "select_session_lines",
     "signal_summary",
+    "within_window",
 ]
 
 _SEVERITY_RANK = {"high": 3, "medium": 2, "low": 1, "info": 0}
@@ -271,6 +274,49 @@ def _line_timestamp(line: str) -> datetime | None:
     return None
 
 
+# Public alias -- session-scoping (support_logs.py) needs the same per-line
+# timestamp parser the digest window already uses.
+line_timestamp = _line_timestamp
+
+
+# Matches hermes_logging.py's LOG_FORMAT ("%(asctime)s %(levelname)s%(session_tag)s
+# %(name)s: %(message)s"); group 1 is the session id when the line carries one
+# (session_tag is formatted as " [id]" or "" -- see set_session_context).
+_SESSION_HEADER_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]?\d*\s+[A-Z]+\s+(?:\[([^\]]+)\]\s+)?"
+)
+
+
+def select_session_lines(
+    lines: list[str], session_id: str, *, lead_in: int = 20, trail: int = 20
+) -> list[str] | None:
+    """Lines belonging to *session_id*'s span, or ``None`` if too few match.
+
+    A line whose header carries no ``[session_id]`` tag, or that has no
+    header at all (a traceback/continuation line), inherits the previous
+    line's owner -- this is what keeps a session's own tracebacks in the
+    kept set instead of being dropped as "untagged". A line tagged with a
+    *different* session is always dropped, even inside the span (interleaved
+    cron/background activity). Returns ``None`` when *session_id* is empty or
+    no line matches, so the caller can fall back to the next tier.
+    """
+    if not session_id:
+        return None
+    owners: list[str | None] = []
+    last_owner: str | None = None
+    for line in lines:
+        m = _SESSION_HEADER_RE.match(line)
+        if m:
+            last_owner = m.group(1)
+        owners.append(last_owner)
+    matches = [i for i, owner in enumerate(owners) if owner == session_id]
+    if not matches:
+        return None
+    lo = max(0, matches[0] - lead_in)
+    hi = min(len(lines), matches[-1] + trail + 1)
+    return [line for i, line in zip(range(lo, hi), lines[lo:hi]) if owners[i] in (session_id, None)]
+
+
 _BOOT_MARKER = re.compile(r"Resolving Hermes backend|\[boot\] Resolving|Desktop starting|=== desktop start", re.IGNORECASE)
 
 
@@ -314,7 +360,14 @@ def _within_window(
         section = lines[-untimestamped_lines:]
         offset = len(lines) - len(section)
         return [(offset + i + 1, line, None) for i, line in enumerate(section)]
-    cutoff_naive = (now.replace(tzinfo=None) - window)
+    # Naive log timestamps are LOCAL wall-clock (hermes_logging.py's
+    # %(asctime)s), so the naive cutoff must be local too -- comparing them
+    # against a naive-UTC cutoff silently widens/narrows the window by the
+    # local UTC offset (e.g. the stated 60min window becomes 180min in CEST,
+    # or the cutoff lands in the future and the digest goes empty west of
+    # UTC). `now` is aware by default (datetime.now(timezone.utc)); convert
+    # to local before stripping tzinfo. A naive `now` is assumed already local.
+    cutoff_naive = (now.astimezone().replace(tzinfo=None) if now.tzinfo is not None else now) - window
     cutoff_aware = now.astimezone(timezone.utc) - window
     out: list[tuple[int, str, datetime | None]] = []
     for idx, line, ts in stamped:
@@ -326,6 +379,12 @@ def _within_window(
         elif ts.astimezone(timezone.utc) >= cutoff_aware:
             out.append((idx, line, ts))
     return out
+
+
+# Public alias -- support_logs.py's raw-tail scoping ladder needs the same
+# wall-clock window logic the digest uses, including its own no-timestamp
+# fallback.
+within_window = _within_window
 
 
 def _read_tail(path: Path, max_lines: int) -> list[str]:

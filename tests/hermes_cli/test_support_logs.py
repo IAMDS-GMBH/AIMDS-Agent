@@ -4,6 +4,7 @@ import argparse
 import io
 import json
 import zipfile
+from datetime import datetime, timedelta, timezone
 
 from hermes_cli import support_logs
 from hermes_cli.subcommands.support import build_support_parser
@@ -358,7 +359,18 @@ def _focused_home(tmp_path, monkeypatch):
         "[hermes] Hermes backend is ready\n",
         encoding="utf-8",
     )
-    (logs_dir / "agent.log").write_text("".join(f"2026-09-15 11:00:{i:02d} INFO agent line {i}\n" for i in range(300)), encoding="utf-8")
+    # Timestamps relative to "now" (not a fixed past date): AIS-384's
+    # session/time-window scoping in _read_last_lines applies a wall-clock
+    # filter by default, so a hardcoded old date would make every line here
+    # fall outside the window and vanish from the bundle.
+    base = datetime.now(timezone.utc) - timedelta(minutes=5)
+    (logs_dir / "agent.log").write_text(
+        "".join(
+            f"{(base + timedelta(seconds=i)).strftime('%Y-%m-%d %H:%M:%S')},000 INFO agent line {i}\n"
+            for i in range(300)
+        ),
+        encoding="utf-8",
+    )
     (logs_dir / "gateway.log").write_text("gateway noise token=sk-abcdefghijklmnopqrstuv\n" * 5, encoding="utf-8")
     (logs_dir / "bootstrap-installer.log").write_text("[updater] Web UI build failed — serving stale dist as fallback\n", encoding="utf-8")
     (logs_dir / "mcp-stderr.log").write_text("MCP server MSOffice365MCP failed to start: boom\n", encoding="utf-8")
@@ -426,8 +438,10 @@ def test_focused_bundle_caps_relevant_tails_at_200_lines_and_mcp_category_ships_
         assert {"logs/agent.log", "logs/mcp-stderr.log"} <= names
         assert "logs/desktop.log" not in names
         agent_log = zf.read("logs/agent.log").decode("utf-8")
-        assert agent_log.count("\n") == 200
-        assert "agent line 299" in agent_log and "agent line 50" not in agent_log
+        assert agent_log.startswith("# hermes support: logs/agent.log -- scope=")
+        header, _, body = agent_log.partition("\n")
+        assert body.count("\n") == 200
+        assert "agent line 299" in body and "agent line 50" not in body
 
 
 def test_context_type_wins_over_category_for_log_selection():
@@ -466,3 +480,104 @@ def test_dry_run_previews_signals_and_files_without_uploading(tmp_path, monkeypa
     assert any(f["path"] == "incident-digest.txt" for f in payload["files"])
     assert all("size_bytes" in f for f in payload["files"])
     assert out_path.exists() and payload["bundle_bytes"] == out_path.stat().st_size
+
+
+# --------------------------------------------------------------------------
+# AIS-384 / SUP-20260918-131539: precision fallback ladder in
+# _read_last_lines (session-scoped tail, wall-clock fallback, plain-tail
+# degrade) -- unit-level, exercising the ladder directly.
+# --------------------------------------------------------------------------
+
+
+def _write_log(path, lines):
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_read_last_lines_plain_call_matches_old_blind_tail(tmp_path):
+    """No session_id / now: byte-for-byte the pre-AIS-384 behavior."""
+    path = tmp_path / "agent.log"
+    _write_log(path, [f"line {i}" for i in range(50)])
+    lines, scope = support_logs._read_last_lines(path, 10)
+    assert scope == "tail"
+    assert lines == support_logs._tail_lines(path, 10)
+
+
+def test_read_last_lines_session_scoped_keeps_only_that_session(tmp_path):
+    path = tmp_path / "agent.log"
+    now = datetime.now(timezone.utc)
+    ts = lambda i: (now - timedelta(seconds=50 - i)).strftime("%Y-%m-%d %H:%M:%S") + ",000"
+    _write_log(
+        path,
+        [
+            f"{ts(0)} INFO [sess-B] cron: tick",
+            f"{ts(1)} INFO [sess-A] agent.turn_context: start",
+            f"{ts(2)} ERROR [sess-A] agent.x: boom",
+            "Traceback (most recent call last):",
+            f"{ts(3)} INFO [sess-B] cron: tick2",
+            f"{ts(4)} INFO [sess-A] agent.turn_context: end",
+        ]
+        * 6,  # 4 sess-A-owned lines per block x 6 = 24 >= _MIN_SESSION_LINES
+    )
+    lines, scope = support_logs._read_last_lines(path, 100, session_id="sess-A", now=now)
+    assert scope == "session"
+    joined = "".join(lines)
+    assert "sess-B" not in joined
+    assert "sess-A" in joined and "Traceback" in joined
+
+
+def test_read_last_lines_stale_near_zero_tag_file_uses_time_window(tmp_path):
+    """Direct regression test for the measured gateway.log bug: a file with
+    (near-)zero session tagging whose blind tail would otherwise ship weeks
+    of stale content now drops it via the wall-clock fallback tier."""
+    path = tmp_path / "gateway.log"
+    now = datetime.now(timezone.utc)
+    stale = now - timedelta(days=30)
+    lines = [f"{(stale + timedelta(seconds=i)).strftime('%Y-%m-%d %H:%M:%S')},000 INFO gateway: old {i}" for i in range(50)]
+    lines += [f"{(now - timedelta(minutes=5, seconds=-i)).strftime('%Y-%m-%d %H:%M:%S')},000 INFO gateway: fresh {i}" for i in range(50)]
+    _write_log(path, lines)
+    kept, scope = support_logs._read_last_lines(path, 200, session_id="", now=now)
+    assert scope == "time_window"
+    joined = "".join(kept)
+    assert "old " not in joined
+    assert "fresh " in joined
+
+
+def test_read_last_lines_brand_new_session_falls_back_to_time_window(tmp_path):
+    path = tmp_path / "agent.log"
+    now = datetime.now(timezone.utc)
+    lines = [f"{(now - timedelta(seconds=60 - i)).strftime('%Y-%m-%d %H:%M:%S')},000 INFO [sess-old] agent: x{i}" for i in range(30)]
+    # Only 2 lines for the brand-new session -- below _MIN_SESSION_LINES.
+    lines.append(f"{now.strftime('%Y-%m-%d %H:%M:%S')},000 INFO [sess-new] agent.turn_context: start")
+    lines.append(f"{now.strftime('%Y-%m-%d %H:%M:%S')},000 INFO [sess-new] agent.turn_context: end")
+    _write_log(path, lines)
+    kept, scope = support_logs._read_last_lines(path, 100, session_id="sess-new", now=now)
+    assert scope == "time_window"
+    # Falls back to the wall-clock window, not an (empty-ish) session slice --
+    # every line here is recent, so the older session's lines are kept too.
+    assert "sess-old" in "".join(kept)
+
+
+def test_read_last_lines_untimestamped_file_degrades_to_plain_tail(tmp_path):
+    path = tmp_path / "mcp-stderr.log"
+    _write_log(path, ["no timestamp here"] * 5)
+    lines, scope = support_logs._read_last_lines(path, 3, session_id="whatever", now=datetime.now(timezone.utc))
+    assert scope == "tail"
+    assert len(lines) == 3
+
+
+def test_full_logs_bypasses_session_and_time_scoping(tmp_path, monkeypatch, capsys):
+    """Extends test_full_logs_flag_restores_every_log_tail: confirm the ladder
+    is not reachable at all under --full-logs, even with a stale, tagged log."""
+    hermes_home = _focused_home(tmp_path, monkeypatch)
+    stale_line = "2020-01-01 00:00:00,000 INFO [sess-ancient] agent: ancient line\n"
+    (hermes_home / "logs" / "agent.log").write_text(stale_line * 5, encoding="utf-8")
+    captured = {}
+    _fake_upload(monkeypatch, captured)
+    assert support_logs.run_send_logs(
+        _parse(["--json", "--category", "installation_update", "--full-logs", "--session-id", "sess-ancient"])
+    ) == 0
+    capsys.readouterr()
+    with zipfile.ZipFile(io.BytesIO(captured["data"])) as zf:
+        agent_log = zf.read("logs/agent.log").decode("utf-8")
+        assert "ancient line" in agent_log
+        assert not agent_log.startswith("# hermes support:")

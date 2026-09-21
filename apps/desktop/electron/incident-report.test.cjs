@@ -6,7 +6,7 @@ const os = require('node:os')
 const path = require('node:path')
 const zlib = require('node:zlib')
 
-const { autoReportEnabled, buildZip, countOccurrence, crc32, occurrencesSinceReport, recentlyReported, remember, reportIncident, statePath, uploadMinimalIncident } = require('./incident-report.cjs')
+const { autoReportEnabled, buildZip, categoryForContextType, countOccurrence, crc32, occurrencesSinceReport, recentlyReported, remember, reportIncident, statePath, uploadMinimalIncident } = require('./incident-report.cjs')
 
 function mkHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-incident-test-'))
@@ -106,7 +106,9 @@ test('uploadMinimalIncident posts a schema-1.1.0 bundle as multipart/form-data',
     const entries = readZip(r.zip)
     const metadata = JSON.parse(entries['metadata.json'])
     assert.equal(metadata.schema_version, '1.1.0')
-    assert.equal(metadata.issue_details.category, 'installation_update')
+    // AIS-384: category now derives from contextType ('install_failure'),
+    // not the old hardcoded 'installation_update' default.
+    assert.equal(metadata.issue_details.category, 'install_failure')
     assert.equal(metadata.issue_details.severity, 'high')
     assert.equal(metadata.context_type, 'install_failure')
     assert.equal(metadata.install_type, 'fresh_install')
@@ -117,6 +119,19 @@ test('uploadMinimalIncident posts a schema-1.1.0 bundle as multipart/form-data',
   } finally {
     server.close()
   }
+})
+
+test('categoryForContextType maps every known contextType, falls back to CATEGORY', () => {
+  // AIS-384: this used to be a single hardcoded CATEGORY constant fed to
+  // every incident regardless of contextType -- e.g. a boot failure was
+  // filed as 'installation_update', which is what support triage filters on.
+  assert.equal(categoryForContextType('boot_error'), 'boot_error')
+  assert.equal(categoryForContextType('install_failure'), 'install_failure')
+  assert.equal(categoryForContextType('install_error'), 'install_error')
+  assert.equal(categoryForContextType('update_error'), 'installation_update')
+  assert.equal(categoryForContextType('update_failure'), 'installation_update')
+  assert.equal(categoryForContextType('something-unmapped'), 'installation_update')
+  assert.equal(categoryForContextType(undefined), 'installation_update')
 })
 
 test('reportIncident prefers the CLI bundle, falls back to the minimal upload, and rate-limits', async () => {
@@ -206,6 +221,7 @@ test('reportIncident counts rate-limited repeats and carries the count into the 
     assert.equal(third.occurrences, 2)
     assert.equal(occurrencesSinceReport(home, 'boot-failure-port-in-use'), 2)
     assert.equal(cliCalls.length, 1)
+    assert.equal(cliCalls[0].category, 'boot_error')
     // Window expired → the next report mentions the repeats and resets the count.
     const statePath_ = statePath(home)
     const state = JSON.parse(fs.readFileSync(statePath_, 'utf8'))

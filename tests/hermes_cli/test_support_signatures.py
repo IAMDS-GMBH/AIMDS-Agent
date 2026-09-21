@@ -3,7 +3,10 @@ per signature, deterministic, from the recent part of every log."""
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
+
+import pytest
 
 from hermes_cli import support_signatures as sig
 
@@ -185,3 +188,57 @@ def test_timestamped_desktop_log_lines_are_windowed_like_every_other_log(tmp_pat
     ids = {s["id"] for s in digest.signals}
     assert "boot.backend_exited_before_ready" in ids
     assert "boot.port_in_use" not in ids
+
+
+def test_window_cutoff_uses_local_time_for_naive_timestamps(tmp_path, monkeypatch):
+    """AIS-384: naive log timestamps are LOCAL wall-clock (hermes_logging.py's
+    %(asctime)s), so the naive cutoff must be local too. Before the fix,
+    _within_window compared them against a naive-*UTC* cutoff -- in a
+    UTC-negative zone that silently excludes lines that are genuinely inside
+    the window (this test), and in a UTC-positive zone it silently widens the
+    window instead."""
+    if not hasattr(time, "tzset"):
+        pytest.skip("tzset not available on this platform")
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        # 2026-09-15 12:00 UTC == 2026-09-15 08:00 America/New_York (EDT, UTC-4).
+        now = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
+        log_dir = tmp_path / "logs"
+        # Stamped ~5 minutes before `now` in LOCAL time -- genuinely inside a
+        # 60-minute window. The old naive-UTC cutoff ("11:00") would wrongly
+        # treat this as older than an hour and drop it.
+        recent_local = "2026-09-15 07:55:00 ERROR uvicorn: [Errno 48] address already in use 127.0.0.1:9120"
+        _write(log_dir, "agent.log", recent_local + "\n")
+        digest = sig.build_incident_digest(log_dir, now=now, window_minutes=60)
+        assert "boot.port_in_use" in {s["id"] for s in digest.signals}
+    finally:
+        monkeypatch.delenv("TZ", raising=False)
+        time.tzset()
+
+
+def test_select_session_lines_keeps_only_the_target_session():
+    lines = [
+        "2026-09-15 11:00:00,000 INFO [sess-B] cron: tick",
+        "2026-09-15 11:00:01,000 INFO [sess-A] agent.turn_context: turn start",
+        "2026-09-15 11:00:02,000 ERROR [sess-A] agent.x: boom",
+        "Traceback (most recent call last):",
+        '  File "x.py", line 1, in <module>',
+        "2026-09-15 11:00:03,000 WARNING agent.auxiliary_client: no provider",
+        "2026-09-15 11:00:04,000 INFO [sess-B] cron: tick2",
+        "2026-09-15 11:00:05,000 INFO [sess-A] agent.turn_context: turn end",
+    ]
+    kept = sig.select_session_lines(lines, "sess-A", lead_in=0, trail=0)
+    assert kept is not None
+    assert not any("sess-B" in line or "cron" in line for line in kept)
+    # Continuation lines (no header at all) and untagged-but-in-span lines
+    # both stay -- they inherit the owning session, not "no session".
+    assert "Traceback (most recent call last):" in kept
+    assert "no provider" in "".join(kept)
+    assert "turn start" in "".join(kept) and "turn end" in "".join(kept)
+
+
+def test_select_session_lines_returns_none_below_threshold_or_unknown_session():
+    lines = ["2026-09-15 11:00:00,000 INFO [sess-A] agent.turn_context: turn start"]
+    assert sig.select_session_lines(lines, "") is None
+    assert sig.select_session_lines(lines, "no-such-session") is None
