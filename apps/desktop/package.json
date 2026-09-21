@@ -181,6 +181,7 @@
       },
       "gatekeeperAssess": false,
       "hardenedRuntime": true,
+      "notarize": false,
       "target": [
         "dmg",
         "zip"
