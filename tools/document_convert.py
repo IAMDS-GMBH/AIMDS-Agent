@@ -43,12 +43,26 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-DOCUMENT_EXTENSIONS = frozenset({".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".pdf"})
-#: Pre-2007 binary Office formats: neither Docling nor the local libraries
-#: read them — reported explicitly instead of silently falling back.
-LEGACY_OFFICE_EXTENSIONS = frozenset({".doc", ".xls", ".ppt"})
+DOCUMENT_EXTENSIONS = frozenset({
+    ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".pdf",
+    # AIS-384: pre-2007 binary Office formats used to be hard-rejected (see
+    # LEGACY_OFFICE_EXTENSIONS below) — they're readable via the same
+    # Suite-only path .odt/.ods/.odp already use (LibreOffice-backed
+    # Docling), so route them there instead of refusing outright.
+    ".doc", ".xls", ".ppt",
+    # A document published as HTML (SharePoint guidance) must round-trip
+    # back to Markdown via read_file the same way a .docx does.
+    ".html", ".htm",
+})
+#: Historically: pre-2007 binary Office formats neither Docling nor the
+#: local libraries could read, reported explicitly instead of silently
+#: falling back. AIS-384 moved .doc/.xls/.ppt into DOCUMENT_EXTENSIONS +
+#: _SUITE_ONLY_EXTENSIONS instead (the Suite's LibreOffice-backed Docling
+#: does read them) — kept as an empty set, not deleted, so the mechanism
+#: stays available for a genuinely unsupported future format.
+LEGACY_OFFICE_EXTENSIONS: frozenset[str] = frozenset()
 #: Formats only the Suite (LibreOffice-backed Docling) can read.
-_SUITE_ONLY_EXTENSIONS = frozenset({".odt", ".ods", ".odp"})
+_SUITE_ONLY_EXTENSIONS = frozenset({".odt", ".ods", ".odp", ".doc", ".xls", ".ppt"})
 
 BACKEND_SUITE = "suite-docling"
 BACKEND_LOCAL_MARKITDOWN = "local-markitdown"
@@ -594,6 +608,10 @@ _LOCAL_CHAIN: Dict[str, List[tuple[str, str, Callable[[Path], str]]]] = {
     ".xlsx": [("markitdown", BACKEND_LOCAL_MARKITDOWN, _via_markitdown), ("openpyxl", BACKEND_LOCAL_XLSX, _via_openpyxl)],
     ".pptx": [("markitdown", BACKEND_LOCAL_MARKITDOWN, _via_markitdown), ("pptx", BACKEND_LOCAL_PPTX, _via_python_pptx)],
     ".pdf": [("pypdf", BACKEND_LOCAL_PYPDF, _via_pypdf), ("fitz", BACKEND_LOCAL_PYMUPDF, _via_pymupdf), ("markitdown", BACKEND_LOCAL_MARKITDOWN, _via_markitdown)],
+    # AIS-384: a document published as HTML (SharePoint guidance) needs the
+    # same clean read-back-as-Markdown treatment as a .docx.
+    ".html": [("markitdown", BACKEND_LOCAL_MARKITDOWN, _via_markitdown)],
+    ".htm": [("markitdown", BACKEND_LOCAL_MARKITDOWN, _via_markitdown)],
 }
 
 

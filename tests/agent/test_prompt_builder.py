@@ -28,6 +28,7 @@ from agent.prompt_builder import (
     build_outlook_contact_profiling_guidance,
     build_ai_attribution_guidance,
     build_teams_send_guidance,
+    build_sharepoint_guidance,
     build_jira_guidance,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
@@ -1804,6 +1805,71 @@ class TestBuildTeamsSendGuidance:
         assert "very end of the message" not in att
 
 
+class TestBuildSharePointGuidance:
+    """build_sharepoint_guidance() (AIS-384 / SUP-20260918-131539): only with
+    the SharePoint browse tool; states the resolution chain, the
+    Markdown-first author/convert/upload flow, and the anti-silence rule
+    that's the actual fix for the observed failure (4 turns of prose, zero
+    tool calls)."""
+
+    READ_NAMES = {
+        "mcp_MSOffice365MCP_m365_list_sharepoint_sites",
+        "mcp_MSOffice365MCP_m365_list_sharepoint_drives",
+        "mcp_MSOffice365MCP_m365_list_sharepoint_files",
+        "mcp_MSOffice365MCP_m365_search_sharepoint_files",
+    }
+    WRITE_NAMES = READ_NAMES | {
+        "mcp_MSOffice365MCP_m365_upload_sharepoint_file",
+        "mcp_MSOffice365MCP_m365_create_sharepoint_folder",
+    }
+
+    def test_empty_without_sharepoint_tools(self):
+        assert build_sharepoint_guidance(None) == ""
+        assert build_sharepoint_guidance({"read_file", "office_word"}) == ""
+        assert build_sharepoint_guidance({"mcp_MSOffice365MCP_m365_send_email"}) == ""
+
+    def test_read_only_resolution_guidance(self):
+        text = build_sharepoint_guidance(self.READ_NAMES)
+        assert text.startswith("# SharePoint: resolve the site, then act")
+        for name in self.READ_NAMES:
+            assert name in text
+        assert "Never guess a `site_id`" in text
+        assert "valid `site_id`" in text
+        # No write tool -> no write-flow lines.
+        assert "Author in Markdown first" not in text
+        assert "conflict_behavior" not in text
+
+    def test_full_guidance_mentions_every_tool(self):
+        text = build_sharepoint_guidance(self.WRITE_NAMES)
+        for name in self.WRITE_NAMES:
+            assert name in text
+        assert "Author in Markdown first" in text
+        assert "from_markdown" in text and ".docx" in text
+        assert 'conflict_behavior="rename"' in text
+        assert 'conflict_behavior="replace"' in text
+        assert "never hand-edit the binary" in text
+
+    def test_anti_silence_rule_always_present(self):
+        """The actual fix for the observed session (prose, no tool calls)."""
+        text = build_sharepoint_guidance(self.READ_NAMES)
+        assert "do not narrate a plan in prose instead of calling the tool" in text
+        assert "scope_tier='admin'" in text
+
+    def test_read_line_only_with_download_tool(self):
+        without = build_sharepoint_guidance(self.READ_NAMES)
+        assert "Reading what you found" not in without
+        with_download = build_sharepoint_guidance(self.READ_NAMES | {"mcp_MSOffice365MCP_m365_download_drive_file"})
+        assert "Reading what you found" in with_download
+        assert "as Markdown" in with_download
+
+    def test_deferred_line_only_with_tool_search(self):
+        without = build_sharepoint_guidance(self.WRITE_NAMES)
+        assert "may be deferred" not in without
+        with_bridge = build_sharepoint_guidance(self.WRITE_NAMES | {"tool_search", "tool_call", "tool_describe"})
+        assert "may be deferred behind `tool_search`" in with_bridge
+        assert "office_word" in with_bridge
+
+
 class TestDataHandlingMcpRecordsInstructions:
     """AIS-289: the mcp_records how-to lives once in the static prompt, not
     in a 600-char hint on every tool result."""
@@ -2022,4 +2088,8 @@ class TestDocumentGuidance:
         assert "`read_file(<path>)`" in text and "Docling" in text
         assert "read_metadata" in text and "storage_meta" in text
         assert "documents/attachments/" in text and "documents/m365_attachments/" in text
+        # AIS-384: SharePoint/OneDrive downloads land under m365_downloads/,
+        # not m365_attachments/ (only chat/mail attachments use that folder)
+        # -- the guidance used to name the wrong one.
+        assert "documents/m365_downloads/" in text
         assert "Never parse a document with terminal commands" in text

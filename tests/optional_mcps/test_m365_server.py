@@ -221,6 +221,162 @@ def test_m365_sharepoint_tools():
         mock_req.assert_called_with("GET", "/sites/site-123/drives/drive-456/root/children", params={"$top": 20})
 
 
+# --------------------------------------------------------------------------
+# AIS-384 / SUP-20260918-131539: SharePoint write tooling
+# --------------------------------------------------------------------------
+
+
+def test_resolve_sharepoint_target_resolves_url_and_default_drive():
+    def side_effect(method, endpoint, **kwargs):
+        if endpoint == "/sites/contoso.sharepoint.com:/sites/Guides":
+            return {"id": "resolved-site-id"}
+        if endpoint == "/sites/resolved-site-id/drive":
+            return {"id": "resolved-drive-id"}
+        raise AssertionError(f"unexpected endpoint {endpoint}")
+
+    with patch.object(server, "_graph_request", side_effect=side_effect):
+        site_id, drive_id = server._resolve_sharepoint_target(
+            "https://contoso.sharepoint.com/sites/Guides", None
+        )
+    assert site_id == "resolved-site-id"
+    assert drive_id == "resolved-drive-id"
+
+
+def test_resolve_sharepoint_target_passthrough_when_ids_given():
+    with patch.object(server, "_graph_request") as mock_req:
+        site_id, drive_id = server._resolve_sharepoint_target("site-1", "drive-1")
+    assert (site_id, drive_id) == ("site-1", "drive-1")
+    mock_req.assert_not_called()
+
+
+def test_m365_upload_sharepoint_file_small_put_defaults_to_rename(tmp_path):
+    small_file = tmp_path / "guide.docx"
+    small_file.write_text("content")
+    with patch.object(server, "_resolve_sharepoint_target", return_value=("site-1", "drive-1")), \
+         patch.object(server, "_graph_upload", return_value={"id": "item-1", "name": "guide.docx"}) as mock_upload:
+        result = server.m365_upload_sharepoint_file("site-1", str(small_file), drive_id="drive-1")
+    assert result["id"] == "item-1"
+    mock_upload.assert_called_once()
+    args, _ = mock_upload.call_args
+    assert args[0] == "PUT"
+    assert args[1] == "/sites/site-1/drives/drive-1/root:/guide.docx:/content?@microsoft.graph.conflictBehavior=rename"
+
+
+def test_m365_upload_sharepoint_file_chunked_for_large_files(tmp_path):
+    big_file = tmp_path / "big.docx"
+    big_file.write_bytes(b"x" * (server._ONEDRIVE_SIMPLE_UPLOAD_MAX_BYTES + 10))
+    fake_session = {"uploadUrl": "https://upload.example.com/session"}
+    with patch.object(server, "_resolve_sharepoint_target", return_value=("site-1", "drive-1")), \
+         patch.object(server, "_graph_request", return_value=fake_session) as mock_req:
+        mock_response = MagicMock()
+        mock_response.is_error = False
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"id": "item-2", "name": "big.docx"}
+        mock_client = MagicMock()
+        mock_client.put.return_value = mock_response
+        mock_client.__enter__.return_value = mock_client
+        with patch.object(server.httpx, "Client", return_value=mock_client):
+            result = server.m365_upload_sharepoint_file("site-1", str(big_file), drive_id="drive-1")
+    assert result["id"] == "item-2"
+    endpoint = mock_req.call_args.args[1]
+    assert "createUploadSession" in endpoint
+    session_item = mock_req.call_args.kwargs["json_data"]["item"]
+    assert session_item["@microsoft.graph.conflictBehavior"] == "rename"
+
+
+def test_m365_upload_sharepoint_file_folder_id_vs_folder_path(tmp_path):
+    f = tmp_path / "x.docx"
+    f.write_text("c")
+    with patch.object(server, "_resolve_sharepoint_target", return_value=("site-1", "drive-1")), \
+         patch.object(server, "_graph_upload", return_value={"id": "i"}) as mock_upload:
+        server.m365_upload_sharepoint_file("site-1", str(f), drive_id="drive-1", folder_id="folder-9")
+    assert "/items/folder-9:/x.docx:" in mock_upload.call_args.args[1]
+
+    with patch.object(server, "_resolve_sharepoint_target", return_value=("site-1", "drive-1")), \
+         patch.object(server, "_graph_upload", return_value={"id": "i"}) as mock_upload:
+        server.m365_upload_sharepoint_file("site-1", str(f), drive_id="drive-1", folder_path="Guides/2026")
+    assert "/root:/Guides/2026/x.docx:" in mock_upload.call_args.args[1]
+
+
+def test_m365_upload_sharepoint_file_rejects_folder_id_and_path_together(tmp_path):
+    f = tmp_path / "x.docx"
+    f.write_text("c")
+    result = server.m365_upload_sharepoint_file("site-1", str(f), folder_id="a", folder_path="b")
+    assert "error" in result
+
+
+def test_m365_create_sharepoint_folder_fails_on_conflict_by_design():
+    with patch.object(server, "_resolve_sharepoint_target", return_value=("site-1", "drive-1")), \
+         patch.object(server, "_graph_request", return_value={"id": "folder-1", "name": "Guides"}) as mock_req:
+        result = server.m365_create_sharepoint_folder("site-1", "Guides", drive_id="drive-1")
+    assert result["id"] == "folder-1"
+    args, kwargs = mock_req.call_args
+    assert args == ("POST", "/sites/site-1/drives/drive-1/root/children")
+    assert kwargs["json_data"] == {"name": "Guides", "folder": {}, "@microsoft.graph.conflictBehavior": "fail"}
+
+
+def test_m365_create_sharepoint_folder_under_parent():
+    with patch.object(server, "_resolve_sharepoint_target", return_value=("site-1", "drive-1")), \
+         patch.object(server, "_graph_request", return_value={"id": "folder-2"}) as mock_req:
+        server.m365_create_sharepoint_folder("site-1", "2026", drive_id="drive-1", parent_folder_id="folder-1")
+    assert mock_req.call_args.args[1] == "/sites/site-1/drives/drive-1/items/folder-1/children"
+
+
+def test_graph_upload_403_on_sites_endpoint_carries_consent_hint():
+    mock_response = MagicMock()
+    mock_response.is_error = True
+    mock_response.status_code = 403
+    mock_response.text = "Authorization_RequestDenied"
+    mock_client = MagicMock()
+    mock_client.request.return_value = mock_response
+    mock_client.__enter__.return_value = mock_client
+    with patch.object(server, "_get_access_token", return_value="token123"), \
+         patch.object(server.httpx, "Client", return_value=mock_client):
+        with pytest.raises(RuntimeError) as exc_info:
+            server._graph_upload("PUT", "/sites/site-1/drives/drive-1/root:/f:/content", b"x", "text/plain")
+    assert "admin tier" in str(exc_info.value)
+
+
+def test_graph_upload_403_on_absolute_upload_url_has_no_consent_hint():
+    mock_response = MagicMock()
+    mock_response.is_error = True
+    mock_response.status_code = 403
+    mock_response.text = "denied"
+    mock_client = MagicMock()
+    mock_client.request.return_value = mock_response
+    mock_client.__enter__.return_value = mock_client
+    with patch.object(server, "_get_access_token", return_value="token123"), \
+         patch.object(server.httpx, "Client", return_value=mock_client):
+        with pytest.raises(RuntimeError) as exc_info:
+            server._graph_upload("PUT", "https://upload.example.com/session", b"x", "text/plain")
+    assert "admin tier" not in str(exc_info.value)
+
+
+def test_m365_download_drive_file_hints_read_file_for_convertible_suffix(tmp_path):
+    with patch.object(server, "_graph_request", return_value={"id": "item-1", "name": "guide.docx"}), \
+         patch.object(server, "_graph_download_bytes", return_value=b"binary"), \
+         patch.object(server, "_resolve_save_path", return_value=tmp_path / "guide.docx"):
+        result = server.m365_download_drive_file("item-1")
+    assert result["next"] == "read_file(saved_path) -- returns this document as Markdown"
+
+
+def test_m365_download_drive_file_no_hint_for_non_document_suffix(tmp_path):
+    with patch.object(server, "_graph_request", return_value={"id": "item-1", "name": "photo.png"}), \
+         patch.object(server, "_graph_download_bytes", return_value=b"binary"), \
+         patch.object(server, "_resolve_save_path", return_value=tmp_path / "photo.png"):
+        result = server.m365_download_drive_file("item-1")
+    assert "next" not in result
+
+
+def test_sharepoint_write_tools_are_in_manifest_default_enabled():
+    import yaml
+
+    manifest_path = Path(__file__).parent.parent.parent / "optional-mcps" / "MSOffice365MCP" / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    enabled = set(manifest["tools"]["default_enabled"])
+    assert {"m365_upload_sharepoint_file", "m365_create_sharepoint_folder"} <= enabled
+
+
 def test_m365_send_chat_message_formatting():
     with patch.object(server, "_graph_request", return_value={"id": "msg-1"}) as mock_req:
         server.m365_send_chat_message("chat-123", "Para 1\n\nPara 2")

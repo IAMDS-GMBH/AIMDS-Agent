@@ -365,7 +365,9 @@ class TestAutoloadForMessage:
 
     def _setup(self):
         for suffix in ("m365_find_chat", "m365_download_chat_files", "m365_list_chat_messages",
-                       "m365_send_chat_message", "m365_download_drive_file"):
+                       "m365_send_chat_message", "m365_download_drive_file",
+                       "m365_list_sharepoint_sites", "m365_list_sharepoint_drives",
+                       "m365_list_sharepoint_files", "m365_search_sharepoint_files"):
             _register(f"mcp_al_{suffix}", "mcp-al")
         return _agent(["mcp-al"])
 
@@ -387,6 +389,22 @@ class TestAutoloadForMessage:
             agent, "hol mir https://iamds-my.sharepoint.com/personal/x/Documents/Plan.docx"
         )
         assert loaded == ["mcp_al_m365_download_drive_file"]
+
+    def test_sharepoint_site_url_also_loads_the_browse_chain(self):
+        # AIS-384: a /sites/ (or /teams/) URL is a document-library link, not
+        # a personal OneDrive one — load the resolution chain too, additive
+        # to the plain drive-download rule above.
+        agent = self._setup()
+        loaded = dt.autoload_for_message(
+            agent, "bitte auf https://iamds.sharepoint.com/sites/SetupGuides/Freigegebene%20Dokumente/x.docx"
+        )
+        assert set(loaded) == {
+            "mcp_al_m365_download_drive_file",
+            "mcp_al_m365_list_sharepoint_sites",
+            "mcp_al_m365_list_sharepoint_drives",
+            "mcp_al_m365_list_sharepoint_files",
+            "mcp_al_m365_search_sharepoint_files",
+        }
 
     def test_plain_text_loads_nothing(self):
         agent = self._setup()

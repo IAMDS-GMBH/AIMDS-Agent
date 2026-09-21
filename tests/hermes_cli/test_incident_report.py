@@ -114,6 +114,29 @@ def test_corrupt_state_file_is_ignored(monkeypatch, home):
     assert json.loads(ir.state_path().read_text(encoding="utf-8"))["k"]["case_id"]
 
 
+def test_category_is_derived_from_context_type(monkeypatch, home):
+    """AIS-384: category used to default unconditionally to
+    installation_update -- a boot failure reported via context_type=
+    "boot_error" without an explicit category must be filed as boot_error,
+    not silently mis-categorized as an update issue."""
+    calls: list[SimpleNamespace] = []
+    monkeypatch.setattr(ir, "_upload", _uploader(calls))
+
+    ir.report_incident("boot-failure-x", "backend exited", context_type="boot_error")
+    assert calls[-1].category == "boot_error"
+
+    ir.report_incident("install-failure-x", "install failed", context_type="install_failure")
+    assert calls[-1].category == "install_failure"
+
+    # Explicit category always wins over the context_type-derived default.
+    ir.report_incident("weird-x", "custom", context_type="boot_error", category="other")
+    assert calls[-1].category == "other"
+
+    # Unrecognised context_type falls back to the old default.
+    ir.report_incident("fallback-x", "unknown", context_type="something-new")
+    assert calls[-1].category == ir.CATEGORY_INSTALLATION_UPDATE
+
+
 def test_rate_limited_repeats_are_counted_for_the_next_report(monkeypatch, home, caplog):
     """AIS-344: a boot failure that repeats within the 24 h window is not
     lost — the state counts it and the count is readable for the next case."""

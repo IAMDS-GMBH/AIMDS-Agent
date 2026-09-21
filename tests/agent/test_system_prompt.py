@@ -268,6 +268,13 @@ class TestGuidanceSeesDeferredTools:
         "mcp_MSOffice365MCP_m365_download_chat_files",
     }
 
+    SHAREPOINT = {
+        "mcp_MSOffice365MCP_m365_list_sharepoint_sites",
+        "mcp_MSOffice365MCP_m365_list_sharepoint_drives",
+        "mcp_MSOffice365MCP_m365_list_sharepoint_files",
+        "mcp_MSOffice365MCP_m365_search_sharepoint_files",
+    }
+
     def test_teams_block_present_when_tools_are_deferred(self):
         # tui: the co-worker surface keeps the integration prose (the CLI's
         # developer posture drops it — see TestDeveloperPosturePrompt).
@@ -280,6 +287,19 @@ class TestGuidanceSeesDeferredTools:
         assert "# Teams: send to a person without guessing" in stable
         assert "mcp_MSOffice365MCP_m365_download_chat_files" in stable
         assert "tool_describe" in stable
+
+    def test_sharepoint_block_present_when_tools_are_deferred(self):
+        # AIS-384: same re-export-namespace bridge as Teams — this is exactly
+        # the class of bug that would leave the SharePoint block silently
+        # missing if run_agent.py's re-export list forgot the new builder.
+        agent = _make_agent(
+            valid_tool_names={"tool_search", "tool_call", "tool_describe", "terminal"},
+            platform="tui",
+        )
+        with patch("agent.deferred_tools.scoped_deferrable_names", return_value=frozenset(self.SHAREPOINT)):
+            stable = _stable_prompt(agent)
+        assert "# SharePoint: resolve the site, then act" in stable
+        assert "mcp_MSOffice365MCP_m365_list_sharepoint_sites" in stable
 
     def test_no_teams_block_without_bridge_and_without_tools(self):
         agent = _make_agent(valid_tool_names={"terminal"}, platform="cli")
@@ -304,6 +324,13 @@ class TestDeveloperPosturePrompt:
         "mcp_MSOffice365MCP_m365_send_chat_message",
         "mcp_MSOffice365MCP_m365_find_chat",
         "mcp_MSOffice365MCP_m365_download_chat_files",
+    }
+
+    SHAREPOINT = {
+        "mcp_MSOffice365MCP_m365_list_sharepoint_sites",
+        "mcp_MSOffice365MCP_m365_list_sharepoint_drives",
+        "mcp_MSOffice365MCP_m365_list_sharepoint_files",
+        "mcp_MSOffice365MCP_m365_search_sharepoint_files",
     }
 
     def test_cli_requests_dev_identity_variant(self):
@@ -346,6 +373,26 @@ class TestDeveloperPosturePrompt:
         with patch("agent.deferred_tools.scoped_deferrable_names", return_value=frozenset(self.M365)):
             stable = _stable_prompt(agent)
         assert "# Teams: send to a person without guessing" in stable
+        assert "Co-developer contract" not in stable
+
+    def test_sharepoint_guidance_dropped_on_cli_even_when_reachable(self):
+        agent = _make_agent(
+            valid_tool_names={"tool_search", "tool_call", "tool_describe", "terminal"},
+            platform="cli",
+        )
+        with patch("agent.deferred_tools.scoped_deferrable_names", return_value=frozenset(self.SHAREPOINT)):
+            stable = _stable_prompt(agent)
+        assert "# SharePoint: resolve the site, then act" not in stable
+        assert "Co-developer contract" in stable
+
+    def test_sharepoint_guidance_kept_on_tui(self):
+        agent = _make_agent(
+            valid_tool_names={"tool_search", "tool_call", "tool_describe", "terminal"},
+            platform="tui",
+        )
+        with patch("agent.deferred_tools.scoped_deferrable_names", return_value=frozenset(self.SHAREPOINT)):
+            stable = _stable_prompt(agent)
+        assert "# SharePoint: resolve the site, then act" in stable
         assert "Co-developer contract" not in stable
 
     def test_prebuilt_runtime_mode_is_reused(self):

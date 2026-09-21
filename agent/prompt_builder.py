@@ -2164,7 +2164,8 @@ def build_document_guidance(valid_tool_names: "set[str] | None" = None) -> str:
         "# Documents: keep the original, work on the converted copy\n"
         "Files the user attaches in chat or that arrive from mail, Teams or SharePoint are source material. "
         "The original stays unchanged in the Vault (chat attachments under `documents/attachments/<date>/`, "
-        "Microsoft 365 downloads under `documents/m365_attachments/`) — say where it is kept when you file or "
+        "chat/mail M365 attachments under `documents/m365_attachments/`, OneDrive/SharePoint downloads under "
+        "`documents/m365_downloads/`) — say where it is kept when you file or "
         "convert one. Read Office files (docx/xlsx/pptx/odt/ods/odp) and PDFs with `read_file(<path>)`: they "
         "come back as Markdown, converted by the AIMDS-Suite Docling when it is reachable and locally otherwise "
         "(the result names the converter and, when the Suite was skipped, why). Document metadata (author, "
@@ -2289,6 +2290,97 @@ def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str
             else ""
         )
         + index_line
+        + deferred_line
+    )
+
+
+def build_sharepoint_guidance(valid_tool_names: "set[str] | None" = None) -> str:
+    """SharePoint: resolve the site, then act — author in Markdown first.
+
+    AIS-384 (SUP-20260918-131539): a real session asked the agent to migrate
+    "Setup Guides" content into SharePoint; it talked in prose across 4 turns
+    and never called a single SharePoint tool. Unlike Mail (4 builders) and
+    Teams (1), SharePoint had no dedicated guidance block at all — states the
+    capabilities (no recipe): the sites -> drives -> files resolution chain
+    is the only way in (never guess/ask for an id), content is authored as
+    Markdown and converted before upload (round-trips cleanly back through
+    `read_file` later, unlike a hand-written binary), and a failed call must
+    be reported, never silently worked around.
+
+    Only injected when the MSOffice365MCP SharePoint browse tool is present.
+    """
+    names = set(valid_tool_names or set())
+    sites_tool = _resolve_m365_tool_name(names, "m365_list_sharepoint_sites")
+    if not sites_tool:
+        return ""
+    drives_tool = _resolve_m365_tool_name(names, "m365_list_sharepoint_drives")
+    files_tool = _resolve_m365_tool_name(names, "m365_list_sharepoint_files")
+    search_tool = _resolve_m365_tool_name(names, "m365_search_sharepoint_files")
+    upload_tool = _resolve_m365_tool_name(names, "m365_upload_sharepoint_file")
+    folder_tool = _resolve_m365_tool_name(names, "m365_create_sharepoint_folder")
+    download_tool = _resolve_m365_tool_name(names, "m365_download_drive_file")
+
+    resolve_bits = [f"`{sites_tool}(search=<name>)`"]
+    if drives_tool:
+        resolve_bits.append(f"`{drives_tool}(site_id)` (omit `drive_id` downstream to use the site's default document library)")
+    if files_tool or search_tool:
+        list_or_search = " / ".join(f"`{t}`" for t in (files_tool, search_tool) if t)
+        resolve_bits.append(list_or_search)
+    resolve_line = (
+        "Never guess a `site_id`, `drive_id` or `folder_id`, and never ask the user for one: "
+        + " -> ".join(resolve_bits)
+        + ". A SharePoint site URL the user pastes is a valid `site_id` — it resolves automatically.\n"
+    )
+
+    write_line = ""
+    if upload_tool:
+        write_line = (
+            f"Author in Markdown first: draft with `write_file`, get approval on the Markdown itself "
+            f"(that is what gets shown and reviewed), then convert — `office_word(action=from_markdown, "
+            f"source_path=<the .md>, output_path=<name>.docx)` for a document-library item (the default "
+            "for guides/documentation: it round-trips cleanly back through `read_file` later, unlike raw "
+            "HTML), or `office_word(action=convert, path=<the .md>, format=html)` only when the user "
+            f"specifically wants a web page. Keep the `.md` as the editable source and say where it is "
+            f"kept. Upload with `{upload_tool}` — it defaults to `conflict_behavior=\"rename\"` (never "
+            "silently overwrites); show the target site/library/folder and the file, get approval, then "
+            "upload, and only pass `conflict_behavior=\"replace\"` when the user explicitly asked to "
+            "overwrite an existing file."
+            + (
+                f" To create a new folder structure first, use `{folder_tool}`."
+                if folder_tool
+                else ""
+            )
+            + " Revising a document already in SharePoint: download it, `read_file` it back as Markdown, "
+            "edit the Markdown, reconvert and re-upload with `conflict_behavior=\"replace\"` — never "
+            "hand-edit the binary.\n"
+        )
+
+    read_line = ""
+    if download_tool:
+        read_line = (
+            f"Reading what you found: `{download_tool}(file_id=<webUrl or item id>)` saves it locally, "
+            "then `read_file(saved_path)` returns it as Markdown (Office files/PDF via Docling, same as "
+            "any other document source) — read it once with a sensible range, do not re-read it.\n"
+        )
+
+    deferred_line = (
+        " `office_word` and these SharePoint tools may be deferred behind `tool_search`: load one with "
+        "`tool_describe(<name>)` or call it directly via `tool_call(<name>, {...})` — do not substitute "
+        "the terminal, a browser or OneDrive for them."
+        if "tool_search" in names
+        else ""
+    )
+
+    return (
+        "# SharePoint: resolve the site, then act\n"
+        + resolve_line
+        + write_line
+        + read_line
+        + "If a SharePoint call fails, say which call failed and what it returned — do not narrate a plan "
+        "in prose instead of calling the tool. SharePoint needs the admin consent tier: on a permission "
+        "error the tool result already contains the fix (a consent URL and/or "
+        "`m365_initiate_login(scope_tier='admin')`) — relay it and stop, do not retry blindly or "
+        "substitute a workaround with credentials found elsewhere."
         + deferred_line
     )
 

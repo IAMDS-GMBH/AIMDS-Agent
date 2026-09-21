@@ -257,7 +257,18 @@ export function ReportIssueDialog({
     if (!fn) {return}
     let cancelled = false
     setPreviewLoading(true)
-    fn({ category, contextType, dryRun: true, fullLogs, installType, reason: 'preview' } as any)
+    // AIS-384: the preview used to omit sessionId, so once the backend
+    // scopes a focused bundle to the reporting session the preview showed a
+    // different (larger, unscoped) bundle than what actually gets sent.
+    fn({
+      category,
+      contextType,
+      dryRun: true,
+      fullLogs,
+      installType,
+      sessionId: includeSession && sessionId ? sessionId : undefined,
+      reason: 'preview'
+    } as any)
       .then(res => {
         if (!cancelled) {setPreview(res && res.ok ? res : null)}
       })
@@ -271,7 +282,7 @@ export function ReportIssueDialog({
     return () => {
       cancelled = true
     }
-  }, [open, category, contextType, fullLogs, installType])
+  }, [open, category, contextType, fullLogs, installType, includeSession, sessionId])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

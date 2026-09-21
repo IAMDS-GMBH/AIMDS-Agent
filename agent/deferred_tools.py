@@ -409,6 +409,19 @@ _MESSAGE_AUTOLOAD_RULES: Tuple[Tuple["re.Pattern[str]", Tuple[str, ...]], ...] =
         re.compile(r"(?:\.sharepoint\.com/|1drv\.ms/|onedrive\.live\.com/)", re.IGNORECASE),
         ("m365_download_drive_file",),
     ),
+    (
+        # A SharePoint *site* URL (not a personal OneDrive-for-Business one,
+        # which is ``/personal/...``) — load the browse chain too, so the
+        # model can resolve the pasted link to a site_id/drive_id without a
+        # tool_search round trip (AIS-384).
+        re.compile(r"\.sharepoint\.com/(?:sites|teams)/", re.IGNORECASE),
+        (
+            "m365_list_sharepoint_sites",
+            "m365_list_sharepoint_drives",
+            "m365_list_sharepoint_files",
+            "m365_search_sharepoint_files",
+        ),
+    ),
 )
 
 

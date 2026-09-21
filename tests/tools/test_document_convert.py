@@ -112,14 +112,27 @@ def _docx(path: Path, paragraphs=("Hello Docling", "Second paragraph")) -> Path:
 # --------------------------------------------------------------------------- classification
 
 class TestClassification:
-    @pytest.mark.parametrize("name", ["a.docx", "b.XLSX", "c.pptx", "d.pdf", "e.odt", "f.ods", "g.odp"])
+    @pytest.mark.parametrize(
+        "name",
+        ["a.docx", "b.XLSX", "c.pptx", "d.pdf", "e.odt", "f.ods", "g.odp", "h.doc", "i.xls", "j.ppt", "k.html", "l.HTM"],
+    )
     def test_convertible(self, name):
         assert dc.is_convertible_document(name)
 
     @pytest.mark.parametrize("name", ["a.doc", "b.xls", "c.ppt"])
-    def test_legacy(self, name):
-        assert dc.is_legacy_office_document(name)
-        assert not dc.is_convertible_document(name)
+    def test_legacy_office_formats_route_through_the_suite_only_path_not_rejected(self, name):
+        """AIS-384: .doc/.xls/.ppt used to be hard-rejected (is_legacy_office_document);
+        they now route through the same Suite-only (LibreOffice-backed Docling)
+        path .odt/.ods/.odp already use, matching Johannes's explicit request
+        to handle "doc, pdf, excel und so" optimally via Docling."""
+        assert not dc.is_legacy_office_document(name)
+        assert dc.is_convertible_document(name)
+        assert Path(name).suffix.lower() in dc._SUITE_ONLY_EXTENSIONS
+
+    def test_legacy_office_mechanism_is_empty_but_still_present(self):
+        # Not deleted -- kept available for a genuinely unsupported format.
+        assert dc.LEGACY_OFFICE_EXTENSIONS == frozenset()
+        assert not dc.is_legacy_office_document("whatever.doc")
 
     @pytest.mark.parametrize("name", ["a.txt", "b.md", "c.png", "noext"])
     def test_plain(self, name):

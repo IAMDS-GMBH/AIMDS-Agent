@@ -37,6 +37,20 @@ DEFAULT_WINDOW_SECONDS = 24 * 60 * 60
 _UPLOAD_TIMEOUT_SECONDS = 20
 _MAX_LOG_LINES = 400
 
+# AIS-384: report_incident used to default `category` unconditionally to
+# CATEGORY_INSTALLATION_UPDATE, so a caller that (like this module's own
+# single call site historically did) forgot to pass an explicit category
+# would silently mis-file e.g. a boot failure as an installation/update
+# issue -- which is what support triage actually filters on. Resolve from
+# `context_type` instead when the caller doesn't pass one explicitly.
+_CATEGORY_FOR_CONTEXT: dict[str, str] = {
+    "boot_error": "boot_error",
+    "install_failure": "install_failure",
+    "install_error": "install_error",
+    "update_error": CATEGORY_INSTALLATION_UPDATE,
+    "update_failure": CATEGORY_INSTALLATION_UPDATE,
+}
+
 
 def _hermes_home() -> Path:
     from hermes_constants import get_hermes_home
@@ -171,7 +185,7 @@ def report_incident(
     description: str = "",
     *,
     severity: str = "medium",
-    category: str = CATEGORY_INSTALLATION_UPDATE,
+    category: str = "",
     context_type: str = "update_failure",
     install_type: str = "update",
     client_type: str = "hermes-cli",
@@ -182,9 +196,12 @@ def report_incident(
 
     Returns the case / reference id when a case was created, else ``None``.
     ``kind`` is a stable slug such as ``update-fallback-git`` — it becomes the
-    upload reason and the rate-limit key.
+    upload reason and the rate-limit key. ``category`` defaults to a
+    resolution from ``context_type`` (see ``_CATEGORY_FOR_CONTEXT``); an
+    explicit ``category`` always wins.
     """
     kind = (kind or "incident").strip().lower().replace(" ", "-")
+    resolved_category = category or _CATEGORY_FOR_CONTEXT.get(context_type, CATEGORY_INSTALLATION_UPDATE)
     logger.warning("[incident] %s: %s%s", kind, summary, f" — {description}" if description else "")
     if not auto_report_enabled():
         logger.info("[incident] %s not reported (support.auto_report is off)", kind)
@@ -195,7 +212,7 @@ def report_incident(
         return None
     args = SimpleNamespace(
         reason=kind,
-        category=category,
+        category=resolved_category,
         severity=severity,
         summary=summary[:200],
         user_description=description,

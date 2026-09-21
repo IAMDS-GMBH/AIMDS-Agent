@@ -253,6 +253,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         if teams_send_guidance:
             stable_parts.append(teams_send_guidance)
 
+        # AIS-384: SharePoint had no dedicated guidance at all (unlike Mail's
+        # 4 builders and Teams' 1) — the direct cause of a real session
+        # talking in prose for 4 turns and never calling a SharePoint tool.
+        sharepoint_guidance = _r.build_sharepoint_guidance(_guidance_names)
+        if sharepoint_guidance:
+            stable_parts.append(sharepoint_guidance)
+
         # AIS-349: documents from any source — original kept, read via
         # read_file (Docling), metadata tools named, no terminal parsing.
         document_guidance = _r.build_document_guidance(_guidance_names)
