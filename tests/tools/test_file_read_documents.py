@@ -69,9 +69,13 @@ def test_pdf_never_returns_raw_bytes(tmp_path):
 
 
 def test_legacy_doc_gets_explicit_message(tmp_path):
+    # AIS-384: .doc now routes through the Suite-only Docling path (the same
+    # mechanism .odt/.ods/.odp already use) instead of being hard-rejected —
+    # unreachable Suite surfaces as this explicit error, not a silent read.
     (tmp_path / "old.doc").write_bytes(b"\xd0\xcf\x11\xe0 legacy")
     out = json.loads(read_file_tool(str(tmp_path / "old.doc")))
-    assert "legacy binary Office format" in out["error"]
+    assert "needs the AIMDS-Suite Docling" in out["error"]
+    assert "Do not parse the file with terminal commands" in out["error"]
 
 
 def test_other_binaries_keep_the_guard(tmp_path):
