@@ -937,7 +937,12 @@ jobs:
           set -euo pipefail
           app="$(ls -d apps/desktop/release/mac*/Hermes.app | head -1)"
           codesign --verify --deep --strict --verbose=2 "$app"
-          if ! codesign -dv "$app" 2>&1 | grep -q "Authority=Developer ID Application"; then
+          # codesign -dv at the default verbosity never prints Authority=
+          # lines at all (confirmed locally against a real Developer-ID-signed
+          # app: empty at -dv, full chain at --verbose=4) -- this check was a
+          # permanent false negative regardless of whether signing was
+          # correct, unreached until the AIS-389/390 fixes got this far.
+          if ! codesign -dv --verbose=4 "$app" 2>&1 | grep -q "Authority=Developer ID Application"; then
             echo "::error::Hermes.app is not signed with a Developer ID certificate"
             exit 1
           fi
