@@ -649,6 +649,26 @@ export interface Translations {
           reauthTitle: (envLabel: string) => string
           reauthBody: (domain: string) => string
         }
+        cli: {
+          title: string
+          intro: string
+          notInstalled: string
+          notConfigured: string
+          inSync: string
+          urlDrift: string
+          keyDrift: string
+          unknown: string
+          setUp: string
+          update: string
+          suiteMissing: string
+          confirmTitle: string
+          confirmBody: (label: string, path: string) => string
+          confirmAction: string
+          writtenTitle: string
+          writtenMessage: (label: string, path: string) => string
+          unchangedMessage: (label: string) => string
+          failedTitle: string
+        }
         reason: {
           keyMissing: string
           urlMissing: string

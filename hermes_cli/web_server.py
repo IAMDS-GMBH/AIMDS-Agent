@@ -1808,6 +1808,50 @@ async def complete_aimds_suite_reauth(env: str, request: Request, profile: Optio
     return {"ok": True, **result}
 
 
+@app.get("/api/providers/aimds-suite/cli-targets")
+async def get_aimds_suite_cli_targets(request: Request, profile: Optional[str] = None):
+    """Which local CLIs could host the Suite MCP, and whether they match (AIS-404).
+
+    Token-gated even though it returns no secret: it reports which tools are
+    installed and where their config lives, and the fingerprint comparison
+    behind it reads the resolved Suite key.
+    """
+    _require_token(request)
+    from hermes_cli.cli_mcp_sync import all_statuses
+
+    with _profile_scope(profile):
+        return await asyncio.get_running_loop().run_in_executor(None, all_statuses)
+
+
+class CliMcpSyncRequest(BaseModel):
+    # Replacing a key the user may have put there on purpose needs an explicit
+    # yes from the dialog, never a default.
+    replace_key: bool = False
+
+
+@app.post("/api/providers/aimds-suite/cli-targets/{target_id}/apply")
+async def apply_aimds_suite_cli_target(
+    target_id: str,
+    request: Request,
+    body: Optional[CliMcpSyncRequest] = None,
+    profile: Optional[str] = None,
+):
+    """Write the AIMDSSuiteMCP entry into that CLI's config.
+
+    The key itself never crosses this boundary: the writer resolves it inside
+    Python and the response carries only a status report.
+    """
+    _require_token(request)
+    from hermes_cli.cli_mcp_sync import apply_to_target
+
+    replace_key = bool(body.replace_key) if body else False
+    with _profile_scope(profile):
+        report = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: apply_to_target(target_id, replace_key=replace_key)
+        )
+    return report.to_dict()
+
+
 @app.get("/api/subagents")
 async def get_active_subagents():
     """List currently active subagents/delegations in the gateway process."""

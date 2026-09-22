@@ -759,6 +759,28 @@ export const en: Translations = {
           reauthTitle: (envLabel: string) => `AIMDS-Suite: re-authentication required (${envLabel})`,
           reauthBody: (domain: string) => `Suite sign-in for ${domain} has expired. Please sign in again.`
         },
+        cli: {
+          title: 'Local CLIs',
+          intro: 'Adds the AIMDS-Suite MCP to your other installed CLIs. The key is written in plain text into their configuration file.',
+          notInstalled: 'Not installed',
+          notConfigured: 'Not set up',
+          inSync: 'Set up',
+          urlDrift: 'Different address',
+          keyDrift: 'Different key',
+          unknown: 'Unreadable',
+          setUp: 'Set up',
+          update: 'Update',
+          suiteMissing: 'No AIMDS-Suite key configured — sign in above first.',
+          confirmTitle: 'Replace the key?',
+          confirmBody: (label: string, path: string) =>
+            `${label} already holds a different key. It will be replaced with the current AIMDS-Suite key and written in plain text into ${path}. A backup is kept alongside it.`,
+          confirmAction: 'Replace',
+          writtenTitle: 'Set up',
+          writtenMessage: (label: string, path: string) =>
+            `${label} was configured in ${path}. Restart the CLI so it picks the server up.`,
+          unchangedMessage: (label: string) => `${label} was already up to date.`,
+          failedTitle: 'Could not set up'
+        },
         reason: {
           keyMissing: 'No API key stored',
           urlMissing: 'No base URL configured',

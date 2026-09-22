@@ -3,6 +3,8 @@ import { JsonRpcGatewayClient } from '@hermes/shared'
 import type {
   ActionResponse,
   ActionStatusResponse,
+  AimdsSuiteCliSyncReport,
+  AimdsSuiteCliTargetsResponse,
   AimdsSuiteStatusResponse,
   AnalyticsResponse,
   AudioSpeakResponse,
@@ -456,6 +458,25 @@ export function completeAimdsSuiteReauth(env: string): Promise<{ ok: boolean }> 
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...profileScoped(),
     path: `/api/providers/aimds-suite/${encodeURIComponent(env)}/reauth-complete`,
+    method: 'POST'
+  })
+}
+
+export function getAimdsSuiteCliTargets(): Promise<AimdsSuiteCliTargetsResponse> {
+  return window.hermesDesktop.api<AimdsSuiteCliTargetsResponse>({
+    ...profileScoped(),
+    path: '/api/providers/aimds-suite/cli-targets'
+  })
+}
+
+export function applyAimdsSuiteCliTarget(
+  targetId: string,
+  options: { replaceKey?: boolean } = {}
+): Promise<AimdsSuiteCliSyncReport> {
+  return window.hermesDesktop.api<AimdsSuiteCliSyncReport>({
+    ...profileScoped(),
+    body: { replace_key: Boolean(options.replaceKey) },
+    path: `/api/providers/aimds-suite/cli-targets/${encodeURIComponent(targetId)}/apply`,
     method: 'POST'
   })
 }

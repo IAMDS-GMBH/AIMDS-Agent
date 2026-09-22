@@ -760,6 +760,28 @@ export const de
           reauthTitle: (envLabel: string) => `AIMDS-Suite: Anmeldung erforderlich (${envLabel})`,
           reauthBody: (domain: string) => `Die Suite-Anmeldung für ${domain} ist abgelaufen. Bitte erneut anmelden.`
         },
+        cli: {
+          title: 'Lokale CLIs',
+          intro: 'Trägt den AIMDS-Suite-MCP in andere installierte CLIs ein. Der Schlüssel wird dabei im Klartext in deren Konfigurationsdatei geschrieben.',
+          notInstalled: 'Nicht installiert',
+          notConfigured: 'Nicht eingetragen',
+          inSync: 'Eingetragen',
+          urlDrift: 'Andere Adresse',
+          keyDrift: 'Anderer Schlüssel',
+          unknown: 'Nicht lesbar',
+          setUp: 'Eintragen',
+          update: 'Aktualisieren',
+          suiteMissing: 'Kein AIMDS-Suite-Schlüssel konfiguriert — erst oben anmelden.',
+          confirmTitle: 'Schlüssel ersetzen?',
+          confirmBody: (label: string, path: string) =>
+            `In ${label} steht bereits ein anderer Schlüssel. Er wird durch den aktuellen AIMDS-Suite-Schlüssel ersetzt und im Klartext in ${path} geschrieben. Eine Sicherungskopie wird daneben angelegt.`,
+          confirmAction: 'Ersetzen',
+          writtenTitle: 'Eingetragen',
+          writtenMessage: (label: string, path: string) =>
+            `${label} wurde in ${path} konfiguriert. Starte die CLI neu, damit sie den Server lädt.`,
+          unchangedMessage: (label: string) => `${label} war bereits aktuell.`,
+          failedTitle: 'Eintragen fehlgeschlagen'
+        },
         reason: {
           keyMissing: 'Kein API-Schlüssel hinterlegt',
           urlMissing: 'Keine Base-URL konfiguriert',
