@@ -663,6 +663,8 @@ export const de
       catalogInstall: 'Installieren',
       catalogInstalled: 'Installiert',
       catalogInstalling: 'Installiere...',
+      catalogAccountRequired: 'Konto nicht verbunden — verbinde es zuerst, dann wird diese Integration automatisch eingerichtet.',
+      catalogAccountConnect: 'Konto verbinden',
       catalogModalTitle: (name: string) => `${name} konfigurieren`,
       catalogModalDesc: 'Gib die erforderlichen Secrets oder Tokens ein, um diese MCP-Integration zu aktivieren.',
       catalogSecretsNotice: 'Secrets werden sicher in deiner .env-Konfiguration gespeichert.',

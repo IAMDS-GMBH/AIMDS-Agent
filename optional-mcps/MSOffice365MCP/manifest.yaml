@@ -6,6 +6,11 @@ disabled: false
 description: Access Microsoft 365 services (Outlook Mail, Outlook Calendar, Teams, OneDrive, Directory/Users, Contacts, and SharePoint) via MS Graph API.
 source: https://github.com/IAMDS-GMBH/hermes-agent/tree/main/optional-mcps/MSOffice365MCP
 
+# AIS-401: connecting this account first is the shorter path — it installs and
+# enables this server on its own (_auto_enable_m365_toolset). Advisory: the
+# catalog shows the missing connection and links to it, installing stays possible.
+requires_account: microsoft
+
 transport:
   type: stdio
   command: "${INSTALL_DIR}/.venv/bin/python"

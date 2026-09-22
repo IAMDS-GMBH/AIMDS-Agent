@@ -159,9 +159,17 @@ class CatalogEntry:
     # large tool surface (openproject-ce-mcp: ~150 tools) save tokens in every
     # tool_search hit, call and result.
     tool_prefix: str = ""
+    # AIS-401: OAuth provider id (see the accounts list in the dashboard) whose
+    # account has to be connected for this server to work. Advisory only —
+    # installing without it stays possible, because a wrong check must never
+    # dead-end a user. It lets the catalog card say "account not connected"
+    # with a link instead of leaving people to find the login by chance, and it
+    # tells the model to point at the account rather than at a reinstall.
+    requires_account: str = ""
 
 
 _TOOL_PREFIX_RE = re.compile(r"^[a-z0-9]{1,8}$")
+_PROVIDER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 
 # ─── Manifest loader ─────────────────────────────────────────────────────────
@@ -225,6 +233,12 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     if tool_prefix and not _TOOL_PREFIX_RE.match(tool_prefix):
         raise CatalogError(
             f"{path}: tool_prefix must match {_TOOL_PREFIX_RE.pattern} (got {tool_prefix!r})"
+        )
+
+    requires_account = str(data.get("requires_account") or "").strip()
+    if requires_account and not _PROVIDER_ID_RE.match(requires_account):
+        raise CatalogError(
+            f"{path}: requires_account must match {_PROVIDER_ID_RE.pattern} (got {requires_account!r})"
         )
 
     transport_raw = data.get("transport") or {}
@@ -340,6 +354,7 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         disabled=bool(data.get("disabled", False)),
         manifest_path=path,
         tool_prefix=tool_prefix,
+        requires_account=requires_account,
     )
 
 

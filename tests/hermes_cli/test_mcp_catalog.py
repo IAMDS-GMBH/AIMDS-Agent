@@ -2521,6 +2521,31 @@ class TestVersionPinsAndToolPrefix:
             with pytest.raises(CatalogError):
                 _parse_manifest(path)
 
+    def test_requires_account_parsed_and_validated(self, catalog_dir):
+        """AIS-401: the account a server depends on, so the catalog can say
+        'not connected' with a link instead of leaving people to find the
+        sign-in by chance (SUP-20260918-120608)."""
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        ok = _write_manifest(catalog_dir, "demo", _basic_manifest(requires_account="microsoft"))
+        assert _parse_manifest(ok).requires_account == "microsoft"
+
+        plain = _write_manifest(catalog_dir, "plain", _basic_manifest(name="plain"))
+        assert _parse_manifest(plain).requires_account == ""
+
+        for bad in ("Microsoft", "has space", "-leading", "x" * 33):
+            path = _write_manifest(catalog_dir, "bad", _basic_manifest(name="bad", requires_account=bad))
+            with pytest.raises(CatalogError):
+                _parse_manifest(path)
+
+    def test_shipped_m365_manifest_declares_its_account(self):
+        """Connecting the account auto-installs this server, so the catalog must
+        be able to point there."""
+        from hermes_cli.mcp_catalog import get_entry
+
+        entry = get_entry("MSOffice365MCP")
+        assert entry is not None and entry.requires_account == "microsoft"
+
     def test_build_server_config_writes_tool_prefix(self, catalog_dir):
         from hermes_cli.mcp_catalog import _build_server_config, _parse_manifest
 
