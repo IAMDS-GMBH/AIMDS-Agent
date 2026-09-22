@@ -9399,6 +9399,18 @@ def _run_post_update_pipeline(
     except Exception as e:
         logger.debug("MCP catalog install refresh during update failed: %s", e)
 
+    # AIS-405: a corrected manifest only reaches new installs — an existing one
+    # keeps its own tools.include, so a renamed or withdrawn tool stays in it
+    # and keeps warning on every start. Runs for every configured catalog
+    # server, including the ones with no install block that the refresh above
+    # skips by design (GithubMCP, TempoMCP).
+    try:
+        from hermes_cli.mcp_catalog import reconcile_tool_includes
+
+        reconcile_tool_includes()
+    except Exception as e:
+        logger.debug("MCP tool-include reconcile during update failed: %s", e)
+
     print()
     print("✓ Update complete!")
 
