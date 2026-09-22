@@ -42,6 +42,12 @@ auth:
       secret: false
 
 tools:
+  # One scheme only: the npx server advertises these camelCase names. The list
+  # used to carry a snake_case variant of each as well, so five entries could
+  # never match anything and every client logged them as "not advertised" on
+  # every start (AIS-403). Two more (create_worklog, delete_worklog) stayed
+  # quiet only because the alias matching folded them onto the camelCase twins
+  # already listed here — redundant rather than correct.
   default_enabled:
     - retrieveWorklogs
     - createWorklog
@@ -50,13 +56,6 @@ tools:
     - deleteWorklog
     - getMissingWorklogDays
     - getWorklogAnalytics
-    - get_worklogs
-    - create_worklog
-    - update_worklog
-    - delete_worklog
-    - get_user_schedule
-    - missing_days_report
-    - worklog_analytics
 
 post_install: |
   Tempo MCP (@ivelin-web/tempo-mcp-server via npx) has been configured.
