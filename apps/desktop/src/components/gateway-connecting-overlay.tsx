@@ -45,8 +45,11 @@ const TAIL = 'ECTING'
 // ensure cross-platform compatibility across Windows, macOS, and Linux font engines.
 const SCRAMBLE_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ#$@%&*!?'
 const TICK_MS = 45
-const MESSAGE_STEP_MS = 2800
-const STARTUP_MIN_MS = MESSAGE_STEP_MS * 3
+const MESSAGE_STEP_MS = 4200
+// Absolute, deliberately not MESSAGE_STEP_MS * n: the minimum keeps the overlay
+// from merely flashing on a warm start, but it must not grow when the messages
+// linger longer — that would hold back an already-ready backend.
+const STARTUP_MIN_MS = 8400
 
 const TEAM_MESSAGES_DE = [
   'Patrick aktiviert Arbeitskräfte...',
@@ -79,7 +82,21 @@ const TEAM_MESSAGES_DE = [
   'Johannes überzeugt den KI-Agenten, dass YAML besser ist als JSON...',
   'Martin startet den Docker-Daemon neu (schon wieder)...',
   'Tobias jagt einen Race Condition-Bug im Warenkorb...',
-  'Johannes optimiert die System-Prompts für maximale Höflichkeit...'
+  'Johannes optimiert die System-Prompts für maximale Höflichkeit...',
+  'Martin googelt die Fehlermeldung, die er selbst geschrieben hat...',
+  'Gonzalo erklärt dem Cluster, wer hier der Chef ist...',
+  'Benedikt hat schon wieder einen Weg gefunden, alles zum Absturz zu bringen...',
+  'Matthias schiebt das Fälligkeitsdatum ein kleines Stück nach rechts...',
+  'Tobias schaltet den Cache aus und wieder ein...',
+  'Patrick verwandelt Kaffee in Kundentermine...',
+  'Michael malt das Diagramm, das endlich alles erklärt...',
+  'Julian kompiliert den Kernel – nur zur Sicherheit...',
+  'Johannes diskutiert mit dem Linter über Zeilenlängen...',
+  'Der Agent liest die Dokumentation. Freiwillig...',
+  'Wir suchen noch kurz das fehlende Semikolon...',
+  'Die Tests sind grün. Verdächtig grün...',
+  'Ein Merge-Konflikt wird auf dem Verhandlungsweg gelöst...',
+  'Übrigens: Fehler meldest du über ⚙️ Einstellungen → Problem melden...'
 ] as const
 
 const TEAM_MESSAGES_EN = [
@@ -113,7 +130,21 @@ const TEAM_MESSAGES_EN = [
   'Johannes is convincing the AI agent that YAML is better than JSON...',
   'Martin is restarting the Docker daemon (yet again)...',
   'Tobias is chasing a race condition bug in the shopping cart...',
-  'Johannes is optimizing system prompts for maximum politeness...'
+  'Johannes is optimizing system prompts for maximum politeness...',
+  'Martin is googling the error message he wrote himself...',
+  'Gonzalo is explaining to the cluster who is in charge here...',
+  'Benedikt found yet another way to crash the whole thing...',
+  'Matthias is nudging the due date a little to the right...',
+  'Tobias is turning the cache off and on again...',
+  'Patrick is turning coffee into customer meetings...',
+  'Michael is drawing the diagram that finally explains everything...',
+  'Julian is compiling the kernel – just to be safe...',
+  'Johannes is arguing with the linter about line lengths...',
+  'The agent is reading the documentation. Voluntarily...',
+  'Still looking for that one missing semicolon...',
+  'The tests are green. Suspiciously green...',
+  'Negotiating a diplomatic solution to a merge conflict...',
+  'By the way: report bugs via ⚙️ Settings → Report Issue...'
 ] as const
 
 const BUSINESS_MESSAGES_DE = [
@@ -124,7 +155,19 @@ const BUSINESS_MESSAGES_DE = [
   'Kompiliere Zusammenfassungen und Berichte...',
   'Prüfe Dokumentenstrukturen und Richtlinien...',
   'Optimiere Kommunikations- und Entscheidungswege...',
-  'Lade spezialisierte KI-Werkzeuge für den Arbeitsbereich...'
+  'Lade spezialisierte KI-Werkzeuge für den Arbeitsbereich...',
+  'Lade Arbeitsbereich und zuletzt genutzte Sitzungen...',
+  'Prüfe verfügbare Werkzeuge und Berechtigungen...',
+  'Stelle Verbindungen zu verknüpften Konten her...',
+  'Gleiche Kalender- und Aufgabenquellen ab...',
+  'Bereite die Dokumentenverarbeitung vor...',
+  'Aktualisiere den Katalog verfügbarer Fähigkeiten...',
+  'Richte den sicheren Zugriff auf Unternehmensdaten ein...',
+  'Ordne Aufgaben nach Priorität und Fälligkeit...',
+  'Initialisiere den Arbeitsspeicher der Sitzung...',
+  'Übernehme Sprach- und Anzeigeeinstellungen...',
+  'Stelle die Verbindung zum Modellanbieter her...',
+  'Hinweis: Rückmeldungen erreichen uns über ⚙️ Einstellungen → Problem melden...'
 ] as const
 
 const BUSINESS_MESSAGES_EN = [
@@ -135,7 +178,19 @@ const BUSINESS_MESSAGES_EN = [
   'Compiling summaries and reports...',
   'Verifying document structures and guidelines...',
   'Optimizing communication and decision channels...',
-  'Loading specialized AI tools for the workspace...'
+  'Loading specialized AI tools for the workspace...',
+  'Loading workspace and recent sessions...',
+  'Checking available tools and permissions...',
+  'Connecting to linked accounts...',
+  'Reconciling calendar and task sources...',
+  'Preparing document processing...',
+  'Refreshing the catalog of available capabilities...',
+  'Setting up secure access to company data...',
+  'Sorting tasks by priority and due date...',
+  'Initializing session memory...',
+  'Applying language and display preferences...',
+  'Establishing the connection to the model provider...',
+  'Note: you can send us feedback via ⚙️ Settings → Report Issue...'
 ] as const
 
 // Exit choreography (ms): text fades down + out, hold, then the overlay fades.
