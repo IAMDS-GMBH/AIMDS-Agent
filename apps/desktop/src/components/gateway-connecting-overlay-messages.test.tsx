@@ -7,9 +7,12 @@ import { $desktopBoot } from '@/store/boot'
 import { setGatewayState } from '@/store/session'
 
 import {
+  composedTeamMessage,
   GatewayConnectingOverlay,
   TEAM_ACTIVITIES_DE,
   TEAM_ACTIVITIES_EN,
+  TEAM_FIXED_MESSAGES_DE,
+  TEAM_FIXED_MESSAGES_EN,
   TEAM_NAMES,
   teamMessage
 } from './gateway-connecting-overlay'
@@ -79,14 +82,14 @@ afterEach(() => {
 
 describe('teamMessage composition', () => {
   it('walks every name/activity pairing before repeating any of them', () => {
-    // 9 names and 45 activities share the factor 9, so indexing both with a
-    // plain `step % length` would pin each activity to one name forever and
-    // yield 45 sentences instead of 405. This is the regression that guards it.
+    // 9 names and 42 activities share the factor 3, so indexing both with a
+    // plain `step % length` would pin each activity to a subset of names and
+    // shrink the pool to a fraction. This is the regression that guards it.
     const period = TEAM_NAMES.length * TEAM_ACTIVITIES_DE.length
     const seen = new Set<string>()
 
     for (let step = 0; step < period; step++) {
-      seen.add(teamMessage(step, TEAM_ACTIVITIES_DE))
+      seen.add(composedTeamMessage(step, TEAM_ACTIVITIES_DE))
     }
 
     expect(seen.size).toBe(period)
@@ -96,7 +99,7 @@ describe('teamMessage composition', () => {
     const perName = new Map<string, number>()
 
     for (let step = 0; step < TEAM_NAMES.length * TEAM_ACTIVITIES_EN.length; step++) {
-      const name = teamMessage(step, TEAM_ACTIVITIES_EN).split(' ')[0]
+      const name = composedTeamMessage(step, TEAM_ACTIVITIES_EN).split(' ')[0]
 
       perName.set(name, (perName.get(name) ?? 0) + 1)
     }
@@ -105,8 +108,43 @@ describe('teamMessage composition', () => {
     expect([...perName.values()].every(count => count === TEAM_ACTIVITIES_EN.length)).toBe(true)
   })
 
-  it('keeps the activity lists parallel across locales', () => {
+  it('keeps the name-bound and composed lists parallel across locales', () => {
     expect(TEAM_ACTIVITIES_EN.length).toBe(TEAM_ACTIVITIES_DE.length)
+    expect(TEAM_FIXED_MESSAGES_EN.length).toBe(TEAM_FIXED_MESSAGES_DE.length)
+  })
+
+  it('reserves every eighth slot for the name-bound messages and rotates them', () => {
+    const drawnOnFixedSlots = [7, 15, 23, 31].map(step =>
+      teamMessage(step, TEAM_ACTIVITIES_DE, TEAM_FIXED_MESSAGES_DE)
+    )
+
+    expect(drawnOnFixedSlots).toEqual([
+      TEAM_FIXED_MESSAGES_DE[0],
+      TEAM_FIXED_MESSAGES_DE[1],
+      TEAM_FIXED_MESSAGES_DE[2],
+      TEAM_FIXED_MESSAGES_DE[0]
+    ])
+  })
+
+  it('starts on a composed message and loses no composed entry to the fixed slots', () => {
+    // Step 0 must stay composed — the overlay tests below assert the very first
+    // message verbatim. The composed walk must also skip nothing: over a stretch
+    // covering more than one activity wrap, every composed message is distinct.
+    expect(teamMessage(0, TEAM_ACTIVITIES_DE, TEAM_FIXED_MESSAGES_DE)).toBe(
+      composedTeamMessage(0, TEAM_ACTIVITIES_DE)
+    )
+
+    const composed = []
+
+    for (let step = 0; step < 96; step++) {
+      const message = teamMessage(step, TEAM_ACTIVITIES_DE, TEAM_FIXED_MESSAGES_DE)
+
+      if (!TEAM_FIXED_MESSAGES_DE.includes(message as never)) {
+        composed.push(message)
+      }
+    }
+
+    expect(new Set(composed).size).toBe(composed.length)
   })
 })
 

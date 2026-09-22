@@ -67,9 +67,23 @@ export const TEAM_NAMES = [
   'Julian'
 ] as const
 
+// In-jokes that only work with one specific person stay whole here instead of
+// being composed. They are drawn on a fixed slot (see teamMessage) — the
+// composed pool is big enough that they would otherwise almost never appear.
+export const TEAM_FIXED_MESSAGES_DE = [
+  'Michael hat alle Projekte fest im Griff (Better call Fischi!)...',
+  'Julian freut sich riesig über den Hermes Linux Client...',
+  'Martin beendet gerade das EVN-Meeting...'
+] as const
+
+export const TEAM_FIXED_MESSAGES_EN = [
+  'Michael keeps all projects firmly under control (Better call Fischi!)...',
+  'Julian is celebrating the Hermes Linux Client...',
+  'Martin is wrapping up the EVN meeting...'
+] as const
+
 export const TEAM_ACTIVITIES_DE = [
   'aktiviert Arbeitskräfte...',
-  'hat alle Projekte fest im Griff (Better call Fischi!)...',
   'testet die Stabilität des KI-Agenten...',
   'bringt Struktur in OpenProject...',
   'diskutiert im Auto-Modus mit dem Copilot...',
@@ -81,8 +95,6 @@ export const TEAM_ACTIVITIES_DE = [
   'beäugt kritisch, was wir heute wieder gebaut haben...',
   'feilt an der Manufaktur- und Werkstatt-Lösung...',
   'durchschaut die Tiefen von Kubernetes und Infrastruktur...',
-  'beendet gerade das EVN-Meeting...',
-  'freut sich riesig über den Hermes Linux Client...',
   'debuggt den Prompt-Cache...',
   'ordnet Jira-Tickets nach Wichtigkeit...',
   'prüft, ob die Kundenversprechen eingehalten werden...',
@@ -117,7 +129,6 @@ export const TEAM_ACTIVITIES_DE = [
 
 export const TEAM_ACTIVITIES_EN = [
   'is activating manpower...',
-  'keeps all projects firmly under control (Better call Fischi!)...',
   'is testing the AI agent\'s stability...',
   'is structuring tasks in OpenProject...',
   'is debating with Copilot in auto mode...',
@@ -129,8 +140,6 @@ export const TEAM_ACTIVITIES_EN = [
   'is keeping a skeptical eye on what we built today...',
   'is refining the manufacturing and workshop solution...',
   'is mastering the depths of Kubernetes and infrastructure...',
-  'is wrapping up the EVN meeting...',
-  'is celebrating the Hermes Linux Client...',
   'is debugging the prompt cache...',
   'is organizing Jira tickets by priority...',
   'is making sure customer promises are delivered...',
@@ -233,19 +242,38 @@ function forcedPreview(): boolean {
   }
 }
 
+// Every FIXED_SLOT_EVERY-th message comes from the name-bound list. Without a
+// reserved slot those few entries would be drawn about once in 127 messages
+// against the composed pool, i.e. practically never.
+const FIXED_SLOT_EVERY = 8
+
 /**
  * Compose "<name> <activity>" for `step`.
  *
  * Both indices run off the same counter, but the name takes one extra step
  * every time the activity list wraps. Without that offset the shared factor
- * between the two lengths (9 names, 45 activities) would pin each activity to
+ * between the two lengths (9 names, 42 activities) would pin each activity to
  * a single name forever; with it, every pairing appears before any repeats.
  */
-export function teamMessage(step: number, activities: readonly string[]): string {
+export function composedTeamMessage(step: number, activities: readonly string[]): string {
   const activity = activities[step % activities.length]
   const name = TEAM_NAMES[(step + Math.floor(step / activities.length)) % TEAM_NAMES.length]
 
   return `${name} ${activity}`
+}
+
+/**
+ * The message for `step`: mostly composed, every FIXED_SLOT_EVERY-th one taken
+ * from `fixed`. Step 0 is composed, so the first message after a connect starts
+ * is always a name/activity pairing.
+ */
+export function teamMessage(step: number, activities: readonly string[], fixed: readonly string[]): string {
+  if (fixed.length > 0 && step % FIXED_SLOT_EVERY === FIXED_SLOT_EVERY - 1) {
+    return fixed[Math.floor(step / FIXED_SLOT_EVERY) % fixed.length]
+  }
+
+  // Skip the steps the fixed slots consumed, so the composed walk stays gapless.
+  return composedTeamMessage(step - Math.floor(step / FIXED_SLOT_EVERY), activities)
 }
 
 function scrambledTail(resolvedCount: number): string {
@@ -547,6 +575,7 @@ export function GatewayConnectingOverlay() {
   // Select message source based on language and Nerdy / Business mode. Nerdy
   // composes name x activity, so its pool is the cross product rather than a list.
   const teamActivities = locale === 'en' ? TEAM_ACTIVITIES_EN : TEAM_ACTIVITIES_DE
+  const teamFixed = locale === 'en' ? TEAM_FIXED_MESSAGES_EN : TEAM_FIXED_MESSAGES_DE
   const businessMessages = locale === 'en' ? BUSINESS_MESSAGES_EN : BUSINESS_MESSAGES_DE
   const poolSize = isNerdy ? TEAM_NAMES.length * teamActivities.length : businessMessages.length
 
@@ -572,7 +601,7 @@ export function GatewayConnectingOverlay() {
   const progressPct = Math.min(100, Math.round((shownElapsed / STARTUP_MIN_MS) * 100))
 
   const currentMessage = isNerdy
-    ? teamMessage(step, teamActivities)
+    ? teamMessage(step, teamActivities, teamFixed)
     : businessMessages[step % businessMessages.length]
 
   return (
