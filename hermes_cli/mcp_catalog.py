@@ -139,6 +139,16 @@ class ToolsSpec:
     # applied directly when probe fails). If None, all probed tools are
     # pre-checked (or no filter is written when probe fails).
     default_enabled: Optional[List[str]] = None
+    # AIS-405: names an installed config may still carry that the server no
+    # longer has. Correcting the lists above only helps new installs — an
+    # existing install keeps its own ``tools.include``, so the stale entry (and
+    # its warning) survives every update. These two are curated statements of
+    # obsolescence: nothing is inferred from a server's momentary answer, so a
+    # selection the user made themselves is never touched.
+    #: ``{old_name: new_name}`` — the entry is rewritten, keeping the capability.
+    renamed: Dict[str, str] = field(default_factory=dict)
+    #: names that are simply gone; the entry is dropped.
+    removed: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -297,7 +307,27 @@ def _parse_manifest(path: Path) -> CatalogEntry:
             raise CatalogError(
                 f"{path}: tools.default_enabled must be a list of strings"
             )
-    tools_spec = ToolsSpec(default_enabled=default_enabled)
+    renamed_raw = tools_raw.get("renamed") or {}
+    if not isinstance(renamed_raw, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip()
+        for k, v in renamed_raw.items()
+    ):
+        raise CatalogError(f"{path}: tools.renamed must be a mapping of old name to new name")
+    removed_raw = tools_raw.get("removed") or []
+    if not isinstance(removed_raw, list) or not all(
+        isinstance(t, str) and t.strip() for t in removed_raw
+    ):
+        raise CatalogError(f"{path}: tools.removed must be a list of strings")
+    overlap = sorted(set(renamed_raw) & set(removed_raw))
+    if overlap:
+        raise CatalogError(
+            f"{path}: {', '.join(overlap)} appear in both tools.renamed and tools.removed"
+        )
+    tools_spec = ToolsSpec(
+        default_enabled=default_enabled,
+        renamed={str(k): str(v) for k, v in renamed_raw.items()},
+        removed=[str(t) for t in removed_raw],
+    )
 
     install: Optional[InstallSpec] = None
     install_raw = data.get("install")
@@ -1301,6 +1331,71 @@ def _write_tools_include(name: str, include: Optional[List[str]]) -> None:
     servers[name] = server_entry
     cfg["mcp_servers"] = servers
     save_config(cfg)
+
+
+def reconcile_tool_includes(*, quiet: bool = False) -> Dict[str, Dict[str, List[str]]]:
+    """Bring every configured ``tools.include`` in line with its manifest (AIS-405).
+
+    Correcting a shipped manifest only helps new installs: an existing one keeps
+    its own include list, so a name the server dropped stays there and keeps
+    producing "configured tool(s) not advertised" on every start.
+
+    Only names the manifest explicitly declares obsolete are touched — renamed
+    ones are rewritten so the capability survives, removed ones are dropped.
+    Deliberately not "prune whatever the server did not advertise": that is the
+    AIS-330 case, where a scope-limited OpenProject server hides its write tools
+    for a while and pruning would delete the user's selection for good. Equally
+    not "prune whatever is outside default_enabled": `hermes mcp configure`
+    writes the probed selection, which may legitimately go beyond it.
+
+    Returns ``{server: {"renamed": [...], "removed": [...]}}`` for the servers
+    that changed.
+    """
+    changes: Dict[str, Dict[str, List[str]]] = {}
+    servers = load_config().get("mcp_servers") or {}
+    if not isinstance(servers, dict):
+        return changes
+
+    for name in list(servers):
+        entry = get_entry(name)
+        if entry is None:
+            continue
+        renamed_map = entry.tools.renamed or {}
+        removed_set = set(entry.tools.removed or [])
+        if not renamed_map and not removed_set:
+            continue
+
+        server_cfg = servers.get(name) or {}
+        tools_block = server_cfg.get("tools") if isinstance(server_cfg, dict) else None
+        include = (tools_block or {}).get("include") if isinstance(tools_block, dict) else None
+        if not isinstance(include, list) or not include:
+            continue
+
+        updated: List[str] = []
+        did_rename: List[str] = []
+        did_remove: List[str] = []
+        for raw in include:
+            tool = str(raw)
+            if tool in removed_set:
+                did_remove.append(tool)
+                continue
+            target = renamed_map.get(tool)
+            if target:
+                did_rename.append(f"{tool} -> {target}")
+                tool = target
+            if tool not in updated:
+                updated.append(tool)
+
+        if not did_rename and not did_remove:
+            continue
+
+        _write_tools_include(name, updated)
+        changes[name] = {"renamed": did_rename, "removed": did_remove}
+        if not quiet:
+            detail = ", ".join(did_rename + did_remove)
+            print(color(f"  ↻ '{name}' tool list updated: {detail}", Colors.CYAN))
+
+    return changes
 
 
 def _apply_tool_selection(

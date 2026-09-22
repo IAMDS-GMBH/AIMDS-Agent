@@ -54,9 +54,13 @@ tools:
   # The hosted server consolidated its per-verb issue and pull-request tools
   # into read/write pairs; the old names are gone, so listing them only
   # produced a permanent "configured tool(s) not advertised" warning (AIS-403).
-  #   get_issue         -> issue_read
-  #   create_issue      -> issue_write
-  #   get_pull_request  -> pull_request_read
+  # `renamed` carries the same correction into configs that were written before
+  # it, so an existing install keeps the capability instead of just losing the
+  # dead entry (AIS-405).
+  renamed:
+    get_issue: issue_read
+    create_issue: issue_write
+    get_pull_request: pull_request_read
   default_enabled:
     - search_repositories
     - search_code
