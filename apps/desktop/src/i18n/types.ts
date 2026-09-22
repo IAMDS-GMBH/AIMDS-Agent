@@ -643,6 +643,10 @@ export interface Translations {
         saving: string
         saved: string
         checking: string
+        notifications: {
+          reauthTitle: (envLabel: string) => string
+          reauthBody: (domain: string) => string
+        }
         reason: {
           keyMissing: string
           urlMissing: string

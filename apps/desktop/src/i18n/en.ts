@@ -745,7 +745,7 @@ export const en: Translations = {
         connected: 'Connected',
         needsReauth: 'Re-authentication required',
         notConfigured: 'Not configured',
-        unreachable: 'Not verified',
+        unreachable: 'Unreachable',
         signInSso: 'Sign in with SSO',
         reauthenticate: 'Re-authenticate',
         enterUrlFirst: 'Enter the base URL first',
@@ -753,6 +753,10 @@ export const en: Translations = {
         saving: 'Saving…',
         saved: 'AIMDS-Suite provider URLs saved',
         checking: 'Checking…',
+        notifications: {
+          reauthTitle: (envLabel: string) => `AIMDS-Suite: re-authentication required (${envLabel})`,
+          reauthBody: (domain: string) => `Suite sign-in for ${domain} has expired. Please sign in again.`
+        },
         reason: {
           keyMissing: 'No API key stored',
           urlMissing: 'No base URL configured',

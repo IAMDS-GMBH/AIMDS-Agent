@@ -142,6 +142,17 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
             cron_tick(verbose=False, sync=False)
         except Exception as e:
             _log.debug("Desktop cron tick error: %s", e)
+        try:
+            from hermes_cli.iamds_suite import maybe_run_suite_health_check
+
+            results = maybe_run_suite_health_check()
+            for r in results or []:
+                if r.get("outcome") == "newly_broken":
+                    _log.warning(
+                        "Suite health check: %s needs re-auth (http_%s)", r.get("provider"), r.get("http_status")
+                    )
+        except Exception as e:
+            _log.debug("Suite health check tick error: %s", e)
         stop_event.wait(interval)
 
 
@@ -200,6 +211,61 @@ def _provider_host_resolvable(timeout: float = 3.0) -> bool:
     if not outcome["ok"]:
         _log.debug("Desktop cron ticker: %s does not resolve (%s)", host, outcome.get("error"))
     return bool(outcome["ok"])
+
+
+async def _broadcast_suite_auth_event(app: "FastAPI", provider_id: str, flag: Dict[str, Any]) -> None:
+    """Push a ``suite_auth_needs_reauth`` event to every ``/api/events`` subscriber."""
+    from hermes_cli.iamds_suite import resolve_suite_endpoint
+    from utils import base_url_hostname
+
+    try:
+        ep = resolve_suite_endpoint(provider_id, allow_default=True)
+        label, domain = ep.label, base_url_hostname(ep.base_url)
+    except Exception:
+        label, domain = provider_id, ""
+    payload = json.dumps({
+        "type": "suite_auth_needs_reauth",
+        "provider": provider_id,
+        "label": label,
+        "domain": domain,
+        "http_status": flag.get("http_status"),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    await _broadcast_event(app, "provider_events", payload)
+
+
+async def _suite_auth_flag_watcher(app: "FastAPI", stop_event: "asyncio.Event", interval: float = 60.0) -> None:
+    """Poll the shared Suite auth-failure flag file and broadcast new failures.
+
+    Runs unconditionally (desktop-spawned *and* server ``hermes dashboard``
+    alike) so a failure detected by ``maybe_run_suite_health_check()`` in
+    *either* the desktop ticker or a separate ``hermes gateway run`` process
+    (AIS-394) still reaches this process's connected clients — both share the
+    same ``<HERMES_HOME>/state/iamds_suite_auth.json`` flag file, so this
+    watcher notices the change regardless of which process wrote it. Only
+    newly-appearing/changed flags are broadcast (tracked by ``since``); the
+    first read after startup just seeds the baseline without notifying, so a
+    pre-existing failure doesn't re-fire a notification on every restart.
+    """
+    from hermes_cli.iamds_suite import suite_auth_failures
+
+    seen: Dict[str, float] = {}
+    initialized = False
+    while not stop_event.is_set():
+        try:
+            flags = suite_auth_failures()
+            for provider_id, flag in flags.items():
+                since = float(flag.get("since") or 0.0)
+                if initialized and seen.get(provider_id) != since:
+                    await _broadcast_suite_auth_event(app, provider_id, flag)
+                seen[provider_id] = since
+            initialized = True
+        except Exception as exc:
+            _log.debug("Suite auth flag watcher error: %s", exc)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            pass
 
 
 @asynccontextmanager
@@ -267,11 +333,25 @@ async def _lifespan(app: "FastAPI"):
         )
         cron_thread.start()
 
+    # Always on, regardless of desktop vs. server topology: a Suite auth
+    # failure may be detected by this process's own ticker above, or by a
+    # separate `hermes gateway run` process sharing the same HERMES_HOME
+    # (AIS-394) — either way this watcher notices it via the shared flag file
+    # and pushes it to whatever UI is connected to *this* process.
+    suite_watcher_stop = asyncio.Event()
+    suite_watcher_task = asyncio.create_task(_suite_auth_flag_watcher(app, suite_watcher_stop))
+
     try:
         yield
     finally:
         if cron_stop is not None:
             cron_stop.set()
+        suite_watcher_stop.set()
+        suite_watcher_task.cancel()
+        try:
+            await suite_watcher_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 def _get_event_state(app: "FastAPI"):
