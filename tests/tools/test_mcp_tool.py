@@ -5253,12 +5253,49 @@ class TestMissingIncludeTools:
             msg = warnings[0].getMessage()
             assert "2 of 5 configured tool(s)" in msg
             assert "create_work_package, update_work_package" in msg
-            assert "OPENPROJECT_WRITE_PROJECTS" in msg
+            # AIS-402: the line no longer asserts the OpenProject scope story
+            # for every server — it names possibilities instead of diagnosing.
+            assert "missing write scope" in msg and "outdated install" in msg
+            assert "OPENPROJECT_WRITE_PROJECTS" not in msg
         finally:
             self._cleanup(registered, "OPDemo")
             from tools.mcp_tool import _mcp_server_prefixes, _prefix_lock
             with _prefix_lock:
                 _mcp_server_prefixes.pop("OPDemo", None)
+
+    def test_stale_local_install_is_named_as_the_cause(self, caplog, monkeypatch, tmp_path):
+        """AIS-402: when the installed copy is older than this Hermes version
+        the warning says so and names the fix, instead of blaming a write scope
+        — reading it the other way is what got SUP-20260918-131539 closed on the
+        checkout state while the tools were missing from the install."""
+        import hermes_cli.mcp_catalog as catalog
+        from tools.mcp_tool import _register_server_tools
+
+        install_root = tmp_path / "mcp-installs"
+        (install_root / "LocalDemo").mkdir(parents=True)
+
+        class _Entry:
+            install = type("I", (), {"type": "local"})()
+            # _merge_catalog_default_tools reaches for this on the same lookup.
+            tools = type("T", (), {"default_enabled": None})()
+
+        monkeypatch.setattr(catalog, "get_entry", lambda name: _Entry())
+        monkeypatch.setattr(catalog, "_install_root", lambda: install_root)
+        monkeypatch.setattr(catalog, "installed_commit", lambda d: "a" * 40)
+        monkeypatch.setattr(catalog, "_checkout_identity", lambda: "b" * 40)
+
+        server = _make_mock_server("LocalDemo", tools=[_make_mcp_tool("alpha", "A")])
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+            registered = _register_server_tools(
+                "LocalDemo", server, {"tools": {"include": ["alpha", "beta"]}}
+            )
+        try:
+            msg = next(r.getMessage() for r in caplog.records if "not advertised" in r.getMessage())
+            assert "older than this Hermes version" in msg
+            assert "hermes mcp update LocalDemo" in msg
+            assert "write scope" not in msg
+        finally:
+            self._cleanup(registered, "LocalDemo")
 
     def test_no_warning_when_every_include_is_served(self, caplog):
         from tools.mcp_tool import _register_server_tools, get_mcp_missing_include_tools
