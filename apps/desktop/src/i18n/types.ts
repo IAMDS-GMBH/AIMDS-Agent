@@ -567,6 +567,8 @@ export interface Translations {
       catalogInstall: string
       catalogInstalled: string
       catalogInstalling: string
+      catalogAccountRequired: string
+      catalogAccountConnect: string
       catalogModalTitle: (name: string) => string
       catalogModalDesc: string
       catalogSecretsNotice: string

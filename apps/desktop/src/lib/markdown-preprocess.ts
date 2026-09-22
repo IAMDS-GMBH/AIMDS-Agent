@@ -131,7 +131,17 @@ function autoLinkRawUrls(text: string): string {
     const previous = text[index - 1] || ''
     const beforePrevious = text[index - 2] || ''
 
+    // `<url>` is already an autolink; `](url` is the href of a markdown link.
     if (previous === '<' || (beforePrevious === ']' && previous === '(')) {
+      return url
+    }
+
+    // `[url` is a link *label*. RAW_URL_RE permits `]`, `(` and `)` — they
+    // occur in real URLs (`…/wiki/Foo_(bar)`) — so on `[url](url)` the match
+    // runs from the label straight through the href as one span. Wrapping that
+    // produced `…/device%5D(…/device)` once the renderer encoded the `]`,
+    // corrupting every markdown link whose label equals its href (AIS-401).
+    if (previous === '[') {
       return url
     }
 

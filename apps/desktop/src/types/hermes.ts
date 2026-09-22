@@ -753,6 +753,12 @@ export interface McpCatalogEntry {
   source?: string
   tools?: string[]
   transport: string
+  // AIS-401: OAuth provider id this entry depends on (e.g. 'microsoft').
+  // Advisory: the card shows the missing connection and links to it, the
+  // install stays available. `account_connected` is null when the entry has
+  // no dependency or the probe failed — show no claim rather than a wrong one.
+  requires_account?: null | string
+  account_connected?: boolean | null
 }
 
 export interface McpCatalogResponse {

@@ -662,6 +662,8 @@ export const en: Translations = {
       catalogInstall: 'Install',
       catalogInstalled: 'Installed',
       catalogInstalling: 'Installing...',
+      catalogAccountRequired: 'Account not connected — connect it first and this integration is set up for you automatically.',
+      catalogAccountConnect: 'Connect account',
       catalogModalTitle: (name: string) => `Configure ${name}`,
       catalogModalDesc: 'Enter the required secrets or tokens to activate this MCP integration.',
       catalogSecretsNotice: 'Secrets will be stored securely in your .env configuration.',

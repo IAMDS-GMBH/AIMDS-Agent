@@ -1054,9 +1054,26 @@ function McpCatalogSection({
         const outcome = await waitForInstallAction(result.action)
 
         if (!outcome.ok) {
+          // AIS-401: a failed or timed-out install used to be a dead end — it
+          // returns before the OAuth hand-off below, so for an account-backed
+          // entry the user never learned that connecting the account is the
+          // shorter route and sets the server up on its own.
+          const pendingAccount =
+            installModalEntry.requires_account && installModalEntry.account_connected === false
+              ? installModalEntry.requires_account
+              : null
+
           notify({
+            action: pendingAccount
+              ? {
+                  label: m.catalogAccountConnect,
+                  onClick: () => void startManualProviderOAuth(pendingAccount)
+                }
+              : undefined,
             kind: 'error',
-            message: m.catalogInstallFailedMessage(installModalEntry.name, outcome.detail),
+            message: pendingAccount
+              ? `${m.catalogInstallFailedMessage(installModalEntry.name, outcome.detail)} ${m.catalogAccountRequired}`
+              : m.catalogInstallFailedMessage(installModalEntry.name, outcome.detail),
             title: m.catalogInstallFailedTitle
           })
           await loadCatalogAndConfig()
@@ -1169,6 +1186,24 @@ function McpCatalogSection({
                   )}
                 </div>
                 <p className="mt-1.5 line-clamp-2 text-xs text-muted-foreground">{entry.description}</p>
+                {/* AIS-401: connecting the account is the shorter path — it installs
+                    and enables the server on its own. Advisory only: a wrong probe
+                    must never dead-end someone who needs the server anyway. */}
+                {entry.requires_account && entry.account_connected === false && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md bg-amber-500/10 px-2 py-1.5">
+                    <span className="text-[11px] text-muted-foreground">{m.catalogAccountRequired}</span>
+                    <Button
+                      onClick={e => {
+                        e.stopPropagation()
+                        void startManualProviderOAuth(entry.requires_account as string)
+                      }}
+                      size="xs"
+                      variant="secondary"
+                    >
+                      {m.catalogAccountConnect}
+                    </Button>
+                  </div>
+                )}
               </div>
 
               <div className="mt-4 flex items-center justify-between border-t border-border/50 pt-2.5">

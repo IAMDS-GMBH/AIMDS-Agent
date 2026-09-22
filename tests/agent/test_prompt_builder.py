@@ -2020,9 +2020,10 @@ class TestBuildMcpStatusPrompt:
     """AIS-334 / SUP-20260908-110726: configured-but-unconnected MCP servers are
     named in the system prompt so the model stops hunting for their tools."""
 
-    def _patch(self, monkeypatch, rows, discovery_alive=False):
+    def _patch(self, monkeypatch, rows, discovery_alive=False, accounts=None):
         import tools.mcp_tool as mt
         import hermes_cli.mcp_startup as startup
+        import hermes_cli.mcp_catalog as catalog
         monkeypatch.setattr(mt, "get_mcp_status", lambda: rows)
 
         class _Thread:
@@ -2030,6 +2031,18 @@ class TestBuildMcpStatusPrompt:
                 return discovery_alive
 
         monkeypatch.setattr(startup, "_mcp_discovery_thread", _Thread())
+
+        # Decouple from the shipped manifests: the advice branch depends only on
+        # whether an entry declares requires_account.
+        mapping = accounts or {}
+
+        class _Entry:
+            def __init__(self, provider):
+                self.requires_account = provider
+
+        monkeypatch.setattr(
+            catalog, "get_entry", lambda name: _Entry(mapping[name]) if name in mapping else None
+        )
 
     def test_names_unconnected_enabled_servers_only(self, monkeypatch):
         from agent.prompt_builder import build_mcp_status_prompt
@@ -2043,6 +2056,35 @@ class TestBuildMcpStatusPrompt:
         assert "MSOffice365MCP" in text
         assert "AIMDSSuiteMCP" not in text and "OldMCP" not in text
         assert "do not search for them" in text and "hermes mcp install" in text
+
+    def test_account_backed_server_points_at_the_account_not_a_reinstall(self, monkeypatch):
+        """AIS-401 / SUP-20260918-120608: advising a reinstall when the account
+        is simply not connected is what sent the reporter around five corners."""
+        from agent.prompt_builder import build_mcp_status_prompt
+        self._patch(
+            monkeypatch,
+            [{"name": "MSOffice365MCP", "connected": False, "disabled": False}],
+            accounts={"MSOffice365MCP": "microsoft"},
+        )
+        text = build_mcp_status_prompt()
+        assert "Accounts" in text and "Connect" in text
+        assert "microsoft" in text
+        assert "hermes mcp install" not in text
+        assert "Do not tell them to reinstall" in text
+
+    def test_mixed_servers_get_their_own_advice_each(self, monkeypatch):
+        from agent.prompt_builder import build_mcp_status_prompt
+        self._patch(
+            monkeypatch,
+            [
+                {"name": "MSOffice365MCP", "connected": False, "disabled": False},
+                {"name": "SomeOtherMCP", "connected": False, "disabled": False},
+            ],
+            accounts={"MSOffice365MCP": "microsoft"},
+        )
+        text = build_mcp_status_prompt()
+        assert "Accounts" in text
+        assert "hermes mcp install" in text and "SomeOtherMCP" in text
 
     def test_empty_when_everything_is_connected(self, monkeypatch):
         from agent.prompt_builder import build_mcp_status_prompt
@@ -2068,6 +2110,73 @@ class TestBuildMcpStatusPrompt:
     def test_wired_into_run_agent_exports(self):
         import run_agent
         assert callable(getattr(run_agent, "build_mcp_status_prompt", None))
+
+
+class TestM365IdentityPrompt:
+    """AIS-401: the signed-in work account answers "who am I" for free, so a
+    session with a cold memory does not have to spend a tool call on it."""
+
+    def _patch(self, monkeypatch, accounts):
+        import hermes_cli.m365_auth as auth
+        monkeypatch.setattr(auth, "list_msal_accounts", lambda: accounts)
+
+    def test_names_the_signed_in_account(self, monkeypatch):
+        from agent.prompt_builder import build_m365_identity_prompt
+        self._patch(monkeypatch, [
+            {"name": "Jane Doe", "username": "jane@corp.example", "realm": "corp.example"},
+        ])
+        text = build_m365_identity_prompt()
+        assert text.startswith("# Signed-in Microsoft 365 account")
+        assert "Jane Doe" in text and "jane@corp.example" in text and "corp.example" in text
+        assert "save them once" in text
+
+    def test_drops_msal_tenant_placeholders(self, monkeypatch):
+        """`organizations`/`common` mean "any work account", not an org — stating
+        them as the tenant would be plainly wrong."""
+        from agent.prompt_builder import build_m365_identity_prompt
+        for placeholder in ("organizations", "common", "consumers"):
+            self._patch(monkeypatch, [
+                {"name": "", "username": "jane@corp.example", "realm": placeholder},
+            ])
+            text = build_m365_identity_prompt()
+            assert "jane@corp.example" in text
+            assert "tenant" not in text
+
+    def test_does_not_repeat_the_name_when_it_is_the_username(self, monkeypatch):
+        from agent.prompt_builder import build_m365_identity_prompt
+        self._patch(monkeypatch, [
+            {"name": "jane@corp.example", "username": "jane@corp.example", "realm": ""},
+        ])
+        assert build_m365_identity_prompt().count("jane@corp.example") == 1
+
+    def test_mentions_that_more_than_one_account_is_cached(self, monkeypatch):
+        from agent.prompt_builder import build_m365_identity_prompt
+        self._patch(monkeypatch, [
+            {"name": "Jane", "username": "jane@corp.example", "realm": ""},
+            {"name": "Jan", "username": "jan@other.example", "realm": ""},
+        ])
+        text = build_m365_identity_prompt()
+        assert "2 accounts cached" in text
+        assert "jan@other.example" not in text
+
+    def test_empty_without_a_signed_in_account(self, monkeypatch):
+        from agent.prompt_builder import build_m365_identity_prompt
+        self._patch(monkeypatch, [])
+        assert build_m365_identity_prompt() == ""
+
+    def test_empty_when_the_cache_cannot_be_read(self, monkeypatch):
+        import hermes_cli.m365_auth as auth
+        from agent.prompt_builder import build_m365_identity_prompt
+
+        def _boom():
+            raise RuntimeError("no cache")
+
+        monkeypatch.setattr(auth, "list_msal_accounts", _boom)
+        assert build_m365_identity_prompt() == ""
+
+    def test_wired_into_run_agent_exports(self):
+        import run_agent
+        assert callable(getattr(run_agent, "build_m365_identity_prompt", None))
 
 
 class TestDocumentGuidance:

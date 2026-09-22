@@ -1787,6 +1787,56 @@ def build_local_profile_fallback_prompt() -> str:
     )
 
 
+def build_m365_identity_prompt() -> str:
+    """Name the signed-in Microsoft 365 account so identity costs nothing (AIS-401).
+
+    Read straight from the local MSAL cache — no Graph call, no MCP round-trip,
+    no tool turn, a couple of dozen tokens. With an empty or fresh memory the
+    model otherwise has to go hunting for who the user is, which is what the
+    "wer bin ich?" cases behind AIS-370 looked like from the inside. The signed-in
+    work account answers name, work address and organisation authoritatively and
+    for free, and is worth persisting once instead of re-deriving every session.
+
+    Empty when nobody is signed in or the cache cannot be read, so a session
+    without Microsoft 365 pays nothing for this.
+    """
+    try:
+        from hermes_cli.m365_auth import list_msal_accounts
+
+        accounts = list_msal_accounts() or []
+    except Exception:
+        return ""
+    if not accounts:
+        return ""
+
+    primary = accounts[0] or {}
+    name = str(primary.get("name") or "").strip()
+    username = str(primary.get("username") or "").strip()
+    tenant = str(primary.get("realm") or "").strip()
+    # The display name frequently *is* the username; showing it twice is noise.
+    facts = []
+    if name and name != username:
+        facts.append(f"name {name}")
+    if username:
+        facts.append(f"work address {username}")
+    # "organizations"/"common"/"consumers" are MSAL's tenant *placeholders* for
+    # the multi-tenant app, not an organisation the user belongs to — stating
+    # them as the tenant would be actively wrong.
+    if tenant and tenant.lower() not in {"organizations", "common", "consumers"}:
+        facts.append(f"tenant {tenant}")
+    if not facts:
+        return ""
+
+    extra = f" ({len(accounts)} accounts cached, this is the primary one)" if len(accounts) > 1 else ""
+    return (
+        "# Signed-in Microsoft 365 account\n"
+        f"The user is signed in as {', '.join(facts)}{extra}. These come from the local sign-in "
+        "cache and are authoritative for the user's identity and organisation: use them instead of "
+        "asking, guessing, or spending a tool call to look them up. If your memory does not hold "
+        "them yet, save them once.\n"
+    )
+
+
 def build_mcp_status_prompt() -> str:
     """One block naming configured MCP servers that are not connected (AIS-334).
 
@@ -1818,15 +1868,44 @@ def build_mcp_status_prompt() -> str:
     )
     if not down:
         return ""
+    # AIS-401: an account-backed server that is down is usually not a broken
+    # install but a missing sign-in. Telling the model to reinstall sent users
+    # on a detour (SUP-20260918-120608) — name the account instead.
+    account_backed: dict[str, str] = {}
+    for name in down:
+        try:
+            from hermes_cli.mcp_catalog import get_entry
+
+            entry = get_entry(name)
+        except Exception:
+            entry = None
+        if entry is not None and getattr(entry, "requires_account", ""):
+            account_backed[name] = entry.requires_account
+
+    remedy = (
+        "say that the integration is currently not connected, then continue with what is possible "
+        "without it. "
+    )
+    if account_backed:
+        named = ", ".join(f"{name} (account '{provider}')" for name, provider in sorted(account_backed.items()))
+        remedy += (
+            f"For {named} the usual cause is that the account is not connected yet — point the user at "
+            "Settings -> Providers -> Accounts and the matching Connect button; connecting it installs "
+            "and enables the server automatically. Do not tell them to reinstall it. "
+        )
+    other = [name for name in down if name not in account_backed]
+    if other:
+        remedy += (
+            f"For {', '.join(other)} suggest reconnecting or reinstalling in the MCP settings "
+            "(`hermes mcp install <name>`). "
+        )
     return (
         "# MCP status\n"
         f"Configured MCP server(s) NOT connected at session start: {', '.join(down)}. "
         "Their tools are unavailable in this session: do not search for them with tool_search, do "
         "not retry them, and do not describe the situation as a missing tool integration. If the user "
         "asks for something one of these servers provides (e.g. MSOffice365MCP for mail, calendar or "
-        "Teams), say that the integration is currently not connected and suggest reconnecting or "
-        "reinstalling it in the MCP settings (`hermes mcp install <name>`), then continue with what "
-        "is possible without it.\n"
+        f"Teams), {remedy}\n"
     )
 
 

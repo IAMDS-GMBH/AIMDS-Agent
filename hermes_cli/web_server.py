@@ -5772,6 +5772,23 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                     accounts = app.get_accounts()
                     username = accounts[0].get("username") if accounts else None
                     label = f"Microsoft 365 Account ({username})" if username else "Microsoft 365 MSAL Cache"
+                    # AIS-401: who is actually signed in. Read straight from the
+                    # MSAL cache (no Graph call, no MCP round-trip) so the card
+                    # can name the account even when the MCP is not installed —
+                    # "connected" alone left people guessing which tenant/user
+                    # they had signed in with.
+                    profile: Dict[str, Any] = {}
+                    try:
+                        first = (accounts or [None])[0]
+                        if first:
+                            profile = {
+                                "username": first.get("username") or first.get("preferred_username") or "",
+                                "name": first.get("name") or "",
+                                "tenant": first.get("realm") or "",
+                                "accounts": len(accounts or []),
+                            }
+                    except Exception:
+                        profile = {}
                     return {
                         "logged_in": True,
                         "source": "microsoft_msal",
@@ -5779,6 +5796,7 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                         "token_preview": "msal-cached-token",
                         "expires_at": None,
                         "has_refresh_token": True,
+                        "profile": profile or None,
                     }
             except Exception:
                 pass
@@ -8830,6 +8848,23 @@ async def set_mcp_server_enabled(
     return {"ok": True, "name": name, "enabled": bool(body.enabled)}
 
 
+def _catalog_account_connected(provider_id: str) -> Optional[bool]:
+    """Whether the OAuth account a catalog entry depends on is connected (AIS-401).
+
+    ``None`` when the entry declares no dependency or the probe fails — the
+    card then shows no claim at all rather than a wrong one, since this only
+    ever guides and never blocks an install.
+    """
+    if not provider_id:
+        return None
+    try:
+        status = _resolve_provider_status(provider_id, None)
+        return bool(status.get("logged_in"))
+    except Exception:
+        _log.debug("account probe failed for %s", provider_id, exc_info=True)
+        return None
+
+
 @app.get("/api/mcp/catalog")
 async def list_mcp_catalog(profile: Optional[str] = None):
     """Browse the Nous-approved MCP catalog (the optional-mcps/ manifests).
@@ -8899,6 +8934,12 @@ async def list_mcp_catalog(profile: Optional[str] = None):
                     "needs_install": entry.install is not None,
                     "installed": installed_state.get(entry.name, (False, False))[0],
                     "enabled": installed_state.get(entry.name, (False, False))[1],
+                    # AIS-401: advisory only — the card shows the missing
+                    # connection and links to it, the install stays available.
+                    "requires_account": getattr(entry, "requires_account", "") or None,
+                    "account_connected": _catalog_account_connected(
+                        getattr(entry, "requires_account", "") or ""
+                    ),
                     "multi_instance": entry.name in _MULTI_INSTANCE_CATALOG_NAMES,
                     "instances": (
                         mcp_catalog.list_instances(entry.name)
