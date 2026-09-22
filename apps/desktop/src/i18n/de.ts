@@ -746,7 +746,7 @@ export const de
         connected: 'Verbunden',
         needsReauth: 'Neu anmelden erforderlich',
         notConfigured: 'Nicht konfiguriert',
-        unreachable: 'Nicht geprüft',
+        unreachable: 'Nicht erreichbar',
         signInSso: 'Mit SSO anmelden',
         reauthenticate: 'Neu anmelden',
         enterUrlFirst: 'Zuerst die Base-URL eintragen',
@@ -754,6 +754,10 @@ export const de
         saving: 'Speichere…',
         saved: 'AIMDS-Suite-Anbieter-URLs gespeichert',
         checking: 'Prüfe…',
+        notifications: {
+          reauthTitle: (envLabel: string) => `AIMDS-Suite: Anmeldung erforderlich (${envLabel})`,
+          reauthBody: (domain: string) => `Die Suite-Anmeldung für ${domain} ist abgelaufen. Bitte erneut anmelden.`
+        },
         reason: {
           keyMissing: 'Kein API-Schlüssel hinterlegt',
           urlMissing: 'Keine Base-URL konfiguriert',
