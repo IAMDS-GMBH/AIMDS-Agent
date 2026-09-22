@@ -182,6 +182,38 @@ const BUSINESS_TIPS_OF_THE_DAY: Tip[] = [
   {
     de: '💡 Tipp des Tages: Gute Vorbereitung ist der Schlüssel: Konkrete Rahmenbedingungen bringen die präzisesten Ergebnisse.',
     en: '💡 Tip of the Day: Preparation is key: Providing clear context yields the most accurate AI responses.'
+  },
+  {
+    de: '💡 Tipp des Tages: Den Status Ihrer gemeldeten Probleme finden Sie jederzeit unter ⚙️ Einstellungen → Gateway → Support-Tickets.',
+    en: '💡 Tip of the Day: You can check the status of your reported issues any time under ⚙️ Settings → Gateway → Support Tickets.'
+  },
+  {
+    de: '💡 Tipp des Tages: Beim Melden eines Problems werden Chat-Verlauf und Diagnose-Logs automatisch angehängt – das beschleunigt die Analyse erheblich.',
+    en: '💡 Tip of the Day: Reporting an issue automatically attaches the chat history and diagnostic logs – that speeds up analysis considerably.'
+  },
+  {
+    de: '💡 Tipp des Tages: Hängen Sie Dateien direkt an den Chat an – die Inhalte werden ausgelesen und stehen als Kontext zur Verfügung.',
+    en: '💡 Tip of the Day: Attach files directly to the chat – their content is extracted and becomes available as context.'
+  },
+  {
+    de: '💡 Tipp des Tages: Beschreiben Sie das gewünschte Ergebnis, nicht nur die Aufgabe – so entstehen direkt verwendbare Antworten.',
+    en: '💡 Tip of the Day: Describe the outcome you need, not just the task – that produces answers you can use right away.'
+  },
+  {
+    de: '💡 Tipp des Tages: Nennen Sie Rahmenbedingungen wie Zeitraum, Zielgruppe und Format – das reduziert Rückfragen spürbar.',
+    en: '💡 Tip of the Day: State constraints such as time range, audience and format – it noticeably cuts down on follow-up questions.'
+  },
+  {
+    de: '💡 Tipp des Tages: Wiederkehrende Auswertungen lassen sich als geplante Aufgabe hinterlegen und laufen dann automatisch.',
+    en: '💡 Tip of the Day: Recurring analyses can be set up as a scheduled job and then run automatically.'
+  },
+  {
+    de: '💡 Tipp des Tages: Teilen Sie große Vorhaben in nachvollziehbare Zwischenschritte – Teilergebnisse lassen sich leichter prüfen.',
+    en: '💡 Tip of the Day: Break large undertakings into traceable steps – partial results are much easier to verify.'
+  },
+  {
+    de: '💡 Tipp des Tages: Prüfen Sie Ergebnisse stichprobenartig gegen die Quelle – eine KI-Ausgabe ist ein Entwurf, keine Endabnahme.',
+    en: '💡 Tip of the Day: Spot-check results against the source – AI output is a draft, not a sign-off.'
   }
 ]
 
@@ -217,6 +249,38 @@ const IAMDS_NERDY_TIPS_OF_THE_DAY: Tip[] = [
   {
     de: '💡 Tipp des Tages: Erkläre dem Agenten das Problem so, als wäre er ein sehr schlauer Praktikant mit Kaffeedurst.',
     en: '💡 Tip of the Day: Explain the issue to the agent like a brilliant intern who really needs coffee.'
+  },
+  {
+    de: '💡 Tipp des Tages: Deine gemeldeten Tickets samt Status findest du unter ⚙️ Einstellungen → Gateway → Support-Tickets.',
+    en: '💡 Tip of the Day: Your reported tickets and their status live under ⚙️ Settings → Gateway → Support Tickets.'
+  },
+  {
+    de: '💡 Tipp des Tages: Beim „Problem melden“ gehen Chat-Verlauf und Diagnose-Logs automatisch mit – auf Wunsch auch die vollständigen Logs.',
+    en: '💡 Tip of the Day: "Report Issue" ships the chat history and diagnostic logs along – full logs too, if you tick the box.'
+  },
+  {
+    de: '💡 Tipp des Tages: Der beste Bug-Report macht den Fehler reproduzierbar – Schritte schlagen Vermutungen.',
+    en: '💡 Tip of the Day: The best bug report makes the bug reproducible – steps beat guesses.'
+  },
+  {
+    de: '💡 Tipp des Tages: „Läuft auf meinem Rechner“ ist kein Testergebnis, sondern ein Hilferuf.',
+    en: '💡 Tip of the Day: "Works on my machine" is not a test result, it is a cry for help.'
+  },
+  {
+    de: '💡 Tipp des Tages: Ein Cache, den niemand invalidiert, ist nur eine sehr selbstbewusste Fehlerquelle.',
+    en: '💡 Tip of the Day: A cache nobody invalidates is just a very confident source of bugs.'
+  },
+  {
+    de: '💡 Tipp des Tages: Wenn du beim Erklären selbst auf die Lösung kommst – herzlichen Glückwunsch, das war Rubber-Duck-Debugging mit Extraschritten.',
+    en: '💡 Tip of the Day: If explaining it hands you the answer – congratulations, that was rubber-duck debugging with extra steps.'
+  },
+  {
+    de: '💡 Tipp des Tages: Lange Sitzungen kosten Kontext. Für ein neues Thema lohnt sich ein neuer Chat.',
+    en: '💡 Tip of the Day: Long sessions cost context. A new topic deserves a new chat.'
+  },
+  {
+    de: '💡 Tipp des Tages: Logs lesen ist schneller als raten – meistens steht die Antwort drei Zeilen über der Fehlermeldung.',
+    en: '💡 Tip of the Day: Reading logs beats guessing – the answer is usually three lines above the error.'
   }
 ]
 
