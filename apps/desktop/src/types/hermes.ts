@@ -679,6 +679,48 @@ export interface AimdsSuiteStatusResponse {
   environments: AimdsSuiteEnvStatus[]
 }
 
+// AIS-404: a local CLI (Claude, Gemini, Copilot) whose MCP config can hold the
+// AIMDSSuiteMCP entry. `key_matches` comes from a fingerprint comparison — the
+// key itself never crosses this boundary.
+export type AimdsSuiteCliState =
+  | 'in_sync'
+  | 'key_drift'
+  | 'not_configured'
+  | 'not_installed'
+  | 'unknown'
+  | 'url_drift'
+
+export interface AimdsSuiteCliTarget {
+  id: string
+  label: string
+  installed: boolean
+  config_path: string
+  config_exists: boolean
+  entry_present: boolean
+  state: AimdsSuiteCliState
+  url?: string
+  url_matches?: boolean | null
+  key_matches?: boolean | null
+  error?: string
+}
+
+export interface AimdsSuiteCliTargetsResponse {
+  suite_configured: boolean
+  targets: AimdsSuiteCliTarget[]
+}
+
+export interface AimdsSuiteCliSyncReport {
+  id: string
+  ok: boolean
+  outcome: 'error' | 'needs_confirmation' | 'unchanged' | 'written'
+  config_path: string
+  backup_path?: string
+  created_config?: boolean
+  replaced_key?: boolean
+  error?: string
+  status?: AimdsSuiteCliTarget | null
+}
+
 export interface StatusResponse {
   active_sessions: number
   auth_providers?: string[]
