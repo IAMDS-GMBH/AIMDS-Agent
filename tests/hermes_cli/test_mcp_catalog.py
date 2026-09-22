@@ -1768,6 +1768,93 @@ class TestRefreshStaleInstalls:
         assert result["checked"] == []
         assert result["updated"] == []
 
+    # ── type: local ───────────────────────────────────────────────────────
+    # AIS-402: a local install is a copytree with no .git and no ref, so
+    # _remote_head returned None and this whole loop skipped it forever —
+    # `hermes update` shipped a new server.py that never reached the client.
+
+    @staticmethod
+    def _local_manifest():
+        return _basic_manifest(
+            install={"type": "local", "path": "optional-mcps/demo", "bootstrap": []},
+            transport={"type": "stdio", "command": "${INSTALL_DIR}/run.sh"},
+        )
+
+    def _install_local(self, catalog_dir, tmp_path, commit):
+        _write_manifest(catalog_dir, "demo", self._local_manifest())
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.mcp_catalog import install_entry
+
+        # The install dir has to exist afterwards or refresh_stale_installs
+        # skips the entry and every assertion below passes vacuously.
+        def _fake_fetch(entry, dest):
+            Path(dest).mkdir(parents=True, exist_ok=True)
+
+        with patch.object(mcp_catalog, "_fetch_and_bootstrap", side_effect=_fake_fetch), patch.object(
+            mcp_catalog, "installed_commit", return_value=commit
+        ):
+            install_entry(_entry("demo"), enable=True)
+
+        from hermes_cli.config import load_config
+
+        return Path(load_config()["mcp_servers"]["demo"]["install_source"]["dir"])
+
+    def test_local_install_is_refreshed_when_the_checkout_moved_on(self, catalog_dir, tmp_path):
+        self._install_local(catalog_dir, tmp_path, "a" * 40)
+
+        from hermes_cli import mcp_catalog, mcp_picker
+
+        with patch.object(mcp_catalog, "_checkout_identity", return_value="b" * 40), patch.object(
+            mcp_picker, "update_by_name", return_value=0
+        ) as update_mock, patch.object(mcp_catalog, "installed_commit", return_value="a" * 40):
+            result = mcp_picker.refresh_stale_installs(quiet=True)
+
+        assert result["updated"] == ["demo"]
+        assert update_mock.call_count == 1
+
+    def test_local_install_on_the_current_checkout_is_left_alone(self, catalog_dir, tmp_path):
+        self._install_local(catalog_dir, tmp_path, "a" * 40)
+
+        from hermes_cli import mcp_catalog, mcp_picker
+
+        with patch.object(mcp_catalog, "_checkout_identity", return_value="a" * 40), patch.object(
+            mcp_picker, "update_by_name", return_value=0
+        ) as update_mock:
+            result = mcp_picker.refresh_stale_installs(quiet=True)
+
+        assert result["updated"] == []
+        assert result["checked"] == ["demo"]
+        assert update_mock.call_count == 0
+
+    def test_unidentifiable_checkout_does_not_reinstall_every_time(self, catalog_dir, tmp_path):
+        """No git, no release marker, no version — comparing against "unknown"
+        would rebuild the venv on every single update."""
+        self._install_local(catalog_dir, tmp_path, "a" * 40)
+
+        from hermes_cli import mcp_catalog, mcp_picker
+
+        with patch.object(mcp_catalog, "_checkout_identity", return_value="unknown"), patch.object(
+            mcp_picker, "update_by_name", return_value=0
+        ) as update_mock:
+            result = mcp_picker.refresh_stale_installs(quiet=True)
+
+        assert result["updated"] == []
+        assert update_mock.call_count == 0
+
+    def test_local_install_does_not_consult_the_network(self, catalog_dir, tmp_path):
+        """It has no upstream — asking git for one was the bug."""
+        self._install_local(catalog_dir, tmp_path, "a" * 40)
+
+        from hermes_cli import mcp_catalog, mcp_picker
+
+        with patch.object(mcp_catalog, "_checkout_identity", return_value="a" * 40), patch.object(
+            mcp_picker, "_remote_head"
+        ) as remote_mock:
+            mcp_picker.refresh_stale_installs(quiet=True)
+
+        assert remote_mock.call_count == 0
+
 
 class TestWindowsInstallRobustness:
     """AIS-286 / SUP-20260903-101450: catalog installs on a customer's Windows

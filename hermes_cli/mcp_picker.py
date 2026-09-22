@@ -350,7 +350,13 @@ def update_by_name(identifier: str) -> int:
         if install_dir and install_dir.exists():
             before = installed_commit(install_dir) or ""
 
-    print(color(f"  Updating '{identifier}' from {entry.install.url} ({entry.install.ref})", Colors.CYAN))
+    # A type:local install has no url and no ref — printing them gave
+    # "Updating 'X' from  ()" (AIS-402).
+    if entry.install.type == "local":
+        origin = f"this Hermes install ({entry.install.path})"
+    else:
+        origin = f"{entry.install.url} ({entry.install.ref})"
+    print(color(f"  Updating '{identifier}' from {origin}", Colors.CYAN))
     if before:
         print(color(f"  Currently on {_short(before)}", Colors.DIM))
     else:
@@ -407,19 +413,28 @@ def _remote_head(install_dir: Path, ref: str) -> Optional[str]:
 
 
 def refresh_stale_installs(*, quiet: bool = False) -> dict:
-    """Re-clone catalog MCPs whose install has fallen behind its manifest ref.
+    """Re-install catalog MCPs whose install has fallen behind its source.
 
     Called at the end of `hermes update`. A catalog install is an independent
-    clone under ~/.hermes/mcp-installs/<name> that nothing else ever touches,
+    copy under ~/.hermes/mcp-installs/<name> that nothing else ever touches,
     so without this a server fix reaches the agent but never the code that
-    actually runs. Only installs that are genuinely behind are re-cloned —
+    actually runs. Only installs that are genuinely behind are re-installed —
     re-running bootstrap for every entry on every update would be slow and
     would rebuild venvs for no reason.
 
+    The two install types answer "what should be installed" differently
+    (AIS-402). A ``type: git`` install is a clone, so upstream decides. A
+    ``type: local`` install is a copytree of this checkout with no ``.git`` and
+    no ref, which made ``_remote_head`` return None and this loop skip it every
+    single time: `hermes update` shipped a new server and a new manifest while
+    leaving the old server.py running indefinitely — that is how AIS-384's
+    SharePoint tools stayed missing on a client that had long since updated.
+    For those the checkout identity is the target.
+
     Best-effort by design: a missing network, a deleted upstream ref or a
-    broken clone must never fail an otherwise-good update.
+    broken install must never fail an otherwise-good update.
     """
-    from hermes_cli.mcp_catalog import _install_root, get_entry, installed_commit
+    from hermes_cli.mcp_catalog import _checkout_identity, _install_root, get_entry, installed_commit
 
     servers = load_config().get("mcp_servers") or {}
     result = {"checked": [], "updated": [], "failed": [], "skipped": []}
@@ -437,12 +452,21 @@ def refresh_stale_installs(*, quiet: bool = False) -> dict:
 
         result["checked"].append(name)
         local = source.get("commit") or installed_commit(install_dir) or ""
-        remote = _remote_head(install_dir, entry.install.ref) or ""
-        if not remote or (local and local == remote):
+        if entry.install.type == "local":
+            target = _checkout_identity()
+            # "unknown" means we could not identify this checkout at all —
+            # comparing against it would re-install on every single update.
+            if target == "unknown":
+                target = ""
+            source_label = "this Hermes version"
+        else:
+            target = _remote_head(install_dir, entry.install.ref) or ""
+            source_label = entry.install.ref
+        if not target or (local and local == target):
             continue
 
         if not quiet:
-            print(color(f"  ↑ '{name}' is behind {entry.install.ref} — re-installing", Colors.CYAN))
+            print(color(f"  ↑ '{name}' is behind {source_label} — re-installing", Colors.CYAN))
         if update_by_name(name) == 0:
             result["updated"].append(name)
         else:

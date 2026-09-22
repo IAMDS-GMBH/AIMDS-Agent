@@ -5601,12 +5601,43 @@ def _record_missing_include_tools(
     if missing:
         logger.warning(
             "MCP server '%s': %d of %d configured tool(s) not advertised by the "
-            "server: %s — the server was started without them (for OpenProject "
-            "a missing OPENPROJECT_WRITE_PROJECTS write scope hides every write "
-            "tool); the agent will be told these tools are unavailable",
+            "server: %s — %s; the agent will be told these tools are unavailable",
             name, len(missing), len(include_set), ", ".join(missing),
+            _missing_tools_cause(name),
         )
     return missing
+
+
+def _missing_tools_cause(name: str) -> str:
+    """The likely reason a server offers fewer tools than configured (AIS-402).
+
+    This line used to assert the OpenProject scope story for *every* server,
+    which read as a diagnosis and was wrong whenever the real cause was a stale
+    install: the shipped MSOffice365MCP grew two SharePoint tools, the manifest
+    listed them, and the copy under ~/.hermes/mcp-installs was still months old
+    — so the support case got closed against the checkout instead of the
+    install. Name that case when it applies and stay vague otherwise.
+    """
+    try:
+        from hermes_cli.mcp_catalog import _checkout_identity, _install_root, get_entry, installed_commit
+
+        entry = get_entry(name)
+        if entry is not None and entry.install is not None and entry.install.type == "local":
+            install_dir = _install_root() / name
+            if install_dir.exists():
+                installed = installed_commit(install_dir) or ""
+                current = _checkout_identity()
+                if installed and current and current != "unknown" and installed != current:
+                    return (
+                        f"the installed copy is older than this Hermes version "
+                        f"({installed[:12]} vs {current[:12]}) — run `hermes mcp update {name}`"
+                    )
+    except Exception:
+        pass
+    return (
+        "the server was started without them (a missing write scope can hide every write "
+        "tool, and an outdated install can lag behind its manifest)"
+    )
 
 
 def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> List[str]:
