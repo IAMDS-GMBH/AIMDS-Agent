@@ -6,7 +6,13 @@ import type * as I18nModule from '@/i18n'
 import { $desktopBoot } from '@/store/boot'
 import { setGatewayState } from '@/store/session'
 
-import { GatewayConnectingOverlay } from './gateway-connecting-overlay'
+import {
+  GatewayConnectingOverlay,
+  TEAM_ACTIVITIES_DE,
+  TEAM_ACTIVITIES_EN,
+  TEAM_NAMES,
+  teamMessage
+} from './gateway-connecting-overlay'
 
 let mockLocale = 'de'
 let mockConfig: any = { model: { base_url: '' } }
@@ -69,6 +75,39 @@ afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
   delete (window as any).hermesDesktop
+})
+
+describe('teamMessage composition', () => {
+  it('walks every name/activity pairing before repeating any of them', () => {
+    // 9 names and 45 activities share the factor 9, so indexing both with a
+    // plain `step % length` would pin each activity to one name forever and
+    // yield 45 sentences instead of 405. This is the regression that guards it.
+    const period = TEAM_NAMES.length * TEAM_ACTIVITIES_DE.length
+    const seen = new Set<string>()
+
+    for (let step = 0; step < period; step++) {
+      seen.add(teamMessage(step, TEAM_ACTIVITIES_DE))
+    }
+
+    expect(seen.size).toBe(period)
+  })
+
+  it('pairs each name with every activity equally often over one period', () => {
+    const perName = new Map<string, number>()
+
+    for (let step = 0; step < TEAM_NAMES.length * TEAM_ACTIVITIES_EN.length; step++) {
+      const name = teamMessage(step, TEAM_ACTIVITIES_EN).split(' ')[0]
+
+      perName.set(name, (perName.get(name) ?? 0) + 1)
+    }
+
+    expect(perName.size).toBe(TEAM_NAMES.length)
+    expect([...perName.values()].every(count => count === TEAM_ACTIVITIES_EN.length)).toBe(true)
+  })
+
+  it('keeps the activity lists parallel across locales', () => {
+    expect(TEAM_ACTIVITIES_EN.length).toBe(TEAM_ACTIVITIES_DE.length)
+  })
 })
 
 describe('GatewayConnectingOverlay Messages Gating', () => {
