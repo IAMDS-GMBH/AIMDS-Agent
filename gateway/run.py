@@ -15745,6 +15745,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
     PASTE_SWEEP_EVERY = 60   # ticks — once per hour
     CURATOR_EVERY = 60       # ticks — poll hourly (inner gate handles the real cadence)
+    SUITE_HEALTH_EVERY = 1   # ticks — cheap call every tick; maybe_run_suite_health_check() self-gates on its own interval
 
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
@@ -15813,6 +15814,24 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
                 )
             except Exception as e:
                 logger.debug("Curator tick error: %s", e)
+
+        # AIS-394 — periodic AIMDS-Suite key revalidation. Detection only:
+        # this writes/clears the shared auth-failure flag file; the actual
+        # desktop notification is pushed by the always-on
+        # `_suite_auth_flag_watcher` in hermes_cli/web_server.py, which polls
+        # that same flag file — including when it runs in a separate
+        # `hermes dashboard` process connected to this gateway.
+        if tick_count % SUITE_HEALTH_EVERY == 0:
+            try:
+                from hermes_cli.iamds_suite import maybe_run_suite_health_check
+                results = maybe_run_suite_health_check()
+                for r in results or []:
+                    if r.get("outcome") == "newly_broken":
+                        logger.warning(
+                            "Suite health check: %s needs re-auth (http_%s)", r.get("provider"), r.get("http_status")
+                        )
+            except Exception as e:
+                logger.debug("Suite health check tick error: %s", e)
 
         stop_event.wait(timeout=interval)
     logger.info("Cron ticker stopped")

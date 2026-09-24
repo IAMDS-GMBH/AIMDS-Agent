@@ -476,3 +476,147 @@ def test_rebind_path_only_mismatch_now_triggers_reconnect(monkeypatch):
     tools = suite.rebind_suite_mcp_for_model("google-gemini-cli")
     assert tools == ["tool_a", "tool_b"]
     assert calls["mcp"]["provider"] == "aimds-suite-prod"
+
+
+# --------------------------------------------------------------------------- periodic health check (AIS-394)
+
+class TestSuiteHealthCheck:
+    CFG = {"providers": {"aimds-suite-prod": {"base_url": "https://suite.iamds.com/litellm/v1"}}}
+
+    def test_not_configured_skips_probe_entirely(self, isolated_home):
+        calls = []
+        result = suite.check_suite_environment_health(
+            "aimds-suite-staging", probe_fn=lambda u, k: calls.append((u, k)) or (200, "")
+        )
+        assert result["outcome"] == "not_configured"
+        assert calls == []
+
+    def test_unreachable_is_not_an_auth_problem(self, isolated_home, monkeypatch):
+        monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "sk-prod-key-1234")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: self.CFG)
+        suite.mark_suite_auth_failure("aimds-suite-prod", 401, "old failure", source="llm")
+
+        result = suite.check_suite_environment_health(
+            "aimds-suite-prod", probe_fn=lambda u, k: (None, "ConnectionRefused")
+        )
+
+        assert result["outcome"] == "unreachable"
+        # a network blip must never clear or overwrite an existing auth flag
+        assert suite.suite_auth_failures()["aimds-suite-prod"]["message"] == "old failure"
+
+    def test_newly_broken_then_still_broken_does_not_move_since(self, isolated_home, monkeypatch):
+        monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "sk-prod-key-1234")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: self.CFG)
+
+        first = suite.check_suite_environment_health(
+            "aimds-suite-prod", probe_fn=lambda u, k: (401, "unauthorized")
+        )
+        assert first["outcome"] == "newly_broken"
+        since_first = suite.suite_auth_failures()["aimds-suite-prod"]["since"]
+
+        second = suite.check_suite_environment_health(
+            "aimds-suite-prod", probe_fn=lambda u, k: (401, "unauthorized")
+        )
+        assert second["outcome"] == "still_broken"
+        assert suite.suite_auth_failures()["aimds-suite-prod"]["since"] == since_first
+
+    def test_self_heal_recovers_on_key_rotation(self, isolated_home, monkeypatch):
+        monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "sk-old-key-1234")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: self.CFG)
+
+        reauth_calls: list[str] = []
+        monkeypatch.setattr(suite, "apply_reauth", lambda provider, **kw: reauth_calls.append(provider))
+
+        def rotate_key():
+            monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "sk-new-key-5678")
+
+        monkeypatch.setattr("hermes_cli.config.invalidate_env_cache", lambda: None)
+        monkeypatch.setattr("hermes_cli.env_loader.load_hermes_dotenv", rotate_key)
+
+        def fake_probe(url, key):
+            return (200, "") if key == "sk-new-key-5678" else (401, "unauthorized")
+
+        result = suite.check_suite_environment_health("aimds-suite-prod", probe_fn=fake_probe)
+
+        assert result["outcome"] == "recovered_self_heal"
+        assert result["http_status"] == 200
+        assert reauth_calls == ["aimds-suite-prod"]
+        assert suite.suite_auth_failures() == {}  # never had to be flagged at all
+
+    def test_still_broken_when_self_heal_finds_no_new_key(self, isolated_home, monkeypatch):
+        monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "sk-dead-key-1234")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: self.CFG)
+        monkeypatch.setattr("hermes_cli.config.invalidate_env_cache", lambda: None)
+        monkeypatch.setattr("hermes_cli.env_loader.load_hermes_dotenv", lambda: None)  # no rotation happens
+
+        result = suite.check_suite_environment_health(
+            "aimds-suite-prod", probe_fn=lambda u, k: (401, "unauthorized")
+        )
+
+        assert result["outcome"] == "newly_broken"
+        assert suite.suite_auth_failures()["aimds-suite-prod"]["source"] == "health_check"
+
+    def test_recovered_without_key_change_clears_flag(self, isolated_home, monkeypatch):
+        monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "sk-prod-key-1234")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: self.CFG)
+        suite.mark_suite_auth_failure("aimds-suite-prod", 401, "was broken", source="llm")
+
+        reauth_calls: list[str] = []
+        monkeypatch.setattr(suite, "apply_reauth", lambda provider, **kw: reauth_calls.append(provider))
+
+        result = suite.check_suite_environment_health(
+            "aimds-suite-prod", probe_fn=lambda u, k: (200, "")
+        )
+
+        assert result["outcome"] == "recovered"
+        assert reauth_calls == ["aimds-suite-prod"]
+
+    def test_ok_when_healthy_and_never_flagged(self, isolated_home, monkeypatch):
+        monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "sk-prod-key-1234")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: self.CFG)
+        result = suite.check_suite_environment_health("aimds-suite-prod", probe_fn=lambda u, k: (200, ""))
+        assert result["outcome"] == "ok"
+
+    def test_sweep_isolates_per_environment_failures(self, isolated_home, monkeypatch):
+        monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "sk-prod-key-1234")
+        monkeypatch.setenv("IAMDS_LITELLM_STAGING_API_KEY", "sk-staging-key-1234")
+        cfg = {
+            "providers": {
+                "aimds-suite-prod": {"base_url": "https://suite.iamds.com/litellm/v1"},
+                "aimds-suite-staging": {"base_url": "https://staging.suite.iamds.com/litellm/v1"},
+            }
+        }
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+
+        def flaky_probe(url, key):
+            if "staging" in url:
+                raise RuntimeError("boom")
+            return (200, "")
+
+        results = suite.run_suite_health_sweep(probe_fn=flaky_probe)
+        by_provider = {r["provider"]: r for r in results}
+
+        assert len(results) == len(suite.SUITE_ENVIRONMENTS)
+        assert by_provider["aimds-suite-prod"]["outcome"] == "ok"
+        assert by_provider["aimds-suite-staging"]["outcome"] == "error"
+
+
+class TestMaybeRunSuiteHealthCheck:
+    @pytest.fixture(autouse=True)
+    def _state_file(self, isolated_home, monkeypatch):
+        monkeypatch.setattr(
+            suite, "_suite_health_check_state_file", lambda: isolated_home / "state" / "iamds_suite_health_check.json"
+        )
+
+    def test_disabled_returns_none(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SUITE_HEALTH_CHECK_ENABLED", "0")
+        assert suite.maybe_run_suite_health_check() is None
+
+    def test_interval_gate_and_force(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SUITE_HEALTH_CHECK_INTERVAL_SECONDS", "1800")
+        t0 = 1_000_000.0
+
+        assert suite.maybe_run_suite_health_check(now=t0) is not None  # no prior state -> due
+        assert suite.maybe_run_suite_health_check(now=t0 + 60) is None  # not due yet
+        assert suite.maybe_run_suite_health_check(now=t0 + 60, force=True) is not None  # forced bypass
+        assert suite.maybe_run_suite_health_check(now=t0 + 1900) is not None  # interval elapsed

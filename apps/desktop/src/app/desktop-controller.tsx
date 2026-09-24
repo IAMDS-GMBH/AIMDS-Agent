@@ -127,6 +127,10 @@ import { useMessageStream } from './session/hooks/use-message-stream'
 import { useModelControls } from './session/hooks/use-model-controls'
 import { usePreviewRouting } from './session/hooks/use-preview-routing'
 import { usePromptActions } from './session/hooks/use-prompt-actions'
+import {
+  type SuiteAuthNeedsReauthEvent,
+  useProviderEventsListener
+} from './session/hooks/use-provider-events-listener'
 import { useRouteResume } from './session/hooks/use-route-resume'
 import { useSessionActions } from './session/hooks/use-session-actions'
 import { useSessionStateCache } from './session/hooks/use-session-state-cache'
@@ -866,6 +870,27 @@ export function DesktopController() {
   // query param). Listen on that same backend so completion toasts are reliable
   // even when the active chat profile points at a pooled backend.
   useCronCompletionListener(handleCronJobCompleted)
+
+  // AIS-394: the periodic Suite key health check pushes this event once a
+  // non-self-healing 401/403 is confirmed. Toast + native notification, no
+  // deep-link for v1 — the Settings → Providers pill catches up on its own
+  // next mount/probe.
+  const handleSuiteAuthNeedsReauth = useCallback((event: SuiteAuthNeedsReauthEvent) => {
+    const title = translateNow('settings.providers.suite.notifications.reauthTitle', event.label)
+
+    const body = translateNow(
+      'settings.providers.suite.notifications.reauthBody',
+      event.domain || event.provider
+    )
+
+    notify({ kind: 'warning', title, message: body, durationMs: 0 })
+
+    if (window.hermesDesktop?.notify) {
+      void window.hermesDesktop.notify({ title, body })
+    }
+  }, [])
+
+  useProviderEventsListener(handleSuiteAuthNeedsReauth)
 
   // OS badge mirrors the unseen-output count (primary window only).
   useCronUnreadBadge()

@@ -142,6 +142,17 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
             cron_tick(verbose=False, sync=False)
         except Exception as e:
             _log.debug("Desktop cron tick error: %s", e)
+        try:
+            from hermes_cli.iamds_suite import maybe_run_suite_health_check
+
+            results = maybe_run_suite_health_check()
+            for r in results or []:
+                if r.get("outcome") == "newly_broken":
+                    _log.warning(
+                        "Suite health check: %s needs re-auth (http_%s)", r.get("provider"), r.get("http_status")
+                    )
+        except Exception as e:
+            _log.debug("Suite health check tick error: %s", e)
         stop_event.wait(interval)
 
 
@@ -200,6 +211,61 @@ def _provider_host_resolvable(timeout: float = 3.0) -> bool:
     if not outcome["ok"]:
         _log.debug("Desktop cron ticker: %s does not resolve (%s)", host, outcome.get("error"))
     return bool(outcome["ok"])
+
+
+async def _broadcast_suite_auth_event(app: "FastAPI", provider_id: str, flag: Dict[str, Any]) -> None:
+    """Push a ``suite_auth_needs_reauth`` event to every ``/api/events`` subscriber."""
+    from hermes_cli.iamds_suite import resolve_suite_endpoint
+    from utils import base_url_hostname
+
+    try:
+        ep = resolve_suite_endpoint(provider_id, allow_default=True)
+        label, domain = ep.label, base_url_hostname(ep.base_url)
+    except Exception:
+        label, domain = provider_id, ""
+    payload = json.dumps({
+        "type": "suite_auth_needs_reauth",
+        "provider": provider_id,
+        "label": label,
+        "domain": domain,
+        "http_status": flag.get("http_status"),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    await _broadcast_event(app, "provider_events", payload)
+
+
+async def _suite_auth_flag_watcher(app: "FastAPI", stop_event: "asyncio.Event", interval: float = 60.0) -> None:
+    """Poll the shared Suite auth-failure flag file and broadcast new failures.
+
+    Runs unconditionally (desktop-spawned *and* server ``hermes dashboard``
+    alike) so a failure detected by ``maybe_run_suite_health_check()`` in
+    *either* the desktop ticker or a separate ``hermes gateway run`` process
+    (AIS-394) still reaches this process's connected clients — both share the
+    same ``<HERMES_HOME>/state/iamds_suite_auth.json`` flag file, so this
+    watcher notices the change regardless of which process wrote it. Only
+    newly-appearing/changed flags are broadcast (tracked by ``since``); the
+    first read after startup just seeds the baseline without notifying, so a
+    pre-existing failure doesn't re-fire a notification on every restart.
+    """
+    from hermes_cli.iamds_suite import suite_auth_failures
+
+    seen: Dict[str, float] = {}
+    initialized = False
+    while not stop_event.is_set():
+        try:
+            flags = suite_auth_failures()
+            for provider_id, flag in flags.items():
+                since = float(flag.get("since") or 0.0)
+                if initialized and seen.get(provider_id) != since:
+                    await _broadcast_suite_auth_event(app, provider_id, flag)
+                seen[provider_id] = since
+            initialized = True
+        except Exception as exc:
+            _log.debug("Suite auth flag watcher error: %s", exc)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            pass
 
 
 @asynccontextmanager
@@ -267,11 +333,25 @@ async def _lifespan(app: "FastAPI"):
         )
         cron_thread.start()
 
+    # Always on, regardless of desktop vs. server topology: a Suite auth
+    # failure may be detected by this process's own ticker above, or by a
+    # separate `hermes gateway run` process sharing the same HERMES_HOME
+    # (AIS-394) — either way this watcher notices it via the shared flag file
+    # and pushes it to whatever UI is connected to *this* process.
+    suite_watcher_stop = asyncio.Event()
+    suite_watcher_task = asyncio.create_task(_suite_auth_flag_watcher(app, suite_watcher_stop))
+
     try:
         yield
     finally:
         if cron_stop is not None:
             cron_stop.set()
+        suite_watcher_stop.set()
+        suite_watcher_task.cancel()
+        try:
+            await suite_watcher_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 def _get_event_state(app: "FastAPI"):
@@ -1726,6 +1806,50 @@ async def complete_aimds_suite_reauth(env: str, request: Request, profile: Optio
     with _profile_scope(profile):
         result = await asyncio.get_running_loop().run_in_executor(None, lambda: apply_reauth(provider))
     return {"ok": True, **result}
+
+
+@app.get("/api/providers/aimds-suite/cli-targets")
+async def get_aimds_suite_cli_targets(request: Request, profile: Optional[str] = None):
+    """Which local CLIs could host the Suite MCP, and whether they match (AIS-404).
+
+    Token-gated even though it returns no secret: it reports which tools are
+    installed and where their config lives, and the fingerprint comparison
+    behind it reads the resolved Suite key.
+    """
+    _require_token(request)
+    from hermes_cli.cli_mcp_sync import all_statuses
+
+    with _profile_scope(profile):
+        return await asyncio.get_running_loop().run_in_executor(None, all_statuses)
+
+
+class CliMcpSyncRequest(BaseModel):
+    # Replacing a key the user may have put there on purpose needs an explicit
+    # yes from the dialog, never a default.
+    replace_key: bool = False
+
+
+@app.post("/api/providers/aimds-suite/cli-targets/{target_id}/apply")
+async def apply_aimds_suite_cli_target(
+    target_id: str,
+    request: Request,
+    body: Optional[CliMcpSyncRequest] = None,
+    profile: Optional[str] = None,
+):
+    """Write the AIMDSSuiteMCP entry into that CLI's config.
+
+    The key itself never crosses this boundary: the writer resolves it inside
+    Python and the response carries only a status report.
+    """
+    _require_token(request)
+    from hermes_cli.cli_mcp_sync import apply_to_target
+
+    replace_key = bool(body.replace_key) if body else False
+    with _profile_scope(profile):
+        report = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: apply_to_target(target_id, replace_key=replace_key)
+        )
+    return report.to_dict()
 
 
 @app.get("/api/subagents")
@@ -5692,6 +5816,23 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                     accounts = app.get_accounts()
                     username = accounts[0].get("username") if accounts else None
                     label = f"Microsoft 365 Account ({username})" if username else "Microsoft 365 MSAL Cache"
+                    # AIS-401: who is actually signed in. Read straight from the
+                    # MSAL cache (no Graph call, no MCP round-trip) so the card
+                    # can name the account even when the MCP is not installed —
+                    # "connected" alone left people guessing which tenant/user
+                    # they had signed in with.
+                    profile: Dict[str, Any] = {}
+                    try:
+                        first = (accounts or [None])[0]
+                        if first:
+                            profile = {
+                                "username": first.get("username") or first.get("preferred_username") or "",
+                                "name": first.get("name") or "",
+                                "tenant": first.get("realm") or "",
+                                "accounts": len(accounts or []),
+                            }
+                    except Exception:
+                        profile = {}
                     return {
                         "logged_in": True,
                         "source": "microsoft_msal",
@@ -5699,6 +5840,7 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                         "token_preview": "msal-cached-token",
                         "expires_at": None,
                         "has_refresh_token": True,
+                        "profile": profile or None,
                     }
             except Exception:
                 pass
@@ -8750,6 +8892,23 @@ async def set_mcp_server_enabled(
     return {"ok": True, "name": name, "enabled": bool(body.enabled)}
 
 
+def _catalog_account_connected(provider_id: str) -> Optional[bool]:
+    """Whether the OAuth account a catalog entry depends on is connected (AIS-401).
+
+    ``None`` when the entry declares no dependency or the probe fails — the
+    card then shows no claim at all rather than a wrong one, since this only
+    ever guides and never blocks an install.
+    """
+    if not provider_id:
+        return None
+    try:
+        status = _resolve_provider_status(provider_id, None)
+        return bool(status.get("logged_in"))
+    except Exception:
+        _log.debug("account probe failed for %s", provider_id, exc_info=True)
+        return None
+
+
 @app.get("/api/mcp/catalog")
 async def list_mcp_catalog(profile: Optional[str] = None):
     """Browse the Nous-approved MCP catalog (the optional-mcps/ manifests).
@@ -8819,6 +8978,12 @@ async def list_mcp_catalog(profile: Optional[str] = None):
                     "needs_install": entry.install is not None,
                     "installed": installed_state.get(entry.name, (False, False))[0],
                     "enabled": installed_state.get(entry.name, (False, False))[1],
+                    # AIS-401: advisory only — the card shows the missing
+                    # connection and links to it, the install stays available.
+                    "requires_account": getattr(entry, "requires_account", "") or None,
+                    "account_connected": _catalog_account_connected(
+                        getattr(entry, "requires_account", "") or ""
+                    ),
                     "multi_instance": entry.name in _MULTI_INSTANCE_CATALOG_NAMES,
                     "instances": (
                         mcp_catalog.list_instances(entry.name)

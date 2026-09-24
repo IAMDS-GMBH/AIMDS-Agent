@@ -45,75 +45,131 @@ const TAIL = 'ECTING'
 // ensure cross-platform compatibility across Windows, macOS, and Linux font engines.
 const SCRAMBLE_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ#$@%&*!?'
 const TICK_MS = 45
-const MESSAGE_STEP_MS = 2800
-const STARTUP_MIN_MS = MESSAGE_STEP_MS * 3
+const MESSAGE_STEP_MS = 4200
+// Absolute, deliberately not MESSAGE_STEP_MS * n: the minimum keeps the overlay
+// from merely flashing on a warm start, but it must not grow when the messages
+// linger longer — that would hold back an already-ready backend.
+const STARTUP_MIN_MS = 8400
 
-const TEAM_MESSAGES_DE = [
-  'Patrick aktiviert Arbeitskräfte...',
-  'Michael hat alle Projekte fest im Griff (Better call Fischi!)...',
-  'Benedikt testet die Stabilität des KI-Agenten...',
-  'Matthias bringt Struktur in OpenProject...',
-  'Gonzalo diskutiert im Auto-Modus mit dem Copilot...',
-  'Tobias optimiert E-Commerce-Shops und Enterprise-Integrationen...',
-  'Martin bringt im Mitarbeiter-Meeting neue Ideen für die Büroausstattung ein...',
-  'Johannes macht gerade das Dev-Deployment...',
-  'Patrick verteilt Motivation und sorgt für beste Laune...',
-  'Michael freut sich riesig auf den nächsten AIMDS-Agenten...',
-  'Benedikt beäugt kritisch, was wir heute wieder gebaut haben...',
-  'Tobias feilt an der Manufaktur- und Werkstatt-Lösung...',
-  'Gonzalo durchschaut die Tiefen von Kubernetes und Infrastruktur...',
-  'Martin beendet gerade das EVN-Meeting...',
-  'Julian freut sich riesig über den Hermes Linux Client...',
-  'Johannes debuggt den Prompt-Cache...',
-  'Michael ordnet Jira-Tickets nach Wichtigkeit...',
-  'Patrick prüft, ob die Kundenversprechen eingehalten werden...',
-  'Benedikt überzeugt sich persönlich von der Software-Qualität...',
-  'Matthias behält alle Meilensteine fest im Blick...',
-  'Gonzalo bändigt widerspenstige LLM-Prompts...',
-  'Martin konfiguriert Keycloak zum hundertsten Mal...',
-  'Johannes erklärt dem Agenten, wie man fehlerfreien Code schreibt...',
-  'Tobias optimiert Datenbankabfragen im Schlaf...',
-  'Michael übersetzt Entwickler-Slang in verständliche Kunden-Präsentationen...',
-  'Martin sucht den Fehler im OAuth-Handshake...',
-  'Tobias führt ein unangekündigtes Backup im Live-System durch...',
-  'Johannes überzeugt den KI-Agenten, dass YAML besser ist als JSON...',
-  'Martin startet den Docker-Daemon neu (schon wieder)...',
-  'Tobias jagt einen Race Condition-Bug im Warenkorb...',
-  'Johannes optimiert die System-Prompts für maximale Höflichkeit...'
+// Team easter eggs are composed, not hand-paired: every name goes with every
+// activity, so 9 x 45 entries carry the pool instead of 45 fixed sentences.
+// Activities therefore must read as a predicate that works after any name and
+// must not assume a gender or a specific person.
+export const TEAM_NAMES = [
+  'Patrick',
+  'Michael',
+  'Benedikt',
+  'Matthias',
+  'Gonzalo',
+  'Tobias',
+  'Martin',
+  'Johannes',
+  'Julian'
 ] as const
 
-const TEAM_MESSAGES_EN = [
-  'Patrick is activating manpower...',
+// In-jokes that only work with one specific person stay whole here instead of
+// being composed. They are drawn on a fixed slot (see teamMessage) — the
+// composed pool is big enough that they would otherwise almost never appear.
+export const TEAM_FIXED_MESSAGES_DE = [
+  'Michael hat alle Projekte fest im Griff (Better call Fischi!)...',
+  'Julian freut sich riesig über den Hermes Linux Client...',
+  'Martin beendet gerade das EVN-Meeting...'
+] as const
+
+export const TEAM_FIXED_MESSAGES_EN = [
   'Michael keeps all projects firmly under control (Better call Fischi!)...',
-  'Benedikt is testing the AI agent\'s stability...',
-  'Matthias is structuring tasks in OpenProject...',
-  'Gonzalo is debating with Copilot in auto mode...',
-  'Tobias is optimizing e-commerce shops and enterprise integrations...',
-  'Martin is proposing new office equipment ideas in the staff meeting...',
-  'Johannes is running the dev deployment...',
-  'Patrick is spreading motivation and good vibes...',
-  'Michael is super excited for the next AIMDS Agent...',
-  'Benedikt is keeping a skeptical eye on what we built today...',
-  'Tobias is refining the manufacturing and workshop solution...',
-  'Gonzalo is mastering the depths of Kubernetes and infrastructure...',
-  'Martin is wrapping up the EVN meeting...',
   'Julian is celebrating the Hermes Linux Client...',
-  'Johannes is debugging the prompt cache...',
-  'Michael is organizing Jira tickets by priority...',
-  'Patrick is making sure customer promises are delivered...',
-  'Benedikt is personally verifying software quality...',
-  'Matthias is keeping a close eye on all milestones...',
-  'Gonzalo is taming stubborn LLM prompts...',
-  'Martin is configuring Keycloak for the hundredth time...',
-  'Johannes is explaining to the agent how to write bug-free code...',
-  'Tobias is optimizing database queries in his sleep...',
-  'Michael is translating developer slang into understandable client presentations...',
-  'Martin is searching for the bug in the OAuth handshake...',
-  'Tobias is running an unannounced backup on the production database...',
-  'Johannes is convincing the AI agent that YAML is better than JSON...',
-  'Martin is restarting the Docker daemon (yet again)...',
-  'Tobias is chasing a race condition bug in the shopping cart...',
-  'Johannes is optimizing system prompts for maximum politeness...'
+  'Martin is wrapping up the EVN meeting...'
+] as const
+
+export const TEAM_ACTIVITIES_DE = [
+  'aktiviert Arbeitskräfte...',
+  'testet die Stabilität des KI-Agenten...',
+  'bringt Struktur in OpenProject...',
+  'diskutiert im Auto-Modus mit dem Copilot...',
+  'optimiert E-Commerce-Shops und Enterprise-Integrationen...',
+  'bringt im Mitarbeiter-Meeting neue Ideen für die Büroausstattung ein...',
+  'macht gerade das Dev-Deployment...',
+  'verteilt Motivation und sorgt für beste Laune...',
+  'freut sich riesig auf den nächsten AIMDS-Agenten...',
+  'beäugt kritisch, was wir heute wieder gebaut haben...',
+  'feilt an der Manufaktur- und Werkstatt-Lösung...',
+  'durchschaut die Tiefen von Kubernetes und Infrastruktur...',
+  'debuggt den Prompt-Cache...',
+  'ordnet Jira-Tickets nach Wichtigkeit...',
+  'prüft, ob die Kundenversprechen eingehalten werden...',
+  'überzeugt sich persönlich von der Software-Qualität...',
+  'behält alle Meilensteine fest im Blick...',
+  'bändigt widerspenstige LLM-Prompts...',
+  'konfiguriert Keycloak zum hundertsten Mal...',
+  'erklärt dem Agenten, wie man fehlerfreien Code schreibt...',
+  'optimiert Datenbankabfragen im Schlaf...',
+  'übersetzt Entwickler-Slang in verständliche Kunden-Präsentationen...',
+  'sucht den Fehler im OAuth-Handshake...',
+  'führt ein unangekündigtes Backup im Live-System durch...',
+  'überzeugt den KI-Agenten, dass YAML besser ist als JSON...',
+  'startet den Docker-Daemon neu (schon wieder)...',
+  'jagt einen Race Condition-Bug im Warenkorb...',
+  'optimiert die System-Prompts für maximale Höflichkeit...',
+  'googelt die selbst geschriebene Fehlermeldung...',
+  'erklärt dem Cluster, wer hier der Chef ist...',
+  'hat schon wieder einen Weg gefunden, alles zum Absturz zu bringen...',
+  'schiebt das Fälligkeitsdatum ein kleines Stück nach rechts...',
+  'schaltet den Cache aus und wieder ein...',
+  'verwandelt Kaffee in Kundentermine...',
+  'malt das Diagramm, das endlich alles erklärt...',
+  'kompiliert den Kernel – nur zur Sicherheit...',
+  'diskutiert mit dem Linter über Zeilenlängen...',
+  'liest die Dokumentation. Freiwillig...',
+  'sucht noch kurz das fehlende Semikolon...',
+  'schaut misstrauisch auf die verdächtig grünen Tests...',
+  'löst einen Merge-Konflikt auf dem Verhandlungsweg...',
+  'erinnert dich: Fehler meldest du über ⚙️ Einstellungen → Problem melden...'
+] as const
+
+export const TEAM_ACTIVITIES_EN = [
+  'is activating manpower...',
+  'is testing the AI agent\'s stability...',
+  'is structuring tasks in OpenProject...',
+  'is debating with Copilot in auto mode...',
+  'is optimizing e-commerce shops and enterprise integrations...',
+  'is proposing new office equipment ideas in the staff meeting...',
+  'is running the dev deployment...',
+  'is spreading motivation and good vibes...',
+  'is super excited for the next AIMDS Agent...',
+  'is keeping a skeptical eye on what we built today...',
+  'is refining the manufacturing and workshop solution...',
+  'is mastering the depths of Kubernetes and infrastructure...',
+  'is debugging the prompt cache...',
+  'is organizing Jira tickets by priority...',
+  'is making sure customer promises are delivered...',
+  'is personally verifying software quality...',
+  'is keeping a close eye on all milestones...',
+  'is taming stubborn LLM prompts...',
+  'is configuring Keycloak for the hundredth time...',
+  'is explaining to the agent how to write bug-free code...',
+  'is optimizing database queries in their sleep...',
+  'is translating developer slang into understandable client presentations...',
+  'is searching for the bug in the OAuth handshake...',
+  'is running an unannounced backup on the production database...',
+  'is convincing the AI agent that YAML is better than JSON...',
+  'is restarting the Docker daemon (yet again)...',
+  'is chasing a race condition bug in the shopping cart...',
+  'is optimizing system prompts for maximum politeness...',
+  'is googling a self-written error message...',
+  'is explaining to the cluster who is in charge here...',
+  'found yet another way to crash the whole thing...',
+  'is nudging the due date a little to the right...',
+  'is turning the cache off and on again...',
+  'is turning coffee into customer meetings...',
+  'is drawing the diagram that finally explains everything...',
+  'is compiling the kernel – just to be safe...',
+  'is arguing with the linter about line lengths...',
+  'is reading the documentation. Voluntarily...',
+  'is still looking for that one missing semicolon...',
+  'is eyeing the suspiciously green tests...',
+  'is negotiating a diplomatic solution to a merge conflict...',
+  'reminds you: report bugs via ⚙️ Settings → Report Issue...'
 ] as const
 
 const BUSINESS_MESSAGES_DE = [
@@ -124,7 +180,19 @@ const BUSINESS_MESSAGES_DE = [
   'Kompiliere Zusammenfassungen und Berichte...',
   'Prüfe Dokumentenstrukturen und Richtlinien...',
   'Optimiere Kommunikations- und Entscheidungswege...',
-  'Lade spezialisierte KI-Werkzeuge für den Arbeitsbereich...'
+  'Lade spezialisierte KI-Werkzeuge für den Arbeitsbereich...',
+  'Lade Arbeitsbereich und zuletzt genutzte Sitzungen...',
+  'Prüfe verfügbare Werkzeuge und Berechtigungen...',
+  'Stelle Verbindungen zu verknüpften Konten her...',
+  'Gleiche Kalender- und Aufgabenquellen ab...',
+  'Bereite die Dokumentenverarbeitung vor...',
+  'Aktualisiere den Katalog verfügbarer Fähigkeiten...',
+  'Richte den sicheren Zugriff auf Unternehmensdaten ein...',
+  'Ordne Aufgaben nach Priorität und Fälligkeit...',
+  'Initialisiere den Arbeitsspeicher der Sitzung...',
+  'Übernehme Sprach- und Anzeigeeinstellungen...',
+  'Stelle die Verbindung zum Modellanbieter her...',
+  'Hinweis: Rückmeldungen erreichen uns über ⚙️ Einstellungen → Problem melden...'
 ] as const
 
 const BUSINESS_MESSAGES_EN = [
@@ -135,7 +203,19 @@ const BUSINESS_MESSAGES_EN = [
   'Compiling summaries and reports...',
   'Verifying document structures and guidelines...',
   'Optimizing communication and decision channels...',
-  'Loading specialized AI tools for the workspace...'
+  'Loading specialized AI tools for the workspace...',
+  'Loading workspace and recent sessions...',
+  'Checking available tools and permissions...',
+  'Connecting to linked accounts...',
+  'Reconciling calendar and task sources...',
+  'Preparing document processing...',
+  'Refreshing the catalog of available capabilities...',
+  'Setting up secure access to company data...',
+  'Sorting tasks by priority and due date...',
+  'Initializing session memory...',
+  'Applying language and display preferences...',
+  'Establishing the connection to the model provider...',
+  'Note: you can send us feedback via ⚙️ Settings → Report Issue...'
 ] as const
 
 // Exit choreography (ms): text fades down + out, hold, then the overlay fades.
@@ -160,6 +240,40 @@ function forcedPreview(): boolean {
   } catch {
     return false
   }
+}
+
+// Every FIXED_SLOT_EVERY-th message comes from the name-bound list. Without a
+// reserved slot those few entries would be drawn about once in 127 messages
+// against the composed pool, i.e. practically never.
+const FIXED_SLOT_EVERY = 8
+
+/**
+ * Compose "<name> <activity>" for `step`.
+ *
+ * Both indices run off the same counter, but the name takes one extra step
+ * every time the activity list wraps. Without that offset the shared factor
+ * between the two lengths (9 names, 42 activities) would pin each activity to
+ * a single name forever; with it, every pairing appears before any repeats.
+ */
+export function composedTeamMessage(step: number, activities: readonly string[]): string {
+  const activity = activities[step % activities.length]
+  const name = TEAM_NAMES[(step + Math.floor(step / activities.length)) % TEAM_NAMES.length]
+
+  return `${name} ${activity}`
+}
+
+/**
+ * The message for `step`: mostly composed, every FIXED_SLOT_EVERY-th one taken
+ * from `fixed`. Step 0 is composed, so the first message after a connect starts
+ * is always a name/activity pairing.
+ */
+export function teamMessage(step: number, activities: readonly string[], fixed: readonly string[]): string {
+  if (fixed.length > 0 && step % FIXED_SLOT_EVERY === FIXED_SLOT_EVERY - 1) {
+    return fixed[Math.floor(step / FIXED_SLOT_EVERY) % fixed.length]
+  }
+
+  // Skip the steps the fixed slots consumed, so the composed walk stays gapless.
+  return composedTeamMessage(step - Math.floor(step / FIXED_SLOT_EVERY), activities)
 }
 
 function scrambledTail(resolvedCount: number): string {
@@ -458,20 +572,22 @@ export function GatewayConnectingOverlay() {
 
   const isNerdy = resolveIsNerdyMode(tipMode, defaultIsIamds)
 
-  // Select message list based on language and Nerdy / Business mode
-  const messages = isNerdy
-    ? (locale === 'en' ? TEAM_MESSAGES_EN : TEAM_MESSAGES_DE)
-    : (locale === 'en' ? BUSINESS_MESSAGES_EN : BUSINESS_MESSAGES_DE)
+  // Select message source based on language and Nerdy / Business mode. Nerdy
+  // composes name x activity, so its pool is the cross product rather than a list.
+  const teamActivities = locale === 'en' ? TEAM_ACTIVITIES_EN : TEAM_ACTIVITIES_DE
+  const teamFixed = locale === 'en' ? TEAM_FIXED_MESSAGES_EN : TEAM_FIXED_MESSAGES_DE
+  const businessMessages = locale === 'en' ? BUSINESS_MESSAGES_EN : BUSINESS_MESSAGES_DE
+  const poolSize = isNerdy ? TEAM_NAMES.length * teamActivities.length : businessMessages.length
 
   if (startIndexRef.current === null) {
-    startIndexRef.current = Math.floor(Math.random() * messages.length)
+    startIndexRef.current = Math.floor(Math.random() * poolSize)
   }
 
   // Reset the message clock and pick a new random start index whenever isNerdy changes
   if (prevIsIamdsRef.current !== isNerdy) {
     prevIsIamdsRef.current = isNerdy
     messageStartRef.current = Date.now()
-    startIndexRef.current = Math.floor(Math.random() * messages.length)
+    startIndexRef.current = Math.floor(Math.random() * poolSize)
   }
 
   if (!messageStartRef.current) {
@@ -481,9 +597,12 @@ export function GatewayConnectingOverlay() {
   const messageElapsed = Math.max(0, Date.now() - messageStartRef.current)
 
   // Modulo-based cycling starting from a random index so messages vary each connection
-  const messageIndex = (startIndexRef.current + Math.floor(messageElapsed / MESSAGE_STEP_MS)) % messages.length
+  const step = startIndexRef.current + Math.floor(messageElapsed / MESSAGE_STEP_MS)
   const progressPct = Math.min(100, Math.round((shownElapsed / STARTUP_MIN_MS) * 100))
-  const currentMessage = messages[messageIndex]
+
+  const currentMessage = isNerdy
+    ? teamMessage(step, teamActivities, teamFixed)
+    : businessMessages[step % businessMessages.length]
 
   return (
     <div

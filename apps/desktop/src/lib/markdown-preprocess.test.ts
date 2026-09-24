@@ -36,3 +36,40 @@ describe('preprocessMarkdown path links', () => {
     expect(out).toBe('Docs: <https://example.com/docs/guide.md>')
   })
 })
+
+describe('preprocessMarkdown raw URL autolinking', () => {
+  it('leaves a markdown link whose label equals its href untouched (AIS-401)', () => {
+    // The device-code login link the model writes. RAW_URL_RE permits `]`, `(`
+    // and `)`, so the match used to run from the label through the href and the
+    // wrapped result rendered as …/device%5D(…/device).
+    const input = '[https://login.microsoft.com/device](https://login.microsoft.com/device)'
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it('leaves a markdown link with differing label and href untouched', () => {
+    const input = '[https://a.test/x](https://b.test/y)'
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it('still autolinks a bare URL that merely follows a bracket', () => {
+    const out = preprocessMarkdown('[see also] https://example.com/x')
+
+    expect(out).toBe('[see also] <https://example.com/x>')
+  })
+
+  it('keeps parentheses that belong to the URL', () => {
+    // Guarding on the preceding `[` rather than banning `()` from the pattern:
+    // excluding them would truncate this to …/Foo_ .
+    const out = preprocessMarkdown('siehe https://en.wikipedia.org/wiki/Foo_(bar) dort')
+
+    expect(out).toBe('siehe <https://en.wikipedia.org/wiki/Foo_(bar)> dort')
+  })
+
+  it('does not double-wrap an existing autolink', () => {
+    const input = 'schon <https://example.com/x> verlinkt'
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+})

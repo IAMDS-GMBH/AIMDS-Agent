@@ -662,6 +662,8 @@ export const en: Translations = {
       catalogInstall: 'Install',
       catalogInstalled: 'Installed',
       catalogInstalling: 'Installing...',
+      catalogAccountRequired: 'Account not connected — connect it first and this integration is set up for you automatically.',
+      catalogAccountConnect: 'Connect account',
       catalogModalTitle: (name: string) => `Configure ${name}`,
       catalogModalDesc: 'Enter the required secrets or tokens to activate this MCP integration.',
       catalogSecretsNotice: 'Secrets will be stored securely in your .env configuration.',
@@ -745,7 +747,7 @@ export const en: Translations = {
         connected: 'Connected',
         needsReauth: 'Re-authentication required',
         notConfigured: 'Not configured',
-        unreachable: 'Not verified',
+        unreachable: 'Unreachable',
         signInSso: 'Sign in with SSO',
         reauthenticate: 'Re-authenticate',
         enterUrlFirst: 'Enter the base URL first',
@@ -753,6 +755,32 @@ export const en: Translations = {
         saving: 'Saving…',
         saved: 'AIMDS-Suite provider URLs saved',
         checking: 'Checking…',
+        notifications: {
+          reauthTitle: (envLabel: string) => `AIMDS-Suite: re-authentication required (${envLabel})`,
+          reauthBody: (domain: string) => `Suite sign-in for ${domain} has expired. Please sign in again.`
+        },
+        cli: {
+          title: 'Local CLIs',
+          intro: 'Adds the AIMDS-Suite MCP to your other installed CLIs. The key is written in plain text into their configuration file.',
+          notInstalled: 'Not installed',
+          notConfigured: 'Not set up',
+          inSync: 'Set up',
+          urlDrift: 'Different address',
+          keyDrift: 'Different key',
+          unknown: 'Unreadable',
+          setUp: 'Set up',
+          update: 'Update',
+          suiteMissing: 'No AIMDS-Suite key configured — sign in above first.',
+          confirmTitle: 'Replace the key?',
+          confirmBody: (label: string, path: string) =>
+            `${label} already holds a different key. It will be replaced with the current AIMDS-Suite key and written in plain text into ${path}. A backup is kept alongside it.`,
+          confirmAction: 'Replace',
+          writtenTitle: 'Set up',
+          writtenMessage: (label: string, path: string) =>
+            `${label} was configured in ${path}. Restart the CLI so it picks the server up.`,
+          unchangedMessage: (label: string) => `${label} was already up to date.`,
+          failedTitle: 'Could not set up'
+        },
         reason: {
           keyMissing: 'No API key stored',
           urlMissing: 'No base URL configured',

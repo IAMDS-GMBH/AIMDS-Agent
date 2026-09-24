@@ -1063,6 +1063,172 @@ def apply_reauth(provider: str, *, reload_mcp: bool = True, refresh_sessions: bo
     return result
 
 
+# --------------------------------------------------------------------------- periodic health check (AIS-394)
+#
+# `suite_environment_status(..., probe=True)` is deliberately *not* reused
+# here: once `mark_suite_auth_failure` has flagged an environment, that
+# function short-circuits on the flag and never probes the network again (see
+# the `elif runtime_failure` branch above, which is checked before `elif
+# probe`) — correct for a cheap settings-pill read, but it would make a
+# periodic sweep built on it probe once, flag the environment, and then never
+# notice the key being fixed. This sweep calls `probe_suite_endpoint()`
+# directly so every tick can both detect a new failure and detect recovery.
+
+SUITE_HEALTH_CHECK_DEFAULT_INTERVAL_SECONDS = 1800.0  # 30 min — key expiry is rare, per product decision
+
+
+def _suite_health_check_state_file() -> Path:
+    try:
+        from hermes_cli.config import get_hermes_home
+
+        home = Path(get_hermes_home())
+    except Exception:
+        home = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
+    return home / "state" / "iamds_suite_health_check.json"
+
+
+def _load_suite_health_check_state() -> Dict[str, Any]:
+    try:
+        data = json.loads(_suite_health_check_state_file().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_suite_health_check_state(data: Dict[str, Any]) -> None:
+    path = _suite_health_check_state_file()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception as exc:  # advisory state — never raise into the ticker
+        logger.debug("could not write %s: %s", path, exc)
+
+
+def suite_health_check_enabled() -> bool:
+    from utils import env_var_enabled
+
+    return env_var_enabled("HERMES_SUITE_HEALTH_CHECK_ENABLED", default="1")
+
+
+def suite_health_check_interval_seconds() -> float:
+    raw = os.environ.get("HERMES_SUITE_HEALTH_CHECK_INTERVAL_SECONDS", "").strip()
+    if not raw:
+        return SUITE_HEALTH_CHECK_DEFAULT_INTERVAL_SECONDS
+    try:
+        return max(30.0, float(raw))
+    except ValueError:
+        return SUITE_HEALTH_CHECK_DEFAULT_INTERVAL_SECONDS
+
+
+def check_suite_environment_health(
+    provider: str,
+    *,
+    probe_fn: Optional[Callable[[str, str], tuple[Optional[int], str]]] = None,
+) -> Dict[str, Any]:
+    """Probe one Suite environment for real, self-heal, and reconcile the auth flag.
+
+    Never raises. ``outcome`` is one of ``not_configured`` (no usable key,
+    skipped), ``unreachable`` (network/5xx — not an auth problem, flag
+    untouched), ``newly_broken`` (401/403, just started, flag set),
+    ``still_broken`` (401/403, already flagged — flag left as-is so its
+    ``since`` timestamp keeps meaning "broken since"), ``recovered_self_heal``
+    (401/403 healed by reloading ``.env``, ``apply_reauth`` ran),
+    ``recovered`` (was flagged, now answers healthy without a key reload —
+    e.g. the backend itself recovered — ``apply_reauth`` ran), or ``ok``.
+    """
+    canonical = canonical_suite_provider(provider)
+    if canonical is None:
+        return {"provider": provider, "outcome": "error", "error": "not a Suite provider"}
+
+    fn = probe_fn or probe_suite_endpoint
+    result: Dict[str, Any] = {"provider": canonical}
+    try:
+        ep = resolve_suite_endpoint(canonical, allow_default=True)
+        result["label"] = ep.label
+        if not ep.configured or not _usable_secret(ep.api_key):
+            result["outcome"] = "not_configured"
+            return result
+
+        was_flagged = canonical in suite_auth_failures()
+        code, err = fn(ep.base_url, ep.api_key)
+        result["http_status"], result["probe_error"] = code, err
+
+        if code is None or (code >= 500 and code != 429):
+            result["outcome"] = "unreachable"
+            return result
+
+        if code in (401, 403):
+            healed = False
+            try:
+                from hermes_cli.config import invalidate_env_cache
+
+                invalidate_env_cache()
+            except Exception:
+                pass
+            try:
+                from hermes_cli.env_loader import load_hermes_dotenv
+
+                load_hermes_dotenv()
+            except Exception:
+                pass
+            reloaded_ep = resolve_suite_endpoint(canonical, allow_default=True)
+            if reloaded_ep.api_key and reloaded_ep.api_key != ep.api_key:
+                code2, err2 = fn(reloaded_ep.base_url, reloaded_ep.api_key)
+                if code2 is not None and code2 not in (401, 403) and (code2 < 500 or code2 == 429):
+                    result["http_status"], result["probe_error"] = code2, err2
+                    healed = True
+            if healed:
+                apply_reauth(canonical)
+                result["outcome"] = "recovered_self_heal"
+            elif was_flagged:
+                result["outcome"] = "still_broken"
+            else:
+                mark_suite_auth_failure(canonical, code, err or f"http_{code}", source="health_check")
+                result["outcome"] = "newly_broken"
+            return result
+
+        if was_flagged:
+            apply_reauth(canonical)
+            result["outcome"] = "recovered"
+        else:
+            result["outcome"] = "ok"
+        return result
+    except Exception as exc:
+        logger.debug("suite health check failed for %s: %s", canonical, exc)
+        result["outcome"] = "error"
+        result["error"] = str(exc)
+        return result
+
+
+def run_suite_health_sweep(
+    *, probe_fn: Optional[Callable[[str, str], tuple[Optional[int], str]]] = None
+) -> List[Dict[str, Any]]:
+    """One health-check pass over every configured Suite environment."""
+    return [check_suite_environment_health(provider_id, probe_fn=probe_fn) for provider_id in SUITE_ENVIRONMENTS]
+
+
+def maybe_run_suite_health_check(
+    *, now: Optional[float] = None, force: bool = False
+) -> Optional[List[Dict[str, Any]]]:
+    """Gate for the periodic sweep: at most once per ``suite_health_check_interval_seconds()``.
+
+    Returns ``None`` when disabled or not due yet, else the sweep results
+    (possibly all ``not_configured``/``ok``).
+    """
+    if not suite_health_check_enabled():
+        return None
+    now = time.time() if now is None else now
+    state = _load_suite_health_check_state()
+    last_run_at = float(state.get("last_run_at") or 0.0)
+    if not force and (now - last_run_at) < suite_health_check_interval_seconds():
+        return None
+    results = run_suite_health_sweep()
+    _save_suite_health_check_state({"last_run_at": now})
+    return results
+
+
 __all__ = [
     "SUITE_ENVIRONMENTS",
     "SuiteEndpoint",
@@ -1084,4 +1250,9 @@ __all__ = [
     "suite_auth_failures",
     "suite_environment_status",
     "sync_suite_env_from_providers",
+    "check_suite_environment_health",
+    "run_suite_health_sweep",
+    "maybe_run_suite_health_check",
+    "suite_health_check_enabled",
+    "suite_health_check_interval_seconds",
 ]

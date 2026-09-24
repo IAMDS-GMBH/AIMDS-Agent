@@ -12,9 +12,11 @@ import {
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
+  applyAimdsSuiteCliTarget,
   completeAimdsSuiteReauth,
   disconnectOAuthProvider,
   getActionStatus,
+  getAimdsSuiteCliTargets,
   getAimdsSuiteStatus,
   getHermesConfigRecord,
   getMcpCatalog,
@@ -31,7 +33,7 @@ import { AlertCircle, Check, ChevronRight, ExternalLink, KeyRound, Loader2, Shie
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualApiKeyEntry, startManualProviderOAuth } from '@/store/onboarding'
-import type { ActionStatusResponse, AimdsSuiteEnvStatus, EnvVarInfo, HermesConfigRecord, McpCatalogEntry, MicrosoftAdminConsentResponse, OAuthProvider } from '@/types/hermes'
+import type { ActionStatusResponse, AimdsSuiteCliTarget, AimdsSuiteEnvStatus, EnvVarInfo, HermesConfigRecord, McpCatalogEntry, MicrosoftAdminConsentResponse, OAuthProvider } from '@/types/hermes'
 
 import { COMMON_PROVIDERS } from './common-providers'
 import { ProviderKeyRows } from './credential-key-ui'
@@ -473,7 +475,170 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
           {isSaving ? labels.saving : labels.saveUrls}
         </Button>
       </div>
+
+      <SuiteCliTargetsSection />
     </section>
+  )
+}
+
+// AIS-404: the Suite key is only ever shown masked, so nobody can put the
+// AIMDSSuiteMCP entry into their other CLIs by hand. Show what is installed,
+// whether it matches, and write it on request. Replacing a key that differs
+// needs an explicit yes — it may be one the user put there on purpose.
+function SuiteCliTargetsSection() {
+  const { t } = useI18n()
+  const c = t.settings.providers.suite.cli
+  const [targets, setTargets] = useState<AimdsSuiteCliTarget[]>([])
+  const [suiteConfigured, setSuiteConfigured] = useState(true)
+  const [busyId, setBusyId] = useState<null | string>(null)
+  const [confirmTarget, setConfirmTarget] = useState<AimdsSuiteCliTarget | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const res = await getAimdsSuiteCliTargets()
+
+      setTargets(res.targets ?? [])
+      setSuiteConfigured(Boolean(res.suite_configured))
+    } catch {
+      setTargets([])
+    }
+  }, [])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const stateLabel = (target: AimdsSuiteCliTarget): string => {
+    if (target.state === 'not_installed') {return c.notInstalled}
+
+    if (target.state === 'in_sync') {return c.inSync}
+
+    if (target.state === 'url_drift') {return c.urlDrift}
+
+    if (target.state === 'key_drift') {return c.keyDrift}
+
+    if (target.state === 'unknown') {return c.unknown}
+
+    return c.notConfigured
+  }
+
+  const apply = async (target: AimdsSuiteCliTarget, replaceKey: boolean) => {
+    setBusyId(target.id)
+
+    try {
+      const report = await applyAimdsSuiteCliTarget(target.id, { replaceKey })
+
+      if (report.outcome === 'needs_confirmation') {
+        setConfirmTarget(target)
+
+        return
+      }
+
+      if (report.ok) {
+        notify({
+          kind: 'success',
+          message:
+            report.outcome === 'unchanged'
+              ? c.unchangedMessage(target.label)
+              : c.writtenMessage(target.label, report.config_path),
+          title: c.writtenTitle
+        })
+      } else {
+        notify({ kind: 'error', message: report.error || c.failedTitle, title: c.failedTitle })
+      }
+
+      await load()
+    } catch (err) {
+      notifyError(err, c.failedTitle)
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const installed = targets.filter(target => target.installed)
+
+  if (installed.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="mt-5 border-t border-border/50 pt-4">
+      <h4 className="font-medium text-sm">{c.title}</h4>
+      <p className="mt-1 text-xs text-muted-foreground">{c.intro}</p>
+      {!suiteConfigured && <p className="mt-2 text-xs text-amber-600">{c.suiteMissing}</p>}
+
+      <div className="mt-3 grid gap-2">
+        {installed.map(target => (
+          <div
+            className="flex items-center justify-between gap-3 rounded-md border border-border/50 px-3 py-2"
+            key={target.id}
+          >
+            <div className="min-w-0">
+              <div className="font-medium text-sm">{target.label}</div>
+              <div className="truncate text-[11px] text-muted-foreground" title={target.config_path}>
+                {target.config_path}
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <span
+                className={cn(
+                  'text-xs',
+                  target.state === 'in_sync' ? 'text-emerald-500' : 'text-muted-foreground'
+                )}
+                title={target.error || undefined}
+              >
+                {stateLabel(target)}
+              </span>
+              {target.state !== 'in_sync' && target.state !== 'unknown' && (
+                <Button
+                  disabled={!suiteConfigured || busyId !== null}
+                  onClick={() => void apply(target, false)}
+                  size="xs"
+                  variant={target.entry_present ? 'secondary' : 'default'}
+                >
+                  {busyId === target.id ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : target.entry_present ? (
+                    c.update
+                  ) : (
+                    c.setUp
+                  )}
+                </Button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <Dialog onOpenChange={open => !open && setConfirmTarget(null)} open={Boolean(confirmTarget)}>
+        {confirmTarget && (
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>{c.confirmTitle}</DialogTitle>
+              <DialogDescription>
+                {c.confirmBody(confirmTarget.label, confirmTarget.config_path)}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button onClick={() => setConfirmTarget(null)} size="sm" variant="ghost">
+                {t.common.cancel}
+              </Button>
+              <Button
+                onClick={() => {
+                  const target = confirmTarget
+
+                  setConfirmTarget(null)
+                  void apply(target, true)
+                }}
+                size="sm"
+              >
+                {c.confirmAction}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        )}
+      </Dialog>
+    </div>
   )
 }
 
@@ -1054,9 +1219,26 @@ function McpCatalogSection({
         const outcome = await waitForInstallAction(result.action)
 
         if (!outcome.ok) {
+          // AIS-401: a failed or timed-out install used to be a dead end — it
+          // returns before the OAuth hand-off below, so for an account-backed
+          // entry the user never learned that connecting the account is the
+          // shorter route and sets the server up on its own.
+          const pendingAccount =
+            installModalEntry.requires_account && installModalEntry.account_connected === false
+              ? installModalEntry.requires_account
+              : null
+
           notify({
+            action: pendingAccount
+              ? {
+                  label: m.catalogAccountConnect,
+                  onClick: () => void startManualProviderOAuth(pendingAccount)
+                }
+              : undefined,
             kind: 'error',
-            message: m.catalogInstallFailedMessage(installModalEntry.name, outcome.detail),
+            message: pendingAccount
+              ? `${m.catalogInstallFailedMessage(installModalEntry.name, outcome.detail)} ${m.catalogAccountRequired}`
+              : m.catalogInstallFailedMessage(installModalEntry.name, outcome.detail),
             title: m.catalogInstallFailedTitle
           })
           await loadCatalogAndConfig()
@@ -1169,6 +1351,24 @@ function McpCatalogSection({
                   )}
                 </div>
                 <p className="mt-1.5 line-clamp-2 text-xs text-muted-foreground">{entry.description}</p>
+                {/* AIS-401: connecting the account is the shorter path — it installs
+                    and enables the server on its own. Advisory only: a wrong probe
+                    must never dead-end someone who needs the server anyway. */}
+                {entry.requires_account && entry.account_connected === false && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md bg-amber-500/10 px-2 py-1.5">
+                    <span className="text-[11px] text-muted-foreground">{m.catalogAccountRequired}</span>
+                    <Button
+                      onClick={e => {
+                        e.stopPropagation()
+                        void startManualProviderOAuth(entry.requires_account as string)
+                      }}
+                      size="xs"
+                      variant="secondary"
+                    >
+                      {m.catalogAccountConnect}
+                    </Button>
+                  </div>
+                )}
               </div>
 
               <div className="mt-4 flex items-center justify-between border-t border-border/50 pt-2.5">

@@ -175,6 +175,20 @@ jobs:
             exit 1
           fi
 
+      # AIS-396: the candidate's manifest and asset names carry the rc version.
+      # Uploaded unchanged they make the stable release fail the clients' own
+      # manifest validation ("tag ... is not a stable release"), so every stable
+      # client falls back to the source repo and files an incident. Re-stamp the
+      # names and the manifest; payload, digests and commit stay untouched.
+      - name: Re-stamp candidate assets for the stable version
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/promote_release_assets.py dist "$VERSION"
+          ls -la dist
+
       - name: Release notes since the previous stable release
         id: notes
         env:
@@ -297,6 +311,30 @@ jobs:
           fi
           gh release upload "$TAG" "${files[@]}" --clobber
           echo "Mirrored $TAG to $GH_REPO as latest with ${#files[@]} asset(s)."
+
+      # AIS-396: prove the published artifact is the one clients accept. The
+      # same validator the clients run, against what the mirror actually serves
+      # — a broken promotion now fails the release instead of the update check
+      # on every installation out there.
+      - name: Verify the published stable manifest
+        if: steps.mirror.outputs.enabled == 'true'
+        env:
+          RELEASES_REPO: ${{ vars.RELEASES_REPO }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://github.com/$RELEASES_REPO/releases/latest/download/hermes-release.json"
+          curl -fsSL --retry 3 --retry-delay 5 "$url" -o "$RUNNER_TEMP/published.json"
+          python3 - "$RUNNER_TEMP/published.json" "$TAG" "$RELEASES_REPO" <<'PY'
+          import json, sys
+          from hermes_cli.release_update import validate_manifest
+
+          path, tag, repo = sys.argv[1], sys.argv[2], sys.argv[3]
+          manifest = json.loads(open(path, encoding="utf-8").read())
+          feed = validate_manifest(manifest, channel="stable", repo=repo, release_tag=tag)
+          print(f"published stable manifest is valid: {feed.tag} ({feed.commit_sha[:7]})")
+          PY
 
   build-installers:
     name: Build (${{ matrix.os }})
@@ -937,7 +975,12 @@ jobs:
           set -euo pipefail
           app="$(ls -d apps/desktop/release/mac*/Hermes.app | head -1)"
           codesign --verify --deep --strict --verbose=2 "$app"
-          if ! codesign -dv "$app" 2>&1 | grep -q "Authority=Developer ID Application"; then
+          # codesign -dv at the default verbosity never prints Authority=
+          # lines at all (confirmed locally against a real Developer-ID-signed
+          # app: empty at -dv, full chain at --verbose=4) -- this check was a
+          # permanent false negative regardless of whether signing was
+          # correct, unreached until the AIS-389/390 fixes got this far.
+          if ! codesign -dv --verbose=4 "$app" 2>&1 | grep -q "Authority=Developer ID Application"; then
             echo "::error::Hermes.app is not signed with a Developer ID certificate"
             exit 1
           fi

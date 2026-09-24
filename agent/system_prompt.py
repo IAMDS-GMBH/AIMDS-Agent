@@ -282,6 +282,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     mcp_status_prompt = _r.build_mcp_status_prompt()
     if mcp_status_prompt:
         stable_parts.append(mcp_status_prompt)
+    # AIS-401: identity facts from the local Microsoft 365 sign-in cache. Like
+    # the block above this is availability, not integration prose — it belongs
+    # in every posture, and it is what lets a session with a cold memory answer
+    # "who am I" without spending a tool call.
+    m365_identity_prompt = _r.build_m365_identity_prompt()
+    if m365_identity_prompt:
+        stable_parts.append(m365_identity_prompt)
     # Tool-use enforcement: tells the model to actually call tools instead
     # of describing intended actions.  Controlled by config.yaml
     # agent.tool_use_enforcement:

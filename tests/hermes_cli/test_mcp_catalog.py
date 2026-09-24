@@ -1768,6 +1768,93 @@ class TestRefreshStaleInstalls:
         assert result["checked"] == []
         assert result["updated"] == []
 
+    # ── type: local ───────────────────────────────────────────────────────
+    # AIS-402: a local install is a copytree with no .git and no ref, so
+    # _remote_head returned None and this whole loop skipped it forever —
+    # `hermes update` shipped a new server.py that never reached the client.
+
+    @staticmethod
+    def _local_manifest():
+        return _basic_manifest(
+            install={"type": "local", "path": "optional-mcps/demo", "bootstrap": []},
+            transport={"type": "stdio", "command": "${INSTALL_DIR}/run.sh"},
+        )
+
+    def _install_local(self, catalog_dir, tmp_path, commit):
+        _write_manifest(catalog_dir, "demo", self._local_manifest())
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.mcp_catalog import install_entry
+
+        # The install dir has to exist afterwards or refresh_stale_installs
+        # skips the entry and every assertion below passes vacuously.
+        def _fake_fetch(entry, dest):
+            Path(dest).mkdir(parents=True, exist_ok=True)
+
+        with patch.object(mcp_catalog, "_fetch_and_bootstrap", side_effect=_fake_fetch), patch.object(
+            mcp_catalog, "installed_commit", return_value=commit
+        ):
+            install_entry(_entry("demo"), enable=True)
+
+        from hermes_cli.config import load_config
+
+        return Path(load_config()["mcp_servers"]["demo"]["install_source"]["dir"])
+
+    def test_local_install_is_refreshed_when_the_checkout_moved_on(self, catalog_dir, tmp_path):
+        self._install_local(catalog_dir, tmp_path, "a" * 40)
+
+        from hermes_cli import mcp_catalog, mcp_picker
+
+        with patch.object(mcp_catalog, "_checkout_identity", return_value="b" * 40), patch.object(
+            mcp_picker, "update_by_name", return_value=0
+        ) as update_mock, patch.object(mcp_catalog, "installed_commit", return_value="a" * 40):
+            result = mcp_picker.refresh_stale_installs(quiet=True)
+
+        assert result["updated"] == ["demo"]
+        assert update_mock.call_count == 1
+
+    def test_local_install_on_the_current_checkout_is_left_alone(self, catalog_dir, tmp_path):
+        self._install_local(catalog_dir, tmp_path, "a" * 40)
+
+        from hermes_cli import mcp_catalog, mcp_picker
+
+        with patch.object(mcp_catalog, "_checkout_identity", return_value="a" * 40), patch.object(
+            mcp_picker, "update_by_name", return_value=0
+        ) as update_mock:
+            result = mcp_picker.refresh_stale_installs(quiet=True)
+
+        assert result["updated"] == []
+        assert result["checked"] == ["demo"]
+        assert update_mock.call_count == 0
+
+    def test_unidentifiable_checkout_does_not_reinstall_every_time(self, catalog_dir, tmp_path):
+        """No git, no release marker, no version — comparing against "unknown"
+        would rebuild the venv on every single update."""
+        self._install_local(catalog_dir, tmp_path, "a" * 40)
+
+        from hermes_cli import mcp_catalog, mcp_picker
+
+        with patch.object(mcp_catalog, "_checkout_identity", return_value="unknown"), patch.object(
+            mcp_picker, "update_by_name", return_value=0
+        ) as update_mock:
+            result = mcp_picker.refresh_stale_installs(quiet=True)
+
+        assert result["updated"] == []
+        assert update_mock.call_count == 0
+
+    def test_local_install_does_not_consult_the_network(self, catalog_dir, tmp_path):
+        """It has no upstream — asking git for one was the bug."""
+        self._install_local(catalog_dir, tmp_path, "a" * 40)
+
+        from hermes_cli import mcp_catalog, mcp_picker
+
+        with patch.object(mcp_catalog, "_checkout_identity", return_value="a" * 40), patch.object(
+            mcp_picker, "_remote_head"
+        ) as remote_mock:
+            mcp_picker.refresh_stale_installs(quiet=True)
+
+        assert remote_mock.call_count == 0
+
 
 class TestWindowsInstallRobustness:
     """AIS-286 / SUP-20260903-101450: catalog installs on a customer's Windows
@@ -2521,6 +2608,31 @@ class TestVersionPinsAndToolPrefix:
             with pytest.raises(CatalogError):
                 _parse_manifest(path)
 
+    def test_requires_account_parsed_and_validated(self, catalog_dir):
+        """AIS-401: the account a server depends on, so the catalog can say
+        'not connected' with a link instead of leaving people to find the
+        sign-in by chance (SUP-20260918-120608)."""
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        ok = _write_manifest(catalog_dir, "demo", _basic_manifest(requires_account="microsoft"))
+        assert _parse_manifest(ok).requires_account == "microsoft"
+
+        plain = _write_manifest(catalog_dir, "plain", _basic_manifest(name="plain"))
+        assert _parse_manifest(plain).requires_account == ""
+
+        for bad in ("Microsoft", "has space", "-leading", "x" * 33):
+            path = _write_manifest(catalog_dir, "bad", _basic_manifest(name="bad", requires_account=bad))
+            with pytest.raises(CatalogError):
+                _parse_manifest(path)
+
+    def test_shipped_m365_manifest_declares_its_account(self):
+        """Connecting the account auto-installs this server, so the catalog must
+        be able to point there."""
+        from hermes_cli.mcp_catalog import get_entry
+
+        entry = get_entry("MSOffice365MCP")
+        assert entry is not None and entry.requires_account == "microsoft"
+
     def test_build_server_config_writes_tool_prefix(self, catalog_dir):
         from hermes_cli.mcp_catalog import _build_server_config, _parse_manifest
 
@@ -2608,3 +2720,140 @@ class TestInstallVerifyImports:
         )
         mcp_catalog._fetch_and_bootstrap(entry, tmp_path / "dest")
         assert calls == [("bootstrap", ["true"]), ("verify", ["mcp"])]
+
+
+class TestReconcileToolIncludes:
+    """AIS-405: correcting a manifest only helps new installs — an existing one
+    keeps its own tools.include, so the stale name and its warning survive every
+    update. Only names a manifest declares obsolete are touched."""
+
+    def _configure(self, name: str, include: list) -> None:
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("mcp_servers", {})[name] = {"enabled": True, "tools": {"include": include}}
+        save_config(cfg)
+
+    def _include(self, name: str) -> list:
+        from hermes_cli.config import load_config
+
+        return load_config()["mcp_servers"][name]["tools"]["include"]
+
+    def test_renamed_entries_are_rewritten_not_dropped(self, catalog_dir):
+        """The capability has to survive: dropping get_issue without putting
+        issue_read in its place would leave the user with no issue tool."""
+        from hermes_cli.mcp_catalog import reconcile_tool_includes
+
+        _write_manifest(
+            catalog_dir,
+            "demo",
+            _basic_manifest(tools={"default_enabled": ["issue_read"], "renamed": {"get_issue": "issue_read"}}),
+        )
+        self._configure("demo", ["search_code", "get_issue"])
+
+        changes = reconcile_tool_includes(quiet=True)
+
+        assert self._include("demo") == ["search_code", "issue_read"]
+        assert changes["demo"]["renamed"] == ["get_issue -> issue_read"]
+
+    def test_removed_entries_are_dropped(self, catalog_dir):
+        from hermes_cli.mcp_catalog import reconcile_tool_includes
+
+        _write_manifest(
+            catalog_dir,
+            "demo",
+            _basic_manifest(tools={"default_enabled": ["keep"], "removed": ["gone", "also_gone"]}),
+        )
+        self._configure("demo", ["keep", "gone", "also_gone"])
+
+        changes = reconcile_tool_includes(quiet=True)
+
+        assert self._include("demo") == ["keep"]
+        assert changes["demo"]["removed"] == ["gone", "also_gone"]
+
+    def test_leaves_a_selection_the_manifest_never_declared_obsolete(self, catalog_dir):
+        """hermes mcp configure writes the probed selection, which may go beyond
+        default_enabled — deleting that would throw away a deliberate choice."""
+        from hermes_cli.mcp_catalog import reconcile_tool_includes
+
+        _write_manifest(
+            catalog_dir, "demo", _basic_manifest(tools={"default_enabled": ["a"], "removed": ["gone"]})
+        )
+        self._configure("demo", ["a", "list_branches", "gone"])
+
+        reconcile_tool_includes(quiet=True)
+
+        assert self._include("demo") == ["a", "list_branches"]
+
+    def test_keeps_tools_that_are_merely_unavailable_right_now(self, catalog_dir):
+        """The AIS-330 case: a scope-limited server stops advertising its write
+        tools. They stay in the manifest, so they stay in the config."""
+        from hermes_cli.mcp_catalog import reconcile_tool_includes
+
+        _write_manifest(
+            catalog_dir,
+            "demo",
+            _basic_manifest(tools={"default_enabled": ["read_thing", "write_thing"]}),
+        )
+        self._configure("demo", ["read_thing", "write_thing"])
+
+        assert reconcile_tool_includes(quiet=True) == {}
+        assert self._include("demo") == ["read_thing", "write_thing"]
+
+    def test_rename_onto_an_entry_that_is_already_there_does_not_duplicate(self, catalog_dir):
+        from hermes_cli.mcp_catalog import reconcile_tool_includes
+
+        _write_manifest(
+            catalog_dir, "demo", _basic_manifest(tools={"renamed": {"old": "new"}})
+        )
+        self._configure("demo", ["new", "old"])
+
+        reconcile_tool_includes(quiet=True)
+
+        assert self._include("demo") == ["new"]
+
+    def test_untouched_config_is_not_rewritten(self, catalog_dir):
+        from hermes_cli.mcp_catalog import reconcile_tool_includes
+
+        _write_manifest(catalog_dir, "demo", _basic_manifest(tools={"renamed": {"old": "new"}}))
+        self._configure("demo", ["something_else"])
+
+        assert reconcile_tool_includes(quiet=True) == {}
+        assert self._include("demo") == ["something_else"]
+
+    def test_ignores_servers_without_a_catalog_entry(self, catalog_dir):
+        from hermes_cli.mcp_catalog import reconcile_tool_includes
+
+        self._configure("CustomMCP", ["anything"])
+
+        assert reconcile_tool_includes(quiet=True) == {}
+        assert self._include("CustomMCP") == ["anything"]
+
+    def test_manifest_rejects_a_name_declared_both_renamed_and_removed(self, catalog_dir):
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        path = _write_manifest(
+            catalog_dir,
+            "demo",
+            _basic_manifest(tools={"renamed": {"x": "y"}, "removed": ["x"]}),
+        )
+        with pytest.raises(CatalogError, match="both tools.renamed and tools.removed"):
+            _parse_manifest(path)
+
+    def test_shipped_manifests_declare_the_names_they_dropped(self):
+        """The whole point: the corrections from AIS-403 have to reach configs
+        that were written before them."""
+        from hermes_cli.mcp_catalog import get_entry
+
+        github = get_entry("GithubMCP")
+        assert github is not None
+        assert github.tools.renamed == {
+            "get_issue": "issue_read",
+            "create_issue": "issue_write",
+            "get_pull_request": "pull_request_read",
+        }
+
+        tempo = get_entry("TempoMCP")
+        assert tempo is not None
+        for name in ("get_worklogs", "update_worklog", "get_user_schedule", "worklog_analytics"):
+            assert name in tempo.tools.removed
