@@ -340,3 +340,27 @@ def test_unconfigured_server_says_what_to_set(monkeypatch):
     monkeypatch.delenv("OPENPROJECT_API_TOKEN")
     with pytest.raises(ToolError, match="OPENPROJECT_API_TOKEN"):
         server._http()
+
+
+def test_time_entries_answer_day_counts_per_work_package(op):
+    """AIS-421 / SUP-20260924-074133: "how many vacation days" is a day count."""
+    server, fake = op
+    fake.time_entries = [_time_entry(1, "2026-08-03", "PT8H"), _time_entry(2, "2026-08-04", "PT4H"),
+                         _time_entry(3, "2026-08-04", "PT4H")]
+    result = server.list_time_entries("2026-08-01", "2026-08-31")
+    assert result["booked_days"] == 2
+    assert result["by_work_package"] == [{"work_package_id": "EXT-70", "subject": "EVN Ongoing", "hours": 16.0, "booked_days": 2}]
+
+
+def test_work_package_filter_accepts_the_exact_subject(op):
+    server, fake = op
+    fake.search_results = [_wp(17054, "IAMDS-477", 107, subject="INTERNAL_URLAUB_2026"),
+                           _wp(17055, "IAMDS-489", 107, subject="INTERNAL_SONDERURLAUB_2026")]
+    fake.work_packages["17054"] = _wp(17054, "IAMDS-477", 107, subject="INTERNAL_URLAUB_2026")
+    server.list_time_entries("2026-01-01", "2026-12-31", work_package="INTERNAL_URLAUB_2026")
+    query = [c for c in fake.calls if c[:2] == ("GET", "time_entries")][-1][2]
+    filters = json.loads(query["filters"])
+    assert {"entity_id": {"operator": "=", "values": ["17054"]}} in filters
+    assert {"entity_type": {"operator": "=", "values": ["WorkPackage"]}} in filters
+    with pytest.raises(ToolError, match="Candidates: IAMDS-477"):
+        server.list_time_entries("2026-01-01", "2026-12-31", work_package="URLAUB")
