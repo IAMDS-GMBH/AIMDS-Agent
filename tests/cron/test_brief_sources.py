@@ -236,3 +236,23 @@ def test_resolve_tool_finds_short_prefix_names_via_registry(monkeypatch):
     names = {"mcp_op_list_time_entries", "mcp_AtlassianMCP_jira_search"}
     assert base.resolve_tool(names, "OpenProjectMCP", "list_time_entries") == "mcp_op_list_time_entries"
     assert base.resolve_tool(names, "AtlassianMCP", "list_time_entries") is None
+
+
+def test_openproject_aggregates_booked_hours_per_working_day(monkeypatch):
+    """AIS-409: OpenProject time entries feed the brief like Tempo worklogs."""
+    import tools.mcp_tool as mt
+    from cron.brief_sources.openproject import OpenProjectAdapter
+
+    monkeypatch.setattr(mt, "get_mcp_server_for_tool",
+                        lambda name: "OpenProjectMCP" if name.startswith("mcp_op_") else None)
+    calls = []
+    _ctx.responses = {"mcp_op_list_time_entries": {"complete": True, "time_entries": [
+        {"id": 1, "spent_on": "2026-09-07", "hours": 4.0, "work_package_id": "EXT-70"},
+        {"id": 2, "spent_on": "2026-09-07", "hours": 4.0, "work_package_id": "AIS-408"},
+    ]}}
+    ctx = _ctx(["mcp_op_list_time_entries"], calls, status={"OpenProjectMCP": {"connected": True}},
+               store=_Store(targets={"2026-09-07": 8.0}))
+    items = OpenProjectAdapter().fetch(bc.build_window("morning-brief", NOW, {}), ctx)
+    assert calls[0][1] == {"date_from": "2026-09-07", "date_to": "2026-09-07", "user": "me"}
+    assert len(items) == 1 and items[0].source == "openproject" and items[0].status == "complete"
+    assert items[0].extra["by_work_package"] == {"AIS-408": 4.0, "EXT-70": 4.0}

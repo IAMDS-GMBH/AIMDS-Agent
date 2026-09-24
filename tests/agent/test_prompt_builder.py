@@ -1980,6 +1980,13 @@ class TestBuildTicketRoutingGuidance:
         assert "external customer" in text and "never guess" in text
         assert "mcp_TempoMCP_createWorklog" in text and "mcp_op_create_time_entry" in text
 
+    def test_in_repo_server_books_time_via_log_time(self):
+        """AIS-409: the in-repo OpenProjectMCP books with `log_time`."""
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        text = g({self.JIRA, self.OP, "ticket_routing", "clarify", "mcp_TempoMCP_createWorklog", "mcp_op_log_time"})
+        assert "OpenProject projects via `mcp_op_log_time`" in text
+        assert g({"mcp_AtlassianMCP_jira_search", "mcp_op_search_work_packages", "mcp_op_log_time"}) == ""
+
     def test_without_clarify_the_model_must_not_write(self):
         from agent.prompt_builder import build_ticket_routing_guidance as g
         text = g({self.JIRA, self.OP, "ticket_routing"})

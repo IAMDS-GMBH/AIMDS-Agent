@@ -4716,9 +4716,12 @@ _MCP_TOOL_DESCRIPTION_NOTES: Dict[Tuple[str, str], str] = {
     # Tempo do — time entries on a work package. Name the Tempo counterpart so
     # timesheet questions land here for OpenProject projects.
     ("OpenProjectMCP", "list_time_entries"): (
-        " OpenProject counterpart of Tempo retrieveWorklogs: pass user='me' plus "
-        "spent_on_from/spent_on_to (YYYY-MM-DD) for timesheet, hour-total and "
-        "missing-day questions; `hours` is an ISO 8601 duration (PT1H30M)."
+        " OpenProject counterpart of Tempo retrieveWorklogs: use it for timesheet, "
+        "hour-total and missing-day questions on OpenProject projects."
+    ),
+    ("OpenProjectMCP", "log_time"): (
+        " OpenProject counterpart of Tempo createWorklog; the saved entry is "
+        "stored locally at once, so a report right after the booking needs no re-fetch."
     ),
     ("OpenProjectMCP", "create_time_entry"): (
         " OpenProject counterpart of Tempo createWorklog: book time on a work "
