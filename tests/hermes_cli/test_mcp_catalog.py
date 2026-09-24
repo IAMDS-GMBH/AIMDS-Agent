@@ -2960,3 +2960,55 @@ class TestReplaceSupersededServers:
         bad["install"]["replaces"] = "old-demo-mcp"
         with pytest.raises(CatalogError, match="install.replaces"):
             _parse_manifest(_write_manifest(catalog_dir, "demo", bad))
+
+
+class TestSupersededServerOnTheUpdateBoundary:
+    """AIS-422: the update that ships the replacement still runs the previous
+    main.py — the swap must come from a freshly imported module, and the tool
+    names must not be rewritten for the old server in the meantime."""
+
+    @staticmethod
+    def _manifest():
+        return _basic_manifest(
+            install={"type": "git", "url": "https://example.com/demo.git", "ref": "main", "bootstrap": [],
+                     "replaces": ["old-demo-mcp"]},
+            transport={"type": "stdio", "command": "${INSTALL_DIR}/run.sh"},
+            tools={"default_enabled": ["new_tool"], "renamed": {"old_tool": "new_tool"}},
+        )
+
+    @staticmethod
+    def _config(include):
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("mcp_servers", {})["demo"] = {
+            "command": "uvx", "args": ["old-demo-mcp==0.4.0"], "env": {"TOKEN": "${TOKEN}"},
+            "tools": {"include": include},
+        }
+        save_config(cfg)
+
+    def test_reconcile_leaves_a_not_yet_replaced_server_alone(self, catalog_dir):
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_catalog import reconcile_tool_includes
+
+        _write_manifest(catalog_dir, "demo", self._manifest())
+        self._config(["old_tool"])
+        assert reconcile_tool_includes(quiet=True) == {}
+        assert load_config()["mcp_servers"]["demo"]["tools"]["include"] == ["old_tool"]
+
+    def test_refresh_stale_installs_performs_the_swap(self, catalog_dir, tmp_path):
+        from hermes_cli import mcp_catalog, mcp_picker
+        from hermes_cli.config import load_config
+
+        _write_manifest(catalog_dir, "demo", self._manifest())
+        # the mixed state rc1 clients were left in: old launcher, new names
+        self._config(["new_tool"])
+        clone = tmp_path / "clone"
+        clone.mkdir()
+        with patch.object(mcp_catalog, "_do_git_install", return_value=clone), \
+                patch.object(mcp_catalog, "installed_commit", return_value="c" * 40), \
+                patch.object(mcp_picker, "_remote_head", return_value="c" * 40):
+            result = mcp_picker.refresh_stale_installs(quiet=True)
+        assert result["replaced"] == ["demo"]
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["command"].endswith("run.sh") and server["env"] == {"TOKEN": "${TOKEN}"}
