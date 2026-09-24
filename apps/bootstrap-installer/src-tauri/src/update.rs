@@ -257,12 +257,17 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // for the concurrent-instance guard (exit 2) — that's a "close Hermes" state
     // a retry can't fix.
     if !matches!(update.exit_code, Some(0) | Some(UPDATE_EXIT_CONCURRENT)) {
+        // AIS-419: name the exit code — SUP-20260924-082257 only showed that
+        // the first attempt failed, not how.
         emit_log(
             &app,
             Some("update"),
             LogStream::Stdout,
-            "[update] first update attempt failed; retrying once (the fix it just \
-             pulled loads on the second run)…",
+            &format!(
+                "[update] first update attempt failed (exit {:?}); retrying once (the fix \
+                 it just pulled loads on the second run)…",
+                update.exit_code
+            ),
         );
         update = run_streamed(
             &app,
@@ -737,10 +742,15 @@ fn resolve_hermes(install_root: &Path) -> Option<PathBuf> {
 
 fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
     let hermes_home = crate::paths::hermes_home();
-    let mut envs = vec![(
-        "HERMES_HOME".to_string(),
-        hermes_home.as_os_str().to_os_string(),
-    )];
+    let mut envs = vec![
+        (
+            "HERMES_HOME".to_string(),
+            hermes_home.as_os_str().to_os_string(),
+        ),
+        // AIS-419: through a pipe Python block-buffers stdout, so a killed
+        // `hermes update` lost everything it had printed (SUP-20260924-082257).
+        ("PYTHONUNBUFFERED".to_string(), OsString::from("1")),
+    ];
     if let Some(path) = path_with_prepended_entries(&[
         hermes_home.join("node").join("bin"),
         venv_bin_dir(install_root),
