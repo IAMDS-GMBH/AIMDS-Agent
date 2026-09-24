@@ -49,6 +49,10 @@ _CATEGORY_FOR_CONTEXT: dict[str, str] = {
     "install_error": "install_error",
     "update_error": CATEGORY_INSTALLATION_UPDATE,
     "update_failure": CATEGORY_INSTALLATION_UPDATE,
+    # AIS-420: runtime triggers (hermes_cli.auto_incidents)
+    "agent_python_fallback": "mcp_tools",
+    "mcp_failure": "mcp_tools",
+    "auth_error": "connection_error",
 }
 
 
@@ -190,6 +194,7 @@ def report_incident(
     install_type: str = "update",
     client_type: str = "hermes-cli",
     session_id: str = "",
+    session_json: str = "",
     quiet: bool = False,
 ) -> Optional[str]:
     """Log the incident and, when allowed and not rate-limited, open a support case.
@@ -210,6 +215,11 @@ def report_incident(
         count = _count_occurrence(kind)
         logger.info("[incident] %s already reported within the last 24 h — not reported again (%d since)", kind, count)
         return None
+    # Repeats inside the last window are named, like the desktop reporter
+    # does — the case says how often it happened, not only that it did.
+    since = occurrences_since_report(kind)
+    if since:
+        description = f"{description}\nseen {since} more time(s) since the last report" if description else f"seen {since} more time(s) since the last report"
     args = SimpleNamespace(
         reason=kind,
         category=resolved_category,
@@ -217,7 +227,7 @@ def report_incident(
         summary=summary[:200],
         user_description=description,
         session_id=session_id,
-        session_json="",
+        session_json=session_json,
         client_type=client_type,
         client_version="",
         install_type=install_type,

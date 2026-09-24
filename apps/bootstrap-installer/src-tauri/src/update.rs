@@ -982,6 +982,18 @@ fn option_env_string(key: &str) -> Option<String> {
 }
 
 fn emit(app: &AppHandle, event: BootstrapEvent) {
+    // AIS-420: a failed update reaches support like a failed first install
+    // (best-effort, rate-limited per stage through incident-reports.json).
+    if let BootstrapEvent::Failed { stage, error } = &event {
+        let stage = Some(format!(
+            "update-{}",
+            stage.clone().unwrap_or_else(|| "run".to_string())
+        ));
+        let error = error.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::support::auto_report_bootstrap_failure(stage, error).await;
+        });
+    }
     if let Err(e) = app.emit(BootstrapEvent::CHANNEL, &event) {
         tracing::warn!(?e, "failed to emit update event");
     }

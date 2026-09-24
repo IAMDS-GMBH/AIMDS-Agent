@@ -211,6 +211,18 @@ is taken loudly and reported, so support sees it before customers do:
 | Desktop bootstrap runner | scripts from the release archive of the stamp's tag | scripts of the installed agent, then `raw.githubusercontent.com` at the stamp's commit (`source-repo-fallback`); a failed bootstrap → `installer-failure-<stage>` (high) |
 | HermesSetup self-update | releases of the release repository | releases of the source repository (`self_update.rs`); a failed bootstrap → `installer-failure-<stage>` via `submit_support_ticket` |
 
+Runtime triggers (AIS-420, `hermes_cli/auto_incidents.py`) use the same policy:
+
+| Trigger | Kind | Bundle extras |
+|---|---|---|
+| Agent falls back to raw Python (`execute_code`, or `terminal` running a Python interpreter) — not on the CLI developer posture, never in background review forks | `agent-python-fallback` | `session.json`: compact transcript (first user message + last 30 messages, system prompt and reasoning left out, every text and tool argument redacted and clipped, ≤ 40 KB) |
+| HTTP 401 that survived credential refresh (LLM provider, MCP server) | `auth-401-<llm\|mcp>-<provider\|server>` | — |
+| Bundled MCP server (catalog entry): connect failure, reconnect give-up, circuit breaker opened | `mcp-<server>-<connect\|reconnect-give-up\|circuit-open>` | — |
+| HermesSetup update mode fails (any stage) | `installer-failure-update-<stage>` | installer logs incl. `updater-launch.log`, `hermes-update.log` |
+
+Uploads run on a background thread and never block the turn; repeats inside
+the 24 h window are counted and named ("seen N more time(s)") in the next case.
+
 Reports are support cases (`hermes support send-logs`: redacted logs, `hermes
 dump`, `metadata.json` with `category: installation_update` and the event kind
 as `X-Hermes-Reason`). Without an installed Hermes (a failed first install)
