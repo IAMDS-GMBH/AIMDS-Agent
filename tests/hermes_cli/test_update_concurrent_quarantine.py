@@ -528,3 +528,74 @@ def test_cmd_update_force_bypasses_concurrent_check(_winp, tmp_path):
 
     # When --force is set, we should not have even consulted psutil.
     detect.assert_not_called()
+
+
+# AIS-419 / SUP-20260924-082257: the Windows trampoline chain is
+# hermes.exe → venv\Scripts\python.exe → base python (os.getpid()). The venv
+# python.exe ancestor was flagged as "concurrent" and terminated (exit 15).
+def _fake_psutil_chain(chain_exes: dict, proc_iter_rows: list, terminated: list):
+    """psutil stand-in whose ancestors each report their own exe."""
+
+    class _Proc:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def exe(self):
+            return chain_exes[self.pid]
+
+        def parents(self):
+            return [_Proc(p) for p in chain_exes if p != os.getpid()]
+
+        def terminate(self):
+            terminated.append(self.pid)
+
+        def kill(self):
+            terminated.append(("kill", self.pid))
+
+    return types.SimpleNamespace(
+        Process=_Proc,
+        process_iter=lambda attrs: iter(proc_iter_rows),
+        wait_procs=lambda procs, timeout=None: (procs, []),
+    )
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_excludes_own_venv_python_ancestor(_winp, tmp_path):
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+    venv_python = scripts_dir / "python.exe"
+    venv_python.write_bytes(b"")
+    me = os.getpid()
+    launcher, venv_launcher = me + 100, me + 50
+    chain = {me: r"C:\\Python311\\python.exe", venv_launcher: str(venv_python), launcher: str(shim)}
+    rows = [
+        _make_proc(launcher, str(shim), "hermes.exe"),
+        _make_proc(venv_launcher, str(venv_python), "python.exe"),
+        _make_proc(me + 7, str(venv_python), "python.exe"),  # a real second instance
+    ]
+    with patch.dict(sys.modules, {"psutil": _fake_psutil_chain(chain, rows, [])}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+    assert result == [(me + 7, "python.exe")]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_terminate_never_touches_the_own_process_chain(_winp, tmp_path):
+    me = os.getpid()
+    chain = {me: "python.exe", me + 50: "venv-python.exe", me + 100: "hermes.exe"}
+    terminated: list = []
+    with patch.dict(sys.modules, {"psutil": _fake_psutil_chain(chain, [], terminated)}):
+        cli_main._try_terminate_concurrent_instances([(me + 50, "python.exe"), (me + 7, "python.exe")])
+    assert terminated == [me + 7]
+
+
+def test_up_to_date_run_finishes_a_pending_install(tmp_path, monkeypatch):
+    marker = tmp_path / ".update-incomplete"
+    monkeypatch.setattr(cli_main, "_update_marker_path", lambda: marker)
+    calls = []
+    monkeypatch.setattr(cli_main, "_recover_from_interrupted_install", lambda: calls.append("recover"))
+    cli_main._finish_pending_install()
+    assert calls == []
+    marker.write_text("started=1\n")
+    cli_main._finish_pending_install()
+    assert calls == ["recover"]

@@ -5795,6 +5795,7 @@ def _cmd_update_via_release(
         _apply_aimds_defaults_after_update()
         _seed_aimds_default_cron_after_update()
         _sync_canonical_soul_after_update()
+        _finish_pending_install()
         print()
         print("✓ Already up to date!")
         return True
@@ -6512,6 +6513,18 @@ def _clear_update_incomplete_marker() -> None:
         logger.debug("Could not clear update-incomplete marker: %s", exc)
 
 
+def _finish_pending_install() -> None:
+    """A "nothing to update" run still finishes a half-done dependency install.
+
+    AIS-419 (SUP-20260924-082257): the installer's first ``hermes update``
+    died mid-install, the retry answered "Already up to date" and left
+    ``.update-incomplete`` behind; the recovery then first ran inside the
+    desktop rebuild, where it failed. The update is where it belongs.
+    """
+    if _update_marker_path().exists():
+        _recover_from_interrupted_install()
+
+
 def _recover_from_interrupted_install() -> None:
     """Finish a dependency install that a prior ``hermes update`` left half-done.
 
@@ -6709,6 +6722,33 @@ def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
     ]
 
 
+def _is_venv_python_exe(exe_norm: str, scripts_dir: Path) -> bool:
+    """True when *exe_norm* is this venv's python.exe / pythonw.exe."""
+    try:
+        return (
+            Path(exe_norm).name.lower() in ("python.exe", "pythonw.exe")
+            and str(Path(exe_norm).parent.resolve()).lower() == str(scripts_dir.resolve()).lower()
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def _own_process_chain() -> set[int]:
+    """PIDs of this process and every ancestor — never a termination target."""
+    chain = {os.getpid()}
+    try:
+        import psutil
+
+        for ancestor in psutil.Process(os.getpid()).parents():
+            try:
+                chain.add(int(ancestor.pid))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return chain
+
+
 def _detect_concurrent_hermes_instances(
     scripts_dir: Path, *, exclude_pid: int | None = None
 ) -> list[tuple[int, str]]:
@@ -6792,7 +6832,11 @@ def _detect_concurrent_hermes_instances(
                 anc_norm = str(Path(anc_exe).resolve()).lower()
             except (OSError, ValueError):
                 anc_norm = str(anc_exe).lower()
-            if anc_norm in shim_paths:
+            # AIS-419: the venv's own python.exe is an ancestor too — the
+            # trampoline chain is hermes.exe → venv\Scripts\python.exe →
+            # base python. Flagging it made the install recovery terminate
+            # its own launcher (exit 15, SUP-20260924-082257).
+            if anc_norm in shim_paths or _is_venv_python_exe(anc_norm, scripts_dir):
                 try:
                     exclude_pids.add(int(ancestor.pid))
                 except Exception:
@@ -6820,11 +6864,7 @@ def _detect_concurrent_hermes_instances(
         except (OSError, ValueError):
             exe_norm = str(exe).lower()
         is_shim = exe_norm in shim_paths
-        is_venv_python = (
-            Path(exe_norm).name.lower() in ("python.exe", "pythonw.exe")
-            and str(Path(exe_norm).parent.resolve()).lower() == str(scripts_dir.resolve()).lower()
-        )
-        if is_shim or is_venv_python:
+        if is_shim or _is_venv_python_exe(exe_norm, scripts_dir):
             name = info.get("name") or Path(exe).name
             matches.append((int(pid), str(name)))
 
@@ -6863,8 +6903,13 @@ def _try_terminate_concurrent_instances(matches: list[tuple[int, str]]) -> None:
         return
     try:
         import psutil
+        # AIS-419: whatever the detector returned, our own chain (the launcher
+        # that is waiting for us) is never terminated.
+        own_chain = _own_process_chain()
         procs = []
         for pid, _name in matches:
+            if int(pid) in own_chain:
+                continue
             try:
                 p = psutil.Process(pid)
                 p.terminate()
@@ -10320,6 +10365,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     _apply_aimds_defaults_after_update()
                     _seed_aimds_default_cron_after_update()
                     _sync_canonical_soul_after_update()
+                    _finish_pending_install()
                     if head_state == HEAD_NEWER_RELEASE:
                         print(f"✓ On {head_release_tag(head_tags)}, newer than {branch} {latest_tag} — nothing to do.")
                     else:
@@ -10528,6 +10574,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _apply_aimds_defaults_after_update()
                 _seed_aimds_default_cron_after_update()
                 _sync_canonical_soul_after_update()
+                _finish_pending_install()
                 print("✓ Already up to date!")
                 return
 

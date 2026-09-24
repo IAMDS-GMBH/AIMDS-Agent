@@ -159,6 +159,9 @@ fn collect_installer_logs() -> HashMap<String, String> {
         "desktop.log",
         "errors.log",
         "gateway.log",
+        // AIS-419: the updater hand-off logs — missing from SUP-20260924-082257.
+        "updater-launch.log",
+        "hermes-update.log",
     ];
 
     for name in &candidate_names {
