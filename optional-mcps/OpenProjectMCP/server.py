@@ -411,6 +411,26 @@ def _get_wp(ref: Any) -> Dict[str, Any]:
     return wp
 
 
+def _get_wp_by_ref_or_subject(ref: Any) -> Dict[str, Any]:
+    """A work package by id/display id, or by its exact subject (AIS-421):
+    "INTERNAL_URLAUB_2026" names the package the user means just as well."""
+    text = str(ref or "").strip()
+    if re.fullmatch(r"#?\d+|[A-Za-z][A-Za-z0-9_]*-\d+", text):
+        return _get_wp(text)
+    payload = _request(
+        "GET",
+        "work_packages",
+        params={"filters": _filters({"subject_or_id": {"operator": "**", "values": [text]}}), "pageSize": 20},
+    )
+    exact = [wp for wp in _elements(payload) if str(wp.get("subject") or "").strip().casefold() == text.casefold()]
+    if len(exact) == 1:
+        return _get_wp(exact[0].get("id"))
+    candidates = ", ".join(f"{wp.get('displayId')} ({wp.get('subject')})" for wp in _elements(payload)[:5]) or "none"
+    raise ToolError(
+        f"No single work package is called '{text}'. Candidates: {candidates}. Pass the display id instead."
+    )
+
+
 def _wp_project(wp: Dict[str, Any]) -> Dict[str, Any]:
     project = _project_by_id(_href_id((wp.get("_links") or {}).get("project")))
     if not project:
@@ -818,8 +838,10 @@ def list_time_entries(
 
     - date_from / date_to: YYYY-MM-DD, inclusive
     - user: 'me' (default), 'all' or a user id
+    - work_package: display id ('IAMDS-477') or its exact subject ('INTERNAL_URLAUB_2026')
     Every entry is returned (no paging); `complete` says whether the range was
-    fetched in full and `months[]` gives the per-month count.
+    fetched in full and `months[]` gives the per-month count. `booked_days`
+    and `by_work_package` answer day-count questions (e.g. vacation days) directly.
     """
     start, end = _day(date_from, "date_from"), _day(date_to, "date_to")
     if start > end:
@@ -830,13 +852,27 @@ def list_time_entries(
         filters.append({"user_id": {"operator": "=", "values": ["me" if who.casefold() == "me" else who]}})
     if project:
         filters.append({"project_id": {"operator": "=", "values": [str(_resolve_project(project)["id"])]}})
+    wp_filter_sets: List[List[Dict[str, Any]]] = [[]]
     if work_package:
-        filters.append({"work_package_id": {"operator": "=", "values": [str(_get_wp(work_package)["id"])]}})
-    entries, total = _collect(
-        "time_entries",
-        {"filters": _filters(*filters), "sortBy": json.dumps([["spent_on", "asc"]])},
-        limit=_TIME_ENTRY_LIMIT,
-    )
+        wp_id = str(_get_wp_by_ref_or_subject(work_package)["id"])
+        # OpenProject 16+ files time entries under an entity (work package or
+        # meeting) and rejects `work_package_id` ("filter does not exist");
+        # older instances only know `work_package_id`.
+        wp_filter_sets = [
+            [{"entity_type": {"operator": "=", "values": ["WorkPackage"]}}, {"entity_id": {"operator": "=", "values": [wp_id]}}],
+            [{"work_package_id": {"operator": "=", "values": [wp_id]}}],
+        ]
+    for index, wp_filters in enumerate(wp_filter_sets):
+        try:
+            entries, total = _collect(
+                "time_entries",
+                {"filters": _filters(*filters, *wp_filters), "sortBy": json.dumps([["spent_on", "asc"]])},
+                limit=_TIME_ENTRY_LIMIT,
+            )
+            break
+        except ToolError as exc:
+            if index + 1 >= len(wp_filter_sets) or "filter" not in str(exc).lower():
+                raise
     complete = len(entries) >= total
     entries = [e for e in entries if (p := _project_by_id(_href_id((e.get("_links") or {}).get("project")))) is None or _readable(p)]
     wp_ids = []
@@ -852,10 +888,26 @@ def list_time_entries(
         month = str(row.get("spent_on") or "")[:7]
         if month in per_month:
             per_month[month] += 1
+    # AIS-421 (SUP-20260924-074133): "how many vacation days" is a day count —
+    # without it the model looped over sql per row.
+    per_wp: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        key = str(row.get("work_package_id") or "-")
+        bucket = per_wp.setdefault(key, {"work_package_id": row.get("work_package_id"), "subject": row.get("work_package_subject"),
+                                         "hours": 0.0, "_days": set()})
+        bucket["hours"] += row["hours"]
+        bucket["_days"].add(row.get("spent_on"))
+    by_work_package = sorted(
+        ({"work_package_id": b["work_package_id"], "subject": b["subject"], "hours": round(b["hours"], 2),
+          "booked_days": len(b["_days"])} for b in per_wp.values()),
+        key=lambda b: -b["hours"],
+    )
     result: Dict[str, Any] = {
         "window": {"start": start, "end": end},
         "count": len(rows),
         "total_hours": round(sum(r["hours"] for r in rows), 2),
+        "booked_days": len({r.get("spent_on") for r in rows if r.get("spent_on")}),
+        "by_work_package": by_work_package[:50],
         "complete": bool(complete),
         "months": [{"month": m, "count": c, "complete": bool(complete)} for m, c in per_month.items()],
         "time_entries": rows,
