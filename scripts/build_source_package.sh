@@ -86,6 +86,24 @@ tree="$(GIT_INDEX_FILE="$tmp_index" git write-tree)"
 echo "Archiving tree $tree as $archive (prefix $prefix)"
 git archive --format=zip --prefix="$prefix" -o "$out_dir/$archive" "$tree"
 
+# AIS-425: files a client build cannot work without. An over-broad
+# export-ignore (`assets/` matched every assets folder) silently shipped the
+# desktop without its icon (SUP-20260924-115333) — fail the release instead.
+required_files=(
+    "apps/desktop/assets/icon.ico"
+    "apps/desktop/assets/icon.png"
+    "apps/desktop/assets/icon.icns"
+    "apps/desktop/package.json"
+    "pyproject.toml"
+)
+archive_listing="$("$python_bin" -c 'import sys, zipfile; print("\n".join(zipfile.ZipFile(sys.argv[1]).namelist()))' "$out_dir/$archive")"
+for required in "${required_files[@]}"; do
+    if ! grep -qxF "$prefix$required" <<<"$archive_listing"; then
+        echo "error: $archive is missing $required — check export-ignore rules in .gitattributes" >&2
+        exit 1
+    fi
+done
+
 if command -v sha256sum >/dev/null 2>&1; then
     sha256="$(sha256sum "$out_dir/$archive" | cut -d' ' -f1)"
 else
