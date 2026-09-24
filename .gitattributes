@@ -31,7 +31,7 @@ createTag.sh             export-ignore
 CONTRIBUTING.md          export-ignore
 SECURITY.md              export-ignore
 # README screenshots and PR/design material
-assets/                  export-ignore
+/assets/                 export-ignore
 apps/desktop/pr-assets/  export-ignore
 apps/desktop/DESIGN.md   export-ignore
 apps/desktop/preview-demo.html export-ignore
