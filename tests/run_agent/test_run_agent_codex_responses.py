@@ -2280,3 +2280,18 @@ def test_run_conversation_codex_invalid_encrypted_content_without_replay_state_d
     assert all(not any(item.get("type") == "reasoning" for item in payload["input"]) for payload in request_payloads)
     assert agent._codex_reasoning_replay_enabled is True
     assert result["messages"][0].get("codex_reasoning_items") is None
+
+
+def test_interim_check_accepts_text_contained_in_the_stream():
+    """AIS-411 / SUP-20260924-073844: the paragraph break the stream adds, or
+    text streamed before the interim message, must not make an already
+    streamed interim message look new (the UI then showed it twice)."""
+    from run_agent import AIAgent
+
+    agent = object.__new__(AIAgent)
+    agent._current_streamed_assistant_text = "\n\nIch prüfe zuerst das Projekt.  Dann lege ich das Ticket an."
+    assert agent._interim_content_was_streamed("Dann lege ich das Ticket an.")
+    assert agent._interim_content_was_streamed("Ich prüfe zuerst das Projekt. Dann lege ich das Ticket an.")
+    assert not agent._interim_content_was_streamed("Etwas ganz anderes.")
+    agent._current_streamed_assistant_text = ""
+    assert not agent._interim_content_was_streamed("Dann lege ich das Ticket an.")

@@ -6,6 +6,7 @@ import {
   STREAM_TYPING_BATCH_MS
 } from '../config/timing.js'
 import type { SessionInterruptResponse, SubagentEventPayload } from '../gatewayTypes.js'
+import { interimRemainder } from '../lib/interimText.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
@@ -652,9 +653,18 @@ class TurnController {
     return { finalMessages, finalText, wasInterrupted }
   }
 
-  recordMessageDelta({ text }: { rendered?: string; text?: string }) {
+  recordMessageDelta({ interim, text }: { interim?: boolean; rendered?: string; text?: string }) {
     if (this.interrupted || !text) {
       return
+    }
+
+    // AIS-411: interim text may already be in the buffer — keep only the rest.
+    if (interim) {
+      text = interimRemainder(this.bufRef, text)
+
+      if (!text) {
+        return
+      }
     }
 
     this.pruneTransient()

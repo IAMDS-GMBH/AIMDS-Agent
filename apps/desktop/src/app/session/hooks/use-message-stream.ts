@@ -4,6 +4,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import {
   appendAssistantTextPart,
+  appendInterimTextPart,
   appendReasoningPart,
   assistantTextPart,
   type ChatMessage,
@@ -923,7 +924,20 @@ export function useMessageStream({
           setTurnStartedAt(Date.now())
         }
       } else if (event.type === 'message.delta') {
-        if (sessionId) {
+        if (sessionId && payload?.interim) {
+          // AIS-411: interim text may already be on screen — append only
+          // what is missing instead of the whole text again.
+          const interim = coerceGatewayText(payload?.text)
+
+          if (interim) {
+            flushQueuedDeltas(sessionId)
+            mutateStream(
+              sessionId,
+              parts => appendInterimTextPart(parts, interim),
+              () => [assistantTextPart(interim.trim())]
+            )
+          }
+        } else if (sessionId) {
           appendAssistantDelta(sessionId, coerceGatewayText(payload?.text))
         }
       } else if (event.type === 'message.interim_flush') {
@@ -1154,6 +1168,7 @@ export function useMessageStream({
       failAssistantMessage,
       flushQueuedDeltas,
       hydrateFromStoredSession,
+      mutateStream,
       onSessionRotated,
       queryClient,
       refreshHermesConfig,

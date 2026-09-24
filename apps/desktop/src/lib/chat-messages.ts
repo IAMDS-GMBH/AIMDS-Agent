@@ -20,6 +20,8 @@ export type ChatMessage = {
 }
 
 export type GatewayEventPayload = {
+  /** AIS-411: interim assistant text the agent could not prove was streamed. */
+  interim?: boolean
   text?: string
   rendered?: string
   status?: string
@@ -211,6 +213,56 @@ export function appendAssistantTextPart(parts: ChatMessagePart[], delta: string)
   }
 
   return next
+}
+
+const collapseWhitespace = (text: string) => text.replace(/\s+/g, ' ').trim()
+
+/**
+ * The part of an interim assistant message that is not on screen yet
+ * (AIS-411, SUP-20260924-073844).
+ *
+ * The gateway re-sends the whole interim text as `message.delta {interim}`
+ * whenever the agent could not prove it was already streamed — a paragraph
+ * break it added itself or a stream reset after a reconnect is enough. Taken
+ * as a plain delta, text already rendered appeared a second time. Compared
+ * with the trailing text part (the text since the last tool call): already
+ * contained → nothing; rendered as a prefix → only the rest; unrelated → the
+ * interim text as a new paragraph.
+ */
+export function interimRemainder(rendered: string, interim: string): string {
+  const shown = collapseWhitespace(rendered)
+  const next = collapseWhitespace(interim)
+
+  if (!next) {
+    return ''
+  }
+
+  if (shown && shown.includes(next)) {
+    return ''
+  }
+
+  if (shown && next.startsWith(shown)) {
+    // Walk the raw interim text until its collapsed form covers what is shown.
+    let consumed = 0
+
+    while (consumed < interim.length && collapseWhitespace(interim.slice(0, consumed)).length < shown.length) {
+      consumed += 1
+    }
+
+    return interim.slice(consumed)
+  }
+
+  const trimmed = interim.trim()
+
+  return rendered.trim() ? `\n\n${trimmed}` : trimmed
+}
+
+export function appendInterimTextPart(parts: ChatMessagePart[], interim: string): ChatMessagePart[] {
+  const last = parts.at(-1)
+  const rendered = last?.type === 'text' ? last.text : ''
+  const remainder = interimRemainder(rendered, interim)
+
+  return remainder ? appendAssistantTextPart(parts, remainder) : parts
 }
 
 export function appendReasoningPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
