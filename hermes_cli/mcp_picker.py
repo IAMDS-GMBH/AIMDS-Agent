@@ -475,6 +475,64 @@ def refresh_stale_installs(*, quiet: bool = False) -> dict:
     return result
 
 
+def replace_superseded_servers(*, quiet: bool = False) -> dict:
+    """Swap configured servers that a catalog install now supersedes (AIS-410).
+
+    OpenProjectMCP used to launch the upstream ``openproject-ce-mcp`` via uvx;
+    the catalog now ships its own server as a ``type: local`` install. A uvx
+    entry has no install dir, so :func:`refresh_stale_installs` never looks at
+    it — without this every existing user kept the old server forever.
+
+    For each configured server whose manifest ``install.replaces`` matches its
+    command line: drop the old tool selection (it names the other server's
+    tools), install the catalog entry without prompting, then put the old
+    ``env`` block and ``tool_prefix`` back verbatim so the credentials and
+    tool names stay exactly as they were. Best-effort, like the refresh.
+    """
+    from hermes_cli.mcp_catalog import get_entry
+
+    result = {"replaced": [], "failed": []}
+    servers = load_config().get("mcp_servers") or {}
+    for name in list(servers if isinstance(servers, dict) else {}):
+        old_cfg = servers.get(name)
+        entry = get_entry(name)
+        if entry is None or entry.install is None or not entry.install.supersedes(old_cfg):
+            continue
+        if not quiet:
+            print(color(f"  ↻ '{name}' is replaced by the server shipped with Hermes — installing", Colors.CYAN))
+        cfg = load_config()
+        current = dict((cfg.get("mcp_servers") or {}).get(name) or {})
+        current.pop("tools", None)
+        cfg.setdefault("mcp_servers", {})[name] = current
+        save_config(cfg)
+
+        enabled = old_cfg.get("enabled", True)
+        if isinstance(enabled, str):
+            enabled = enabled.lower() in {"true", "1", "yes"}
+        try:
+            install_entry(entry, enable=bool(enabled), skip_auth_prompt=True)
+        except CatalogError as exc:
+            # Leave the old, working server in place rather than a half install.
+            cfg = load_config()
+            cfg.setdefault("mcp_servers", {})[name] = old_cfg
+            save_config(cfg)
+            if not quiet:
+                print(color(f"  ✗ replacing '{name}' failed, keeping the old server: {exc}", Colors.RED))
+            result["failed"].append(name)
+            continue
+
+        cfg = load_config()
+        new_cfg = (cfg.get("mcp_servers") or {}).get(name)
+        if isinstance(new_cfg, dict):
+            if isinstance(old_cfg.get("env"), dict):
+                new_cfg["env"] = dict(old_cfg["env"])
+            if old_cfg.get("tool_prefix"):
+                new_cfg["tool_prefix"] = old_cfg["tool_prefix"]
+            save_config(cfg)
+        result["replaced"].append(name)
+    return result
+
+
 def update_all() -> int:
     """Update every installed git-based catalog MCP."""
     from hermes_cli.mcp_catalog import get_entry

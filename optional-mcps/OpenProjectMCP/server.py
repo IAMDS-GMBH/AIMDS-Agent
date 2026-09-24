@@ -311,7 +311,10 @@ def _resolve_project(ref: Any, *, write: bool = False) -> Dict[str, Any]:
                 seen.append(label)
         hint = f" Closest matches: {', '.join(seen)}." if seen else ""
         what = "is ambiguous" if len(exact) > 1 else "was not found"
-        raise ToolError(f"OpenProject project '{text}' {what}.{hint} Use the identifier from list_projects.")
+        raise ToolError(
+            f"OpenProject project '{text}' {what}.{hint} Use the identifier from list_projects; "
+            "if it is not clear which project the user meant, ask them before writing anything."
+        )
     project = exact[0]
     if write and not _writable(project):
         raise ToolError(

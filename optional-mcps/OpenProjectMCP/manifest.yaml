@@ -4,25 +4,38 @@ manifest_version: 1
 
 name: OpenProjectMCP
 description: >-
-  Read and manage OpenProject Community Edition projects, work packages,
-  comments, relations, versions, boards, meetings, wiki pages and time
-  entries using openproject-ce-mcp. Every write is preview-then-confirm;
+  Read and manage OpenProject Community Edition work packages and time
+  entries: search, create, update (including moving between projects),
+  delete, comment, relate and book time. Every write is preview-then-confirm;
   project scope is enforced by allowlists.
-source: https://github.com/jtauschl/openproject-ce-mcp
+source: https://github.com/IAMDS-GMBH/AIMDS-Agent/tree/main/optional-mcps/OpenProjectMCP
 
-# AIS-327: the server registers ~150 tools. Registered names use the short
-# prefix (`mcp_op_list_work_packages`) instead of `mcp_OpenProjectMCP_...` to
-# save tokens in every tool_search hit, call and result.
+# Registered names use the short prefix (`mcp_op_search_work_packages`)
+# instead of `mcp_OpenProjectMCP_...` (AIS-327).
 tool_prefix: op
 
 transport:
   type: stdio
-  command: "uvx"
-  # Pinned exact version (see CONTRIBUTING.md#mcp-catalog-version-pinning-policy).
-  # Unpinned uvx installs upstream's *latest* on every launch; bump
-  # deliberately. See .github/workflows/mcp-catalog-version-check.yml.
+  command: "${INSTALL_DIR}/.venv/bin/python"
   args:
-    - "openproject-ce-mcp==0.4.0"
+    - "${INSTALL_DIR}/optional-mcps/OpenProjectMCP/server.py"
+
+install:
+  # AIS-408: the server ships inside this Hermes install; it replaced the
+  # upstream openproject-ce-mcp (~150 tools, opaque "Error executing tool"
+  # failures — SUP-20260924-073844).
+  type: local
+  path: optional-mcps/OpenProjectMCP
+  bootstrap:
+    - "python3 -m venv .venv"
+    - ".venv/bin/pip install -r ${INSTALL_DIR}/optional-mcps/OpenProjectMCP/requirements.txt"
+  verify_imports:
+    - mcp
+    - httpx
+  # AIS-410: existing uvx installs of the upstream package are swapped for
+  # this server on `hermes update`, keeping their env block and tool prefix.
+  replaces:
+    - "openproject-ce-mcp"
 
 auth:
   type: api_key
@@ -33,8 +46,7 @@ auth:
     "*" reads every project the token can see; leave OPENPROJECT_WRITE_PROJECTS
     empty for a read-only setup and list project identifiers (or "*") to allow
     writes there. Every write tool validates first and only executes when called
-    again with confirm=true. Admin and personal-data writes stay disabled
-    (server defaults). Community Edition only -- Enterprise ships its own MCP.
+    again with confirm=true.
   env:
     - name: OPENPROJECT_BASE_URL
       prompt: "OpenProject URL (e.g. https://openproject.example.com)"
@@ -50,73 +62,71 @@ auth:
       required: false
       secret: false
     - name: OPENPROJECT_WRITE_PROJECTS
-      # AIS-330: an empty value is a legitimate read-only setup, but it also
-      # means the server never exports create/update/comment/time-entry
-      # tools — the curated defaults below then silently shrink from 41 to
-      # 28 (SUP-20260914-152536). Say so in the prompt.
-      prompt: "Writable projects (identifiers, globs or * — EMPTY = read-only: no create/update/comment/time-entry tools will be available)"
+      # AIS-330: an empty value is a legitimate read-only setup; the server
+      # then registers no write tools at all. Say so in the prompt.
+      prompt: "Writable projects (identifiers, globs or * — EMPTY = read-only: no create/update/comment/time-booking tools will be available)"
       default: ""
       required: false
       secret: false
 
-# Tool selection at install time (AIS-327): the server exposes ~150 tools.
-# The curated core below is pre-checked in the install checklist; everything
-# else (meetings CRUD, boards CRUD, grids, news, documents, storages, admin
-# user/group management, ...) stays opt-in per user. Order matters: the
-# tool_search server-browse lists these first.
 tools:
   default_enabled:
-    - get_current_user
     - list_projects
-    - get_project
-    - get_project_work_package_context
-    - list_types
-    - list_statuses
-    - list_priorities
-    - list_versions
-    - get_version
-    - list_work_packages
+    - project_context
     - search_work_packages
     - get_work_package
-    - get_work_packages
-    - list_my_open_work_packages
-    - get_work_package_activities
-    - get_work_package_relations
+    - list_time_entries
     - create_work_package
-    - create_subtask
     - update_work_package
-    - add_work_package_comment
-    - create_work_package_relation
+    - delete_work_package
+    - add_comment
+    - manage_relation
+    - log_time
+  # AIS-410: tool names of the replaced openproject-ce-mcp. A replaced install
+  # starts from default_enabled; these keep a hand-edited include list working.
+  renamed:
+    get_project_work_package_context: project_context
+    list_work_packages: search_work_packages
+    list_my_open_work_packages: search_work_packages
+    get_work_packages: search_work_packages
+    create_subtask: create_work_package
+    add_work_package_comment: add_comment
+    get_work_package_activities: get_work_package
+    get_work_package_relations: get_work_package
+    create_work_package_relation: manage_relation
+    list_time_entry_activities: project_context
+    create_time_entry: log_time
+    update_time_entry: log_time
+    list_types: project_context
+    list_statuses: project_context
+    list_priorities: project_context
+    list_versions: project_context
+  removed:
+    - get_current_user
+    - get_project
+    - get_version
     - list_work_package_attachments
     - get_attachment_content
     - get_wiki_page
     - list_work_package_wiki_links
     - create_work_package_wiki_link
     - delete_work_package_wiki_link
-    - list_time_entry_activities
-    - list_time_entries
-    - create_time_entry
-    - update_time_entry
     - list_boards
     - list_meetings
     - list_views
     - execute_query
 
 post_install: |
-  OpenProject MCP (openproject-ce-mcp via uvx) has been configured. Tools are
-  registered as mcp_op_<tool> (e.g. mcp_op_list_work_packages).
+  OpenProject MCP has been configured. Tools are registered as
+  mcp_op_<tool> (e.g. mcp_op_search_work_packages).
 
   - Read scope comes from OPENPROJECT_READ_PROJECTS; writes stay disabled until
     OPENPROJECT_WRITE_PROJECTS lists projects (then restart Hermes). Without it
-    the server exports NO create/update/comment/time-entry tools — Hermes logs
-    which configured tools are missing and tells the agent OpenProject is
-    read-only. Every write is preview-then-confirm.
-  - Time tracking works like Jira + Tempo: time entries on a work package
-    (spent_on + hours as ISO 8601 duration, e.g. PT1H30M).
-  - Wiki pages: OpenProject's REST API only exposes a page's id/title/project
-    (no list endpoint, no body text) — get_wiki_page reflects that. The
-    work-package wiki-link tools (list/create/delete) require OpenProject
-    17.6+.
-  - uv/uvx must be on the PATH (same requirement as AtlassianMCP).
+    the server registers NO create/update/comment/time-booking tools. Every
+    write is preview-then-confirm.
+  - Time tracking works like Jira + Tempo: log_time books on a work package
+    (hours as 1.5 or '1h30m'); a confirmed booking is stored locally at once.
+  - Display ids such as AIS-408 need OpenProject 17.5+ (semantic ids);
+    numeric ids always work.
 
   Start a new Hermes session to load the OpenProject tools.
