@@ -125,6 +125,18 @@ class InstallSpec:
     # AIS-334: modules that must import from ``<install>/.venv`` after the
     # bootstrap; a failing import fails the install with a readable line.
     verify_imports: List[str] = field(default_factory=list)
+    # AIS-410: launch commands of the servers this install supersedes — an
+    # existing ``mcp_servers.<name>`` whose command line contains one of these
+    # is replaced by this install on `hermes update` (credentials kept).
+    replaces: List[str] = field(default_factory=list)
+
+    def supersedes(self, server_cfg: Any) -> bool:
+        """True when *server_cfg* launches one of the servers this replaces."""
+        if not self.replaces or not isinstance(server_cfg, dict):
+            return False
+        args = server_cfg.get("args") if isinstance(server_cfg.get("args"), list) else []
+        command_line = " ".join(str(p) for p in [server_cfg.get("command") or "", *args])
+        return any(marker in command_line for marker in self.replaces)
 
 
 @dataclass
@@ -345,6 +357,9 @@ def _parse_manifest(path: Path) -> CatalogEntry:
             isinstance(m, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", m) for m in verify_imports
         ):
             raise CatalogError(f"{path}: install.verify_imports must be a list of module names")
+        replaces = install_raw.get("replaces") or []
+        if not isinstance(replaces, list) or not all(isinstance(r, str) and r.strip() for r in replaces):
+            raise CatalogError(f"{path}: install.replaces must be a list of command markers")
         if i_type == "git":
             url = install_raw.get("url") or ""
             ref = install_raw.get("ref") or ""
@@ -356,6 +371,7 @@ def _parse_manifest(path: Path) -> CatalogEntry:
                 ref=ref,
                 bootstrap=[str(c) for c in bootstrap],
                 verify_imports=[str(m) for m in verify_imports],
+                replaces=[r.strip() for r in replaces],
             )
         else:
             local_path = str(install_raw.get("path") or "").strip().replace("\\", "/")
@@ -370,6 +386,7 @@ def _parse_manifest(path: Path) -> CatalogEntry:
                 bootstrap=[str(c) for c in bootstrap],
                 path=local_path.strip("/"),
                 verify_imports=[str(m) for m in verify_imports],
+                replaces=[r.strip() for r in replaces],
             )
 
     return CatalogEntry(

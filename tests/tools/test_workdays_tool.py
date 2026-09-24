@@ -361,7 +361,8 @@ class TestAbsences:
         wt._profile_cache.update({"at": 0.0, "profile": None})
         out = json.loads(wt.execute_workdays(
             {"action": "absences", "op": "import_from_bookings"}, db_path=tmp_path / "s.db"))
-        assert out["error"] == "no vacation_booking_patterns configured" and "vault" in out["ask"]
+        assert out["error"].startswith("no absence booking patterns configured") and "vault" in out["ask"]
+        assert "estimate_profile" in out["ask"]
 
     def test_remove_refuses_to_wipe_without_filter(self, tmp_path):
         out = json.loads(wt.execute_workdays({"action": "absences", "op": "remove"}, db_path=tmp_path / "s.db"))
@@ -413,8 +414,9 @@ class TestReport:
         json.loads(wt.execute_workdays({"action": "absences", "op": "import_from_bookings"}, db_path=db))
         out = json.loads(wt.execute_workdays(
             {"action": "report", "start": "2026-01-01", "end": "2026-01-31"}, db_path=db))
-        assert {k: out["totals"][k] for k in ("target_gross", "vacation_credit", "target_net", "actual", "delta")} == {
-            "target_gross": 160.0, "vacation_credit": 8.0, "target_net": 152.0, "actual": 12.0, "delta": -140.0}
+        assert {k: out["totals"][k] for k in ("target_gross", "absence_credit", "target_net", "actual", "delta")} == {
+            "target_gross": 160.0, "absence_credit": 8.0, "target_net": 152.0, "actual": 12.0, "delta": -140.0}
+        assert out["totals"]["absence_credit_by_kind"] == {"vacation": 8.0}
         # 2026-01-06 is Heilige Drei Könige in BY: booked, but no target → not a home-office day
         assert out["totals"]["homeoffice_days"] == 1 and out["totals"]["office_days"] == 0 and out["totals"]["absence_days"] == 1
         assert out["months"][0]["month"] == "2026-01"
@@ -885,3 +887,154 @@ class TestPresenceGenericLayer:
         conn.commit(); conn.close()
         out = self._import(db, calendar="OFFICE")
         assert out["upserted"] == 0 and any("no involves_me flag" in h for h in out["hints"])
+
+
+# AIS-416: absences recognised by the booked item's title, every absence
+# kind credited, several booking sources, the user's own rows only.
+INSERT_MCP_TITLED = ("INSERT INTO mcp_records (id, tool_name, tool_use_id, reference_key, timestamp, user_id, "
+                     "duration_seconds, category, comment, raw_data, title) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+OP = "mcp_op_list_time_entries"
+TEMPO = "mcp_TempoMCP_retrieveWorklogs"
+
+
+def _seed_titled(db, rows):
+    conn = sqlite3.connect(str(db))
+    from tools.mcp_json_ingestor import init_mcp_tables
+    init_mcp_tables(conn)
+    conn.executemany(INSERT_MCP_TITLED, rows)
+    conn.commit()
+    conn.close()
+
+
+def _row(rid, tool, ref, day, hours, title="", user="Johannes Huchler"):
+    return (rid, tool, "u", ref, f"{day}T08:00:00", user, int(hours * 3600), "", "", "{}", title)
+
+
+class TestAbsencesByTitle:
+    def _profile(self, monkeypatch, **extra):
+        profile = dict(BY, worklog_source_tool=f"{OP}, {TEMPO}", _source="memory (mcp)")
+        profile.update(extra)
+        monkeypatch.setattr(wt, "_profile_from_memory", lambda: profile)
+        wt._profile_cache.update({"at": 0.0, "profile": None})
+
+    def test_year_neutral_title_patterns_and_kind_priority(self, tmp_path, monkeypatch):
+        self._profile(monkeypatch, vacation_booking_patterns="INTERNAL_URLAUB_%",
+                      special_leave_booking_patterns="%SONDERURLAUB%", sick_booking_patterns="%KRANK%")
+        db = tmp_path / "s.db"
+        _seed_titled(db, [
+            _row("a", OP, "IAMDS-477", "2026-09-07", 8, "INTERNAL_URLAUB_2026"),
+            _row("b", TEMPO, "IAMDS-595", "2025-12-22", 8, "INTERNAL_URLAUB_2025"),   # last year's ticket, other system
+            _row("c", OP, "IAMDS-489", "2026-09-08", 8, "INTERNAL_SONDERURLAUB_2026"),
+            _row("d", OP, "IAMDS-488", "2026-09-09", 4, "INTERNAL_KRANK_2026"),
+            _row("e", OP, "EXT-70", "2026-09-10", 8, "EVN Ongoing JH"),
+        ])
+        out = json.loads(wt.execute_workdays({"action": "absences", "op": "import_from_bookings"}, db_path=db))
+        assert out["days_by_kind"] == {"vacation": 2, "special_leave": 1, "sick": 1}
+        rows = {(d, k): pt for d, k, pt in sqlite3.connect(str(db)).execute("SELECT day, kind, portion FROM absences")}
+        assert rows == {("2025-12-22", "vacation"): 1.0, ("2026-09-07", "vacation"): 1.0,
+                        ("2026-09-08", "special_leave"): 1.0, ("2026-09-09", "sick"): 0.5}
+
+    def test_report_imports_absences_itself_and_credits_every_kind(self, tmp_path, monkeypatch):
+        self._profile(monkeypatch, vacation_booking_patterns="INTERNAL_URLAUB_%", sick_booking_patterns="%KRANK%",
+                      worklog_user="Johannes Huchler")
+        db = tmp_path / "s.db"
+        _seed_titled(db, [
+            _row("a", OP, "IAMDS-477", "2026-09-07", 8, "INTERNAL_URLAUB_2026"),
+            _row("d", OP, "IAMDS-488", "2026-09-08", 8, "INTERNAL_KRANK_2026"),
+            _row("w", OP, "EXT-70", "2026-09-09", 6, "EVN Ongoing JH"),
+            _row("x", OP, "AIS-365", "2026-09-09", 8, "LBBW Ongoing", user="Gonzalo Oberreuter"),  # colleague
+            _row("y", OP, "IAMDS-477", "2026-09-10", 8, "INTERNAL_URLAUB_2026", user="Tobias Hehl"),  # colleague's vacation
+        ])
+        out = json.loads(wt.execute_workdays({"action": "report", "start": "2026-09-07", "end": "2026-09-11"}, db_path=db))
+        t = out["totals"]
+        assert t["target_gross"] == 40.0 and t["absence_credit"] == 16.0
+        assert t["absence_credit_by_kind"] == {"sick": 8.0, "vacation": 8.0}
+        assert t["actual"] == 6.0  # own work only: no absence rows, no colleague
+        assert out["coverage"]["absences_imported"]["days_by_kind"] == {"sick": 1, "vacation": 1}
+        assert out["coverage"]["worklog_user"] == "Johannes Huchler"
+
+    def test_report_hints_at_unread_sources_and_colleagues(self, tmp_path, monkeypatch):
+        self._profile(monkeypatch, worklog_source_tool=TEMPO)
+        db = tmp_path / "s.db"
+        _seed_titled(db, [
+            _row("t1", TEMPO, "AIS-1", "2026-09-01", 8, user="Johannes Huchler"),
+            _row("t2", TEMPO, "AIS-1", "2026-09-02", 8, user="Tobias Hehl"),
+        ] + [_row(f"o{i}", OP, "EXT-70", f"2026-09-{i:02d}", 8) for i in range(14, 18)])
+        out = json.loads(wt.execute_workdays({"action": "report", "start": "2026-09-01", "end": "2026-09-18"}, db_path=db))
+        hints = " | ".join(out["hints"])
+        assert f"{OP} (4 rows" in hints and "not part of worklog_source_tool" in hints
+        assert "rows of 2 people" in hints and "worklog_user" in hints
+
+
+class TestEstimateSourcesUsersAbsences:
+    def test_estimate_proposes_all_booking_sources_the_user_and_absence_patterns(self, tmp_path):
+        from datetime import date as _date, timedelta as _td
+        base = _date.today() - _td(weeks=6)
+        base -= _td(days=base.weekday())
+        rows = []
+        for w in range(4):
+            for dd in range(5):
+                day = (base + _td(days=w * 7 + dd)).isoformat()
+                tool = TEMPO if w < 2 else OP
+                rows.append(_row(f"r{w}{dd}", tool, "EXT-70", day, 8, "EVN Ongoing JH"))
+        rows += [
+            _row("v1", OP, "IAMDS-477", base.isoformat(), 8, "INTERNAL_URLAUB_2026"),
+            _row("s1", OP, "IAMDS-488", base.isoformat(), 8, "INTERNAL_KRANK_2026"),
+            _row("c1", OP, "AIS-365", base.isoformat(), 8, "LBBW Ongoing", user="Gonzalo Oberreuter"),
+            _row("e1", "mcp_MSOffice365MCP_m365_get_events", "", base.isoformat(), 1, "Jour fixe"),
+        ]
+        db = tmp_path / "s.db"
+        _seed_titled(db, rows)
+        out = json.loads(wt.execute_workdays({"action": "estimate_profile"}, db_path=db))
+        prop = out["proposal"]
+        assert set(prop["worklog_source_tool"].split(", ")) == {OP, TEMPO}  # calendar events are not bookings
+        assert prop["worklog_user"] == "Johannes Huchler"
+        assert prop["vacation_booking_patterns"] == ["INTERNAL_URLAUB_%"]
+        assert prop["sick_booking_patterns"] == ["INTERNAL_KRANK_%"]
+        assert {u["user"] for u in out["evidence"]["booking_users"]} == {"Johannes Huchler", "Gonzalo Oberreuter"}
+        assert "colleagues" in out["next"] and "CONFIRM" in out["next"]
+
+
+def test_title_column_is_added_and_backfilled_from_raw_data(tmp_path):
+    from tools.mcp_json_ingestor import init_mcp_tables
+
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE mcp_records (id TEXT PRIMARY KEY, tool_name TEXT, tool_use_id TEXT, reference_key TEXT, "
+                 "timestamp TEXT, user_id TEXT, duration_seconds INTEGER DEFAULT 0, category TEXT, comment TEXT, "
+                 "raw_data TEXT, created_at TEXT DEFAULT (datetime('now')))")
+    conn.execute("INSERT INTO mcp_records (id, raw_data) VALUES ('1', ?)", (json.dumps({"work_package_subject": "INTERNAL_URLAUB_2026"}),))
+    conn.execute("INSERT INTO mcp_records (id, raw_data) VALUES ('2', 'not json')")
+    conn.commit()
+    init_mcp_tables(conn)
+    assert dict(conn.execute("SELECT id, title FROM mcp_records").fetchall()) == {"1": "INTERNAL_URLAUB_2026", "2": None}
+
+
+def test_estimate_asks_for_the_user_when_a_team_fetch_makes_it_ambiguous(tmp_path):
+    from datetime import date as _date, timedelta as _td
+    base = _date.today() - _td(weeks=3)
+    base -= _td(days=base.weekday())
+    rows = []
+    for i, user in enumerate(["Johannes Huchler", "Tobias Hehl", "Gonzalo Oberreuter"] * 4):
+        rows.append(_row(f"r{i}", OP, "EXT-70", (base + _td(days=i % 5)).isoformat(), 8, "EVN", user=user))
+    db = tmp_path / "s.db"
+    _seed_titled(db, rows)
+    out = json.loads(wt.execute_workdays({"action": "estimate_profile"}, db_path=db))
+    assert "worklog_user" not in out["proposal"]
+    assert "worklog_user" in out["missing"] and "which of them" in out["ask_worklog_user"]
+
+
+def test_booking_import_never_overwrites_a_day_the_user_recorded(tmp_path, monkeypatch):
+    """AIS-416: an upserted 'bookings:' row replaced the user's own entry on
+    the same day, and the next refresh deleted it for good."""
+    monkeypatch.setattr(wt, "_profile_from_memory", lambda: dict(
+        BY, vacation_booking_patterns="INTERNAL_URLAUB_%", _source="memory (mcp)"))
+    wt._profile_cache.update({"at": 0.0, "profile": None})
+    db = tmp_path / "s.db"
+    wt.execute_workdays({"action": "absences", "op": "add", "days": ["2026-09-09"], "source": "user"}, db_path=db)
+    _seed_titled(db, [_row("a", OP, "IAMDS-477", "2026-09-09", 4, "INTERNAL_URLAUB_2026"),
+                      _row("b", OP, "IAMDS-477", "2026-09-10", 8, "INTERNAL_URLAUB_2026")])
+    for _ in range(2):
+        wt.execute_workdays({"action": "absences", "op": "import_from_bookings"}, db_path=db)
+    rows = dict(sqlite3.connect(str(db)).execute("SELECT day, source FROM absences").fetchall())
+    assert rows == {"2026-09-09": "user", "2026-09-10": "bookings:INTERNAL_URLAUB_%"}

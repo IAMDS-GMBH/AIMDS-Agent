@@ -16,7 +16,8 @@ from cron.brief_sources.base import SourceAdapter
 def default_adapters() -> List[SourceAdapter]:
     from cron.brief_sources.m365 import M365Adapter
     from cron.brief_sources.jira import JiraAdapter
+    from cron.brief_sources.openproject import OpenProjectAdapter
     from cron.brief_sources.tempo import TempoAdapter
     from cron.brief_sources.workspace import WorkspaceAdapter
 
-    return [M365Adapter(), JiraAdapter(), TempoAdapter(), WorkspaceAdapter()]
+    return [M365Adapter(), JiraAdapter(), TempoAdapter(), OpenProjectAdapter(), WorkspaceAdapter()]

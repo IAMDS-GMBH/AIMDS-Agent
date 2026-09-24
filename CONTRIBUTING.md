@@ -864,6 +864,10 @@ Servers that expose dozens of tools (openproject-ce-mcp registers ~150) need thr
 - `tool_prefix` (`^[a-z0-9]{1,8}$`, e.g. `op`) — tools register as `mcp_op_<tool>` instead of `mcp_<Name>_<tool>`. The prefix is written to `mcp_servers.<name>.tool_prefix`; code that needs the server behind a registered name must use `tools.mcp_tool.get_mcp_server_for_tool()` rather than parsing the second name segment.
 - A PascalCase name whose parts are plain English words (`OpenProjectMCP` → `open`, `project`) must be listed in `tools.tool_search._GENERIC_SERVER_NAME_TOKENS` / `tools.mcp_tool._GENERIC_SERVER_NAME_KEYWORDS`, otherwise every query containing that word boosts the whole server. Add a `SOURCE_ALIASES` entry (`openproject`) so the full name still browses it.
 
+### Replacing a third-party server with an in-repo one
+
+When the catalog starts shipping its own server under an existing name (OpenProjectMCP: `uvx openproject-ce-mcp` → `optional-mcps/OpenProjectMCP`, AIS-408/410), list the old package under `install.replaces`. `hermes update` (`hermes_cli.mcp_picker.replace_superseded_servers`) then re-installs every configured server whose command line contains one of those markers, keeps its `env` block and `tool_prefix` verbatim, and drops the old `tools.include` so the new `default_enabled` applies. Map the old tool names in `tools.renamed` / `tools.removed` for hand-edited include lists.
+
 Tool descriptions are abridged for the model by `tools.mcp_schema_compact` (first paragraph(s), `title`/`default: null` stripped); the unabridged text stays in the registry for `tool_describe` and the search index. Curated per-tool nudges go into `tools/mcp_tool.py:_MCP_TOOL_DESCRIPTION_NOTES` and survive the abridging.
 
 ---

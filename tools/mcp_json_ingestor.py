@@ -164,6 +164,57 @@ def prune_mcp_records(
             conn.close()
 
 
+def _ingest_write_through(
+    data: Any,
+    target_tool: str,
+    tool_use_id: str,
+    db_path: Optional[Path],
+    tool_args: Optional[Dict[str, Any]],
+) -> "IngestResult":
+    """A confirmed booking lands in the listing tool's rows at once (AIS-409):
+    a saved entry is upserted by id, a deleted one removed. The report that
+    follows the booking sees it without a re-fetch. Only rows that look like
+    bookings (date and duration) are written — an echo without them is not
+    a record."""
+    payload = data.get("result") if isinstance(data, dict) and isinstance(data.get("result"), dict) else data
+    deleted = None
+    if isinstance(payload, dict):
+        deleted = next((payload.get(k) for k in _DELETED_ID_KEYS if payload.get(k) not in (None, "")), None)
+    fallback_ref = _reference_key_from_args(tool_args)
+    records = []
+    if deleted is None:
+        for item in _flatten_nested_worklogs(_extract_items(payload)):
+            record = _extract_fields(item, target_tool, tool_use_id, fallback_ref)
+            if record[4] and record[6] > 0:
+                records.append(record)
+    if deleted is None and not records:
+        return IngestResult(0)
+    try:
+        conn = get_db_connection(db_path)
+        with conn:
+            if deleted is not None:
+                cursor = conn.execute(
+                    "DELETE FROM mcp_records WHERE id = ? AND tool_name = ?", (str(deleted), target_tool)
+                )
+                removed = cursor.rowcount or 0
+            else:
+                conn.executemany("""
+                INSERT OR REPLACE INTO mcp_records (
+                    id, tool_name, tool_use_id, reference_key, timestamp, user_id,
+                    duration_seconds, category, comment, raw_data, title
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, records)
+        conn.close()
+    except Exception as exc:
+        logger.warning("Failed to write booking through to mcp_records: %s", exc)
+        return IngestResult(0)
+    if deleted is not None:
+        logger.info("Booking deleted: removed %d row(s) of %s (id %s)", removed, target_tool, deleted)
+        return IngestResult(0, replaced=removed)
+    logger.info("Booking written through: %d row(s) upserted into %s", len(records), target_tool)
+    return IngestResult(len(records))
+
+
 def init_mcp_tables(conn: sqlite3.Connection) -> None:
     """Initialize the mcp_records schema in SQLite."""
     with conn:
@@ -205,6 +256,22 @@ def init_mcp_tables(conn: sqlite3.Connection) -> None:
         )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mcp_fetches_tool ON mcp_fetches(tool_name, reference_key, month)")
+        # AIS-416: the booked item's name (work package subject, issue
+        # summary). Absences are recognised by it — keys change every year
+        # and differ between ticket systems, "INTERNAL_URLAUB_<year>" does not.
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(mcp_records)")}
+        if "title" not in columns:
+            conn.execute("ALTER TABLE mcp_records ADD COLUMN title TEXT")
+            # Rows ingested before carry the name in raw_data only.
+            try:
+                conn.execute(
+                    "UPDATE mcp_records SET title = COALESCE("
+                    "json_extract(raw_data, '$.work_package_subject'), json_extract(raw_data, '$.subject'), "
+                    "json_extract(raw_data, '$.issue.summary'), json_extract(raw_data, '$.title')) "
+                    "WHERE title IS NULL AND json_valid(raw_data)"
+                )
+            except sqlite3.Error:
+                pass
     try:
         prune_mcp_records(conn)
     except Exception:
@@ -286,7 +353,8 @@ def _extract_items(data: Any) -> List[Dict[str, Any]]:
         # Check common collection keys
         # ``value`` is Microsoft Graph's collection key: without it a chat or
         # drive listing was ingested as ONE blob row (AIS-289).
-        for key in ("worklogs", "issues", "tickets", "entries", "records", "items", "data", "results", "values", "value", "cases", "matches"):
+        # ``time_entries``/``work_packages``: the in-repo OpenProject server (AIS-408).
+        for key in ("worklogs", "time_entries", "issues", "work_packages", "tickets", "entries", "records", "items", "data", "results", "values", "value", "cases", "matches"):
             val = data.get(key)
             if isinstance(val, list):
                 return [item for item in val if isinstance(item, dict)]
@@ -468,6 +536,14 @@ def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fall
 
     raw_data = json.dumps(item, ensure_ascii=False)
 
+    # Title of the booked item (AIS-416) — not the booking's own comment.
+    title = _pick(norm, "workpackagesubject", "workpackagetitle", "issuesummary", "issuetitle", "tasktitle", "subject", "title")
+    if not title and isinstance(issue, dict):
+        title = issue.get("summary") or issue.get("title") or issue.get("name")
+    work_package = norm.get("workpackage")
+    if not title and isinstance(work_package, dict):
+        title = work_package.get("subject") or work_package.get("title")
+
     return (
         str(record_id),
         tool_name,
@@ -479,6 +555,7 @@ def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fall
         str(category),
         str(comment),
         raw_data,
+        str(title or ""),
     )
 
 
@@ -507,6 +584,42 @@ def should_ingest_tool(tool_name: str) -> bool:
         pass
     lowered = name.lower()
     return not any(marker in lowered for marker in _NON_DATA_TOOL_MARKERS)
+
+
+# AIS-409: a booking tool's saved entry belongs to the rows of the tool that
+# lists those entries — the workdays report and sql read that tool's rows.
+# Suffix of the write tool -> suffix of the listing tool (same server prefix).
+_WRITE_THROUGH_SUFFIXES = (
+    ("log_time", "list_time_entries"),  # in-repo OpenProjectMCP (AIS-408)
+    ("create_time_entry", "list_time_entries"),  # openproject-ce-mcp
+    ("update_time_entry", "list_time_entries"),
+    ("bulkCreateWorklogs", "retrieveWorklogs"),  # TempoMCP
+    ("createWorklog", "retrieveWorklogs"),
+    ("updateWorklog", "retrieveWorklogs"),
+    ("jira_add_worklog", "jira_get_worklog"),  # AtlassianMCP
+)
+_DELETED_ID_KEYS = ("deleted_time_entry_id", "deleted_worklog_id")
+
+
+def write_through_target(tool_name: str) -> Optional[str]:
+    """The listing tool whose rows a booking tool's result updates, or None."""
+    name = str(tool_name or "")
+    for write_suffix, list_suffix in _WRITE_THROUGH_SUFFIXES:
+        if name.endswith(write_suffix):
+            return name[: -len(write_suffix)] + list_suffix
+    return None
+
+
+def _is_preview_payload(data: Any) -> bool:
+    """A validate-only answer of a preview-then-confirm write tool: it
+    describes a change that has not happened, so it is not a record."""
+    if not isinstance(data, dict):
+        return False
+    if isinstance(data.get("result"), dict):
+        return _is_preview_payload(data["result"])
+    if str(data.get("state") or "").lower() in ("preview", "duplicate"):
+        return True
+    return data.get("requires_confirmation") is True or data.get("confirmed") is False
 
 
 def _is_error_payload(data: Any) -> bool:
@@ -571,6 +684,7 @@ _DATE_WINDOW_KEY_PAIRS = (
     ("startdate", "enddate"),
     ("datefrom", "dateto"),
     ("from", "to"),
+    ("spentonfrom", "spentonto"),  # openproject-ce-mcp list_time_entries
     ("start", "end"),
     ("starttimeiso", "endtimeiso"),  # m365_get_events / calendarView (AIS-339)
 )
@@ -879,8 +993,12 @@ def try_auto_ingest_json(
     except Exception:
         return IngestResult(0)
 
-    if _is_error_payload(data):
+    if _is_error_payload(data) or _is_preview_payload(data):
         return IngestResult(0)
+
+    target = write_through_target(tool_name)
+    if target:
+        return _ingest_write_through(data, target, tool_use_id, db_path, tool_args)
 
     items = _flatten_nested_worklogs(_extract_items(data))
     fallback_ref = _reference_key_from_args(tool_args)
@@ -944,8 +1062,8 @@ def try_auto_ingest_json(
             conn.executemany("""
             INSERT OR REPLACE INTO mcp_records (
                 id, tool_name, tool_use_id, reference_key, timestamp, user_id,
-                duration_seconds, category, comment, raw_data
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                duration_seconds, category, comment, raw_data, title
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, records)
             if window is not None:
                 record_fetches(conn, tool_use_id=tool_use_id, tool_name=tool_name, reference_key=scope_ref,

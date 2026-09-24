@@ -363,7 +363,9 @@ def build_data_handling_guidance(valid_tool_names: "set[str] | None" = None) -> 
             "week numbers or holiday dates into SQL or prose, never compute Easter yourself, never write a report "
             "file the tool can render. Never assume a state or week model: on 'worktime profile unknown' propose "
             "(estimate_profile) and confirm with `clarify` before configure; municipal/partial holidays deduct "
-            "only after the user confirmed them (`partial_holidays_unresolved`)."
+            "only after the user confirmed them (`partial_holidays_unresolved`). The profile follows the user's "
+            "systems: when report hints name an unread booking source, colleagues' rows or unmatched absences, "
+            "propose the change (estimate_profile) and confirm it instead of answering with incomplete numbers."
         )
     rungs.append(
         "Personal data is user-first: start with what is assigned to or involves the user, widen only on "
@@ -2608,7 +2610,7 @@ _JIRA_WRITE_SUFFIXES = (
 )
 _OPENPROJECT_WRITE_SUFFIXES = (
     "create_work_package", "update_work_package", "add_work_package_comment",
-    "create_time_entry",
+    "create_time_entry", "log_time", "add_comment",
 )
 _OPENPROJECT_READ_SUFFIXES = (
     "list_work_packages", "search_work_packages", "get_work_package",
@@ -2630,7 +2632,7 @@ MCP_PERMISSION_BYPASS_GUIDANCE = (
 OPENPROJECT_READ_ONLY_GUIDANCE = (
     "# OpenProject is read-only in this session\n"
     "The OpenProject MCP server is loaded, but none of its write tools (create_work_package, "
-    "update_work_package, add_work_package_comment, create_time_entry) is registered: the server "
+    "update_work_package, add_comment, log_time) is registered: the server "
     "was configured without a write scope (OPENPROJECT_WRITE_PROJECTS). Do not try to create, "
     "update, comment on, transition or book time on work packages, and do not search for such "
     "tools — they do not exist in this session. Tell the user that write access must first be "
@@ -2674,14 +2676,14 @@ def build_ticket_routing_guidance(valid_tool_names: "set[str] | None" = None) ->
     if not jira_write or not op_write:
         return ""
     tempo_create = _resolve_tool_by_suffix(names, "createWorklog") or _resolve_tool_by_suffix(names, "jira_add_worklog")
-    op_time = _resolve_tool_by_suffix(names, "create_time_entry")
+    op_time = _resolve_tool_by_suffix(names, "log_time") or _resolve_tool_by_suffix(names, "create_time_entry")
     has_clarify = "clarify" in names
     time_line = ""
     if tempo_create or op_time:
         time_line = (
             " Time booking follows the same routing — both systems track time the same way: "
             + (f"Jira projects book via `{tempo_create}`" if tempo_create else "Jira projects book via Tempo")
-            + (f", OpenProject projects via `{op_time}` (time entry on the work package, hours as ISO 8601 e.g. PT1H30M)." if op_time else ".")
+            + (f", OpenProject projects via `{op_time}` (time entry on the work package)." if op_time else ".")
         )
     ask_line = (
         "If the result says `ask: true`, ask the user with `clarify` using the returned `clarify_choices`"

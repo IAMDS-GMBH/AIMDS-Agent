@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -39,8 +40,16 @@ PROFILE_KEYS = (
     "region", "weekly_hours", "days_per_week", "work_weekdays", "employment_label", "half_days",
     "employment_start", "employment_end", "part_time_factor",
     "municipality", "plz", "partial_holidays",
-    "worklog_source_tool", "vacation_booking_patterns", "vacation_hour_factor",
+    "worklog_source_tool", "worklog_user", "vacation_booking_patterns", "special_leave_booking_patterns",
+    "sick_booking_patterns", "vacation_hour_factor",
     "presence_calendar", "presence_match_patterns", "presence_default", "notes",
+)
+# AIS-416: absence kinds booked as time entries, in matching priority — a row
+# matching several kinds gets the first ("SONDERURLAUB" before "URLAUB").
+ABSENCE_PATTERN_KEYS = (
+    ("sick", "sick_booking_patterns"),
+    ("special_leave", "special_leave_booking_patterns"),
+    ("vacation", "vacation_booking_patterns"),
 )
 TABLE = "workday_calendar"
 ABSENCES_TABLE = "absences"
@@ -313,7 +322,8 @@ def _profile_text(profile: Dict[str, Any]) -> str:
         lines.append("partial_holidays: " + (", ".join(profile["partial_holidays"]) or "none"))
     for key in ("employment_start", "employment_end", "part_time_factor", "employment_label",
                 "municipality", "plz",
-                "worklog_source_tool", "vacation_booking_patterns", "vacation_hour_factor",
+                "worklog_source_tool", "worklog_user", "vacation_booking_patterns",
+                "special_leave_booking_patterns", "sick_booking_patterns", "vacation_hour_factor",
                 "presence_calendar", "presence_match_patterns", "presence_default", "notes"):
         if profile.get(key) not in (None, ""):
             lines.append(f"{key}: {profile[key]}")
@@ -419,7 +429,10 @@ def _resolve(args: Dict[str, Any]) -> Dict[str, Any]:
         picked["partial_holidays"] = profile["partial_holidays"]
         picked["_source"]["partial_holidays"] = profile.get("_source", "profile")
     take("worklog_source_tool")
+    take("worklog_user")
     take("vacation_booking_patterns")
+    take("special_leave_booking_patterns")
+    take("sick_booking_patterns")
     take("vacation_hour_factor", 1.0)
     take("presence_calendar")
     take("presence_match_patterns")
@@ -561,8 +574,8 @@ def _partial_holidays_hint(p: Dict[str, Any], start: date, end: date) -> Optiona
 
 
 FORMULA = (
-    "target_net = target_gross − vacation_credit (absences.portion × per-day target_hours, via sql); "
-    "actual = SUM(duration_seconds)/3600 of all worklogs except vacation bookings (weekend bookings count in actual, not in target); "
+    "target_net = target_gross − absence_credit (absences of every kind: portion × per-day target_hours, via sql); "
+    "actual = SUM(duration_seconds)/3600 of the user's worklogs except absence bookings (weekend bookings count in actual, not in target); "
     "delta = actual − target_net"
 )
 
@@ -587,6 +600,119 @@ def _like_literal(column: str, patterns: List[str]) -> str:
 # ---------------------------------------------------------------------------
 # Actions
 # ---------------------------------------------------------------------------
+
+
+# Tool names that list time bookings (Tempo worklogs, OpenProject time
+# entries, Jira worklogs, timesheets) — calendar events also carry durations
+# but are not bookings.
+_WORKLOG_TOOL_RE = re.compile(r"(?i)(worklog|time_?entr|timesheet|timelog|time_?track|zeiterfassung)")
+
+
+def _absence_patterns(p: Dict[str, Any]) -> List[tuple]:
+    """[(kind, patterns)] of the configured absence kinds, in priority order."""
+    out = []
+    for kind, key in ABSENCE_PATTERN_KEYS:
+        patterns = _split_patterns(p.get(key))
+        if patterns:
+            out.append((kind, patterns))
+    return out
+
+
+def _booking_match_sql(patterns: List[str]) -> tuple:
+    """Rows whose booked item matches: key OR title (AIS-416). Titles survive
+    the yearly new ticket and the move between ticket systems."""
+    if not patterns:
+        return "0", []
+    clause = " OR ".join("reference_key LIKE ? OR COALESCE(title, '') LIKE ?" for _ in patterns)
+    params: List[Any] = []
+    for pat in patterns:
+        params += [pat, pat]
+    return f"({clause})", params
+
+
+def _user_scope_sql(p: Dict[str, Any]) -> tuple:
+    """Only the user's own bookings (AIS-416): a shared source (OpenProject
+    time entries of the whole team) must not count colleagues' hours. Rows
+    without a user (Tempo answers only for the token owner) stay in."""
+    user = str(p.get("worklog_user") or "").strip()
+    if not user:
+        return "", []
+    return " AND lower(COALESCE(user_id, '')) IN (lower(?), '')", [user]
+
+
+def _like_match(text: str, pattern: str) -> bool:
+    """SQL LIKE semantics (``%`` any run, ``_`` one char), case-insensitive."""
+    import re as _re
+
+    regex = "".join(".*" if ch == "%" else "." if ch == "_" else _re.escape(ch) for ch in pattern.lower())
+    return _re.fullmatch(regex, (text or "").lower(), _re.S) is not None
+
+
+def _import_absences(conn: sqlite3.Connection, p: Dict[str, Any], now: str, *,
+                     start: Optional[date] = None, end: Optional[date] = None,
+                     tool_patterns: Optional[List[str]] = None, factor: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    """Absences from booked time (vacation, special leave, sick) → absences
+    table. Derived ``bookings:%`` rows of the configured kinds are replaced
+    in the window (AIS-275); days the user added stay. None when no kind has
+    patterns."""
+    kinds = _absence_patterns(p)
+    if not kinds:
+        return None
+    factor = float(factor or p.get("vacation_hour_factor") or 1.0)
+    hours = wc.hours_per_day(
+        float(p["weekly_hours"]), int(p["days_per_week"]), float(p.get("part_time_factor") or 1.0),
+        work_weekdays=p.get("work_weekdays") or None,
+    )
+    all_patterns = [pat for _k, pats in kinds for pat in pats]
+    where, params = _booking_match_sql(all_patterns)
+    if tool_patterns:
+        where += " AND " + _like_sql("tool_name", tool_patterns)
+        params += list(tool_patterns)
+    scope_sql, scope_params = _user_scope_sql(p)
+    where += scope_sql
+    params += scope_params
+    if start and end:
+        where += " AND substr(timestamp, 1, 10) BETWEEN ? AND ?"
+        params += [start.isoformat(), end.isoformat()]
+    booked: Dict[tuple, float] = {}
+    for day, secs, ref, title in conn.execute(
+        f"SELECT substr(timestamp, 1, 10), duration_seconds, COALESCE(reference_key, ''), COALESCE(title, '') "
+        f"FROM mcp_records WHERE {where} AND duration_seconds > 0",
+        params,
+    ):
+        kind = next((k for k, pats in kinds if any(_like_match(ref, pt) or _like_match(title, pt) for pt in pats)), None)
+        if kind:
+            booked[(day, kind)] = booked.get((day, kind), 0.0) + secs / 3600.0
+    deleted = 0
+    for kind, _pats in kinds:
+        delete_sql = f"DELETE FROM {ABSENCES_TABLE} WHERE kind = ? AND source LIKE 'bookings:%'"
+        delete_params: List[Any] = [kind]
+        if start and end:
+            delete_sql += " AND day BETWEEN ? AND ?"
+            delete_params += [start.isoformat(), end.isoformat()]
+        deleted += conn.execute(delete_sql, delete_params).rowcount or 0
+    sources = {kind: "bookings:" + ", ".join(pats) for kind, pats in kinds}
+    # A day the user (or a vault note / document) recorded wins: a derived row
+    # must never overwrite it — the next refresh would delete it as
+    # "bookings:%" and the user's own entry would be gone.
+    kept = {
+        (day, kind) for day, kind in conn.execute(
+            f"SELECT day, kind FROM {ABSENCES_TABLE} WHERE source NOT LIKE 'bookings:%'"
+        )
+    }
+    rows = [
+        (day, min(1.0, round(h * factor / hours, 4)), kind, sources[kind], None, now)
+        for (day, kind), h in sorted(booked.items())
+        if (day, kind) not in kept
+    ]
+    _upsert_absences(conn, rows)
+    per_kind: Dict[str, int] = {}
+    for _day, _portion, kind, *_rest in rows:
+        per_kind[kind] = per_kind.get(kind, 0) + 1
+    return {
+        "patterns": {kind: pats for kind, pats in kinds}, "vacation_hour_factor": factor, "hours_per_day": hours,
+        "upserted": len(rows), "deleted": deleted, "days_by_kind": per_kind,
+    }
 
 
 def _act_holidays(args: Dict[str, Any]) -> str:
@@ -783,8 +909,11 @@ def _act_configure(args: Dict[str, Any]) -> str:
         if not patterns:
             return tool_error("worklog_source_tool must be a non-empty LIKE pattern (or comma-separated list)", success=False)
         profile["worklog_source_tool"] = ", ".join(patterns)
-    if args.get("vacation_booking_patterns"):
-        profile["vacation_booking_patterns"] = ", ".join(_split_patterns(args["vacation_booking_patterns"]))
+    for _kind, key in ABSENCE_PATTERN_KEYS:
+        if args.get(key):
+            profile[key] = ", ".join(_split_patterns(args[key]))
+    if args.get("worklog_user"):
+        profile["worklog_user"] = str(args["worklog_user"]).strip()
     if args.get("vacation_hour_factor"):
         factor = float(args["vacation_hour_factor"])
         if factor <= 0:
@@ -990,50 +1119,30 @@ def _act_absences(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
             missing = p.get("_missing", [])
             if missing:
                 return _unknown_profile(missing)
-            patterns = _split_patterns(args.get("vacation_booking_patterns") or p.get("vacation_booking_patterns"))
-            if not patterns:
-                return json.dumps({
-                    "action": "absences", "op": "import_from_bookings",
-                    "error": "no vacation_booking_patterns configured",
-                    "ask": (
-                        "Ask the user for the vacation booking reference (may change per year — patterns are "
-                        "additive), or take vacation days directly (op='add'), from a vault note, or extracted "
-                        "from a document (Excel/PDF) they provide."
-                    ),
-                }, ensure_ascii=False)
-            factor = float(args.get("vacation_hour_factor") or p.get("vacation_hour_factor") or 1.0)
-            hours = wc.hours_per_day(
-                float(p["weekly_hours"]), int(p["days_per_week"]), float(p.get("part_time_factor") or 1.0),
-                work_weekdays=p.get("work_weekdays") or None,
-            )
-            where = _like_sql("reference_key", patterns)
-            params: List[Any] = list(patterns)
+            for _kind, key in ABSENCE_PATTERN_KEYS:
+                if args.get(key):
+                    p[key] = args[key]
+            start = end = None
             if args.get("start") or args.get("year"):
                 start, end = _range(args)
-                where += " AND substr(timestamp, 1, 10) BETWEEN ? AND ?"
-                params += [start.isoformat(), end.isoformat()]
-            booked = conn.execute(
-                "SELECT substr(timestamp, 1, 10) AS day, SUM(duration_seconds) / 3600.0 "
-                f"FROM mcp_records WHERE {where} AND duration_seconds > 0 GROUP BY 1",
-                params,
-            ).fetchall()
-            # Refresh semantics (AIS-275): derived booking rows in the import
-            # window are dropped first, so a cancelled/moved vacation booking
-            # disappears instead of silently inflating vacation credit. Only
-            # 'bookings:%' rows are touched — user/vault/document entries stay.
-            delete_sql = f"DELETE FROM {ABSENCES_TABLE} WHERE kind = ? AND source LIKE 'bookings:%'"
-            delete_params: List[Any] = [kind]
-            if args.get("start") or args.get("year"):
-                delete_sql += " AND day BETWEEN ? AND ?"
-                delete_params += [start.isoformat(), end.isoformat()]
-            deleted = conn.execute(delete_sql, delete_params).rowcount or 0
-            source = "bookings:" + ", ".join(patterns)
-            rows = [(day, min(1.0, round(booked_h * factor / hours, 4)), kind, source, None, now) for day, booked_h in booked]
-            _upsert_absences(conn, rows)
+            result = _import_absences(
+                conn, p, now, start=start, end=end,
+                tool_patterns=_split_patterns(p.get("worklog_source_tool")) or None,
+                factor=args.get("vacation_hour_factor"),
+            )
+            if result is None:
+                return json.dumps({
+                    "action": "absences", "op": "import_from_bookings",
+                    "error": "no absence booking patterns configured (vacation/special_leave/sick_booking_patterns)",
+                    "ask": (
+                        "workdays(action='estimate_profile') proposes candidates from the booked items' titles — "
+                        "confirm them with the user. Otherwise ask for the booking reference (it may change per year; "
+                        "a title pattern like '%URLAUB%' survives that), or take the days directly (op='add'), from a "
+                        "vault note, or extracted from a document (Excel/PDF) they provide."
+                    ),
+                }, ensure_ascii=False)
             return json.dumps({
-                "action": "absences", "op": "import_from_bookings", "patterns": patterns,
-                "vacation_hour_factor": factor, "hours_per_day": hours, "upserted": len(rows),
-                "deleted": deleted,
+                "action": "absences", "op": "import_from_bookings", **result,
                 "summary": _absences_summary(conn),
             }, ensure_ascii=False)
 
@@ -1346,13 +1455,52 @@ def _upsert_presence(conn: sqlite3.Connection, rows: List[tuple]) -> None:
     conn.commit()
 
 
+# AIS-416: vocabulary that marks a booked item as an absence, per kind in
+# matching priority. Only proposes — the user confirms before configure.
+_ABSENCE_VOCABULARY = (
+    ("sick", re.compile(r"(?i)(krank|sick|illness|arbeitsunf(ä|ae)hig|\bAU\b)")),
+    ("special_leave", re.compile(r"(?i)(sonderurlaub|special[ _-]?leave|bildungsurlaub|elternzeit|parental)")),
+    ("vacation", re.compile(r"(?i)(urlaub|vacation|holiday|ferien|\bleave\b|abwesen|absence|\bpto\b|time[ _-]?off)")),
+)
+
+
+def _year_neutral_pattern(text: str) -> str:
+    """'INTERNAL_URLAUB_2026' -> 'INTERNAL_URLAUB_%' (the next year's ticket matches too)."""
+    return re.sub(r"(19|20)\d{2}", "%", text or "").replace("%%", "%")
+
+
+def _absence_candidates(conn: sqlite3.Connection, tools: List[str]) -> Dict[str, Any]:
+    marks = ",".join("?" for _ in tools)
+    rows = conn.execute(
+        "SELECT COALESCE(title, ''), COALESCE(reference_key, ''), COUNT(*), ROUND(SUM(duration_seconds) / 3600.0, 1), "
+        "MIN(substr(timestamp, 1, 10)), MAX(substr(timestamp, 1, 10)) FROM mcp_records "
+        f"WHERE tool_name IN ({marks}) AND duration_seconds > 0 GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 400",
+        tools,
+    ).fetchall()
+    patterns: Dict[str, List[str]] = {}
+    evidence: List[Dict[str, Any]] = []
+    for title, ref, n, hours, first, last in rows:
+        kind = next((k for k, rx in _ABSENCE_VOCABULARY if rx.search(title) or rx.search(ref)), None)
+        if not kind:
+            continue
+        pattern = _year_neutral_pattern(title) if title else ref
+        if pattern and pattern not in patterns.setdefault(kind, []):
+            patterns[kind].append(pattern)
+        evidence.append({"kind": kind, "title": title, "reference_key": ref, "rows": n, "hours": hours,
+                         "first_day": first, "last_day": last, "pattern": pattern})
+    return {
+        "patterns": {f"{kind}_booking_patterns": pats for kind, pats in patterns.items()},
+        "evidence": evidence[:12],
+    }
+
+
 def _act_estimate(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
     conn = _open_db(db_path)
     try:
         sources = conn.execute(
             "SELECT tool_name, COUNT(*) AS n, MIN(substr(timestamp, 1, 10)), MAX(substr(timestamp, 1, 10)) "
             "FROM mcp_records WHERE duration_seconds > 0 AND timestamp IS NOT NULL "
-            "GROUP BY tool_name ORDER BY n DESC LIMIT 5"
+            "GROUP BY tool_name ORDER BY n DESC LIMIT 12"
         ).fetchall()
         if not sources:
             return json.dumps({
@@ -1361,53 +1509,83 @@ def _act_estimate(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
                 "ask": "Ask the user directly for their work-time model: hours/week, working days (Mo-Fr, Mo-Sa, Mo-We, …), full/part time, region.",
                 "clarify_choices": CLARIFY_CHOICES,
             }, ensure_ascii=False)
-        top = sources[0][0]
+        # AIS-416: every time-booking source with data (Tempo history plus a
+        # newer OpenProject, …) — calendar events carry durations too but are
+        # not bookings; fall back to the biggest source when none looks like one.
+        booking_sources = [src for src in sources if _WORKLOG_TOOL_RE.search(src[0]) and src[1] >= 5]
+        chosen = booking_sources or [sources[0]]
+        tools = [src[0] for src in chosen]
+        marks = ",".join("?" for _ in tools)
+        users = conn.execute(
+            f"SELECT user_id, COUNT(*) FROM mcp_records WHERE tool_name IN ({marks}) AND duration_seconds > 0 "
+            "AND COALESCE(user_id, '') != '' GROUP BY 1 ORDER BY 2 DESC LIMIT 8",
+            tools,
+        ).fetchall()
         hist = conn.execute(
             "SELECT CAST(strftime('%w', substr(timestamp, 1, 10)) AS INTEGER) AS wd, "
-            "COUNT(DISTINCT substr(timestamp, 1, 10)) FROM mcp_records "
-            "WHERE tool_name = ? AND duration_seconds > 0 GROUP BY 1",
-            (top,),
+            f"COUNT(DISTINCT substr(timestamp, 1, 10)) FROM mcp_records "
+            f"WHERE tool_name IN ({marks}) AND duration_seconds > 0 GROUP BY 1",
+            tools,
         ).fetchall()
         iso_hist = {((wd + 6) % 7) + 1: n for wd, n in hist}  # %w: 0=Sun → ISO 1=Mon
         max_booked = max(iso_hist.values())
         proposed_days = sorted(d for d, n in iso_hist.items() if n >= 0.2 * max_booked)
         monday = _today() - timedelta(days=_today().weekday())
+        # The booking user is proposed only when unambiguous (one person holds
+        # >= 80 % of the named rows); a team-wide fetch must never make a
+        # colleague the proposal — then the user is asked.
+        named_rows = sum(n for _u, n in users)
+        own_user = users[0][0] if users and users[0][1] >= 0.8 * named_rows else None
+        user_filter, user_params = "", []
+        if own_user:
+            user_filter = " AND lower(COALESCE(user_id, '')) IN (lower(?), '')"
+            user_params = [own_user]
+        elif users:
+            user_filter = " AND COALESCE(user_id, '') = ''"  # token-owner rows (e.g. Tempo) only
         weeks = conn.execute(
             "SELECT strftime('%Y-%W', substr(timestamp, 1, 10)) AS wk, SUM(duration_seconds) / 3600.0 "
-            "FROM mcp_records WHERE tool_name = ? AND duration_seconds > 0 AND substr(timestamp, 1, 10) < ? "
-            "GROUP BY wk ORDER BY wk DESC LIMIT 8",
-            (top, monday.isoformat()),
+            f"FROM mcp_records WHERE tool_name IN ({marks}) AND duration_seconds > 0 AND substr(timestamp, 1, 10) < ?"
+            f"{user_filter} GROUP BY wk ORDER BY wk DESC LIMIT 8",
+            tools + [monday.isoformat()] + user_params,
         ).fetchall()
         avg = round(sum(h for _, h in weeks) / len(weeks), 1) if weeks else None
         snapped = min((20.0, 25.0, 30.0, 38.5, 40.0, 42.0), key=lambda x: abs(x - avg)) if avg else None
-        vacation_candidates = conn.execute(
-            "SELECT reference_key, COUNT(*) AS n FROM mcp_records "
-            "WHERE tool_name = ? AND duration_seconds BETWEEN 1 AND 7200 AND reference_key IS NOT NULL "
-            "GROUP BY reference_key HAVING n >= 3 ORDER BY n DESC LIMIT 3",
-            (top,),
-        ).fetchall()
+        absences = _absence_candidates(conn, tools)
         profile = load_profile() or {}
         missing = [k for k in ("region", "weekly_hours", "days_per_week") if not profile.get(k)]
-        proposal: Dict[str, Any] = {"worklog_source_tool": top}
+        proposal: Dict[str, Any] = {"worklog_source_tool": ", ".join(tools)}
         if proposed_days:
             proposal["work_weekdays"] = [_DAY_ABBR[d].lower() for d in proposed_days]
         if snapped is not None:
             proposal["weekly_hours"] = snapped
+        if own_user:
+            proposal["worklog_user"] = own_user
+        proposal.update(absences["patterns"])
+        ask_user = None
+        if users and not own_user:
+            ask_user = (
+                f"the booking sources hold rows of {len(users)} people — ask the user which of them they are "
+                "(booking_users) and store it as worklog_user; the others are colleagues"
+            )
         return json.dumps({
             "action": "estimate_profile",
             "proposal": proposal,
             "evidence": {
-                "sources": [{"tool_name": t, "rows": n, "first_day": f, "last_day": l} for t, n, f, l in sources],
+                "sources": [{"tool_name": t, "rows": n, "first_day": f, "last_day": l} for t, n, f, l in sources[:5]],
+                "booking_users": [{"user": u, "rows": n} for u, n in users],
                 "weekday_booked_days": {_DAY_ABBR[d]: n for d, n in sorted(iso_hist.items())},
                 "avg_weekly_hours_last_8_complete_weeks": avg,
+                "absence_bookings": absences["evidence"],
             },
-            "candidates": {"vacation_booking_patterns": [k for k, _ in vacation_candidates]},
-            "missing": missing or ["confirmation"],
+            "missing": (missing + (["worklog_user"] if ask_user else [])) or ["confirmation"],
+            **({"ask_worklog_user": ask_user} if ask_user else {}),
             "next": (
                 "Present this proposal to the user in their language and ask them to CONFIRM or correct it "
                 "(region is never estimated — ask for it; also ask full/part time, and when the region has "
-                "municipal partial holidays, ask for municipality/PLZ too), then persist via "
-                "workdays(action='configure', …)."
+                "municipal partial holidays, ask for municipality/PLZ too). worklog_user is the person whose "
+                "bookings count — the others in booking_users are colleagues. Absence patterns come from the "
+                "booked items' titles with the year replaced by %, so next year's ticket matches too; ask which "
+                "of them are vacation, special leave or sick leave. Then persist via workdays(action='configure', …)."
             ),
         }, ensure_ascii=False)
     finally:
@@ -1459,13 +1637,31 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
     if mat.get("error"):
         return json.dumps(mat, ensure_ascii=False)
 
-    vac_patterns = _split_patterns(p.get("vacation_booking_patterns"))
+    absence_kinds = _absence_patterns(p)
+    absence_patterns = [pat for _k, pats in absence_kinds for pat in pats]
     ist_where = _like_sql("tool_name", src_patterns)
     ist_params: List[Any] = list(src_patterns)
-    if vac_patterns:
-        ist_where += " AND NOT " + _like_sql("reference_key", vac_patterns)
-        ist_params += vac_patterns
+    if absence_patterns:
+        # Booked absences are credited on the target side, never counted as work.
+        match_sql, match_params = _booking_match_sql(absence_patterns)
+        ist_where += " AND NOT " + match_sql
+        ist_params += match_params
+    scope_sql, scope_params = _user_scope_sql(p)
+    ist_where += scope_sql
+    ist_params += scope_params
     s, e = start.isoformat(), end.isoformat()
+    # AIS-416: absences booked as time entries are refreshed for the range on
+    # every report — no separate import step the model has to remember.
+    absences_imported = None
+    if absence_kinds:
+        conn = _open_db(db_path)
+        try:
+            absences_imported = _import_absences(
+                conn, p, datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                start=start, end=end, tool_patterns=src_patterns,
+            )
+        finally:
+            conn.close()
     ctes = f"""
         WITH ist AS (
             SELECT substr(timestamp, 1, 10) AS day, SUM(duration_seconds) / 3600.0 AS hours
@@ -1475,7 +1671,7 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
         vac AS (
             SELECT c.month AS month, SUM(a.portion * c.target_hours) AS hours
             FROM {ABSENCES_TABLE} a JOIN {TABLE} c ON c.day = a.day
-            WHERE a.kind = 'vacation' AND a.day BETWEEN ? AND ?
+            WHERE a.day BETWEEN ? AND ?
             GROUP BY 1)
     """
     cte_params = ist_params + [s, e, s, e]
@@ -1521,10 +1717,37 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
                 "last_fetched_at": fetched,
             })
         absence_cov = conn.execute(
-            f"SELECT source, COUNT(*), ROUND(SUM(portion), 2), MAX(created_at) FROM {ABSENCES_TABLE} "
-            "WHERE kind = 'vacation' AND day BETWEEN ? AND ? GROUP BY source",
+            f"SELECT source, kind, COUNT(*), ROUND(SUM(portion), 2), MAX(created_at) FROM {ABSENCES_TABLE} "
+            "WHERE day BETWEEN ? AND ? GROUP BY source, kind",
             (s, e),
         ).fetchall()
+        credit_by_kind = {
+            kind: hours for kind, hours in conn.execute(
+                f"SELECT a.kind, ROUND(SUM(a.portion * c.target_hours), 2) FROM {ABSENCES_TABLE} a "
+                f"JOIN {TABLE} c ON c.day = a.day WHERE a.day BETWEEN ? AND ? GROUP BY 1",
+                (s, e),
+            )
+        }
+        # Worklog-shaped data this profile does not read yet (e.g. OpenProject
+        # time entries after a move away from Tempo) and other people's rows
+        # in the configured sources (a team-wide fetch).
+        unread_sources = [
+            {"tool_name": t, "rows": n, "first_day": f, "last_day": l}
+            for t, n, f, l in conn.execute(
+                "SELECT tool_name, COUNT(*), MIN(substr(timestamp, 1, 10)), MAX(substr(timestamp, 1, 10)) "
+                "FROM mcp_records WHERE duration_seconds > 0 AND substr(timestamp, 1, 10) BETWEEN ? AND ? "
+                f"AND NOT {_like_sql('tool_name', src_patterns)} GROUP BY 1 ORDER BY 2 DESC LIMIT 5",
+                [s, e] + list(src_patterns),
+            )
+            if n >= 3 and _WORKLOG_TOOL_RE.search(t)
+        ]
+        users_in_sources = [
+            u for (u,) in conn.execute(
+                "SELECT DISTINCT user_id FROM mcp_records WHERE COALESCE(user_id, '') != '' "
+                f"AND {_like_sql('tool_name', src_patterns)} AND substr(timestamp, 1, 10) BETWEEN ? AND ?",
+                list(src_patterns) + [s, e],
+            )
+        ]
         presence_cov = conn.execute(
             f"SELECT source, kind, COUNT(*), MAX(created_at) FROM {PRESENCE_TABLE} "
             "WHERE day BETWEEN ? AND ? GROUP BY source, kind",
@@ -1550,8 +1773,23 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
             )
     if not absence_cov:
         hints.append(
-            "no absences recorded for this range — import via workdays(action='absences', op='import_from_bookings'), "
-            "add days directly (op='add'), or extract them from a vault note/document; vacation_credit is 0 until then"
+            "no absences recorded for this range — "
+            + ("the configured absence booking patterns matched nothing; " if absence_kinds else
+               "no absence booking patterns configured: workdays(action='estimate_profile') proposes them from the "
+               "booked items' titles (confirm with the user), ")
+            + "or add days directly (absences op='add') or from a vault note/document; absence_credit is 0 until then"
+        )
+    if unread_sources:
+        hints.append(
+            "other worklog data exists in this range but is not part of worklog_source_tool: "
+            + ", ".join(f"{u['tool_name']} ({u['rows']} rows, {u['first_day']}..{u['last_day']})" for u in unread_sources)
+            + " — if these are the user's bookings too (e.g. a new time-tracking system), ask and add the pattern via configure"
+        )
+    worklog_user = str(p.get("worklog_user") or "").strip()
+    if not worklog_user and len(users_in_sources) > 1:
+        hints.append(
+            f"rows of {len(users_in_sources)} people are in the worklog sources ({', '.join(sorted(users_in_sources)[:6])}) "
+            "and all are counted — ask which one is the user and set worklog_user via configure; the others are colleagues"
         )
 
     try:
@@ -1597,19 +1835,19 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
     payload: Dict[str, Any] = {
         "action": "report",
         "range": range_payload,
-        "totals": {"target_gross": total[0], "vacation_credit": total[1], "target_net": total[2],
-                   "actual": total[3], "delta": total[4], **presence_total},
+        "totals": {"target_gross": total[0], "absence_credit": total[1], "absence_credit_by_kind": credit_by_kind,
+                   "target_net": total[2], "actual": total[3], "delta": total[4], **presence_total},
         "months": [
-            {"month": m, "target_gross": tg, "vacation_credit": vc, "target_net": tn, "actual": act, "delta": dl,
+            {"month": m, "target_gross": tg, "absence_credit": vc, "target_net": tn, "actual": act, "delta": dl,
              **presence_months.get(m, _empty_presence())}
             for m, tg, vc, tn, act, dl in month_rows
         ],
         "assumptions": mat.get("assumptions"),
         "coverage": {
             "worklog_sources": coverage,
-            "vacation_absences": [
-                {"source": src, "days": n, "portions": pt, "last_updated_at": upd}
-                for src, n, pt, upd in absence_cov
+            "absences": [
+                {"source": src, "kind": kind, "days": n, "portions": pt, "last_updated_at": upd}
+                for src, kind, n, pt, upd in absence_cov
             ],
             "presence_sources": [
                 {"source": src, "kind": k, "days": n, "last_updated_at": upd}
@@ -1619,6 +1857,12 @@ def _act_report(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
         },
         "formula": FORMULA,
     }
+    if worklog_user:
+        payload["coverage"]["worklog_user"] = worklog_user
+    if absences_imported:
+        payload["coverage"]["absences_imported"] = {
+            k: absences_imported[k] for k in ("patterns", "upserted", "deleted", "days_by_kind")
+        }
     if args.get("include_days"):
         payload["days"] = day_rows
     if clamped:
@@ -1754,7 +1998,7 @@ _REPORT_LABELS = {
     "en": {
         "title": "Working time {period}", "assumptions": "Assumptions", "result": "Result", "days": "Days",
         "presence": "Presence", "coverage": "Coverage", "method": "Method", "verification": "Verification",
-        "month": "Month", "target_gross": "Target (gross)", "vacation": "Vacation credit", "target_net": "Target (net)",
+        "month": "Month", "target_gross": "Target (gross)", "vacation": "Absence credit", "target_net": "Target (net)",
         "actual": "Actual", "delta": "Delta", "total": "Total", "day": "Day", "wd": "Wd", "start": "Start",
         "end": "End", "hours": "Hours", "status": "Status", "office": "Office", "homeoffice": "Home office",
         "travel": "Travel", "absence": "Absence", "note": "Note",
@@ -1764,7 +2008,7 @@ _REPORT_LABELS = {
     "de": {
         "title": "Arbeitszeit {period}", "assumptions": "Annahmen", "result": "Ergebnis", "days": "Tage",
         "presence": "Präsenz", "coverage": "Datenabdeckung", "method": "Methode", "verification": "Prüfung",
-        "month": "Monat", "target_gross": "Soll (brutto)", "vacation": "Urlaubsgutschrift", "target_net": "Soll (netto)",
+        "month": "Monat", "target_gross": "Soll (brutto)", "vacation": "Abwesenheitsgutschrift", "target_net": "Soll (netto)",
         "actual": "Ist", "delta": "Differenz", "total": "Gesamt", "day": "Tag", "wd": "WT", "start": "Beginn",
         "end": "Ende", "hours": "Stunden", "status": "Status", "office": "Büro", "homeoffice": "Home-Office",
         "travel": "Auswärts", "absence": "Abwesenheit", "note": "Hinweis",
@@ -1848,12 +2092,12 @@ def _render_report_markdown(payload: Dict[str, Any], day_rows: List[Dict[str, An
     ]
     for m in payload["months"]:
         lines.append(
-            f"| {m['month']} | {_fmt_h(m['target_gross'])} | {_fmt_h(m['vacation_credit'])} | {_fmt_h(m['target_net'])} | "
+            f"| {m['month']} | {_fmt_h(m['target_gross'])} | {_fmt_h(m['absence_credit'])} | {_fmt_h(m['target_net'])} | "
             f"{_fmt_h(m['actual'])} | {_fmt_h(m['delta'])} | {m['office_days']} | {m['homeoffice_days']} | {m['travel_days']} | {m['absence_days']} |"
         )
     t = payload["totals"]
     lines.append(
-        f"| **{L['total']}** | **{_fmt_h(t['target_gross'])}** | **{_fmt_h(t['vacation_credit'])}** | **{_fmt_h(t['target_net'])}** | "
+        f"| **{L['total']}** | **{_fmt_h(t['target_gross'])}** | **{_fmt_h(t['absence_credit'])}** | **{_fmt_h(t['target_net'])}** | "
         f"**{_fmt_h(t['actual'])}** | **{_fmt_h(t['delta'])}** | **{t['office_days']}** | **{t['homeoffice_days']}** | **{t['travel_days']}** | **{t['absence_days']}** |"
     )
     if include_days:
@@ -1876,8 +2120,8 @@ def _render_report_markdown(payload: Dict[str, Any], day_rows: List[Dict[str, An
     lines += ["", f"## {L['coverage']}", ""]
     for c in payload["coverage"]["worklog_sources"]:
         lines.append(f"- `{c['pattern']}`: {c['rows']} rows, {c['first_day'] or '-'} – {c['last_day'] or '-'} ({L['generated'].lower()} {c['last_fetched_at'] or '-'})")
-    for v in payload["coverage"]["vacation_absences"]:
-        lines.append(f"- {L['absence']}: {v['source']} ({v['days']} d, {v['portions']} portions)")
+    for v in payload["coverage"]["absences"]:
+        lines.append(f"- {L['absence']} ({v['kind']}): {v['source']} ({v['days']} d, {v['portions']} portions)")
     for pr in payload["coverage"]["presence_sources"]:
         lines.append(f"- {L['presence']}: {pr['source']} ({pr['kind']}, {pr['days']} d)")
     for h in payload.get("hints") or []:
@@ -1970,14 +2214,17 @@ WORKDAYS_SCHEMA = {
         "MANDATORY for target hours, overtime, working days, public holidays, bridge days: NEVER type calendars, weekday "
         "counts or holiday dates into SQL or prose, never compute Easter yourself.\n"
         "Actions: 'report' (THE one-call actual-vs-target balance up to today: target, actual from ingested worklogs "
-        "in mcp_records via the profile's worklog_source_tool pattern, vacation credit from the absences table, "
+        "in mcp_records via the profile's worklog_source_tool pattern(s) — several time-tracking systems combine — "
+        "scoped to worklog_user, absence credit from the absences table (vacation, special leave, sick; absences "
+        "booked as time entries are refreshed from the booking patterns on every report), "
         "delta, office/home-office days — all math in SQLite; include_days=true adds one row per day with first "
         "start, last end, hours, presence and status; period='ytd'|'mtd'|'this_month'|'last_month'|'this_week'|"
         "'last_week'|'through_last_week' resolves relative ranges deterministically; write='vault' renders the "
         "canonical Markdown report into the vault (reports/worklog/worktime-<period>.md, overwritten in place) — "
-        "never write that file yourself), 'estimate_profile' (propose a week model from ingested worklog data when the "
-        "profile is unknown — present the proposal and let the user CONFIRM before configure; region is never "
-        "estimated), 'absences' (source-neutral vacation/sick store in state.db: op=add/list/remove/"
+        "never write that file yourself; follow its hints — they name unread booking sources and colleagues' rows), "
+        "'estimate_profile' (propose week model, booking sources, the booking user and absence patterns from "
+        "ingested bookings when the profile is unknown or incomplete — present the proposal and let the user CONFIRM "
+        "before configure; region is never estimated), 'absences' (source-neutral vacation/sick store in state.db: op=add/list/remove/"
         "import_from_bookings — days can come from booking tickets, the user directly, a vault note, or a document), "
         "'presence' (office/homeoffice/travel days: op=add/list/remove/import_from_calendar — days from ingested "
         "calendar events; without match= the entries involving the signed-in user count (involves_me), match=… "
@@ -2016,7 +2263,10 @@ WORKDAYS_SCHEMA = {
             "employment_label": {"type": "string", "enum": ["vollzeit", "teilzeit"], "description": "configure only: full/part-time label shown in assumptions (math stays weekly_hours/part_time_factor)."},
             "part_time_factor": {"type": "number", "description": "0 < factor <= 1 (default 1)."},
             "worklog_source_tool": {"type": "string", "description": "SQL LIKE pattern (comma-separated for several) matching mcp_records.tool_name rows that are the user's time bookings — any worklog tool, not vendor-specific. Needed for report/estimate."},
-            "vacation_booking_patterns": {"type": "string", "description": "LIKE pattern(s) on mcp_records.reference_key for vacation bookings (the ticket workaround; may differ per year — patterns are additive)."},
+            "vacation_booking_patterns": {"type": "string", "description": "LIKE pattern(s) for vacation bookings, matched against the booked item's key OR title (mcp_records.reference_key / title), e.g. 'INTERNAL_URLAUB_%' survives the yearly new ticket; comma-separated, additive."},
+            "special_leave_booking_patterns": {"type": "string", "description": "Same for special leave (Sonderurlaub); matched before vacation."},
+            "sick_booking_patterns": {"type": "string", "description": "Same for sick leave; matched first."},
+            "worklog_user": {"type": "string", "description": "configure: whose bookings count as actual (user name as in the worklog rows) when a source holds the whole team's entries; rows of others are colleagues."},
             "vacation_hour_factor": {"type": "number", "description": "Credit hours per booked vacation hour for absences import (default 1.0; e.g. 8.0 when 1h booked = one 8h day)."},
             "op": {"type": "string", "enum": ["add", "list", "remove", "import_from_bookings", "import_from_calendar"], "description": "absences / presence: what to do (default list). import_from_bookings = absences, import_from_calendar = presence."},
             "days": {"type": "array", "items": {}, "description": "absences add/remove: 'YYYY-MM-DD' strings, {day, portion} objects, or {from, to} ranges (ranges expand to working days only)."},

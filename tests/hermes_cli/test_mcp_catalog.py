@@ -2586,16 +2586,21 @@ class TestVersionPinsAndToolPrefix:
         monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
         entry = _entry("OpenProjectMCP")
         assert entry.tool_prefix == "op"
-        assert entry.transport.command == "uvx"
-        assert entry.transport.args == ["openproject-ce-mcp==0.4.0"]
+        # AIS-408/410: the in-repo server, replacing the upstream uvx package.
+        assert entry.install is not None and entry.install.type == "local"
+        assert entry.install.path == "optional-mcps/OpenProjectMCP"
+        assert entry.install.replaces == ["openproject-ce-mcp"]
+        assert entry.transport.args == ["${INSTALL_DIR}/optional-mcps/OpenProjectMCP/server.py"]
         env = {e.name: e for e in entry.auth.env}
         assert env["OPENPROJECT_API_TOKEN"].secret and env["OPENPROJECT_API_TOKEN"].required
         assert env["OPENPROJECT_READ_PROJECTS"].default == "*"
         assert env["OPENPROJECT_WRITE_PROJECTS"].required is False and env["OPENPROJECT_WRITE_PROJECTS"].default == ""
         assert entry.tools.default_enabled is not None
-        assert "list_work_packages" in entry.tools.default_enabled
-        assert "create_time_entry" in entry.tools.default_enabled
-        assert "delete_project" not in entry.tools.default_enabled
+        assert len(entry.tools.default_enabled) == 11
+        assert {"search_work_packages", "log_time", "delete_work_package"} <= set(entry.tools.default_enabled)
+        assert entry.tools.renamed["create_time_entry"] == "log_time"
+        # every renamed target is a tool the server really has
+        assert set(entry.tools.renamed.values()) <= set(entry.tools.default_enabled)
 
     def test_tool_prefix_parsed_and_validated(self, catalog_dir):
         from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
@@ -2857,3 +2862,101 @@ class TestReconcileToolIncludes:
         assert tempo is not None
         for name in ("get_worklogs", "update_worklog", "get_user_schedule", "worklog_analytics"):
             assert name in tempo.tools.removed
+
+
+class TestReplaceSupersededServers:
+    """AIS-410: an install that still launches the replaced upstream server is
+    swapped for the catalog's own install on `hermes update`."""
+
+    @staticmethod
+    def _manifest():
+        return _basic_manifest(
+            install={"type": "git", "url": "https://example.com/demo.git", "ref": "main", "bootstrap": [],
+                     "replaces": ["old-demo-mcp"]},
+            transport={"type": "stdio", "command": "${INSTALL_DIR}/run.sh"},
+            tool_prefix="dm",
+            tools={"default_enabled": ["new_tool"]},
+        )
+
+    @staticmethod
+    def _old_config(**extra):
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("mcp_servers", {})["demo"] = {
+            "command": "uvx", "args": ["old-demo-mcp==0.4.0"], "tool_prefix": "dm", "enabled": True,
+            "env": {"DEMO_TOKEN": "${DEMO_TOKEN}", "DEMO_SCOPE": "AIS"},
+            "tools": {"include": ["old_tool_a", "old_tool_b"]}, **extra,
+        }
+        save_config(cfg)
+
+    def _run(self, tmp_path, **patches):
+        from hermes_cli import mcp_catalog, mcp_picker
+
+        clone = tmp_path / "clone"
+        clone.mkdir(exist_ok=True)
+        with patch.object(mcp_catalog, "_do_git_install", return_value=clone, **patches) as clone_mock, \
+                patch.object(mcp_catalog, "installed_commit", return_value="c" * 40):
+            return mcp_picker.replace_superseded_servers(quiet=True), clone_mock
+
+    def test_old_launcher_is_replaced_keeping_env_and_prefix(self, catalog_dir, tmp_path):
+        from hermes_cli.config import load_config
+
+        _write_manifest(catalog_dir, "demo", self._manifest())
+        self._old_config()
+        result, clone_mock = self._run(tmp_path)
+
+        assert result == {"replaced": ["demo"], "failed": []}
+        assert clone_mock.call_count == 1
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["command"].endswith("run.sh")
+        assert server["env"] == {"DEMO_TOKEN": "${DEMO_TOKEN}", "DEMO_SCOPE": "AIS"}
+        assert server["tool_prefix"] == "dm"
+        assert server["enabled"] is True
+        # the old server's tool selection is gone — its names meant another server
+        assert "old_tool_a" not in str(server.get("tools"))
+
+    def test_replacement_is_idempotent(self, catalog_dir, tmp_path):
+        _write_manifest(catalog_dir, "demo", self._manifest())
+        self._old_config()
+        self._run(tmp_path)
+        result, clone_mock = self._run(tmp_path)
+        assert result == {"replaced": [], "failed": []}
+        assert clone_mock.call_count == 0
+
+    def test_disabled_server_stays_disabled(self, catalog_dir, tmp_path):
+        from hermes_cli.config import load_config
+
+        _write_manifest(catalog_dir, "demo", self._manifest())
+        self._old_config(enabled=False)
+        self._run(tmp_path)
+        assert load_config()["mcp_servers"]["demo"]["enabled"] is False
+
+    def test_failed_install_keeps_the_old_server(self, catalog_dir, tmp_path):
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_catalog import CatalogError
+
+        _write_manifest(catalog_dir, "demo", self._manifest())
+        self._old_config()
+        result, _ = self._run(tmp_path, side_effect=CatalogError("pip failed"))
+        assert result == {"replaced": [], "failed": ["demo"]}
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["command"] == "uvx" and server["tools"]["include"] == ["old_tool_a", "old_tool_b"]
+
+    def test_unrelated_launchers_are_left_alone(self, catalog_dir, tmp_path):
+        from hermes_cli.config import load_config, save_config
+
+        _write_manifest(catalog_dir, "demo", self._manifest())
+        cfg = load_config()
+        cfg.setdefault("mcp_servers", {})["demo"] = {"command": "uvx", "args": ["some-fork-mcp"]}
+        save_config(cfg)
+        result, clone_mock = self._run(tmp_path)
+        assert result["replaced"] == [] and clone_mock.call_count == 0
+
+    def test_replaces_must_be_a_list_of_strings(self, catalog_dir):
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        bad = self._manifest()
+        bad["install"]["replaces"] = "old-demo-mcp"
+        with pytest.raises(CatalogError, match="install.replaces"):
+            _parse_manifest(_write_manifest(catalog_dir, "demo", bad))
