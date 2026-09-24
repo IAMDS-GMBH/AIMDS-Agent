@@ -1383,6 +1383,12 @@ def reconcile_tool_includes(*, quiet: bool = False) -> Dict[str, Dict[str, List[
             continue
 
         server_cfg = servers.get(name) or {}
+        # AIS-422: the renamed/removed maps describe the catalog's own server.
+        # A config that still launches the server it replaces (uvx
+        # openproject-ce-mcp) keeps its include list until the swap — renaming
+        # it early hid the old server's time-booking and comment tools.
+        if entry.install is not None and entry.install.supersedes(server_cfg):
+            continue
         tools_block = server_cfg.get("tools") if isinstance(server_cfg, dict) else None
         include = (tools_block or {}).get("include") if isinstance(tools_block, dict) else None
         if not isinstance(include, list) or not include:

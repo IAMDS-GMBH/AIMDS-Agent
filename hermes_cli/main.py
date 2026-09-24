@@ -9427,22 +9427,13 @@ def _run_post_update_pipeline(
     # and are never touched by the agent update, so a server fix would
     # otherwise reach the checkout but not the process that runs. Only
     # installs actually behind their manifest ref get re-cloned.
-    # AIS-410: a server the catalog now ships itself (OpenProjectMCP replacing
-    # uvx openproject-ce-mcp) is swapped first, so the refresh below already
-    # sees the new install.
-    try:
-        from hermes_cli.mcp_picker import replace_superseded_servers
-
-        mcp_replaced = replace_superseded_servers()
-        if mcp_replaced["replaced"]:
-            print(f"  ↻ {len(mcp_replaced['replaced'])} MCP server(s) replaced: {', '.join(mcp_replaced['replaced'])}")
-    except Exception as e:
-        logger.debug("MCP superseded-server replacement during update failed: %s", e)
-
     try:
         from hermes_cli.mcp_picker import refresh_stale_installs
 
+        # Also swaps servers the catalog now ships itself (AIS-410/422).
         mcp_refresh = refresh_stale_installs()
+        if mcp_refresh.get("replaced"):
+            print(f"  ↻ {len(mcp_refresh['replaced'])} MCP server(s) replaced: {', '.join(mcp_refresh['replaced'])}")
         if mcp_refresh["updated"]:
             print(
                 f"  ↑ {len(mcp_refresh['updated'])} MCP install(s) updated: "

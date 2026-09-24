@@ -436,8 +436,20 @@ def refresh_stale_installs(*, quiet: bool = False) -> dict:
     """
     from hermes_cli.mcp_catalog import _checkout_identity, _install_root, get_entry, installed_commit
 
+    result = {"checked": [], "updated": [], "failed": [], "skipped": [], "replaced": []}
+    # AIS-422: the swap runs from here, not only from cmd_update. The update
+    # that brings this code still executes the previous main.py (already in
+    # memory), which never called replace_superseded_servers — but it calls
+    # this function, from the freshly pulled module.
+    try:
+        swapped = replace_superseded_servers(quiet=quiet)
+        result["replaced"] = swapped.get("replaced", [])
+        result["failed"] += swapped.get("failed", [])
+    except Exception as exc:
+        if not quiet:
+            print(color(f"  ⚠ replacing superseded MCP servers failed: {exc}", Colors.YELLOW))
+
     servers = load_config().get("mcp_servers") or {}
-    result = {"checked": [], "updated": [], "failed": [], "skipped": []}
 
     for name in list(servers if isinstance(servers, dict) else {}):
         entry = get_entry(name)
