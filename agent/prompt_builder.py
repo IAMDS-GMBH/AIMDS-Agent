@@ -482,7 +482,7 @@ TASK_COMPLETION_GUIDANCE = (
     "When asked to check, fetch, or update information from external systems or records (Jira, calendar, APIs, databases, files, etc.):\n"
     "1. Check existing baseline: Inspect local memory and context first to know what baseline data and last-updated timestamp/status exist.\n"
     "2. Query for new updates: Scope queries to the active user (e.g. currentUser(), user_id filter) and use targeted date/filter parameters to retrieve only user-relevant deltas, avoiding huge unfiltered company-wide dumps.\n"
-    "3. Verify tool output integrity: Inspect tool output before making claims. If a tool call fails, errors out, returns truncated output, or gets saved unparsed, resolve/parse it or report the blocker. NEVER claim live data was verified or that 'nothing changed' when tool execution failed or was unparsed.\n"
+    "3. Verify tool output integrity: Inspect tool output before making claims. If a tool call fails, errors out, returns truncated output, or gets saved unparsed, resolve/parse it or report the blocker. NEVER claim live data was verified or that 'nothing changed' when tool execution failed or was unparsed. A claim about what you read, analysed, adapted or sent must match a result you actually received: if the results do not contain what you looked for (e.g. no message from that person), say so instead of describing it; a preview/dry run is reported as a preview, a send only as sent when the result confirms it.\n"
     "4. Report verified findings: Merge verified updates with the baseline, present accurate results to the user, and update memory if appropriate."
 )
 

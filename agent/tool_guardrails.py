@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -60,6 +61,32 @@ MUTATING_TOOL_NAMES = frozenset(
 )
 
 
+# AIS-412: MCP tools are not in the static lists above, so their read loops
+# went unnoticed (27 identical m365_list_emails calls, 21 paged
+# list_work_packages calls in one turn). A tool counts as read-only when its
+# name carries a read verb and no write verb.
+_MCP_READ_VERBS = frozenset(
+    {"list", "get", "search", "find", "read", "retrieve", "query", "describe", "fetch", "lookup", "show", "count"}
+)
+_MCP_WRITE_VERBS = frozenset(
+    {
+        "create", "update", "delete", "remove", "send", "add", "set", "move", "post", "write",
+        "log", "book", "upload", "transition", "assign", "merge", "patch", "put", "reply",
+        "forward", "respond", "cancel", "approve", "submit", "save", "manage", "import", "ingest",
+        "rebuild", "toggle", "trash", "untrash", "edit", "rename", "copy", "init",
+    }
+)
+
+
+def looks_like_read_only_mcp_tool(tool_name: str) -> bool:
+    """True for ``mcp_*`` tools whose name reads as a pure lookup."""
+    if not isinstance(tool_name, str) or not tool_name.startswith("mcp_"):
+        return False
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", tool_name[4:])
+    words = {w for w in re.split(r"[_\-.]+", spaced.lower()) if w}
+    return bool(words & _MCP_READ_VERBS) and not (words & _MCP_WRITE_VERBS)
+
+
 @dataclass(frozen=True)
 class ToolCallGuardrailConfig:
     """Thresholds for per-turn tool-call loop detection.
@@ -77,6 +104,9 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    # AIS-412: the same read-only tool called this often in one turn with
+    # changing arguments (paging, guessing filters) gets a strategy hint.
+    same_tool_read_warn_after: int = 8
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
 
@@ -120,6 +150,10 @@ class ToolCallGuardrailConfig:
             no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
                 defaults.no_progress_block_after,
+            ),
+            same_tool_read_warn_after=_positive_int(
+                warn_after.get("same_tool_read", data.get("same_tool_read_warn_after")),
+                defaults.same_tool_read_warn_after,
             ),
         )
 
@@ -232,6 +266,7 @@ class ToolCallGuardrailController:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._same_tool_read_counts: dict[str, int] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -364,11 +399,31 @@ class ToolCallGuardrailController:
                 code="idempotent_no_progress_warning",
                 message=(
                     f"{tool_name} returned the same result {repeat_count} times. "
-                    "Use the result already provided or change the query instead of "
-                    "repeating it unchanged."
+                    "The arguments are not changing what comes back — an argument the "
+                    "tool ignores looks exactly like this. Check the tool's declared "
+                    "parameters, use the result already provided, or change the query "
+                    "instead of repeating it unchanged."
                 ),
                 tool_name=tool_name,
                 count=repeat_count,
+                signature=signature,
+            )
+
+        read_count = self._same_tool_read_counts.get(tool_name, 0) + 1
+        self._same_tool_read_counts[tool_name] = read_count
+        threshold = self.config.same_tool_read_warn_after
+        if self.config.warnings_enabled and read_count >= threshold and read_count % threshold == 0:
+            return ToolGuardrailDecision(
+                action="warn",
+                code="same_tool_read_streak_warning",
+                message=(
+                    f"{tool_name} has run {read_count} times this turn with changing arguments. "
+                    "Paging or guessing through results rarely converges: narrow the call with "
+                    "the filters the tool declares, work with the results already returned, "
+                    "or tell the user what is missing instead of calling it again."
+                ),
+                tool_name=tool_name,
+                count=read_count,
                 signature=signature,
             )
 
@@ -377,7 +432,7 @@ class ToolCallGuardrailController:
     def _is_idempotent(self, tool_name: str) -> bool:
         if tool_name in self.config.mutating_tools:
             return False
-        return tool_name in self.config.idempotent_tools
+        return tool_name in self.config.idempotent_tools or looks_like_read_only_mcp_tool(tool_name)
 
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
