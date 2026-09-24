@@ -286,7 +286,8 @@ def _extract_items(data: Any) -> List[Dict[str, Any]]:
         # Check common collection keys
         # ``value`` is Microsoft Graph's collection key: without it a chat or
         # drive listing was ingested as ONE blob row (AIS-289).
-        for key in ("worklogs", "issues", "tickets", "entries", "records", "items", "data", "results", "values", "value", "cases", "matches"):
+        # ``time_entries``/``work_packages``: the in-repo OpenProject server (AIS-408).
+        for key in ("worklogs", "time_entries", "issues", "work_packages", "tickets", "entries", "records", "items", "data", "results", "values", "value", "cases", "matches"):
             val = data.get(key)
             if isinstance(val, list):
                 return [item for item in val if isinstance(item, dict)]
