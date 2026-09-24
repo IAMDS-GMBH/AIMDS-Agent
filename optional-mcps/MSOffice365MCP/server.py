@@ -1181,8 +1181,14 @@ def m365_send_email(
     save_to_sent_items: bool = True,
     attachments: Optional[List[str]] = None,
     account: Optional[str] = None,
+    dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Send an email using Outlook Mail. Ensures saveToSentItems is respected.
+
+    Write `body` as the Markdown you showed the user: it is rendered to the
+    same HTML as Teams messages (lists, bold, links, code blocks). dry_run=true
+    renders it and checks it against the recipient's stored mail style without
+    sending; a body with placeholders like "[Name]" is never sent.
 
     Args:
         to: Recipient email addresses.
@@ -1196,20 +1202,27 @@ def m365_send_email(
             base64, so the combined size must stay under ~3 MB -- for larger files,
             upload to OneDrive first (m365_list_drive_files) and share the link instead.
         account: Optional M365 account username, email, or ID to send from.
+        dry_run: Render and check only; nothing is sent.
     """
     recipients = [{"emailAddress": {"address": addr.strip()}} for addr in to]
-    final_body = body
-    if is_html:
-        import re
-        if not re.search(r"<(p|div|br|ul|ol|li|h[1-6])\b", body, re.IGNORECASE):
-            paragraphs = body.split("\n\n")
-            formatted_p = []
-            for p in paragraphs:
-                p_clean = p.strip().replace("\n", "<br/>")
-                if p_clean:
-                    formatted_p.append(f"<p>{p_clean}</p>")
-            final_body = "".join(formatted_p) if formatted_p else body
+    final_body = (_markdown_to_teams_html(body) or body) if is_html else body
     content_type = "HTML" if is_html else "Text"
+    plain_text = _html_to_text(final_body) if is_html else body
+    stored = _stored_contact_style("mail", emails=list(to))
+    check: Dict[str, Any] = {
+        "rendered_html": final_body if is_html else None,
+        "plain_text": plain_text,
+        "register": stored["profile"] if stored else None,
+        "register_source": f"stored mail style for {stored['contact']}" if stored else "none stored (m365_get_mail_style derives it)",
+    }
+    warnings = _register_warnings(plain_text, "mail", stored["profile"] if stored else None)
+    if warnings:
+        check["register_warnings"] = warnings
+    placeholders = _placeholders(plain_text)
+    if placeholders:
+        return {"sent": False, **check, "error": f"the mail still contains placeholders {placeholders} — fill them in or remove them"}
+    if dry_run:
+        return {"sent": False, "dry_run": True, **check, "note": "Preview only — nothing was sent. Report it to the user as a preview."}
 
     message: Dict[str, Any] = {
         "subject": subject,
@@ -2564,22 +2577,36 @@ def _md_inline_to_html(text: str) -> str:
     return esc
 
 
+_ESCAPED_HTML_RE = _re.compile(r"&lt;(p|br|ul|ol|li|strong|b|em|i|a|div)\b", _re.IGNORECASE)
+
+
+def _normalize_html(text: str) -> str:
+    """Tidy hand-written HTML (AIS-413, SUP-20260923-084810): a Markdown rule
+    wrapped in a paragraph (``<p>---</p>``) becomes a real ``<hr>``, and HTML
+    the model escaped by mistake (``&lt;p&gt;``) is unescaped instead of being
+    shown to the recipient as tags."""
+    if _ESCAPED_HTML_RE.search(text) and not _looks_like_html(text):
+        text = _html.unescape(text)
+    return _re.sub(r"<p>\s*(?:-{3,}|_{3,}|\*{3,})\s*</p>", "<hr>", text, flags=_re.IGNORECASE)
+
+
 def _markdown_to_teams_html(text: str) -> str:
-    """Render the Markdown a model writes in chat into the HTML Teams renders.
+    """Render the Markdown a model writes into the HTML Teams and Outlook show.
 
     Supports paragraphs, line breaks, bold/italic/strike/inline code, links,
-    bullet and numbered lists, headings (as bold paragraphs) and quotes.
-    Already-HTML input is returned unchanged so hand-written markup keeps
-    working.
+    bullet and numbered lists, headings (as bold paragraphs), quotes, fenced
+    code blocks and horizontal rules. Hand-written HTML is normalised
+    (``_normalize_html``), not re-rendered.
     """
     if not text:
         return ""
-    if _looks_like_html(text):
-        return text
+    if _looks_like_html(text) or _ESCAPED_HTML_RE.search(text):
+        return _normalize_html(text)
     lines = text.replace("\r\n", "\n").split("\n")
     out: List[str] = []
     para: List[str] = []
     list_tag: Optional[str] = None
+    code: Optional[List[str]] = None
 
     def flush_para() -> None:
         if para:
@@ -2595,9 +2622,26 @@ def _markdown_to_teams_html(text: str) -> str:
     for raw_line in lines:
         line = raw_line.rstrip()
         stripped = line.strip()
+        if code is not None:
+            if stripped.startswith("```"):
+                out.append("<pre><code>" + _html.escape("\n".join(code), quote=False) + "</code></pre>")
+                code = None
+            else:
+                code.append(raw_line)
+            continue
+        if stripped.startswith("```"):
+            flush_para()
+            close_list()
+            code = []
+            continue
         if not stripped:
             flush_para()
             close_list()
+            continue
+        if _re.fullmatch(r"(?:-{3,}|_{3,}|\*{3,})", stripped):
+            flush_para()
+            close_list()
+            out.append("<hr>")
             continue
         bullet = _re.match(r"^[-*•]\s+(.*)$", stripped)
         numbered = _re.match(r"^\d+[.)]\s+(.*)$", stripped)
@@ -2622,9 +2666,87 @@ def _markdown_to_teams_html(text: str) -> str:
             out.append(f"<blockquote>{_md_inline_to_html(quote.group(1))}</blockquote>")
             continue
         para.append(stripped)
+    if code is not None:  # unterminated fence: keep the text as code
+        out.append("<pre><code>" + _html.escape("\n".join(code), quote=False) + "</code></pre>")
     flush_para()
     close_list()
     return "".join(out)
+
+
+# AIS-413 (SUP-20260923-084810): a formal letter with "[Name/Unterschrift]"
+# was posted into a casual Teams chat. The stored per-contact register is
+# checked on every send; a placeholder never goes out.
+_PLACEHOLDER_RE = _re.compile(
+    r"\[(?:[^\]\n]{0,20}\b)?(?:name|unterschrift|signatur|signature|vorname|nachname|firma|company|datum|date|"
+    r"empf(?:ä|ae)nger|recipient|kontakt|contact|telefon|phone)\b[^\]\n]{0,30}\]|<(?:name|vorname|signature|unterschrift)>|\{\{?\s*name\s*\}?\}",
+    _re.IGNORECASE,
+)
+_LETTER_SALUTATION_RE = _re.compile(
+    r"^\s*(sehr geehrte[rs]?|dear (?:sir|madam|mr|ms|mrs)|liebe damen und herren|to whom it may concern)\b", _re.IGNORECASE
+)
+_LETTER_CLOSING_RE = _re.compile(
+    r"(mit freundlichen gr(ü|ue)(ß|ss)en|freundliche gr(ü|ue)(ß|ss)e|hochachtungsvoll|yours (sincerely|faithfully)|kind regards|best regards)[\s,.!]*"
+    r"(?:\n.{0,60}){0,3}$",
+    _re.IGNORECASE,
+)
+
+
+def _stored_contact_style(channel: str, *, chat_id: str = "", emails: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+    """The register saved for this recipient (``m365_get_chat_style`` /
+    ``m365_get_mail_style``), from the local contact index. No Graph call."""
+    column = "style_teams" if channel == "teams" else "style_mail"
+    addresses = [str(e).strip().lower() for e in (emails or []) if e and "@" in str(e)]
+    if not chat_id and not addresses:
+        return None
+    conn = _index_conn()
+    if conn is None:
+        return None
+    try:
+        clauses, params = [], []
+        if chat_id:
+            clauses.append("chat_id_1on1 = ?")
+            params.append(chat_id)
+        if addresses:
+            clauses.append(f"lower(email) IN ({','.join('?' for _ in addresses)})")
+            params.extend(addresses)
+        row = conn.execute(
+            f"SELECT display_name, {column} AS style FROM contacts WHERE ({' OR '.join(clauses)}) AND {column} IS NOT NULL LIMIT 1",
+            params,
+        ).fetchone()
+    except Exception:
+        return None
+    finally:
+        conn.close()
+    if not row:
+        return None
+    profile = _index_loads(row["style"], None)
+    return {"contact": row["display_name"] or "", "profile": profile} if isinstance(profile, dict) else None
+
+
+def _register_warnings(plain_text: str, channel: str, profile: Optional[Dict[str, Any]]) -> List[str]:
+    """Where a drafted message breaks the recipient's register."""
+    text = (plain_text or "").strip()
+    warnings: List[str] = []
+    if not text:
+        return warnings
+    first_line = text.splitlines()[0]
+    address = str((profile or {}).get("address") or ("du" if channel == "teams" else "unknown"))
+    formality = str((profile or {}).get("formality") or ("casual" if channel == "teams" else "unknown"))
+    if _LETTER_SALUTATION_RE.match(first_line) and (channel == "teams" or formality == "casual" or address == "du"):
+        warnings.append(f"letter salutation '{first_line[:40]}' — this {channel} register has none; drop it")
+    if channel == "teams" and _LETTER_CLOSING_RE.search(text[-160:]):
+        sign_off = str((profile or {}).get("sign_off") or "none")
+        if sign_off in ("none", "") or sign_off.lower() not in text[-160:].lower():
+            warnings.append("letter closing formula — Teams messages end without one; drop it")
+    if address == "du" and _SIE_RE.search(text[1:]):
+        warnings.append("formal 'Sie' although you write 'du' with this person — switch to du")
+    elif address == "Sie" and _DU_RE.search(text):
+        warnings.append("'du' although you write 'Sie' with this person — switch to Sie")
+    return warnings
+
+
+def _placeholders(plain_text: str) -> List[str]:
+    return sorted({m.group(0) for m in _PLACEHOLDER_RE.finditer(plain_text or "")})
 
 
 def _my_identity(account: Optional[str] = None) -> Dict[str, str]:
@@ -3067,8 +3189,11 @@ def m365_send_chat_message(
     Formatting: write `content` as the same Markdown you showed the user
     (bold, lists, links, paragraphs). It is rendered to the HTML Teams
     displays, so what was approved in chat is what arrives. Hand-written HTML
-    is passed through unchanged. The result carries `rendered_html` and
-    `plain_text` so you can confirm exactly what was sent.
+    is normalised, not re-rendered. The result carries `rendered_html` and
+    `plain_text` so you can confirm exactly what was sent, plus the
+    recipient's stored `register` and any `register_warnings` (letter
+    salutation, closing formula, Sie vs du) — fix those before sending. A
+    message with placeholders like "[Name]" is never sent.
 
     Args:
         chat_id: Teams chat id. Optional when `to` is given.
@@ -3151,10 +3276,22 @@ def m365_send_chat_message(
     if recipient:
         result["recipient"] = recipient
         result["chat_type"] = chat_type
+    member_emails = [m.get("email") for m in ((recipient or {}).get("members") or []) if isinstance(m, dict)]
+    stored = _stored_contact_style("teams", chat_id=target_chat_id, emails=member_emails)
+    result["register"] = stored["profile"] if stored else dict(_TEAMS_REGISTER_DEFAULTS)
+    result["register_source"] = f"stored style for {stored['contact']}" if stored else "Teams defaults (no stored style: m365_get_chat_style derives it)"
+    warnings = _register_warnings(plain_text, "teams", stored["profile"] if stored else None)
+    if warnings:
+        result["register_warnings"] = warnings
+    placeholders = _placeholders(plain_text)
+    if placeholders:
+        result.update({"sent": False, "error": f"the message still contains placeholders {placeholders} — fill them in or remove them"})
+        return result
     if dry_run:
         result["sent"] = False
         result["dry_run"] = True
         result["attachments"] = norm_attachments
+        result["note"] = "Preview only — nothing was sent. Report it to the user as a preview."
         return result
     if norm_attachments:
         attachment_payload, attachment_tags = _build_teams_attachments(norm_attachments)

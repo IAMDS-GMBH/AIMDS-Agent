@@ -2597,3 +2597,58 @@ class TestGenericDataLayer:
         assert [m["involves_me"] for m in unknown["value"]] == [None, None]  # identity not fetched for a plain listing
         assert [m["involves_me"] for m in res["value"]] == [True, False]
         assert res["value"][0]["participants"] == ["Max Kollege", "Erika Muster"] and res["value"][0]["source_key"] == "mailbox:me"
+
+
+# AIS-413 / SUP-20260923-084810: a formal letter with "[Name/Unterschrift]"
+# went into a casual Teams chat; mail bodies ignored Markdown.
+class TestMessageFormattingAndRegister:
+    def test_mail_body_markdown_is_rendered_like_teams(self):
+        with patch.object(server, "_graph_request", return_value={}) as mock_req:
+            server.m365_send_email(to=["a@example.com"], subject="S", body="Hi,\n\n- **eins**\n- zwei\n\n```bash\nansible-playbook x.yml\n```")
+        content = mock_req.call_args.kwargs["json_data"]["message"]["body"]["content"]
+        assert "<ul><li><strong>eins</strong></li><li>zwei</li></ul>" in content
+        assert "<pre><code>ansible-playbook x.yml</code></pre>" in content
+
+    def test_mail_dry_run_renders_without_sending(self):
+        with patch.object(server, "_graph_request") as mock_req:
+            res = server.m365_send_email(to=["a@example.com"], subject="S", body="**Hallo**", dry_run=True)
+        mock_req.assert_not_called()
+        assert res["sent"] is False and res["dry_run"] is True
+        assert res["rendered_html"] == "<p><strong>Hallo</strong></p>" and "preview" in res["note"].lower()
+
+    def test_placeholders_are_never_sent(self):
+        with patch.object(server, "_graph_request") as mock_req:
+            mail = server.m365_send_email(to=["a@example.com"], subject="S", body="Danke!\n\nMit freundlichen Grüßen\n[Name/Unterschrift]")
+            chat = server.m365_send_chat_message("chat-1", "Passt so, [Ihr Name]")
+        mock_req.assert_not_called()
+        assert mail["sent"] is False and "[Name/Unterschrift]" in mail["error"]
+        assert chat["sent"] is False and "placeholders" in chat["error"]
+
+    def test_hand_written_html_is_normalised(self):
+        assert server._markdown_to_teams_html("<p>A</p><p>---</p><p>B</p>") == "<p>A</p><hr><p>B</p>"
+        assert server._markdown_to_teams_html("&lt;p&gt;A&lt;/p&gt;") == "<p>A</p>"
+        assert server._markdown_to_teams_html("A\n\n---\n\nB") == "<p>A</p><hr><p>B</p>"
+
+    def test_teams_letter_register_is_flagged_against_the_stored_style(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("M365_INDEX_DISABLED", raising=False)
+        conn = server._index_conn()
+        with conn:
+            server._index_record_contact(conn, email="tobias@example.com", display_name="Tobias", source="teams",
+                                         chat_id_1on1="chat-9", style_teams={"address": "du", "formality": "casual", "sign_off": "none"})
+        conn.close()
+        with patch.object(server, "_graph_request") as mock_req:
+            res = server.m365_send_chat_message(
+                "chat-9", "Sehr geehrte Damen und Herren,\n\nkönnen Sie das prüfen?\n\nMit freundlichen Grüßen", dry_run=True)
+        mock_req.assert_not_called()
+        assert res["register_source"] == "stored style for Tobias"
+        warnings = " | ".join(res["register_warnings"])
+        assert "letter salutation" in warnings and "closing formula" in warnings and "'Sie'" in warnings
+        assert "Preview only" in res["note"]
+
+    def test_casual_teams_message_has_no_warnings(self):
+        with patch.object(server, "_graph_request") as mock_req:
+            res = server.m365_send_chat_message("chat-1", "hi, kannst du kurz auf die Mail schauen?", dry_run=True)
+        mock_req.assert_not_called()
+        assert "register_warnings" not in res
+        assert res["register_source"].startswith("Teams defaults")
