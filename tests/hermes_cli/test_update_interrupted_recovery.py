@@ -216,3 +216,53 @@ def test_recovery_output_goes_to_stderr(tmp_path, monkeypatch, capfd):
     assert "interrupted mid-install" not in out
     assert "interrupted mid-install" in err
     assert "recovered" in err
+
+
+# AIS-424 / SUP-20260924-115533: the desktop's feedback upload ran the recovery,
+# which terminated the running backend on Windows.
+import pytest as _pytest
+
+from hermes_cli import main as _cli_main
+
+
+@_pytest.mark.parametrize("argv,expected", [
+    ([], True),                                  # bare hermes = interactive chat
+    (["chat"], True),
+    (["dashboard", "--port", "9120"], True),
+    (["gateway", "run"], True),
+    (["--version"], False),                      # the desktop's boot probe
+    (["support", "send-logs", "--json"], False), # the feedback upload
+    (["dump"], False),
+    (["mcp", "list"], False),
+    (["update"], False),
+    (["-p", "work", "update"], False),
+])
+def test_recovery_runs_only_for_long_lived_entry_points(monkeypatch, argv, expected):
+    monkeypatch.delenv("HERMES_SKIP_INSTALL_RECOVERY", raising=False)
+    assert _cli_main._should_recover_interrupted_install(argv) is expected
+
+
+def test_recovery_can_be_switched_off_by_env(monkeypatch):
+    monkeypatch.setenv("HERMES_SKIP_INSTALL_RECOVERY", "1")
+    assert _cli_main._should_recover_interrupted_install(["chat"]) is False
+
+
+def test_launch_recovery_never_terminates_other_processes(monkeypatch, tmp_path):
+    shim = tmp_path / "hermes.exe"
+    shim.write_bytes(b"")
+    monkeypatch.setattr(_cli_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(_cli_main, "_hermes_exe_shims", lambda d: [shim])
+    monkeypatch.setattr(_cli_main.Path, "rename", lambda self, target: (_ for _ in ()).throw(PermissionError("locked")))
+    monkeypatch.setattr(_cli_main, "_schedule_replace_on_reboot", lambda *a: False)
+    detected = []
+    monkeypatch.setattr(_cli_main, "_detect_concurrent_hermes_instances", lambda *a, **k: detected.append(1) or [(4242, "hermes.exe")])
+    terminated = []
+    monkeypatch.setattr(_cli_main, "_try_terminate_concurrent_instances", lambda m: terminated.append(m))
+    monkeypatch.setattr(_cli_main, "_LAUNCH_RECOVERY_ACTIVE", True)
+    import time as _time
+    monkeypatch.setattr(_time, "sleep", lambda s: None)
+    try:
+        _cli_main._quarantine_running_hermes_exe(tmp_path, max_attempts=1)
+    except PermissionError:
+        pass
+    assert terminated == [] and detected == []
