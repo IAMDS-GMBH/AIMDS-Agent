@@ -9,6 +9,18 @@ from hermes_cli import config as hermes_config
 from hermes_cli import main as hermes_main
 
 
+@pytest.fixture(autouse=True)
+def _no_release_repo():
+    """Tag channels consult the public release repository first (AIS-318);
+    tests never reach the network. Without this the detached-HEAD test took
+    the release-archive path as soon as a real stable release was published
+    (AIS-415)."""
+    from hermes_cli.release_update import ReleaseFeedError
+
+    with patch("hermes_cli.release_update.fetch_release_feed", side_effect=ReleaseFeedError("offline in tests")):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Managed-uv compatibility for tests that patch shutil.which
 # ---------------------------------------------------------------------------
