@@ -201,8 +201,8 @@ def _ingest_write_through(
                 conn.executemany("""
                 INSERT OR REPLACE INTO mcp_records (
                     id, tool_name, tool_use_id, reference_key, timestamp, user_id,
-                    duration_seconds, category, comment, raw_data
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    duration_seconds, category, comment, raw_data, title
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, records)
         conn.close()
     except Exception as exc:
@@ -256,6 +256,22 @@ def init_mcp_tables(conn: sqlite3.Connection) -> None:
         )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mcp_fetches_tool ON mcp_fetches(tool_name, reference_key, month)")
+        # AIS-416: the booked item's name (work package subject, issue
+        # summary). Absences are recognised by it — keys change every year
+        # and differ between ticket systems, "INTERNAL_URLAUB_<year>" does not.
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(mcp_records)")}
+        if "title" not in columns:
+            conn.execute("ALTER TABLE mcp_records ADD COLUMN title TEXT")
+            # Rows ingested before carry the name in raw_data only.
+            try:
+                conn.execute(
+                    "UPDATE mcp_records SET title = COALESCE("
+                    "json_extract(raw_data, '$.work_package_subject'), json_extract(raw_data, '$.subject'), "
+                    "json_extract(raw_data, '$.issue.summary'), json_extract(raw_data, '$.title')) "
+                    "WHERE title IS NULL AND json_valid(raw_data)"
+                )
+            except sqlite3.Error:
+                pass
     try:
         prune_mcp_records(conn)
     except Exception:
@@ -520,6 +536,14 @@ def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fall
 
     raw_data = json.dumps(item, ensure_ascii=False)
 
+    # Title of the booked item (AIS-416) — not the booking's own comment.
+    title = _pick(norm, "workpackagesubject", "workpackagetitle", "issuesummary", "issuetitle", "tasktitle", "subject", "title")
+    if not title and isinstance(issue, dict):
+        title = issue.get("summary") or issue.get("title") or issue.get("name")
+    work_package = norm.get("workpackage")
+    if not title and isinstance(work_package, dict):
+        title = work_package.get("subject") or work_package.get("title")
+
     return (
         str(record_id),
         tool_name,
@@ -531,6 +555,7 @@ def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fall
         str(category),
         str(comment),
         raw_data,
+        str(title or ""),
     )
 
 
@@ -1037,8 +1062,8 @@ def try_auto_ingest_json(
             conn.executemany("""
             INSERT OR REPLACE INTO mcp_records (
                 id, tool_name, tool_use_id, reference_key, timestamp, user_id,
-                duration_seconds, category, comment, raw_data
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                duration_seconds, category, comment, raw_data, title
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, records)
             if window is not None:
                 record_fetches(conn, tool_use_id=tool_use_id, tool_name=tool_name, reference_key=scope_ref,

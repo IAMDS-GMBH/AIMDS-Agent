@@ -94,7 +94,7 @@ class TestDelimitedRowsGetStructuredFields:
         item = _extract_items({"result": "TempoWorklogId: 43086 | IssueKey: IAMDS-595 | IssueId: 32482 | Date: 2026-01-08 | StartTime: 07:30:00 | Hours: 0.50 | Description: Arbeit an Vorgang IAMDS-595"})[0]
 
         rec = _extract_fields(item, "mcp_TempoMCP_retrieveWorklogs", "call-1")
-        record_id, _tool, _use, ref, ts, _user, seconds, _cat, comment, _raw = rec
+        record_id, _tool, _use, ref, ts, _user, seconds, _cat, comment, _raw, _title = rec
         assert record_id == "43086"
         assert ref == "IAMDS-595"
         assert ts == "2026-01-08T07:30:00"

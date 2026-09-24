@@ -363,7 +363,9 @@ def build_data_handling_guidance(valid_tool_names: "set[str] | None" = None) -> 
             "week numbers or holiday dates into SQL or prose, never compute Easter yourself, never write a report "
             "file the tool can render. Never assume a state or week model: on 'worktime profile unknown' propose "
             "(estimate_profile) and confirm with `clarify` before configure; municipal/partial holidays deduct "
-            "only after the user confirmed them (`partial_holidays_unresolved`)."
+            "only after the user confirmed them (`partial_holidays_unresolved`). The profile follows the user's "
+            "systems: when report hints name an unread booking source, colleagues' rows or unmatched absences, "
+            "propose the change (estimate_profile) and confirm it instead of answering with incomplete numbers."
         )
     rungs.append(
         "Personal data is user-first: start with what is assigned to or involves the user, widen only on "

@@ -306,6 +306,7 @@ def test_time_entry_rows_feed_the_ingestor(op):
     fields = _extract_fields(items[0], "mcp_op_list_time_entries", "t1")
     assert fields[:6] == ("7", "mcp_op_list_time_entries", "t1", "EXT-70", "2026-09-02", "Johannes Huchler")
     assert fields[6] == 7200
+    assert fields[10] == "EVN Ongoing"  # AIS-416: absences are recognised by the booked item's title
 
 
 def test_log_time_converts_hours_and_returns_the_saved_entry(op):
