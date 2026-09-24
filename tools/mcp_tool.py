@@ -3804,6 +3804,64 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 # ---------------------------------------------------------------------------
 
 
+# AIS-412: free-text search parameters go by many names across servers. An
+# unknown key from one group is renamed to the single member the tool declares.
+_ARG_SYNONYM_GROUPS: Tuple[frozenset, ...] = (
+    frozenset({"search", "query", "q", "search_query", "search_text", "keyword", "keywords", "term", "text"}),
+)
+
+
+def _check_mcp_arg_names(
+    server: "MCPServerTask", tool_name: str, args: Any
+) -> Tuple[Any, List[str], Optional[str]]:
+    """Reject argument names the tool does not declare instead of dropping them.
+
+    FastMCP/pydantic servers silently ignore unknown keys: a ``query`` the tool
+    calls ``search`` came back as an unfiltered listing 27 times in a row and
+    the model reported it as the filtered result (SUP-20260923-084810).
+
+    Returns ``(args, notes, error)``. An unambiguous search synonym is renamed
+    and noted; any other unknown key yields an error naming the allowed
+    arguments. Tools without declared properties, or that allow additional
+    properties, pass through unchanged.
+    """
+    if not isinstance(args, dict) or not args:
+        return args, [], None
+    tool_obj = next((t for t in getattr(server, "_tools", []) if getattr(t, "name", "") == tool_name), None)
+    schema = getattr(tool_obj, "inputSchema", None) if tool_obj else None
+    if not isinstance(schema, dict):
+        return args, [], None
+    props = schema.get("properties")
+    if not isinstance(props, dict) or not props or schema.get("additionalProperties") is True:
+        return args, [], None
+
+    fixed = dict(args)
+    notes: List[str] = []
+    unknown: List[str] = []
+    for key in list(args):
+        if key in props or key in ("name", "tool_name"):
+            continue
+        target = None
+        for group in _ARG_SYNONYM_GROUPS:
+            if key in group:
+                candidates = [p for p in props if p in group and p not in fixed]
+                if len(candidates) == 1:
+                    target = candidates[0]
+                break
+        if target:
+            fixed[target] = fixed.pop(key)
+            notes.append(f"argument '{key}' is not declared by {tool_name}; passed as '{target}'")
+        else:
+            unknown.append(key)
+    if unknown:
+        return args, notes, (
+            f"Unknown argument(s) for tool '{tool_name}': {', '.join(sorted(unknown))}. "
+            f"Allowed arguments: {', '.join(sorted(props))}. Nothing was executed; "
+            "call again with the declared argument names."
+        )
+    return fixed, notes, None
+
+
 def _clean_mcp_args(server: "MCPServerTask", tool_name: str, args: dict) -> dict:
     if not isinstance(args, dict):
         return args
@@ -4056,7 +4114,25 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, pr
             )
 
         async def _call(call_args: Optional[dict] = None):
-            clean_args = _clean_mcp_args(server, tool_name, args if call_args is None else call_args)
+            checked_args, arg_notes, arg_error = _check_mcp_arg_names(
+                server, tool_name, args if call_args is None else call_args
+            )
+            if arg_error:
+                return json.dumps({"error": arg_error}, ensure_ascii=False)
+            result_text = await _call_checked(checked_args)
+            if not arg_notes:
+                return result_text
+            try:
+                payload = json.loads(result_text)
+            except (TypeError, ValueError):
+                return result_text
+            if isinstance(payload, dict):
+                payload["argument_notes"] = arg_notes
+                return json.dumps(payload, ensure_ascii=False)
+            return result_text
+
+        async def _call_checked(call_args: Any):
+            clean_args = _clean_mcp_args(server, tool_name, call_args)
             async with server._rpc_lock:
                 result = await server.session.call_tool(tool_name, arguments=clean_args)
             # MCP CallToolResult has .content (list of content blocks) and .isError
