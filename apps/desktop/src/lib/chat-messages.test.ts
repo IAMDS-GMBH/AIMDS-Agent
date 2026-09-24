@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest'
 import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {
   appendAssistantTextPart,
+  appendInterimTextPart,
   chatMessageText,
+  interimRemainder,
   preserveLocalAssistantErrors,
   renderMediaTags,
   toChatMessages,
@@ -907,5 +909,32 @@ describe('upsertToolPart', () => {
       data: { web: [{ title: 'Suva forecast' }] },
       summary: 'Did 1 search in 0.5s'
     })
+  })
+})
+
+// AIS-411 / SUP-20260924-073844: the gateway re-sends interim text it could
+// not prove was streamed; it must not appear twice.
+describe('interimRemainder', () => {
+  it('drops interim text that is already on screen', () => {
+    expect(interimRemainder('Ich lege das Ticket an.', 'Ich lege das Ticket an.')).toBe('')
+    expect(interimRemainder('\n\nIch lege  das Ticket\nan.', 'Ich lege das Ticket an.')).toBe('')
+    expect(interimRemainder('Vorher. Ich lege das Ticket an.', 'Ich lege das Ticket an.')).toBe('')
+  })
+
+  it('appends only the missing tail when the start was streamed', () => {
+    expect(interimRemainder('Ich lege das', 'Ich lege das Ticket an.')).toBe(' Ticket an.')
+    expect(interimRemainder('Ich lege\n\ndas', 'Ich lege das Ticket an.')).toBe(' Ticket an.')
+  })
+
+  it('adds unrelated interim text as a new paragraph', () => {
+    expect(interimRemainder('Erster Schritt erledigt.', 'Jetzt der zweite.')).toBe('\n\nJetzt der zweite.')
+    expect(interimRemainder('', '  Jetzt der zweite. ')).toBe('Jetzt der zweite.')
+  })
+
+  it('appendInterimTextPart leaves parts untouched when nothing is missing', () => {
+    const parts = appendAssistantTextPart([], 'Schon da.')
+    expect(appendInterimTextPart(parts, 'Schon da.')).toBe(parts)
+    const text = chatMessageText({ id: 'a', role: 'assistant', parts: appendInterimTextPart(parts, 'Schon da. Und mehr.') })
+    expect(text).toBe('Schon da. Und mehr.')
   })
 })

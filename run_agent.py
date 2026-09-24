@@ -4187,7 +4187,11 @@ class AIAgent:
         streamed = self._normalize_interim_visible_text(
             self._strip_think_blocks(getattr(self, "_current_streamed_assistant_text", "") or "")
         )
-        return bool(streamed) and streamed == visible_content
+        # AIS-411: containment, not equality — the paragraph break
+        # _fire_stream_delta prepends or text streamed before the interim
+        # message made an exact match fail, and the UI then received the
+        # whole interim text a second time (SUP-20260924-073844).
+        return bool(streamed) and visible_content in streamed
 
     def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
         """Surface a real mid-turn assistant commentary message to the UI layer."""
