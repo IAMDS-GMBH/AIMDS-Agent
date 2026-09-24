@@ -10,7 +10,9 @@ const {
   describeUpdaterLaunchFailure,
   openUpdaterLogStdio,
   resolveDetachedCheckoutChannel,
-  describeNoReleaseError
+  describeNoReleaseError,
+  createTransientFailureTracker,
+  transientNetworkError
 } = require('./update-apply.cjs')
 
 test('resolveDetachedCheckoutChannel: detached HEAD git checkout on main → stable', () => {
@@ -183,4 +185,40 @@ test('describeNoReleaseError names the cause for the benign log line', () => {
   assert.equal(describeNoReleaseError(Object.assign(new Error('x'), { status: 404 })), 'HTTP 404')
   assert.equal(describeNoReleaseError(Object.assign(new Error('x'), { noRelease: true })), 'no release with a manifest')
   assert.equal(describeNoReleaseError(new Error('boom')), 'boom')
+})
+
+// AIS-414 / SUP-20260924-064314, -055844, SUP-20260923-211245: timeouts and
+// network changes on the release feed are the client's connectivity.
+test('transientNetworkError: timeouts, network changes and DNS only', () => {
+  const timeout = Object.assign(new Error('request to https://api.github.com/repos/x/releases?per_page=30 timed out after 5000 ms'), { code: 'fetch-failed' })
+  assert.equal(transientNetworkError(timeout), true)
+  assert.equal(transientNetworkError(Object.assign(new Error('net::ERR_NETWORK_CHANGED'), { code: 'fetch-failed' })), true)
+  assert.equal(transientNetworkError(Object.assign(new Error('net::ERR_INTERNET_DISCONNECTED'), { code: 'fetch-failed' })), true)
+  assert.equal(transientNetworkError(Object.assign(new Error('getaddrinfo ENOTFOUND github.com'), { code: 'fetch-failed' })), true)
+  assert.equal(transientNetworkError(Object.assign(new Error('socket hang up'), { transient: true })), true)
+  // Real answers from the release repository keep reporting.
+  assert.equal(transientNetworkError(Object.assign(new Error('HTTP 502 for …'), { code: 'fetch-failed', status: 502 })), false)
+  assert.equal(transientNetworkError(Object.assign(new Error('response from … timed out after x'), { status: 200 })), false)
+  assert.equal(transientNetworkError(Object.assign(new Error('rate limit'), { code: 'rate-limited' })), false)
+  assert.equal(transientNetworkError(Object.assign(new Error('x'), { noRelease: true })), false)
+  assert.equal(transientNetworkError(new Error('invalid release manifest at …: missing tag')), false)
+  assert.equal(transientNetworkError(null), false)
+})
+
+test('createTransientFailureTracker: reports once per streak after the window, success resets', () => {
+  let now = 0
+  const tracker = createTransientFailureTracker({ windowMs: 1000, now: () => now })
+  assert.equal(tracker.failure('stable'), false)
+  now = 999
+  assert.equal(tracker.failure('stable'), false)
+  now = 1000
+  assert.equal(tracker.failure('stable'), true)
+  now = 5000
+  assert.equal(tracker.failure('stable'), false, 'one report per streak')
+  assert.equal(tracker.failure('preview'), false, 'streaks are per key')
+  tracker.success('stable')
+  now = 6000
+  assert.equal(tracker.failure('stable'), false, 'a success starts a fresh streak')
+  now = 7000
+  assert.equal(tracker.failure('stable'), true)
 })

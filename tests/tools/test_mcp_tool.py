@@ -5428,3 +5428,65 @@ class TestMonthByMonthCalls:
         assert mt._unwrap_result_envelope("plain text") == ("plain text", False)
         # a dict with more than the envelope key is the payload itself
         assert mt._unwrap_result_envelope(json.dumps({"result": {"x": 1}, "complete": True})) == ({"result": {"x": 1}, "complete": True}, True)
+
+
+# ---------------------------------------------------------------------------
+# _check_mcp_arg_names: unknown argument names are rejected, not dropped
+# (AIS-412, SUP-20260923-084810)
+# ---------------------------------------------------------------------------
+
+class TestCheckMcpArgNames:
+    def _server(self, properties, **schema_extra):
+        tool = _make_mcp_tool(
+            name="list_emails",
+            input_schema={"type": "object", "properties": properties, **schema_extra},
+        )
+        return _make_mock_server("m365", tools=[tool])
+
+    def test_declared_arguments_pass_unchanged(self):
+        from tools.mcp_tool import _check_mcp_arg_names
+
+        server = self._server({"search": {"type": "string"}, "top": {"type": "integer"}})
+        args, notes, error = _check_mcp_arg_names(server, "list_emails", {"search": "Burak", "top": 5})
+        assert (args, notes, error) == ({"search": "Burak", "top": 5}, [], None)
+
+    def test_search_synonym_is_renamed_and_noted(self):
+        from tools.mcp_tool import _check_mcp_arg_names
+
+        server = self._server({"search": {"type": "string"}, "top": {"type": "integer"}})
+        args, notes, error = _check_mcp_arg_names(server, "list_emails", {"query": "Burak"})
+        assert error is None
+        assert args == {"search": "Burak"}
+        assert notes and "'query'" in notes[0] and "'search'" in notes[0]
+
+    def test_synonym_is_not_renamed_onto_an_argument_already_given(self):
+        from tools.mcp_tool import _check_mcp_arg_names
+
+        server = self._server({"search": {"type": "string"}})
+        _args, _notes, error = _check_mcp_arg_names(server, "list_emails", {"search": "a", "query": "b"})
+        assert error and "query" in error and "Allowed arguments: search" in error
+
+    def test_unknown_argument_is_an_error_naming_the_allowed_ones(self):
+        from tools.mcp_tool import _check_mcp_arg_names
+
+        server = self._server({"work_package_id": {"type": "string"}, "subject": {"type": "string"}})
+        args, _notes, error = _check_mcp_arg_names(server, "list_emails", {"work_package_id": "1", "project": "PRO"})
+        assert args == {"work_package_id": "1", "project": "PRO"}
+        assert "Unknown argument(s)" in error and "project" in error
+        assert "Allowed arguments: subject, work_package_id" in error
+
+    def test_open_or_undeclared_schemas_pass_through(self):
+        from tools.mcp_tool import _check_mcp_arg_names
+
+        open_server = self._server({"search": {"type": "string"}}, additionalProperties=True)
+        assert _check_mcp_arg_names(open_server, "list_emails", {"x": 1}) == ({"x": 1}, [], None)
+        bare_server = self._server({})
+        assert _check_mcp_arg_names(bare_server, "list_emails", {"x": 1}) == ({"x": 1}, [], None)
+        assert _check_mcp_arg_names(open_server, "other_tool", {"x": 1}) == ({"x": 1}, [], None)
+
+    def test_tool_name_echo_keys_are_left_to_clean_mcp_args(self):
+        from tools.mcp_tool import _check_mcp_arg_names
+
+        server = self._server({"search": {"type": "string"}})
+        _args, _notes, error = _check_mcp_arg_names(server, "list_emails", {"search": "x", "tool_name": "list_emails"})
+        assert error is None

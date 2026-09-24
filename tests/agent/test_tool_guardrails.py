@@ -256,3 +256,64 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
 
     assert controller.before_call("web_search", {"query": "same"}).action == "allow"
     assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
+
+
+# AIS-412: MCP read loops (SUP-20260923-084810, SUP-20260924-073844).
+def test_read_only_mcp_tool_names_are_recognised():
+    from agent.tool_guardrails import looks_like_read_only_mcp_tool
+
+    for name in (
+        "mcp_m365_list_emails",
+        "mcp_op_list_work_packages",
+        "mcp_op_get_project_work_package_context",
+        "mcp_tempo_retrieveWorklogs",
+        "mcp_AIMDSSuiteMCP_mcp_memory-memory_search",
+    ):
+        assert looks_like_read_only_mcp_tool(name), name
+    for name in (
+        "mcp_op_create_work_package",
+        "mcp_op_log_time",
+        "mcp_m365_send_chat_message",
+        "mcp_AIMDSSuiteMCP_mcp_memory-memory_save",
+        "mcp_op_whoami",
+        "read_file",
+        "list_emails",
+    ):
+        assert not looks_like_read_only_mcp_tool(name), name
+
+
+def test_identical_mcp_read_results_warn_as_no_progress():
+    controller = ToolCallGuardrailController()
+    args = {"query": "Burak"}
+    first = controller.after_call("mcp_m365_list_emails", args, '{"result": "inbox"}', failed=False)
+    second = controller.after_call("mcp_m365_list_emails", args, '{"result": "inbox"}', failed=False)
+
+    assert first.action == "allow"
+    assert second.action == "warn"
+    assert second.code == "idempotent_no_progress_warning"
+    assert "declared" in second.message
+
+
+def test_same_mcp_read_tool_with_changing_args_warns_every_threshold():
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(same_tool_read_warn_after=3))
+    actions = [
+        controller.after_call("mcp_op_list_work_packages", {"offset": i}, f'{{"page": {i}}}', failed=False).code
+        for i in range(7)
+    ]
+
+    assert actions[2] == "same_tool_read_streak_warning"
+    assert actions[5] == "same_tool_read_streak_warning"
+    assert [a for a in actions if a != "allow"] == ["same_tool_read_streak_warning"] * 2
+    controller.reset_for_turn()
+    assert controller.after_call("mcp_op_list_work_packages", {"offset": 0}, "x", failed=False).action == "allow"
+
+
+def test_mcp_write_tools_never_count_as_read_loops():
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(same_tool_read_warn_after=2))
+    for i in range(4):
+        assert controller.after_call("mcp_op_create_work_package", {"subject": "x"}, "same", failed=False).action == "allow"
+
+
+def test_same_tool_read_threshold_parses_from_config():
+    cfg = ToolCallGuardrailConfig.from_mapping({"warn_after": {"same_tool_read": 12}})
+    assert cfg.same_tool_read_warn_after == 12
