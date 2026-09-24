@@ -85,6 +85,10 @@ _CATEGORY_LOGS: dict[str, tuple[str, ...]] = {
     "ui_bug": ("desktop.log", "gui.log", "errors.log"),
     "ui-bug": ("desktop.log", "gui.log", "errors.log"),
     "other": ("agent.log", "errors.log", "desktop.log"),
+    # AIS-420: automatic runtime cases (hermes_cli.auto_incidents)
+    "agent_python_fallback": ("agent.log", "errors.log", "mcp-stderr.log"),
+    "auth_error": ("agent.log", "errors.log", "gateway.log", "mcp-stderr.log"),
+    "mcp_failure": ("agent.log", "errors.log", "mcp-stderr.log"),
 }
 _DEFAULT_CATEGORY_LOGS: tuple[str, ...] = _CATEGORY_LOGS["other"]
 _DEFAULT_TIMEOUT_SECONDS = 45
@@ -419,9 +423,12 @@ def _resolve_session_id(args: Any) -> tuple[str, dict[str, Any] | None, dict[str
         if raw_text:
             try:
                 session_data = json.loads(raw_text)
-                extra_files["session.json"] = json.dumps(session_data, indent=2, ensure_ascii=False) + "\n"
+                rendered = json.dumps(session_data, indent=2, ensure_ascii=False) + "\n"
             except json.JSONDecodeError:
-                extra_files["session.json"] = raw_text
+                rendered = raw_text
+            # AIS-420: the transcript is redacted like every log line — it
+            # used to be the one file in the bundle that was not.
+            extra_files["session.json"] = redact_sensitive_text(rendered, force=True)
 
     session_id_val = getattr(args, "session_id", "") or (session_data.get("session_id") if session_data else "") or ""
     return session_id_val, session_data, extra_files

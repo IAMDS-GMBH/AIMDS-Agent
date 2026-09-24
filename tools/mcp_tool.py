@@ -2365,6 +2365,12 @@ class MCPServerTask:
                         _MAX_RECONNECT_RETRIES,
                         exc,
                     )
+                    try:
+                        from hermes_cli.auto_incidents import report_bundled_mcp_failure
+
+                        report_bundled_mcp_failure(self.name, "reconnect-give-up", str(exc))
+                    except Exception:
+                        pass
                     return
 
                 logger.warning(
@@ -2468,6 +2474,16 @@ def _bump_server_error(server_name: str) -> None:
     _server_error_counts[server_name] = n
     if n >= _CIRCUIT_BREAKER_THRESHOLD:
         _server_breaker_opened_at[server_name] = time.monotonic()
+    if n == _CIRCUIT_BREAKER_THRESHOLD:
+        # AIS-420: the breaker just opened — a bundled server gets a case.
+        try:
+            from hermes_cli.auto_incidents import report_bundled_mcp_failure
+
+            report_bundled_mcp_failure(
+                server_name, "circuit-open", f"{n} consecutive failures; tool calls short-circuit for {_CIRCUIT_BREAKER_COOLDOWN_SEC:.0f}s"
+            )
+        except Exception:
+            pass
 
 
 def _reset_server_error(server_name: str) -> None:
@@ -2716,6 +2732,12 @@ def _handle_auth_error_and_retry(
     # needs_reauth error. Bumps the circuit breaker so the model stops
     # retrying the tool.
     _bump_server_error(server_name)
+    try:
+        from hermes_cli.auto_incidents import report_auth_401
+
+        report_auth_401("mcp", server_name, f"{op_description}: {exc}")
+    except Exception:
+        pass
     _iamds_provider = _iamds_provider_for_server(server_name)
     if _iamds_provider:
         _flag_iamds_mcp_auth_failure(server_name, exc)
@@ -5985,6 +6007,12 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
                     f" (command={command})" if command else "",
                     _format_connect_error(result),
                 )
+                try:
+                    from hermes_cli.auto_incidents import report_bundled_mcp_failure
+
+                    report_bundled_mcp_failure(name, "connect", _format_connect_error(result))
+                except Exception:
+                    pass
 
     # Per-server timeouts are handled inside _discover_and_register_server.
     # The outer timeout is generous: 120s total for parallel discovery.

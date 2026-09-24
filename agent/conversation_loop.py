@@ -4799,6 +4799,19 @@ def run_conversation(
                             f"{agent._summarize_api_error(api_error)}"
                         )
                     agent._vprint(f"{agent.log_prefix}❌ Non-retryable client error (HTTP {status_code}). Aborting.", force=True)
+                    if status_code == 401:
+                        # AIS-420: every credential refresh is behind us — support
+                        # gets a case (background, rate-limited per provider).
+                        try:
+                            from hermes_cli.auto_incidents import report_auth_401
+
+                            report_auth_401(
+                                "llm", _provider or "provider",
+                                f"model {_model} at {_base}: {agent._summarize_api_error(api_error)}",
+                                session_id=str(getattr(agent, "session_id", "") or ""),
+                            )
+                        except Exception:
+                            pass
                     agent._vprint(f"{agent.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
                     agent._vprint(f"{agent.log_prefix}   🌐 Endpoint: {_base}", force=True)
                     # Actionable guidance for common auth errors

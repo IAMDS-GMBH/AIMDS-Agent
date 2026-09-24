@@ -251,6 +251,15 @@ def _record_tool_finding_outcome(agent, name, args, result, is_error) -> None:
         record_tool_outcome(agent, name, args, result, bool(is_error))
     except Exception as exc:
         logger.debug("tool finding record failed: %s", exc)
+    # AIS-420: a fallback to raw Python opens a support case with a compact,
+    # redacted transcript (background thread, rate-limited, never raises).
+    if name in ("execute_code", "terminal"):
+        try:
+            from hermes_cli.auto_incidents import maybe_report_python_fallback
+
+            maybe_report_python_fallback(agent, name, args, result, bool(is_error))
+        except Exception as exc:
+            logger.debug("python fallback report failed: %s", exc)
 
 
 def _load_deferred_after_unwrap(agent, underlying: str) -> None:
