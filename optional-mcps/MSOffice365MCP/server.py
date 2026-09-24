@@ -606,8 +606,11 @@ def _graph_request(
 
     with httpx.Client(timeout=30.0) as client:
         response = client.request(method, url, headers=headers, json=json_data, params=params)
-        if response.status_code == 204:
-            return {"success": True}
+        # AIS-423: sendMail answers 202 Accepted with an EMPTY body. Parsing it
+        # raised "Expecting value" although the mail had gone out — the model
+        # retried and the recipient got it three times (SUP-20260924-115430).
+        if response.status_code in (202, 204) or (not response.is_error and not response.content):
+            return {"success": True, "status": response.status_code}
         if response.is_error:
             hint = ""
             if response.status_code == 403 or "Authorization_RequestDenied" in response.text:
@@ -1213,8 +1216,13 @@ def m365_send_email(
     attachments: Optional[List[str]] = None,
     account: Optional[str] = None,
     dry_run: bool = False,
+    confirm: bool = False,
 ) -> Dict[str, Any]:
     """Send an email using Outlook Mail. Ensures saveToSentItems is respected.
+
+    Sending is two-step: without confirm=true the tool only renders the mail
+    and returns status "confirmation_required" — ask the user with `clarify`,
+    then call again with the same arguments and confirm=true.
 
     Write `body` as the Markdown you showed the user: it is rendered to the
     same HTML as Teams messages (lists, bold, links, code blocks). dry_run=true
@@ -1234,6 +1242,7 @@ def m365_send_email(
             upload to OneDrive first (m365_list_drive_files) and share the link instead.
         account: Optional M365 account username, email, or ID to send from.
         dry_run: Render and check only; nothing is sent.
+        confirm: Send for real — only after the user approved the preview.
     """
     recipients = [{"emailAddress": {"address": addr.strip()}} for addr in to]
     final_body = (_markdown_to_teams_html(body) or body) if is_html else body
@@ -1254,6 +1263,17 @@ def m365_send_email(
         return {"sent": False, **check, "error": f"the mail still contains placeholders {placeholders} — fill them in or remove them"}
     if dry_run:
         return {"sent": False, "dry_run": True, **check, "note": "Preview only — nothing was sent. Report it to the user as a preview."}
+    if not confirm:
+        # AIS-423: a real, clickable confirmation instead of a question in
+        # prose the user has to answer by typing (SUP-20260924-115338).
+        return {
+            "sent": False, "status": "confirmation_required", **check,
+            "to": list(to), "subject": subject,
+            "question": f"Send this email to {', '.join(to)}?",
+            "choices": ["Send", "Cancel"],
+            "next": "Show the preview, ask with `clarify` (question and choices in the user's language); on yes call "
+                    "m365_send_email again with the same arguments and confirm=true.",
+        }
 
     message: Dict[str, Any] = {
         "subject": subject,
@@ -1282,7 +1302,10 @@ def m365_send_email(
     _audit_log("m365_send_email", "send", subject=subject, counterpart=", ".join(to),
                details={"attachments": norm_attachments or [], "html": bool(is_html), "save_to_sent_items": bool(save_to_sent_items)},
                result="error" if failed else "ok", error=str(res.get("error")) if failed else None)
-    return res
+    if failed:
+        return res
+    return {**(res if isinstance(res, dict) else {}), "sent": True, "to": list(to), "subject": subject,
+            "note": "Sent. Do not send it again."}
 
 
 @mcp.tool()
@@ -3209,8 +3232,13 @@ def m365_send_chat_message(
     to: Optional[str] = None,
     dry_run: bool = False,
     account: Optional[str] = None,
+    confirm: bool = False,
 ) -> Dict[str, Any]:
     """Send a Microsoft Teams chat message to a person or chat.
+
+    Sending is two-step: without confirm=true the tool resolves the chat,
+    renders the message and returns status "confirmation_required" — ask the
+    user with `clarify`, then call again with the same arguments and confirm=true.
 
     Recipient: pass `to` (name, nickname, email or group topic) and the tool
     resolves the chat via `m365_find_chat`; it sends only when the match is
@@ -3237,6 +3265,7 @@ def m365_send_chat_message(
         to: Recipient name / email / group topic; resolved to a chat before sending.
         dry_run: Resolve the recipient and render the message but do not send.
         account: Optional M365 account username, email, or ID.
+        confirm: Send for real — only after the user approved the preview.
     """
     resolved_content = content if content is not None else (message if message is not None else (body if body is not None else text))
     if resolved_content is None:
@@ -3323,6 +3352,17 @@ def m365_send_chat_message(
         result["dry_run"] = True
         result["attachments"] = norm_attachments
         result["note"] = "Preview only — nothing was sent. Report it to the user as a preview."
+        return result
+    if not confirm:
+        # AIS-423: two-step send with a clickable confirmation.
+        who = (recipient or {}).get("topic") or to_clean or target_chat_id
+        result.update({
+            "sent": False, "status": "confirmation_required", "attachments": norm_attachments,
+            "question": f"Send this Teams message to {who}?",
+            "choices": ["Send", "Cancel"],
+            "next": "Show the preview, ask with `clarify` (question and choices in the user's language); on yes call "
+                    "m365_send_chat_message again with the same arguments and confirm=true.",
+        })
         return result
     if norm_attachments:
         attachment_payload, attachment_tags = _build_teams_attachments(norm_attachments)

@@ -78,6 +78,18 @@ _MCP_WRITE_VERBS = frozenset(
 )
 
 
+_SEND_VERBS = frozenset({"send", "reply", "forward", "publish"})
+
+
+def looks_like_send_tool(tool_name: str) -> bool:
+    """Tools that deliver something to other people (mail, chat, posts)."""
+    if not isinstance(tool_name, str):
+        return False
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", tool_name)
+    words = {w for w in re.split(r"[_\-.]+", spaced.lower()) if w}
+    return bool(words & _SEND_VERBS)
+
+
 def looks_like_read_only_mcp_tool(tool_name: str) -> bool:
     """True for ``mcp_*`` tools whose name reads as a pure lookup."""
     if not isinstance(tool_name, str) or not tool_name.startswith("mcp_"):
@@ -337,6 +349,23 @@ class ToolCallGuardrailController:
 
             same_count = self._same_tool_failure_counts.get(tool_name, 0) + 1
             self._same_tool_failure_counts[tool_name] = same_count
+
+            # AIS-423: a failed send may still have been delivered (Graph
+            # sendMail answered 202 and the tool misread it; two retries sent
+            # the mail three times). Say so at the FIRST failure.
+            if self.config.warnings_enabled and looks_like_send_tool(tool_name) and same_count == 1:
+                return ToolGuardrailDecision(
+                    action="warn",
+                    code="send_failure_may_have_delivered",
+                    message=(
+                        f"{tool_name} reported a failure, but the message may already have been delivered. "
+                        "Do not send it again automatically: verify first (e.g. sent items / the chat) or "
+                        "tell the user and let them decide."
+                    ),
+                    tool_name=tool_name,
+                    count=same_count,
+                    signature=signature,
+                )
 
             if self.config.hard_stop_enabled and same_count >= self.config.same_tool_failure_halt_after:
                 decision = ToolGuardrailDecision(

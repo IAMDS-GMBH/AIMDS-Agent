@@ -317,3 +317,14 @@ def test_mcp_write_tools_never_count_as_read_loops():
 def test_same_tool_read_threshold_parses_from_config():
     cfg = ToolCallGuardrailConfig.from_mapping({"warn_after": {"same_tool_read": 12}})
     assert cfg.same_tool_read_warn_after == 12
+
+
+def test_first_failure_of_a_send_tool_warns_that_it_may_have_been_delivered():
+    """AIS-423 / SUP-20260924-115430: a misread 202 made the model resend twice."""
+    from agent.tool_guardrails import looks_like_send_tool
+
+    controller = ToolCallGuardrailController()
+    decision = controller.after_call("mcp_MSOffice365MCP_m365_send_email", {"to": ["t@x"]}, '{"error": "x"}', failed=True)
+    assert decision.action == "warn" and decision.code == "send_failure_may_have_delivered"
+    assert looks_like_send_tool("mcp_m365_send_chat_message") and looks_like_send_tool("replyToMessage")
+    assert not looks_like_send_tool("mcp_m365_list_emails")

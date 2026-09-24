@@ -59,7 +59,7 @@ def test_m365_send_email_payload():
             to=["user@example.com"],
             subject="Test Subject",
             body="Hello World",
-            save_to_sent_items=True,
+            save_to_sent_items=True, confirm=True
         )
         mock_req.assert_called_once()
         args, kwargs = mock_req.call_args
@@ -79,7 +79,7 @@ def test_m365_send_email_plain_text_opt_out():
             to=["user@example.com"],
             subject="Test Subject",
             body="Hello World",
-            is_html=False,
+            is_html=False, confirm=True
         )
         args, kwargs = mock_req.call_args
         assert kwargs["json_data"]["message"]["body"]["contentType"] == "Text"
@@ -92,7 +92,7 @@ def test_m365_send_email_html_passthrough_when_already_tagged():
         server.m365_send_email(
             to=["user@example.com"],
             subject="Test Subject",
-            body="<p>Already HTML</p>",
+            body="<p>Already HTML</p>", confirm=True
         )
         args, kwargs = mock_req.call_args
         assert kwargs["json_data"]["message"]["body"]["content"] == "<p>Already HTML</p>"
@@ -379,7 +379,7 @@ def test_sharepoint_write_tools_are_in_manifest_default_enabled():
 
 def test_m365_send_chat_message_formatting():
     with patch.object(server, "_graph_request", return_value={"id": "msg-1"}) as mock_req:
-        server.m365_send_chat_message("chat-123", "Para 1\n\nPara 2")
+        server.m365_send_chat_message("chat-123", "Para 1\n\nPara 2", confirm=True)
         mock_req.assert_called_once()
         args, kwargs = mock_req.call_args
         assert args[0] == "POST"
@@ -389,7 +389,7 @@ def test_m365_send_chat_message_formatting():
         assert json_data["body"]["content"] == "<p>Para 1</p><p>Para 2</p>"
 
     with patch.object(server, "_graph_request", return_value={"id": "msg-2"}) as mock_req:
-        server.m365_send_chat_message("chat-123", "<p>Paragraph 1</p><p>Paragraph 2</p>")
+        server.m365_send_chat_message("chat-123", "<p>Paragraph 1</p><p>Paragraph 2</p>", confirm=True)
         mock_req.assert_called_once()
         args, kwargs = mock_req.call_args
         json_data = kwargs["json_data"]
@@ -406,7 +406,7 @@ def test_m365_send_email_with_small_attachment(tmp_path):
             to=["user@example.com"],
             subject="With attachment",
             body="See attached",
-            attachments=[str(attachment)],
+            attachments=[str(attachment)], confirm=True
         )
         args, kwargs = mock_req.call_args
         attachments = kwargs["json_data"]["message"]["attachments"]
@@ -419,14 +419,14 @@ def test_m365_send_email_with_small_attachment(tmp_path):
 
 def test_m365_send_email_attachment_missing_file():
     with pytest.raises(ValueError, match="not found"):
-        server.m365_send_email(to=["user@example.com"], subject="x", body="y", attachments=["/no/such/file.txt"])
+        server.m365_send_email(to=["user@example.com"], subject="x", body="y", attachments=["/no/such/file.txt"], confirm=True)
 
 
 def test_m365_send_email_attachment_too_large_for_inline(tmp_path):
     big_file = tmp_path / "big.bin"
     big_file.write_bytes(b"0" * (server._MAIL_INLINE_ATTACHMENT_MAX_BYTES + 1))
     with pytest.raises(ValueError, match="MB"):
-        server.m365_send_email(to=["user@example.com"], subject="x", body="y", attachments=[str(big_file)])
+        server.m365_send_email(to=["user@example.com"], subject="x", body="y", attachments=[str(big_file)], confirm=True)
 
 
 def test_m365_send_chat_message_with_attachment_uploads_to_onedrive_and_links(tmp_path):
@@ -436,7 +436,7 @@ def test_m365_send_chat_message_with_attachment_uploads_to_onedrive_and_links(tm
     with patch.object(server, "_upload_file_to_onedrive") as mock_upload, \
             patch.object(server, "_graph_request", return_value={"id": "msg-1"}) as mock_req:
         mock_upload.return_value = {"id": "item-1", "name": "report.pdf", "webUrl": "https://onedrive/report.pdf"}
-        server.m365_send_chat_message("chat-123", "Here you go", attachments=[str(attachment)])
+        server.m365_send_chat_message("chat-123", "Here you go", attachments=[str(attachment)], confirm=True)
 
         mock_upload.assert_called_once_with(str(attachment))
         args, kwargs = mock_req.call_args
@@ -455,7 +455,7 @@ def test_m365_send_chat_message_attachment_forces_html_content_type(tmp_path):
 
     with patch.object(server, "_upload_file_to_onedrive", return_value={"id": "item-1", "name": "img.png", "webUrl": "https://onedrive/img.png"}), \
             patch.object(server, "_graph_request", return_value={"id": "msg-2"}) as mock_req:
-        server.m365_send_chat_message("chat-123", "Look at this", content_type="text", attachments=[str(attachment)])
+        server.m365_send_chat_message("chat-123", "Look at this", content_type="text", attachments=[str(attachment)], confirm=True)
         json_data = mock_req.call_args.kwargs["json_data"]
         assert json_data["body"]["contentType"] == "html"
 
@@ -612,31 +612,31 @@ class TestRegression_ChatMessageContentAliases:
 
     def test_message_alias_accepted(self):
         with patch.object(server, "_graph_request", return_value={"id": "msg-1"}) as mock_req:
-            server.m365_send_chat_message("chat-123", message="Hello via alias")
+            server.m365_send_chat_message("chat-123", message="Hello via alias", confirm=True)
             args, kwargs = mock_req.call_args
             assert kwargs["json_data"]["body"]["content"] == "<p>Hello via alias</p>"
 
     def test_body_alias_accepted(self):
         with patch.object(server, "_graph_request", return_value={"id": "msg-2"}) as mock_req:
-            server.m365_send_chat_message("chat-123", body="Hello via body alias")
+            server.m365_send_chat_message("chat-123", body="Hello via body alias", confirm=True)
             args, kwargs = mock_req.call_args
             assert kwargs["json_data"]["body"]["content"] == "<p>Hello via body alias</p>"
 
     def test_text_alias_accepted(self):
         with patch.object(server, "_graph_request", return_value={"id": "msg-3"}) as mock_req:
-            server.m365_send_chat_message("chat-123", text="Hello via text alias")
+            server.m365_send_chat_message("chat-123", text="Hello via text alias", confirm=True)
             args, kwargs = mock_req.call_args
             assert kwargs["json_data"]["body"]["content"] == "<p>Hello via text alias</p>"
 
     def test_content_takes_priority_over_aliases(self):
         with patch.object(server, "_graph_request", return_value={"id": "msg-4"}) as mock_req:
-            server.m365_send_chat_message("chat-123", content="Real content", message="Ignored")
+            server.m365_send_chat_message("chat-123", content="Real content", message="Ignored", confirm=True)
             args, kwargs = mock_req.call_args
             assert kwargs["json_data"]["body"]["content"] == "<p>Real content</p>"
 
     def test_missing_content_and_aliases_raises_clear_error(self):
         with pytest.raises(ValueError, match="requires the message text"):
-            server.m365_send_chat_message("chat-123")
+            server.m365_send_chat_message("chat-123", confirm=True)
 
 
 class TestRegression_ScopeTiering:
@@ -1173,7 +1173,7 @@ class TestSendChatMessageSmart:
     def test_to_unique_sends_markdown_as_html_and_reports_recipient(self):
         side_effect, sent = _teams_graph()
         with patch.object(server, "_graph_request", side_effect=side_effect):
-            res = server.m365_send_chat_message(to="Fischi", content="Hi Martin,\n\nam **09./10.09** baue ich Überstunden ab:\n- Di frei\n- Mi ab 12")
+            res = server.m365_send_chat_message(to="Fischi", content="Hi Martin,\n\nam **09./10.09** baue ich Überstunden ab:\n- Di frei\n- Mi ab 12", confirm=True)
         assert res["sent"] is True
         assert res["chat_id"] == "c-fischi"
         assert res["recipient"]["members"][0]["displayName"] == "Martin Fischerauer"
@@ -1189,7 +1189,7 @@ class TestSendChatMessageSmart:
     def test_to_ambiguous_does_not_send(self):
         side_effect, sent = _teams_graph()
         with patch.object(server, "_graph_request", side_effect=side_effect):
-            res = server.m365_send_chat_message(to="Martin", content="hi")
+            res = server.m365_send_chat_message(to="Martin", content="hi", confirm=True)
         assert res["sent"] is False
         assert res["resolution"] == "ambiguous"
         assert "ambiguous" in res["error"]
@@ -1198,7 +1198,7 @@ class TestSendChatMessageSmart:
     def test_to_unknown_does_not_send(self):
         side_effect, sent = _teams_graph()
         with patch.object(server, "_graph_request", side_effect=side_effect):
-            res = server.m365_send_chat_message(to="Zaphod", content="hi")
+            res = server.m365_send_chat_message(to="Zaphod", content="hi", confirm=True)
         assert res["sent"] is False and res["resolution"] == "none" and sent == []
 
     def test_dry_run_never_sends(self):
@@ -1212,14 +1212,14 @@ class TestSendChatMessageSmart:
 
     def test_missing_chat_id_and_to_raises(self):
         with pytest.raises(ValueError):
-            server.m365_send_chat_message(content="hi")
+            server.m365_send_chat_message(content="hi", confirm=True)
 
     def test_existing_html_passes_through_and_text_mode_is_verbatim(self):
         with patch.object(server, "_graph_request", return_value={"id": "m"}) as mock_req:
-            server.m365_send_chat_message("chat-1", "<p>Hallo <b>Welt</b></p>")
+            server.m365_send_chat_message("chat-1", "<p>Hallo <b>Welt</b></p>", confirm=True)
             assert mock_req.call_args.kwargs["json_data"]["body"]["content"] == "<p>Hallo <b>Welt</b></p>"
         with patch.object(server, "_graph_request", return_value={"id": "m"}) as mock_req:
-            res = server.m365_send_chat_message("chat-1", "**raw**", content_type="text")
+            res = server.m365_send_chat_message("chat-1", "**raw**", content_type="text", confirm=True)
             assert mock_req.call_args.kwargs["json_data"]["body"] == {"contentType": "text", "content": "**raw**"}
             assert res["rendered_html"] is None
 
@@ -1407,7 +1407,7 @@ class TestTeamsLinks:
 
     def test_send_chat_message_accepts_link_as_to(self):
         with patch.object(server, "_graph_request", return_value={"id": "msg"}) as mock_req:
-            res = server.m365_send_chat_message(to=CHAT_LINK, content="hi")
+            res = server.m365_send_chat_message(to=CHAT_LINK, content="hi", confirm=True)
         assert res["sent"] is True and res["chat_id"] == "19:6bd3df1234@thread.v2"
         assert mock_req.call_args.args[1] == "/me/chats/19:6bd3df1234@thread.v2/messages"
 
@@ -1932,10 +1932,10 @@ class TestMailTrashSafetyAndAudit:
     def test_send_is_audited_including_failures(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with patch.object(server, "_graph_request", return_value={}):
-            server.m365_send_email(to=["a@example.com"], subject="Hallo", body="Text")
+            server.m365_send_email(to=["a@example.com"], subject="Hallo", body="Text", confirm=True)
         with patch.object(server, "_graph_request", side_effect=RuntimeError("MS Graph API Error [403]")):
             with pytest.raises(RuntimeError):
-                server.m365_send_email(to=["b@example.com"], subject="Fail", body="Text")
+                server.m365_send_email(to=["b@example.com"], subject="Fail", body="Text", confirm=True)
         log = server.m365_get_audit_log(action="send")
         assert [e["result"] for e in log["entries"]] == ["error", "ok"]
         assert log["entries"][1]["counterpart"] == "a@example.com" and log["entries"][1]["subject"] == "Hallo"
@@ -2604,7 +2604,7 @@ class TestGenericDataLayer:
 class TestMessageFormattingAndRegister:
     def test_mail_body_markdown_is_rendered_like_teams(self):
         with patch.object(server, "_graph_request", return_value={}) as mock_req:
-            server.m365_send_email(to=["a@example.com"], subject="S", body="Hi,\n\n- **eins**\n- zwei\n\n```bash\nansible-playbook x.yml\n```")
+            server.m365_send_email(to=["a@example.com"], subject="S", body="Hi,\n\n- **eins**\n- zwei\n\n```bash\nansible-playbook x.yml\n```", confirm=True)
         content = mock_req.call_args.kwargs["json_data"]["message"]["body"]["content"]
         assert "<ul><li><strong>eins</strong></li><li>zwei</li></ul>" in content
         assert "<pre><code>ansible-playbook x.yml</code></pre>" in content
@@ -2618,8 +2618,8 @@ class TestMessageFormattingAndRegister:
 
     def test_placeholders_are_never_sent(self):
         with patch.object(server, "_graph_request") as mock_req:
-            mail = server.m365_send_email(to=["a@example.com"], subject="S", body="Danke!\n\nMit freundlichen Grüßen\n[Name/Unterschrift]")
-            chat = server.m365_send_chat_message("chat-1", "Passt so, [Ihr Name]")
+            mail = server.m365_send_email(to=["a@example.com"], subject="S", body="Danke!\n\nMit freundlichen Grüßen\n[Name/Unterschrift]", confirm=True)
+            chat = server.m365_send_chat_message("chat-1", "Passt so, [Ihr Name]", confirm=True)
         mock_req.assert_not_called()
         assert mail["sent"] is False and "[Name/Unterschrift]" in mail["error"]
         assert chat["sent"] is False and "placeholders" in chat["error"]
@@ -2679,3 +2679,31 @@ class TestHermesHomeResolution:
         target.write_bytes(b"newer")
         server._adopt_legacy_token_cache(target)
         assert target.read_bytes() == b"newer"  # never overwrites an existing cache
+
+
+# AIS-423 / SUP-20260924-115430 + 115338
+class TestSendConfirmationAnd202:
+    def test_graph_202_with_empty_body_is_success(self, monkeypatch):
+        resp = MagicMock(status_code=202, content=b"", is_error=False)
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.request.return_value = resp
+        monkeypatch.setattr(server, "_get_access_token", lambda *a, **k: "tok")
+        with patch.object(server.httpx, "Client", return_value=client):
+            assert server._graph_request("POST", "/me/sendMail", json_data={}) == {"success": True, "status": 202}
+        resp.json.assert_not_called()
+
+    def test_send_without_confirm_asks_for_a_clickable_confirmation(self):
+        with patch.object(server, "_graph_request") as mock_req:
+            mail = server.m365_send_email(to=["t@example.com"], subject="Rezept", body="Hi Tobias, **Bolognese?**")
+            chat = server.m365_send_chat_message("chat-1", "hi, kurze Frage")
+        mock_req.assert_not_called()
+        for res in (mail, chat):
+            assert res["sent"] is False and res["status"] == "confirmation_required"
+            assert res["choices"] == ["Send", "Cancel"] and "confirm=true" in res["next"]
+        assert "<strong>Bolognese?</strong>" in mail["rendered_html"]
+
+    def test_confirmed_mail_reports_sent(self):
+        with patch.object(server, "_graph_request", return_value={"success": True, "status": 202}):
+            res = server.m365_send_email(to=["t@example.com"], subject="S", body="b", confirm=True)
+        assert res["sent"] is True and "Do not send it again" in res["note"]

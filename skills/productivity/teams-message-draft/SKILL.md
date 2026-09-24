@@ -35,8 +35,9 @@ correction rounds for one short message.
    sent, as normal Markdown (bold, lists, links), not in a code block. Say nothing the
    recipient cannot verify (no "everything is documented in X", no claims about their
    access or data). No technical details of how the information was obtained.
-4. **Send after approval with the same text.** Call
-   `m365_send_chat_message(to=<name>, content=<the approved Markdown>)`. The tool renders
+4. **Send after approval with the same text.** Without `confirm=true` the tool only
+   answers `confirmation_required` — ask with `clarify` (clickable), then call
+   `m365_send_chat_message(to=<name>, content=<the approved Markdown>, confirm=true)`. The tool renders
    the Markdown to the HTML Teams displays, so formatting matches the preview. Pass HTML
    only if the user asked for specific markup.
 5. **Confirm from the tool result, not from assumption.** Report `recipient` (names,
