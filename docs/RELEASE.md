@@ -207,7 +207,7 @@ is taken loudly and reported, so support sees it before customers do:
 |---|---|---|
 | `hermes update` (`updates.source: auto`) | release manifest decides the target; archive when origin cannot serve the tag | git checkout of origin (`update-fallback-git`, `update-fallback-origin-tags`), source-repository archive without `.git` (`update-fallback-source-archive`), `main` when a channel has no tag (`update-no-release-tag`); apply failures → `update-release-apply-failed` (high) |
 | `install.sh` / `install.ps1` | verified release archive | `git clone` of the source repository (`installer-fallback-git`); `installer-failure` / `installer-stage-<name>-failed` (high) when a stage fails |
-| Desktop update check | release manifest | `git ls-remote` on origin (`update-check-fallback-git`, `update-check-fallback-origin-tags`) |
+| Desktop update check | release manifest (10 s timeout, one retry on a network error) | `git ls-remote` on origin (`update-check-fallback-git`, `update-check-fallback-origin-tags`); transient network errors (timeout, `net::ERR_NETWORK_*`, DNS) are log-only and only reported once they persist for 24 h without a successful check (AIS-414) |
 | Desktop bootstrap runner | scripts from the release archive of the stamp's tag | scripts of the installed agent, then `raw.githubusercontent.com` at the stamp's commit (`source-repo-fallback`); a failed bootstrap → `installer-failure-<stage>` (high) |
 | HermesSetup self-update | releases of the release repository | releases of the source repository (`self_update.rs`); a failed bootstrap → `installer-failure-<stage>` via `submit_support_ticket` |
 

@@ -203,7 +203,50 @@ function describeNoReleaseError(error) {
   return Number.isFinite(status) ? `HTTP ${status}` : String(error?.message || error)
 }
 
+// AIS-414: a timeout, a dropped/changed network or a DNS hiccup on the release
+// feed is the client's connectivity, not an outage of the release repository.
+// Anything that carries an HTTP status (404, 5xx, a bad body on 200) or a rate
+// limit is not transient here — those keep reporting.
+const TRANSIENT_NETWORK_PATTERN = /timed out after|net::ERR_(NETWORK_|INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|CONNECTION_|TIMED_OUT|ADDRESS_UNREACHABLE|PROXY_CONNECTION_FAILED)|\b(ENOTFOUND|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|ENETDOWN|EHOSTUNREACH|ECONNREFUSED)\b/
+
+function transientNetworkError(error) {
+  if (!error || typeof error !== 'object') return false
+  if (error.code === 'rate-limited' || error.noRelease === true) return false
+  if (error.status != null && Number.isFinite(Number(error.status))) return false
+  if (error.transient === true) return true
+  return TRANSIENT_NETWORK_PATTERN.test(String(error.message || ''))
+}
+
+// AIS-414: transient failures stay log-only until they persist. The tracker
+// remembers when the current streak of failures for a key started; `failure`
+// answers true exactly once per streak, when it has lasted `windowMs`.
+// `success` ends the streak.
+function createTransientFailureTracker({ windowMs = 24 * 60 * 60 * 1000, now = () => Date.now() } = {}) {
+  const streaks = new Map()
+  return {
+    failure(key) {
+      const at = now()
+      const streak = streaks.get(key)
+      if (!streak) {
+        streaks.set(key, { since: at, reported: false })
+        return false
+      }
+      if (!streak.reported && at - streak.since >= windowMs) {
+        streak.reported = true
+        return true
+      }
+      return false
+    },
+    success(key) {
+      streaks.delete(key)
+    }
+  }
+}
+
 module.exports = {
+  TRANSIENT_NETWORK_PATTERN,
+  createTransientFailureTracker,
+  transientNetworkError,
   UPDATER_LAUNCH_LOG,
   describeUpdaterLaunchFailure,
   inspectUpdaterBinary,
