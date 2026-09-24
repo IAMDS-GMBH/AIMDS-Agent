@@ -83,9 +83,11 @@ const {
   UPDATER_LAUNCH_LOG,
   describeUpdaterLaunchFailure,
   inspectUpdaterBinary,
+  createTransientFailureTracker,
   noStableReleasePublished,
   openUpdaterLogStdio,
   describeNoReleaseError,
+  transientNetworkError,
   quarantineUpdaterBinary,
   resolveDetachedCheckoutChannel
 } = require('./update-apply.cjs')
@@ -1593,7 +1595,13 @@ function effectiveUpdateChannel(root, branch, marker = readReleaseMarkerForRoot(
   return 'stable'
 }
 
-const GITHUB_JSON_TIMEOUT_MS = 5000
+// AIS-414: 5 s tripped on slow hotel/VPN links and filed a support case
+// each time; one retry absorbs a network change mid-request.
+const GITHUB_JSON_TIMEOUT_MS = 10000
+const GITHUB_JSON_TRANSIENT_RETRIES = 1
+// Transient release-feed failures (timeout, network change, DNS) are log-only
+// until they persist this long without a single successful check.
+const releaseFeedTransientFailures = createTransientFailureTracker({ windowMs: 24 * 60 * 60 * 1000 })
 const GITHUB_JSON_MAX_BYTES = 4 * 1024 * 1024
 // Minimum interval between two network checks of the same URL. The renderer
 // re-checks on every window focus (plus every 30 min) — inside the window the
@@ -1623,7 +1631,18 @@ function gitHubRequestHeaders(url, etag) {
 // fetch is not). Resolves `{ status, etag, body }`, or `{ status: 304, cached:
 // true }` when `etag` matched. Throws on timeout, non-2xx and on a GitHub
 // rate limit (`error.code === 'rate-limited'`).
-async function fetchGitHubJson(url, { timeoutMs = GITHUB_JSON_TIMEOUT_MS, etag } = {}) {
+async function fetchGitHubJson(url, { retries = GITHUB_JSON_TRANSIENT_RETRIES, ...options } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetchGitHubJsonOnce(url, options)
+    } catch (error) {
+      if (attempt >= retries || !transientNetworkError(error)) throw error
+      rememberLog(`[updates] ${error.message || error}; retrying once`)
+    }
+  }
+}
+
+async function fetchGitHubJsonOnce(url, { timeoutMs = GITHUB_JSON_TIMEOUT_MS, etag } = {}) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -1671,6 +1690,7 @@ async function fetchGitHubJson(url, { timeoutMs = GITHUB_JSON_TIMEOUT_MS, etag }
     if (error?.name === 'AbortError') {
       const timeout = new Error(`request to ${url} timed out after ${timeoutMs} ms`)
       timeout.code = 'fetch-failed'
+      timeout.transient = true
       throw timeout
     }
     if (!error.code) error.code = 'fetch-failed'
@@ -1699,7 +1719,36 @@ async function fetchGitHubJsonCached(url, options = {}) {
 // `releases/latest/download/` URL (GitHub resolves the newest non-prerelease
 // itself, no API call), `preview` via the releases API (highest release tag,
 // candidates included). Throws with `code` 'fetch-failed' | 'rate-limited'.
+// AIS-414: a release-feed failure the update check recovered from. Real
+// outages (HTTP status, bad manifest, rate limit) report right away; transient
+// network errors only once they have persisted for a day without a successful
+// check — every hotel Wi-Fi or VPN switch filed a support case before.
+function reportReleaseFeedFailure(error, channel, { kind, summary }) {
+  if (transientNetworkError(error)) {
+    const key = normalizeChannel(channel)
+    if (!releaseFeedTransientFailures.failure(key)) return
+    summary = `${summary} — unreachable for more than 24 h`
+  }
+  void reportAutoIncident({
+    kind,
+    summary,
+    detail: String(error?.message || error),
+    contextType: 'update_failure',
+    installType: 'update',
+    clientVersion: app.getVersion(),
+    hermesHome: HERMES_HOME,
+    runCli: runSupportLogUpload,
+    log: rememberLog
+  })
+}
+
 async function fetchReleaseManifest(channel) {
+  const manifest = await fetchReleaseManifestUncounted(channel)
+  releaseFeedTransientFailures.success(normalizeChannel(channel))
+  return manifest
+}
+
+async function fetchReleaseManifestUncounted(channel) {
   const normalized = normalizeChannel(channel)
   let releaseTag = null
   let manifestUrl
@@ -1808,16 +1857,9 @@ async function checkUpdates() {
         rememberLogOnce(`release-fallback:no-stable`, `[updates] no ${branch} release is published in the release repository yet (${describeNoReleaseError(error)}); falling back to git`)
       } else {
         rememberLogOnce(`release-fallback:${code}`, `[updates] release manifest check failed (${code}): ${message}; falling back to git`)
-        void reportAutoIncident({
+        reportReleaseFeedFailure(error, branch, {
           kind: 'update-check-fallback-git',
-          summary: `desktop update check: release repository unavailable (${code}); falling back to git`,
-          detail: message,
-          contextType: 'update_failure',
-          installType: 'update',
-          clientVersion: app.getVersion(),
-          hermesHome: HERMES_HOME,
-          runCli: runSupportLogUpload,
-          log: rememberLog
+          summary: `desktop update check: release repository unavailable (${code}); falling back to git`
         })
       }
     }
@@ -1861,16 +1903,9 @@ async function checkUpdates() {
         rememberLogOnce(`release-target:${branch}:no-stable`, `[updates] no ${branch} release is published in the release repository yet (${describeNoReleaseError(error)}); resolving ${branch} from ${remote}`)
       } else {
         rememberLogOnce(`release-target:${branch}:${code}`, `[updates] release repository unavailable (${code}): ${error?.message || error}; resolving ${branch} from ${remote}`)
-        void reportAutoIncident({
+        reportReleaseFeedFailure(error, branch, {
           kind: 'update-check-fallback-origin-tags',
-          summary: `desktop update check: release repository unavailable (${code}); resolving ${branch} from the source repository`,
-          detail: String(error?.message || error),
-          contextType: 'update_failure',
-          installType: 'update',
-          clientVersion: app.getVersion(),
-          hermesHome: HERMES_HOME,
-          runCli: runSupportLogUpload,
-          log: rememberLog
+          summary: `desktop update check: release repository unavailable (${code}); resolving ${branch} from the source repository`
         })
       }
     }
