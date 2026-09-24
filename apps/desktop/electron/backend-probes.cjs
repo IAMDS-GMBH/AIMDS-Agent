@@ -35,6 +35,7 @@
 const { execFileSync } = require('node:child_process')
 
 const PROBE_TIMEOUT_MS = 5000
+const SLOW_PROBE_TIMEOUT_MS = 20000
 
 /**
  * Return true iff `python -c "import hermes_cli"` exits 0.
@@ -86,21 +87,42 @@ function canImportHermesCli(pythonPath) {
  */
 function verifyHermesCli(hermesCommand, opts = {}) {
   if (!hermesCommand) return false
-  try {
-    execFileSync(hermesCommand, ['--version'], {
+  const run = opts.execFileSync || execFileSync
+  const probe = timeout =>
+    run(hermesCommand, ['--version'], {
       stdio: 'ignore',
-      timeout: PROBE_TIMEOUT_MS,
+      timeout,
       shell: Boolean(opts.shell),
-      windowsHide: true
+      windowsHide: true,
+      // AIS-424: the probe must never start the interrupted-install recovery.
+      env: { ...process.env, HERMES_SKIP_INSTALL_RECOVERY: '1' }
     })
+  try {
+    probe(PROBE_TIMEOUT_MS)
     return true
-  } catch {
-    return false
+  } catch (error) {
+    if (!isProbeTimeout(error)) return false
   }
+  // A slow start (cold Windows Defender scan, busy disk) is not "not
+  // installed": falling through to the first-launch bootstrap showed the
+  // "Hermes wird eingerichtet" overlay on an installed client
+  // (SUP-20260924-115533). One longer try; a binary that is still starting
+  // after that counts as present — the boot guard reports a real failure.
+  try {
+    probe(SLOW_PROBE_TIMEOUT_MS)
+    return true
+  } catch (error) {
+    return isProbeTimeout(error)
+  }
+}
+
+function isProbeTimeout(error) {
+  return Boolean(error && (error.code === 'ETIMEDOUT' || (error.signal === 'SIGTERM' && error.status === null)))
 }
 
 module.exports = {
   canImportHermesCli,
   verifyHermesCli,
-  PROBE_TIMEOUT_MS
+  PROBE_TIMEOUT_MS,
+  SLOW_PROBE_TIMEOUT_MS
 }

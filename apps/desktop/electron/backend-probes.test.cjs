@@ -80,3 +80,21 @@ test('verifyHermesCli swallows timeouts (does not throw)', () => {
   // propagating. Same code path the timeout case takes.
   assert.equal(verifyHermesCli('/definitely/not/a/real/binary/anywhere'), false)
 })
+
+// AIS-424 / SUP-20260924-115533: a slow `--version` is not a missing install,
+// and the probe never starts the interrupted-install recovery.
+test('verifyHermesCli: a slow start is present, a crash is not, recovery is skipped', () => {
+  const timeout = Object.assign(new Error('spawnSync ETIMEDOUT'), { code: 'ETIMEDOUT' })
+  const calls = []
+  const slowThenOk = (cmd, args, opts) => {
+    calls.push(opts)
+    if (calls.length === 1) throw timeout
+  }
+  assert.equal(verifyHermesCli('hermes', { execFileSync: slowThenOk }), true)
+  assert.equal(calls[0].env.HERMES_SKIP_INSTALL_RECOVERY, '1')
+  assert.ok(calls[1].timeout > calls[0].timeout)
+
+  assert.equal(verifyHermesCli('hermes', { execFileSync: () => { throw timeout } }), true)
+  const crash = Object.assign(new Error('exit 1'), { status: 1 })
+  assert.equal(verifyHermesCli('hermes', { execFileSync: () => { throw crash } }), false)
+})

@@ -7155,7 +7155,9 @@ async function runSupportLogUpload(rawPayload = {}) {
         args,
         hiddenWindowsChildOptions({
           cwd: directoryExists(ACTIVE_HERMES_ROOT) ? ACTIVE_HERMES_ROOT : HERMES_HOME,
-          env: { ...process.env, HERMES_HOME, NO_COLOR: '1' },
+          // AIS-424: a support upload must never start the interrupted-install
+          // recovery — on Windows that terminated the running backend.
+          env: { ...process.env, HERMES_HOME, NO_COLOR: '1', HERMES_SKIP_INSTALL_RECOVERY: '1' },
           stdio: ['ignore', 'pipe', 'pipe']
         })
       )

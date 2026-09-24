@@ -6513,6 +6513,27 @@ def _clear_update_incomplete_marker() -> None:
         logger.debug("Could not clear update-incomplete marker: %s", exc)
 
 
+# AIS-424: the long-lived entry points that may heal a half-built venv. A
+# short-lived call (``--version`` probe, ``support send-logs``, ``dump``, …)
+# must never start a reinstall: on Windows the desktop's feedback upload ran
+# the recovery, which terminated the running backend (SUP-20260924-115533),
+# and the boot probe running it timed out into the first-launch overlay.
+_RECOVERY_ENTRYPOINTS = frozenset({"chat", "dashboard", "gateway", "acp", "tui"})
+
+
+def _should_recover_interrupted_install(argv: list[str]) -> bool:
+    if os.environ.get("HERMES_SKIP_INSTALL_RECOVERY", "").strip().lower() in ("1", "true", "yes", "on"):
+        return False
+    if "update" in argv:  # the update writes and clears its own marker
+        return False
+    command = next((a for a in argv if not a.startswith("-")), None)
+    if command is None:
+        # bare ``hermes`` is the interactive chat; a flag-only call
+        # (``--version``, ``-h``) is not.
+        return not argv
+    return command in _RECOVERY_ENTRYPOINTS
+
+
 def _finish_pending_install() -> None:
     """A "nothing to update" run still finishes a half-done dependency install.
 
@@ -6720,6 +6741,10 @@ def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
         scripts_dir / "hermes.exe",
         scripts_dir / "hermes-gateway.exe",
     ]
+
+
+# Set while _recover_from_interrupted_install runs outside ``hermes update``.
+_LAUNCH_RECOVERY_ACTIVE = False
 
 
 def _is_venv_python_exe(exe_norm: str, scripts_dir: Path) -> bool:
@@ -6980,7 +7005,9 @@ def _quarantine_running_hermes_exe(
             continue
 
         # If rename failed, try terminating concurrent processes holding the venv
-        concurrent = _detect_concurrent_hermes_instances(scripts_dir)
+        # — only inside ``hermes update``. A launch-time recovery never kills
+        # the user's running Hermes (AIS-424); it leaves the marker instead.
+        concurrent = [] if _LAUNCH_RECOVERY_ACTIVE else _detect_concurrent_hermes_instances(scripts_dir)
         if concurrent:
             _try_terminate_concurrent_instances(concurrent)
             time.sleep(0.5)
@@ -12548,8 +12575,13 @@ def main():
     # under-matching (missing ``hermes -p work update``) would race a recovery
     # install against the real one. Loose wins.
     try:
-        if "update" not in sys.argv[1:]:
-            _recover_from_interrupted_install()
+        if _should_recover_interrupted_install(sys.argv[1:]):
+            global _LAUNCH_RECOVERY_ACTIVE
+            _LAUNCH_RECOVERY_ACTIVE = True
+            try:
+                _recover_from_interrupted_install()
+            finally:
+                _LAUNCH_RECOVERY_ACTIVE = False
     except Exception:
         pass
 
