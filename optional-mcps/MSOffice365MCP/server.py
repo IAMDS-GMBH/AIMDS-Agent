@@ -373,10 +373,11 @@ except ImportError:
         return "self"
 
     def _get_token_cache_path() -> Path:
-        hermes_home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
-        cache_dir = Path(hermes_home)
+        cache_dir = _hermes_home()
         cache_dir.mkdir(parents=True, exist_ok=True)
-        return cache_dir / "m365_token_cache.bin"
+        path = cache_dir / "m365_token_cache.bin"
+        _adopt_legacy_token_cache(path)
+        return path
 
 
     def _get_msal_app() -> msal.PublicClientApplication:
@@ -518,7 +519,7 @@ def _get_access_token(account: Optional[str] = None) -> str:
             result = app.acquire_token_interactive(scopes=login_scopes, port=8400)
             if "access_token" in result:
                 _save_cache(app)
-                print("[M365 OAuth] Sign-in successful! Token cached in ~/.hermes/m365_token_cache.bin", file=sys.stderr)
+                print(f"[M365 OAuth] Sign-in successful! Token cached in {_get_token_cache_path()}", file=sys.stderr)
                 return result["access_token"]
         except Exception as err:
             print(f"[M365 OAuth] Interactive loopback failed ({err}), trying device code flow...", file=sys.stderr)
@@ -939,6 +940,36 @@ def _build_teams_attachments(file_paths: List[str]) -> Tuple[List[Dict[str, Any]
 # ─── Tools ───────────────────────────────────────────────────────────────────
 
 
+
+def _hermes_home() -> Path:
+    """The agent's Hermes home (AIS-418). Hermes passes HERMES_HOME; the
+    fallback is the platform-native default of hermes_constants — on Windows
+    %LOCALAPPDATA%\\hermes, never ~/.hermes, where the desktop's sign-in
+    never lands."""
+    explicit = (os.environ.get("HERMES_HOME") or "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    if sys.platform == "win32":
+        local_appdata = (os.environ.get("LOCALAPPDATA") or "").strip()
+        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        return base / "hermes"
+    return Path.home() / ".hermes"
+
+
+def _adopt_legacy_token_cache(path: Path) -> None:
+    """A sign-in made while this server still resolved ~/.hermes on Windows
+    left its cache there; copy it once instead of asking to sign in again."""
+    if path.exists():
+        return
+    legacy = Path.home() / ".hermes" / path.name
+    try:
+        if legacy.is_file() and legacy.resolve() != path.resolve():
+            import shutil as _shutil
+
+            _shutil.copy2(legacy, path)
+    except OSError:
+        pass
+
 @mcp.tool()
 def m365_list_accounts() -> str:
     """List all connected M365 accounts in the MSAL cache.
@@ -1095,7 +1126,7 @@ def m365_complete_login(flow_data: Dict[str, Any]) -> Dict[str, Any]:
             granted_tier = None
         payload: Dict[str, Any] = {
             "success": True,
-            "message": "Sign-in successful! Token cached in ~/.hermes/m365_token_cache.bin",
+            "message": f"Sign-in successful! Token cached in {_get_token_cache_path()}",
             "account": username,
             "granted_tier": granted_tier,
         }
@@ -5099,8 +5130,7 @@ def _index_path() -> Path:
     override = os.environ.get("M365_INDEX_PATH")
     if override:
         return Path(override).expanduser()
-    hermes_home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
-    return Path(hermes_home) / "state" / "m365_index.sqlite"
+    return _hermes_home() / "state" / "m365_index.sqlite"
 
 
 def _index_now() -> str:

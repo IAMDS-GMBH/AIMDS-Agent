@@ -222,10 +222,25 @@ def m365_granted_tier(app: Any, account: Any) -> Optional[str]:
 
 def get_m365_token_cache_path() -> Path:
     """Return absolute path to the shared M365 MSAL token cache file."""
-    hermes_home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
-    cache_dir = Path(hermes_home)
+    from hermes_constants import get_hermes_home
+
+    # AIS-418: the platform-native home (%LOCALAPPDATA%\hermes on Windows) —
+    # the same place the MSOffice365MCP subprocess reads from.
+    cache_dir = get_hermes_home()
     cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir / "m365_token_cache.bin"
+    path = cache_dir / "m365_token_cache.bin"
+    if not path.exists():
+        # A sign-in stored under ~/.hermes while a server still resolved that
+        # on Windows: copy it once instead of asking to sign in again.
+        legacy = Path.home() / ".hermes" / path.name
+        try:
+            if legacy.is_file() and legacy.resolve() != path.resolve():
+                import shutil
+
+                shutil.copy2(legacy, path)
+        except OSError:
+            pass
+    return path
 
 
 def has_valid_msal_cache() -> bool:

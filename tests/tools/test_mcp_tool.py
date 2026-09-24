@@ -5490,3 +5490,15 @@ class TestCheckMcpArgNames:
         server = self._server({"search": {"type": "string"}})
         _args, _notes, error = _check_mcp_arg_names(server, "list_emails", {"search": "x", "tool_name": "list_emails"})
         assert error is None
+
+
+def test_stdio_env_carries_the_agent_hermes_home(monkeypatch, tmp_path):
+    """AIS-418: every stdio MCP keeps its state under the agent's Hermes home."""
+    from tools.mcp_tool import _build_safe_env
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
+    env = _build_safe_env({"M365_CLIENT_ID": "x"})
+    assert env["HERMES_HOME"] == str(tmp_path / "hermes")
+    assert "OPENAI_API_KEY" not in env and env["M365_CLIENT_ID"] == "x"
+    assert _build_safe_env({"HERMES_HOME": "/custom"})["HERMES_HOME"] == "/custom"
