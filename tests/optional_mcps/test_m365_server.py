@@ -2652,3 +2652,30 @@ class TestMessageFormattingAndRegister:
         mock_req.assert_not_called()
         assert "register_warnings" not in res
         assert res["register_source"].startswith("Teams defaults")
+
+
+# AIS-418 / SUP-20260924-093853: on Windows the desktop saved the sign-in under
+# %LOCALAPPDATA%\hermes while the MCP subprocess looked in ~/.hermes.
+class TestHermesHomeResolution:
+    def test_explicit_hermes_home_wins(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
+        assert server._hermes_home() == tmp_path / "hh"
+
+    def test_windows_default_is_localappdata(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(server.sys, "platform", "win32")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+        assert server._hermes_home() == tmp_path / "Local" / "hermes"
+
+    def test_legacy_cache_is_adopted_once(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(server.Path, "home", classmethod(lambda cls: tmp_path / "user"))
+        legacy = tmp_path / "user" / ".hermes" / "m365_token_cache.bin"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_bytes(b"cache")
+        target = tmp_path / "Local" / "hermes" / "m365_token_cache.bin"
+        target.parent.mkdir(parents=True)
+        server._adopt_legacy_token_cache(target)
+        assert target.read_bytes() == b"cache"
+        target.write_bytes(b"newer")
+        server._adopt_legacy_token_cache(target)
+        assert target.read_bytes() == b"newer"  # never overwrites an existing cache

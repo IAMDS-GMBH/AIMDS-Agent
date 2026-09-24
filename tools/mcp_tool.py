@@ -415,6 +415,16 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     for key, value in os.environ.items():
         if key in _SAFE_ENV_KEYS or key.startswith("XDG_"):
             env[key] = value
+    # AIS-418: servers keep their state under the same Hermes home as the
+    # agent. Without it a server fell back to ~/.hermes, which on Windows is
+    # not %LOCALAPPDATA%\hermes: the desktop saved the Microsoft sign-in
+    # there and MSOffice365MCP never found it (SUP-20260924-093853).
+    try:
+        from hermes_constants import get_hermes_home
+
+        env["HERMES_HOME"] = str(get_hermes_home())
+    except Exception:
+        pass
     if user_env:
         env.update(user_env)
     return env

@@ -102,7 +102,7 @@ which consent step is missing instead of guessing.
 
 Optional overrides: `M365_CLIENT_ID` / `M365_TENANT_ID` (also `OUTLOOK_*` / `TEAMS_*`)
 switch to a customer-owned app registration. The token cache lives in
-`~/.hermes/m365_token_cache.bin` and is shared by CLI, dashboard and MCP server.
+`<Hermes home>/m365_token_cache.bin` (`%LOCALAPPDATA%\hermes` on Windows, `~/.hermes` elsewhere) and is shared by CLI, dashboard and MCP server — Hermes passes `HERMES_HOME` to every stdio MCP.
 
 ## Troubleshooting Entra errors
 

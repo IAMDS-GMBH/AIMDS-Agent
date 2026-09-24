@@ -156,7 +156,7 @@ post_install: |
       m365_initiate_login(scope_tier="admin").
     - Didn't sign in during install (non-interactive install, or skipped)? Use the in-chat
       m365_initiate_login / m365_complete_login tools any time afterwards.
-    - Token cache is automatically stored in ~/.hermes/m365_token_cache.bin.
+    - Token cache is stored in the Hermes home (m365_token_cache.bin; %LOCALAPPDATA%\hermes on Windows, ~/.hermes elsewhere).
 
   Supported Services:
     - User Directory (m365_search_users, m365_get_user_profile) — directory-wide search needs the admin tier.
