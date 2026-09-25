@@ -53,6 +53,7 @@ _CATEGORY_FOR_CONTEXT: dict[str, str] = {
     "agent_python_fallback": "mcp_tools",
     "mcp_failure": "mcp_tools",
     "auth_error": "connection_error",
+    "state_db_error": "chat_issue",
 }
 
 

@@ -150,3 +150,12 @@ def test_bundled_catalog_entries_are_recognised():
     ai._bundled_cache.clear()
     assert ai.is_bundled_mcp("MSOffice365MCP") is True
     assert ai.is_bundled_mcp("SomethingUserAdded") is False
+
+
+def test_session_json_string_is_not_probed_as_a_path():
+    """AIS-427: a long JSON string raised "File name too long" and lost the case."""
+    from hermes_cli.support_logs import _resolve_session_id
+
+    long_json = json.dumps({"session_id": "s", "messages": [{"text": "x" * 5000}]})
+    _sid, data, files = _resolve_session_id(SimpleNamespace(session_json=long_json))
+    assert data["session_id"] == "s" and "session.json" in files

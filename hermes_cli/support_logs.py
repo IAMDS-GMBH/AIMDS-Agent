@@ -89,6 +89,7 @@ _CATEGORY_LOGS: dict[str, tuple[str, ...]] = {
     "agent_python_fallback": ("agent.log", "errors.log", "mcp-stderr.log"),
     "auth_error": ("agent.log", "errors.log", "gateway.log", "mcp-stderr.log"),
     "mcp_failure": ("agent.log", "errors.log", "mcp-stderr.log"),
+    "state_db_error": ("agent.log", "errors.log", "gui.log", "desktop.log"),
 }
 _DEFAULT_CATEGORY_LOGS: tuple[str, ...] = _CATEGORY_LOGS["other"]
 _DEFAULT_TIMEOUT_SECONDS = 45
@@ -411,14 +412,20 @@ def _resolve_session_id(args: Any) -> tuple[str, dict[str, Any] | None, dict[str
     session_json_input = getattr(args, "session_json", None) or ""
     if session_json_input:
         raw_text = ""
-        p = Path(session_json_input).expanduser()
-        if p.exists() and p.is_file():
-            try:
-                raw_text = p.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                pass
+        text_input = str(session_json_input)
+        if text_input.lstrip().startswith(("{", "[")):
+            # AIS-427: a JSON document, not a path — probing it as a path
+            # raised "[Errno 63] File name too long" and lost the report.
+            raw_text = text_input
         else:
-            raw_text = session_json_input
+            try:
+                p = Path(text_input).expanduser()
+                if p.is_file():
+                    raw_text = p.read_text(encoding="utf-8", errors="replace")
+                else:
+                    raw_text = text_input
+            except OSError:
+                raw_text = text_input
 
         if raw_text:
             try:

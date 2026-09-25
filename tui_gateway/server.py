@@ -658,6 +658,21 @@ def _get_db():
                 "TUI session store unavailable — continuing without state.db features: %s",
                 exc,
             )
+            # AIS-427: chats are not stored while this lasts — support must
+            # see it, not only a warning line (lost a day of sessions once).
+            try:
+                from hermes_cli.auto_incidents import report_in_background
+
+                report_in_background(
+                    "state-db-unavailable",
+                    "TUI session store unavailable — chats are not being saved",
+                    str(exc),
+                    category="chat_issue",
+                    context_type="state_db_error",
+                    severity="high",
+                )
+            except Exception:
+                pass
             return None
     return _db
 

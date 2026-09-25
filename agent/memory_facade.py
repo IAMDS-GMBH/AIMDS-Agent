@@ -263,6 +263,25 @@ class MemoryFacade:
     def save_tool(self) -> Optional[str]:
         return self._tool("memory_save")
 
+    def _call_read(self, tool_name: str, args: Dict[str, Any], timeout: float = 20.0) -> Any:
+        """A memory READ that the turn waits for, bounded (AIS-427).
+
+        A hung memory backend held a turn for the MCP tool timeout (180 s)
+        before the model was even called; the user saw nothing and restarted.
+        Past *timeout* the turn continues without memory — the call keeps
+        running on its daemon thread and its result is dropped.
+        """
+        import concurrent.futures as _cf
+
+        pool = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="memory-read")
+        future = pool.submit(self._call, tool_name, args)
+        pool.shutdown(wait=False)
+        try:
+            return future.result(timeout=timeout)
+        except _cf.TimeoutError:
+            logger.warning("memory_facade: %s did not answer within %.0fs — continuing without it", tool_name, timeout)
+            raise TimeoutError(f"{tool_name} timed out after {timeout:.0f}s") from None
+
     def _call(self, tool_name: str, args: Dict[str, Any]) -> Any:
         import run_agent as _ra
 
@@ -406,7 +425,7 @@ class MemoryFacade:
             tool = self._tool("memory_search")
             if tool:
                 try:
-                    result = self._call(tool, {"query": query, "limit": limit})
+                    result = self._call_read(tool, {"query": query, "limit": limit})
                     payload = _unwrap_mcp_result(result)
                     items = payload.get("results") if isinstance(payload, dict) else payload
                     if isinstance(items, list):
@@ -478,7 +497,7 @@ class MemoryFacade:
         if not tool:
             return None
         try:
-            return str(self._call(tool, {"query": query} if query else {}))
+            return str(self._call_read(tool, {"query": query} if query else {}))
         except Exception as exc:
             logger.debug("memory_facade: memory_context failed: %s", exc)
             return None
