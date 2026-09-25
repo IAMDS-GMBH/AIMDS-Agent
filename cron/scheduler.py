@@ -2081,6 +2081,22 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         collector_kind = resolve_collector_kind(job, _user_cfg)
         brief_lang = brief_language(_user_cfg)
+        # AIS-429: the same user's other client may already have made today's
+        # report — then this run is silent instead of a second copy.
+        if collector_kind:
+            from cron import report_memory as _report_memory
+
+            _existing = _report_memory.wait_and_check(collector_kind, _hermes_now().date())
+            if _existing is not None:
+                _key = _report_memory.report_key(collector_kind, _hermes_now().date())
+                logger.info("Job '%s': report %s already in memory (%s) — not created again",
+                            job_id, _key, _existing.get("title") or _existing.get("slug") or "")
+                _set_run_meta(job_id, session_id="", journal_path=None, api_calls=0,
+                              collector_kind=collector_kind, silent=True)
+                return True, (
+                    f"# Cron Job: {job_name}\n\n**Job ID:** {job_id}\n"
+                    f"**Status:** silent (report {_key} already created by another client)\n"
+                ), SILENT_MARKER, None
         if collector_kind:
             try:
                 from tools.mcp_tool import discover_mcp_tools
@@ -2588,6 +2604,17 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 journal_path = _write_brief_journal(job, collector_kind, final_response, brief_lang)
                 if journal_path:
                     output += f"\n**Journal:** {journal_path}\n"
+                # AIS-429: the report lives in memory too, once per user.
+                try:
+                    from cron import report_memory as _report_memory
+                    from cron.brief_collector import brief_title as _brief_title
+
+                    _today = _hermes_now().date()
+                    if _report_memory.store(collector_kind, _today,
+                                            _brief_title(collector_kind, brief_lang, _today), final_response):
+                        output += "\n**Memory:** stored\n"
+                except Exception as _rm_exc:
+                    logger.debug("Job '%s': storing the report in memory failed: %s", job_id, _rm_exc)
             if final_response.strip():
                 try:
                     from cron.brief_store import BriefStore
