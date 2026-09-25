@@ -1642,6 +1642,35 @@ async def delete_managed_file(payload: ManagedFileDelete, request: Request):
     return {"ok": True, "path": display_path, **_managed_response_meta(policy)}
 
 
+@app.get("/api/backend/idle")
+async def get_backend_idle(request: Request):
+    """Whether a restart would interrupt work (AIS-428).
+
+    The desktop restarts its backend at night (and after a sleep that missed
+    that time) to load new code and fresh MCP servers — only when no chat
+    turn, pending prompt or cron job is running.
+    """
+    _require_token(request)
+    running_sessions: list[str] = []
+    try:
+        from tui_gateway import server as _tui
+
+        for sid, session in list(getattr(_tui, "_sessions", {}).items()):
+            if isinstance(session, dict) and session.get("running"):
+                running_sessions.append(str(sid))
+    except Exception:
+        pass
+    running_jobs: list[str] = []
+    try:
+        from cron import scheduler as _cron
+
+        running_jobs = sorted(str(j) for j in getattr(_cron, "_running_job_ids", set()))
+    except Exception:
+        pass
+    return {"idle": not running_sessions and not running_jobs,
+            "running_sessions": running_sessions, "running_jobs": running_jobs}
+
+
 @app.get("/api/status")
 async def get_status():
     current_ver, latest_ver = check_config_version()
