@@ -91,6 +91,7 @@ const {
   quarantineUpdaterBinary,
   resolveDetachedCheckoutChannel
 } = require('./update-apply.cjs')
+const { createNightlyRestarter } = require('./nightly-restart.cjs')
 const {
   buildKeycloakAuthUrl,
   isKeycloakCallbackUrl,
@@ -4213,6 +4214,24 @@ function sendPowerResume() {
 
 let powerResumeRegistered = false
 
+// AIS-428: one backend restart per night (new code, fresh MCP servers),
+// caught up shortly after a wake that slept through it; never mid-turn.
+const nightlyRestarter = createNightlyRestarter({
+  isIdle: async () => {
+    // Only the local backend this app started; a remote gateway is not ours.
+    if (!hermesProcess || !connectionPromise) return false
+    const conn = await connectionPromise
+    if (!conn?.baseUrl || !conn?.token) return false
+    const status = await fetchJson(`${conn.baseUrl}/api/backend/idle`, conn.token, { timeoutMs: 5_000 })
+    return Boolean(status?.idle)
+  },
+  restart: async () => {
+    await teardownPrimaryBackendAndWait()
+    mainWindow?.reload()
+  },
+  log: rememberLog
+})
+
 function registerPowerResumeListeners() {
   if (powerResumeRegistered) return
   powerResumeRegistered = true
@@ -4221,6 +4240,7 @@ function registerPowerResumeListeners() {
     // full suspend. Either can drop an idle socket.
     powerMonitor.on('resume', sendPowerResume)
     powerMonitor.on('unlock-screen', sendPowerResume)
+    powerMonitor.on('resume', () => nightlyRestarter.onResume())
   } catch {
     // powerMonitor is unavailable before app 'ready' on some platforms; the
     // caller registers after 'ready', so this should not normally throw.
@@ -6197,6 +6217,7 @@ async function startHermes() {
       throw error
     }
     backendReady = true
+    nightlyRestarter.noteBackendStarted()
     updateBootProgress({
       phase: 'backend.ready',
       message: 'Hermes backend is ready. Finalizing desktop startup',
@@ -7995,6 +8016,7 @@ app.whenReady().then(() => {
   ensureWslWindowsFonts()
   configureSpellChecker()
   registerPowerResumeListeners()
+  nightlyRestarter.start()
   createWindow()
 
   // Send client version telemetry quietly at startup
