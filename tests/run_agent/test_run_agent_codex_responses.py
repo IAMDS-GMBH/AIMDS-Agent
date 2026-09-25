@@ -2295,3 +2295,32 @@ def test_interim_check_accepts_text_contained_in_the_stream():
     assert not agent._interim_content_was_streamed("Etwas ganz anderes.")
     agent._current_streamed_assistant_text = ""
     assert not agent._interim_content_was_streamed("Dann lege ich das Ticket an.")
+
+
+def test_append_recreates_a_missing_session_row_once():
+    """AIS-427: a session whose row vanished from state.db failed every append
+    with "FOREIGN KEY constraint failed" — the chat could not continue."""
+    import sqlite3
+    from run_agent import AIAgent
+
+    calls = []
+
+    class _DB:
+        def __init__(self):
+            self.rows = set()
+
+        def append_message(self, **kwargs):
+            calls.append(("append", kwargs["session_id"]))
+            if kwargs["session_id"] not in self.rows:
+                raise sqlite3.IntegrityError("FOREIGN KEY constraint failed")
+
+        def ensure_session(self, session_id, source="unknown", model=None, **kw):
+            calls.append(("ensure", session_id, source))
+            self.rows.add(session_id)
+
+    agent = object.__new__(AIAgent)
+    agent._session_db = _DB()
+    agent.platform = "tui"
+    agent.model = "m"
+    agent._append_message_with_row_repair(session_id="s1", role="user", content="hi")
+    assert calls == [("append", "s1"), ("ensure", "s1", "tui"), ("append", "s1")]

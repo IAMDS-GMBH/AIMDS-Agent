@@ -1597,7 +1597,7 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
-                self._session_db.append_message(
+                self._append_message_with_row_repair(
                     session_id=self.session_id,
                     role=role,
                     content=content,
@@ -1614,6 +1614,30 @@ class AIAgent:
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)
+
+    def _append_message_with_row_repair(self, **kwargs) -> None:
+        """append_message that recreates a missing session row once (AIS-427).
+
+        A session whose row is gone from state.db (it was never persisted, or
+        the file lost it) made every append fail with "FOREIGN KEY constraint
+        failed" — the chat could not continue. Re-create the row and retry.
+        """
+        import sqlite3 as _sqlite3
+
+        try:
+            self._session_db.append_message(**kwargs)
+        except _sqlite3.IntegrityError as exc:
+            if "foreign key" not in str(exc).lower():
+                raise
+            logger.warning(
+                "Session %s had no row in state.db — recreating it so the conversation is stored again",
+                kwargs.get("session_id"),
+            )
+            self._session_db.ensure_session(
+                kwargs.get("session_id"), source=str(getattr(self, "platform", "") or "unknown"),
+                model=getattr(self, "model", None),
+            )
+            self._session_db.append_message(**kwargs)
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """
