@@ -427,6 +427,35 @@ def _recoverable_oneshot_run_at(
     return None
 
 
+def _catch_up_in_same_period(job: dict, missed_at: datetime, now: datetime) -> bool:
+    """A daily/weekly job whose run the machine slept through runs once late (AIS-429).
+
+    The 2 h grace window made a laptop that woke at 10:00 skip the 08:00
+    morning brief for the whole day. A missed run of a job with a period of a
+    day or more is caught up — once — as long as it is still in the same
+    calendar day (daily) or ISO week (weekly and longer); older misses are
+    still fast-forwarded. ``catch_up: false`` on the job opts out.
+    """
+    if job.get("catch_up") is False:
+        return False
+    schedule = job.get("schedule") or {}
+    if schedule.get("kind") != "cron" or not HAS_CRONITER:
+        return False
+    try:
+        following = croniter(schedule["expr"], missed_at).get_next(datetime)
+        period = (following - missed_at).total_seconds()
+    except Exception:
+        return False
+    if following <= now:
+        return False  # a newer occurrence is due as well — that one runs
+    if period < 20 * 3600:
+        return False  # sub-daily jobs keep fast-forwarding
+    missed_local, now_local = missed_at.astimezone(now.tzinfo), now
+    if period < 6 * 86400:
+        return missed_local.date() == now_local.date()
+    return missed_local.isocalendar()[:2] == now_local.isocalendar()[:2]
+
+
 def _compute_grace_seconds(schedule: dict) -> int:
     """Compute how late a job can be and still catch up instead of fast-forwarding.
 
@@ -1178,6 +1207,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 kind in {"cron", "interval"}
                 and not manual_triggered_at
                 and (now - next_run_dt).total_seconds() > grace
+                and not _catch_up_in_same_period(job, next_run_dt, now)
             ):
                 # Job is past its catch-up grace window — this is a stale missed run.
                 # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
