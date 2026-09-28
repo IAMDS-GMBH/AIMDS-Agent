@@ -5,8 +5,10 @@ Modular wizard with independently-runnable sections:
   1. Model & Provider — choose your AI provider and model
   2. Terminal Backend — where your agent runs commands
   3. Agent Settings — iterations, compression, session reset
-  4. Messaging Platforms — connect Telegram, Discord, etc.
-  5. Tools — configure TTS, web search, image generation, etc.
+  4. Tools — configure TTS, web search, image generation, etc.
+
+Messaging platforms (Telegram, Discord, ...) are not offered in AIMDS-Agent
+(AIS-444); ``setup_gateway`` stays for the code that still calls it directly.
 
 Config files are stored in ~/.hermes/ for easy access.
 """
@@ -614,7 +616,6 @@ def _print_setup_summary(config: dict, hermes_home):
     print(f"   {color('hermes setup', Colors.GREEN)}          Re-run the full wizard")
     print(f"   {color('hermes setup model', Colors.GREEN)}    Change model/provider")
     print(f"   {color('hermes setup terminal', Colors.GREEN)} Change terminal backend")
-    print(f"   {color('hermes setup gateway', Colors.GREEN)}  Configure messaging")
     print(f"   {color('hermes setup tools', Colors.GREEN)}    Configure tool providers")
     print()
     print(f"   {color('hermes config', Colors.GREEN)}         View current settings")
@@ -634,7 +635,6 @@ def _print_setup_summary(config: dict, hermes_home):
     print(color("🚀 Ready to go!", Colors.CYAN, Colors.BOLD))
     print()
     print(f"   {color('hermes', Colors.GREEN)}              Start chatting")
-    print(f"   {color('hermes gateway', Colors.GREEN)}      Start messaging gateway")
     print(f"   {color('hermes doctor', Colors.GREEN)}       Check for issues")
     print()
 
@@ -2801,7 +2801,6 @@ SETUP_SECTIONS = [
     ("model", "Model & Provider", setup_model_provider),
     ("tts", "Text-to-Speech", setup_tts),
     ("terminal", "Terminal Backend", setup_terminal_backend),
-    ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
     ("agent", "Agent Settings", setup_agent_settings),
 ]
@@ -2899,7 +2898,6 @@ def run_setup_wizard(args):
       hermes setup model     — just model/provider
       hermes setup tts       — just text-to-speech
       hermes setup terminal  — just terminal backend
-      hermes setup gateway   — just messaging platforms
       hermes setup tools     — just tool configuration
       hermes setup agent     — just agent settings
     """
@@ -3105,10 +3103,6 @@ def run_setup_wizard(args):
     if not is_existing:
         _apply_default_agent_settings(config)
 
-    # Section 4: Messaging Platforms
-    if not (migration_ran and _skip_configured_section(config, "gateway", "Messaging Platforms")):
-        setup_gateway(config)
-
     # Section 5: Tools
     if not (migration_ran and _skip_configured_section(config, "tools", "Tools")):
         setup_tools(config, first_install=not is_existing)
@@ -3169,27 +3163,10 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
 
     save_config(config)
 
-    # Step 4: Offer messaging gateway setup
-    print()
-    gateway_choice = prompt_choice(
-        "Connect a messaging platform? (Telegram, Discord, etc.)",
-        [
-            "Set up messaging now (recommended)",
-            "Skip — set up later with 'hermes setup gateway'",
-        ],
-        0,
-    )
-
-    if gateway_choice == 0:
-        setup_gateway(config)
-        save_config(config)
-
     print()
     print_success("Setup complete! You're ready to go.")
     print()
     print_info("  Configure all settings:    hermes setup")
-    if gateway_choice != 0:
-        print_info("  Connect Telegram/Discord:  hermes setup gateway")
     print()
 
     _print_setup_summary(config, hermes_home)
@@ -3258,11 +3235,8 @@ def _run_quick_setup(config: dict, hermes_home):
 
     # Split missing optional vars by category
     missing_tools = [v for v in missing_optional if v.get("category") == "tool"]
-    missing_messaging = [
-        v
-        for v in missing_optional
-        if v.get("category") == "messaging" and not v.get("advanced")
-    ]
+    # AIS-444: messaging platform keys are never asked for.
+    missing_messaging: list = []
 
     # ── Tool API keys (checklist) ──
     if missing_tools:

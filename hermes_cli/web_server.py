@@ -2423,9 +2423,24 @@ def _restart_gateway_after_webhook_enable() -> dict[str, Any]:
     }
 
 
+def _refuse_gateway_in_desktop_mode() -> None:
+    """AIS-444: a desktop backend (HERMES_DESKTOP=1) runs cron itself and the
+    messaging gateway is retired, so a separate ``hermes gateway`` process would
+    only run every cron job a second time."""
+    if os.getenv("HERMES_DESKTOP") == "1":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The desktop backend runs cron itself and messaging is not available; "
+                "restart the Hermes backend instead of starting a gateway."
+            ),
+        )
+
+
 @app.post("/api/gateway/restart")
 async def restart_gateway():
     """Kick off a ``hermes gateway restart`` in the background."""
+    _refuse_gateway_in_desktop_mode()
     try:
         proc, _reused = _spawn_gateway_restart()
     except Exception as exc:
@@ -4509,6 +4524,28 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
 _DISABLED_MESSAGING_PLATFORMS = {"outlook", "teams", "msteams"}
 
 
+def _refuse_retired_platform(platform_id: str) -> None:
+    """AIS-444: writes that would configure or enable a retired messaging
+    platform are refused instead of silently storing dead config."""
+    from gateway.config import is_retired_platform
+
+    if is_retired_platform(platform_id):
+        raise HTTPException(
+            status_code=410,
+            detail=f"Messaging platform '{platform_id}' is not available in AIMDS-Agent.",
+        )
+
+
+def _is_hidden_messaging_platform(platform_id: str) -> bool:
+    """Outlook/Teams never were chat platforms here; since AIS-444 every
+    messaging platform except ntfy is retired as well."""
+    if platform_id in _DISABLED_MESSAGING_PLATFORMS:
+        return True
+    from gateway.config import is_retired_platform
+
+    return is_retired_platform(platform_id)
+
+
 def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
     """Build the messaging catalog from the gateway's Platform enum + plugin registry.
 
@@ -4525,7 +4562,7 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
     entries: list[dict[str, Any]] = []
 
     for member in Platform.__members__.values():
-        if member.value == "local" or member.value in _DISABLED_MESSAGING_PLATFORMS:
+        if member.value == "local" or _is_hidden_messaging_platform(member.value):
             continue
         if member.value in seen:
             continue
@@ -4536,7 +4573,7 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
         from gateway.platform_registry import platform_registry
 
         for plugin_entry in platform_registry.plugin_entries():
-            if plugin_entry.name in seen or plugin_entry.name in _DISABLED_MESSAGING_PLATFORMS:
+            if plugin_entry.name in seen or _is_hidden_messaging_platform(plugin_entry.name):
                 continue
             seen.add(plugin_entry.name)
             entries.append(_build_catalog_entry(plugin_entry.name, plugin_entry))
@@ -4544,7 +4581,7 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
         _log.debug("plugin platform registry unavailable", exc_info=True)
 
     for platform_id in _PLATFORM_OVERRIDES:
-        if platform_id in _DISABLED_MESSAGING_PLATFORMS:
+        if _is_hidden_messaging_platform(platform_id):
             continue
         if platform_id not in seen:
             seen.add(platform_id)
@@ -4969,6 +5006,7 @@ async def _telegram_onboarding_request(
 
 @app.post("/api/messaging/telegram/onboarding/start")
 async def start_telegram_onboarding(body: TelegramOnboardingStart):
+    _refuse_retired_platform("telegram")
     bot_name = (body.bot_name or "Hermes Agent").strip() or "Hermes Agent"
     payload = await _telegram_onboarding_request(
         "POST",
@@ -9231,6 +9269,7 @@ async def list_pairing():
 async def approve_pairing(body: PairingApprove):
     store = _pairing_store()
     platform = (body.platform or "").lower().strip()
+    _refuse_retired_platform(platform)
     code = (body.code or "").upper().strip()
     if not platform or not code:
         raise HTTPException(status_code=400, detail="platform and code are required")
@@ -9328,6 +9367,7 @@ async def list_webhooks():
 
 @app.post("/api/webhooks/enable")
 async def enable_webhooks():
+    _refuse_retired_platform("webhook")
     try:
         _write_platform_enabled("webhook", True)
     except Exception as exc:
@@ -9349,6 +9389,7 @@ async def enable_webhooks():
 
 @app.post("/api/webhooks")
 async def create_webhook(body: WebhookCreate):
+    _refuse_retired_platform("webhook")
     import re as _re
     import secrets as _secrets
     import time as _time
@@ -9448,6 +9489,7 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle):
 
 @app.post("/api/gateway/start")
 async def start_gateway():
+    _refuse_gateway_in_desktop_mode()
     try:
         proc = _spawn_hermes_action(["gateway", "start"], "gateway-start")
     except Exception as exc:

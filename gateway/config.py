@@ -23,6 +23,18 @@ logger = logging.getLogger(__name__)
 
 _GLOBAL_MESSAGING_PLUGINS_DISABLED = True
 
+# AIS-444: AIMDS-Agent offers no chat-platform messaging (WhatsApp, Discord,
+# Telegram, Slack, webhooks, API server, ...). The adapters stay in the tree
+# but are neither loaded, listed nor offered in setup. ntfy is the one
+# remaining gateway platform (Suite notifications, AIS-232).
+AVAILABLE_GATEWAY_PLATFORMS = frozenset({"local", "ntfy"})
+
+
+def is_retired_platform(name: Any) -> bool:
+    """True for every gateway platform AIMDS-Agent no longer offers."""
+    value = getattr(name, "value", name)
+    return str(value or "").strip().lower() not in AVAILABLE_GATEWAY_PLATFORMS
+
 
 def _coerce_bool(value: Any, default: bool = True) -> bool:
     """Coerce bool-ish config values, preserving a caller-provided default."""

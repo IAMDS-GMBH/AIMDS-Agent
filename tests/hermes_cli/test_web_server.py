@@ -1074,6 +1074,7 @@ class TestWebServerEndpoints:
         for key, info in data.items():
             assert info["channel_managed"] is (key in channel_keys)
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_platform_scoped_messaging_env_vars_are_channel_managed(self):
         from hermes_cli.web_server import (
             _MESSAGING_KEYS_PAGE_KEYS,
@@ -1317,6 +1318,7 @@ class TestWebServerEndpoints:
 
         assert resp.status_code == 200
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_get_messaging_platforms(self):
         resp = self.client.get("/api/messaging/platforms")
 
@@ -1327,6 +1329,7 @@ class TestWebServerEndpoints:
         assert telegram["enabled"] is False
         assert any(field["key"] == "TELEGRAM_BOT_TOKEN" and field["required"] for field in telegram["env_vars"])
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_messaging_catalog_covers_gateway_platforms(self):
         """Catalog is derived from the Platform enum, so every built-in shows up."""
         from gateway.config import Platform
@@ -1342,6 +1345,7 @@ class TestWebServerEndpoints:
                 continue
             assert member.value in platforms, f"Missing gateway platform {member.value} from /api/messaging/platforms"
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_messaging_catalog_includes_plugin_platforms(self, monkeypatch):
         """Plugin-registered adapters appear in the catalog without per-platform code."""
         from gateway.platform_registry import PlatformEntry, platform_registry
@@ -1365,6 +1369,7 @@ class TestWebServerEndpoints:
         finally:
             platform_registry.unregister("ircfake")
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_update_messaging_platform_saves_env_and_enablement(self):
         from hermes_cli.config import load_config, load_env
 
@@ -1388,6 +1393,7 @@ class TestWebServerEndpoints:
     # the M365 toolset is auto-enabled by the Microsoft OAuth login instead
     # (covered in tests/hermes_cli/test_mcp_catalog.py / test_web_oauth_dispatch.py).
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_messaging_platform_test_reports_missing_required_setup(self):
         resp = self.client.put("/api/messaging/platforms/telegram", json={"enabled": True})
         assert resp.status_code == 200
@@ -1468,6 +1474,7 @@ class TestWebServerEndpoints:
             == "Telegram setup service is unavailable. Try again shortly."
         )
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_telegram_onboarding_start_strips_poll_token(self, monkeypatch):
         import hermes_cli.web_server as ws
 
@@ -1507,6 +1514,7 @@ class TestWebServerEndpoints:
             )
         ]
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_telegram_onboarding_ready_and_apply_never_returns_bot_token(self, monkeypatch):
         import hermes_cli.web_server as ws
         from hermes_cli.config import load_config, load_env
@@ -1578,6 +1586,7 @@ class TestWebServerEndpoints:
         assert env["TELEGRAM_ALLOWED_USERS"] == "123456789"
         assert load_config()["platforms"]["telegram"]["enabled"] is True
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_telegram_onboarding_apply_reports_restart_failure_after_save(
         self, monkeypatch
     ):
@@ -1640,6 +1649,7 @@ class TestWebServerEndpoints:
         assert env["TELEGRAM_ALLOWED_USERS"] == "123456789"
         assert load_config()["platforms"]["telegram"]["enabled"] is True
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_telegram_onboarding_apply_reuses_inflight_gateway_restart(
         self, monkeypatch
     ):
@@ -1699,6 +1709,7 @@ class TestWebServerEndpoints:
         assert applied_data["restart_started"] is True
         assert applied_data["restart_pid"] == 5151
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_telegram_onboarding_apply_requires_ready_pairing(self, monkeypatch):
         import hermes_cli.web_server as ws
 
@@ -1728,6 +1739,7 @@ class TestWebServerEndpoints:
         assert resp.status_code == 409
         assert "not ready" in resp.json()["detail"]
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_telegram_onboarding_cancel_clears_local_session(self, monkeypatch):
         import hermes_cli.web_server as ws
 

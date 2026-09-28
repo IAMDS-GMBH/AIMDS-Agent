@@ -4,6 +4,8 @@ from argparse import Namespace
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from hermes_cli import setup as setup_mod
 
 
@@ -415,6 +417,7 @@ class TestGetSectionConfigSummary:
             result = setup_mod._get_section_config_summary({}, "gateway")
         assert result is None
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_gateway_lists_platforms(self):
         def env_side(key):
             if key == "TELEGRAM_BOT_TOKEN":
@@ -673,7 +676,7 @@ class TestSetupWizardSkipsConfiguredSections:
         # Terminal/agent always have a summary → skip offered, user said No
         mock_terminal.assert_not_called()
         mock_agent.assert_not_called()
-        # Gateway has no tokens (env_side returns "" for gateway keys) → section runs
-        mock_gateway.assert_called_once()
+        # Messaging platforms are not offered in AIMDS-Agent (AIS-444)
+        mock_gateway.assert_not_called()
         # Tools have no keys → section runs
         mock_tools.assert_called_once()

@@ -122,12 +122,13 @@ class TestExistingInstallDefault:
         m["prompt_choice"].assert_not_called()
         # Quick-setup path NOT taken.
         m["quick"].assert_not_called()
-        # Model/terminal/gateway/tools run; agent settings are no longer
-        # prompted on existing installs (they keep their tuned values).
+        # Model/terminal/tools run; agent settings are no longer prompted on
+        # existing installs (they keep their tuned values), and messaging
+        # platforms are not offered at all (AIS-444).
         m["model"].assert_called_once()
         m["terminal"].assert_called_once()
         m["agent"].assert_not_called()
-        m["gateway"].assert_called_once()
+        m["gateway"].assert_not_called()
         m["tools"].assert_called_once()
 
     def test_reconfigure_flag_is_backwards_compat_noop(self, existing_install):
@@ -151,7 +152,7 @@ class TestExistingInstallDefault:
         m["model"].assert_called_once()
         m["terminal"].assert_called_once()
         m["agent"].assert_not_called()
-        m["gateway"].assert_called_once()
+        m["gateway"].assert_not_called()
         m["tools"].assert_called_once()
 
 

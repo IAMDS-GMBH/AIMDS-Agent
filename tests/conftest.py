@@ -430,6 +430,17 @@ def _isolate_hermes_home(_hermetic_environment):
 
 
 @pytest.fixture()
+def messaging_platforms_enabled(monkeypatch):
+    """Lift the AIS-444 retirement gate for tests of the (kept) messaging code.
+
+    AIMDS-Agent no longer loads, lists or configures chat platforms, but the
+    adapters and their dashboard endpoints stay in the tree; their own tests
+    keep exercising that code with the gate lifted.
+    """
+    monkeypatch.setattr("gateway.config.is_retired_platform", lambda name: False)
+
+
+@pytest.fixture()
 def tmp_dir(tmp_path):
     """Provide a temporary directory that is cleaned up automatically."""
     return tmp_path

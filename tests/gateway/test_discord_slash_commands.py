@@ -8,6 +8,8 @@ import pytest
 
 from gateway.config import PlatformConfig
 
+pytestmark = pytest.mark.usefixtures("messaging_platforms_enabled")  # AIS-444: tests of retired, kept adapter code
+
 
 def _ensure_discord_mock():
     if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):

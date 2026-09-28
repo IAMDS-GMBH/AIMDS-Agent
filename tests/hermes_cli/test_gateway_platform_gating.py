@@ -12,8 +12,10 @@ Currently:
   Windows path that works.
 """
 
+import pytest
 
 
+@pytest.mark.usefixtures("messaging_platforms_enabled")  # AIS-444: retired adapters, kept code
 class TestMatrixHiddenOnWindows:
     def test_matrix_present_on_linux(self, monkeypatch):
         """Sanity: matrix is still in the picker on Linux/macOS."""

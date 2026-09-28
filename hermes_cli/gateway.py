@@ -6374,7 +6374,8 @@ def _gateway_command_inner(args):
         return
 
     if subcmd == "setup":
-        gateway_setup()
+        # AIS-444: AIMDS-Agent offers no messaging platforms to connect.
+        print("Messaging platforms (Telegram, Discord, WhatsApp, ...) are not available in AIMDS-Agent.")
         return
 
     # Service management commands
