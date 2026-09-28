@@ -24,11 +24,22 @@ function isToday(date: Date, now = new Date()): boolean {
   )
 }
 
-// The job the intro should surface: the newest unseen output of any job, else
-// today's most recent brief (already read, but still the day's context).
+function isFromToday(job: CronJob, now: Date): boolean {
+  const date = outputDate(job)
+
+  return date !== null && isToday(date, now)
+}
+
+// The job the intro should surface: the newest unseen output of any job from
+// today, else today's most recent brief (already read, but still the day's
+// context). An unread output from an earlier day is not today's news (AIS-431:
+// after a long weekend the card kept showing Thursday's mail check) — it keeps
+// its "New" pill in the sidebar but stays out of the intro.
 export function pickBriefJob(jobs: CronJob[], unseen: CronJob[], now = new Date()): CronJob | null {
-  if (unseen.length > 0) {
-    return unseen[0]
+  const unseenToday = unseen.find(job => isFromToday(job, now))
+
+  if (unseenToday) {
+    return unseenToday
   }
 
   let best: CronJob | null = null
@@ -41,7 +52,7 @@ export function pickBriefJob(jobs: CronJob[], unseen: CronJob[], now = new Date(
 
     const date = outputDate(job)
 
-    if (!date || !isToday(date, now)) {
+    if (!date || !isFromToday(job, now)) {
       continue
     }
 

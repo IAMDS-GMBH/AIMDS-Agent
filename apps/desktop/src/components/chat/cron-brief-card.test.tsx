@@ -34,6 +34,26 @@ describe('pickBriefJob', () => {
     )
   })
 
+  it('skips unseen outputs from an earlier day', () => {
+    // AIS-431: backend off Thu-Mon, Thursday's mail check still unread on Monday.
+    const monday = new Date(2026, 8, 28, 9, 35)
+
+    const stale = job({
+      id: 'mail',
+      name: 'M365 mail check',
+      last_output_at: new Date(2026, 8, 24, 15, 0).toISOString()
+    })
+
+    const brief = job({ id: 'brief', last_output_at: new Date(2026, 8, 28, 9, 33).toISOString() })
+
+    expect(pickBriefJob([stale], [stale], monday)).toBeNull()
+    expect(pickBriefJob([stale, brief], [brief, stale], monday)?.id).toBe('brief')
+
+    const seenBrief = { ...brief, last_seen_at: new Date(2026, 8, 28, 9, 34).toISOString() }
+
+    expect(pickBriefJob([stale, seenBrief], [stale], monday)?.id).toBe('brief')
+  })
+
   it("falls back to today's most recent brief job", () => {
     const jobs = [
       job({ id: 'old', last_output_at: '2026-09-07T06:00:00Z', last_seen_at: '2026-09-07T07:00:00Z' }),
@@ -125,6 +145,15 @@ describe('CronBriefCard', () => {
     await waitFor(() => expect(screen.getByText('Parsed locally.')).toBeTruthy())
     expect(screen.getByText('Do it.')).toBeTruthy()
     expect(readFileText).toHaveBeenCalledWith('/tmp/brief.md')
+  })
+
+  it('does not present an unread output from an earlier day', () => {
+    const yesterday = new Date()
+    yesterday.setDate(yesterday.getDate() - 1)
+    setCronJobs([job({ last_output_at: yesterday.toISOString(), last_output_path: '/tmp/brief.md' })])
+    const { container } = renderCard()
+
+    expect(container.querySelector('[data-slot="cron_brief_card"]')).toBeNull()
   })
 
   it('offers the run link only when a run session is known', () => {
