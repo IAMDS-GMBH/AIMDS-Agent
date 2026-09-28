@@ -3859,8 +3859,11 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 
 # AIS-412: free-text search parameters go by many names across servers. An
 # unknown key from one group is renamed to the single member the tool declares.
+# AIS-432: `project_id` for a tool that takes `project` (OpenProject's
+# list_time_entries, SUP-20260928-093333) is the same kind of slip.
 _ARG_SYNONYM_GROUPS: Tuple[frozenset, ...] = (
     frozenset({"search", "query", "q", "search_query", "search_text", "keyword", "keywords", "term", "text"}),
+    frozenset({"project", "project_id"}),
 )
 
 

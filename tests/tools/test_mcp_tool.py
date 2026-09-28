@@ -5551,6 +5551,15 @@ class TestCheckMcpArgNames:
         _args, _notes, error = _check_mcp_arg_names(server, "list_emails", {"search": "x", "tool_name": "list_emails"})
         assert error is None
 
+    def test_project_id_is_passed_as_project(self):
+        """AIS-432 / SUP-20260928-093333: OpenProject's list_time_entries takes `project`."""
+        from tools.mcp_tool import _check_mcp_arg_names
+
+        server = self._server({"date_from": {"type": "string"}, "project": {"type": "string"}})
+        args, notes, error = _check_mcp_arg_names(server, "list_emails", {"date_from": "2026-09-01", "project_id": "AIS"})
+        assert error is None and args == {"date_from": "2026-09-01", "project": "AIS"}
+        assert notes and "'project_id'" in notes[0] and "'project'" in notes[0]
+
 
 def test_stdio_env_carries_the_agent_hermes_home(monkeypatch, tmp_path):
     """AIS-418: every stdio MCP keeps its state under the agent's Hermes home."""

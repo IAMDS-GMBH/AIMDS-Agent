@@ -535,6 +535,62 @@ def _day(value: Any, what: str) -> str:
         raise ToolError(f"{what} must be an ISO date (YYYY-MM-DD), got '{value}'.") from exc
 
 
+def _local_tz() -> Optional[dt.tzinfo]:
+    """HERMES_TIMEZONE / TIMEZONE as a zone, or None for the system's own."""
+    name = (os.environ.get("HERMES_TIMEZONE") or os.environ.get("TIMEZONE") or "").strip()
+    if not name:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(name)
+    except Exception:  # unknown name, or no tz database (Windows without tzdata)
+        return None
+
+
+def _as_local(moment: dt.datetime) -> dt.datetime:
+    """A datetime in the user's timezone; naive values are local already."""
+    tz = _local_tz()
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=tz) if tz else moment.astimezone()
+    return moment.astimezone(tz) if tz else moment.astimezone()
+
+
+def _clock(value: Any, what: str) -> Tuple[int, str]:
+    """'9', '9:00', '09:00', '9.30', '9h30' -> (minutes of day, 'HH:MM')."""
+    text = re.sub(r"[.h]", ":", str(value or "").strip().lower()).rstrip(":")
+    match = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?(?::\d{2})?", text)
+    minutes = int(match.group(1)) * 60 + int(match.group(2) or 0) if match else -1
+    if not match or int(match.group(2) or 0) > 59 or not 0 <= minutes <= 24 * 60:
+        raise ToolError(f"{what} must be a time of day like '09:00', got '{value}'.")
+    return minutes, f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def _hhmm(minutes: int) -> str:
+    return f"{minutes // 60 % 24:02d}:{minutes % 60:02d}"
+
+
+def _local_clock(value: Any) -> Optional[str]:
+    """An API datetime ('2026-09-24T07:00:00Z') as local 'HH:MM', or None."""
+    try:
+        moment = dt.datetime.fromisoformat(str(value or "").strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return _as_local(moment).strftime("%H:%M")
+
+
+def _start_iso(day: str, minutes: int) -> str:
+    """spent_on + local start time -> ISO datetime with the local offset."""
+    return _as_local(dt.datetime.fromisoformat(day) + dt.timedelta(minutes=minutes)).isoformat()
+
+
+def _start_time_writable(form: Dict[str, Any]) -> bool:
+    """Exact time tracking is an admin setting (Administration -> Time and
+    costs); when it is off the form schema has no writable ``startTime``."""
+    spec = ((form.get("_embedded") or {}).get("schema") or {}).get("startTime")
+    return isinstance(spec, dict) and spec.get("writable", True) is not False
+
+
 def _preview(action: str, summary: Dict[str, Any], errors: Dict[str, str]) -> Dict[str, Any]:
     ready = not errors
     return {
@@ -660,7 +716,7 @@ def search_work_packages(
     project: Optional[str] = None,
     text: Optional[str] = None,
     status: Optional[str] = None,
-    assignee: Optional[str] = None,
+    assignee: str = "me",
     type: Optional[str] = None,
     updated_since: Optional[str] = None,
     sort: str = "updated_at desc",
@@ -671,7 +727,8 @@ def search_work_packages(
 
     - text: matches subject and id/display id
     - status: 'open', 'closed' or a status name
-    - assignee: 'me', a user id or a member name
+    - assignee: 'me' (default: the current user's work packages), a user id,
+      a member name, or 'all' for everyone's
     - type: 'Task', 'Bug', ... ; updated_since: YYYY-MM-DD
     - sort: '<field> asc|desc' (updated_at, created_at, id, due_date, priority, status)
     Use get_work_package for the description and comments.
@@ -693,17 +750,20 @@ def search_work_packages(
             filters.append({"status_id": {"operator": "o" if folded == "open" else "c", "values": []}})
         else:
             filters.append({"status_id": {"operator": "=", "values": [str(_pick_named(_statuses(), status, "status")["id"])]}})
-    if assignee:
-        folded = str(assignee).strip().casefold()
+    # AIS-432 (SUP-20260924-131414): like list_time_entries, a search is the
+    # current user's unless the caller explicitly asks for everyone's.
+    who = str(assignee or "me").strip()
+    if who.casefold() != "all":
+        folded = who.casefold()
         if folded == "me":
             uid = str(_me().get("id"))
-        elif str(assignee).strip().isdigit():
-            uid = str(assignee).strip()
+        elif who.isdigit():
+            uid = who
         else:
             principals = _elements(
-                _request("GET", "principals", params={"filters": _filters({"name": {"operator": "~", "values": [str(assignee)]}}), "pageSize": 20})
+                _request("GET", "principals", params={"filters": _filters({"name": {"operator": "~", "values": [who]}}), "pageSize": 20})
             )
-            uid = str(_pick_named(principals, assignee, "assignee")["id"])
+            uid = str(_pick_named(principals, who, "assignee")["id"])
         filters.append({"assigned_to_id": {"operator": "=", "values": [uid]}})
     if type:
         types = _project_types(str(proj["id"])) if proj else _cached("types", lambda: _elements(_request("GET", "types")), ttl=3600)
@@ -734,6 +794,8 @@ def search_work_packages(
     result: Dict[str, Any] = {"total": total, "page": max(1, int(page or 1)), "pages": pages, "work_packages": items}
     if total > size:
         result["hint"] = "More results exist: narrow the filters rather than paging through everything."
+    elif not total and who.casefold() == "me":
+        result["hint"] = "Only work packages assigned to the current user were searched; assignee='all' searches everyone's."
     return result
 
 
@@ -811,7 +873,7 @@ def _time_entry_row(entry: Dict[str, Any], display: Dict[str, str]) -> Dict[str,
     project = _project_by_id(_href_id(links.get("project")))
     hours = _iso_to_hours(entry.get("hours"))
     comment = (entry.get("comment") or {}).get("raw") if isinstance(entry.get("comment"), dict) else entry.get("comment")
-    return {
+    row: Dict[str, Any] = {
         "id": entry.get("id"),
         "spent_on": entry.get("spentOn"),
         "hours": hours,
@@ -824,6 +886,16 @@ def _time_entry_row(entry: Dict[str, Any], display: Dict[str, str]) -> Dict[str,
         "comment": comment or "",
         "updated_at": entry.get("updatedAt"),
     }
+    # AIS-432: OpenProject 16+ "exact time tracking" gives the entry a start
+    # (and end) time. As local HH:MM, `start_time` also reaches the ingestor,
+    # which joins it with spent_on into the row timestamp.
+    start = _local_clock(entry.get("startTime"))
+    if start:
+        end = _local_clock(entry.get("endTime"))
+        if not end:
+            end = _hhmm(int(start[:2]) * 60 + int(start[3:]) + round(hours * 60))
+        row["start_time"], row["end_time"] = start, end
+    return row
 
 
 @mcp.tool()
@@ -1177,11 +1249,46 @@ def manage_relation(
     raise ToolError("action must be 'create' or 'delete'.")
 
 
+def _booking_span(
+    start_time: Optional[str], end_time: Optional[str], hours: Optional[str], *, need_duration: bool
+) -> Tuple[Optional[int], Optional[str]]:
+    """(start minute of day or None, ISO hours or None) from the time arguments.
+
+    start + end books the exact period and derives hours; start + hours is
+    fine as well; hours alone stays a plain duration.
+    """
+    start = _clock(start_time, "start_time") if start_time not in (None, "") else None
+    end = _clock(end_time, "end_time") if end_time not in (None, "") else None
+    if end and not start:
+        raise ToolError("end_time needs start_time; pass hours alone to book a duration without times.")
+    if start and start[0] >= 24 * 60:
+        raise ToolError("start_time must be before 24:00.")
+    iso = _hours_iso(hours) if hours is not None else None
+    if start and end:
+        span = end[0] - start[0]
+        if span <= 0:
+            raise ToolError(f"end_time {end[1]} must be after start_time {start[1]} on the same day.")
+        if iso and abs(round(_iso_to_hours(iso) * 60) - span) > 1:
+            raise ToolError(
+                f"hours {_iso_to_hours(iso):g} does not match {start[1]}-{end[1]} ({span / 60:g} h): "
+                "pass start_time and end_time, or correct hours."
+            )
+        iso = iso or _hours_iso(f"{span}m")
+    if need_duration and not iso:
+        raise ToolError(
+            "The booking needs its time: start_time and end_time ('09:00', '10:30'), "
+            "start_time with hours, or hours alone (1.5 or '1h30m')."
+        )
+    return (start[0] if start else None), iso
+
+
 def log_time(
     action: str = "create",
     work_package: Optional[str] = None,
     spent_on: Optional[str] = None,
     hours: Optional[str] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
     activity: Optional[str] = None,
     comment: Optional[str] = None,
     time_entry_id: Optional[str] = None,
@@ -1189,9 +1296,13 @@ def log_time(
 ) -> Dict[str, Any]:
     """Book, change or delete time on a work package (preview first, confirm=true to save).
 
-    - create: work_package, spent_on (YYYY-MM-DD, default today), hours (1.5 or '1h30m'), activity (project_context lists them), comment
+    - create: work_package, spent_on (YYYY-MM-DD, default today), activity (project_context lists them), comment
+    - time: start_time + end_time ('09:00', '10:30', local time) book the exact period and hours
+      follows from them; start_time + hours works too; hours alone (1.5 or '1h30m') books a duration
+      without times. Whenever the user names times, book them as start_time/end_time.
     - update: time_entry_id plus the fields to change
     - delete: time_entry_id
+    If the instance does not track exact times, the duration is booked and `warning` says so.
     The saved entry comes back in `time_entries`, same shape as list_time_entries.
     """
     _require_writes()
@@ -1214,6 +1325,7 @@ def log_time(
         if not time_entry_id:
             raise ToolError("update needs time_entry_id (from list_time_entries).")
         existing = _request("GET", f"time_entries/{time_entry_id}", not_found=f"Time entry {time_entry_id} was not found.")
+    start_minute, hours_iso = _booking_span(start_time, end_time, hours, need_duration=verb == "create")
     wp = _get_wp(work_package) if work_package else None
     if verb == "create" and not wp:
         raise ToolError("create needs work_package (display id like 'AIS-408').")
@@ -1224,30 +1336,54 @@ def log_time(
         body["_links"]["entity"] = _link("work_packages", wp.get("id"))
     if spent_on or verb == "create":
         body["spentOn"] = _day(spent_on or dt.date.today().isoformat(), "spent_on")
-    if hours is not None or verb == "create":
-        body["hours"] = _hours_iso(hours)
+    if hours_iso:
+        body["hours"] = hours_iso
     if comment is not None:
         body["comment"] = {"format": "plain", "raw": str(comment)}
     form_path = "time_entries/form" if verb == "create" else f"time_entries/{time_entry_id}/form"
     form = _request("POST", form_path, body=body)
+    revalidate = False
+    warning = None
+    if start_minute is not None:
+        # AIS-432 (SUP-20260928-093333): exact times are an OpenProject admin
+        # setting; without it the form has no writable startTime.
+        if _start_time_writable(form):
+            day = body.get("spentOn") or _day((existing or {}).get("spentOn"), "spent_on")
+            body["startTime"] = _start_iso(day, start_minute)
+            revalidate = True
+        else:
+            warning = (
+                "Exact time tracking is not enabled on this OpenProject instance (an administrator switches it on "
+                "under Administration -> Time and costs); the duration was booked without start and end time."
+            )
     if activity:
         chosen = _pick_named(_schema_allowed(form, "activity"), activity, "activity")
         activity = chosen.get("name") or activity
         body["_links"]["activity"] = _link("time_entries/activities", chosen["id"])
+        revalidate = True
+    if revalidate:
         form = _request("POST", form_path, body=body)
     errors = _validation_errors(form)
+    booked_hours = _iso_to_hours(body.get("hours") or (existing or {}).get("hours"))
     summary = {
         "work_package": (wp or {}).get("displayId"),
         "spent_on": body.get("spentOn"),
+        "start_time": _hhmm(start_minute) if "startTime" in body and start_minute is not None else None,
+        "end_time": _hhmm(start_minute + round(booked_hours * 60)) if "startTime" in body and start_minute is not None else None,
         "hours": _iso_to_hours(body.get("hours")) if body.get("hours") else None,
         "activity": activity,
         "comment": comment,
         "time_entry_id": time_entry_id,
     }
     if not confirm:
-        return _preview(f"{verb}_time_entry", {k: v for k, v in summary.items() if v is not None}, errors)
+        result = _preview(f"{verb}_time_entry", {k: v for k, v in summary.items() if v is not None}, errors)
+        if warning:
+            result["warning"] = warning
+        return result
     _reject_if_invalid(errors)
-    payload = (form.get("_embedded") or {}).get("payload") or body
+    payload = dict((form.get("_embedded") or {}).get("payload") or body)
+    if "startTime" in body:
+        payload.setdefault("startTime", body["startTime"])
     saved = (
         _request("POST", "time_entries", body=payload)
         if verb == "create"
@@ -1255,7 +1391,10 @@ def log_time(
     )
     display = {str(wp.get("id")): str(wp.get("displayId"))} if wp else {}
     row = _time_entry_row(saved, display)
-    return {"state": "created" if verb == "create" else "updated", "time_entry": row, "time_entries": [row]}
+    result = {"state": "created" if verb == "create" else "updated", "time_entry": row, "time_entries": [row]}
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 WRITE_TOOLS = (create_work_package, update_work_package, delete_work_package, add_comment, manage_relation, log_time)
