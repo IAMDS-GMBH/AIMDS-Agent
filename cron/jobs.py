@@ -456,6 +456,29 @@ def _catch_up_in_same_period(job: dict, missed_at: datetime, now: datetime) -> b
     return missed_local.isocalendar()[:2] == now_local.isocalendar()[:2]
 
 
+def _latest_missed_occurrence(job: dict, missed_at: datetime, now: datetime) -> datetime:
+    """The newest occurrence of a daily-or-longer cron job that is already due (AIS-431).
+
+    A backend that was off for days still holds the first occurrence it
+    missed (Thursday 08:00) as ``next_run_at``. The grace window and the
+    same-period rule have to judge the newest due occurrence (Monday 08:00),
+    not that one — otherwise the stale Thursday is fast-forwarded past
+    Monday and today's run is lost. Older misses are skipped either way.
+    Sub-daily jobs, interval jobs and a missing croniter keep ``missed_at``.
+    """
+    schedule = job.get("schedule") or {}
+    if schedule.get("kind") != "cron" or not HAS_CRONITER:
+        return missed_at
+    try:
+        latest = croniter(schedule["expr"], now).get_prev(datetime)
+        following = croniter(schedule["expr"], latest).get_next(datetime)
+    except Exception:
+        return missed_at
+    if latest <= missed_at or (following - latest).total_seconds() < 20 * 3600:
+        return missed_at
+    return latest
+
+
 def _compute_grace_seconds(schedule: dict) -> int:
     """Compute how late a job can be and still catch up instead of fast-forwarding.
 
@@ -1203,11 +1226,12 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # the next future occurrence instead of firing a stale run.
             grace = _compute_grace_seconds(schedule)
             manual_triggered_at = job.get("manual_triggered_at")
+            missed_at = _latest_missed_occurrence(job, next_run_dt, now)
             if (
                 kind in {"cron", "interval"}
                 and not manual_triggered_at
-                and (now - next_run_dt).total_seconds() > grace
-                and not _catch_up_in_same_period(job, next_run_dt, now)
+                and (now - missed_at).total_seconds() > grace
+                and not _catch_up_in_same_period(job, missed_at, now)
             ):
                 # Job is past its catch-up grace window — this is a stale missed run.
                 # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.

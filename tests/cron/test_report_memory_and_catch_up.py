@@ -38,6 +38,69 @@ class TestCatchUp:
         assert not cron_jobs._catch_up_in_same_period(_job("0 8 * * *", catch_up=False), missed, missed + timedelta(hours=3))
 
 
+@pytest.fixture()
+def _jobs_store(tmp_path, monkeypatch):
+    monkeypatch.setattr(cron_jobs, "CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr(cron_jobs, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr(cron_jobs, "OUTPUT_DIR", tmp_path / "cron" / "output")
+
+    def _at(now):
+        monkeypatch.setattr(cron_jobs, "_hermes_now", lambda: now)
+
+    return _at
+
+
+def _stored_job(expr, next_run_at, **extra):
+    return {"id": "brief", "name": "Morning Briefing", "prompt": "brief", "enabled": True,
+            "state": "scheduled", "schedule": {"kind": "cron", "expr": expr},
+            "next_run_at": next_run_at.isoformat(), **extra}
+
+
+@pytest.mark.skipif(not cron_jobs.HAS_CRONITER, reason="croniter missing")
+class TestLatestMissedOccurrence:
+    """AIS-431: backend off Thu 16:00 - Mon 09:30, next_run_at still Thu 25.09 08:00."""
+
+    STALE = datetime(2026, 9, 25, 8, 0, tzinfo=TZ)
+
+    def test_todays_run_within_grace_runs_once(self, _jobs_store):
+        now = datetime(2026, 9, 28, 9, 32, tzinfo=TZ)
+        _jobs_store(now)
+        cron_jobs.save_jobs([_stored_job("0 8 * * 1-5", self.STALE)])
+        assert [j["id"] for j in cron_jobs.get_due_jobs()] == ["brief"]
+        cron_jobs.mark_job_run("brief", True)
+        assert cron_jobs.get_due_jobs() == []
+        assert cron_jobs.load_jobs()[0]["next_run_at"].startswith("2026-09-29T08:00")
+
+    def test_same_day_outside_grace_still_runs(self, _jobs_store):
+        # 11:00 is past the 2 h grace, but AIS-429's same-day rule catches the
+        # Monday 08:00 run up; Thursday and Friday stay skipped.
+        _jobs_store(datetime(2026, 9, 28, 11, 0, tzinfo=TZ))
+        cron_jobs.save_jobs([_stored_job("0 8 * * 1-5", self.STALE)])
+        assert [j["id"] for j in cron_jobs.get_due_jobs()] == ["brief"]
+
+    def test_opt_out_runs_only_within_grace(self, _jobs_store):
+        cron_jobs.save_jobs([_stored_job("0 8 * * 1-5", self.STALE, catch_up=False)])
+        _jobs_store(datetime(2026, 9, 28, 9, 32, tzinfo=TZ))
+        assert [j["id"] for j in cron_jobs.get_due_jobs()] == ["brief"]
+        cron_jobs.save_jobs([_stored_job("0 8 * * 1-5", self.STALE, catch_up=False)])
+        _jobs_store(datetime(2026, 9, 28, 11, 0, tzinfo=TZ))
+        assert cron_jobs.get_due_jobs() == []
+        assert cron_jobs.load_jobs()[0]["next_run_at"].startswith("2026-09-29T08:00")
+
+    def test_weekend_start_skips_the_missed_weekdays(self, _jobs_store):
+        # Saturday: the newest occurrence is Friday's, a day old — skipped.
+        _jobs_store(datetime(2026, 9, 26, 10, 0, tzinfo=TZ))
+        cron_jobs.save_jobs([_stored_job("0 8 * * 1-5", self.STALE)])
+        assert cron_jobs.get_due_jobs() == []
+        assert cron_jobs.load_jobs()[0]["next_run_at"].startswith("2026-09-28T08:00")
+
+    def test_sub_daily_job_still_fast_forwards(self, _jobs_store):
+        _jobs_store(datetime(2026, 9, 28, 9, 32, tzinfo=TZ))
+        cron_jobs.save_jobs([_stored_job("*/30 * * * *", self.STALE)])
+        assert cron_jobs.get_due_jobs() == []
+        assert cron_jobs.load_jobs()[0]["next_run_at"].startswith("2026-09-28T10:00")
+
+
 def test_report_keys_are_stable_and_language_free():
     assert rm.report_key("morning-brief", date(2026, 9, 25)) == "morning-brief-2026-09-25"
     assert rm.report_key("weekly-review", date(2026, 9, 25)) == "weekly-review-2026-W39"
