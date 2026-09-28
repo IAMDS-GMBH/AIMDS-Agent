@@ -736,7 +736,40 @@ def _live_system_guard(request, monkeypatch):
                     return True
         return False
 
+    def _is_gateway_spawn(cmd) -> bool:
+        # A real ``hermes gateway run|start|restart`` started from a test
+        # outlives it: detached (setsid, parent = launchd/init), it keeps a
+        # cron ticker and the kanban dispatcher running against the test's
+        # HERMES_HOME and restarts itself on every checkout change — the
+        # developer machine collects one per test run and slows down.
+        cmd_str = _cmd_to_string(cmd)
+        low = cmd_str.lower()
+        if "hermes" not in low or "gateway" not in low:
+            return False
+        try:
+            tokens = _shlex.split(cmd_str)
+        except ValueError:
+            tokens = cmd_str.split()
+        if "--help" in tokens or "-h" in tokens:
+            return False  # argparse probes exit right away
+        for i, tok in enumerate(tokens[:-1]):
+            if tok != "gateway":
+                continue
+            rest = [t for t in tokens[i + 1:] if not t.startswith("-")]
+            if rest and rest[0] in ("run", "start", "restart"):
+                return True
+        return False
+
     def _check_subprocess_cmd(name, cmd):
+        if _is_gateway_spawn(cmd):
+            raise RuntimeError(
+                f"tests/conftest.py live-system guard: blocked "
+                f"subprocess.{name}({cmd!r}) — would start a real, detached "
+                "Hermes gateway that outlives the test. Mock "
+                "_spawn_detached_gateway / launch_detached_profile_gateway_restart "
+                "/ _spawn_hermes_action, or mark with "
+                "@pytest.mark.live_system_guard_bypass."
+            )
         if _is_blocked_systemctl(cmd):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
