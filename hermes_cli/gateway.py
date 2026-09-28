@@ -6224,6 +6224,18 @@ def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
 
 
 
+def _spawned_by_a_test() -> bool:
+    """True in a gateway process a test started as a real subprocess (AIS-445).
+
+    Such a gateway detaches (setsid, re-parented to launchd/init), keeps a
+    cron ticker running against the test's temporary HERMES_HOME and restarts
+    itself on every checkout change — developer machines collected one per
+    test run. The pytest process itself (tests calling ``gateway_command``
+    directly) has ``pytest`` loaded and is not affected.
+    """
+    return bool(os.environ.get("PYTEST_CURRENT_TEST")) and "pytest" not in sys.modules
+
+
 def gateway_command(args):
     """Handle gateway subcommands."""
     try:
@@ -6365,6 +6377,13 @@ def _gateway_command_inner(args):
 
     # Default to run if no subcommand
     if subcmd is None or subcmd == "run":
+        if _spawned_by_a_test():
+            print(
+                "Refusing to run a gateway spawned by a test (PYTEST_CURRENT_TEST is set "
+                "but pytest is not loaded): it would outlive the test run.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         if _maybe_redirect_run_to_s6_supervision(args):
             return  # unreachable; execvp doesn't return
         verbose = getattr(args, "verbose", 0)
