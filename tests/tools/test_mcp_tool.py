@@ -2118,6 +2118,66 @@ class TestReconnection:
 
         asyncio.run(_test())
 
+    def test_drops_of_stable_sessions_do_not_add_up_to_give_up(self):
+        """Idle drops hours apart each start a fresh streak (SUP-20260927-211444)."""
+        from tools.mcp_tool import MCPServerTask, _MAX_RECONNECT_RETRIES
+
+        cycles = _MAX_RECONNECT_RETRIES * 2
+        run_count = 0
+
+        async def patched_run_stdio(self_srv, config):
+            nonlocal run_count
+            run_count += 1
+            self_srv.session = MagicMock()
+            self_srv._ready.set()
+            if run_count <= cycles:
+                raise ConnectionError("idle stream closed")
+            self_srv._shutdown_event.set()
+
+        async def _test():
+            server = MCPServerTask("test_srv")
+            with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio), \
+                 patch("tools.mcp_tool._STABLE_SESSION_SECONDS", 0), \
+                 patch("asyncio.sleep", new_callable=AsyncMock) as sleep, \
+                 patch("hermes_cli.auto_incidents.report_bundled_mcp_failure") as report:
+                await server.run({"command": "test"})
+            assert run_count == cycles + 1
+            report.assert_not_called()
+            # Backoff restarts too: every reconnect waits the initial second.
+            assert {call.args[0] for call in sleep.await_args_list} == {1.0}
+
+        asyncio.run(_test())
+
+    def test_flapping_session_still_gives_up_with_root_cause(self):
+        """A session that dies right after connecting keeps counting and names the cause."""
+        from tools.mcp_tool import MCPServerTask, _MAX_RECONNECT_RETRIES
+
+        run_count = 0
+
+        async def patched_run_stdio(self_srv, config):
+            nonlocal run_count
+            run_count += 1
+            self_srv.session = MagicMock()
+            self_srv._ready.set()
+            raise ExceptionGroup(
+                "unhandled errors in a TaskGroup", [ConnectionResetError("peer reset")]
+            )
+
+        async def _test():
+            server = MCPServerTask("test_srv")
+            with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio), \
+                 patch("tools.mcp_tool._STABLE_SESSION_SECONDS", 3600), \
+                 patch("asyncio.sleep", new_callable=AsyncMock), \
+                 patch("hermes_cli.auto_incidents.report_bundled_mcp_failure") as report:
+                await server.run({"command": "test"})
+            assert run_count == _MAX_RECONNECT_RETRIES + 1
+            report.assert_called_once()
+            name, kind, detail = report.call_args.args
+            assert (name, kind) == ("test_srv", "reconnect-give-up")
+            assert detail == "ConnectionResetError: peer reset"
+
+        asyncio.run(_test())
+
     def test_no_reconnect_on_shutdown(self):
         """If shutdown is requested, don't attempt reconnection."""
         from tools.mcp_tool import MCPServerTask
