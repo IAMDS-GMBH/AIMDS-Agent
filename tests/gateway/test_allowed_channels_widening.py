@@ -235,6 +235,7 @@ class TestDingTalkAllowedChats:
 # Mattermost (env-var only — no config.yaml bridge)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("messaging_platforms_enabled")  # AIS-444: retired adapters, kept code
 class TestMattermostAllowedChannels:
     """Mattermost whitelist logic — replicated since the adapter reads config
     with env-var fallback inline inside _handle_post rather than through a

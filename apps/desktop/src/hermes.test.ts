@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getCronJobLatestOutput, getCronJobRuns, listAllProfileSessions, listSessions, markCronJobSeen } from './hermes'
+import {
+  getCronJobLatestOutput,
+  getCronJobRuns,
+  listAllProfileSessions,
+  listSessions,
+  markCronJobSeen,
+  restartHermesBackend
+} from './hermes'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -113,5 +120,28 @@ describe('Hermes REST session helpers', () => {
 
     api.mockResolvedValueOnce({})
     expect(await getCronJobRuns('job-1')).toEqual([])
+  })
+})
+
+describe('restartHermesBackend', () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'hermesDesktop')
+  })
+
+  it('restarts the desktop backend over IPC instead of the gateway REST route', async () => {
+    const api = vi.fn()
+    const restartBackend = vi.fn().mockResolvedValue({ ok: true })
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api, restartBackend } })
+
+    await expect(restartHermesBackend()).resolves.toEqual({ ok: true })
+
+    expect(restartBackend).toHaveBeenCalledTimes(1)
+    expect(api).not.toHaveBeenCalled()
+  })
+
+  it('rejects when the preload bridge has no backend restart', async () => {
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api: vi.fn() } })
+
+    await expect(restartHermesBackend()).rejects.toThrow('Backend restart is not available')
   })
 })

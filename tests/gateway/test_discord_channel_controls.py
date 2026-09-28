@@ -9,6 +9,8 @@ import pytest
 
 from gateway.config import PlatformConfig
 
+pytestmark = pytest.mark.usefixtures("messaging_platforms_enabled")  # AIS-444: tests of retired, kept adapter code
+
 
 def _ensure_discord_mock():
     """Install a mock discord module when discord.py isn't available."""

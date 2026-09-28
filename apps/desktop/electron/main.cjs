@@ -6546,6 +6546,16 @@ ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
   touchPoolBackend(profile)
   return { ok: true }
 })
+// AIS-444: user-triggered backend restart (Command Center / system status).
+// Same re-home as the nightly restart, but without scheduledRestartAt so a
+// boot problem after a manual restart is still reported. Never starts a
+// separate `hermes gateway` process: the desktop backend already runs cron.
+ipcMain.handle('hermes:backend:restart', async () => {
+  rememberLog('[backend] restart requested by renderer')
+  await teardownPrimaryBackendAndWait()
+  mainWindow?.reload()
+  return { ok: true }
+})
 ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => freshGatewayWsUrl(profile))
 ipcMain.handle('hermes:window:openSession', async (_event, sessionId) => {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {

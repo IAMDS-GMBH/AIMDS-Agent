@@ -4,6 +4,8 @@ import logging
 import os
 from unittest.mock import patch
 
+import pytest
+
 from gateway.config import (
     GatewayConfig,
     HomeChannel,
@@ -440,6 +442,7 @@ class TestLoadGatewayConfig:
 
         assert config.max_concurrent_sessions == 2
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_bridges_discord_thread_require_mention_from_config_yaml(self, tmp_path, monkeypatch):
         """discord.thread_require_mention in config.yaml should reach the runtime env var."""
         hermes_home = tmp_path / ".hermes"
@@ -477,6 +480,7 @@ class TestLoadGatewayConfig:
         # Env value preserved, not clobbered by yaml.
         assert os.environ.get("DISCORD_THREAD_REQUIRE_MENTION") == "true"
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_bridges_discord_allow_from_from_config_yaml(self, tmp_path, monkeypatch):
         """discord.allow_from should populate DISCORD_ALLOWED_USERS for auth."""
         hermes_home = tmp_path / ".hermes"
@@ -503,6 +507,7 @@ class TestLoadGatewayConfig:
             "123456789012345678,999888777666555444"
         )
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_bridges_discord_platform_extra_allow_from_to_env(self, tmp_path, monkeypatch):
         """platforms.discord.extra.allow_from should reach DISCORD_ALLOWED_USERS too."""
         hermes_home = tmp_path / ".hermes"
@@ -725,6 +730,7 @@ class TestLoadGatewayConfig:
 
         assert config.always_log_local is False
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_bridges_discord_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -746,6 +752,7 @@ class TestLoadGatewayConfig:
             "456": "Therapist mode",
         }
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_bridges_discord_history_backfill_settings_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

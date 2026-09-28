@@ -1,6 +1,8 @@
 // AIS-428: nightly backend restart — scheduled, caught up after sleep, never mid-turn.
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
 
 const { createNightlyRestarter, parseRestartTime, restartDue } = require('./nightly-restart.cjs')
 
@@ -73,4 +75,21 @@ test('an app relaunch counts as tonight\'s restart', async () => {
   h.set('2026-09-25T05:00:00')
   h.r.noteBackendStarted()
   assert.equal(await h.r.attempt('scheduled'), false)
+})
+
+// AIS-444: the user-triggered restart re-homes the desktop backend like the
+// nightly restart does, instead of spawning a separate `hermes gateway`.
+test('manual backend restart IPC: preload bridge and main handler agree', () => {
+  const preload = fs.readFileSync(path.join(__dirname, 'preload.cjs'), 'utf8')
+  const main = fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8')
+
+  assert.match(preload, /restartBackend: \(\) => ipcRenderer\.invoke\('hermes:backend:restart'\)/)
+
+  const handler = main.match(/ipcMain\.handle\('hermes:backend:restart', async \(\) => \{([\s\S]*?)\n\}\)/)
+  assert.ok(handler, 'main.cjs registers hermes:backend:restart')
+  assert.match(handler[1], /await teardownPrimaryBackendAndWait\(\)/)
+  assert.match(handler[1], /mainWindow\?\.reload\(\)/)
+  // A manual restart must still report boot problems.
+  assert.doesNotMatch(handler[1], /scheduledRestartAt/)
+  assert.doesNotMatch(handler[1], /api\/gateway/)
 })

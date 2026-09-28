@@ -149,7 +149,6 @@ const ArtifactsView = lazy(async () => ({ default: (await import('./artifacts'))
 const CommandCenterView = lazy(async () => ({ default: (await import('./command-center')).CommandCenterView }))
 const CronView = lazy(async () => ({ default: (await import('./cron')).CronView }))
 const HubView = lazy(async () => ({ default: (await import('./hub')).HubView }))
-const MessagingView = lazy(async () => ({ default: (await import('./messaging')).MessagingView }))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
@@ -1393,14 +1392,6 @@ export function DesktopController() {
           <Route
             element={
               <Suspense fallback={null}>
-                <MessagingView setStatusbarItemGroup={setStatusbarItemGroup} />
-              </Suspense>
-            }
-            path="messaging"
-          />
-          <Route
-            element={
-              <Suspense fallback={null}>
                 <ArtifactsView setStatusbarItemGroup={setStatusbarItemGroup} />
               </Suspense>
             }
@@ -1420,6 +1411,8 @@ export function DesktopController() {
           <Route element={null} path="command-center" />
           <Route element={null} path="agents" />
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="new" />
+          {/* AIS-444: the messaging page is gone; keep a stale #/messaging from resuming as a session id. */}
+          <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="messaging" />
           <Route element={<LegacySessionRedirect />} path="sessions/:sessionId" />
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="*" />
         </Routes>

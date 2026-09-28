@@ -1026,6 +1026,18 @@ class PluginContext:
 # PluginManager
 # ---------------------------------------------------------------------------
 
+
+def _is_retired_platform_plugin(manifest: "PluginManifest") -> bool:
+    """A bundled gateway platform plugin AIMDS-Agent no longer offers (AIS-444)."""
+    try:
+        from gateway.config import is_retired_platform
+    except Exception:
+        return False
+    name = str(manifest.name or "")
+    if name.endswith("-platform"):
+        name = name[: -len("-platform")]
+    return is_retired_platform(name)
+
 class PluginManager:
     """Central manager that discovers, loads, and invokes plugins."""
 
@@ -1188,6 +1200,14 @@ class PluginManager:
             # for the same reason: every platform Hermes ships must be
             # available out of the box without the user having to opt in.
             if manifest.source == "bundled" and manifest.kind in {"backend", "platform"}:
+                if manifest.kind == "platform" and _is_retired_platform_plugin(manifest):
+                    # AIS-444: messaging platforms are retired in AIMDS-Agent —
+                    # recorded for introspection, never imported.
+                    loaded = LoadedPlugin(manifest=manifest, enabled=False)
+                    loaded.error = "messaging platform not available in AIMDS-Agent"
+                    self._plugins[lookup_key] = loaded
+                    logger.debug("Skipping retired platform plugin '%s'", lookup_key)
+                    continue
                 self._load_plugin(manifest)
                 continue
 

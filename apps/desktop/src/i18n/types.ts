@@ -825,7 +825,7 @@ export interface Translations {
     archivedChats: string
     sections: Record<'system' | 'logs' | 'usage' | 'support', string>
     sectionDescriptions: Record<'system' | 'logs' | 'usage' | 'support', string>
-    nav: Record<'newChat' | 'settings' | 'skills' | 'discover' | 'messaging' | 'artifacts', { title: string; detail: string }>
+    nav: Record<'newChat' | 'settings' | 'skills' | 'discover' | 'artifacts', { title: string; detail: string }>
     sectionEntries: Record<'system' | 'logs' | 'usage' | 'support', { title: string; detail: string }>
     providerNavigate: string
     providerSessions: string
@@ -840,12 +840,10 @@ export interface Translations {
     gatewayRunning: string
     gatewayStopped: string
     hermesActiveSessions: (version: string, count: number) => string
-    restartMessaging: string
     updateHermes: string
     actionRunning: string
     actionDone: string
     actionFailed: string
-    actionStartedWaiting: string
     loadingStatus: string
     recentLogs: string
     noLogs: string
@@ -867,51 +865,6 @@ export interface Translations {
     topSkills: string
     noSkillActivity: string
     actions: (count: string) => string
-  }
-
-  messaging: {
-    search: string
-    loading: string
-    loadFailed: string
-    states: Record<string, string>
-    unknown: string
-    hintPendingRestart: string
-    hintGatewayStopped: string
-    credentialsSet: string
-    needsSetup: string
-    gatewayStopped: string
-    getCredentials: string
-    openSetupGuide: string
-    contactSystemAdmin: string
-    required: string
-    recommended: string
-    advanced: (count: number) => string
-    noTokenNeeded: string
-    enabled: string
-    disabled: string
-    unsavedChanges: string
-    saving: string
-    saveChanges: string
-    saved: string
-    replaceValue: string
-    openDocs: string
-    clearField: (key: string) => string
-    enableAria: (name: string) => string
-    disableAria: (name: string) => string
-    platformEnabled: (name: string) => string
-    platformDisabled: (name: string) => string
-    restartToApply: string
-    outlookMessagingToggleLabel: string
-    outlookMessagingToggleHelp: string
-    setupSaved: (name: string) => string
-    restartToReconnect: string
-    keyCleared: (key: string) => string
-    setupUpdated: (name: string) => string
-    failedUpdate: (name: string) => string
-    failedSave: (name: string) => string
-    failedClear: (key: string) => string
-    fieldCopy: Record<string, { label?: string; help?: string; placeholder?: string }>
-    platformIntro: Record<string, string>
   }
 
   profiles: {

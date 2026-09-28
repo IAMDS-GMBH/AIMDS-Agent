@@ -1071,6 +1071,18 @@ _RETIRED_MESSAGING_PLATFORMS = (
     "weixin",
     "qqbot",
     "yuanbao",
+    # AIS-444: every other gateway platform except ntfy.
+    "email",
+    "homeassistant",
+    "api_server",
+    "webhook",
+    "msgraph_webhook",
+    "wecom_callback",
+    "google_chat",
+    "irc",
+    "line",
+    "photon",
+    "simplex",
 )
 
 

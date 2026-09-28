@@ -115,3 +115,33 @@ class TestExistingInstallations:
 
         assert cfg["platforms"]["outlook"]["enabled"] is True
         assert cfg["platforms"]["slack"]["enabled"] is False
+
+
+class TestEveryPlatformButNtfyIsRetired:
+    """AIS-444: only ntfy stays available as a gateway platform."""
+
+    def test_migration_list_matches_the_gateway_gate(self):
+        from gateway.config import Platform, is_retired_platform
+        from hermes_cli.config import _RETIRED_MESSAGING_PLATFORMS
+
+        builtin = {m.value for m in Platform.__members__.values()} - {"local"}
+        assert builtin <= set(_RETIRED_MESSAGING_PLATFORMS)
+        assert "ntfy" not in _RETIRED_MESSAGING_PLATFORMS
+        assert all(is_retired_platform(name) for name in _RETIRED_MESSAGING_PLATFORMS)
+
+    def test_ntfy_and_local_stay_available(self):
+        from gateway.config import Platform, is_retired_platform
+
+        assert not is_retired_platform("ntfy")
+        assert not is_retired_platform(Platform.LOCAL)
+        assert is_retired_platform(Platform.WHATSAPP)
+        assert is_retired_platform("Discord")
+
+    def test_bundled_platform_plugins_other_than_ntfy_are_not_loaded(self):
+        from types import SimpleNamespace
+
+        from hermes_cli.plugins import _is_retired_platform_plugin
+
+        assert _is_retired_platform_plugin(SimpleNamespace(name="discord-platform"))
+        assert _is_retired_platform_plugin(SimpleNamespace(name="photon-platform"))
+        assert not _is_retired_platform_plugin(SimpleNamespace(name="ntfy-platform"))

@@ -384,6 +384,7 @@ class TestHandleUpdateCommand:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("messaging_platforms_enabled")  # AIS-444: retired adapters, kept code
 class TestUpdateCommandPlatformGate:
     """Tests for the platform-allowlist gate at the top of
     ``_handle_update_command``.  Built-in messaging platforms are listed in

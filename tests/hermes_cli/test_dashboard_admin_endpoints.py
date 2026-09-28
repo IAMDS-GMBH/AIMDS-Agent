@@ -7,6 +7,8 @@ contract and the CLI-config parity (servers/keys written via the API are
 visible to the CLI data layer), not specific catalog values.
 """
 
+from unittest.mock import patch
+
 import pytest
 
 
@@ -446,6 +448,7 @@ class TestPairingEndpoints:
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_list_and_bad_approve(self):
         data = self.client.get("/api/pairing").json()
         assert data == {"pending": [], "approved": []}
@@ -455,17 +458,48 @@ class TestPairingEndpoints:
         assert r.status_code == 404
 
 
+class TestRetiredMessagingGate:
+    """AIS-444: every messaging platform except ntfy is retired."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, _ = _client()
+
+    def test_writes_that_would_enable_a_retired_platform_are_refused(self):
+        assert self.client.post("/api/webhooks/enable").status_code == 410
+        assert self.client.post("/api/webhooks", json={"name": "gh", "deliver": "log"}).status_code == 410
+        r = self.client.post("/api/pairing/approve", json={"platform": "telegram", "code": "NOPE99"})
+        assert r.status_code == 410
+        r = self.client.post("/api/messaging/telegram/onboarding/start", json={})
+        assert r.status_code == 410
+
+    def test_catalog_lists_no_retired_platform(self):
+        ids = {entry["id"] for entry in self.client.get("/api/messaging/platforms").json()["platforms"]}
+        assert not ids & {"telegram", "discord", "whatsapp", "slack", "webhook", "api_server"}
+        r = self.client.put("/api/messaging/platforms/telegram", json={"enabled": True})
+        assert r.status_code == 404
+
+    def test_desktop_backend_never_starts_a_gateway(self, monkeypatch):
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        with patch("hermes_cli.web_server._spawn_hermes_action") as spawn:
+            assert self.client.post("/api/gateway/restart").status_code == 409
+            assert self.client.post("/api/gateway/start").status_code == 409
+        spawn.assert_not_called()
+
+
 class TestWebhookEndpoints:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_list_disabled_and_create_blocked(self):
         data = self.client.get("/api/webhooks").json()
         assert data["enabled"] is False
         r = self.client.post("/api/webhooks", json={"name": "gh", "deliver": "log"})
         assert r.status_code == 400
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_enable_platform_starts_gateway_restart(self, monkeypatch):
         import hermes_cli.web_server as ws
         from hermes_cli.config import load_config
@@ -498,6 +532,7 @@ class TestWebhookEndpoints:
         assert load_config()["platforms"]["webhook"]["enabled"] is True
         assert self.client.get("/api/webhooks").json()["enabled"] is True
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_enable_platform_reports_restart_failure_after_save(self, monkeypatch):
         import hermes_cli.web_server as ws
         from hermes_cli.config import load_config
@@ -523,6 +558,7 @@ class TestWebhookEndpoints:
         assert "supervisor unavailable" in data["restart_error"]
         assert load_config()["platforms"]["webhook"]["enabled"] is True
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_enable_platform_reuses_inflight_gateway_restart(self, monkeypatch):
         import hermes_cli.web_server as ws
         from hermes_cli.config import load_config
@@ -926,6 +962,7 @@ class TestWebhookToggleEndpoint:
         }
         save_config(cfg)
 
+    @pytest.mark.usefixtures("messaging_platforms_enabled")
     def test_create_toggle_disable(self):
         r = self.client.post(
             "/api/webhooks", json={"name": "hook1", "deliver": "log", "events": ["push"]}

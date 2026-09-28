@@ -51,7 +51,6 @@ import {
   ARTIFACTS_ROUTE,
   COMMAND_CENTER_ROUTE,
   CRON_ROUTE,
-  MESSAGING_ROUTE,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
   sessionRoute,
@@ -307,13 +306,6 @@ export function CommandPalette() {
             keywords: ['tools', 'toolsets'],
             label: cc.nav.skills.title,
             run: go(SKILLS_ROUTE)
-          },
-          {
-            action: 'nav.messaging',
-            icon: MessageCircle,
-            id: 'nav-messaging',
-            label: cc.nav.messaging.title,
-            run: go(MESSAGING_ROUTE)
           },
           {
             action: 'nav.artifacts',

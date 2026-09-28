@@ -22,6 +22,8 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
+pytestmark = pytest.mark.usefixtures("messaging_platforms_enabled")  # AIS-444: tests of retired, kept adapter code
+
 # Platform uses _missing_() for dynamic members, so "google_chat" is
 # resolvable via Platform("google_chat") even without a static
 # GOOGLE_CHAT attribute on the enum class.
