@@ -3,7 +3,6 @@ export const NEW_CHAT_ROUTE = '/'
 export const SETTINGS_ROUTE = '/settings'
 export const COMMAND_CENTER_ROUTE = '/command-center'
 export const SKILLS_ROUTE = '/skills'
-export const MESSAGING_ROUTE = '/messaging'
 export const ARTIFACTS_ROUTE = '/artifacts'
 export const TODOS_ROUTE = '/todos'
 export const CRON_ROUTE = '/cron'
@@ -19,7 +18,6 @@ export type AppView =
   | 'command-center'
   | 'cron'
   | 'hub'
-  | 'messaging'
   | 'profiles'
   | 'settings'
   | 'skills'
@@ -31,7 +29,6 @@ export type AppRouteId =
   | 'command-center'
   | 'cron'
   | 'hub'
-  | 'messaging'
   | 'new'
   | 'profiles'
   | 'settings'
@@ -49,7 +46,6 @@ export const APP_ROUTES = [
   { id: 'command-center', path: COMMAND_CENTER_ROUTE, view: 'command-center' },
   { id: 'skills', path: SKILLS_ROUTE, view: 'skills' },
   { id: 'hub', path: HUB_ROUTE, view: 'hub' },
-  { id: 'messaging', path: MESSAGING_ROUTE, view: 'messaging' },
   { id: 'artifacts', path: ARTIFACTS_ROUTE, view: 'artifacts' },
   { id: 'todos', path: TODOS_ROUTE, view: 'todos' },
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
@@ -58,7 +54,11 @@ export const APP_ROUTES = [
 ] as const satisfies readonly AppRoute[]
 
 const APP_VIEW_BY_PATH = new Map<string, AppView>(APP_ROUTES.map(route => [route.path, route.view]))
-const RESERVED_PATHS: ReadonlySet<string> = new Set(APP_ROUTES.map(route => route.path))
+// Paths of retired pages (AIS-444: messaging). The router redirects them to a
+// new chat; they must never be read as a session id in the meantime.
+const RETIRED_PATHS = ['/messaging']
+
+const RESERVED_PATHS: ReadonlySet<string> = new Set([...APP_ROUTES.map(route => route.path), ...RETIRED_PATHS])
 
 // Views that render as a full-screen modal card (OverlayView) over the shell.
 // While one is open the app's titlebar control clusters must hide so they don't

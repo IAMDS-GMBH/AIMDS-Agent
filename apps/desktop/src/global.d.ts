@@ -17,6 +17,9 @@ declare global {
       // Keepalive: mark a pool profile backend as recently used so the idle
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
+      // AIS-444: tear down the primary backend and reload the window (the
+      // desktop replacement for `hermes gateway restart`).
+      restartBackend?: () => Promise<{ ok: boolean }>
       getGatewayWsUrl: (profile?: null | string) => Promise<string>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false

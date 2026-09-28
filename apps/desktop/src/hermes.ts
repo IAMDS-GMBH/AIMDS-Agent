@@ -25,9 +25,6 @@ import type {
   McpCatalogInstallResponse,
   McpCatalogResponse,
   McpServersResponse,
-  MessagingPlatformsResponse,
-  MessagingPlatformTestResponse,
-  MessagingPlatformUpdate,
   MicrosoftAdminConsentResponse,
   ModelAssignmentRequest,
   ModelAssignmentResponse,
@@ -37,7 +34,6 @@ import type {
   OAuthProvidersResponse,
   OAuthStartResponse,
   OAuthSubmitResponse,
-  OutlookTestConnectionResponse,
   PaginatedSessions,
   ProfileCreatePayload,
   ProfileSetupCommand,
@@ -93,18 +89,11 @@ export type {
   McpCatalogResponse,
   McpServersResponse,
   McpServerSummary,
-  MessagingEnvVarInfo,
-  MessagingHomeChannel,
-  MessagingPlatformInfo,
-  MessagingPlatformsResponse,
-  MessagingPlatformTestResponse,
-  MessagingPlatformUpdate,
   ModelAssignmentRequest,
   ModelAssignmentResponse,
   ModelInfoResponse,
   ModelOptionProvider,
   ModelOptionsResponse,
-  OutlookTestConnectionResponse,
   PaginatedSessions,
   ProfileCreatePayload,
   ProfileInfo,
@@ -630,37 +619,6 @@ export function runToolsetPostSetup(name: string, key: string): Promise<ActionRe
   })
 }
 
-export function getMessagingPlatforms(): Promise<MessagingPlatformsResponse> {
-  return window.hermesDesktop.api<MessagingPlatformsResponse>({
-    path: '/api/messaging/platforms'
-  })
-}
-
-export function updateMessagingPlatform(
-  platformId: string,
-  body: MessagingPlatformUpdate
-): Promise<{ ok: boolean; platform: string }> {
-  return window.hermesDesktop.api<{ ok: boolean; platform: string }>({
-    path: `/api/messaging/platforms/${encodeURIComponent(platformId)}`,
-    method: 'PUT',
-    body
-  })
-}
-
-export function testMessagingPlatform(platformId: string): Promise<MessagingPlatformTestResponse> {
-  return window.hermesDesktop.api<MessagingPlatformTestResponse>({
-    path: `/api/messaging/platforms/${encodeURIComponent(platformId)}/test`,
-    method: 'POST'
-  })
-}
-
-export function testOutlookConnection(): Promise<OutlookTestConnectionResponse> {
-  return window.hermesDesktop.api<OutlookTestConnectionResponse>({
-    path: '/api/messaging/platforms/outlook/test-connection',
-    method: 'POST'
-  })
-}
-
 export function getCronJobs(): Promise<CronJob[]> {
   return window.hermesDesktop.api<CronJob[]>({
     path: '/api/cron/jobs'
@@ -875,11 +833,17 @@ export function setModelAssignment(body: ModelAssignmentRequest): Promise<ModelA
   })
 }
 
-export function restartGateway(): Promise<ActionResponse> {
-  return window.hermesDesktop.api<ActionResponse>({
-    path: '/api/gateway/restart',
-    method: 'POST'
-  })
+// AIS-444: restarts the desktop's own backend (teardown + window reload in the
+// main process). Deliberately not `/api/gateway/restart`, which spawns a
+// separate `hermes gateway` process with its own cron ticker.
+export function restartHermesBackend(): Promise<{ ok: boolean }> {
+  const restart = window.hermesDesktop?.restartBackend
+
+  if (!restart) {
+    return Promise.reject(new Error('Backend restart is not available in this build.'))
+  }
+
+  return restart()
 }
 
 export interface ActiveSubagentRecord {

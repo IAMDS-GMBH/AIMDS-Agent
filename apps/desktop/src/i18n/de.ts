@@ -246,7 +246,6 @@ export const de
       'nav.profiles': 'Profile öffnen',
       'nav.skills': 'Skills öffnen',
       'nav.discover': 'Entdecken öffnen',
-      'nav.messaging': 'Messaging öffnen',
       'nav.artifacts': 'Artefakte öffnen',
       'nav.cron': 'Automatische Aufgaben öffnen',
       'nav.agents': 'Agenten öffnen',
@@ -951,7 +950,6 @@ export const de
       settings: { title: 'Einstellungen', detail: 'Hermes Desktop konfigurieren' },
       skills: { title: 'Skills & Tools', detail: 'Skills, Toolsets und Anbieter aktivieren' },
       discover: { title: 'Entdecken', detail: 'LiteLLM-Agenten und Skills durchsuchen' },
-      messaging: { title: 'Messaging', detail: 'Telegram, Slack, Discord und mehr einrichten' },
       artifacts: { title: 'Artefakte', detail: 'Generierte Ausgaben durchsuchen' }
     },
     sectionEntries: {
@@ -973,12 +971,10 @@ export const de
     gatewayRunning: 'Messaging-Gateway läuft',
     gatewayStopped: 'Messaging-Gateway gestoppt',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Aktive Sitzungen ${count}`,
-    restartMessaging: 'Messaging neu starten',
     updateHermes: 'Hermes aktualisieren',
     actionRunning: 'läuft',
     actionDone: 'fertig',
     actionFailed: 'fehlgeschlagen',
-    actionStartedWaiting: 'Aktion gestartet, warte auf Status...',
     loadingStatus: 'Lade Status...',
     recentLogs: 'Aktuelle Protokolle',
     noLogs: 'Noch keine Protokolle geladen.',
@@ -1000,143 +996,6 @@ export const de
     topSkills: 'Top-Skills',
     noSkillActivity: 'Noch keine Skill-Aktivität.',
     actions: count => `${count} Aktionen`
-  },
-
-  messaging: {
-    search: 'Messaging suchen...',
-    loading: 'Lade Messaging-Plattformen...',
-    loadFailed: 'Messaging-Plattformen konnten nicht geladen werden',
-    states: {
-      connected: 'Verbunden',
-      connecting: 'Verbinde',
-      disabled: 'Deaktiviert',
-      fatal: 'Fehler',
-      gateway_stopped: 'Messaging-Gateway gestoppt',
-      not_configured: 'Einrichtung erforderlich',
-      pending_restart: 'Neustart erforderlich',
-      retrying: 'Wiederhole',
-      startup_failed: 'Start fehlgeschlagen'
-    },
-    unknown: 'Unbekannt',
-    hintPendingRestart: 'Gateway über die Statusleiste neu starten, um diese Änderung zu übernehmen.',
-    hintGatewayStopped: 'Gateway über die Statusleiste starten, um zu verbinden.',
-    credentialsSet: 'Zugangsdaten gesetzt',
-    needsSetup: 'Einrichtung erforderlich',
-    gatewayStopped: 'Messaging-Gateway gestoppt',
-    getCredentials: 'Zugangsdaten holen',
-    openSetupGuide: 'Einrichtungsanleitung öffnen',
-    contactSystemAdmin: 'Systemadministrator kontaktieren, um diese Funktion zu aktivieren.',
-    required: 'Erforderlich',
-    recommended: 'Empfohlen',
-    advanced: count => `Erweitert (${count})`,
-    noTokenNeeded: 'Diese Plattform benötigt hier keinen Token. Einrichtungsanleitung oben folgen, dann unten aktivieren.',
-    enabled: 'Aktiviert',
-    disabled: 'Deaktiviert',
-    unsavedChanges: 'Nicht gespeicherte Änderungen',
-    saving: 'Speichere...',
-    saveChanges: 'Änderungen speichern',
-    saved: 'Gespeichert',
-    replaceValue: 'Aktuellen Wert ersetzen',
-    openDocs: 'Dokumentation öffnen',
-    clearField: key => `${key} löschen`,
-    enableAria: name => `${name} aktivieren`,
-    disableAria: name => `${name} deaktivieren`,
-    platformEnabled: name => `${name} aktiviert`,
-    platformDisabled: name => `${name} deaktiviert`,
-    restartToApply: 'Gateway neu starten, damit diese Änderung wirksam wird.',
-    outlookMessagingToggleLabel: 'Als Messaging-Plattform aktivieren',
-    outlookMessagingToggleHelp:
-      'Standardmäßig dient Outlook nur als Tool für Chat und Cron-Jobs (Mails/Kalender lesen und schreiben auf Anfrage). Aktiviere diesen Schalter nur, wenn Hermes den Posteingang automatisch abrufen und selbstständig Antworten versenden soll.',
-    setupSaved: name => `${name}-Einrichtung gespeichert`,
-    restartToReconnect: 'Gateway neu starten, um mit den neuen Zugangsdaten zu verbinden.',
-    keyCleared: key => `${key} gelöscht`,
-    setupUpdated: name => `${name}-Einrichtung wurde aktualisiert.`,
-    failedUpdate: name => `Aktualisierung von ${name} fehlgeschlagen`,
-    failedSave: name => `Speichern von ${name} fehlgeschlagen`,
-    failedClear: key => `Löschen von ${key} fehlgeschlagen`,
-    fieldCopy: {
-      TELEGRAM_BOT_TOKEN: {
-        label: 'Bot-Token',
-        help: 'Bot mit @BotFather erstellen, dann den erhaltenen Token einfügen.',
-        placeholder: 'Telegram-Bot-Token einfügen'
-      },
-      TELEGRAM_ALLOWED_USERS: {
-        label: 'Erlaubte Telegram-Benutzer-IDs',
-        help: 'Empfohlen. Kommagetrennte numerische IDs von @userinfobot. Ohne diese kann jeder deinen Bot anschreiben.'
-      },
-      TELEGRAM_PROXY: { label: 'Proxy-URL', help: 'Nur in Netzwerken nötig, in denen Telegram gesperrt ist.' },
-      DISCORD_BOT_TOKEN: {
-        label: 'Bot-Token',
-        help: 'Anwendung im Discord Developer Portal erstellen, Bot hinzufügen, dann Token einfügen.'
-      },
-      DISCORD_ALLOWED_USERS: {
-        label: 'Erlaubte Discord-Benutzer-IDs',
-        help: 'Empfohlen. Kommagetrennte Discord-Benutzer-IDs.'
-      },
-      DISCORD_REPLY_TO_MODE: { label: 'Antwortstil', help: 'first, all oder off.' },
-      DISCORD_ALLOW_ALL_USERS: {
-        label: 'Alle Discord-Benutzer zulassen',
-        help: 'Nur für Entwicklung. Wenn aktiviert, kann jeder den Bot anschreiben ohne Allowlist.'
-      },
-      DISCORD_HOME_CHANNEL: {
-        label: 'Home-Kanal-ID',
-        help: 'Kanal, in den der Bot proaktive Nachrichten sendet (Cron-Ausgabe, Erinnerungen).'
-      },
-      DISCORD_HOME_CHANNEL_NAME: {
-        label: 'Home-Kanal-Name',
-        help: 'Anzeigename des Home-Kanals in Protokollen und Statusausgabe.'
-      },
-      BLUEBUBBLES_ALLOW_ALL_USERS: {
-        label: 'Alle iMessage-Benutzer zulassen',
-        help: 'Wenn aktiviert, BlueBubbles-Allowlist überspringen.'
-      },
-      MATTERMOST_ALLOW_ALL_USERS: { label: 'Alle Mattermost-Benutzer zulassen' },
-      MATTERMOST_HOME_CHANNEL: { label: 'Home-Kanal' },
-      QQ_ALLOW_ALL_USERS: { label: 'Alle QQ-Benutzer zulassen' },
-      QQBOT_HOME_CHANNEL: { label: 'QQ-Home-Kanal', help: 'Standardkanal oder -gruppe für Cron-Zustellung.' },
-      QQBOT_HOME_CHANNEL_NAME: { label: 'QQ-Home-Kanal-Name' },
-      SLACK_BOT_TOKEN: {
-        label: 'Slack-Bot-Token',
-        help: 'Bot-Token aus OAuth & Berechtigungen nach Installation der Slack-App verwenden.',
-        placeholder: 'Slack-Bot-Token einfügen'
-      },
-      SLACK_APP_TOKEN: {
-        label: 'Slack-App-Token',
-        help: 'App-Level-Token für den Socket-Mode verwenden.',
-        placeholder: 'Slack-App-Token einfügen'
-      },
-      SLACK_ALLOWED_USERS: { label: 'Erlaubte Slack-Benutzer-IDs', help: 'Empfohlen. Kommagetrennte Slack-Benutzer-IDs.' },
-      MATTERMOST_URL: { label: 'Server-URL', placeholder: 'https://mattermost.example.com' },
-      MATTERMOST_TOKEN: { label: 'Bot-Token' },
-      MATTERMOST_ALLOWED_USERS: {
-        label: 'Erlaubte Benutzer-IDs',
-        help: 'Empfohlen. Kommagetrennte Mattermost-Benutzer-IDs.'
-      },
-      MATRIX_HOMESERVER: { label: 'Homeserver-URL', placeholder: 'https://matrix.org' },
-      MATRIX_ACCESS_TOKEN: { label: 'Zugriffstoken' },
-      MATRIX_USER_ID: { label: 'Bot-Benutzer-ID', placeholder: '@hermes:example.org' },
-      MATRIX_ALLOWED_USERS: {
-        label: 'Erlaubte Matrix-Benutzer-IDs',
-        help: 'Empfohlen. Kommagetrennte Benutzer-IDs im Format @user:server.'
-      },
-      SIGNAL_HTTP_URL: {
-        label: 'Signal-Bridge-URL',
-        placeholder: 'http://127.0.0.1:8080',
-        help: 'URL einer laufenden signal-cli-REST-Bridge.'
-      },
-      SIGNAL_ACCOUNT: { label: 'Telefonnummer', help: 'Die bei deiner signal-cli-Bridge registrierte Nummer.' },
-      SIGNAL_ALLOWED_USERS: { label: 'Erlaubte Signal-Benutzer', help: 'Empfohlen. Kommagetrennte Signal-Kennungen.' },
-      WHATSAPP_ENABLED: {
-        label: 'WhatsApp-Bridge aktivieren',
-        help: 'Wird automatisch durch den Schalter unten gesetzt. Nur ändern, wenn du weißt, was du tust.'
-      },
-      WHATSAPP_MODE: { label: 'Bridge-Modus' },
-      WHATSAPP_ALLOWED_USERS: {
-        label: 'Erlaubte WhatsApp-Benutzer',
-        help: 'Empfohlen. Kommagetrennte Telefonnummern oder WhatsApp-IDs.'
-      }
-    },
-    platformIntro: {}
   },
 
   profiles: {
@@ -1380,7 +1239,6 @@ export const de
       'new-session': 'Neue Sitzung',
       skills: 'Skills & Tools',
       discover: 'Entdecken',
-      messaging: 'Messaging',
       artifacts: 'Artefakte'
     },
     searchAria: 'Sitzungen suchen',

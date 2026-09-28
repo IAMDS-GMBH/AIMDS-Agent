@@ -12,23 +12,13 @@ import { SystemStatusContent } from '@/app/settings/gateway-settings'
 import { PageLoader } from '@/components/page-loader'
 import { ReportIssueDialog } from '@/components/report-issue-dialog'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
-import {
-  getActionStatus,
-  getLogs,
-  getStatus,
-  getUsageAnalytics,
-  restartGateway,
-  updateHermes
-} from '@/hermes'
-import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
+import { getLogs, getStatus, getUsageAnalytics } from '@/hermes'
+import type { AnalyticsResponse, StatusResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { Activity, AlertCircle, BarChart3, Copy, ExternalLink, HelpCircle, Terminal } from '@/lib/icons'
+import { Activity, AlertCircle, BarChart3, HelpCircle, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { upsertDesktopActionTask } from '@/store/activity'
 import { notify } from '@/store/notifications'
 import { $supportTickets, checkSupportTicketsStatus, clearResolvedSupportTickets, isTicketResolved } from '@/store/support-tickets'
 
@@ -50,66 +40,6 @@ interface CommandCenterViewProps {
   onDeleteSession?: (sessionId: string) => Promise<void>
   onNavigateRoute?: (path: string) => void
   onOpenSession?: (sessionId: string) => void
-}
-
-interface OutlookDeviceCodePrompt {
-  userCode?: string
-  verificationUri: string
-}
-
-function extractOutlookDeviceCodePrompt(lines: readonly string[]): OutlookDeviceCodePrompt | null {
-  if (!lines.length) {
-    return null
-  }
-
-  const joined = lines.join('\n')
-  const inline = joined.match(/open\s+(https?:\/\/\S+)\s+and\s+enter\s+([A-Z0-9-]+)/i)
-
-  if (inline) {
-    return {
-      verificationUri: inline[1].replace(/[|)\].,;]+$/g, ''),
-      userCode: inline[2].trim()
-    }
-  }
-
-  let verificationUri = ''
-  let userCode = ''
-
-  for (const line of lines) {
-    if (!verificationUri) {
-      const open = line.match(/Open:\s*(https?:\/\/\S+)/i)
-
-      if (open) {
-        verificationUri = open[1].replace(/[|)\].,;]+$/g, '')
-      }
-    }
-
-    if (!userCode) {
-      const enter = line.match(/Enter:\s*([A-Z0-9-]+)/i)
-
-      if (enter) {
-        userCode = enter[2]?.trim() || enter[1].trim()
-      }
-    }
-  }
-
-  if (verificationUri && userCode) {
-    return { verificationUri, userCode }
-  }
-
-  const signInIndex = lines.findIndex(line => /sign-in required/i.test(line))
-
-  if (signInIndex >= 0) {
-    for (let i = signInIndex; i < lines.length; i += 1) {
-      const urlMatch = lines[i].match(/(https?:\/\/\S+)/)
-
-      if (urlMatch) {
-        return { verificationUri: urlMatch[1].replace(/[|)\].,;]+$/g, '') }
-      }
-    }
-  }
-
-  return null
 }
 
 function EmptyPanel({ action, description, title }: { action?: ReactNode; description: string; title?: string }) {
@@ -137,8 +67,6 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [systemLoading, setSystemLoading] = useState(false)
   const [systemError, setSystemError] = useState('')
-  const [outlookPrompt, setOutlookPrompt] = useState<null | OutlookDeviceCodePrompt>(null)
-  const [systemAction, setSystemAction] = useState<ActionStatusResponse | null>(null)
 
   // Logs state
   const [logFile, setLogFile] = useState<'agent' | 'gateway' | 'desktop' | 'error'>('agent')
@@ -289,62 +217,6 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
       void checkSupportTicketsStatus()
     }
   })
-
-  const runSystemAction = useCallback(
-    async (kind: 'restart' | 'update') => {
-      setSystemError('')
-
-      try {
-        const started = kind === 'restart' ? await restartGateway() : await updateHermes()
-        let nextStatus: ActionStatusResponse | null = null
-        let promptCaptured = false
-
-        if (kind === 'restart') {
-          setOutlookPrompt(null)
-        }
-
-        for (let attempt = 0; attempt < 18; attempt += 1) {
-          await new Promise(resolve => window.setTimeout(resolve, 1200))
-          const polled = await getActionStatus(started.name, 180)
-          nextStatus = polled
-          setSystemAction(polled)
-
-          if (kind === 'restart' && !promptCaptured) {
-            const prompt = extractOutlookDeviceCodePrompt(polled.lines)
-
-            if (prompt) {
-              promptCaptured = true
-              setOutlookPrompt(prompt)
-            }
-          }
-
-          upsertDesktopActionTask(polled)
-
-          if (!polled.running) {
-            break
-          }
-        }
-
-        if (!nextStatus) {
-          const pendingStatus = {
-            exit_code: null,
-            lines: [cc.actionStartedWaiting],
-            name: started.name,
-            pid: started.pid,
-            running: true
-          }
-
-          setSystemAction(pendingStatus)
-          upsertDesktopActionTask(pendingStatus)
-        }
-      } catch (error) {
-        setSystemError(error instanceof Error ? error.message : String(error))
-      } finally {
-        void refreshSystem()
-      }
-    },
-    [cc, refreshSystem]
-  )
 
   const filteredLogs = useMemo(() => {
     if (!logsFilter.trim()) {return logs}
@@ -598,68 +470,7 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
       </OverlaySplitLayout>
 
       <ReportIssueDialog onOpenChange={setReportIssueOpen} open={reportIssueOpen} />
-      <OutlookDeviceCodeDialog onClose={() => setOutlookPrompt(null)} prompt={outlookPrompt} />
     </OverlayView>
-  )
-}
-
-function OutlookDeviceCodeDialog({
-  onClose,
-  prompt
-}: {
-  onClose: () => void
-  prompt: null | OutlookDeviceCodePrompt
-}) {
-  const [copied, setCopied] = useState(false)
-
-  return (
-    <Dialog onOpenChange={open => !open && onClose()} open={Boolean(prompt)}>
-      <DialogContent showCloseButton>
-        <DialogHeader>
-          <DialogTitle>Outlook authentication required</DialogTitle>
-          <DialogDescription>
-            {prompt?.userCode
-              ? 'Gateway restart triggered Outlook device login. Open the Microsoft page and enter this code.'
-              : 'Gateway restart triggered Outlook sign-in. Open the Microsoft page to sign in — no code needed.'}
-          </DialogDescription>
-        </DialogHeader>
-
-        {prompt && (
-          <div className="space-y-3">
-            <Button asChild className="w-full" variant="default">
-              <a href={prompt.verificationUri} rel="noreferrer" target="_blank">
-                <ExternalLink className="size-4" />
-                Open Microsoft Login
-              </a>
-            </Button>
-            {prompt.userCode && (
-              <div className="flex items-center gap-2">
-                <Input className="font-mono text-lg font-bold tracking-widest" readOnly value={prompt.userCode} />
-                <Button
-                  className="shrink-0"
-                  onClick={() => {
-                    void navigator.clipboard.writeText(prompt.userCode ?? '')
-                    setCopied(true)
-                    window.setTimeout(() => setCopied(false), 1500)
-                  }}
-                  size="sm"
-                  variant="outline"
-                >
-                  <Copy className="size-4" />
-                  {copied ? 'Copied' : 'Copy'}
-                </Button>
-              </div>
-            )}
-          </div>
-        )}
-
-        <DialogFooter>
-          <Button onClick={onClose} variant="outline">
-            Close
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   )
 }
 

@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
-import { getHermesConfigRecord, getMcpServers, getRemoteHealthStatus, getStatus, reloadMcpServers, restartGateway } from '@/hermes'
+import { getHermesConfigRecord, getMcpServers, getRemoteHealthStatus, getStatus, reloadMcpServers, restartHermesBackend } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertCircle, Globe, Loader2, RefreshCw } from '@/lib/icons'
 import {
@@ -68,7 +68,7 @@ export function SystemStatusContent() {
   const [localCheckedAt, setLocalCheckedAt] = useState<null | number>(null)
 
   const [aimdsEnv, setAimdsEnv] = useState<string | null>(null)
-  const [restartingGateway, setRestartingGateway] = useState(false)
+  const [restartingBackend, setRestartingBackend] = useState(false)
   const [reloadingMcp, setReloadingMcp] = useState(false)
 
   const handleReloadMcp = async () => {
@@ -89,23 +89,21 @@ export function SystemStatusContent() {
     }
   }
 
-  const handleRestartGateway = async () => {
-    setRestartingGateway(true)
+  const handleRestartBackend = async () => {
+    setRestartingBackend(true)
+    notify({
+      kind: 'info',
+      title: 'Backend-Neustart',
+      message: 'Hermes-Backend wird neu gestartet …'
+    })
 
     try {
-      await restartGateway()
-      notify({
-        kind: 'success',
-        title: 'Gateway Neustart',
-        message: 'Der Hermes Gateway-Prozess wird neu gestartet...'
-      })
-      setTimeout(() => {
-        void refreshLocalConnectivity()
-        setRestartingGateway(false)
-      }, 2500)
+      // The main process tears the backend down and reloads this window, so
+      // there is nothing to refresh here on success.
+      await restartHermesBackend()
     } catch (err) {
-      notifyError(err, 'Gateway konnte nicht neu gestartet werden')
-      setRestartingGateway(false)
+      notifyError(err, 'Hermes-Backend konnte nicht neu gestartet werden')
+      setRestartingBackend(false)
     }
   }
 
@@ -311,13 +309,13 @@ export function SystemStatusContent() {
                 {reloadingMcp ? 'MCPs laden...' : 'MCP neu laden'}
               </Button>
               <Button
-                disabled={restartingGateway}
-                onClick={() => void handleRestartGateway()}
+                disabled={restartingBackend}
+                onClick={() => void handleRestartBackend()}
                 size="sm"
                 variant="text"
               >
-                {restartingGateway ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
-                {restartingGateway ? 'Neu starten...' : 'Gateway neu starten'}
+                {restartingBackend ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+                {restartingBackend ? 'Neu starten...' : 'Backend neu starten'}
               </Button>
               <Button
                 disabled={localConnectivityLoading}

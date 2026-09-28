@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
   revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
   touchBackend: profile => ipcRenderer.invoke('hermes:backend:touch', profile),
+  restartBackend: () => ipcRenderer.invoke('hermes:backend:restart'),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
   openSessionWindow: sessionId => ipcRenderer.invoke('hermes:window:openSession', sessionId),
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),

@@ -158,33 +158,17 @@ def test_dockerfile_installs_tui_dependencies(dockerfile_text):
     )
 
 
-def test_dockerfile_preinstalls_gateway_messaging_dependencies(dockerfile_text):
+def test_dockerfile_does_not_bake_in_retired_messaging_extras(dockerfile_text):
+    """AIS-444: AIMDS-Agent offers no chat-platform messaging, so the image
+    no longer carries the [messaging] and [matrix] adapter dependencies."""
     sync_steps = [
         step for step in _run_steps(dockerfile_text)
         if "uv sync" in step and "--no-install-project" in step
     ]
 
     assert sync_steps, "Dockerfile must install Python dependencies with uv sync"
-    assert any("--extra messaging" in step for step in sync_steps), (
-        "Published Docker images must preload the [messaging] extra so "
-        "Telegram/Discord gateway adapters do not depend on first-boot "
-        "lazy installation (#24698)."
-    )
-
-
-def test_dockerfile_preinstalls_matrix_dependencies(dockerfile_text):
-    sync_steps = [
-        step for step in _run_steps(dockerfile_text)
-        if "uv sync" in step and "--no-install-project" in step
-    ]
-
-    assert sync_steps, "Dockerfile must install Python dependencies with uv sync"
-    assert any("--extra matrix" in step for step in sync_steps), (
-        "Published Docker images must preload the [matrix] extra so the "
-        "Matrix gateway has mautrix[encryption]/python-olm available at "
-        "runtime instead of relying on first-boot lazy installation into "
-        "the container venv (#30399)."
-    )
+    assert not any("--extra messaging" in step for step in sync_steps)
+    assert not any("--extra matrix" in step for step in sync_steps)
 
 
 def test_dockerfile_installs_matrix_native_build_dependencies(dockerfile_text):
