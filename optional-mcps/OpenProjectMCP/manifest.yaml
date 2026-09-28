@@ -124,8 +124,14 @@ post_install: |
     OPENPROJECT_WRITE_PROJECTS lists projects (then restart Hermes). Without it
     the server registers NO create/update/comment/time-booking tools. Every
     write is preview-then-confirm.
-  - Time tracking works like Jira + Tempo: log_time books on a work package
-    (hours as 1.5 or '1h30m'); a confirmed booking is stored locally at once.
+  - Time tracking works like Jira + Tempo: log_time books on a work package,
+    with start and end time ('09:00'-'10:30') when the user names them, else
+    as a duration (1.5 or '1h30m'); a confirmed booking is stored locally at
+    once. Exact times need "exact time tracking" enabled by an OpenProject
+    administrator (Administration -> Time and costs); without it the duration
+    is booked and the tool says so.
+  - Searches and time listings default to the current user; pass 'all' for
+    everyone's.
   - Display ids such as AIS-408 need OpenProject 17.5+ (semantic ids);
     numeric ids always work.
 

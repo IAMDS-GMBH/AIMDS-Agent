@@ -65,6 +65,7 @@ class FakeOpenProject:
         self.search_results = []
         self.time_entries = []
         self.patch_result_project = None
+        self.exact_times = True
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         path = urlparse(str(request.url)).path.split("/api/v3/", 1)[-1]
@@ -118,9 +119,12 @@ class FakeOpenProject:
         if (method, path) == ("GET", "time_entries"):
             return collection(self.time_entries)
         if method == "POST" and path == "time_entries/form":
-            return ok(self._form(body, activities=[{"id": 3, "name": "Development"}, {"id": 5, "name": "Support"}]))
+            form = self._form(body, activities=[{"id": 3, "name": "Development"}, {"id": 5, "name": "Support"}])
+            if self.exact_times:
+                form["_embedded"]["schema"]["startTime"] = {"type": "DateTime", "writable": True, "required": False}
+            return ok(form)
         if (method, path) == ("POST", "time_entries"):
-            return ok(_time_entry(99, body["spentOn"], body["hours"]), 201)
+            return ok(_time_entry(99, body["spentOn"], body["hours"], start=body.get("startTime")), 201)
         if method == "GET" and path == "relations":
             return collection([])
         if method == "POST" and path.endswith("/activities"):
@@ -139,11 +143,12 @@ class FakeOpenProject:
         return {"_embedded": {"payload": body or {}, "schema": schema, "validationErrors": {}}}
 
 
-def _time_entry(eid, spent_on, hours, wp=17054):
+def _time_entry(eid, spent_on, hours, wp=17054, start=None):
     return {
         "id": eid,
         "spentOn": spent_on,
         "hours": hours,
+        "startTime": start,
         "comment": {"format": "plain", "raw": "work"},
         "_links": {
             "project": {"href": "/api/v3/projects/107", "title": "AIMDS Suite"},
@@ -364,3 +369,95 @@ def test_work_package_filter_accepts_the_exact_subject(op):
     assert {"entity_type": {"operator": "=", "values": ["WorkPackage"]}} in filters
     with pytest.raises(ToolError, match="Candidates: IAMDS-477"):
         server.list_time_entries("2026-01-01", "2026-12-31", work_package="URLAUB")
+
+
+# ─── AIS-432: exact start/end times, user-scoped searches ─────────────────────
+
+
+@pytest.fixture
+def berlin(monkeypatch):
+    monkeypatch.setenv("HERMES_TIMEZONE", "Europe/Berlin")
+
+
+def test_listed_entry_with_a_start_time_carries_local_start_and_end(op, berlin):
+    server, fake = op
+    fake.time_entries = [_time_entry(1, "2026-09-24", "PT1H30M", start="2026-09-24T07:00:00Z"),
+                         _time_entry(2, "2026-09-24", "PT2H")]
+    rows = server.list_time_entries("2026-09-01", "2026-09-30")["time_entries"]
+    assert (rows[0]["start_time"], rows[0]["end_time"]) == ("09:00", "10:30")
+    assert "start_time" not in rows[1] and rows[1]["duration_seconds"] == 7200  # duration stays the fallback
+
+
+def test_api_end_time_wins_over_start_plus_hours(op, berlin):
+    server, _ = op
+    entry = _time_entry(1, "2026-01-15", "PT1H", start="2026-01-15T08:00:00Z")
+    entry["endTime"] = "2026-01-15T09:15:00Z"
+    row = server._time_entry_row(entry, {})
+    assert (row["start_time"], row["end_time"]) == ("09:00", "10:15")  # CET in winter
+
+
+def test_start_time_reaches_the_ingestor_timestamp(op, berlin):
+    server, fake = op
+    from tools.mcp_json_ingestor import _extract_fields, _extract_items
+
+    fake.time_entries = [_time_entry(7, "2026-09-02", "PT2H", start="2026-09-02T06:30:00Z")]
+    items = _extract_items(server.list_time_entries("2026-09-01", "2026-09-30"))
+    fields = _extract_fields(items[0], "mcp_op_list_time_entries", "t1")
+    assert fields[4] == "2026-09-02T08:30" and fields[6] == 7200
+
+
+def test_log_time_with_start_and_end_books_exact_times(op, berlin):
+    server, fake = op
+    preview = server.log_time(work_package="AIS-408", spent_on="2026-09-24", start_time="9:00", end_time="10:30")
+    assert preview["would"]["hours"] == 1.5
+    assert (preview["would"]["start_time"], preview["would"]["end_time"]) == ("09:00", "10:30")
+    assert "warning" not in preview
+    saved = server.log_time(work_package="AIS-408", spent_on="2026-09-24", start_time="09:00", end_time="10:30", confirm=True)
+    post = [c for c in fake.calls if c[:2] == ("POST", "time_entries")][-1]
+    assert post[3]["hours"] == "PT1H30M"
+    assert post[3]["startTime"] == "2026-09-24T09:00:00+02:00"
+    row = saved["time_entries"][0]
+    assert (row["start_time"], row["end_time"]) == ("09:00", "10:30")
+
+
+def test_log_time_start_with_hours_and_consistency_checks(op, berlin):
+    server, fake = op
+    preview = server.log_time(work_package="AIS-408", spent_on="2026-12-01", start_time="08:15", hours="1h")
+    assert (preview["would"]["start_time"], preview["would"]["end_time"]) == ("08:15", "09:15")
+    server.log_time(work_package="AIS-408", spent_on="2026-12-01", start_time="08:15", hours="1h", confirm=True)
+    post = [c for c in fake.calls if c[:2] == ("POST", "time_entries")][-1]
+    assert post[3]["startTime"] == "2026-12-01T08:15:00+01:00" and post[3]["hours"] == "PT1H"
+    with pytest.raises(ToolError, match="must be after start_time"):
+        server.log_time(work_package="AIS-408", start_time="10:00", end_time="09:00")
+    with pytest.raises(ToolError, match="does not match 09:00-10:30"):
+        server.log_time(work_package="AIS-408", start_time="09:00", end_time="10:30", hours=2)
+    with pytest.raises(ToolError, match="end_time needs start_time"):
+        server.log_time(work_package="AIS-408", end_time="10:30", hours=1)
+    with pytest.raises(ToolError, match="start_time and end_time"):
+        server.log_time(work_package="AIS-408", start_time="09:00")
+    with pytest.raises(ToolError, match="time of day"):
+        server.log_time(work_package="AIS-408", start_time="25:00", hours=1)
+
+
+def test_log_time_without_exact_time_tracking_books_the_duration_and_warns(op, berlin):
+    server, fake = op
+    fake.exact_times = False
+    preview = server.log_time(work_package="AIS-408", spent_on="2026-09-24", start_time="09:00", end_time="10:30")
+    assert "start_time" not in preview["would"] and preview["would"]["hours"] == 1.5
+    assert "exact time tracking is not enabled" in preview["warning"].lower()
+    saved = server.log_time(work_package="AIS-408", spent_on="2026-09-24", start_time="09:00", end_time="10:30", confirm=True)
+    post = [c for c in fake.calls if c[:2] == ("POST", "time_entries")][-1]
+    assert "startTime" not in post[3] and post[3]["hours"] == "PT1H30M"
+    assert saved["state"] == "created" and "booked without start and end time" in saved["warning"]
+
+
+def test_search_work_packages_defaults_to_the_current_user(op):
+    server, fake = op
+    result = server.search_work_packages(text="Doc")
+    filters = json.loads([c for c in fake.calls if c[:2] == ("GET", "work_packages")][-1][2]["filters"])
+    assert {"assigned_to_id": {"operator": "=", "values": ["14"]}} in filters
+    assert "assignee='all'" in result["hint"]  # nothing found for the user: the opt-out is named
+
+    server.search_work_packages(text="Doc", assignee="all")
+    filters = json.loads([c for c in fake.calls if c[:2] == ("GET", "work_packages")][-1][2]["filters"])
+    assert not any("assigned_to_id" in f for f in filters)
