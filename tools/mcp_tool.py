@@ -360,6 +360,9 @@ _DEFAULT_CONNECT_TIMEOUT = 60  # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3  # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
+# A session that stayed up this long counts as healthy: its drop starts a new
+# reconnect streak instead of continuing the previous one.
+_STABLE_SESSION_SECONDS = 60
 
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset(
@@ -2215,6 +2218,7 @@ class MCPServerTask:
         initial_auth_recovery_attempted = False
 
         while True:
+            attempt_started = time.monotonic()
             try:
                 if self._is_http():
                     await self._run_http(config)
@@ -2252,6 +2256,19 @@ class MCPServerTask:
                 self.session = None
                 raise
             except Exception as exc:
+                # A session is only assigned after ``initialize()`` succeeded,
+                # so a non-None session means this attempt connected. If it
+                # stayed up, the drop is a fresh failure rather than the next
+                # step of an earlier streak: idle disconnects hours apart must
+                # not add up to the give-up limit. A server that connects and
+                # dies right away keeps counting, so it still gives up.
+                if (
+                    self.session is not None
+                    and self._ready.is_set()
+                    and time.monotonic() - attempt_started >= _STABLE_SESSION_SECONDS
+                ):
+                    retries = 0
+                    backoff = 1.0
                 self.session = None
 
                 # If this is the first connection attempt, retry with backoff
@@ -2357,18 +2374,22 @@ class MCPServerTask:
                     return
 
                 retries += 1
+                # ExceptionGroup text ("unhandled errors in a TaskGroup") says
+                # nothing; name the sub-exception that actually broke the link.
+                root = _unwrap_exception(exc)
+                cause = f"{type(root).__name__}: {root}" if root is not exc else str(exc)
                 if retries > _MAX_RECONNECT_RETRIES:
                     logger.warning(
                         "MCP server '%s' failed after %d reconnection attempts, "
                         "giving up: %s",
                         self.name,
                         _MAX_RECONNECT_RETRIES,
-                        exc,
+                        cause,
                     )
                     try:
                         from hermes_cli.auto_incidents import report_bundled_mcp_failure
 
-                        report_bundled_mcp_failure(self.name, "reconnect-give-up", str(exc))
+                        report_bundled_mcp_failure(self.name, "reconnect-give-up", cause)
                     except Exception:
                         pass
                     return
@@ -2380,7 +2401,7 @@ class MCPServerTask:
                     retries,
                     _MAX_RECONNECT_RETRIES,
                     backoff,
-                    exc,
+                    cause,
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
