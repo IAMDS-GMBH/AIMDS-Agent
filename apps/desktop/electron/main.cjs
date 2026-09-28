@@ -42,7 +42,10 @@ const { classifyBootFailure, lastBootSection, lastSignatureLine } = require('./b
 const {
   LOCAL_READY_TIMEOUT_MS,
   REMOTE_READY_TIMEOUT_MS,
+  createBackendRegistry,
+  isScheduledRestartRecovery,
   shouldClearConnectionState,
+  shouldDropSingleFlight,
   slowBootMessage,
   waitForBackendReady
 } = require('./boot-guard.cjs')
@@ -642,6 +645,12 @@ function registerMediaProtocol() {
 let mainWindow = null
 let hermesProcess = null
 let connectionPromise = null
+// AIS-430: every primary backend spawned, keyed to its boot chain, so a
+// backend no chain owns any more is stopped instead of leaking.
+const primaryBackends = createBackendRegistry()
+// When the nightly restart last ran; a boot that recovers right after it is
+// expected churn, not an incident.
+let scheduledRestartAt = null
 // Additional per-profile backends, keyed by profile name. The PRIMARY backend
 // (the desktop's launch profile) stays managed by hermesProcess +
 // connectionPromise + startHermes(); this pool only holds EXTRA profile
@@ -3480,6 +3489,10 @@ function reportBootFailure(attempts, error) {
 function reportBootRecovered(attempts, lastError) {
   const text = `${lastError?.message || ''}\n${recentHermesLog()}`
   const signature = classifyBootFailure(text)
+  if (isScheduledRestartRecovery({ now: Date.now(), scheduledRestartAt })) {
+    rememberLog(`[boot] recovered on attempt ${attempts} right after the scheduled restart (${signature.title}) — not reported`)
+    return
+  }
   reportBootIncident({
     kind: `boot-recovered-${signature.slug}`,
     severity: 'low',
@@ -4226,6 +4239,7 @@ const nightlyRestarter = createNightlyRestarter({
     return Boolean(status?.idle)
   },
   restart: async () => {
+    scheduledRestartAt = Date.now()
     await teardownPrimaryBackendAndWait()
     mainWindow?.reload()
   },
@@ -5663,9 +5677,17 @@ function resetHermesConnection() {
 async function teardownPrimaryBackendAndWait() {
   // Capture the reference before resetHermesConnection() nulls hermesProcess.
   const dying = hermesProcess && !hermesProcess.killed ? hermesProcess : null
+  // AIS-430: backends an earlier chain lost track of go down with it.
+  const strays = primaryBackends.strays({ keep: dying })
   resetHermesConnection()
 
-  await waitForBackendExit(dying)
+  await Promise.all([waitForBackendExit(dying), ...strays.map(stopStrayBackend)])
+}
+
+async function stopStrayBackend(child) {
+  const result = await stopProcessAndWait(child, { log: rememberLog })
+  rememberLog(`[boot] stopped stray backend pid ${child.pid} (exited=${result.exited}, forced=${result.forced})`)
+  return result
 }
 
 async function waitForBackendExit(child, timeoutMs = 5000) {
@@ -5968,7 +5990,10 @@ async function startHermes() {
   }
   if (connectionPromise) return connectionPromise
 
-  connectionPromise = (async () => {
+  // AIS-430: this chain's own promise — only it may be dropped by this
+  // chain's failure or by the exit of a backend this chain started.
+  let chain = null
+  chain = (async () => {
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     // Resolve for the desktop's primary profile so a per-profile remote
     // override on the active profile is honored (falls back to env / global).
@@ -6133,6 +6158,7 @@ async function startHermes() {
     }))
 
     hermesProcess = child
+    primaryBackends.add(child, chain)
     lastBackendExit = null
     child.stdout.on('data', rememberLog)
     child.stderr.on('data', rememberLog)
@@ -6161,7 +6187,9 @@ async function startHermes() {
       )
       if (shouldClearConnectionState({ exitingChild: child, currentChild: hermesProcess })) {
         hermesProcess = null
-        if (backendReady) connectionPromise = null
+        if (shouldDropSingleFlight({ backendReady, ownConnection: chain, currentConnection: connectionPromise })) {
+          connectionPromise = null
+        }
         recordBackendExit({ code: null, signal: null, error: error.message })
       }
       rejectBackendStart?.(error)
@@ -6173,7 +6201,9 @@ async function startHermes() {
         return
       }
       hermesProcess = null
-      if (backendReady) connectionPromise = null
+      if (shouldDropSingleFlight({ backendReady, ownConnection: chain, currentConnection: connectionPromise })) {
+        connectionPromise = null
+      }
       recordBackendExit({ code, signal })
       if (!backendReady) {
         const message = `Hermes backend exited before it became ready (${signal || code}).`
@@ -6218,6 +6248,13 @@ async function startHermes() {
     }
     backendReady = true
     nightlyRestarter.noteBackendStarted()
+    // AIS-430: a backend started by a chain that is no longer current is not
+    // referenced anywhere — stop it rather than leave it running.
+    if (connectionPromise === chain) {
+      for (const stray of primaryBackends.strays({ currentChain: chain, keep: child })) {
+        void stopStrayBackend(stray)
+      }
+    }
     updateBootProgress({
       phase: 'backend.ready',
       message: 'Hermes backend is ready. Finalizing desktop startup',
@@ -6248,11 +6285,12 @@ async function startHermes() {
       },
       { allowDecrease: true }
     )
-    connectionPromise = null
+    if (connectionPromise === chain) connectionPromise = null
     throw error
   })
 
-  return connectionPromise
+  connectionPromise = chain
+  return chain
 }
 
 // Shared navigation guards + window chrome wiring applied to every window
@@ -8078,6 +8116,13 @@ app.on('before-quit', () => {
 
   if (hermesProcess && !hermesProcess.killed) {
     hermesProcess.kill('SIGTERM')
+  }
+  for (const stray of primaryBackends.strays({ keep: hermesProcess })) {
+    try {
+      stray.kill('SIGTERM')
+    } catch {
+      void 0
+    }
   }
   stopAllPoolBackends()
 })
