@@ -512,6 +512,40 @@ class TestMCPInitialConnectionRetry:
 
         asyncio.get_event_loop().run_until_complete(_run())
 
+    def test_initial_connect_does_not_retry_a_403(self):
+        """A 403 on the first connect fails at once (AIS-446): no backoff, one attempt."""
+        import httpx
+        from tools.mcp_tool import MCPServerTask
+
+        call_count = 0
+        request = httpx.Request("POST", "https://staging.suite.example/litellm/mcp/")
+        response = httpx.Response(403, request=request)
+
+        async def _run():
+            nonlocal call_count
+            server = MCPServerTask("test-forbidden")
+
+            async def fake_run_stdio(self_inner, config):
+                nonlocal call_count
+                call_count += 1
+                raise ExceptionGroup(
+                    "unhandled errors in a TaskGroup",
+                    [httpx.HTTPStatusError("Client error '403 Forbidden'", request=request, response=response)],
+                )
+
+            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio), \
+                    patch("tools.mcp_tool.asyncio.sleep") as sleep:
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+                await server._ready.wait()
+
+                assert server._error is not None
+                assert call_count == 1
+                sleep.assert_not_called()
+
+                await task
+
+        asyncio.get_event_loop().run_until_complete(_run())
+
     def test_initial_connect_retry_respects_shutdown(self):
         """Shutdown during initial retry backoff aborts cleanly."""
         from tools.mcp_tool import MCPServerTask

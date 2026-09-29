@@ -2332,6 +2332,24 @@ class MCPServerTask:
                         self._ready.set()
                         return
 
+                    if _is_forbidden_error(exc):
+                        # A 403 is an answer, not a blip: the endpoint knows
+                        # the credential and refuses it (e.g. a Suite key
+                        # without MCP access on that host). Retrying only
+                        # hid the real error behind minutes of backoff and
+                        # held up every other server in the same discovery
+                        # run (AIS-446 / SUP-20260929-024835).
+                        logger.warning(
+                            "MCP server '%s' refused the connection (HTTP 403), "
+                            "not retrying: the credential is not allowed to use "
+                            "this endpoint — check its MCP access on that host: %s",
+                            self.name,
+                            _unwrap_exception(exc),
+                        )
+                        self._error = exc
+                        self._ready.set()
+                        return
+
                     initial_retries += 1
                     if initial_retries > _MAX_INITIAL_CONNECT_RETRIES:
                         logger.warning(
@@ -2641,6 +2659,19 @@ def _is_auth_error(exc: BaseException) -> bool:
     except ImportError:
         pass
     return True
+
+
+def _is_forbidden_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` (possibly wrapped in an ExceptionGroup) is an HTTP 403."""
+    unwrapped = _unwrap_exception(exc)
+    try:
+        import httpx
+    except ImportError:
+        return False
+    return (
+        isinstance(unwrapped, httpx.HTTPStatusError)
+        and getattr(unwrapped.response, "status_code", None) == 403
+    )
 
 
 def _handle_auth_error_and_retry(
@@ -6023,6 +6054,18 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             return_exceptions=True,
         )
         for name, result in zip(server_names, results):
+            if isinstance(result, asyncio.CancelledError):
+                # Cancelled from outside (discovery budget, shutdown, a reload
+                # racing this run), not refused by the server: say so and do
+                # not file a "connect — CancelledError" incident that names
+                # the wrong server and carries no cause (AIS-446).
+                logger.warning(
+                    "MCP server '%s': connect was cancelled before it finished "
+                    "(discovery run ended or the server was shut down) — it "
+                    "will be retried on the next discovery",
+                    name,
+                )
+                continue
             if isinstance(result, BaseException):
                 command = new_servers.get(name, {}).get("command")
                 logger.warning(

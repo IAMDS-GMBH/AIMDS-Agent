@@ -392,6 +392,34 @@ def _support_config() -> dict[str, Any]:
     return support if isinstance(support, dict) else {}
 
 
+def _support_litellm_url(cfg: dict[str, Any], provider_name: str) -> str:
+    """The Suite endpoint this client really talks to, for the case metadata.
+
+    Resolved like the chat client resolves it (legacy slugs such as
+    ``iamds-litellm``, ``IAMDS_LITELLM_BASE_URL`` / ``OPENAI_BASE_URL``, then
+    the provider entry). A literal ``providers[model.provider]`` lookup missed
+    the legacy slug and reported the prod default for a client that was
+    running on staging (AIS-446 / SUP-20260929-024835). A model outside the
+    Suite reports the Suite environment Hermes is set up for.
+    """
+    try:
+        from hermes_cli.iamds_suite import (
+            canonical_suite_provider,
+            primary_suite_provider,
+            resolve_suite_endpoint,
+        )
+
+        slug = canonical_suite_provider(provider_name) or primary_suite_provider(cfg) or "aimds-suite-prod"
+        endpoint = resolve_suite_endpoint(slug, config=cfg, allow_default=True)
+        if endpoint.base_url:
+            return endpoint.base_url
+    except Exception:
+        pass
+    providers = cfg.get("providers") or {}
+    provider_cfg = providers.get(provider_name) if isinstance(providers.get(provider_name), dict) else {}
+    return provider_cfg.get("base_url") or "https://suite.iamds.com/litellm/v1"
+
+
 def _relevant_log_names(category: str, context_type: str) -> tuple[str, ...]:
     """Logs that ship a tail in a focused bundle for this category/context."""
     for key in (str(context_type or "").strip().lower(), str(category or "").strip().lower()):
@@ -578,9 +606,7 @@ def _collect_payload(
     support_cfg = cfg.get("support", {}) if isinstance(cfg.get("support"), dict) else {}
     model_used = (cfg.get("model") or {}).get("default") or "AIMDS-Suite-Auto"
     provider_name = (cfg.get("model") or {}).get("provider") or "aimds-suite-prod"
-    providers = cfg.get("providers") or {}
-    provider_cfg = providers.get(provider_name) if isinstance(providers.get(provider_name), dict) else {}
-    litellm_url = provider_cfg.get("base_url") or "https://suite.iamds.com/litellm/v1"
+    litellm_url = _support_litellm_url(cfg, provider_name)
     mcp_servers = list((cfg.get("mcp_servers") or {}).keys())
     active_skills = list((cfg.get("skills") or {}).get("inline") or [])
 

@@ -581,3 +581,46 @@ def test_full_logs_bypasses_session_and_time_scoping(tmp_path, monkeypatch, caps
         agent_log = zf.read("logs/agent.log").decode("utf-8")
         assert "ancient line" in agent_log
         assert not agent_log.startswith("# hermes support:")
+
+
+def _clear_suite_env(monkeypatch):
+    for name in (
+        "IAMDS_LITELLM_BASE_URL",
+        "IAMDS_LITELLM_API_KEY",
+        "IAMDS_LITELLM_STAGING_BASE_URL",
+        "IAMDS_LITELLM_STAGING_API_KEY",
+        "IAMDS_LITELLM_DEV_BASE_URL",
+        "IAMDS_LITELLM_DEV_API_KEY",
+        "IAMDS_LITELLM_LOCALDEV_BASE_URL",
+        "IAMDS_LITELLM_LOCALDEV_API_KEY",
+        "OPENAI_BASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_support_litellm_url_follows_legacy_slug_to_the_env_url(monkeypatch):
+    # AIS-446 / SUP-20260929-024835: model.provider=iamds-litellm (legacy prod
+    # slug) with the prod URL env pointed at staging. The chat client talked to
+    # staging; the case metadata must say so instead of the prod default.
+    _clear_suite_env(monkeypatch)
+    monkeypatch.setenv("IAMDS_LITELLM_BASE_URL", "https://staging.suite.iamds.com/litellm/v1")
+    cfg = {"model": {"provider": "iamds-litellm", "default": "AIMDS-Suite-Auto"}}
+
+    assert support_logs._support_litellm_url(cfg, "iamds-litellm") == "https://staging.suite.iamds.com/litellm/v1"
+
+
+def test_support_litellm_url_uses_the_canonical_provider_entry(monkeypatch):
+    _clear_suite_env(monkeypatch)
+    cfg = {
+        "model": {"provider": "aimds-suite-staging"},
+        "providers": {"aimds-suite-staging": {"base_url": "https://staging.example.test/litellm/v1"}},
+    }
+
+    assert support_logs._support_litellm_url(cfg, "aimds-suite-staging") == "https://staging.example.test/litellm/v1"
+
+
+def test_support_litellm_url_defaults_to_prod_for_a_non_suite_model(monkeypatch):
+    _clear_suite_env(monkeypatch)
+    cfg = {"model": {"provider": "anthropic"}}
+
+    assert support_logs._support_litellm_url(cfg, "anthropic") == "https://suite.iamds.com/litellm/v1"

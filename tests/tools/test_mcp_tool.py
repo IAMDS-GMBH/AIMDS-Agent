@@ -1380,6 +1380,46 @@ class TestToolsetInjection:
         assert "mcp_broken_ping" not in result
         assert call_count == 2
 
+    def test_cancelled_connect_files_no_incident(self, caplog):
+        """A connect cancelled from outside is logged as such, not reported (AIS-446)."""
+        from tools.mcp_tool import MCPServerTask
+
+        mock_tools = [_make_mcp_tool("ping", "Ping")]
+
+        async def connect(name, config):
+            if name == "cancelled":
+                raise asyncio.CancelledError()
+            if name == "refused":
+                raise ConnectionError("cannot reach server")
+            server = MCPServerTask(name)
+            server.session = MagicMock()
+            server._tools = mock_tools
+            return server
+
+        fake_config = {
+            "cancelled": {"command": "slow"},
+            "refused": {"command": "bad"},
+            "good": {"command": "npx", "args": []},
+        }
+        fake_toolsets = {
+            "hermes-cli": {"tools": [], "description": "CLI", "includes": []},
+        }
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._servers", {}), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
+             patch("tools.mcp_tool._connect_server", side_effect=connect), \
+             patch("toolsets.TOOLSETS", fake_toolsets), \
+             patch("hermes_cli.auto_incidents.report_bundled_mcp_failure") as report, \
+             caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+            from tools.mcp_tool import discover_mcp_tools
+            result = discover_mcp_tools()
+
+        assert "mcp_good_ping" in result
+        assert [call.args[:2] for call in report.call_args_list] == [("refused", "connect")]
+        assert "MCP server 'cancelled': connect was cancelled" in caplog.text
+        assert "Failed to connect to MCP server 'cancelled'" not in caplog.text
+
     def test_partial_failure_retry_on_second_call(self):
         """Failed servers are retried on subsequent discover_mcp_tools() calls."""
         from tools.mcp_tool import MCPServerTask
