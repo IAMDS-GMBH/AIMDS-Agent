@@ -99,8 +99,21 @@ jobs:
             --format=sarif \
             --output=results.sarif || true
 
+      # Code Scanning on a private repo needs GitHub Code Security, which is
+      # not licensed (AIS-313): upload only while the repo is public, always
+      # keep the report as an artifact.
       - name: Upload SARIF to GitHub Code Scanning
+        if: ${{ !github.event.repository.private }}
         uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
         continue-on-error: true
         with:
           sarif_file: results.sarif
+
+      - name: Keep the SARIF report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: osv-scanner-sarif
+          path: results.sarif
+          if-no-files-found: ignore
+          retention-days: 30
