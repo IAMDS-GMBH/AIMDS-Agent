@@ -132,6 +132,40 @@ def normalize_telemetry_url(url: str) -> str:
     return raw
 
 
+def _install_channel_and_patch(version: str) -> tuple[str, str, int]:
+    """Update channel, commit and commits-behind-main of this install.
+
+    A release-managed install (AIS-312) has no usable git history: its
+    marker names channel and commit. A git checkout reports its branch.
+    """
+    channel, patch_level, commits_behind_main = "main", version, 0
+    try:
+        hermes_home = get_hermes_home()
+        root = hermes_home / "hermes-agent"
+        if not (root / ".git").exists() and not (root / ".hermes-release.json").exists():
+            root = Path(__file__).resolve().parent.parent
+        from hermes_cli.release_marker import read_release_marker
+
+        marker = read_release_marker(root)
+        if marker:
+            return str(marker["channel"]), str(marker["commit_sha"])[:10], 0
+        if (root / ".git").exists():
+            import subprocess
+
+            def _git(*git_args: str) -> str:
+                res = subprocess.run(["git", *git_args], cwd=root, capture_output=True, text=True, timeout=5)
+                return res.stdout.strip() if res.returncode == 0 else ""
+
+            channel = _git("rev-parse", "--abbrev-ref", "HEAD") or channel
+            patch_level = _git("rev-parse", "--short", "HEAD") or patch_level
+            behind = _git("rev-list", "HEAD..origin/main", "--count")
+            if behind.isdigit():
+                commits_behind_main = int(behind)
+    except Exception:
+        pass
+    return channel, patch_level, commits_behind_main
+
+
 def send_client_telemetry(args: Any = None) -> dict[str, Any]:
     """Send client version telemetry to the support server.
 
@@ -151,74 +185,18 @@ def send_client_telemetry(args: Any = None) -> dict[str, Any]:
             or os.getenv("SUPPORT_API_KEY", "")
         ).strip()
 
-        hostname = socket.gethostname()
-        user_id_val = os.getenv("USER") or os.getenv("USERNAME") or "user"
-        try:
-            import getpass
+        from hermes_cli.install_identity import get_install_id, hermes_version, legacy_client_id
 
-            user_id_val = getpass.getuser() or user_id_val
-        except Exception:
-            pass
-        client_id = f"{hostname}-{user_id_val}"
-
-        version = os.getenv("HERMES_VERSION") or getattr(args, "version", "") or ""
-        if not version:
-            try:
-                p = Path(__file__).resolve().parent.parent / "pyproject.toml"
-                if p.exists():
-                    for line in p.read_text(encoding="utf-8").splitlines():
-                        if line.strip().startswith("version ="):
-                            version = line.split("=")[1].strip().strip('"')
-                            break
-            except Exception:
-                pass
-        if not version:
-            version = "0.7.1"
-
-        channel = "main"
-        patch_level = version
-        commits_behind_main = 0
-
-        try:
-            hermes_home = get_hermes_home()
-            root = hermes_home / "hermes-agent"
-            if not (root / ".git").exists():
-                root = Path(__file__).resolve().parent.parent
-            if (root / ".git").exists():
-                import subprocess
-
-                b_res = subprocess.run(
-                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                    cwd=root,
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if b_res.returncode == 0 and b_res.stdout.strip():
-                    channel = b_res.stdout.strip()
-                s_res = subprocess.run(
-                    ["git", "rev-parse", "--short", "HEAD"],
-                    cwd=root,
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if s_res.returncode == 0 and s_res.stdout.strip():
-                    patch_level = s_res.stdout.strip()
-                c_res = subprocess.run(
-                    ["git", "rev-list", "HEAD..origin/main", "--count"],
-                    cwd=root,
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if c_res.returncode == 0 and c_res.stdout.strip().isdigit():
-                    commits_behind_main = int(c_res.stdout.strip())
-        except Exception:
-            pass
+        # One id per install (AIS-449): the hostname-based id split one Mac
+        # into several clients whenever its network changed.
+        legacy_id = legacy_client_id()
+        client_id = get_install_id() or legacy_id
+        version = os.getenv("HERMES_VERSION") or getattr(args, "version", "") or hermes_version() or "unknown"
+        channel, patch_level, commits_behind_main = _install_channel_and_patch(version)
 
         payload = {
             "client_id": client_id,
+            "legacy_client_id": legacy_id if legacy_id != client_id else "",
             "customer_id": os.getenv("IAMDS_CUSTOMER_ID") or support_cfg.get("customer_id") or "cust-iamds",
             "environment": os.getenv("HERMES_ENV") or "production",
             "version": version,
@@ -418,6 +396,34 @@ def _support_litellm_url(cfg: dict[str, Any], provider_name: str) -> str:
     providers = cfg.get("providers") or {}
     provider_cfg = providers.get(provider_name) if isinstance(providers.get(provider_name), dict) else {}
     return provider_cfg.get("base_url") or "https://suite.iamds.com/litellm/v1"
+
+
+def _case_client_info(args: Any, user_id: str) -> dict[str, Any]:
+    """``client_info`` of a support case (AIS-449).
+
+    ``client_version`` is always the installed Hermes version, the same one
+    telemetry reports, so the support tool can tell whether a case comes from
+    a build that already has a fix. A different version handed in by the
+    caller (the desktop app's own version) is kept as ``app_version``. The
+    old fallback was a hard-coded ``"v1.0.75"``.
+    """
+    from hermes_cli.install_identity import get_install_id, hermes_version
+
+    passed = str(getattr(args, "client_version", None) or "").strip()
+    version = hermes_version() or passed or "unknown"
+    channel, patch_level, _behind = _install_channel_and_patch(version)
+    info: dict[str, Any] = {
+        "client_type": getattr(args, "client_type", None) or "hermes-cli",
+        "client_version": version,
+        "install_id": get_install_id(),
+        "channel": channel,
+        "patch_level": patch_level,
+        "os": f"{platform.system()} {platform.release()} ({platform.machine()})",
+        "user_id": user_id,
+    }
+    if passed and passed.lstrip("v") != version.lstrip("v"):
+        info["app_version"] = passed
+    return info
 
 
 def _relevant_log_names(category: str, context_type: str) -> tuple[str, ...]:
@@ -660,12 +666,7 @@ def _collect_payload(
         "embedding_model_used": "text-embedding-3-small",
         "environment": os.getenv("HERMES_ENV") or "production",
         "timestamp": now_utc.isoformat(),
-        "client_info": {
-            "client_type": getattr(args, "client_type", None) or "hermes-cli",
-            "client_version": getattr(args, "client_version", None) or "v1.0.75",
-            "os": f"{platform.system()} {platform.release()} ({platform.machine()})",
-            "user_id": user_id_val,
-        },
+        "client_info": _case_client_info(args, user_id_val),
         "issue_details": {
             "category": getattr(args, "category", None) or "other",
             "severity": getattr(args, "severity", None) or "medium",

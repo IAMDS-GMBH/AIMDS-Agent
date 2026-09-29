@@ -28,6 +28,7 @@ const { execFileSync, spawn } = require('node:child_process')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { reportIncident: reportAutoIncident } = require('./incident-report.cjs')
+const { getInstallId, legacyClientId } = require('./install-id.cjs')
 const {
   SPAWN_ATTEMPTS: BACKEND_SPAWN_ATTEMPTS,
   isPortRaceText,
@@ -1745,7 +1746,7 @@ function reportReleaseFeedFailure(error, channel, { kind, summary }) {
     detail: String(error?.message || error),
     contextType: 'update_failure',
     installType: 'update',
-    clientVersion: app.getVersion(),
+    clientVersion: resolveHermesVersion(),
     hermesHome: HERMES_HOME,
     runCli: runSupportLogUpload,
     log: rememberLog
@@ -2195,7 +2196,7 @@ function resolveUpdaterBinary() {
     detail: `${candidate}${parked ? ` moved to ${parked}` : ' (rename failed)'}; expected ${verdict.expected}`,
     contextType: 'update_error',
     installType: 'update',
-    clientVersion: app.getVersion(),
+    clientVersion: resolveHermesVersion(),
     hermesHome: HERMES_HOME,
     runCli: runSupportLogUpload,
     log: rememberLog
@@ -3351,7 +3352,7 @@ async function ensureRuntime(backend) {
         severity: 'high',
         contextType: 'install_failure',
         installType: 'fresh_install',
-        clientVersion: app.getVersion(),
+        clientVersion: resolveHermesVersion(),
         hermesHome: HERMES_HOME,
         runCli: runSupportLogUpload,
         log: rememberLog
@@ -3465,7 +3466,7 @@ function reportBootIncident({ kind, severity, summary, detail, signature }) {
     detail,
     severity,
     contextType: 'boot_error',
-    clientVersion: app.getVersion(),
+    clientVersion: resolveHermesVersion(),
     hermesHome: HERMES_HOME,
     runCli: runSupportLogUpload,
     log: rememberLog,
@@ -7332,9 +7333,10 @@ async function sendClientTelemetry(updateInfo = null) {
     const updateRoot = resolveUpdateRoot()
     const { branch } = readDesktopUpdateConfig()
     const version = resolveHermesVersion()
-    const hostname = os.hostname() || 'unknown-host'
-    const username = process.env.USER || process.env.USERNAME || 'user'
-    const clientId = `${hostname}-${username}`
+    // One id per install (AIS-449): hostname-user split one Mac into several
+    // clients whenever its network (and with it the hostname) changed.
+    const legacyId = legacyClientId()
+    const clientId = getInstallId(HERMES_HOME) || legacyId
 
     let channel = branch || 'main'
     let patchLevel = version
@@ -7376,6 +7378,7 @@ async function sendClientTelemetry(updateInfo = null) {
 
     const payload = {
       client_id: clientId,
+      legacy_client_id: legacyId !== clientId ? legacyId : '',
       customer_id: process.env.IAMDS_CUSTOMER_ID || 'cust-iamds',
       environment: process.env.HERMES_ENV || 'production',
       version,

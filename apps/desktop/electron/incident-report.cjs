@@ -17,6 +17,8 @@ const os = require('node:os')
 const path = require('node:path')
 const zlib = require('node:zlib')
 
+const { getInstallId } = require('./install-id.cjs')
+
 const DEFAULT_UPLOAD_URL = 'https://suite-support.iamds.com/api/v1/upload'
 const STATE_FILENAME = 'incident-reports.json'
 const WINDOW_SECONDS = 24 * 60 * 60
@@ -243,6 +245,7 @@ async function uploadMinimalIncident({
   installType = 'update',
   clientType = 'hermes-desktop',
   clientVersion = '',
+  hermesHome = '',
   env = process.env,
   uploadUrl = null,
   extraFiles = {},
@@ -271,7 +274,7 @@ async function uploadMinimalIncident({
     model_used: 'unknown',
     environment: env.HERMES_ENV || 'production',
     timestamp: now.toISOString(),
-    client_info: { client_type: clientType, client_version: clientVersion || 'unknown', os: `${os.type()} ${os.release()} (${os.arch()})`, user_id: os.userInfo().username },
+    client_info: { client_type: clientType, client_version: clientVersion || 'unknown', install_id: getInstallId(hermesHome, { create: Boolean(hermesHome) }), os: `${os.type()} ${os.release()} (${os.arch()})`, user_id: os.userInfo().username },
     issue_details: {
       category: categoryForContextType(contextType),
       severity,
@@ -339,7 +342,7 @@ async function reportIncident({ kind, summary, detail = '', severity = 'medium',
   }
   if (!caseId) {
     try {
-      const minimal = await uploadMinimalIncident({ kind: slug, summary, detail, severity, contextType, installType, clientType, clientVersion, env, uploadUrl, extraFiles, signals })
+      const minimal = await uploadMinimalIncident({ kind: slug, summary, detail, severity, contextType, installType, clientType, clientVersion, hermesHome, env, uploadUrl, extraFiles, signals })
       caseId = minimal.caseId
     } catch (err) {
       log(`[incident] ${slug} could not be reported to support: ${err.message}`)
