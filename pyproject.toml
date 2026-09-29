@@ -300,7 +300,7 @@ hermes-acp = "acp_adapter.entry:main"
 # libsodium with GHSA "Incomplete List of Disallowed Inputs" (fixed in 1.6.2).
 # The voice code only uses SecretBox/Aead, unchanged in 1.6. Drop this once
 # discord.py allows PyNaCl>=1.6.2 (AIS-434).
-override-dependencies = ["pynacl>=1.6.2"]
+override-dependencies = ["pynacl>=1.6.2,<2"]
 
 [tool.setuptools]
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]

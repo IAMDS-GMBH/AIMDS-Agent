@@ -14,7 +14,7 @@ resolution-markers = [
 ]
 
 [manifest]
-overrides = [{ name = "pynacl", specifier = ">=1.6.2" }]
+overrides = [{ name = "pynacl", specifier = ">=1.6.2,<2" }]
 
 [[package]]
 name = "agent-client-protocol"
