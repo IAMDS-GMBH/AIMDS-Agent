@@ -121,6 +121,21 @@ test('uploadMinimalIncident posts a schema-1.1.0 bundle as multipart/form-data',
   }
 })
 
+test('uploadMinimalIncident carries the install id so the support tool keys the case to the machine (AIS-449)', async () => {
+  const received = []
+  const { server, url } = await startFakeSupportServer(received)
+  const home = mkHome()
+  fs.writeFileSync(path.join(home, '.install-id'), 'inst-0123456789abcdef0123456789abcdef\n')
+  try {
+    await uploadMinimalIncident({ kind: 'boot-failed', summary: 's', clientVersion: '0.7.8-rc.4', hermesHome: home, env: {}, uploadUrl: url })
+    const metadata = JSON.parse(readZip(received[0].zip)['metadata.json'])
+    assert.equal(metadata.client_info.install_id, 'inst-0123456789abcdef0123456789abcdef')
+    assert.equal(metadata.client_info.client_version, '0.7.8-rc.4')
+  } finally {
+    server.close()
+  }
+})
+
 test('categoryForContextType maps every known contextType, falls back to CATEGORY', () => {
   // AIS-384: this used to be a single hardcoded CATEGORY constant fed to
   // every incident regardless of contextType -- e.g. a boot failure was
