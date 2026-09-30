@@ -67,7 +67,7 @@ concurrency:
 jobs:
   check:
     name: uv lock --check
-    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_LABEL }}
     timeout-minutes: 5
     steps:
       # main is protected by a branch ruleset (PRs required); an auto-refresh

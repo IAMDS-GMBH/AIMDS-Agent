@@ -64,7 +64,7 @@ permissions:
 jobs:
   scan:
     name: Scan lockfiles
-    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_LABEL }}
     permissions:
       contents: read
       security-events: write

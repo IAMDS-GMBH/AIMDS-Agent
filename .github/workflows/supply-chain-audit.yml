@@ -23,7 +23,7 @@ permissions:
 jobs:
   # ── Path filter (shared by both scan and dep-bounds) ───────────────
   changes:
-    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_LABEL }}
     outputs:
       # True when any file the scanner cares about changed in this PR
       scan: ${{ steps.filter.outputs.scan }}
@@ -59,7 +59,7 @@ jobs:
     name: Scan PR for critical supply chain risks
     needs: changes
     if: needs.changes.outputs.scan == 'true'
-    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_LABEL }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -186,7 +186,7 @@ jobs:
     # skipped — without it, a failed dependency would leave the required
     # check unreported (i.e. "pending"), the exact failure mode this fixes.
     if: always() && needs.changes.outputs.scan != 'true'
-    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_LABEL }}
     steps:
       - run: echo "No supply-chain-relevant files changed, skipping scan."
 
@@ -194,7 +194,7 @@ jobs:
     name: Check PyPI dependency upper bounds
     needs: changes
     if: needs.changes.outputs.deps == 'true'
-    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_LABEL }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -265,6 +265,6 @@ jobs:
     # skipped — without it, a failed dependency would leave the required
     # check unreported (i.e. "pending"), the exact failure mode this fixes.
     if: always() && needs.changes.outputs.deps != 'true'
-    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_LABEL }}
     steps:
       - run: echo "No pyproject.toml changes, skipping dependency bounds check."

@@ -23,7 +23,7 @@ on:
 
 jobs:
   lint:
-    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_LABEL }}
     strategy:
       matrix:
         package: [ui-tui, apps/desktop]

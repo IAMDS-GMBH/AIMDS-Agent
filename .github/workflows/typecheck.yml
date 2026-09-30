@@ -32,7 +32,7 @@ concurrency:
 
 jobs:
   typecheck:
-    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_LABEL }}
     strategy:
       matrix:
         package:
