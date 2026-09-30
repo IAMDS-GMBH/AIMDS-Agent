@@ -329,6 +329,7 @@ class TestDefaultWorkerCount:
 
         rtp = _load_runner()
 
+        monkeypatch.setattr(rtp, "_cgroup_cpu_limit", lambda: None)
         monkeypatch.setattr(rtp, "_performance_core_count", lambda: None)
         monkeypatch.setattr(os, "cpu_count", lambda: 16)
 
@@ -339,6 +340,7 @@ class TestDefaultWorkerCount:
 
         rtp = _load_runner()
 
+        monkeypatch.setattr(rtp, "_cgroup_cpu_limit", lambda: None)
         monkeypatch.setattr(rtp, "_performance_core_count", lambda: 1)
         monkeypatch.setattr(os, "cpu_count", lambda: 1)
 
@@ -349,10 +351,47 @@ class TestDefaultWorkerCount:
 
         rtp = _load_runner()
 
+        monkeypatch.setattr(rtp, "_cgroup_cpu_limit", lambda: None)
         monkeypatch.setattr(rtp, "_performance_core_count", lambda: None)
         monkeypatch.setattr(os, "cpu_count", lambda: 128)
 
         assert rtp.default_worker_count() == 8
+
+    def test_respects_the_container_cpu_limit(self, monkeypatch):
+        import os
+
+        rtp = _load_runner()
+
+        monkeypatch.setattr(rtp, "_performance_core_count", lambda: None)
+        monkeypatch.setattr(os, "cpu_count", lambda: 32)
+        monkeypatch.setattr(rtp, "_cgroup_cpu_limit", lambda: 4)
+
+        # A 4-CPU pod on a 32-core node -> 2 workers, not 8.
+        assert rtp.default_worker_count() == 2
+
+    def test_reads_cgroup_v2_and_v1_quotas(self, monkeypatch, tmp_path):
+        import sys
+
+        rtp = _load_runner()
+        monkeypatch.setattr(sys, "platform", "linux")
+
+        v2 = tmp_path / "v2"
+        v2.mkdir()
+        (v2 / "cpu.max").write_text("250000 100000\n")
+        assert rtp._cgroup_cpu_limit(v2) == 3
+
+        (v2 / "cpu.max").write_text("max 100000\n")
+        assert rtp._cgroup_cpu_limit(v2) is None
+
+        v1 = tmp_path / "v1"
+        (v1 / "cpu").mkdir(parents=True)
+        (v1 / "cpu" / "cpu.cfs_quota_us").write_text("400000\n")
+        (v1 / "cpu" / "cpu.cfs_period_us").write_text("100000\n")
+        assert rtp._cgroup_cpu_limit(v1) == 4
+
+        (v1 / "cpu" / "cpu.cfs_quota_us").write_text("-1\n")
+        assert rtp._cgroup_cpu_limit(v1) is None
+        assert rtp._cgroup_cpu_limit(tmp_path / "missing") is None
 
     def test_non_darwin_reports_no_performance_cores(self, monkeypatch):
         import sys

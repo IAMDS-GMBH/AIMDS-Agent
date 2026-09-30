@@ -67,7 +67,7 @@ concurrency:
 jobs:
   check:
     name: uv lock --check
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER_LABEL }}
     timeout-minutes: 5
     steps:
       # main is protected by a branch ruleset (PRs required); an auto-refresh
@@ -100,6 +100,15 @@ jobs:
       # For forks (no push rights) and branch pushes, this stays blocking and
       # prints clear remediation instructions.
       - name: Verify or auto-refresh uv.lock
+        # PR data goes through env, never into the script text: the branch
+        # name of a fork PR is attacker-controlled (script injection on the
+        # self-hosted runner, AIS-453).
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          THIS_REPO: ${{ github.repository }}
+          GIT_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           uv lock
@@ -110,9 +119,9 @@ jobs:
           fi
 
           target_ref=""
-          if [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
-            target_ref="${{ github.event.pull_request.head.ref }}"
-          elif [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; then
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$HEAD_REPO" = "$THIS_REPO" ]; then
+            target_ref="$HEAD_REF"
+          elif [ "$EVENT_NAME" = "push" ] && [ "$GIT_REF" = "refs/heads/main" ]; then
             target_ref="main"
           fi
 

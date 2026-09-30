@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -718,6 +719,31 @@ def _performance_core_count() -> "int | None":
     return count if count > 0 else None
 
 
+def _cgroup_cpu_limit(cgroup_root: Path = Path("/sys/fs/cgroup")) -> "int | None":
+    """CPU quota of this process's cgroup, rounded up; None when unlimited.
+
+    Inside a container (CI runner pods) `os.cpu_count()` reports the node's
+    cores, not the pod's CPU limit, so the default would oversubscribe the pod
+    and push timing-sensitive tests into their timeouts.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        quota_s, period_s = (cgroup_root / "cpu.max").read_text().split()[:2]
+        if quota_s == "max":
+            return None
+        quota, period = int(quota_s), int(period_s)
+    except (OSError, ValueError):
+        try:
+            quota = int((cgroup_root / "cpu" / "cpu.cfs_quota_us").read_text())
+            period = int((cgroup_root / "cpu" / "cpu.cfs_period_us").read_text())
+        except (OSError, ValueError):
+            return None
+    if quota <= 0 or period <= 0:
+        return None
+    return max(1, math.ceil(quota / period))
+
+
 def default_worker_count() -> int:
     """Workers to use when neither -j nor HERMES_TEST_WORKERS is given.
 
@@ -732,6 +758,9 @@ def default_worker_count() -> int:
         return max(2, perf - 1)
 
     cpu = os.cpu_count() or 4
+    limit = _cgroup_cpu_limit()
+    if limit:
+        cpu = min(cpu, limit)
 
     return max(2, min(cpu // 2, 8))
 
@@ -855,7 +884,7 @@ def main() -> int:
     print(
         f"Discovered {len(files)} test files ({total_tests} tests) under "
         f"{[str(r.relative_to(repo_root)) if r.is_relative_to(repo_root) else str(r) for r in roots]}; "
-        f"running with -j {args.jobs}",
+        f"running with -j {args.jobs} (cpu_count={os.cpu_count()}, cgroup_cpu_limit={_cgroup_cpu_limit()})",
         flush=True,
     )
 

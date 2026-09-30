@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER_LABEL }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -116,6 +116,8 @@ jobs:
           source .venv/bin/activate
           python scripts/run_tests_parallel.py --slice ${{ matrix.slice }}/6
         env:
+          # Empty -> the runner derives it from the CPUs (cgroup limit aware).
+          HERMES_TEST_WORKERS: ${{ vars.HERMES_TEST_WORKERS }}
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
@@ -133,7 +135,7 @@ jobs:
   save-durations:
     needs: test
     if: always() && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER_LABEL }}
     steps:
       - name: Download all slice durations
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -162,7 +164,7 @@ jobs:
           key: test-durations
 
   e2e:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER_LABEL }}
     timeout-minutes: 15
     steps:
       - name: Checkout code
@@ -236,7 +238,7 @@ jobs:
     name: Tests passed
     needs: [test, e2e]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER_LABEL }}
     timeout-minutes: 5
     steps:
       - name: Evaluate matrix + e2e results

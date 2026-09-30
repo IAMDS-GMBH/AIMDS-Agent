@@ -64,7 +64,7 @@ permissions:
 jobs:
   scan:
     name: Scan lockfiles
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER_LABEL }}
     permissions:
       contents: read
       security-events: write
@@ -72,11 +72,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      # Into the job's temp dir, not /usr/local/bin: on the org runner a
+      # system path would outlive the job (AIS-453).
       - name: Install OSV-Scanner
         run: |
-          curl -fsSL https://github.com/google/osv-scanner/releases/download/v2.5.1/osv-scanner_linux_amd64 -o /usr/local/bin/osv-scanner
-          chmod +x /usr/local/bin/osv-scanner
-          osv-scanner --version
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL https://github.com/google/osv-scanner/releases/download/v2.5.1/osv-scanner_linux_amd64 -o "$RUNNER_TEMP/bin/osv-scanner"
+          chmod +x "$RUNNER_TEMP/bin/osv-scanner"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/osv-scanner" --version
 
       - name: Run OSV-Scanner
         run: |
