@@ -137,6 +137,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
         monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
+        monkeypatch.setattr("hermes_constants.is_container", lambda: False)
 
         from tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
@@ -428,6 +429,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.setattr("tools.voice_mode._termux_api_app_installed", lambda: True)
         monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (_ for _ in ()).throw(ImportError("no audio libs")))
         monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
+        monkeypatch.setattr("hermes_constants.is_container", lambda: False)
 
         from tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()

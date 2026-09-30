@@ -381,6 +381,43 @@ class TestExtractCacheBustingConfig:
         assert third == first
         assert parse_calls == [config_path, config_path]
 
+    def test_honcho_cache_busting_config_sees_an_edit_within_the_same_mtime_tick(self, monkeypatch, tmp_path):
+        """Linux mtimes come from a coarse clock; an edit in the same tick must still re-parse."""
+        import os
+        from types import SimpleNamespace
+        from gateway.run import GatewayRunner
+
+        config_path = tmp_path / "honcho.json"
+        config_path.write_text("{}")
+        parse_calls = []
+
+        class FakeConfig:
+            peer_name = "eri"
+            ai_peer = "hermes"
+            pin_peer_name = False
+            runtime_peer_prefix = ""
+            user_peer_aliases = {}
+
+            @classmethod
+            def from_global_config(cls, config_path=None):
+                parse_calls.append(config_path)
+                return cls()
+
+        fake_client = SimpleNamespace(
+            HonchoClientConfig=FakeConfig,
+            resolve_config_path=lambda: config_path,
+        )
+        monkeypatch.setitem(__import__("sys").modules, "plugins.memory.honcho.client", fake_client)
+        monkeypatch.setattr(GatewayRunner, "_HONCHO_CACHE_BUSTING_MEMO", {})
+
+        GatewayRunner._extract_honcho_cache_busting_config()
+        frozen = config_path.stat().st_mtime_ns
+        config_path.write_text('{"aiPeer": "hermetika"}')
+        os.utime(config_path, ns=(frozen, frozen))
+        GatewayRunner._extract_honcho_cache_busting_config()
+
+        assert parse_calls == [config_path, config_path]
+
     def test_full_round_trip_busts_cache_on_real_edit(self):
         """End-to-end: simulate a config edit on main and verify the
         extracted cache_keys change produces a new signature."""
