@@ -116,6 +116,8 @@ jobs:
           source .venv/bin/activate
           python scripts/run_tests_parallel.py --slice ${{ matrix.slice }}/6
         env:
+          # Empty -> the runner derives it from the CPUs (cgroup limit aware).
+          HERMES_TEST_WORKERS: ${{ vars.HERMES_TEST_WORKERS }}
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
