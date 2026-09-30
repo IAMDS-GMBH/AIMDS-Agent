@@ -43,8 +43,10 @@ def _make_agent():
     agent._interrupt_requested = False
     agent.verbose_logging = False
     # _compute_non_stream_stale_timeout / streaming setup helpers return
-    # benign values; the real call path is mocked per-test.
-    agent._compute_non_stream_stale_timeout.return_value = 5.0
+    # benign values; the real call path is mocked per-test. The stale
+    # detector is only a safety net here: keep it under pytest's 30s timeout
+    # but loose enough that a loaded CI runner does not trip it (5s did).
+    agent._compute_non_stream_stale_timeout.return_value = 25.0
     return agent
 
 
