@@ -10,7 +10,9 @@ waiting for the user to press "Problem melden":
 * an HTTP 401 that survived every credential refresh (LLM provider, AIMDS
   Suite, MCP server);
 * a bundled MCP server (catalog entry under ``optional-mcps/``) that fails
-  to connect, gives up reconnecting or opens its circuit breaker.
+  to connect, gives up reconnecting or opens its circuit breaker;
+* a turn whose LLM call failed on every retry (AIS-456) — the case names
+  the error class and whether the Suite's LLM gateway was up at that moment.
 
 Policy comes from ``incident_report``: ``support.auto_report: false`` or
 ``HERMES_SUPPORT_AUTO_REPORT=0`` switches uploads off, one case per kind per
@@ -24,6 +26,8 @@ import json
 import logging
 import re
 import threading
+import time
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 logger = logging.getLogger("hermes.incident")
@@ -31,6 +35,7 @@ logger = logging.getLogger("hermes.incident")
 CONTEXT_PYTHON_FALLBACK = "agent_python_fallback"
 CONTEXT_AUTH = "auth_error"
 CONTEXT_MCP = "mcp_failure"
+CONTEXT_TURN_FAILURE = "turn_failure"
 
 _TRANSCRIPT_MAX_MESSAGES = 30
 _TRANSCRIPT_PART_CHARS = 1200
@@ -316,6 +321,181 @@ def report_auth_401(source: str, target: str, message: str = "", *, session_id: 
         return None
 
 
+#: Failure reasons that are a quota wall or the user's own doing, not a
+#: defect worth a support case.
+_TURN_FAILURE_SKIP_REASONS = frozenset({"billing", "rate_limit", "auth", "auth_permanent"})
+#: A remembered stream failure older than this belongs to an earlier turn.
+_STREAM_FAILURE_MAX_AGE_SECONDS = 15 * 60
+_ATTACHED_CONTEXT_MARKER = "--- Attached Context ---"
+
+
+def _text_of(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            str(part.get("text") or "") for part in content if isinstance(part, dict)
+        )
+    return ""
+
+
+def request_shape(api_kwargs: Any) -> Dict[str, Any]:
+    """Sizes of an outgoing request, no content (never raises)."""
+    shape: Dict[str, Any] = {}
+    if not isinstance(api_kwargs, dict):
+        return shape
+    try:
+        shape["body_chars"] = len(json.dumps(api_kwargs, ensure_ascii=False, default=str))
+    except Exception:
+        pass
+    messages = api_kwargs.get("messages") or api_kwargs.get("input") or []
+    if isinstance(messages, list):
+        shape["messages"] = len(messages)
+        system = next((m for m in messages if isinstance(m, dict) and m.get("role") in ("system", "developer")), None)
+        if system is not None:
+            shape["system_chars"] = len(_text_of(system.get("content")))
+        last_user = next((m for m in reversed(messages) if isinstance(m, dict) and m.get("role") == "user"), None)
+        if last_user is not None:
+            text = _text_of(last_user.get("content"))
+            shape["last_user_chars"] = len(text)
+            if _ATTACHED_CONTEXT_MARKER in text:
+                shape["attached_context_chars"] = len(text.split(_ATTACHED_CONTEXT_MARKER, 1)[1])
+    tools = api_kwargs.get("tools")
+    if isinstance(tools, list):
+        shape["tools"] = len(tools)
+    return shape
+
+
+def _error_class(failure_reason: str, error: Any) -> str:
+    reason = str(failure_reason or "").strip().lower()
+    if reason and reason != "unknown":
+        return reason
+    name = type(error).__name__.lower() if error is not None else ""
+    if "timeout" in name:
+        return "timeout"
+    if "connection" in name or "protocol" in name:
+        return "connection"
+    return "other"
+
+
+def report_turn_failure(
+    agent: Any,
+    *,
+    error: Any,
+    summary: str,
+    failure_reason: str = "",
+    max_retries: int = 0,
+    api_kwargs: Any = None,
+    dump_path: Any = None,
+) -> Optional[threading.Thread]:
+    """A turn whose LLM call failed on every retry (never raises).
+
+    The kind slug bundles equal causes: error class plus, for AIMDS Suite
+    providers, the LLM gateway state on the Suite's health board right
+    after the failure (``turn-exhausted-connection-suite-up`` = the Suite is
+    fine, this request was cut off). Only sizes of the request go into the
+    case, never its content; the local request dump is named, not uploaded.
+    Subagents (they report their own outcome) and background review forks
+    never report here.
+    """
+    try:
+        if getattr(agent, "_delegate_depth", 0) or getattr(agent, "_is_background_review_fork", False):
+            return None
+        error_class = _error_class(failure_reason, error)
+        if error_class in _TURN_FAILURE_SKIP_REASONS:
+            return None
+        provider = str(getattr(agent, "provider", "") or "")
+        base_url = str(getattr(agent, "base_url", "") or "")
+        model = str(getattr(agent, "model", "") or "")
+        platform = str(getattr(agent, "platform", "") or "")
+        session_id = str(getattr(agent, "session_id", "") or "")
+
+        liveness = ""
+        try:
+            from hermes_cli.iamds_suite import is_suite_provider, suite_llm_liveness
+
+            if is_suite_provider(provider) and _network_probe_allowed():
+                liveness = suite_llm_liveness(base_url)
+        except Exception:
+            liveness = ""
+        # The user-facing error message reads it instead of probing again.
+        try:
+            agent._last_suite_liveness = liveness
+        except Exception:
+            pass
+        target = f"suite-{liveness}" if liveness else _slug(provider or "provider")
+        kind = f"turn-exhausted-{_slug(error_class)}-{target}"
+
+        stream = getattr(agent, "_last_stream_failure", None)
+        if not isinstance(stream, dict) or (time.time() - float(stream.get("at") or 0)) > _STREAM_FAILURE_MAX_AGE_SECONDS:
+            stream = None
+        shape = request_shape(api_kwargs)
+
+        lines = [
+            f"An LLM call failed on all {max_retries or '?'} retries and the turn ended without an answer.",
+            "",
+            f"provider: {provider or '?'}  host: {_host_of(base_url) or '?'}  model: {model or '?'}  platform: {platform or '?'}",
+            f"error: {_clip(_redact(summary), 300)}  (class {error_class})",
+        ]
+        if liveness:
+            lines.append(f"Suite health board right after the failure: litellm {liveness}")
+        if stream:
+            ttfb = stream.get("ttfb")
+            lines.append(
+                "last stream attempt: "
+                f"{stream.get('kind', '?')} chain={_clip(stream.get('chain'), 300)} "
+                f"http_status={stream.get('http_status') if stream.get('http_status') is not None else '-'} "
+                f"bytes={stream.get('bytes', 0)} chunks={stream.get('chunks', 0)} "
+                f"elapsed={float(stream.get('elapsed') or 0):.1f}s "
+                f"ttfb={f'{float(ttfb):.1f}s' if ttfb is not None else '-'}"
+            )
+        if shape:
+            lines.append("request shape: " + " ".join(f"{k}={v}" for k, v in shape.items()))
+        if dump_path:
+            lines.append(f"local request dump (not uploaded): {Path(str(dump_path)).name}")
+        lines += [
+            "",
+            "Hint: bytes=0 with the Suite up means the request was cut off before the first byte "
+            "(server-side timeout); a large attached_context_chars points at oversized user input.",
+        ]
+        return report_in_background(
+            kind,
+            f"Turn failed after {max_retries or '?'} retries ({error_class}) on {provider or 'provider'}",
+            "\n".join(lines),
+            category="connection_error",
+            context_type=CONTEXT_TURN_FAILURE,
+            severity="high" if liveness == "up" else "medium",
+            session_id=session_id,
+        )
+    except Exception as exc:
+        logger.debug("turn failure report failed: %s", exc)
+        return None
+
+
+def _network_probe_allowed() -> bool:
+    """Real runs always probe; under pytest only when a test switched
+    auto-reporting on explicitly (it then stubs the probe)."""
+    import os
+
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    try:
+        from hermes_cli import incident_report
+
+        return incident_report.auto_report_enabled()
+    except Exception:
+        return False
+
+
+def _host_of(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+
+        return urlparse(url).netloc
+    except Exception:
+        return ""
+
+
 def is_bundled_mcp(server_name: str) -> bool:
     """True for catalog servers shipped with Hermes (optional-mcps/)."""
     name = str(server_name or "")
@@ -357,4 +537,6 @@ __all__ = [
     "report_auth_401",
     "report_bundled_mcp_failure",
     "report_in_background",
+    "report_turn_failure",
+    "request_shape",
 ]

@@ -117,6 +117,47 @@ def flatten_exception_chain(error: BaseException) -> str:
     return " <- ".join(parts) if parts else type(error).__name__
 
 
+def stream_diag_summary(error: BaseException, diag: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Per-attempt facts of a dying stream as a plain dict (never raises).
+
+    Shared by :func:`log_stream_retry` and the automatic support case for a
+    failed turn (``hermes_cli.auto_incidents.report_turn_failure``), so the
+    case carries exactly what ``agent.log`` shows.
+    """
+    try:
+        chain = flatten_exception_chain(error)
+    except Exception:
+        chain = type(error).__name__
+    summary: Dict[str, Any] = {
+        "error_type": type(error).__name__,
+        "chain": chain,
+        "http_status": None,
+        "bytes": 0,
+        "chunks": 0,
+        "elapsed": 0.0,
+        "ttfb": None,
+        "headers": {},
+    }
+    if isinstance(diag, dict):
+        try:
+            now = time.time()
+            started = float(diag.get("started_at") or now)
+            summary["bytes"] = int(diag.get("bytes") or 0)
+            summary["chunks"] = int(diag.get("chunks") or 0)
+            summary["elapsed"] = max(0.0, now - started)
+            first = diag.get("first_chunk_at")
+            if first is not None:
+                summary["ttfb"] = max(0.0, float(first) - started)
+            headers = diag.get("headers") or {}
+            if isinstance(headers, dict):
+                summary["headers"] = dict(headers)
+            if diag.get("http_status") is not None:
+                summary["http_status"] = diag.get("http_status")
+        except Exception:
+            pass
+    return summary
+
+
 def log_stream_retry(
     agent: Any,
     *,
@@ -126,6 +167,7 @@ def log_stream_retry(
     max_attempts: int,
     mid_tool_call: bool,
     diag: Optional[Dict[str, Any]] = None,
+    outcome: str = "retrying",
 ) -> None:
     """Record a transient stream-drop and retry to ``agent.log``.
 
@@ -140,6 +182,12 @@ def log_stream_retry(
     streamed before the drop, and elapsed time on the dying attempt.
     These are the breadcrumbs needed to answer "is one CF edge / one
     downstream provider responsible, or is it random across runs?"
+
+    The summary is also kept on ``agent._last_stream_failure`` so the
+    turn-failure support case can quote it after the retries ran out.
+    *outcome* names what happens next (``retrying`` for the stream-level
+    retry, ``handing to the turn retry loop`` for a failure the main loop
+    retries).
     """
     try:
         try:
@@ -149,41 +197,20 @@ def log_stream_retry(
         if _summary and len(_summary) > 240:
             _summary = _summary[:240] + "…"
 
-        # Inner-cause chain (httpx errors hide under openai.APIError).
+        facts = stream_diag_summary(error, diag)
         try:
-            _chain = flatten_exception_chain(error)
+            agent._last_stream_failure = dict(
+                facts, kind=kind, attempt=attempt, max_attempts=max_attempts, at=time.time(),
+            )
         except Exception:
-            _chain = type(error).__name__
-
-        # Per-attempt counters and upstream headers.
-        _now = time.time()
-        _bytes = 0
-        _chunks = 0
-        _elapsed = 0.0
-        _ttfb = None
-        _headers_repr = "-"
-        _http_status = "-"
-        if isinstance(diag, dict):
-            try:
-                _bytes = int(diag.get("bytes") or 0)
-                _chunks = int(diag.get("chunks") or 0)
-                _started = float(diag.get("started_at") or _now)
-                _elapsed = max(0.0, _now - _started)
-                _first = diag.get("first_chunk_at")
-                if _first is not None:
-                    _ttfb = max(0.0, float(_first) - _started)
-                headers = diag.get("headers") or {}
-                if isinstance(headers, dict) and headers:
-                    _headers_repr = " ".join(
-                        f"{k}={v}" for k, v in headers.items()
-                    )
-                if diag.get("http_status") is not None:
-                    _http_status = str(diag.get("http_status"))
-            except Exception:
-                pass
+            pass
+        headers = facts["headers"]
+        _headers_repr = " ".join(f"{k}={v}" for k, v in headers.items()) if headers else "-"
+        _http_status = str(facts["http_status"]) if facts["http_status"] is not None else "-"
+        _ttfb = facts["ttfb"]
 
         logger.warning(
-            "Stream %s on attempt %s/%s — retrying. "
+            "Stream %s on attempt %s/%s — %s. "
             "subagent_id=%s depth=%s provider=%s base_url=%s "
             "error_type=%s error=%s "
             "chain=%s "
@@ -192,17 +219,18 @@ def log_stream_retry(
             kind,
             attempt,
             max_attempts,
+            outcome,
             getattr(agent, "_subagent_id", None) or "-",
             getattr(agent, "_delegate_depth", 0),
             agent.provider or "-",
             agent.base_url or "-",
             type(error).__name__,
             _summary,
-            _chain,
+            facts["chain"],
             _http_status,
-            _bytes,
-            _chunks,
-            _elapsed,
+            facts["bytes"],
+            facts["chunks"],
+            facts["elapsed"],
             f"{_ttfb:.2f}s" if _ttfb is not None else "-",
             _headers_repr,
             extra={"mid_tool_call": mid_tool_call},
@@ -273,6 +301,7 @@ def emit_stream_drop(
 __all__ = [
     "STREAM_DIAG_HEADERS",
     "stream_diag_init",
+    "stream_diag_summary",
     "stream_diag_capture_response",
     "flatten_exception_chain",
     "log_stream_retry",

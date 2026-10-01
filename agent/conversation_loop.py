@@ -4999,12 +4999,28 @@ def run_conversation(
                         agent.log_prefix, max_retries, _final_summary,
                         _provider, _model, len(api_messages), f"{approx_tokens:,}",
                     )
+                    _dump_path = None
                     if api_kwargs is not None:
-                        agent._dump_api_request_debug(
+                        _dump_path = agent._dump_api_request_debug(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
                     agent._persist_session(messages, conversation_history)
                     logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "max_retries_exhausted_api_error", agent.session_id or "none")
+                    # AIS-456: support sees a turn that died on every retry
+                    # without waiting for "Problem melden".
+                    try:
+                        from hermes_cli.auto_incidents import report_turn_failure
+                        report_turn_failure(
+                            agent,
+                            error=api_error,
+                            summary=_final_summary,
+                            failure_reason=classified.reason.value,
+                            max_retries=max_retries,
+                            api_kwargs=api_kwargs,
+                            dump_path=_dump_path,
+                        )
+                    except Exception:
+                        pass
                     if classified.reason == FailoverReason.billing:
                         _final_response = f"Billing or credits exhausted: {_final_summary}"
                         if _billing_guidance:

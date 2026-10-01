@@ -837,6 +837,27 @@ class DoclingAvailability:
         return data
 
 
+#: Health-board monitor of the Suite's LLM gateway.
+LITELLM_HEALTH_SLUG = "litellm"
+
+
+def suite_llm_liveness(base_url: str, *, timeout: float = 3.0) -> str:
+    """``up`` | ``down`` | ``unknown`` | ``unreachable`` for the LLM gateway
+    behind *base_url*, read fresh from ``/uptime/health`` (never raises).
+
+    Used after a turn failed: "the Suite says LiteLLM is up" turns a vague
+    connection error into "this request was cut off server-side".
+    """
+    try:
+        payload, _status, _error = fetch_suite_health(base_url, timeout=timeout, use_cache=False)
+    except Exception:
+        return "unreachable"
+    if payload is None:
+        return "unreachable"
+    state = suite_service_state(payload, LITELLM_HEALTH_SLUG)
+    return "unknown" if state == "missing" else state
+
+
 def docling_availability(
     *,
     provider: Optional[str] = None,

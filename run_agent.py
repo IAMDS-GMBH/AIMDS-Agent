@@ -999,12 +999,14 @@ class AIAgent:
         max_attempts: int,
         mid_tool_call: bool,
         diag: Optional[Dict[str, Any]] = None,
+        outcome: str = "retrying",
     ) -> None:
         """Forwarder — see ``agent.stream_diag.log_stream_retry``."""
         from agent.stream_diag import log_stream_retry
         log_stream_retry(
             self, kind=kind, error=error, attempt=attempt,
             max_attempts=max_attempts, mid_tool_call=mid_tool_call, diag=diag,
+            outcome=outcome,
         )
 
     def _emit_stream_drop(
