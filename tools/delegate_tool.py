@@ -129,7 +129,11 @@ _SUBAGENT_TOOLSETS = sorted(
 )
 _TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
 
-_DEFAULT_MAX_CONCURRENT_CHILDREN = 3
+# Two children at a time keep big jobs moving without stacking long requests
+# on one provider key (AIS-456); more tasks queue behind them.
+_DEFAULT_MAX_CONCURRENT_CHILDREN = 2
+# Upper bound of tasks one delegate_task call may queue.
+MAX_QUEUED_TASKS = 20
 MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); grandchild rejected unless max_spawn_depth raised.
 # Configurable depth cap consulted by _get_max_spawn_depth; MAX_DEPTH
 # stays as the default fallback and is still the symbol tests import.
@@ -922,6 +926,9 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # ``inherit`` | ``fast`` — the subagent model rule (AIS-456) on AIMDS
+    # Suite providers; ignored elsewhere.
+    model_tier: str = "inherit",
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1056,6 +1063,31 @@ def _build_child_agent(
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
     effective_api_key = override_api_key or parent_api_key
+    model_choice_reason = "explicit" if model else "inherit"
+    # AIS-456: on the parent's own AIMDS Suite environment the child follows
+    # the subagent model rule — Auto stays Auto, any other main model hands
+    # the child the cheapest tool-capable model of the same key. A
+    # delegation.provider/base_url override or an ACP transport keeps the
+    # configured model untouched.
+    if not (override_provider or override_base_url or override_acp_command):
+        try:
+            from hermes_cli.iamds_suite import is_suite_provider, pick_child_suite_model
+
+            if is_suite_provider(effective_provider):
+                effective_model, model_choice_reason = pick_child_suite_model(
+                    effective_provider,
+                    parent_agent.model,
+                    base_url=effective_base_url or "",
+                    api_key=effective_api_key or "",
+                    tier=model_tier,
+                    explicit=model or "",
+                )
+        except Exception as exc:
+            logger.debug("subagent model rule skipped: %s", exc)
+    logger.info(
+        "[subagent-%s] model=%s reason=%s provider=%s",
+        task_index, effective_model, model_choice_reason, effective_provider or "-",
+    )
     # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a
     # different provider than the parent — each provider has its own API surface
     # (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).
@@ -1178,6 +1210,7 @@ def _build_child_agent(
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
+    child._model_choice_reason = model_choice_reason
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
@@ -2059,13 +2092,14 @@ def delegate_task(
         tasks = recovered_tasks
 
     if tasks and isinstance(tasks, list):
-        if len(tasks) > max_children:
+        # AIS-456: tasks beyond max_concurrent_children wait in the executor
+        # queue instead of being rejected; only the total is bounded.
+        if len(tasks) > MAX_QUEUED_TASKS:
             return tool_error(
-                f"Too many tasks: {len(tasks)} provided, but "
-                f"max_concurrent_children is {max_children}. "
-                f"Either reduce the task count, split into multiple "
-                f"delegate_task calls, or increase "
-                f"delegation.max_concurrent_children in config.yaml."
+                f"Too many tasks: {len(tasks)} provided, at most "
+                f"{MAX_QUEUED_TASKS} per delegate_task call "
+                f"({max_children} run at a time, the rest queue). "
+                f"Group related items into one task or call delegate_task again."
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
@@ -2650,13 +2684,15 @@ def _build_top_level_description() -> str:
         "never enter your context window.\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
         "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
-        f"2. Batch (parallel): provide 'tasks' array with up to {max_children} "
-        f"items concurrently for this user (configured via "
-        f"delegation.max_concurrent_children in config.yaml). "
-        f"All run in parallel and results are returned together. {nesting_clause}\n\n"
+        f"2. Batch (queued): provide 'tasks' array with up to {MAX_QUEUED_TASKS} "
+        f"items; {max_children} run at a time for this user "
+        f"(delegation.max_concurrent_children), the rest wait in a queue. "
+        f"Results are returned together. {nesting_clause}\n\n"
         "WHEN TO USE delegate_task:\n"
+        "- Work that would flood your context: many or large files, long "
+        "exports, sweeps over many items, month-by-month data fetches. Split "
+        "it into parts, delegate the parts, keep only the conclusions.\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
-        "- Tasks that would flood your context with intermediate data\n"
         "- Parallel independent workstreams (research A and B simultaneously)\n\n"
         "WHEN NOT TO USE (use these instead):\n"
         "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
@@ -2704,9 +2740,9 @@ def _build_tasks_param_description() -> str:
     except Exception:
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
     return (
-        f"Batch mode: tasks to run in parallel (up to {max_children} for this "
-        f"user, set via delegation.max_concurrent_children). Each gets "
-        "its own subagent with isolated context and terminal session. "
+        f"Batch mode: up to {MAX_QUEUED_TASKS} tasks; {max_children} run at a "
+        f"time for this user (delegation.max_concurrent_children), the rest "
+        "queue. Each gets its own subagent with isolated context and terminal session. "
         "When provided, top-level goal/context/toolsets are ignored."
     )
 
@@ -2852,9 +2888,9 @@ DELEGATE_TASK_SCHEMA = {
                     },
                     "required": ["goal"],
                 },
-                # No maxItems — the runtime limit is configurable via
-                # delegation.max_concurrent_children (default 3) and
-                # enforced with a clear error in delegate_task().
+                # No maxItems — at most MAX_QUEUED_TASKS are accepted (clear
+                # error in delegate_task()); delegation.max_concurrent_children
+                # (default 2) of them run at a time, the rest queue.
                 "description": "(rebuilt at get_definitions() time)",
             },
             "role": {

@@ -509,3 +509,13 @@ def test_enforced_policy_names_every_path_the_policy_writes(models):
         if not any(leaf == p or leaf.startswith(p + ".") for p in policy)
     ]
     assert uncovered == []
+
+
+def test_v18_moves_subagent_concurrency_from_the_old_default_only():
+    """AIS-456: two subagents at a time, more queue; a GUI choice stands."""
+    mod = _MODULE
+    cfg = {"delegation": {"max_concurrent_children": 3}}
+    assert mod._one_shot_v18(cfg, None) and cfg["delegation"]["max_concurrent_children"] == 2
+    cfg = {"delegation": {"max_concurrent_children": 5}}
+    assert mod._one_shot_v18(cfg, None) == [] and cfg["delegation"]["max_concurrent_children"] == 5
+    assert mod._one_shot_v18({}, None) == []

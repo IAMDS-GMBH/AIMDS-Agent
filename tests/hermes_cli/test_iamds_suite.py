@@ -620,3 +620,51 @@ class TestMaybeRunSuiteHealthCheck:
         assert suite.maybe_run_suite_health_check(now=t0 + 60) is None  # not due yet
         assert suite.maybe_run_suite_health_check(now=t0 + 60, force=True) is not None  # forced bypass
         assert suite.maybe_run_suite_health_check(now=t0 + 1900) is not None  # interval elapsed
+
+
+# --------------------------------------------------------------------------- AIS-456 subagent model rule
+
+_PROD_MODELS = ["gpt-5-mini", "claude-haiku-4.5", "claude-sonnet-5", "gemini-3.6-flash",
+                "ollama-gemma4", "vllm-custom", "AIMDS-Suite-Auto"]
+# Shape of today's prod /model/info: only some models carry info, on-prem at 0.
+_PROD_INFO = {
+    "vllm-custom": {"mode": "chat", "supports_function_calling": True, "pricing": {"prompt": "0", "completion": "0"}},
+    "claude-sonnet-5": {"mode": "chat", "supports_function_calling": True, "pricing": {"prompt": "2e-06", "completion": "1e-05"}, "context_length": 1000000},
+    "claude-haiku-4.5": {"mode": "chat", "supports_function_calling": True, "pricing": {"prompt": "1e-06", "completion": "5e-06"}, "context_length": 200000},
+    "AIMDS-Suite-Auto": {"mode": "chat", "supports_function_calling": True, "pricing": {"prompt": "0.0", "completion": "0.0"}},
+}
+
+
+def _pick(main, **kw):
+    from hermes_cli.iamds_suite import pick_child_suite_model
+
+    kw.setdefault("available", _PROD_MODELS)
+    kw.setdefault("metadata", _PROD_INFO)
+    return pick_child_suite_model("aimds-suite-prod", main, **kw)
+
+
+def test_child_of_the_auto_router_stays_on_auto():
+    assert _pick("AIMDS-Suite-Auto") == ("AIMDS-Suite-Auto", "inherit-auto")
+
+
+def test_child_of_a_fixed_model_gets_the_cheapest_priced_tool_model():
+    # vllm-custom (price 0, on-prem) and the Auto alias never win on cost
+    assert _pick("claude-sonnet-5") == ("claude-haiku-4.5", "cheapest")
+    assert _pick("AIMDS-Suite-Auto", tier="fast") == ("claude-haiku-4.5", "cheapest")
+
+
+def test_context_floor_skips_too_small_models():
+    assert _pick("claude-sonnet-5", min_context=500000) == ("claude-sonnet-5", "cheapest")
+
+
+def test_without_prices_the_preference_list_decides_then_the_main_model():
+    assert _pick("claude-sonnet-5", metadata={}) == ("claude-haiku-4.5", "preference")
+    assert _pick("claude-sonnet-5", metadata={}, available=["gemini-3.6-flash", "claude-sonnet-5"]) == ("gemini-3.6-flash", "preference")
+    assert _pick("claude-sonnet-5", metadata={}, available=["claude-sonnet-5"]) == ("claude-sonnet-5", "fallback-main")
+
+
+def test_explicit_delegation_model_wins_only_when_the_key_offers_it():
+    assert _pick("AIMDS-Suite-Auto", explicit="gpt-5-mini") == ("gpt-5-mini", "explicit")
+    assert _pick("AIMDS-Suite-Auto", explicit="gpt-4o") == ("AIMDS-Suite-Auto", "inherit-auto")
+    # no model list at all (offline, nothing cached): trust the configured value
+    assert _pick("AIMDS-Suite-Auto", explicit="gpt-4o", available=[]) == ("gpt-4o", "explicit")

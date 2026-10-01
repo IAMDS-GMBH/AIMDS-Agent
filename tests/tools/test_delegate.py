@@ -274,17 +274,41 @@ class TestDelegateTask(unittest.TestCase):
         mock_run.assert_not_called()
 
     @patch("tools.delegate_tool._run_single_child")
-    def test_batch_capped_at_3(self, mock_run):
-        mock_run.return_value = {
-            "task_index": 0, "status": "completed",
-            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
-        }
+    def test_batch_beyond_the_cap_is_queued_not_rejected(self, mock_run):
+        """AIS-456: more tasks than max_concurrent_children wait in a queue;
+        never more than the cap run at once."""
+        import threading as _threading
+
+        running = {"now": 0, "peak": 0}
+        lock = _threading.Lock()
+
+        def fake_run(task_index, goal, child=None, parent_agent=None, **_kw):
+            with lock:
+                running["now"] += 1
+                running["peak"] = max(running["peak"], running["now"])
+            time.sleep(0.05)
+            with lock:
+                running["now"] -= 1
+            return {"task_index": task_index, "status": "completed",
+                    "summary": "Done", "api_calls": 1, "duration_seconds": 0.05}
+
+        mock_run.side_effect = fake_run
         parent = _make_mock_parent()
         limit = _get_max_concurrent_children()
-        tasks = [{"goal": f"Task {i}"} for i in range(limit + 2)]
+        tasks = [{"goal": f"Task {i}"} for i in range(limit + 3)]
         result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
-        # Should return an error instead of silently truncating
-        self.assertIn("error", result)
+        self.assertNotIn("error", result)
+        self.assertEqual(len(result["results"]), limit + 3)
+        self.assertEqual(mock_run.call_count, limit + 3)
+        self.assertLessEqual(running["peak"], limit)
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_above_the_queue_limit_is_rejected(self, mock_run):
+        from tools.delegate_tool import MAX_QUEUED_TASKS
+
+        parent = _make_mock_parent()
+        tasks = [{"goal": f"Task {i}"} for i in range(MAX_QUEUED_TASKS + 1)]
+        result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
         self.assertIn("Too many tasks", result["error"])
         mock_run.assert_not_called()
 
@@ -906,7 +930,7 @@ class TestBlockedTools(unittest.TestCase):
             _get_max_spawn_depth, _get_orchestrator_enabled,
             _MIN_SPAWN_DEPTH,
         )
-        self.assertEqual(_get_max_concurrent_children(), 3)
+        self.assertEqual(_get_max_concurrent_children(), 2)
         self.assertEqual(MAX_DEPTH, 1)
         self.assertEqual(_get_max_spawn_depth(), 1)       # default: flat
         self.assertTrue(_get_orchestrator_enabled())      # default
@@ -2163,10 +2187,10 @@ class TestConcurrencyDefaults(unittest.TestCase):
     """Tests for the concurrency default and no hard ceiling."""
 
     @patch("tools.delegate_tool._load_config", return_value={})
-    def test_default_is_three(self, mock_cfg):
+    def test_default_is_two(self, mock_cfg):
         # Clear env var if set
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(_get_max_concurrent_children(), 3)
+            self.assertEqual(_get_max_concurrent_children(), 2)
 
     @patch("tools.delegate_tool._load_config",
            return_value={"max_concurrent_children": 10})
@@ -2797,3 +2821,56 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSubagentModelRule(unittest.TestCase):
+    """AIS-456: on the parent's AIMDS Suite environment the child follows the
+    subagent model rule; elsewhere the configured/inherited model stands."""
+
+    def _build(self, parent, **kw):
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            child = _build_child_agent(
+                task_index=0, goal="g", context=None, toolsets=None,
+                model=kw.pop("model", None), max_iterations=10,
+                parent_agent=parent, task_count=1, **kw,
+            )
+        return MockAgent.call_args.kwargs, child
+
+    def _suite_parent(self, model):
+        parent = _make_mock_parent()
+        parent.provider = "aimds-suite-prod"
+        parent.base_url = "https://suite.iamds.com/litellm/v1"
+        parent.model = model
+        return parent
+
+    def test_suite_parent_hands_the_rule_its_own_key_and_host(self):
+        seen = {}
+
+        def fake_pick(provider, main_model, **kw):
+            seen.update(provider=provider, main=main_model, **kw)
+            return "claude-haiku-4.5", "cheapest"
+
+        with patch("hermes_cli.iamds_suite.pick_child_suite_model", side_effect=fake_pick):
+            kwargs, child = self._build(self._suite_parent("claude-sonnet-5"), model_tier="fast")
+        self.assertEqual(kwargs["model"], "claude-haiku-4.5")
+        self.assertEqual(kwargs["provider"], "aimds-suite-prod")
+        self.assertEqual(kwargs["base_url"], "https://suite.iamds.com/litellm/v1")
+        self.assertEqual(child._model_choice_reason, "cheapest")
+        self.assertEqual(seen["provider"], "aimds-suite-prod")
+        self.assertEqual(seen["main"], "claude-sonnet-5")
+        self.assertEqual(seen["tier"], "fast")
+        self.assertEqual(seen["base_url"], "https://suite.iamds.com/litellm/v1")
+
+    def test_non_suite_parent_and_provider_override_skip_the_rule(self):
+        with patch("hermes_cli.iamds_suite.pick_child_suite_model") as pick:
+            kwargs, child = self._build(_make_mock_parent())
+            self.assertEqual(kwargs["model"], "anthropic/claude-sonnet-4")
+            self.assertEqual(child._model_choice_reason, "inherit")
+            kwargs, child = self._build(
+                self._suite_parent("AIMDS-Suite-Auto"), model="gpt-4o",
+                override_provider="openrouter", override_base_url="https://openrouter.ai/api/v1",
+            )
+            self.assertEqual(kwargs["model"], "gpt-4o")
+            self.assertEqual(child._model_choice_reason, "explicit")
+            pick.assert_not_called()
