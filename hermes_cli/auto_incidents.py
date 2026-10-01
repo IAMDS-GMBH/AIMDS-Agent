@@ -12,7 +12,10 @@ waiting for the user to press "Problem melden":
 * a bundled MCP server (catalog entry under ``optional-mcps/``) that fails
   to connect, gives up reconnecting or opens its circuit breaker;
 * a turn whose LLM call failed on every retry (AIS-456) — the case names
-  the error class and whether the Suite's LLM gateway was up at that moment.
+  the error class and whether the Suite's LLM gateway was up at that moment;
+* a subagent task that ran badly (AIS-456): timed out, failed, used up its
+  budget, overflowed its result contract, hit mostly tool errors, or was
+  delegated again after such a run — one kind per agent and criterion.
 
 Policy comes from ``incident_report``: ``support.auto_report: false`` or
 ``HERMES_SUPPORT_AUTO_REPORT=0`` switches uploads off, one case per kind per
@@ -36,6 +39,7 @@ CONTEXT_PYTHON_FALLBACK = "agent_python_fallback"
 CONTEXT_AUTH = "auth_error"
 CONTEXT_MCP = "mcp_failure"
 CONTEXT_TURN_FAILURE = "turn_failure"
+CONTEXT_SUBAGENT_OUTCOME = "subagent_outcome"
 
 _TRANSCRIPT_MAX_MESSAGES = 30
 _TRANSCRIPT_PART_CHARS = 1200
@@ -472,6 +476,131 @@ def report_turn_failure(
         return None
 
 
+#: Share of the iteration budget above which a task "nearly ran out".
+_BUDGET_SHARE = 0.8
+#: Tool error share (with at least this many calls) that marks a task.
+_TOOL_ERROR_SHARE = 0.5
+_TOOL_ERROR_MIN_CALLS = 4
+_BAD_EXIT_REASONS = ("timeout", "stale", "max_iterations")
+_BAD_STATUSES = ("failed", "error", "timeout")
+
+
+def subagent_outcome_criterion(
+    entry: Dict[str, Any],
+    *,
+    max_iterations: Optional[int] = None,
+    spilled: bool = False,
+    repeated: bool = False,
+) -> str:
+    """The first criterion a finished subagent task meets, or "" when it ran
+    fine. Deterministic — no model judges the run."""
+    status = str(entry.get("status") or "").lower()
+    exit_reason = str(entry.get("exit_reason") or "").lower()
+    if status == "interrupted" or exit_reason == "interrupted":
+        return ""  # the user stopped it; not a defect
+    if exit_reason in _BAD_EXIT_REASONS:
+        return exit_reason.replace("_", "-")
+    if status in _BAD_STATUSES:
+        return "failed" if status != "timeout" else "timeout"
+    api_calls = entry.get("api_calls")
+    if isinstance(api_calls, int) and api_calls == 0:
+        return "no-api-calls"
+    if isinstance(api_calls, int) and max_iterations and api_calls >= _BUDGET_SHARE * max_iterations:
+        return "budget-nearly-exhausted"
+    trace = [t for t in (entry.get("tool_trace") or []) if isinstance(t, dict)]
+    errors = sum(1 for t in trace if t.get("status") == "error")
+    if len(trace) >= _TOOL_ERROR_MIN_CALLS and errors / len(trace) >= _TOOL_ERROR_SHARE:
+        return "tool-errors"
+    if spilled:
+        return "result-overflow"
+    if repeated:
+        return "repeated"
+    return ""
+
+
+def _goal_digest(goal: str) -> str:
+    import hashlib
+
+    return hashlib.sha1(" ".join(str(goal or "").lower().split()).encode("utf-8")).hexdigest()[:16]
+
+
+def report_subagent_outcome(
+    parent_agent: Any,
+    entry: Dict[str, Any],
+    *,
+    definition: Any = None,
+    goal: str = "",
+    max_iterations: Optional[int] = None,
+    spilled: bool = False,
+    model_choice_reason: str = "",
+) -> Optional[threading.Thread]:
+    """A badly running subagent task becomes a support case (never raises).
+
+    "Repeated" means the parent delegated the same goal again in this
+    session after an earlier run of it met a criterion — the clearest sign
+    the result was not usable. The case carries the definition (name +
+    content hash), the model choice, counters and a compact tool trace;
+    never the result text, and the goal only clipped and redacted.
+    """
+    try:
+        digest = _goal_digest(goal)
+        marked = getattr(parent_agent, "_subagent_marked_goals", None)
+        if not isinstance(marked, set):
+            marked = set()
+            try:
+                parent_agent._subagent_marked_goals = marked
+            except Exception:
+                pass
+        criterion = subagent_outcome_criterion(
+            entry, max_iterations=max_iterations, spilled=spilled, repeated=digest in marked,
+        )
+        if not criterion:
+            return None
+        marked.add(digest)
+        if getattr(parent_agent, "_is_background_review_fork", False):
+            return None
+        agent_name = str(getattr(definition, "name", "") or "generic")
+        session_id = str(getattr(parent_agent, "session_id", "") or "")
+        trace = [t for t in (entry.get("tool_trace") or []) if isinstance(t, dict)]
+        trace_line = ", ".join(
+            f"{t.get('tool', '?')}:{t.get('status', '?')}:{t.get('result_bytes', 0)}B" for t in trace[:40]
+        )
+        if len(trace) > 40:
+            trace_line += f", … (+{len(trace) - 40})"
+        tokens = entry.get("tokens") or {}
+        lines = [
+            f"A subagent task met the criterion '{criterion}'.",
+            "",
+            f"agent: {agent_name}"
+            + (f" (definition {getattr(definition, 'digest', '')}, {Path(str(getattr(definition, 'source', '') or '?')).name})" if definition is not None else ""),
+            f"parent: provider {getattr(parent_agent, 'provider', '') or '?'} model {getattr(parent_agent, 'model', '') or '?'} platform {getattr(parent_agent, 'platform', '') or '?'}",
+            f"child model: {entry.get('model') or '?'} (choice: {model_choice_reason or '?'})",
+            f"status: {entry.get('status')} exit: {entry.get('exit_reason', '-')} api_calls: {entry.get('api_calls')}/{max_iterations or '?'} "
+            f"duration: {entry.get('duration_seconds')}s tokens in/out: {tokens.get('input', 0)}/{tokens.get('output', 0)}",
+            f"goal (clipped): {_clip(_redact(goal), 300)}",
+            f"tool trace (tool:status:bytes): {trace_line or '-'}",
+        ]
+        if entry.get("error"):
+            lines.append(f"error: {_clip(_redact(entry.get('error')), 500)}")
+        lines += [
+            "",
+            "Tune the agent definition (toolsets, iterations, result limit, principles) or the "
+            "delegation guidance; the local agent.log has one '[subagent-N] outcome' line per task.",
+        ]
+        return report_in_background(
+            f"subagent-{_slug(agent_name)}-{criterion}",
+            f"Subagent '{agent_name}' task: {criterion}",
+            "\n".join(lines),
+            category="chat_issue",
+            context_type=CONTEXT_SUBAGENT_OUTCOME,
+            severity="medium",
+            session_id=session_id,
+        )
+    except Exception as exc:
+        logger.debug("subagent outcome report failed: %s", exc)
+        return None
+
+
 def _network_probe_allowed() -> bool:
     """Real runs always probe; under pytest only when a test switched
     auto-reporting on explicitly (it then stubs the probe)."""
@@ -537,6 +666,8 @@ __all__ = [
     "report_auth_401",
     "report_bundled_mcp_failure",
     "report_in_background",
+    "report_subagent_outcome",
     "report_turn_failure",
     "request_shape",
+    "subagent_outcome_criterion",
 ]

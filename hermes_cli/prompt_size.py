@@ -25,6 +25,33 @@ def _bytes(s: str) -> int:
     return len(s.encode("utf-8"))
 
 
+def _build_subagent_inspection_agent(platform: str, agent_name: str) -> Any:
+    """An offline child as ``delegate_task`` would build it for *agent_name*:
+    the definition's toolsets (MCP servers are not connected offline) and the
+    lean system prompt (AIS-456)."""
+    from run_agent import AIAgent
+    from agent.agent_definitions import definitions_for, get_definition
+    from tools.delegate_tool import _make_child_lean
+
+    definition = get_definition(agent_name, platform=platform)
+    if definition is None:
+        offered = ", ".join(d.name for d in definitions_for(platform)) or "none"
+        raise ValueError(f"unknown agent {agent_name!r} on {platform}; available: {offered}")
+    child = AIAgent(
+        model="inspect-only",
+        api_key="inspect-only",
+        base_url="https://openrouter.ai/api/v1",
+        quiet_mode=True,
+        save_trajectories=False,
+        platform=platform,
+        enabled_toolsets=definition.plain_toolsets,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    _make_child_lean(child, definition)
+    return child
+
+
 def _build_inspection_agent(platform: str) -> Any:
     """Construct an offline AIAgent for prompt inspection.
 
@@ -61,7 +88,7 @@ def _build_inspection_agent(platform: str) -> Any:
     )
 
 
-def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
+def compute_prompt_breakdown(platform: str = "cli", agent_name: str = "") -> Dict[str, Any]:
     """Return a dict of prompt-size measurements for a fresh session.
 
     Keys: ``system_prompt`` (chars/bytes), ``skills_index``, ``memory``,
@@ -70,7 +97,11 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
     """
     from agent.system_prompt import build_system_prompt, build_system_prompt_parts
 
-    agent = _build_inspection_agent(platform)
+    agent = (
+        _build_subagent_inspection_agent(platform, agent_name)
+        if agent_name
+        else _build_inspection_agent(platform)
+    )
 
     parts = build_system_prompt_parts(agent)
     full = build_system_prompt(agent)
@@ -116,6 +147,7 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
 
     return {
         "platform": platform,
+        "agent": agent_name or "",
         "posture": getattr(getattr(agent, "runtime_mode", None), "kind", "") or "general",
         "model": getattr(agent, "model", "") or "",
         "stable_blocks": stable_blocks,
@@ -138,7 +170,8 @@ def render_breakdown(data: Dict[str, Any]) -> str:
     sp = data["system_prompt"]
     lines.append(
         f"Prompt-size breakdown (platform={data['platform']}, "
-        f"posture={data.get('posture') or 'general'}, model={data['model'] or 'unset'})"
+        + (f"subagent={data['agent']}, " if data.get("agent") else "")
+        + f"posture={data.get('posture') or 'general'}, model={data['model'] or 'unset'})"
     )
     lines.append("")
     lines.append(f"  System prompt total : {sp['bytes']:>8,} B  ({_fmt_kb(sp['bytes'])}, {sp['chars']:,} chars)")
@@ -171,7 +204,7 @@ def cmd_prompt_size(args: Any) -> None:
     platform = getattr(args, "platform", "cli") or "cli"
     as_json = getattr(args, "json", False)
     try:
-        data = compute_prompt_breakdown(platform)
+        data = compute_prompt_breakdown(platform, agent_name=getattr(args, "agent", "") or "")
     except Exception as e:
         print(f"Could not compute prompt-size breakdown: {e}")
         return

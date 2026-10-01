@@ -3360,6 +3360,18 @@ def run_conversation(
                     if canonical_usage.cache_write_tokens >= LARGE_CACHE_WRITE_TOKENS:
                         agent.session_large_cache_writes = getattr(agent, "session_large_cache_writes", 0) + 1
 
+                    # The model LiteLLM actually answered with; subagent
+                    # outcome lines quote it (AIS-456).
+                    try:
+                        _served_now = getattr(response, "served_model", None) or getattr(response, "model", None)
+                        _pd_now = getattr(response, "provider_data", None) or {}
+                        if not _served_now and isinstance(_pd_now, dict):
+                            _served_now = _pd_now.get("served_model")
+                        if isinstance(_served_now, str) and _served_now:
+                            agent._last_served_model = _served_now
+                    except Exception:
+                        pass
+
                     # One api_calls row per request (served model, cache
                     # accounting, latency) — the session totals cannot show
                     # a mid-session model switch or a per-call cache miss.

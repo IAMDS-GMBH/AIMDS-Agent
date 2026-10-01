@@ -612,8 +612,13 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    max_result_chars: Optional[int] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
+
+    With ``max_result_chars`` (an agent definition is in use) the generic
+    "summarise what you did" closing gives way to the definition's own
+    result shape plus the size limit (AIS-456).
 
     When role='orchestrator', appends a delegation-capability block
     modeled on OpenClaw's buildSubagentSystemPrompt (canSpawn branch at
@@ -634,7 +639,18 @@ def _build_child_system_prompt(
             f"{workspace_path}\n"
             "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
         )
-    parts.append(
+    if max_result_chars:
+        parts.append(
+            "\nComplete this task with the tools available to you and return the "
+            "result exactly in the shape your role describes. "
+            f"Keep the result under {max_result_chars} characters; write anything "
+            "larger to a file in the workspace and return its path.\n\n"
+            "Important workspace rule: Never assume a repository lives at /workspace/... "
+            "or any other container-style path unless the task/context explicitly gives "
+            "that path. If no exact local path is provided, discover it first."
+        )
+    else:
+        parts.append(
         "\nComplete this task using the tools available to you. "
         "When finished, provide a clear, concise summary of:\n"
         "- What you did\n"
@@ -645,7 +661,7 @@ def _build_child_system_prompt(
         "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
         "Be thorough but concise -- your response is returned to the "
         "parent agent as a summary."
-    )
+        )
     if role == "orchestrator":
         child_note = (
             "Your own children MUST be leaves (cannot delegate further) "
@@ -905,6 +921,29 @@ def _build_child_progress_callback(
     return _callback
 
 
+def _make_child_lean(child, definition=None) -> None:
+    """AIS-456: a child runs on a lean system prompt instead of the parent's
+    full one, skips the session-start memory round, and — for a read-only
+    definition — never sees Hermes' own write tools."""
+    child._lean_system_prompt = True
+    child._lean_identity = getattr(definition, "body", "") or ""
+    child._enforce_initial_memory_context = False
+    child._session_start_bootstrap_contract_enabled = False
+    child._session_start_compact_workspace_hydration = False
+    if definition is not None and not definition.writes:
+        from agent.agent_definitions import WRITE_TOOL_NAMES
+
+        tools = getattr(child, "tools", None)
+        if isinstance(tools, list):
+            child.tools = [
+                t for t in tools
+                if not (isinstance(t, dict) and (t.get("function") or {}).get("name") in WRITE_TOOL_NAMES)
+            ]
+        names = getattr(child, "valid_tool_names", None)
+        if isinstance(names, set):
+            child.valid_tool_names = names - WRITE_TOOL_NAMES
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -929,6 +968,9 @@ def _build_child_agent(
     # ``inherit`` | ``fast`` — the subagent model rule (AIS-456) on AIMDS
     # Suite providers; ignored elsewhere.
     model_tier: str = "inherit",
+    # AIS-456: a lean agent definition (agent/agent_definitions.py) that
+    # supplies identity, toolsets, model tier and the result contract.
+    definition=None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -983,7 +1025,16 @@ def _build_child_agent(
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
-    if toolsets:
+    if definition is not None:
+        # The definition's allowlist decides; MCP servers only when it asks
+        # for them ("mcp"), never by blanket inheritance. Still intersected
+        # with the parent so a child never gains tools the parent lacks.
+        expanded_parent = _expand_parent_toolsets(parent_toolsets)
+        child_toolsets = [t for t in definition.plain_toolsets if t in expanded_parent]
+        if definition.wants_mcp:
+            child_toolsets = _preserve_parent_mcp_toolsets(child_toolsets, parent_toolsets)
+        child_toolsets = _strip_blocked_tools(child_toolsets)
+    elif toolsets:
         # Intersect with parent — subagent must not gain tools the parent lacks.
         # Expand composite toolsets (e.g. hermes-cli) so that individual
         # toolset names (e.g. web, terminal) are recognised during intersection.
@@ -1016,6 +1067,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        max_result_chars=getattr(definition, "max_result_chars", None),
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -1211,6 +1263,8 @@ def _build_child_agent(
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
     child._model_choice_reason = model_choice_reason
+    child._agent_definition = definition
+    _make_child_lean(child, definition)
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
@@ -2000,6 +2054,82 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+#: Result cap for a child without an agent definition.
+_DEFAULT_RESULT_CHARS = 12000
+
+
+def _spill_result(text: str, subagent_id: str) -> Optional[str]:
+    """Full child result to ``HERMES_HOME/subagent-results/<id>.md``."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        directory = get_hermes_home() / "subagent-results"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{subagent_id or 'subagent'}.md"
+        path.write_text(text, encoding="utf-8")
+        return str(path)
+    except Exception as exc:
+        logger.debug("subagent result spill failed: %s", exc)
+        return None
+
+
+def _finish_child_result(entry: Dict[str, Any], child, goal: str, parent_agent) -> None:
+    """Cap the summary to the definition's contract (spilling the full text
+    to a file), log one outcome line per task and hand badly running tasks
+    to the automatic support case (AIS-456)."""
+    definition = getattr(child, "_agent_definition", None)
+    limit = getattr(definition, "max_result_chars", None) or _DEFAULT_RESULT_CHARS
+    subagent_id = str(getattr(child, "_subagent_id", "") or "")
+    summary = entry.get("summary")
+    spilled = False
+    if isinstance(summary, str) and len(summary) > limit:
+        path = _spill_result(summary, subagent_id)
+        head = summary[: max(0, limit - 300)].rstrip()
+        if path:
+            entry["summary"] = (
+                f"{head}\n\n[Result cut at {limit} chars; the full {len(summary)}-char "
+                f"result is in {path} — read it with read_file if you need the rest.]"
+            )
+            entry["result_file"] = path
+        else:
+            entry["summary"] = f"{head}\n\n[Result cut at {limit} of {len(summary)} chars.]"
+        spilled = True
+
+    max_iterations = getattr(child, "max_iterations", None)
+    served = getattr(child, "_last_served_model", None) or entry.get("model")
+    logger.info(
+        "[subagent-%s] outcome agent=%s status=%s exit=%s api_calls=%s/%s duration=%ss "
+        "model=%s reason=%s served=%s tokens_in=%s tokens_out=%s spilled=%s",
+        entry.get("task_index"),
+        getattr(definition, "name", "-"),
+        entry.get("status"),
+        entry.get("exit_reason", "-"),
+        entry.get("api_calls"),
+        max_iterations if isinstance(max_iterations, int) else "-",
+        entry.get("duration_seconds"),
+        entry.get("model") or "-",
+        getattr(child, "_model_choice_reason", "-"),
+        served if isinstance(served, str) else "-",
+        (entry.get("tokens") or {}).get("input", 0),
+        (entry.get("tokens") or {}).get("output", 0),
+        spilled,
+    )
+    try:
+        from hermes_cli.auto_incidents import report_subagent_outcome
+
+        report_subagent_outcome(
+            parent_agent,
+            entry,
+            definition=definition,
+            goal=goal,
+            max_iterations=max_iterations if isinstance(max_iterations, int) else None,
+            spilled=spilled,
+            model_choice_reason=str(getattr(child, "_model_choice_reason", "") or ""),
+        )
+    except Exception:
+        logger.debug("subagent outcome report failed", exc_info=True)
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -2009,6 +2139,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    agent: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2112,6 +2243,24 @@ def delegate_task(
     if not task_list:
         return tool_error("No tasks provided.")
 
+    # AIS-456: resolve agent definitions up front so a wrong name fails the
+    # whole call before any child runs.
+    _definitions: Dict[int, Any] = {}
+    _platform = str(getattr(parent_agent, "platform", "") or "")
+    for i, t in enumerate(task_list):
+        _name = (t.get("agent") if isinstance(t, dict) else None) or agent
+        if not _name:
+            continue
+        from agent.agent_definitions import definitions_for, get_definition
+
+        _definition = get_definition(str(_name), platform=_platform)
+        if _definition is None:
+            _offered = ", ".join(d.name for d in definitions_for(_platform)) or "none"
+            return tool_error(
+                f"Task {i}: unknown agent {_name!r} on this surface. Available agents: {_offered}."
+            )
+        _definitions[i] = _definition
+
     # Validate each task has a goal
     for i, task in enumerate(task_list):
         if not isinstance(task, dict):
@@ -2145,13 +2294,18 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            _definition = _definitions.get(i)
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
                 model=creds["model"],
-                max_iterations=effective_max_iter,
+                max_iterations=(
+                    _definition.max_iterations
+                    if _definition is not None and _definition.max_iterations
+                    else effective_max_iter
+                ),
                 task_count=n_tasks,
                 parent_agent=parent_agent,
                 override_provider=creds["provider"],
@@ -2167,6 +2321,8 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                model_tier=getattr(_definition, "model", "inherit"),
+                definition=_definition,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2344,6 +2500,18 @@ def delegate_task(
     for entry in results:
         child_role = entry.pop("_child_role", None)
         child_cost = entry.pop("_child_cost_usd", 0.0)
+        # AIS-456: bound what reaches the parent's context and report a
+        # badly running task.
+        try:
+            _idx = entry.get("task_index", -1)
+            _finish_child_result(
+                entry,
+                children[_idx][2] if isinstance(_idx, int) and 0 <= _idx < len(children) else None,
+                task_list[_idx]["goal"] if isinstance(_idx, int) and 0 <= _idx < len(task_list) else "",
+                parent_agent,
+            )
+        except Exception:
+            logger.debug("subagent result finishing failed", exc_info=True)
         try:
             if child_cost:
                 _children_cost_total += float(child_cost)
@@ -2693,7 +2861,9 @@ def _build_top_level_description() -> str:
         "exports, sweeps over many items, month-by-month data fetches. Split "
         "it into parts, delegate the parts, keep only the conclusions.\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
-        "- Parallel independent workstreams (research A and B simultaneously)\n\n"
+        "- Parallel independent workstreams (research A and B simultaneously)\n"
+        "Pick an 'agent' definition that matches the kind of work (see the "
+        "'agent' parameter); you keep the conclusion, the bulk stays with the agent.\n\n"
         "WHEN NOT TO USE (use these instead):\n"
         "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
         "- Single tool call -> just call the tool directly\n"
@@ -2745,6 +2915,33 @@ def _build_tasks_param_description() -> str:
         "queue. Each gets its own subagent with isolated context and terminal session. "
         "When provided, top-level goal/context/toolsets are ignored."
     )
+
+
+def _build_agent_param_description() -> str:
+    """The agent definitions the model can pick (AIS-456).
+
+    The schema is shared across surfaces, so the list names where each
+    definition is offered; a pick that is not offered on the caller's
+    surface fails with the available names.
+    """
+    try:
+        from agent.agent_definitions import load_definitions
+
+        definitions = sorted(load_definitions().values(), key=lambda d: d.name)
+    except Exception:
+        definitions = []
+    if not definitions:
+        return "Agent definition for the subagent(s). None are installed; leave empty."
+    lines = [
+        "Agent definition for the subagent(s): a lean role with its own toolsets, "
+        "result shape and size limit. Pick the one that matches the kind of work and "
+        "put the domain specifics into goal/context. Per-task 'agent' overrides this. "
+        "Leave empty for a generic subagent."
+    ]
+    for d in definitions:
+        where = "" if set(d.surfaces) == {"tui", "cli"} else f" [{'/'.join(d.surfaces)} only]"
+        lines.append(f"- {d.name}{where}: {d.description}")
+    return "\n".join(lines)
 
 
 def _build_role_param_description() -> str:
@@ -2800,6 +2997,7 @@ def _build_dynamic_schema_overrides() -> dict:
     }
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
     overrides_params["properties"]["role"]["description"] = _build_role_param_description()
+    overrides_params["properties"]["agent"]["description"] = _build_agent_param_description()
     return {
         "description": _build_top_level_description(),
         "parameters": overrides_params,
@@ -2885,6 +3083,10 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "agent": {
+                            "type": "string",
+                            "description": "Per-task agent definition. See top-level 'agent'.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2896,6 +3098,10 @@ DELEGATE_TASK_SCHEMA = {
             "role": {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
+                "description": "(rebuilt at get_definitions() time)",
+            },
+            "agent": {
+                "type": "string",
                 "description": "(rebuilt at get_definitions() time)",
             },
             "acp_command": {
@@ -2942,6 +3148,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        agent=args.get("agent"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

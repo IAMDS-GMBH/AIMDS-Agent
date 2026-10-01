@@ -68,6 +68,82 @@ def _ra():
     return run_agent
 
 
+#: Opening of a lean subagent prompt when no agent definition is given.
+LEAN_SUBAGENT_IDENTITY = (
+    "You are a focused subagent. You do one delegated task with the tools you "
+    "have and return a compact, factual result to the agent that called you. "
+    "You never talk to the user directly."
+)
+
+
+def _timestamp_line(agent: Any) -> str:
+    from hermes_time import get_calendar_context, now as _hermes_now
+
+    now = _hermes_now()
+    line = get_calendar_context(now)["formatted_prompt"]
+    if agent.pass_session_id and agent.session_id:
+        line += f"\nSession ID: {agent.session_id}"
+    if agent.model:
+        line += f"\nModel: {agent.model}"
+    if agent.provider:
+        line += f"\nProvider: {agent.provider}"
+    agent._cached_system_prompt_date = now.strftime("%Y-%m-%d")
+    return line
+
+
+def build_lean_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, Any]:
+    """The system prompt of a delegated child (AIS-456).
+
+    A child used to carry the parent's full prompt (~54k chars: integration
+    prose, skill index, memory-vault strategy, MCP status) with its task
+    appended. Here it gets its identity (the agent definition body), the
+    few rules that guard tool use, document reading when it can read files,
+    the environment hints and the date. Its task and context still arrive
+    as the ephemeral prompt at call time.
+    """
+    _r = _ra()
+    names = agent.valid_tool_names or set()
+    stable_parts: List[str] = [getattr(agent, "_lean_identity", "") or LEAN_SUBAGENT_IDENTITY]
+    if names:
+        stable_parts.append(MCP_PERMISSION_BYPASS_GUIDANCE)
+        stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+        if "tool_search" in names:
+            stable_parts.append(TOOL_SEARCH_ANTI_HALLUCINATION_GUIDANCE)
+        try:
+            from agent.deferred_tools import guidance_tool_names
+
+            document_guidance = _r.build_document_guidance(guidance_tool_names(agent))
+        except Exception:
+            document_guidance = ""
+        if document_guidance:
+            stable_parts.append(document_guidance)
+    try:
+        from agent.i18n import get_language
+
+        language = get_language()
+    except Exception:
+        language = ""
+    if language:
+        stable_parts.append(
+            "Write your result in the language the task asks for; without such an "
+            f"instruction use the user's display language ({language})."
+        )
+    _env_hints = _r.build_environment_hints()
+    if _env_hints:
+        stable_parts.append(_env_hints)
+
+    context_parts = [system_message] if system_message is not None else []
+    volatile_parts = [_timestamp_line(agent)]
+    return {
+        "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),
+        "context":  "\n\n".join(p.strip() for p in context_parts  if p and p.strip()),
+        "volatile": "\n\n".join(p.strip() for p in volatile_parts if p and p.strip()),
+        "stable_blocks": [
+            (p.strip().splitlines()[0][:60], len(p.strip())) for p in stable_parts if p and p.strip()
+        ],
+    }
+
+
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered parts.
 
@@ -86,6 +162,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     session — that's the only way to keep upstream prompt caches
     warm across turns.
     """
+    if getattr(agent, "_lean_system_prompt", False):
+        return build_lean_system_prompt_parts(agent, system_message)
+
     # Local import to avoid pulling model_tools at module load.  Tests
     # patch ``run_agent.get_toolset_for_tool`` and similar helpers, so
     # we resolve through ``_ra()`` to honor those patches.
@@ -520,20 +599,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
-    from hermes_time import get_calendar_context, now as _hermes_now
-    now = _hermes_now()
-    cal_ctx = get_calendar_context(now)
-    timestamp_line = cal_ctx["formatted_prompt"]
-    if agent.pass_session_id and agent.session_id:
-        timestamp_line += f"\nSession ID: {agent.session_id}"
-    if agent.model:
-        timestamp_line += f"\nModel: {agent.model}"
-    if agent.provider:
-        timestamp_line += f"\nProvider: {agent.provider}"
-    volatile_parts.append(timestamp_line)
-
-    # Track date string for automatic mid-session date change cache invalidation
-    agent._cached_system_prompt_date = now.strftime("%Y-%m-%d")
+    # Also tracks the date string for automatic mid-session date change
+    # cache invalidation.
+    volatile_parts.append(_timestamp_line(agent))
 
     return {
         "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),

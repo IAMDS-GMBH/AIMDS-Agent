@@ -128,3 +128,21 @@ def test_breakdown_reports_posture_per_surface(isolated_home):
     assert "posture=general" in render_breakdown(tui)
     # The developer posture owns the toolset: no cron/workdays/sql schemas.
     assert cli["tools"]["count"] <= tui["tools"]["count"]
+
+
+def test_subagent_breakdown_is_lean(isolated_home):
+    """AIS-456: ``--agent`` measures a delegated child — a fraction of the
+    parent's prompt, no skills index, no write tools for a read-only role."""
+    parent = compute_prompt_breakdown("tui")
+    child = compute_prompt_breakdown("tui", agent_name="digest")
+    assert child["agent"] == "digest"
+    assert child["system_prompt"]["chars"] < 6000 < parent["system_prompt"]["chars"]
+    assert child["skills_index"]["chars"] == 0
+    assert child["tools"]["count"] < parent["tools"]["count"]
+
+
+def test_subagent_breakdown_rejects_an_agent_not_offered_here(isolated_home):
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown agent 'explore'"):
+        compute_prompt_breakdown("tui", agent_name="explore")
