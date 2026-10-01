@@ -159,3 +159,143 @@ def test_session_json_string_is_not_probed_as_a_path():
     long_json = json.dumps({"session_id": "s", "messages": [{"text": "x" * 5000}]})
     _sid, data, files = _resolve_session_id(SimpleNamespace(session_json=long_json))
     assert data["session_id"] == "s" and "session.json" in files
+
+
+# --------------------------------------------------------------------------- AIS-456 turn failures
+
+
+def _suite_agent(**overrides):
+    values = dict(
+        provider="aimds-suite-prod", base_url="https://suite.iamds.com/litellm/v1",
+        model="AIMDS-Suite-Auto", platform="tui", session_id="20261001_093626",
+        _delegate_depth=0,
+    )
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def _zone_request():
+    return {
+        "model": "AIMDS-Suite-Auto",
+        "messages": [
+            {"role": "system", "content": "S" * 500},
+            {"role": "user", "content": [{"type": "text", "text": "Sind doch mehr\n--- Attached Context ---\n" + "z" * 900}]},
+        ],
+        "tools": [{"type": "function"}] * 3,
+    }
+
+
+def test_turn_failure_case_names_error_class_and_suite_state(reported, monkeypatch):
+    import time as _time
+
+    from hermes_cli import iamds_suite
+
+    monkeypatch.setattr(iamds_suite, "suite_llm_liveness", lambda base_url, timeout=3.0: "up")
+    agent = _suite_agent(_last_stream_failure={
+        "kind": "failed before delivery", "chain": "APIConnectionError(Connection error.) <- RemoteProtocolError(peer closed)",
+        "http_status": None, "bytes": 0, "chunks": 0, "elapsed": 50.2, "ttfb": None, "at": _time.time(),
+    })
+    _join(ai.report_turn_failure(
+        agent, error=ConnectionError("x"), summary="Connection error.", failure_reason="timeout",
+        max_retries=3, api_kwargs=_zone_request(),
+        dump_path="/Users/x/.hermes/sessions/request_dump_20261001_093626_x.json",
+    ))
+    args = reported[0]
+    assert args.reason == "turn-exhausted-timeout-suite-up"
+    assert args.category == "connection_error" and args.context_type == "turn_failure"
+    assert args.severity == "high" and args.session_id == "20261001_093626"
+    text = args.user_description
+    assert "host: suite.iamds.com" in text and "litellm up" in text
+    assert "bytes=0" in text and "elapsed=50.2s" in text and "RemoteProtocolError" in text
+    assert "attached_context_chars=901" in text and "tools=3" in text
+    # the dump is named, its content and the user's text never leave the machine
+    assert "request_dump_20261001_093626_x.json" in text and "/Users/x" not in text
+    assert "zzzz" not in text and "Sind doch mehr" not in text
+    assert agent._last_suite_liveness == "up"
+
+
+def test_turn_failure_without_suite_uses_the_provider_and_ignores_stale_stream_facts(reported):
+    agent = SimpleNamespace(
+        provider="openrouter", base_url="https://openrouter.ai/api/v1", model="m", platform="cli",
+        session_id="s", _last_stream_failure={"kind": "drop", "chain": "OLD", "at": 0},
+    )
+    _join(ai.report_turn_failure(agent, error=TimeoutError("t"), summary="timed out", max_retries=3))
+    args = reported[0]
+    assert args.reason == "turn-exhausted-timeout-openrouter" and args.severity == "medium"
+    assert "OLD" not in args.user_description
+
+
+@pytest.mark.parametrize("agent,reason", [
+    (_suite_agent(_delegate_depth=1), "timeout"),
+    (_suite_agent(_is_background_review_fork=True), "timeout"),
+    (_suite_agent(), "rate_limit"),
+    (_suite_agent(), "billing"),
+])
+def test_turn_failure_skips_subagents_review_forks_and_quota_walls(reported, monkeypatch, agent, reason):
+    from hermes_cli import iamds_suite
+
+    monkeypatch.setattr(iamds_suite, "suite_llm_liveness", lambda base_url, timeout=3.0: "up")
+    assert ai.report_turn_failure(agent, error=None, summary="x", failure_reason=reason) is None
+    assert reported == []
+
+
+def test_suite_llm_liveness_reads_the_litellm_monitor(monkeypatch):
+    from hermes_cli import iamds_suite
+
+    board = {"details": [{"slug": "litellm", "status": "up"}, {"slug": "vllm", "status": "down"}]}
+    monkeypatch.setattr(iamds_suite, "fetch_suite_health", lambda *a, **k: (board, 200, ""))
+    assert iamds_suite.suite_llm_liveness("https://suite.iamds.com/litellm/v1") == "up"
+    monkeypatch.setattr(iamds_suite, "fetch_suite_health", lambda *a, **k: ({"details": []}, 200, ""))
+    assert iamds_suite.suite_llm_liveness("https://suite.iamds.com/litellm/v1") == "unknown"
+    monkeypatch.setattr(iamds_suite, "fetch_suite_health", lambda *a, **k: (None, None, "refused"))
+    assert iamds_suite.suite_llm_liveness("https://suite.iamds.com/litellm/v1") == "unreachable"
+
+
+# --------------------------------------------------------------------------- AIS-456 subagent outcomes
+
+
+@pytest.mark.parametrize("entry,kw,expected", [
+    ({"status": "completed", "exit_reason": "completed", "api_calls": 3, "tool_trace": []}, {}, ""),
+    ({"status": "interrupted", "exit_reason": "interrupted", "api_calls": 0}, {}, ""),
+    ({"status": "timeout", "exit_reason": "timeout", "api_calls": 2}, {}, "timeout"),
+    ({"status": "failed", "exit_reason": "max_iterations", "api_calls": 20}, {}, "max-iterations"),
+    ({"status": "error", "exit_reason": "error", "api_calls": 1}, {}, "failed"),
+    ({"status": "completed", "exit_reason": "completed", "api_calls": 0}, {}, "no-api-calls"),
+    ({"status": "completed", "exit_reason": "completed", "api_calls": 17}, {"max_iterations": 20}, "budget-nearly-exhausted"),
+    ({"status": "completed", "exit_reason": "completed", "api_calls": 5,
+      "tool_trace": [{"tool": "t", "status": "error"}] * 3 + [{"tool": "t", "status": "ok"}]}, {}, "tool-errors"),
+    ({"status": "completed", "exit_reason": "completed", "api_calls": 3}, {"spilled": True}, "result-overflow"),
+    ({"status": "completed", "exit_reason": "completed", "api_calls": 3}, {"repeated": True}, "repeated"),
+])
+def test_subagent_outcome_criteria(entry, kw, expected):
+    assert ai.subagent_outcome_criterion(entry, **kw) == expected
+
+
+def test_subagent_outcome_case_per_agent_and_criterion(reported):
+    parent = SimpleNamespace(provider="aimds-suite-prod", model="AIMDS-Suite-Auto", platform="tui", session_id="p1")
+    definition = SimpleNamespace(name="digest", digest="abc123", source="/x/agents/digest.md")
+    entry = {
+        "status": "timeout", "exit_reason": "timeout", "api_calls": 4, "duration_seconds": 600,
+        "model": "AIMDS-Suite-Auto", "tokens": {"input": 9000, "output": 100},
+        "summary": "SECRET RESULT TEXT",
+        "tool_trace": [{"tool": "read_file", "status": "ok", "result_bytes": 4000}],
+    }
+    _join(ai.report_subagent_outcome(parent, entry, definition=definition, goal="Extract DNS records",
+                                     max_iterations=30, model_choice_reason="inherit-auto"))
+    args = reported[0]
+    assert args.reason == "subagent-digest-timeout" and args.category == "chat_issue"
+    assert args.context_type == "subagent_outcome" and args.session_id == "p1"
+    text = args.user_description
+    assert "definition abc123, digest.md" in text and "choice: inherit-auto" in text
+    assert "read_file:ok:4000B" in text and "api_calls: 4/30" in text
+    assert "SECRET RESULT TEXT" not in text
+
+
+def test_a_clean_run_reports_nothing_but_a_retry_after_a_bad_run_does(reported):
+    parent = SimpleNamespace(provider="p", model="m", platform="tui", session_id="p2")
+    good = {"status": "completed", "exit_reason": "completed", "api_calls": 3, "tool_trace": []}
+    assert ai.report_subagent_outcome(parent, good, goal="sweep tickets", max_iterations=30) is None
+    bad = {"status": "completed", "exit_reason": "completed", "api_calls": 0}
+    _join(ai.report_subagent_outcome(parent, bad, goal="Sweep  Tickets", max_iterations=30))
+    _join(ai.report_subagent_outcome(parent, good, goal="sweep tickets", max_iterations=30))
+    assert [a.reason for a in reported] == ["subagent-generic-no-api-calls", "subagent-generic-repeated"]

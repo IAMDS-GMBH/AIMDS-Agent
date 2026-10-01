@@ -369,3 +369,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Base de données de sessions indisponible"
     session_not_found:           "Session introuvable dans la base de données."
     warn_passthrough:            "⚠️ {error}"
+
+api_error:
+  # AIS-456: a request the (reachable) server cut off, and the one retry
+  # with the attachments as a file manifest.
+  attachments_as_files: "📎 La requête a été interrompue côté serveur — nouvel essai avec {count} pièce(s) jointe(s) sous forme de liste de fichiers ; les fichiers sont lus par parties."
+  server_cut_off: "Le service d'IA{target} est joignable, mais il a terminé cette requête sans réponse après {attempts} tentatives — la requête est probablement trop volumineuse (pièces jointes, longue conversation). Découpe le contenu en parties plus petites ou démarre un nouveau chat avec moins de pièces jointes."

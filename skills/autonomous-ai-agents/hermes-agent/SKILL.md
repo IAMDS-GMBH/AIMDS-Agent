@@ -634,7 +634,12 @@ before continuing its own loop. Isolated context + terminal session.
 
 - **Single:** `delegate_task(goal, context, toolsets)`.
 - **Batch:** `delegate_task(tasks=[{goal, ...}, ...])` runs children in
-  parallel, capped by `delegation.max_concurrent_children` (default 3).
+  parallel, capped by `delegation.max_concurrent_children` (default 2; more tasks queue, up to 20 per call).
+- **Agents:** `agent='<name>'` (top level or per task) picks a lean agent
+  definition — generic task types such as `digest`, `collect`, `sweep`,
+  `research`, `draft` (CLI also `explore`, `verify`, `review`,
+  `investigate`). Own or overriding definitions go to `~/.hermes/agents/*.md`;
+  `hermes prompt-size --agent <name>` shows what a child costs.
 - **Roles:** `leaf` (default; cannot re-delegate) vs `orchestrator`
   (can spawn its own workers, bounded by `delegation.max_spawn_depth`).
 - **Not durable.** If the parent is interrupted, the child is

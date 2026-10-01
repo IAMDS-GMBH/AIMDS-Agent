@@ -2521,9 +2521,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 "   To avoid this delay, set display.streaming: false "
                                 "in config.yaml\n"
                             )
-                        logger.info(
-                            "Streaming failed before delivery: %s",
-                            e,
+                        # Same structured line as a stream drop (chain,
+                        # bytes, ttfb, elapsed): an openai
+                        # ``APIConnectionError("Connection error.")`` lands
+                        # here, and without these fields a server-side
+                        # cutoff before the first byte is invisible.
+                        agent._log_stream_retry(
+                            kind="failed before delivery",
+                            error=e,
+                            attempt=_stream_attempt + 1,
+                            max_attempts=_max_stream_retries + 1,
+                            mid_tool_call=False,
+                            diag=request_client_holder.get("diag"),
+                            outcome="handing to the turn retry loop",
                         )
 
                     # Propagate the error to the main retry loop instead of

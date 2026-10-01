@@ -274,17 +274,41 @@ class TestDelegateTask(unittest.TestCase):
         mock_run.assert_not_called()
 
     @patch("tools.delegate_tool._run_single_child")
-    def test_batch_capped_at_3(self, mock_run):
-        mock_run.return_value = {
-            "task_index": 0, "status": "completed",
-            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
-        }
+    def test_batch_beyond_the_cap_is_queued_not_rejected(self, mock_run):
+        """AIS-456: more tasks than max_concurrent_children wait in a queue;
+        never more than the cap run at once."""
+        import threading as _threading
+
+        running = {"now": 0, "peak": 0}
+        lock = _threading.Lock()
+
+        def fake_run(task_index, goal, child=None, parent_agent=None, **_kw):
+            with lock:
+                running["now"] += 1
+                running["peak"] = max(running["peak"], running["now"])
+            time.sleep(0.05)
+            with lock:
+                running["now"] -= 1
+            return {"task_index": task_index, "status": "completed",
+                    "summary": "Done", "api_calls": 1, "duration_seconds": 0.05}
+
+        mock_run.side_effect = fake_run
         parent = _make_mock_parent()
         limit = _get_max_concurrent_children()
-        tasks = [{"goal": f"Task {i}"} for i in range(limit + 2)]
+        tasks = [{"goal": f"Task {i}"} for i in range(limit + 3)]
         result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
-        # Should return an error instead of silently truncating
-        self.assertIn("error", result)
+        self.assertNotIn("error", result)
+        self.assertEqual(len(result["results"]), limit + 3)
+        self.assertEqual(mock_run.call_count, limit + 3)
+        self.assertLessEqual(running["peak"], limit)
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_above_the_queue_limit_is_rejected(self, mock_run):
+        from tools.delegate_tool import MAX_QUEUED_TASKS
+
+        parent = _make_mock_parent()
+        tasks = [{"goal": f"Task {i}"} for i in range(MAX_QUEUED_TASKS + 1)]
+        result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
         self.assertIn("Too many tasks", result["error"])
         mock_run.assert_not_called()
 
@@ -906,7 +930,7 @@ class TestBlockedTools(unittest.TestCase):
             _get_max_spawn_depth, _get_orchestrator_enabled,
             _MIN_SPAWN_DEPTH,
         )
-        self.assertEqual(_get_max_concurrent_children(), 3)
+        self.assertEqual(_get_max_concurrent_children(), 2)
         self.assertEqual(MAX_DEPTH, 1)
         self.assertEqual(_get_max_spawn_depth(), 1)       # default: flat
         self.assertTrue(_get_orchestrator_enabled())      # default
@@ -2163,10 +2187,10 @@ class TestConcurrencyDefaults(unittest.TestCase):
     """Tests for the concurrency default and no hard ceiling."""
 
     @patch("tools.delegate_tool._load_config", return_value={})
-    def test_default_is_three(self, mock_cfg):
+    def test_default_is_two(self, mock_cfg):
         # Clear env var if set
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(_get_max_concurrent_children(), 3)
+            self.assertEqual(_get_max_concurrent_children(), 2)
 
     @patch("tools.delegate_tool._load_config",
            return_value={"max_concurrent_children": 10})
@@ -2797,3 +2821,141 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSubagentModelRule(unittest.TestCase):
+    """AIS-456: on the parent's AIMDS Suite environment the child follows the
+    subagent model rule; elsewhere the configured/inherited model stands."""
+
+    def _build(self, parent, **kw):
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            child = _build_child_agent(
+                task_index=0, goal="g", context=None, toolsets=None,
+                model=kw.pop("model", None), max_iterations=10,
+                parent_agent=parent, task_count=1, **kw,
+            )
+        return MockAgent.call_args.kwargs, child
+
+    def _suite_parent(self, model):
+        parent = _make_mock_parent()
+        parent.provider = "aimds-suite-prod"
+        parent.base_url = "https://suite.iamds.com/litellm/v1"
+        parent.model = model
+        return parent
+
+    def test_suite_parent_hands_the_rule_its_own_key_and_host(self):
+        seen = {}
+
+        def fake_pick(provider, main_model, **kw):
+            seen.update(provider=provider, main=main_model, **kw)
+            return "claude-haiku-4.5", "cheapest"
+
+        with patch("hermes_cli.iamds_suite.pick_child_suite_model", side_effect=fake_pick):
+            kwargs, child = self._build(self._suite_parent("claude-sonnet-5"), model_tier="fast")
+        self.assertEqual(kwargs["model"], "claude-haiku-4.5")
+        self.assertEqual(kwargs["provider"], "aimds-suite-prod")
+        self.assertEqual(kwargs["base_url"], "https://suite.iamds.com/litellm/v1")
+        self.assertEqual(child._model_choice_reason, "cheapest")
+        self.assertEqual(seen["provider"], "aimds-suite-prod")
+        self.assertEqual(seen["main"], "claude-sonnet-5")
+        self.assertEqual(seen["tier"], "fast")
+        self.assertEqual(seen["base_url"], "https://suite.iamds.com/litellm/v1")
+
+    def test_non_suite_parent_and_provider_override_skip_the_rule(self):
+        with patch("hermes_cli.iamds_suite.pick_child_suite_model") as pick:
+            kwargs, child = self._build(_make_mock_parent())
+            self.assertEqual(kwargs["model"], "anthropic/claude-sonnet-4")
+            self.assertEqual(child._model_choice_reason, "inherit")
+            kwargs, child = self._build(
+                self._suite_parent("AIMDS-Suite-Auto"), model="gpt-4o",
+                override_provider="openrouter", override_base_url="https://openrouter.ai/api/v1",
+            )
+            self.assertEqual(kwargs["model"], "gpt-4o")
+            self.assertEqual(child._model_choice_reason, "explicit")
+            pick.assert_not_called()
+
+
+class TestAgentDefinitions(unittest.TestCase):
+    """AIS-456: lean agent definitions drive toolsets, prompt and result."""
+
+    def _definition(self, **kw):
+        from agent.agent_definitions import AgentDefinition
+
+        values = dict(name="digest", description="d", body="You are a digest agent.",
+                      toolsets=("file",), max_iterations=12, max_result_chars=500)
+        values.update(kw)
+        return AgentDefinition(**values)
+
+    def _parent(self):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["file", "terminal", "web", "mcp-AIMDSSuiteMCP"]
+        return parent
+
+    def _build(self, definition, tools=None):
+        with patch("run_agent.AIAgent") as MockAgent:
+            child_mock = MagicMock()
+            child_mock.tools = tools or []
+            child_mock.valid_tool_names = {t["function"]["name"] for t in (tools or [])}
+            MockAgent.return_value = child_mock
+            child = _build_child_agent(
+                task_index=0, goal="g", context=None, toolsets=["terminal", "web"],
+                model=None, max_iterations=12, parent_agent=self._parent(), task_count=1,
+                definition=definition,
+            )
+        return MockAgent.call_args.kwargs, child
+
+    def test_definition_toolsets_replace_the_requested_ones_and_mcp_is_opt_in(self):
+        kwargs, _ = self._build(self._definition())
+        self.assertEqual(kwargs["enabled_toolsets"], ["file"])
+        kwargs, _ = self._build(self._definition(toolsets=("file", "mcp")))
+        self.assertEqual(kwargs["enabled_toolsets"], ["file", "mcp-AIMDSSuiteMCP"])
+
+    def test_child_runs_lean_and_read_only(self):
+        tools = [{"function": {"name": n}} for n in ("read_file", "write_file", "patch", "search_files")]
+        kwargs, child = self._build(self._definition(), tools=tools)
+        self.assertTrue(child._lean_system_prompt)
+        self.assertEqual(child._lean_identity, "You are a digest agent.")
+        self.assertFalse(child._enforce_initial_memory_context)
+        self.assertEqual({t["function"]["name"] for t in child.tools}, {"read_file", "search_files"})
+        self.assertEqual(child.valid_tool_names, {"read_file", "search_files"})
+        self.assertIn("under 500 characters", kwargs["ephemeral_system_prompt"])
+
+    def test_unknown_agent_fails_before_any_child_runs(self):
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            result = json.loads(delegate_task(goal="x", agent="nope", parent_agent=_make_mock_parent()))
+        self.assertIn("unknown agent 'nope'", result["error"])
+        self.assertIn("digest", result["error"])
+        mock_run.assert_not_called()
+
+    def test_cli_only_agent_is_not_offered_on_the_tui(self):
+        parent = _make_mock_parent()
+        parent.platform = "tui"
+        result = json.loads(delegate_task(goal="x", agent="explore", parent_agent=parent))
+        self.assertIn("unknown agent 'explore'", result["error"])
+
+    def test_oversized_result_is_cut_and_spilled_to_a_file(self):
+        import tempfile
+
+        from tools.delegate_tool import _finish_child_result
+
+        child = MagicMock()
+        child._agent_definition = self._definition(max_result_chars=500)
+        child._subagent_id = "sa-0-test"
+        child.max_iterations = 12
+        entry = {"task_index": 0, "status": "completed", "exit_reason": "completed",
+                 "api_calls": 2, "summary": "x" * 2000, "tool_trace": []}
+        with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HERMES_HOME": home}):
+            _finish_child_result(entry, child, "g", _make_mock_parent())
+            self.assertLess(len(entry["summary"]), 700)
+            self.assertIn("read it with read_file", entry["summary"])
+            with open(entry["result_file"], encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "x" * 2000)
+
+    def test_agent_param_lists_the_definitions(self):
+        from tools.delegate_tool import _build_dynamic_schema_overrides
+
+        props = _build_dynamic_schema_overrides()["parameters"]["properties"]
+        self.assertIn("- digest:", props["agent"]["description"])
+        self.assertIn("explore [cli only]", props["agent"]["description"])
+        self.assertIn("agent", props["tasks"]["items"]["properties"])

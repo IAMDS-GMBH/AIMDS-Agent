@@ -29,6 +29,11 @@ def build_prompt_size_parser(subparsers, *, cmd_prompt_size: Callable) -> None:
         help="Platform to simulate (cli, telegram, discord, ...). Default: cli",
     )
     prompt_size_parser.add_argument(
+        "--agent",
+        default="",
+        help="Measure a delegated subagent built from this agent definition (e.g. digest)",
+    )
+    prompt_size_parser.add_argument(
         "--json",
         action="store_true",
         help="Emit the breakdown as JSON",

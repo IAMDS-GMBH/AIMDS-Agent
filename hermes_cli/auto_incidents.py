@@ -10,7 +10,12 @@ waiting for the user to press "Problem melden":
 * an HTTP 401 that survived every credential refresh (LLM provider, AIMDS
   Suite, MCP server);
 * a bundled MCP server (catalog entry under ``optional-mcps/``) that fails
-  to connect, gives up reconnecting or opens its circuit breaker.
+  to connect, gives up reconnecting or opens its circuit breaker;
+* a turn whose LLM call failed on every retry (AIS-456) — the case names
+  the error class and whether the Suite's LLM gateway was up at that moment;
+* a subagent task that ran badly (AIS-456): timed out, failed, used up its
+  budget, overflowed its result contract, hit mostly tool errors, or was
+  delegated again after such a run — one kind per agent and criterion.
 
 Policy comes from ``incident_report``: ``support.auto_report: false`` or
 ``HERMES_SUPPORT_AUTO_REPORT=0`` switches uploads off, one case per kind per
@@ -24,6 +29,8 @@ import json
 import logging
 import re
 import threading
+import time
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 logger = logging.getLogger("hermes.incident")
@@ -31,6 +38,8 @@ logger = logging.getLogger("hermes.incident")
 CONTEXT_PYTHON_FALLBACK = "agent_python_fallback"
 CONTEXT_AUTH = "auth_error"
 CONTEXT_MCP = "mcp_failure"
+CONTEXT_TURN_FAILURE = "turn_failure"
+CONTEXT_SUBAGENT_OUTCOME = "subagent_outcome"
 
 _TRANSCRIPT_MAX_MESSAGES = 30
 _TRANSCRIPT_PART_CHARS = 1200
@@ -316,6 +325,310 @@ def report_auth_401(source: str, target: str, message: str = "", *, session_id: 
         return None
 
 
+#: Failure reasons that are a quota wall or the user's own doing, not a
+#: defect worth a support case.
+_TURN_FAILURE_SKIP_REASONS = frozenset({"billing", "rate_limit", "auth", "auth_permanent"})
+#: A remembered stream failure older than this belongs to an earlier turn.
+_STREAM_FAILURE_MAX_AGE_SECONDS = 15 * 60
+_ATTACHED_CONTEXT_MARKER = "--- Attached Context ---"
+
+
+def _text_of(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            str(part.get("text") or "") for part in content if isinstance(part, dict)
+        )
+    return ""
+
+
+def request_shape(api_kwargs: Any) -> Dict[str, Any]:
+    """Sizes of an outgoing request, no content (never raises)."""
+    shape: Dict[str, Any] = {}
+    if not isinstance(api_kwargs, dict):
+        return shape
+    try:
+        shape["body_chars"] = len(json.dumps(api_kwargs, ensure_ascii=False, default=str))
+    except Exception:
+        pass
+    messages = api_kwargs.get("messages") or api_kwargs.get("input") or []
+    if isinstance(messages, list):
+        shape["messages"] = len(messages)
+        system = next((m for m in messages if isinstance(m, dict) and m.get("role") in ("system", "developer")), None)
+        if system is not None:
+            shape["system_chars"] = len(_text_of(system.get("content")))
+        last_user = next((m for m in reversed(messages) if isinstance(m, dict) and m.get("role") == "user"), None)
+        if last_user is not None:
+            text = _text_of(last_user.get("content"))
+            shape["last_user_chars"] = len(text)
+            if _ATTACHED_CONTEXT_MARKER in text:
+                shape["attached_context_chars"] = len(text.split(_ATTACHED_CONTEXT_MARKER, 1)[1])
+    tools = api_kwargs.get("tools")
+    if isinstance(tools, list):
+        shape["tools"] = len(tools)
+    return shape
+
+
+def _error_class(failure_reason: str, error: Any) -> str:
+    reason = str(failure_reason or "").strip().lower()
+    if reason and reason != "unknown":
+        return reason
+    name = type(error).__name__.lower() if error is not None else ""
+    if "timeout" in name:
+        return "timeout"
+    if "connection" in name or "protocol" in name:
+        return "connection"
+    return "other"
+
+
+def report_turn_failure(
+    agent: Any,
+    *,
+    error: Any,
+    summary: str,
+    failure_reason: str = "",
+    max_retries: int = 0,
+    api_kwargs: Any = None,
+    dump_path: Any = None,
+) -> Optional[threading.Thread]:
+    """A turn whose LLM call failed on every retry (never raises).
+
+    The kind slug bundles equal causes: error class plus, for AIMDS Suite
+    providers, the LLM gateway state on the Suite's health board right
+    after the failure (``turn-exhausted-connection-suite-up`` = the Suite is
+    fine, this request was cut off). Only sizes of the request go into the
+    case, never its content; the local request dump is named, not uploaded.
+    Subagents (they report their own outcome) and background review forks
+    never report here.
+    """
+    try:
+        try:
+            agent._last_suite_liveness = ""  # never reuse an earlier turn's probe
+        except Exception:
+            pass
+        if getattr(agent, "_delegate_depth", 0) or getattr(agent, "_is_background_review_fork", False):
+            return None
+        error_class = _error_class(failure_reason, error)
+        if error_class in _TURN_FAILURE_SKIP_REASONS:
+            return None
+        provider = str(getattr(agent, "provider", "") or "")
+        base_url = str(getattr(agent, "base_url", "") or "")
+        model = str(getattr(agent, "model", "") or "")
+        platform = str(getattr(agent, "platform", "") or "")
+        session_id = str(getattr(agent, "session_id", "") or "")
+
+        liveness = ""
+        try:
+            from hermes_cli.iamds_suite import is_suite_provider, suite_llm_liveness
+
+            if is_suite_provider(provider) and _network_probe_allowed():
+                liveness = suite_llm_liveness(base_url)
+        except Exception:
+            liveness = ""
+        # The user-facing error message reads it instead of probing again.
+        try:
+            agent._last_suite_liveness = liveness
+        except Exception:
+            pass
+        target = f"suite-{liveness}" if liveness else _slug(provider or "provider")
+        kind = f"turn-exhausted-{_slug(error_class)}-{target}"
+
+        stream = getattr(agent, "_last_stream_failure", None)
+        if not isinstance(stream, dict) or (time.time() - float(stream.get("at") or 0)) > _STREAM_FAILURE_MAX_AGE_SECONDS:
+            stream = None
+        shape = request_shape(api_kwargs)
+
+        lines = [
+            f"An LLM call failed on all {max_retries or '?'} retries and the turn ended without an answer.",
+            "",
+            f"provider: {provider or '?'}  host: {_host_of(base_url) or '?'}  model: {model or '?'}  platform: {platform or '?'}",
+            f"error: {_clip(_redact(summary), 300)}  (class {error_class})",
+        ]
+        if liveness:
+            lines.append(f"Suite health board right after the failure: litellm {liveness}")
+        if stream:
+            ttfb = stream.get("ttfb")
+            lines.append(
+                "last stream attempt: "
+                f"{stream.get('kind', '?')} chain={_clip(stream.get('chain'), 300)} "
+                f"http_status={stream.get('http_status') if stream.get('http_status') is not None else '-'} "
+                f"bytes={stream.get('bytes', 0)} chunks={stream.get('chunks', 0)} "
+                f"elapsed={float(stream.get('elapsed') or 0):.1f}s "
+                f"ttfb={f'{float(ttfb):.1f}s' if ttfb is not None else '-'}"
+            )
+        if shape:
+            lines.append("request shape: " + " ".join(f"{k}={v}" for k, v in shape.items()))
+        if dump_path:
+            lines.append(f"local request dump (not uploaded): {Path(str(dump_path)).name}")
+        lines += [
+            "",
+            "Hint: bytes=0 with the Suite up means the request was cut off before the first byte "
+            "(server-side timeout); a large attached_context_chars points at oversized user input.",
+        ]
+        return report_in_background(
+            kind,
+            f"Turn failed after {max_retries or '?'} retries ({error_class}) on {provider or 'provider'}",
+            "\n".join(lines),
+            category="connection_error",
+            context_type=CONTEXT_TURN_FAILURE,
+            severity="high" if liveness == "up" else "medium",
+            session_id=session_id,
+        )
+    except Exception as exc:
+        logger.debug("turn failure report failed: %s", exc)
+        return None
+
+
+#: Share of the iteration budget above which a task "nearly ran out".
+_BUDGET_SHARE = 0.8
+#: Tool error share (with at least this many calls) that marks a task.
+_TOOL_ERROR_SHARE = 0.5
+_TOOL_ERROR_MIN_CALLS = 4
+_BAD_EXIT_REASONS = ("timeout", "stale", "max_iterations")
+_BAD_STATUSES = ("failed", "error", "timeout")
+
+
+def subagent_outcome_criterion(
+    entry: Dict[str, Any],
+    *,
+    max_iterations: Optional[int] = None,
+    spilled: bool = False,
+    repeated: bool = False,
+) -> str:
+    """The first criterion a finished subagent task meets, or "" when it ran
+    fine. Deterministic — no model judges the run."""
+    status = str(entry.get("status") or "").lower()
+    exit_reason = str(entry.get("exit_reason") or "").lower()
+    if status == "interrupted" or exit_reason == "interrupted":
+        return ""  # the user stopped it; not a defect
+    if exit_reason in _BAD_EXIT_REASONS:
+        return exit_reason.replace("_", "-")
+    if status in _BAD_STATUSES:
+        return "failed" if status != "timeout" else "timeout"
+    api_calls = entry.get("api_calls")
+    if isinstance(api_calls, int) and api_calls == 0:
+        return "no-api-calls"
+    if isinstance(api_calls, int) and max_iterations and api_calls >= _BUDGET_SHARE * max_iterations:
+        return "budget-nearly-exhausted"
+    trace = [t for t in (entry.get("tool_trace") or []) if isinstance(t, dict)]
+    errors = sum(1 for t in trace if t.get("status") == "error")
+    if len(trace) >= _TOOL_ERROR_MIN_CALLS and errors / len(trace) >= _TOOL_ERROR_SHARE:
+        return "tool-errors"
+    if spilled:
+        return "result-overflow"
+    if repeated:
+        return "repeated"
+    return ""
+
+
+def _goal_digest(goal: str) -> str:
+    import hashlib
+
+    return hashlib.sha1(" ".join(str(goal or "").lower().split()).encode("utf-8")).hexdigest()[:16]
+
+
+def report_subagent_outcome(
+    parent_agent: Any,
+    entry: Dict[str, Any],
+    *,
+    definition: Any = None,
+    goal: str = "",
+    max_iterations: Optional[int] = None,
+    spilled: bool = False,
+    model_choice_reason: str = "",
+) -> Optional[threading.Thread]:
+    """A badly running subagent task becomes a support case (never raises).
+
+    "Repeated" means the parent delegated the same goal again in this
+    session after an earlier run of it met a criterion — the clearest sign
+    the result was not usable. The case carries the definition (name +
+    content hash), the model choice, counters and a compact tool trace;
+    never the result text, and the goal only clipped and redacted.
+    """
+    try:
+        digest = _goal_digest(goal)
+        marked = getattr(parent_agent, "_subagent_marked_goals", None)
+        if not isinstance(marked, set):
+            marked = set()
+            try:
+                parent_agent._subagent_marked_goals = marked
+            except Exception:
+                pass
+        criterion = subagent_outcome_criterion(
+            entry, max_iterations=max_iterations, spilled=spilled, repeated=digest in marked,
+        )
+        if not criterion:
+            return None
+        marked.add(digest)
+        if getattr(parent_agent, "_is_background_review_fork", False):
+            return None
+        agent_name = str(getattr(definition, "name", "") or "generic")
+        session_id = str(getattr(parent_agent, "session_id", "") or "")
+        trace = [t for t in (entry.get("tool_trace") or []) if isinstance(t, dict)]
+        trace_line = ", ".join(
+            f"{t.get('tool', '?')}:{t.get('status', '?')}:{t.get('result_bytes', 0)}B" for t in trace[:40]
+        )
+        if len(trace) > 40:
+            trace_line += f", … (+{len(trace) - 40})"
+        tokens = entry.get("tokens") or {}
+        lines = [
+            f"A subagent task met the criterion '{criterion}'.",
+            "",
+            f"agent: {agent_name}"
+            + (f" (definition {getattr(definition, 'digest', '')}, {Path(str(getattr(definition, 'source', '') or '?')).name})" if definition is not None else ""),
+            f"parent: provider {getattr(parent_agent, 'provider', '') or '?'} model {getattr(parent_agent, 'model', '') or '?'} platform {getattr(parent_agent, 'platform', '') or '?'}",
+            f"child model: {entry.get('model') or '?'} (choice: {model_choice_reason or '?'})",
+            f"status: {entry.get('status')} exit: {entry.get('exit_reason', '-')} api_calls: {entry.get('api_calls')}/{max_iterations or '?'} "
+            f"duration: {entry.get('duration_seconds')}s tokens in/out: {tokens.get('input', 0)}/{tokens.get('output', 0)}",
+            f"goal (clipped): {_clip(_redact(goal), 300)}",
+            f"tool trace (tool:status:bytes): {trace_line or '-'}",
+        ]
+        if entry.get("error"):
+            lines.append(f"error: {_clip(_redact(entry.get('error')), 500)}")
+        lines += [
+            "",
+            "Tune the agent definition (toolsets, iterations, result limit, principles) or the "
+            "delegation guidance; the local agent.log has one '[subagent-N] outcome' line per task.",
+        ]
+        return report_in_background(
+            f"subagent-{_slug(agent_name)}-{criterion}",
+            f"Subagent '{agent_name}' task: {criterion}",
+            "\n".join(lines),
+            category="chat_issue",
+            context_type=CONTEXT_SUBAGENT_OUTCOME,
+            severity="medium",
+            session_id=session_id,
+        )
+    except Exception as exc:
+        logger.debug("subagent outcome report failed: %s", exc)
+        return None
+
+
+def _network_probe_allowed() -> bool:
+    """Real runs always probe; under pytest only when a test switched
+    auto-reporting on explicitly (it then stubs the probe)."""
+    import os
+
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    try:
+        from hermes_cli import incident_report
+
+        return incident_report.auto_report_enabled()
+    except Exception:
+        return False
+
+
+def _host_of(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+
+        return urlparse(url).netloc
+    except Exception:
+        return ""
+
+
 def is_bundled_mcp(server_name: str) -> bool:
     """True for catalog servers shipped with Hermes (optional-mcps/)."""
     name = str(server_name or "")
@@ -357,4 +670,8 @@ __all__ = [
     "report_auth_401",
     "report_bundled_mcp_failure",
     "report_in_background",
+    "report_subagent_outcome",
+    "report_turn_failure",
+    "request_shape",
+    "subagent_outcome_criterion",
 ]

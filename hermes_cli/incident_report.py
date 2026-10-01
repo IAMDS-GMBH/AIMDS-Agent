@@ -54,6 +54,9 @@ _CATEGORY_FOR_CONTEXT: dict[str, str] = {
     "mcp_failure": "mcp_tools",
     "auth_error": "connection_error",
     "state_db_error": "chat_issue",
+    # AIS-456: failed turns and badly running subagent tasks
+    "turn_failure": "connection_error",
+    "subagent_outcome": "chat_issue",
 }
 
 

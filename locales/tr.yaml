@@ -369,3 +369,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Oturum veritabanı kullanılamıyor"
     session_not_found:           "Oturum veritabanında bulunamadı."
     warn_passthrough:            "⚠️ {error}"
+
+api_error:
+  # AIS-456: a request the (reachable) server cut off, and the one retry
+  # with the attachments as a file manifest.
+  attachments_as_files: "📎 İstek sunucu tarafında kesildi — {count} ek dosya listesi olarak bir kez daha deneniyor; dosyalar parça parça okunuyor."
+  server_cut_off: "Yapay zekâ hizmeti{target} erişilebilir, ancak bu isteği {attempts} denemeden sonra yanıtsız sonlandırdı — istek büyük olasılıkla çok büyük (ekler, uzun konuşma). Malzemeyi daha küçük parçalara böl veya daha az ekle yeni bir sohbet başlat."

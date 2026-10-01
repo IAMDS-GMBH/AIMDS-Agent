@@ -112,6 +112,11 @@ class TestClassification:
         for name in BRIDGE_TOOL_NAMES:
             assert not is_deferrable_tool_name(name)
 
+    def test_delegate_task_never_defers(self):
+        """AIS-456: hidden behind tool_search the model never delegated."""
+        from tools.tool_search import is_deferrable_tool_name
+        assert not is_deferrable_tool_name("delegate_task")
+
     def test_core_skill_tools_never_defer(self):
         from tools.tool_search import is_deferrable_tool_name
         assert not is_deferrable_tool_name("skill_view")

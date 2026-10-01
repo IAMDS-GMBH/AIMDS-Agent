@@ -999,12 +999,14 @@ class AIAgent:
         max_attempts: int,
         mid_tool_call: bool,
         diag: Optional[Dict[str, Any]] = None,
+        outcome: str = "retrying",
     ) -> None:
         """Forwarder — see ``agent.stream_diag.log_stream_retry``."""
         from agent.stream_diag import log_stream_retry
         log_stream_retry(
             self, kind=kind, error=error, attempt=attempt,
             max_attempts=max_attempts, mid_tool_call=mid_tool_call, diag=diag,
+            outcome=outcome,
         )
 
     def _emit_stream_drop(
@@ -4862,6 +4864,14 @@ class AIAgent:
         target_info = f" ({p_name} / {m_name})" if m_name else f" ({p_name})"
         lowered = (error_summary or "").lower()
 
+        # AIS-456: the Suite's health board said the LLM gateway was up right
+        # after the failure — the endpoint is fine, this request was cut off.
+        if getattr(self, "_last_suite_liveness", "") == "up" and any(
+            term in lowered for term in ("connection error", "connecterror", "timeout", "timed out", "peer closed")
+        ):
+            from agent.i18n import t as _t
+            return _t("api_error.server_cut_off", target=target_info, attempts=max_retries)
+
         if any(term in lowered for term in ["connection error", "connecterror", "failed to establish a new connection", "connection refused"]):
             return (
                 f"Die Verbindung zum KI-Dienst{target_info} konnte nach {max_retries} Versuchen nicht hergestellt werden.\n"
@@ -5255,6 +5265,7 @@ class AIAgent:
             acp_command=function_args.get("acp_command"),
             acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
+            agent=function_args.get("agent"),
             parent_agent=self,
         )
 

@@ -180,6 +180,14 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
+# Agent-loop tools that must stay visible whenever their toolset is enabled.
+# ``delegate_task`` is how a turn hands bulky work (many files, sweeps,
+# month-by-month fetches) to lean subagents; hidden behind tool_search the
+# model never reaches for it (AIS-456). Platforms without the ``delegation``
+# toolset never get the tool at all, so this only affects where it is enabled.
+PINNED_AGENT_TOOL_NAMES = frozenset({"delegate_task"})
+
+
 # Memory-server tools the session needs before it can search anything: the
 # session-start context load, saving/reading/searching the vault, the
 # server-side skill reader, and the session close-out. Everything else the
@@ -250,7 +258,7 @@ def is_deferrable_tool_name(name: str) -> bool:
     start relies on ``memory_context`` being callable before the first
     search.
     """
-    if name in BRIDGE_TOOL_NAMES:
+    if name in BRIDGE_TOOL_NAMES or name in PINNED_AGENT_TOOL_NAMES:
         return False
     if name in _core_tool_names():
         return False

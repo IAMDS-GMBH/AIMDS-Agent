@@ -369,3 +369,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "База даних сеансів недоступна"
     session_not_found:           "Сеанс не знайдено в базі даних."
     warn_passthrough:            "⚠️ {error}"
+
+api_error:
+  # AIS-456: a request the (reachable) server cut off, and the one retry
+  # with the attachments as a file manifest.
+  attachments_as_files: "📎 Сервер обірвав запит — повторна спроба з {count} вкладенням(и) як списком файлів; файли читаються частинами."
+  server_cut_off: "Сервіс ШІ{target} доступний, але завершив цей запит без відповіді після {attempts} спроб — імовірно, запит завеликий (вкладення, довга розмова). Розділи матеріал на менші частини або почни новий чат із меншою кількістю вкладень."

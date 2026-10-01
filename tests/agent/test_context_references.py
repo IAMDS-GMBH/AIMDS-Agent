@@ -376,3 +376,64 @@ async def test_blocks_sensitive_home_and_hermes_paths(tmp_path: Path, monkeypatc
     assert "API_KEY=super-secret" not in result.message
     assert "PRIVATE-KEY" not in result.message
     assert any("sensitive credential" in warning for warning in result.warnings)
+
+
+# --------------------------------------------------------------------------- AIS-456 manifest
+
+
+def _zone_files(root: Path, count: int, size: int) -> list[str]:
+    names = []
+    for i in range(count):
+        name = f"zone{i}.txt"
+        (root / name).write_text(f";; Domain: zone{i}.\n" + ("a IN A 1.2.3.4\n" * (size // 15)), encoding="utf-8")
+        names.append(name)
+    return names
+
+
+def test_small_attachments_stay_inline(tmp_path: Path):
+    from agent.context_references import ATTACHED_FILES_MARKER, preprocess_context_references
+
+    names = _zone_files(tmp_path, 2, 1000)
+    result = preprocess_context_references(
+        "look " + " ".join(f"@file:{n}" for n in names), cwd=tmp_path, context_length=200_000,
+    )
+    assert result.manifested == 0 and ATTACHED_FILES_MARKER not in result.message
+    assert "a IN A 1.2.3.4" in result.message
+
+
+def test_attachments_over_the_budget_become_a_manifest(tmp_path: Path):
+    from agent.context_references import (
+        ATTACHED_FILES_MARKER,
+        INLINE_ATTACHMENT_BUDGET_CHARS,
+        preprocess_context_references,
+    )
+
+    names = _zone_files(tmp_path, 15, 2500)
+    result = preprocess_context_references(
+        "Sind doch mehr geworden " + " ".join(f"@file:{n}" for n in names),
+        cwd=tmp_path, context_length=200_000, allowed_root=tmp_path,
+    )
+    assert result.manifested == 15 and not result.blocked
+    assert ATTACHED_FILES_MARKER in result.message and "delegate_task" in result.message
+    assert str(tmp_path / "zone3.txt") in result.message
+    assert ";; Domain: zone3." in result.message          # first lines as preview
+    assert result.message.count("a IN A 1.2.3.4") <= 15 * 2  # preview only, not the body
+    assert len(result.message) < INLINE_ATTACHMENT_BUDGET_CHARS
+
+
+def test_manifest_rewrites_an_expanded_message_in_history():
+    from agent.context_references import ATTACHED_FILES_MARKER, manifest_inline_attachments
+
+    body = "x IN TXT v=spf1\n" * 400
+    text = (
+        "Sind doch mehr geworden\n\n--- Attached Context ---\n\n"
+        f"📄 @file:Downloads/a.txt (900 tokens)\n```text\n{body}\n```\n\n"
+        f"📄 @file:Downloads/b.txt (900 tokens)\n```text\n{body}\n```"
+        "\n\nbei uns haben wir noch OVH-Systeme"
+    )
+    new, count = manifest_inline_attachments(text)
+    assert count == 2 and ATTACHED_FILES_MARKER in new
+    assert new.startswith("Sind doch mehr geworden")
+    assert "bei uns haben wir noch OVH-Systeme" in new     # the merged follow-up survives
+    assert "@file:Downloads/a.txt" in new and len(new) < 2000
+    assert manifest_inline_attachments("plain text") == ("plain text", 0)

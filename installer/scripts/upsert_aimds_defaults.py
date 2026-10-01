@@ -29,7 +29,7 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
     from utils import advisory_file_lock, atomic_yaml_write
 
-_AIMDS_DEFAULTS_VERSION = 17
+_AIMDS_DEFAULTS_VERSION = 18
 _AIMDS_DEFAULTS_VERSION_KEY = "aimds_defaults_version"
 
 # ---------------------------------------------------------------------------
@@ -80,7 +80,10 @@ _AIMDS_ENFORCED_POLICY = (
 # see (hermes_cli.models.cached_provider_model_ids — the provider's
 # /v1/models, cached per provider + credential fingerprint), else the main
 # model. Never a model the key cannot see, never a guess.
-_AIMDS_FAST_AUX_PREFERENCE = ("claude-haiku-4.5", "gpt-5-mini", "gemini-3.6-flash")
+try:  # one list for aux slots and subagents (AIS-456)
+    from hermes_cli.iamds_suite import SUITE_FAST_MODEL_PREFERENCE as _AIMDS_FAST_AUX_PREFERENCE
+except Exception:  # bootstrap without the package on sys.path
+    _AIMDS_FAST_AUX_PREFERENCE = ("claude-haiku-4.5", "gpt-5-mini", "gemini-3.6-flash")
 _AIMDS_AUTO_MODEL = "AIMDS-Suite-Auto"
 # Slots the Desktop GUI edits (model-settings.tsx) → one-shot, GUI owns them.
 _AIMDS_GUI_AUX_SLOTS = ("compression", "title_generation", "approval", "mcp")
@@ -557,7 +560,17 @@ def _one_shot_v16(cfg: dict, fetch) -> list[str]:
     return lines
 
 
-_ONE_SHOT_STEPS = {16: _one_shot_v16}
+def _one_shot_v18(cfg: dict, fetch) -> list[str]:
+    """AIS-456: two subagents at a time, the rest queue. Only a value still at
+    the old shipped default (3) moves; a GUI choice stands."""
+    delegation = cfg.get("delegation")
+    if not isinstance(delegation, dict) or delegation.get("max_concurrent_children") != 3:
+        return []
+    delegation["max_concurrent_children"] = 2
+    return ["delegation.max_concurrent_children 3 → 2 (subagent queue)"]
+
+
+_ONE_SHOT_STEPS = {16: _one_shot_v16, 18: _one_shot_v18}
 
 
 def apply_one_shot_defaults(cfg: dict, from_version: int, fetch=None) -> list[str]:

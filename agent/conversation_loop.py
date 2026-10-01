@@ -3360,6 +3360,18 @@ def run_conversation(
                     if canonical_usage.cache_write_tokens >= LARGE_CACHE_WRITE_TOKENS:
                         agent.session_large_cache_writes = getattr(agent, "session_large_cache_writes", 0) + 1
 
+                    # The model LiteLLM actually answered with; subagent
+                    # outcome lines quote it (AIS-456).
+                    try:
+                        _served_now = getattr(response, "served_model", None) or getattr(response, "model", None)
+                        _pd_now = getattr(response, "provider_data", None) or {}
+                        if not _served_now and isinstance(_pd_now, dict):
+                            _served_now = _pd_now.get("served_model")
+                        if isinstance(_served_now, str) and _served_now:
+                            agent._last_served_model = _served_now
+                    except Exception:
+                        pass
+
                     # One api_calls row per request (served model, cache
                     # accounting, latency) — the session totals cannot show
                     # a mid-session model switch or a per-call cache miss.
@@ -4999,12 +5011,61 @@ def run_conversation(
                         agent.log_prefix, max_retries, _final_summary,
                         _provider, _model, len(api_messages), f"{approx_tokens:,}",
                     )
+                    _dump_path = None
                     if api_kwargs is not None:
-                        agent._dump_api_request_debug(
+                        _dump_path = agent._dump_api_request_debug(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
                     agent._persist_session(messages, conversation_history)
                     logger.info("Turn exit diagnostic: early-persist reason=%s session=%s", "max_retries_exhausted_api_error", agent.session_id or "none")
+                    # AIS-456: support sees a turn that died on every retry
+                    # without waiting for "Problem melden".
+                    try:
+                        from hermes_cli.auto_incidents import report_turn_failure
+                        report_turn_failure(
+                            agent,
+                            error=api_error,
+                            summary=_final_summary,
+                            failure_reason=classified.reason.value,
+                            max_retries=max_retries,
+                            api_kwargs=api_kwargs,
+                            dump_path=_dump_path,
+                        )
+                    except Exception:
+                        pass
+                    # AIS-456: a request with large inline attachments that the
+                    # (reachable) server cut off gets exactly one more turn
+                    # attempt with the attachments as a file manifest — the
+                    # model then reads them in parts instead of the session
+                    # re-sending the same oversized message forever.
+                    if (
+                        classified.reason not in (
+                            FailoverReason.billing, FailoverReason.rate_limit,
+                            FailoverReason.auth, FailoverReason.auth_permanent,
+                        )
+                        and getattr(agent, "_last_suite_liveness", "") not in ("down", "unreachable")
+                        and getattr(agent, "_attachments_manifest_turn", None) != turn_id
+                        and isinstance(current_turn_user_idx, int)
+                        and 0 <= current_turn_user_idx < len(messages)
+                    ):
+                        try:
+                            from agent.context_references import manifest_message_attachments
+                            _manifested = manifest_message_attachments(messages[current_turn_user_idx])
+                        except Exception:
+                            _manifested = 0
+                        if _manifested:
+                            agent._attachments_manifest_turn = turn_id
+                            logger.info(
+                                "Retrying turn once with %s attachment(s) as a file manifest (session=%s)",
+                                _manifested, agent.session_id or "none",
+                            )
+                            try:
+                                from agent.i18n import t as _t
+                                agent._emit_status(_t("api_error.attachments_as_files", count=_manifested))
+                            except Exception:
+                                pass
+                            _retry.restart_with_compressed_messages = True
+                            break
                     if classified.reason == FailoverReason.billing:
                         _final_response = f"Billing or credits exhausted: {_final_summary}"
                         if _billing_guidance:

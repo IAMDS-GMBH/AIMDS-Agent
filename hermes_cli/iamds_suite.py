@@ -114,6 +114,123 @@ def is_suite_provider(provider: Optional[str]) -> bool:
     return canonical_suite_provider(provider) is not None
 
 
+# --------------------------------------------------------------------------- model choice (AIS-456)
+
+#: The Suite's routing aliases: LiteLLM picks the model per request.
+SUITE_AUTO_MODEL_IDS = frozenset({"aimds-suite-auto", "auto", "iamds-auto"})
+#: Fast-model preference over today's LiteLLM catalog, used only when the
+#: key's ``/model/info`` carries no usable prices. Every entry is checked
+#: against the key's own model list (the proxy hides models per key).
+SUITE_FAST_MODEL_PREFERENCE = ("claude-haiku-4.5", "gpt-5-mini", "gemini-3.6-flash")
+#: Input tokens dominate delegated work (reading files, tool results), so
+#: the cost rank weighs them three to one against output tokens.
+_INPUT_COST_WEIGHT = 3.0
+
+
+def is_suite_auto_model(model: Optional[str]) -> bool:
+    return str(model or "").strip().lower() in SUITE_AUTO_MODEL_IDS
+
+
+def _price(entry: Dict[str, Any], key: str) -> Optional[float]:
+    try:
+        value = float((entry.get("pricing") or {}).get(key))
+    except (TypeError, ValueError):
+        return None
+    return value
+
+
+def rank_models_by_cost(
+    available: List[str],
+    metadata: Dict[str, Dict[str, Any]],
+    *,
+    min_context: int = 0,
+) -> List[str]:
+    """Chat models with tool calling and a real price, cheapest first.
+
+    A price of 0 means "unknown" or self-hosted (on-prem vLLM/Ollama that may
+    be down); those never win on cost. Models the key lists without
+    ``/model/info`` are not ranked either — the preference list covers them.
+    """
+    ranked: List[tuple[float, str]] = []
+    for model_id in available:
+        if is_suite_auto_model(model_id):
+            continue
+        entry = metadata.get(model_id) or {}
+        if entry.get("mode") not in (None, "chat") or entry.get("supports_function_calling") is not True:
+            continue
+        prompt, completion = _price(entry, "prompt"), _price(entry, "completion")
+        if not prompt or prompt <= 0 or completion is None or completion < 0:
+            continue
+        context = entry.get("context_length")
+        if min_context and isinstance(context, int) and context < min_context:
+            continue
+        ranked.append((prompt * _INPUT_COST_WEIGHT + completion, model_id))
+    return [model_id for _cost, model_id in sorted(ranked)]
+
+
+def pick_child_suite_model(
+    provider: str,
+    main_model: str,
+    *,
+    base_url: str = "",
+    api_key: str = "",
+    tier: str = "inherit",
+    explicit: str = "",
+    min_context: int = 0,
+    available: Optional[List[str]] = None,
+    metadata: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> tuple[str, str]:
+    """Model for a subagent on an AIMDS Suite provider: ``(model, reason)``.
+
+    Always within the parent's environment (same key, same host):
+
+    * ``explicit`` (``delegation.model``) wins when the key lists it;
+    * main model is the Suite router and ``tier`` is not ``fast`` → the
+      child routes through it too (``inherit-auto``);
+    * otherwise the cheapest tool-capable chat model by ``/model/info``
+      (``cheapest``), else the first preference entry the key lists
+      (``preference``), else the main model (``fallback-main``).
+
+    ``available``/``metadata`` are injectable for tests; by default they come
+    from the cached ``/v1/models`` and ``/model/info`` of the key.
+    """
+    if available is None:
+        try:
+            from hermes_cli.models import cached_provider_model_ids
+
+            available = [str(m) for m in (cached_provider_model_ids(provider) or [])]
+        except Exception:
+            available = []
+    by_lower = {m.strip().lower(): m.strip() for m in available if str(m).strip()}
+
+    wanted = str(explicit or "").strip()
+    if wanted:
+        if not by_lower or wanted.lower() in by_lower:
+            return by_lower.get(wanted.lower(), wanted), "explicit"
+        logger.warning(
+            "delegation.model %r is not offered to this key on %s; choosing by the subagent model rule",
+            wanted, provider,
+        )
+
+    if is_suite_auto_model(main_model) and tier != "fast":
+        return main_model, "inherit-auto"
+
+    if metadata is None:
+        try:
+            from agent.model_metadata import fetch_endpoint_model_metadata
+
+            metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key) if base_url else {}
+        except Exception:
+            metadata = {}
+    ranked = rank_models_by_cost(list(by_lower.values()), metadata or {}, min_context=min_context)
+    if ranked:
+        return ranked[0], "cheapest"
+    for candidate in SUITE_FAST_MODEL_PREFERENCE:
+        if candidate.lower() in by_lower:
+            return by_lower[candidate.lower()], "preference"
+    return main_model, "fallback-main"
+
+
 # --------------------------------------------------------------------------- resolution
 
 @dataclass
@@ -835,6 +952,27 @@ class DoclingAvailability:
         data = asdict(self)
         data["available"] = self.available
         return data
+
+
+#: Health-board monitor of the Suite's LLM gateway.
+LITELLM_HEALTH_SLUG = "litellm"
+
+
+def suite_llm_liveness(base_url: str, *, timeout: float = 3.0) -> str:
+    """``up`` | ``down`` | ``unknown`` | ``unreachable`` for the LLM gateway
+    behind *base_url*, read fresh from ``/uptime/health`` (never raises).
+
+    Used after a turn failed: "the Suite says LiteLLM is up" turns a vague
+    connection error into "this request was cut off server-side".
+    """
+    try:
+        payload, _status, _error = fetch_suite_health(base_url, timeout=timeout, use_cache=False)
+    except Exception:
+        return "unreachable"
+    if payload is None:
+        return "unreachable"
+    state = suite_service_state(payload, LITELLM_HEALTH_SLUG)
+    return "unknown" if state == "missing" else state
 
 
 def docling_availability(

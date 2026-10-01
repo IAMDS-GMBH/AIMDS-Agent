@@ -243,3 +243,27 @@ def test_quiet_mode_does_not_clobber_runagent_logger_level():
     for name in ("run_agent", "tools", "trajectory_compressor", "cron", "hermes_cli"):
         logger = logging.getLogger(name)
         assert logger.getEffectiveLevel() <= logging.WARNING
+
+
+def test_failure_before_delivery_logs_outcome_and_remembers_facts(caplog):
+    """AIS-456: a failure before the first byte gets the same structured
+    line, and the facts stay on the agent for the turn-failure case."""
+    agent = _make_agent()
+    agent.provider = "aimds-suite-prod"
+    diag = AIAgent._stream_diag_init()
+    diag["started_at"] = time.time() - 50.0
+
+    inner = ConnectionError("peer closed connection without sending complete message body")
+    outer = RuntimeError("Connection error.")
+    outer.__cause__ = inner
+    with caplog.at_level(logging.WARNING, logger="run_agent"):
+        agent._log_stream_retry(
+            kind="failed before delivery", error=outer, attempt=1, max_attempts=3,
+            mid_tool_call=False, diag=diag, outcome="handing to the turn retry loop",
+        )
+    msg = next(r.getMessage() for r in caplog.records if "failed before delivery" in r.getMessage())
+    assert "handing to the turn retry loop" in msg and "bytes=0" in msg and "ttfb=-" in msg
+    facts = agent._last_stream_failure
+    assert facts["kind"] == "failed before delivery" and facts["bytes"] == 0
+    assert facts["ttfb"] is None and facts["elapsed"] >= 49
+    assert "ConnectionError" in facts["chain"] and facts["at"] > 0

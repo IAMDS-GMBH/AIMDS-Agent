@@ -878,6 +878,12 @@ def fetch_endpoint_model_metadata(
                                     existing_p = entry.get("pricing", {})
                                     existing_p.update(pricing)
                                     entry["pricing"] = existing_p
+                                # Capability facts for callers that pick a
+                                # model per task (AIS-456 subagent model rule).
+                                if isinstance(info.get("mode"), str):
+                                    entry["mode"] = info["mode"]
+                                if isinstance(info.get("supports_function_calling"), bool):
+                                    entry["supports_function_calling"] = info["supports_function_calling"]
                                 _add_model_aliases(cache, canonical, entry)
             except Exception as exc:
                 if not cache:

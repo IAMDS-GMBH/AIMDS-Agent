@@ -369,3 +369,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Sessie-databasis is nie beskikbaar"
     session_not_found:           "Sessie nie in databasis gevind nie."
     warn_passthrough:            "⚠️ {error}"
+
+api_error:
+  # AIS-456: a request the (reachable) server cut off, and the one retry
+  # with the attachments as a file manifest.
+  attachments_as_files: "📎 Die bediener het die versoek afgesny — probeer weer met {count} aanhangsel(s) as 'n lêerlys; die lêers word in dele gelees."
+  server_cut_off: "Die KI-diens{target} is bereikbaar, maar het hierdie versoek ná {attempts} pogings sonder 'n antwoord beëindig — waarskynlik is die versoek te groot (aanhangsels, lang gesprek). Verdeel die materiaal in kleiner dele of begin 'n nuwe klets met minder aanhangsels."
