@@ -297,6 +297,11 @@ interface SubmitTextOptions {
 }
 
 /** Everything a slash handler needs about the invocation it's serving. */
+interface SessionCompressResult {
+  removed?: number
+  summary?: { headline?: string; note?: null | string; noop?: boolean; token_line?: string }
+}
+
 interface SlashActionCtx {
   arg: string
   command: string
@@ -916,8 +921,16 @@ export function usePromptActions({
           renderSlashOutput(result?.warning ? `warning: ${result.warning}\n${body}` : body)
 
           return
-        } catch {
-          // Fall back to command.dispatch for skill/send/alias directives.
+        } catch (err) {
+          // A timeout means the command is still running on the backend; the
+          // command.dispatch fallback would only report a misleading
+          // "not a quick/plugin/skill command".
+          if (err instanceof Error && /timed out/i.test(err.message)) {
+            renderSlashOutput(`/${name}: ${err.message}`)
+
+            return
+          }
+          // Otherwise fall back to command.dispatch for skill/send/alias directives.
         }
 
         try {
@@ -981,6 +994,43 @@ export function usePromptActions({
         },
         branch: async () => {
           await branchCurrentSession()
+        },
+        // /compress uses the gateway's own RPC (like the TUI). Through slash.exec
+        // the worker compressed once and the side-effect mirror a second time,
+        // and the 30 s default request timeout fired before either finished.
+        compress: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+
+          if (busyRef.current) {
+            renderSlashOutput('session busy — stop the current turn before /compress')
+
+            return
+          }
+
+          renderSlashOutput('compressing…')
+
+          try {
+            const result = await requestGateway<SessionCompressResult>('session.compress', {
+              session_id: sessionId,
+              ...(ctx.arg.trim() ? { focus_topic: ctx.arg.trim() } : {})
+            })
+
+            const summary = result?.summary
+
+            const lines = summary?.headline
+              ? [summary.headline, summary.token_line, summary.note].filter(Boolean)
+              : [(result?.removed ?? 0) > 0 ? `compressed ${result?.removed} messages` : 'nothing to compress']
+
+            renderSlashOutput(lines.join('\n'))
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
         },
         // /yolo maps to the status-bar YOLO control — a per-session approval
         // bypass, same scope as the TUI's Shift+Tab. With no session yet we arm

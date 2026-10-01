@@ -7,6 +7,13 @@ import { $gateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gate
 import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState, setConnection } from '@/store/session'
 
+
+// RPCs that legitimately run longer than the default request timeout. A manual
+// compression is one LLM call over the whole history (~45 s for 75k tokens).
+const GATEWAY_METHOD_TIMEOUT_MS: Partial<Record<string, number>> = {
+  'session.compress': 10 * 60_000
+}
+
 export function useGatewayRequest() {
   const gatewayState = useStore($gatewayState)
   const gatewayRef = useRef<HermesGateway | null>(null)
@@ -96,13 +103,14 @@ export function useGatewayRequest() {
   const requestGateway = useCallback(
     async <T>(method: string, params: Record<string, unknown> = {}) => {
       const gateway = gatewayRef.current
+      const timeoutMs = GATEWAY_METHOD_TIMEOUT_MS[method]
 
       if (!gateway) {
         throw new Error('Hermes gateway unavailable')
       }
 
       try {
-        return await gateway.request<T>(method, params)
+        return await gateway.request<T>(method, params, timeoutMs)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
 
@@ -128,7 +136,7 @@ export function useGatewayRequest() {
           throw error
         }
 
-        return recovered.request<T>(method, params)
+        return recovered.request<T>(method, params, timeoutMs)
       }
     },
     [ensureGatewayOpen]
