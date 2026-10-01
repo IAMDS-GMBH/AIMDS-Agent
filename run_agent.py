@@ -4864,6 +4864,14 @@ class AIAgent:
         target_info = f" ({p_name} / {m_name})" if m_name else f" ({p_name})"
         lowered = (error_summary or "").lower()
 
+        # AIS-456: the Suite's health board said the LLM gateway was up right
+        # after the failure — the endpoint is fine, this request was cut off.
+        if getattr(self, "_last_suite_liveness", "") == "up" and any(
+            term in lowered for term in ("connection error", "connecterror", "timeout", "timed out", "peer closed")
+        ):
+            from agent.i18n import t as _t
+            return _t("api_error.server_cut_off", target=target_info, attempts=max_retries)
+
         if any(term in lowered for term in ["connection error", "connecterror", "failed to establish a new connection", "connection refused"]):
             return (
                 f"Die Verbindung zum KI-Dienst{target_info} konnte nach {max_retries} Versuchen nicht hergestellt werden.\n"

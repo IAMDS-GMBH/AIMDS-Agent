@@ -5033,6 +5033,39 @@ def run_conversation(
                         )
                     except Exception:
                         pass
+                    # AIS-456: a request with large inline attachments that the
+                    # (reachable) server cut off gets exactly one more turn
+                    # attempt with the attachments as a file manifest — the
+                    # model then reads them in parts instead of the session
+                    # re-sending the same oversized message forever.
+                    if (
+                        classified.reason not in (
+                            FailoverReason.billing, FailoverReason.rate_limit,
+                            FailoverReason.auth, FailoverReason.auth_permanent,
+                        )
+                        and getattr(agent, "_last_suite_liveness", "") not in ("down", "unreachable")
+                        and getattr(agent, "_attachments_manifest_turn", None) != turn_id
+                        and isinstance(current_turn_user_idx, int)
+                        and 0 <= current_turn_user_idx < len(messages)
+                    ):
+                        try:
+                            from agent.context_references import manifest_message_attachments
+                            _manifested = manifest_message_attachments(messages[current_turn_user_idx])
+                        except Exception:
+                            _manifested = 0
+                        if _manifested:
+                            agent._attachments_manifest_turn = turn_id
+                            logger.info(
+                                "Retrying turn once with %s attachment(s) as a file manifest (session=%s)",
+                                _manifested, agent.session_id or "none",
+                            )
+                            try:
+                                from agent.i18n import t as _t
+                                agent._emit_status(_t("api_error.attachments_as_files", count=_manifested))
+                            except Exception:
+                                pass
+                            _retry.restart_with_compressed_messages = True
+                            break
                     if classified.reason == FailoverReason.billing:
                         _final_response = f"Billing or credits exhausted: {_final_summary}"
                         if _billing_guidance:

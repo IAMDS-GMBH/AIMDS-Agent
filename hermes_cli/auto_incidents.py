@@ -403,6 +403,10 @@ def report_turn_failure(
     never report here.
     """
     try:
+        try:
+            agent._last_suite_liveness = ""  # never reuse an earlier turn's probe
+        except Exception:
+            pass
         if getattr(agent, "_delegate_depth", 0) or getattr(agent, "_is_background_review_fork", False):
             return None
         error_class = _error_class(failure_reason, error)

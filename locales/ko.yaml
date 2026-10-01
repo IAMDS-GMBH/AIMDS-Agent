@@ -369,3 +369,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "세션 데이터베이스를 사용할 수 없습니다"
     session_not_found:           "데이터베이스에서 세션을 찾을 수 없습니다."
     warn_passthrough:            "⚠️ {error}"
+
+api_error:
+  # AIS-456: a request the (reachable) server cut off, and the one retry
+  # with the attachments as a file manifest.
+  attachments_as_files: "📎 서버에서 요청이 중단되었습니다 — 첨부 파일 {count}개를 파일 목록으로 바꿔 한 번 더 시도합니다. 파일은 나누어 읽습니다."
+  server_cut_off: "AI 서비스{target}에는 연결되지만 {attempts}번 시도 후 응답 없이 이 요청을 종료했습니다 — 요청이 너무 클 가능성이 높습니다(첨부 파일, 긴 대화). 자료를 더 작은 부분으로 나누거나 첨부 파일을 줄여 새 채팅을 시작하세요."

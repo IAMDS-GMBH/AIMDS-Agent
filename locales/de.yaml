@@ -369,3 +369,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Session-Datenbank nicht verfügbar"
     session_not_found:           "Session nicht in der Datenbank gefunden."
     warn_passthrough:            "⚠️ {error}"
+
+api_error:
+  # AIS-456: a request the (reachable) server cut off, and the one retry
+  # with the attachments as a file manifest.
+  attachments_as_files: "📎 Die Anfrage wurde serverseitig abgebrochen — neuer Versuch mit {count} Anhang/Anhängen als Dateiliste; die Dateien werden in Teilen gelesen."
+  server_cut_off: "Der KI-Dienst{target} ist erreichbar, hat diese Anfrage aber nach {attempts} Versuchen ohne Antwort beendet — vermutlich ist die Anfrage zu groß (Anhänge, langer Verlauf). Teile das Material in kleinere Stücke oder starte einen neuen Chat mit weniger Anhängen."

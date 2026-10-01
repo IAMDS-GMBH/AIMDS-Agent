@@ -369,3 +369,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Database delle sessioni non disponibile"
     session_not_found:           "Sessione non trovata nel database."
     warn_passthrough:            "⚠️ {error}"
+
+api_error:
+  # AIS-456: a request the (reachable) server cut off, and the one retry
+  # with the attachments as a file manifest.
+  attachments_as_files: "📎 La richiesta è stata interrotta dal server — nuovo tentativo con {count} allegato/i come elenco di file; i file vengono letti a parti."
+  server_cut_off: "Il servizio di IA{target} è raggiungibile, ma ha chiuso questa richiesta senza risposta dopo {attempts} tentativi — probabilmente la richiesta è troppo grande (allegati, conversazione lunga). Dividi il materiale in parti più piccole o avvia una nuova chat con meno allegati."

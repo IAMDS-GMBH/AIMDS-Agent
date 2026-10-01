@@ -37,6 +37,91 @@ _SENSITIVE_HOME_FILES = (
 )
 
 
+ATTACHED_CONTEXT_MARKER = "--- Attached Context ---"
+ATTACHED_FILES_MARKER = "--- Attached Files (not inlined) ---"
+#: Inline budget for attached files per message (AIS-456). Measured against
+#: the AIMDS Suite on 2026-10-01: ~12k chars of attachments in the latest
+#: user message answer in ~4 s, ~37k chars needed ~40 s before the first
+#: byte and were cut off at ~50 s. Above the budget the files go in as a
+#: manifest and the model reads them in parts.
+INLINE_ATTACHMENT_BUDGET_CHARS = 12_000
+_MANIFEST_PREVIEW_LINES = 3
+_MANIFEST_PREVIEW_CHARS = 160
+_MANIFEST_HINT = (
+    "These files are attached but not inlined: together they are too large for one "
+    "request. Read them with read_file in parts; for many or large files hand parts to "
+    "delegate_task (agent 'digest' where offered) and keep only the extracts."
+)
+_INLINE_FILE_BLOCK_RE = re.compile(
+    r"📄 (?P<label>@file:.+?) \((?P<tokens>\d+) tokens\)\n```[^\n]*\n(?P<body>.*?)\n```(?=\n\n|\Z)",
+    re.DOTALL,
+)
+
+
+def _manifest_entry(label: str, body: str, *, path: str = "", tokens: int | None = None) -> str:
+    lines = body.splitlines()
+    preview = [
+        (line[:_MANIFEST_PREVIEW_CHARS] + ("…" if len(line) > _MANIFEST_PREVIEW_CHARS else ""))
+        for line in lines[:_MANIFEST_PREVIEW_LINES]
+    ]
+    where = f" → {path}" if path else ""
+    tokens = estimate_tokens_rough(body) if tokens is None else tokens
+    head = f"📄 {label}{where} ({len(body):,} chars, ~{tokens:,} tokens, {len(lines):,} lines)"
+    if not preview:
+        return head
+    return head + "\n" + "\n".join(f"    | {line}" for line in preview)
+
+
+def _manifest_section(entries: list[str]) -> str:
+    return f"{ATTACHED_FILES_MARKER}\n{_MANIFEST_HINT}\n\n" + "\n".join(entries)
+
+
+def manifest_inline_attachments(text: str) -> tuple[str, int]:
+    """Turn inline ``@file`` blocks of an already expanded message into
+    manifest lines (AIS-456 — the reactive path after a request with large
+    attachments was cut off). Returns ``(new_text, files_converted)``."""
+    if not isinstance(text, str) or ATTACHED_CONTEXT_MARKER not in text:
+        return text, 0
+    head, _, tail = text.partition(ATTACHED_CONTEXT_MARKER)
+    entries: list[str] = []
+
+    def _collect(match: re.Match) -> str:
+        entries.append(_manifest_entry(match.group("label"), match.group("body"), tokens=int(match.group("tokens"))))
+        return ""
+
+    remaining = _INLINE_FILE_BLOCK_RE.sub(_collect, tail)
+    if not entries:
+        return text, 0
+    remaining = re.sub(r"\n{3,}", "\n\n", remaining).strip()
+    parts = [head.rstrip()]
+    if remaining:
+        parts.append(f"{ATTACHED_CONTEXT_MARKER}\n\n{remaining}")
+    parts.append(_manifest_section(entries))
+    return "\n\n".join(p for p in parts if p), len(entries)
+
+
+def manifest_message_attachments(message: dict) -> int:
+    """In-place variant of :func:`manifest_inline_attachments` for a chat
+    message whose content is a string or a list of text parts."""
+    if not isinstance(message, dict):
+        return 0
+    content = message.get("content")
+    if isinstance(content, str):
+        new, count = manifest_inline_attachments(content)
+        if count:
+            message["content"] = new
+        return count
+    total = 0
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                new, count = manifest_inline_attachments(part["text"])
+                if count:
+                    part["text"] = new
+                    total += count
+    return total
+
+
 @dataclass(frozen=True)
 class ContextReference:
     raw: str
@@ -57,6 +142,8 @@ class ContextReferenceResult:
     injected_tokens: int = 0
     expanded: bool = False
     blocked: bool = False
+    #: Files listed as a manifest instead of inlined (over the inline budget).
+    manifested: int = 0
 
 
 def parse_context_references(message: str) -> list[ContextReference]:
@@ -149,6 +236,7 @@ async def preprocess_context_references_async(
     )
     warnings: list[str] = []
     blocks: list[str] = []
+    file_blocks: dict[int, tuple[ContextReference, str]] = {}
     injected_tokens = 0
 
     for ref in refs:
@@ -161,8 +249,33 @@ async def preprocess_context_references_async(
         if warning:
             warnings.append(warning)
         if block:
+            if ref.kind == "file" and block.startswith("📄"):
+                file_blocks[len(blocks)] = (ref, block)
             blocks.append(block)
             injected_tokens += estimate_tokens_rough(block)
+
+    # AIS-456: over the absolute inline budget the files go in as a manifest
+    # (path, size, first lines) and the model reads them in parts — a large
+    # latest user message is what a server-side guard stalls on.
+    manifest: list[str] = []
+    if file_blocks and sum(len(b) for b in blocks) > INLINE_ATTACHMENT_BUDGET_CHARS:
+        kept: list[str] = []
+        for index, block in enumerate(blocks):
+            if index not in file_blocks:
+                kept.append(block)
+                continue
+            ref, _block = file_blocks[index]
+            match = _INLINE_FILE_BLOCK_RE.match(block)
+            body = match.group("body") if match else block
+            try:
+                path = str(_resolve_path(cwd_path, ref.target, allowed_root=allowed_root_path))
+            except Exception:
+                path = ""
+            manifest.append(_manifest_entry(ref.raw, body, path=path))
+        blocks = kept
+        injected_tokens = sum(estimate_tokens_rough(b) for b in blocks) + sum(
+            estimate_tokens_rough(m) for m in manifest
+        )
 
     hard_limit = max(1, int(context_length * 0.50))
     soft_limit = max(1, int(context_length * 0.25))
@@ -190,7 +303,9 @@ async def preprocess_context_references_async(
     if warnings:
         final = f"{final}\n\n--- Context Warnings ---\n" + "\n".join(f"- {warning}" for warning in warnings)
     if blocks:
-        final = f"{final}\n\n--- Attached Context ---\n\n" + "\n\n".join(blocks)
+        final = f"{final}\n\n{ATTACHED_CONTEXT_MARKER}\n\n" + "\n\n".join(blocks)
+    if manifest:
+        final = f"{final}\n\n" + _manifest_section(manifest)
 
     return ContextReferenceResult(
         message=final.strip(),
@@ -198,8 +313,9 @@ async def preprocess_context_references_async(
         references=refs,
         warnings=warnings,
         injected_tokens=injected_tokens,
-        expanded=bool(blocks or warnings),
+        expanded=bool(blocks or warnings or manifest),
         blocked=False,
+        manifested=len(manifest),
     )
 
 

@@ -381,3 +381,9 @@ gateway:
     session_db_unavailable_prefix: "Session database not available"
     session_not_found:           "Session not found in database."
     warn_passthrough:            "⚠️ {error}"
+
+api_error:
+  # AIS-456: a request the (reachable) server cut off, and the one retry
+  # with the attachments as a file manifest.
+  attachments_as_files: "📎 The request was cut off server-side — retrying once with {count} attachment(s) as a file list; the files are read in parts."
+  server_cut_off: "The AI service{target} is reachable, but it ended this request without an answer after {attempts} attempts — most likely the request is too large (attachments, long conversation). Split the material into smaller parts or start a new chat with fewer attachments."
