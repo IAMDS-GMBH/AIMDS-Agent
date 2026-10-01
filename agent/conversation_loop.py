@@ -68,6 +68,7 @@ from agent.prompt_builder import (
 )
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.retry_utils import jittered_backoff
+from agent.stream_diag import pre_first_byte_cut_elapsed
 from agent.session_bootstrap import (
     evaluate_session_bootstrap,
     memory_context_requires_hydration,
@@ -80,6 +81,11 @@ from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
+
+#: Two pre-first-byte cuts this close together are the same gateway timeout.
+_GATEWAY_CUT_JITTER_S = 5.0
+#: Below this size compression cannot shorten the time to the first token.
+_GATEWAY_CUT_MIN_TOKENS = 20_000
 
 # Stable prefix of the local interrupt status string emitted when a turn is
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
@@ -2497,6 +2503,8 @@ def run_conversation(
         retry_count = 0
         max_retries = agent._api_max_retries
         _retry = TurnRetryState()
+        # Elapsed seconds of each pre-first-byte server cut in this attempt block.
+        _gateway_cuts: list[float] = []
         max_compression_attempts = 3
 
         finish_reason = "stop"
@@ -3815,6 +3823,47 @@ def run_conversation(
                     reason=classified.reason.value,
                 )
 
+                # A gateway that cuts the same request twice at the same
+                # point before the first byte is a timeout in front of the
+                # model, not a transient fault: the identical retries (and
+                # the client rebuild) can only fail again. Shrink the context
+                # once so the model answers inside the window (AIS-458).
+                _cut_elapsed = pre_first_byte_cut_elapsed(getattr(agent, "_last_stream_failure", None))
+                if _cut_elapsed is not None:
+                    _previous_cuts = list(_gateway_cuts)
+                    _gateway_cuts.append(_cut_elapsed)
+                    _repeated_cut = bool(_previous_cuts) and (
+                        abs(_previous_cuts[-1] - _cut_elapsed) <= _GATEWAY_CUT_JITTER_S
+                    )
+                    if (
+                        _repeated_cut
+                        and approx_tokens >= _GATEWAY_CUT_MIN_TOKENS
+                        and compression_attempts < max_compression_attempts
+                    ):
+                        compression_attempts += 1
+                        logger.warning(
+                            "%sGateway cut the request %d× after ~%.0fs before the first byte "
+                            "(~%s tokens) — compressing instead of retrying (%d/%d)",
+                            agent.log_prefix, len(_gateway_cuts), _cut_elapsed,
+                            f"{approx_tokens:,}", compression_attempts, max_compression_attempts,
+                        )
+                        agent._buffer_status(
+                            f"⚠️  The gateway cut the request after ~{_cut_elapsed:.0f}s without a response — "
+                            f"compressing the context ({compression_attempts}/{max_compression_attempts})..."
+                        )
+                        original_len = len(messages)
+                        messages, active_system_prompt = agent._compress_context(
+                            messages, system_message, approx_tokens=approx_tokens,
+                            task_id=effective_task_id,
+                        )
+                        # Compression created a new session — clear history
+                        # so the compressed messages land in the new session.
+                        conversation_history = None
+                        if len(messages) < original_len:
+                            agent._buffer_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                            _retry.restart_with_compressed_messages = True
+                            break
+
                 if (
                     classified.reason == FailoverReason.billing
                     and _is_nous_inference_route(
@@ -4938,7 +4987,9 @@ def run_conversation(
                     # client once for transient transport errors (stale
                     # connection pool, TCP reset).  Only attempted once
                     # per API call block.
-                    if not _retry.primary_recovery_attempted and agent._try_recover_primary_transport(
+                    # A fresh client cannot outlast a gateway timeout.
+                    _last_was_gateway_cut = _cut_elapsed is not None
+                    if not _retry.primary_recovery_attempted and not _last_was_gateway_cut and agent._try_recover_primary_transport(
                         api_error, retry_count=retry_count, max_retries=max_retries,
                     ):
                         _retry.primary_recovery_attempted = True
