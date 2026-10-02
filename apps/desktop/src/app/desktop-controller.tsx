@@ -1062,13 +1062,18 @@ export function DesktopController() {
       const pageSize = 200
       let offset = 0
       let total = Number.POSITIVE_INFINITY
-      const allIds: string[] = []
+      const allRows: SessionInfo[] = []
 
       while (offset < total) {
-        const page = await listSessions(pageSize, 0, 'include', 'recent', offset)
+        // Same slice as the sidebar's recents (AIS-459): cron and messaging
+        // sessions have their own sections and must not eat the 50 kept rows.
+        const page = await listSessions(pageSize, 0, 'include', 'recent', offset, {
+          excludeSources: SIDEBAR_EXCLUDED_SOURCES
+        })
+
         const rows = page.sessions ?? []
 
-        allIds.push(...rows.map(session => session.id).filter(Boolean))
+        allRows.push(...rows.filter(session => Boolean(session.id)))
 
         if (rows.length === 0) {
           break
@@ -1078,7 +1083,13 @@ export function DesktopController() {
         total = typeof page.total === 'number' ? page.total : offset
       }
 
-      const targetIds = mode === 'delete_keep_50' ? allIds.slice(50) : allIds
+      // Keep the 50 most recent chats that have content; empty drafts never count.
+      const keptIds =
+        mode === 'delete_keep_50'
+          ? new Set(allRows.filter(session => (session.message_count ?? 0) > 0).slice(0, 50).map(s => s.id))
+          : new Set<string>()
+
+      const targetIds = allRows.map(session => session.id).filter(id => !keptIds.has(id))
 
       if (targetIds.length === 0) {
         return 0
