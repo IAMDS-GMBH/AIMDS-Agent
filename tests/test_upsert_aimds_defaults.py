@@ -68,9 +68,21 @@ def test_upsert_aimds_defaults_creates_required_sections():
         assert name in include
     for name in ("kb_search", "memory_get", "memory_upsert", "memory_delete"):
         assert name not in include
-    # AIS-294: go-mcp-customer document tools for read_file's Suite Docling path
-    for tool in ("storage_ingest_upload", "storage_get_document", "storage_search", "storage_meta"):
+    # AIS-294: go-mcp-customer document tools for read_file's Suite Docling path;
+    # AIS-392: the split metadata tools replace storage_meta (gone with Suite 2.18)
+    for tool in (
+        "storage_status",
+        "storage_ingest_upload",
+        "storage_get_document",
+        "storage_search",
+        "storage_topics",
+        "storage_search_topics",
+        "storage_summary",
+        "storage_recent",
+        "storage_document_meta",
+    ):
         assert tool in include, tool
+    assert "storage_meta" not in include
     assert out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["resources"] is False
     assert out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["prompts"] is False
 
@@ -189,6 +201,22 @@ def test_upsert_removes_synthetic_stub_carrying_the_pre_ais291_list():
     include = out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["include"]
     assert "ntfy_get_messages" in include
     assert "kb_search" not in include and "memory_upsert" not in include
+
+
+def test_upsert_removes_synthetic_stub_carrying_the_pre_ais392_list():
+    """A stub with the storage_meta list (before AIS-392) is still ours."""
+    pre_392 = list(_MODULE._AIMDS_TOOL_INCLUDE_LEGACY[-1])
+    assert "storage_meta" in pre_392 and "storage_summary" not in pre_392
+    cfg = {
+        "mcp_servers": {
+            "AIMDSSuiteMCP": {"provider": "iamds", "url": "https://example/mcp"},
+            "aimds-gateway": {"tools": {"include": pre_392, "resources": False, "prompts": False}},
+        }
+    }
+    out = upsert_aimds_defaults(cfg)
+    assert "aimds-gateway" not in out["mcp_servers"]
+    include = out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["include"]
+    assert "storage_summary" in include and "storage_meta" not in include
 
 
 def test_upsert_targets_provider_iamds_even_with_custom_server_name():

@@ -186,13 +186,15 @@ def is_loaded(agent, name: str) -> bool:
 
 
 # AIS-349 (SUP-20260916-130011): tools that are useless without a sibling.
-# `storage_get_document` / `storage_meta` take an ingest id that only
+# `storage_get_document` / `storage_summary` / `storage_document_meta` take an
+# ingest id that only
 # `storage_ingest_upload` produces — a search for "docling" loaded the first
 # two and the model had nothing it could call. Keyed by name suffix so the
 # server prefix (`mcp_<Server>_<tool_prefix>_`) does not matter.
 _COMPANION_SUFFIXES: dict[str, tuple[str, ...]] = {
     "storage_get_document": ("storage_ingest_upload",),
-    "storage_meta": ("storage_ingest_upload",),
+    "storage_summary": ("storage_ingest_upload",),
+    "storage_document_meta": ("storage_ingest_upload",),
 }
 
 
