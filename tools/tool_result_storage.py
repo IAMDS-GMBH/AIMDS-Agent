@@ -22,6 +22,7 @@ Defense against context-window overflow operates at three levels:
    where many medium-sized results combine to overflow context.
 """
 
+import json
 import logging
 import os
 import shlex
@@ -74,6 +75,22 @@ def _heredoc_marker(content: str) -> str:
     if HEREDOC_MARKER not in content:
         return HEREDOC_MARKER
     return f"HERMES_PERSIST_{uuid.uuid4().hex[:8]}"
+
+
+def _file_view(content: str) -> str:
+    """What goes into the persisted file: JSON pretty-printed, else unchanged.
+
+    read_file pages by line, so a compact single-line JSON payload could not
+    be read in sections and the model fell back to parsing it with Python in
+    the terminal (AIS-462). One field per line makes ``offset``/``limit`` work.
+    """
+    stripped = content.lstrip()
+    if not stripped or stripped[0] not in "[{":
+        return content
+    try:
+        return json.dumps(json.loads(content), indent=2, ensure_ascii=False) + "\n"
+    except (TypeError, ValueError):
+        return content
 
 
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
@@ -296,7 +313,7 @@ def maybe_persist_tool_result(
 
     if env is not None:
         try:
-            if _write_to_sandbox(content, remote_path, env):
+            if _write_to_sandbox(_file_view(content), remote_path, env):
                 logger.info(
                     "Persisted large tool result: %s (%s, %d chars -> %s)",
                     tool_name, tool_use_id, len(content), remote_path,

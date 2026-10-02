@@ -250,8 +250,33 @@ class TestMaybePersistToolResult:
         )
         assert PERSISTED_OUTPUT_TAG in result
         # Content is delivered through stdin (no longer embedded in the
-        # command string — see test_large_content_via_stdin for why).
-        assert env.execute.call_args[1]["stdin_data"] == content
+        # command string — see test_large_content_via_stdin for why). JSON is
+        # stored pretty-printed (AIS-462) but nothing is extracted or dropped.
+        assert json.loads(env.execute.call_args[1]["stdin_data"]) == json.loads(content)
+
+    def test_json_is_stored_one_field_per_line_for_read_file(self):
+        """AIS-462: a compact single-line JSON payload could not be paged with
+        read_file, so the model parsed it with Python in the terminal."""
+        import json
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        payload = {"counts": {"unread_mail": 20}, "unread_mail": [{"subject": f"Mail {i}", "from": "ä@x"} for i in range(400)]}
+        content = json.dumps(payload, separators=(",", ":"))
+        assert "\n" not in content
+
+        maybe_persist_tool_result(content=content, tool_name="mcp_x_brief", tool_use_id="tc_pretty", env=env, threshold=1_000)
+
+        stored = env.execute.call_args[1]["stdin_data"]
+        assert stored.count("\n") > 1000 and max(len(line) for line in stored.splitlines()) < 200
+        assert '"ä@x"' in stored  # no ASCII escaping
+        assert json.loads(stored) == payload
+
+    def test_non_json_is_stored_verbatim(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        for content in ("plain text " * 5_000, "{not json " * 5_000, "[1, 2" + ", 3" * 20_000):
+            maybe_persist_tool_result(content=content, tool_name="terminal", tool_use_id="tc_raw", env=env, threshold=1_000)
+            assert env.execute.call_args[1]["stdin_data"] == content
 
     def test_above_threshold_no_env_truncates_inline(self):
         content = "x" * 60_000
