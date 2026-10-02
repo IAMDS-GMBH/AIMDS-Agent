@@ -52,13 +52,13 @@ def fresh_tracker():
 
 
 class TestPatchFailureEscalation:
-    def test_first_two_failures_use_normal_hint(self, hermes_home, tmp_path, fresh_tracker):
+    def test_first_failure_uses_normal_hint(self, hermes_home, tmp_path, fresh_tracker):
         from tools.file_tools import _handle_patch
 
         target = tmp_path / "f.py"
         target.write_text("def foo():\n    return 1\n")
 
-        for _i in range(2):
+        for _i in range(1):
             result = _handle_patch(
                 {
                     "mode": "replace",
@@ -74,14 +74,15 @@ class TestPatchFailureEscalation:
                 f"Escalating hint fired too early on attempt {_i + 1}: {hint!r}"
             )
 
-    def test_third_consecutive_failure_escalates(self, hermes_home, tmp_path, fresh_tracker):
+    def test_second_consecutive_failure_escalates(self, hermes_home, tmp_path, fresh_tracker):
+        """AIS-461: each retry costs minutes with a long conversation."""
         from tools.file_tools import _handle_patch
 
         target = tmp_path / "f.py"
         target.write_text("def foo():\n    return 1\n")
 
         last_hint = ""
-        for _i in range(3):
+        for _i in range(2):
             result = _handle_patch(
                 {
                     "mode": "replace",
@@ -94,7 +95,7 @@ class TestPatchFailureEscalation:
             d = json.loads(result)
             last_hint = d.get("_hint", "") or ""
 
-        assert "failure #3" in last_hint, repr(last_hint)
+        assert "failure #2" in last_hint, repr(last_hint)
         assert "Stop retrying" in last_hint
         assert "write_file" in last_hint, (
             "Escalating hint should mention write_file fallback"
