@@ -2284,22 +2284,44 @@ def _compress_session_history(
     # cached prompt (which already contains the agent identity block)
     # makes the rebuild append the identity a second time. Mirrors the
     # CLI's _manual_compress fix for issue #15281.
+    session_id_before = getattr(agent, "session_id", None)
     compressed, _ = agent._compress_context(
         history,
         None,
         approx_tokens=approx_tokens,
         focus_topic=focus_topic or None,
     )
+    rotated = bool(getattr(agent, "session_id", None)) and agent.session_id != session_id_before
     with session["history_lock"]:
         if int(session.get("history_version", 0)) != history_version:
             # External mutation during compaction — drop the compressed
             # result so we don't clobber concurrent edits.
+            if rotated:
+                # The DB already moved to the child session: give it the
+                # history the session keeps, or a restart resumes it empty.
+                _persist_compressed_history(agent, list(session.get("history", [])))
             usage = _get_usage(agent)
             return 0, usage
         session["history"] = compressed
         session["history_version"] = history_version + 1
+    if rotated:
+        _persist_compressed_history(agent, compressed)
     usage = _get_usage(agent)
     return len(history) - len(compressed), usage
+
+
+def _persist_compressed_history(agent, history: list) -> None:
+    """Write the compressed handoff into the child session _compress_context created.
+
+    The rotation resets the flush cursor, and later turns pass this history as
+    ``conversation_history`` — whose messages the flush skips. Without this
+    write the child holds only post-compression turns and a resume after a
+    restart starts with no context (AIS-459). Mirrors ``cli.py::_manual_compress``.
+    """
+    try:
+        agent._flush_messages_to_session_db(history, None)
+    except Exception:
+        logger.warning("could not persist the compressed history of %s", getattr(agent, "session_id", "?"), exc_info=True)
 
 
 def _sync_session_key_after_compress(

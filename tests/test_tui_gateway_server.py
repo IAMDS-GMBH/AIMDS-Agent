@@ -8266,3 +8266,104 @@ def test_clarify_cb_uses_agent_clarify_timeout_when_clarify_section_absent(monke
     assert result == "Bavaria"
     assert seen["timeout"] == 480.0
     assert seen["payload"]["timeout_seconds"] == 480
+
+
+class _RotatingCompressAgent:
+    """Stand-in for AIAgent: _compress_context rotates the DB session like
+    run_agent does (parent ended with 'compression', fresh child, flush cursor
+    0) and the flush writes into a real SessionDB."""
+
+    def __init__(self, db, session_id, compressed, rotate=True):
+        self._db = db
+        self.session_id = session_id
+        self._compressed = compressed
+        self._rotate = rotate
+        self._last_flushed_db_idx = 0
+        self.flushes = []
+
+    def _compress_context(self, history, _system, **_kw):
+        if self._rotate:
+            parent = self.session_id
+            self._db.end_session(parent, "compression")
+            self.session_id = f"{parent}-child"
+            self._db.create_session(self.session_id, "tui", parent_session_id=parent)
+            self._last_flushed_db_idx = 0
+        return list(self._compressed), "prompt"
+
+    def _flush_messages_to_session_db(self, messages, conversation_history=None):
+        self.flushes.append((list(messages), conversation_history))
+        start = max(len(conversation_history or []), self._last_flushed_db_idx)
+        for msg in messages[start:]:
+            self._db.append_message(self.session_id, msg["role"], msg.get("content"))
+        self._last_flushed_db_idx = len(messages)
+
+
+def _compress_fixture(tmp_path, rotate=True):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("parent", "tui")
+    history = [
+        {"role": "user", "content": f"q{i}"} if i % 2 == 0 else {"role": "assistant", "content": f"a{i}"}
+        for i in range(8)
+    ]
+    for msg in history:
+        db.append_message("parent", msg["role"], msg["content"])
+    compressed = [
+        {"role": "user", "content": "[summary of q0..a5]"},
+        {"role": "assistant", "content": "a5"},
+        {"role": "user", "content": "q6"},
+        {"role": "assistant", "content": "a7"},
+    ]
+    agent = _RotatingCompressAgent(db, "parent", compressed, rotate=rotate)
+    session = _session(agent=agent, history=list(history), history_version=0)
+    return db, agent, session, history, compressed
+
+
+def test_gateway_compress_persists_the_compressed_history_into_the_child(tmp_path, monkeypatch):
+    """AIS-459: the child session must hold the compressed handoff, or a
+    resume after a restart starts with no context at all."""
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: {})
+    db, agent, session, history, compressed = _compress_fixture(tmp_path)
+
+    removed, _ = server._compress_session_history(session, approx_tokens=1000)
+
+    assert removed == len(history) - len(compressed)
+    assert agent.flushes == [(compressed, None)]
+    resumed = db.get_messages_as_conversation("parent-child")
+    assert [m["content"] for m in resumed] == [m["content"] for m in compressed]
+    # The next turn passes the compressed list as conversation_history: only
+    # the new messages are written, nothing twice.
+    turn = compressed + [{"role": "user", "content": "q8"}, {"role": "assistant", "content": "a9"}]
+    agent._flush_messages_to_session_db(turn, compressed)
+    contents = [m["content"] for m in db.get_messages_as_conversation("parent-child")]
+    assert contents == [m["content"] for m in turn]
+
+
+def test_gateway_compress_without_rotation_writes_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: {})
+    db, agent, session, history, _ = _compress_fixture(tmp_path, rotate=False)
+
+    server._compress_session_history(session, approx_tokens=1000)
+
+    assert agent.flushes == []
+    assert len(db.get_messages_as_conversation("parent")) == len(history)
+
+
+def test_gateway_compress_dropped_by_concurrent_edit_still_fills_the_child(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: {})
+    db, agent, session, history, _ = _compress_fixture(tmp_path)
+    real_compress = agent._compress_context
+
+    def _compress_then_edit(*args, **kwargs):
+        result = real_compress(*args, **kwargs)
+        session["history_version"] = 5  # a concurrent edit landed meanwhile
+        return result
+
+    agent._compress_context = _compress_then_edit
+
+    removed, _ = server._compress_session_history(session, approx_tokens=1000)
+
+    assert removed == 0
+    resumed = db.get_messages_as_conversation("parent-child")
+    assert [m["content"] for m in resumed] == [m["content"] for m in history]
