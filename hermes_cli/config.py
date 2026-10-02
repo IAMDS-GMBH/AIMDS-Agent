@@ -1541,9 +1541,10 @@ DEFAULT_CONFIG = {
     #   - enabled: True -> False   (opt-in; most users never use /rollback)
     #   - max_snapshots: 50 -> 20  (now actually enforced via ref rewrite)
     #   - auto_prune:   False -> True (orphans/stale pruned automatically)
-    # Opt in via ``hermes chat --checkpoints`` or set enabled=True here.
+    # ``auto`` (AIS-461) snapshots once a chat has 20+ messages; ``on`` /
+    # ``off`` (or true/false) force it. ``hermes chat --checkpoints`` = on.
     "checkpoints": {
-        "enabled": False,
+        "enabled": "auto",
         # Max checkpoints to keep per working directory.  Pre-v2 this only
         # limited the `/rollback` listing; v2 actually rewrites the ref and
         # garbage-collects older commits.

@@ -29,7 +29,7 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
     from utils import advisory_file_lock, atomic_yaml_write
 
-_AIMDS_DEFAULTS_VERSION = 18
+_AIMDS_DEFAULTS_VERSION = 19
 _AIMDS_DEFAULTS_VERSION_KEY = "aimds_defaults_version"
 
 # ---------------------------------------------------------------------------
@@ -602,7 +602,27 @@ def _one_shot_v18(cfg: dict, fetch) -> list[str]:
     return ["delegation.max_concurrent_children 3 → 2 (subagent queue)"]
 
 
-_ONE_SHOT_STEPS = {16: _one_shot_v16, 18: _one_shot_v18}
+def _one_shot_v19(cfg: dict, fetch) -> list[str]:
+    """AIS-461: file checkpoints become three-state with ``auto`` (on once a
+    chat is long) as the default. ``false`` was the shipped state, so it
+    moves to ``auto``; an explicit ``true`` keeps its meaning as ``on``."""
+    checkpoints = cfg.get("checkpoints")
+    if isinstance(checkpoints, bool):
+        checkpoints = {"enabled": checkpoints}
+        cfg["checkpoints"] = checkpoints
+    if not isinstance(checkpoints, dict):
+        return []
+    current = checkpoints.get("enabled", False)
+    if current is False:
+        checkpoints["enabled"] = "auto"
+        return ["checkpoints.enabled false → auto (snapshots once a chat is long)"]
+    if current is True:
+        checkpoints["enabled"] = "on"
+        return ["checkpoints.enabled true → on"]
+    return []
+
+
+_ONE_SHOT_STEPS = {16: _one_shot_v16, 18: _one_shot_v18, 19: _one_shot_v19}
 
 
 def apply_one_shot_defaults(cfg: dict, from_version: int, fetch=None) -> list[str]:

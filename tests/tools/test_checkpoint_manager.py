@@ -1049,3 +1049,49 @@ class TestClearFunctions:
         result = clear_all()
         assert result["deleted"] is False
         assert result["bytes_freed"] == 0
+
+
+class TestCheckpointModes:
+    """AIS-461: checkpoints.enabled is on / off / auto (default)."""
+
+    def test_resolve_mode_keeps_booleans_and_defaults_unknown_to_auto(self):
+        from tools.checkpoint_manager import resolve_checkpoints_mode
+
+        assert resolve_checkpoints_mode(True) == "on"
+        assert resolve_checkpoints_mode(False) == "off"
+        assert resolve_checkpoints_mode("ON") == "on"
+        assert resolve_checkpoints_mode("off") == "off"
+        assert resolve_checkpoints_mode("auto") == "auto"
+        assert resolve_checkpoints_mode("maybe") == "auto"
+        assert resolve_checkpoints_mode(None) == "off"
+
+    def test_auto_switches_on_for_long_chats_and_stays_on(self):
+        from tools.checkpoint_manager import AUTO_CHECKPOINT_MIN_MESSAGES, CheckpointManager
+
+        mgr = CheckpointManager(auto=True)
+        mgr.apply_auto(AUTO_CHECKPOINT_MIN_MESSAGES - 1)
+        assert mgr.enabled is False
+        mgr.apply_auto(AUTO_CHECKPOINT_MIN_MESSAGES)
+        assert mgr.enabled is True
+        # a compression shortens the history: snapshots stay on
+        mgr.apply_auto(5)
+        assert mgr.enabled is True
+
+    def test_auto_does_not_touch_an_explicit_off(self):
+        from tools.checkpoint_manager import CheckpointManager
+
+        mgr = CheckpointManager(enabled=False, auto=False)
+        mgr.apply_auto(500)
+        assert mgr.enabled is False
+
+
+class TestSessionDirs:
+    def test_remembers_every_snapshotted_directory_newest_first(self, mgr, work_dir, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "plan.md").write_text("v1\n")
+
+        assert mgr.ensure_checkpoint(str(work_dir)) is True
+        assert mgr.ensure_checkpoint(str(vault)) is True
+
+        assert mgr.session_dirs == [str(vault.resolve()), str(work_dir.resolve())]

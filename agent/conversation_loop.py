@@ -2157,6 +2157,7 @@ def run_conversation(
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
+        agent._checkpoint_mgr.apply_auto(len(messages))
         agent._checkpoint_mgr.new_turn()
 
         # Check for interrupt request (e.g., user sent new message)

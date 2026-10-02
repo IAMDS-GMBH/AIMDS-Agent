@@ -8380,3 +8380,41 @@ def test_agent_turn_phase_reaches_the_desktop_as_its_own_event():
         "sid",
         {"phase": "retrying", "attempt": 2, "max_attempts": 3},
     )
+
+
+def test_rollback_lists_and_restores_snapshots_outside_the_cwd(tmp_path, monkeypatch):
+    """AIS-461: a file written outside the cwd (e.g. a notes vault) is
+    snapshotted under its own folder; /rollback must find and restore it,
+    and the desktop's file-only restore leaves the history alone."""
+    from tools.checkpoint_manager import CheckpointManager
+
+    monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", tmp_path / "checkpoints")
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    doc = vault / "plan.md"
+    doc.write_text("original\n")
+
+    mgr = CheckpointManager(enabled=True)
+    assert mgr.ensure_checkpoint(str(vault), reason="before edit")
+    doc.write_text("changed\n")
+
+    agent = types.SimpleNamespace(_checkpoint_mgr=mgr)
+    history = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
+    server._sessions["sid"] = _session(agent=agent, history=list(history), cwd=str(cwd))
+    monkeypatch.setattr(server, "_session_cwd", lambda _s: str(cwd))
+    try:
+        listed = server.handle_request({"id": "1", "method": "rollback.list", "params": {"session_id": "sid"}})
+        result = listed["result"]
+        assert result["mode"] == "on" and len(result["checkpoints"]) == 1
+        assert result["checkpoints"][0]["dir"] == str(vault.resolve())
+
+        restored = server.handle_request(
+            {"id": "2", "method": "rollback.restore", "params": {"session_id": "sid", "hash": "1", "keep_history": True}}
+        )
+        assert restored["result"]["success"] is True
+        assert doc.read_text() == "original\n"
+        assert server._sessions["sid"]["history"] == history
+    finally:
+        server._sessions.pop("sid", None)

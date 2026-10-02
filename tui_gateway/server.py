@@ -3285,6 +3285,20 @@ def _parse_tui_skills_env() -> list[str]:
     return skills
 
 
+def _checkpoints_setting():
+    """``hermes --tui --checkpoints`` forces them on; otherwise the config
+    decides (``auto`` by default). The desktop used to ignore the config, so
+    its settings switch had no effect (AIS-461)."""
+    if is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")):
+        return True
+    section = _load_cfg().get("checkpoints")
+    if isinstance(section, dict):
+        return section.get("enabled", "auto")
+    if isinstance(section, bool):
+        return section
+    return "auto"
+
+
 def _load_fallback_model():
     """Return the configured fallback chain for TUI-created agents.
 
@@ -3611,7 +3625,7 @@ def _make_agent(
         session_id=session_id or key,
         session_db=session_db if session_db is not None else _get_db(),
         ephemeral_system_prompt=system_prompt or None,
-        checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
+        checkpoints_enabled=_checkpoints_setting(),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
@@ -3708,15 +3722,39 @@ def _with_checkpoints(session, fn):
     return fn(session["agent"]._checkpoint_mgr, _session_cwd(session))
 
 
-def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
+def _checkpoint_dirs(mgr, cwd: str) -> list[str]:
+    """The cwd plus every directory snapshotted in this session (AIS-461)."""
+    dirs = list(getattr(mgr, "session_dirs", []) or [])
+    return dirs + [cwd] if cwd not in dirs else dirs
+
+
+def _session_checkpoints(mgr, cwd: str) -> list[dict]:
+    """All checkpoints of the session's directories, newest first, each with its dir."""
+    found = []
+    for directory in _checkpoint_dirs(mgr, cwd):
+        for checkpoint in mgr.list_checkpoints(directory):
+            found.append({**checkpoint, "dir": directory})
+    found.sort(key=lambda c: str(c.get("timestamp", "")), reverse=True)
+    return found
+
+
+def _resolve_checkpoint(mgr, cwd: str, ref: str) -> tuple[str, str]:
+    """``(dir, hash)`` for a list number (1-based) or a (short) hash."""
+    checkpoints = _session_checkpoints(mgr, cwd)
     try:
-        checkpoints = mgr.list_checkpoints(cwd)
         idx = int(ref) - 1
     except ValueError:
-        return ref
+        for checkpoint in checkpoints:
+            if str(checkpoint.get("hash", "")).startswith(ref) or checkpoint.get("short_hash") == ref:
+                return checkpoint["dir"], checkpoint.get("hash", ref)
+        return cwd, ref
     if 0 <= idx < len(checkpoints):
-        return checkpoints[idx].get("hash", ref)
+        return checkpoints[idx]["dir"], checkpoints[idx].get("hash", ref)
     raise ValueError(f"Invalid checkpoint number. Use 1-{len(checkpoints)}.")
+
+
+def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
+    return _resolve_checkpoint(mgr, cwd, ref)[1]
 
 
 def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
@@ -9758,19 +9796,27 @@ def _(rid, params: dict) -> dict:
     try:
 
         def go(mgr, cwd):
-            if not mgr.enabled:
-                return _ok(rid, {"enabled": False, "checkpoints": []})
+            from tools.checkpoint_manager import AUTO_CHECKPOINT_MIN_MESSAGES
+
+            mode = "on" if mgr.enabled else ("auto" if getattr(mgr, "auto", False) else "off")
+            # Existing snapshots stay listable even while auto mode waits.
+            checkpoints = (
+                _session_checkpoints(mgr, cwd) if mode != "off" or getattr(mgr, "session_dirs", None) else []
+            )
             return _ok(
                 rid,
                 {
-                    "enabled": True,
+                    "enabled": bool(mgr.enabled),
+                    "mode": mode,
+                    "auto_min_messages": AUTO_CHECKPOINT_MIN_MESSAGES,
                     "checkpoints": [
                         {
                             "hash": c.get("hash", ""),
                             "timestamp": c.get("timestamp", ""),
                             "message": c.get("message", ""),
+                            "dir": c.get("dir", cwd),
                         }
-                        for c in mgr.list_checkpoints(cwd)
+                        for c in checkpoints
                     ],
                 },
             )
@@ -9787,6 +9833,9 @@ def _(rid, params: dict) -> dict:
         return err
     target = params.get("hash", "")
     file_path = params.get("file_path", "")
+    # The desktop restores files only: the history pop below touches the
+    # in-memory history but not the stored session (AIS-461).
+    keep_history = bool(params.get("keep_history"))
     if not target:
         return _err(rid, 4014, "hash required")
     # Full-history rollback mutates session history.  Rejecting during
@@ -9794,7 +9843,7 @@ def _(rid, params: dict) -> dict:
     # the agent's output (version mismatch path) or clobbering the
     # rollback (version-matches path).  A file-scoped rollback only
     # touches disk, so we allow it.
-    if not file_path and session.get("running"):
+    if not file_path and not keep_history and session.get("running"):
         return _err(
             rid,
             4009,
@@ -9803,9 +9852,10 @@ def _(rid, params: dict) -> dict:
     try:
 
         def go(mgr, cwd):
-            resolved = _resolve_checkpoint_hash(mgr, cwd, target)
-            result = mgr.restore(cwd, resolved, file_path=file_path or None)
-            if result.get("success") and not file_path:
+            directory, resolved = _resolve_checkpoint(mgr, cwd, target)
+            result = mgr.restore(directory, resolved, file_path=file_path or None)
+            result["dir"] = directory
+            if result.get("success") and not file_path and not keep_history:
                 removed = 0
                 with session["history_lock"]:
                     history = session.get("history", [])
@@ -9838,7 +9888,7 @@ def _(rid, params: dict) -> dict:
     try:
         r = _with_checkpoints(
             session,
-            lambda mgr, cwd: mgr.diff(cwd, _resolve_checkpoint_hash(mgr, cwd, target)),
+            lambda mgr, cwd: mgr.diff(*_resolve_checkpoint(mgr, cwd, target)),
         )
         raw = r.get("diff", "")[:4000]
         payload = {"stat": r.get("stat", ""), "diff": raw}
