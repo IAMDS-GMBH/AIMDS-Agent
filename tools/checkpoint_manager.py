@@ -576,6 +576,32 @@ def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> Optional[str]:
 # CheckpointManager
 # ---------------------------------------------------------------------------
 
+#: ``checkpoints.enabled: auto`` (the default) snapshots file edits once a
+#: chat has this many messages: long chats carry the work worth rolling back,
+#: short ones stay light (AIS-461).
+AUTO_CHECKPOINT_MIN_MESSAGES = 20
+
+_ON_VALUES = {"on", "true", "1", "yes", "enabled"}
+_OFF_VALUES = {"off", "false", "0", "no", "disabled", "none", ""}
+
+
+def resolve_checkpoints_mode(value) -> str:
+    """``checkpoints.enabled`` (or a CLI/env override) as ``on``/``off``/``auto``.
+
+    Booleans keep their old meaning; unknown strings fall back to ``auto``.
+    """
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if value is None:
+        return "off"
+    text = str(value).strip().lower()
+    if text in _ON_VALUES:
+        return "on"
+    if text in _OFF_VALUES:
+        return "off"
+    return "auto"
+
+
 class CheckpointManager:
     """Manages automatic filesystem checkpoints.
 
@@ -604,13 +630,29 @@ class CheckpointManager:
         max_snapshots: int = 20,
         max_total_size_mb: int = 500,
         max_file_size_mb: int = 10,
+        auto: bool = False,
     ):
         self.enabled = enabled
+        # Auto mode: enabled follows the chat length, see apply_auto().
+        self.auto = auto
         self.max_snapshots = max(1, int(max_snapshots))
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
         self._checkpointed_dirs: Set[str] = set()
+        # Every directory snapshotted in this session, newest first: files
+        # are often written outside the cwd (e.g. a notes vault), and
+        # /rollback must find those snapshots too (AIS-461).
+        self.session_dirs: List[str] = []
         self._git_available: Optional[bool] = None  # lazy probe
+
+    def apply_auto(self, message_count: int) -> None:
+        """In auto mode, switch snapshots on once the chat is long enough.
+
+        Sticky: a compression that shortens the history must not switch the
+        snapshots of a long chat off again.
+        """
+        if self.auto and message_count >= AUTO_CHECKPOINT_MIN_MESSAGES:
+            self.enabled = True
 
     # ------------------------------------------------------------------
     # Turn lifecycle
@@ -653,7 +695,12 @@ class CheckpointManager:
         self._checkpointed_dirs.add(abs_dir)
 
         try:
-            return self._take(abs_dir, reason)
+            taken = self._take(abs_dir, reason)
+            if taken:
+                if abs_dir in self.session_dirs:
+                    self.session_dirs.remove(abs_dir)
+                self.session_dirs.insert(0, abs_dir)
+            return taken
         except Exception as e:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
             return False

@@ -631,6 +631,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Terminal execution backend",
         "options": ["local", "docker", "ssh", "modal", "daytona", "singularity"],
     },
+    "checkpoints.enabled": {
+        "type": "select",
+        "description": "File checkpoints before edits: auto = once a chat has 20+ messages",
+        "options": ["auto", "on", "off"],
+    },
     "terminal.modal_mode": {
         "type": "select",
         "description": "Modal sandbox mode",

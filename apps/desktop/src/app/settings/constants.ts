@@ -231,9 +231,15 @@ export const BUILTIN_PERSONALITIES = [
   'hype'
 ]
 
+// Option labels for enum fields whose raw values read poorly.
+export const ENUM_OPTION_LABELS: Record<string, Record<string, string>> = {
+  'checkpoints.enabled': { auto: 'Auto (from 20 messages)', off: 'Off', on: 'On' }
+}
+
 // Schema-side select overrides for desktop-relevant enum fields whose
 // backend schema only declares a string type.
 export const ENUM_OPTIONS: Record<string, string[]> = {
+  'checkpoints.enabled': ['auto', 'on', 'off'],
   'agent.image_input_mode': ['auto', 'native', 'text'],
   'approvals.mode': ['manual', 'smart', 'off'],
   'code_execution.mode': ['project', 'strict'],
@@ -465,7 +471,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     redactSecrets: 'Hide detected secrets from model-visible content when possible.'
   },
   checkpoints: {
-    enabled: 'Create rollback snapshots before file edits.'
+    enabled: 'Create rollback snapshots before file edits. Auto starts once a chat has 20 messages.'
   },
   memory: {
     memoryEnabled: 'Save durable memories that can help future sessions.',

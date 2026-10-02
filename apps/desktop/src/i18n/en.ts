@@ -1960,6 +1960,8 @@ export const en: Translations = {
     stopFailed: 'Stop failed',
     regenerateFailed: 'Regenerate failed',
     editFailed: 'Edit failed',
+    rewindBeforeCompression:
+      'This message is before the last summary of the conversation and can no longer be edited here. Tip: branch into a new chat from here.',
     resumeFailed: 'Resume failed',
     nothingToBranch: 'Nothing to branch',
     branchNeedsChat: 'Start or resume a chat before branching.',
@@ -2000,6 +2002,20 @@ export const en: Translations = {
       systemNote: platform => `↻ Handed off to ${platform} — resume here anytime.`,
       failed: error => `Handoff failed: ${error}`,
       timedOut: 'Timed out waiting for the gateway. Is `hermes gateway` running?'
+    },
+    rollback: {
+      off: 'File checkpoints are switched off. Turn them on in Settings → File Checkpoints.',
+      autoWaiting: messages =>
+        `No checkpoints yet. They start automatically once this chat has ${messages} messages – or set them to “On” in Settings.`,
+      none: 'No files have been backed up in this chat yet.',
+      listTitle: 'Saved file states (newest first):',
+      listHint:
+        '/rollback <no.> restores the files · /rollback diff <no.> shows what changed since. The chat stays as it is.',
+      restored: (when, dir) => `Files in ${dir} reset to the state of ${when}.`,
+      restoredFile: file => `${file} has been restored.`,
+      noChanges: 'Nothing has changed since this state.',
+      failed: error => `Restore failed: ${error}`,
+      usage: 'Usage: /rollback · /rollback <no.> [file] · /rollback diff <no.>'
     }
   },
 

@@ -8380,3 +8380,135 @@ def test_agent_turn_phase_reaches_the_desktop_as_its_own_event():
         "sid",
         {"phase": "retrying", "attempt": 2, "max_attempts": 3},
     )
+
+
+def test_rollback_lists_and_restores_snapshots_outside_the_cwd(tmp_path, monkeypatch):
+    """AIS-461: a file written outside the cwd (e.g. a notes vault) is
+    snapshotted under its own folder; /rollback must find and restore it,
+    and the desktop's file-only restore leaves the history alone."""
+    from tools.checkpoint_manager import CheckpointManager
+
+    monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", tmp_path / "checkpoints")
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    doc = vault / "plan.md"
+    doc.write_text("original\n")
+
+    mgr = CheckpointManager(enabled=True)
+    assert mgr.ensure_checkpoint(str(vault), reason="before edit")
+    doc.write_text("changed\n")
+
+    agent = types.SimpleNamespace(_checkpoint_mgr=mgr)
+    history = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
+    server._sessions["sid"] = _session(agent=agent, history=list(history), cwd=str(cwd))
+    monkeypatch.setattr(server, "_session_cwd", lambda _s: str(cwd))
+    try:
+        listed = server.handle_request({"id": "1", "method": "rollback.list", "params": {"session_id": "sid"}})
+        result = listed["result"]
+        assert result["mode"] == "on" and len(result["checkpoints"]) == 1
+        assert result["checkpoints"][0]["dir"] == str(vault.resolve())
+
+        restored = server.handle_request(
+            {"id": "2", "method": "rollback.restore", "params": {"session_id": "sid", "hash": "1", "keep_history": True}}
+        )
+        assert restored["result"]["success"] is True
+        assert doc.read_text() == "original\n"
+        assert server._sessions["sid"]["history"] == history
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def _truncate_harness(monkeypatch, history):
+    seen = {}
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            seen["history"] = conversation_history
+            return {
+                "final_response": "r",
+                "messages": [*(conversation_history or []), {"role": "user", "content": prompt}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    class _StubDb:
+        def __init__(self):
+            self.replaced = []
+
+        def replace_messages(self, session_id, messages):
+            self.replaced.append(list(messages))
+
+    db = _StubDb()
+    server._sessions["sid"] = _session(agent=_Agent(), history=list(history))
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+    monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+    monkeypatch.setattr(server, "_emit", lambda *a: None)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    return seen, db
+
+
+def test_edit_in_a_continuation_session_cuts_counting_from_the_end(monkeypatch):
+    """AIS-461: the desktop shows the ancestor prefix after a compression, so
+    an ordinal from the start overshot the live history and the edit was
+    silently appended. Counting from the end lands on the right turn."""
+    from agent.context_compressor import SUMMARY_PREFIX
+
+    continuation = [
+        {"role": "user", "content": SUMMARY_PREFIX + " earlier work …"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "tail q1"},
+        {"role": "assistant", "content": "tail a1"},
+        {"role": "user", "content": "tail q2"},
+        {"role": "assistant", "content": "tail a2"},
+    ]
+    seen, db = _truncate_harness(monkeypatch, continuation)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                # edit "tail q1": one user message (tail q2) follows it
+                "params": {"session_id": "sid", "text": "edited q1", "truncate_before_user_from_end": 1},
+            }
+        )
+        assert resp.get("result"), resp.get("error")
+        assert seen["history"] == continuation[:2]
+        assert db.replaced == [continuation[:2]]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_edit_before_the_compression_is_refused_not_appended(monkeypatch):
+    from agent.context_compressor import SUMMARY_PREFIX
+
+    continuation = [
+        {"role": "user", "content": SUMMARY_PREFIX + " earlier work …"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "tail q1"},
+        {"role": "assistant", "content": "tail a1"},
+    ]
+    seen, db = _truncate_harness(monkeypatch, continuation)
+    try:
+        # the target is a prefix message: two user messages follow it
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "edited", "truncate_before_user_from_end": 2},
+            }
+        )
+        assert resp["error"]["code"] == 4019
+        assert "before the last context compression" in resp["error"]["message"]
+        assert server._sessions["sid"]["history"] == continuation
+        assert db.replaced == [] and "history" not in seen
+        assert server._sessions["sid"].get("running") is False
+    finally:
+        server._sessions.pop("sid", None)

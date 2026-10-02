@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
-import { $activeSessionId, $connection, $sessions, setActiveSessionId, setSessions } from '@/store/session'
+import { $activeSessionId, $connection, $sessions, setActiveSessionId, setBusy, setMessages, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment, usePromptActions } from './use-prompt-actions'
@@ -43,6 +43,7 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 
 interface HarnessHandle {
   cancelRun: () => Promise<void>
+  editMessage: (edited: never) => Promise<void>
   steerPrompt: (text: string) => Promise<boolean>
   submitText: (
     text: string,
@@ -112,10 +113,11 @@ function Harness({
   useEffect(() => {
     onReady({
       cancelRun: actions.cancelRun,
+      editMessage: actions.editMessage as never,
       steerPrompt: actions.steerPrompt,
       submitText: actions.submitText
     })
-  }, [actions.cancelRun, actions.steerPrompt, actions.submitText, onReady])
+  }, [actions.cancelRun, actions.editMessage, actions.steerPrompt, actions.submitText, onReady])
 
   return null
 }
@@ -948,5 +950,72 @@ describe('uploadComposerAttachment remote read failures', () => {
         { remote: true, requestGateway: vi.fn(async () => ({}) as never), sessionId: RUNTIME_SESSION_ID }
       )
     ).rejects.toThrow('ENOENT: no such file')
+  })
+})
+
+
+describe('usePromptActions edit after a compression (AIS-461)', () => {
+  const transcript = [
+    { id: 'prefix-u', parts: [{ text: 'old question', type: 'text' }], role: 'user' },
+    { id: 'prefix-a', parts: [{ text: 'old answer', type: 'text' }], role: 'assistant' },
+    { id: 'tail-u1', parts: [{ text: 'tail q1', type: 'text' }], role: 'user' },
+    { id: 'tail-a1', parts: [{ text: 'tail a1', type: 'text' }], role: 'assistant' },
+    { id: 'tail-u2', parts: [{ text: 'tail q2', type: 'text' }], role: 'user' },
+    { id: 'tail-a2', parts: [{ text: 'tail a2', type: 'text' }], role: 'assistant' }
+  ]
+
+  const edit = (sourceId: string, text: string) =>
+    ({ content: [{ text, type: 'text' }], parentId: null, role: 'user', sourceId }) as never
+
+  afterEach(() => {
+    cleanup()
+    setMessages([])
+    setBusy(false)
+    vi.restoreAllMocks()
+  })
+
+  async function mount(requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>) {
+    setMessages(transcript as never)
+    let handle: HarnessHandle | null = null
+    let state: Record<string, unknown> = {}
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={next => (state = next)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    return { handle: handle as unknown as HarnessHandle, state: () => state }
+  }
+
+  it('counts the target from the end of the transcript', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const { handle } = await mount(requestGateway)
+
+    await handle.editMessage(edit('tail-u1', 'edited q1'))
+
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+      session_id: RUNTIME_SESSION_ID,
+      text: 'edited q1',
+      truncate_before_user_from_end: 1
+    })
+  })
+
+  it('restores the transcript instead of appending when the cut is refused', async () => {
+    const requestGateway = vi.fn(async () => {
+      throw new Error('target user message is before the last context compression')
+    })
+
+    const { handle, state } = await mount(requestGateway as never)
+
+    await handle.editMessage(edit('prefix-u', 'edited old'))
+
+    // one attempt only — no silent resend without truncation
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+    expect((state().messages as { id: string }[]).map(m => m.id)).toEqual(transcript.map(m => m.id))
+    expect(state().busy).toBe(false)
   })
 })

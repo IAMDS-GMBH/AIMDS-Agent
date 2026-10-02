@@ -1962,6 +1962,8 @@ export const de
     stopFailed: 'Stoppen fehlgeschlagen',
     regenerateFailed: 'Neu generieren fehlgeschlagen',
     editFailed: 'Bearbeiten fehlgeschlagen',
+    rewindBeforeCompression:
+      'Diese Nachricht liegt vor der letzten Zusammenfassung des Verlaufs und lässt sich hier nicht mehr bearbeiten. Tipp: Von hier aus in einen neuen Chat abzweigen.',
     resumeFailed: 'Fortsetzen fehlgeschlagen',
     nothingToBranch: 'Nichts zum Verzweigen',
     branchNeedsChat: 'Chat starten oder fortsetzen, bevor verzweigt wird.',
@@ -2002,6 +2004,20 @@ export const de
       systemNote: platform => `↻ An ${platform} übergeben — jederzeit hier fortsetzen.`,
       failed: error => `Übergabe fehlgeschlagen: ${error}`,
       timedOut: 'Zeitüberschreitung beim Warten auf das Gateway. Läuft `hermes gateway`?'
+    },
+    rollback: {
+      off: 'Datei-Checkpoints sind ausgeschaltet. Einschalten unter Einstellungen → File Checkpoints.',
+      autoWaiting: messages =>
+        `Noch keine Checkpoints. Sie starten automatisch, sobald dieser Chat ${messages} Nachrichten hat – oder stell sie in den Einstellungen auf „On“.`,
+      none: 'In diesem Chat wurden noch keine Dateien gesichert.',
+      listTitle: 'Gesicherte Dateistände (neueste zuerst):',
+      listHint:
+        '/rollback <Nr.> stellt die Dateien wieder her · /rollback diff <Nr.> zeigt die Änderungen seitdem. Der Chat bleibt dabei unverändert.',
+      restored: (when, dir) => `Dateien in ${dir} auf den Stand vom ${when} zurückgesetzt.`,
+      restoredFile: file => `${file} wurde wiederhergestellt.`,
+      noChanges: 'Seit diesem Stand wurde nichts geändert.',
+      failed: error => `Wiederherstellen fehlgeschlagen: ${error}`,
+      usage: 'Nutzung: /rollback · /rollback <Nr.> [Datei] · /rollback diff <Nr.>'
     }
   },
 

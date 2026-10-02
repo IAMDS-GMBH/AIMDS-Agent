@@ -547,3 +547,17 @@ def test_v18_moves_subagent_concurrency_from_the_old_default_only():
     cfg = {"delegation": {"max_concurrent_children": 5}}
     assert mod._one_shot_v18(cfg, None) == [] and cfg["delegation"]["max_concurrent_children"] == 5
     assert mod._one_shot_v18({}, None) == []
+
+
+def test_v19_moves_checkpoints_from_the_shipped_false_to_auto():
+    """AIS-461: false was the delivery state → auto; true keeps its meaning."""
+    mod = _MODULE
+    cfg = {"checkpoints": {"enabled": False, "max_snapshots": 20}}
+    assert mod._one_shot_v19(cfg, None) and cfg["checkpoints"] == {"enabled": "auto", "max_snapshots": 20}
+    cfg = {"checkpoints": {"enabled": True}}
+    assert mod._one_shot_v19(cfg, None) and cfg["checkpoints"]["enabled"] == "on"
+    cfg = {"checkpoints": {"enabled": "off"}}
+    assert mod._one_shot_v19(cfg, None) == [] and cfg["checkpoints"]["enabled"] == "off"
+    cfg = {"checkpoints": False}
+    assert mod._one_shot_v19(cfg, None) and cfg["checkpoints"] == {"enabled": "auto"}
+    assert mod._one_shot_v19({}, None) == []

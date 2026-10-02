@@ -173,6 +173,8 @@ describe('desktop slash command curation', () => {
     expect(resolveDesktopCommand('/reset')?.surface).toEqual({ kind: 'action', action: 'new' })
     expect(resolveDesktopCommand('/resume')?.surface).toEqual({ kind: 'picker', picker: 'session' })
     expect(resolveDesktopCommand('/usage')?.surface).toEqual({ kind: 'exec' })
+    // AIS-461: live session's checkpoints, not the agent-less slash worker.
+    expect(resolveDesktopCommand('/rollback')?.surface).toEqual({ kind: 'action', action: 'rollback' })
     // session.compress RPC, not slash.exec (double compression + 30 s timeout).
     expect(resolveDesktopCommand('/compress')?.surface).toEqual({ kind: 'action', action: 'compress' })
     expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'unavailable', reason: 'terminal' })

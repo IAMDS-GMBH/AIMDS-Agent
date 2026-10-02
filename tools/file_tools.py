@@ -512,6 +512,10 @@ _read_tracker: dict = {}
 # attempt).  Reset on a successful patch to that path.
 _patch_failure_lock = threading.Lock()
 _patch_failure_tracker: dict = {}  # {task_id: {resolved_path: count}}
+#: Escalate to "re-read or use write_file" on the second failed patch of the
+#: same file. With a long conversation each failed attempt costs minutes
+#: (AIS-461: three ~200 s retries of one large old_string before write_file).
+_PATCH_ESCALATE_AFTER_FAILURES = 2
 
 
 def _record_patch_failure(task_id: str, resolved_path: str) -> int:
@@ -1458,7 +1462,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 resolved = _path_to_resolved.get(path) or path
                 failure_count = _record_patch_failure(task_id, resolved)
 
-            if failure_count >= 3:
+            if failure_count >= _PATCH_ESCALATE_AFTER_FAILURES:
                 # Escalating hint after multiple consecutive failures on the
                 # same path.  Most common cause is a stale view of the file —
                 # the model is retrying with the same old_string against

@@ -35,6 +35,7 @@ export type DesktopActionId =
   | 'help'
   | 'new'
   | 'profile'
+  | 'rollback'
   | 'skin'
   | 'title'
   | 'yolo'
@@ -124,7 +125,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   { name: '/personality', description: 'Switch personality for this session', surface: exec(), args: true },
   { name: '/queue', description: 'Queue a prompt for the next turn', aliases: ['/q'], surface: exec() },
   { name: '/retry', description: 'Retry the last user message', surface: exec() },
-  { name: '/rollback', description: 'List or restore filesystem checkpoints', surface: exec() },
+  { name: '/rollback', description: 'List or restore filesystem checkpoints', surface: action('rollback') },
   { name: '/save', description: 'Save the current transcript to JSON', surface: exec() },
   { name: '/status', description: 'Show current session status', surface: exec() },
   { name: '/steer', description: 'Steer the current run after the next tool call', surface: exec() },

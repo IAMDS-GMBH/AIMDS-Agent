@@ -233,7 +233,7 @@ def init_agent(
     iteration_budget: "IterationBudget" = None,
     fallback_model: Dict[str, Any] = None,
     credential_pool=None,
-    checkpoints_enabled: bool = False,
+    checkpoints_enabled: bool | str = False,
     checkpoint_max_snapshots: int = 20,
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
@@ -1114,8 +1114,12 @@ def init_agent(
     
     # Filesystem checkpoint manager (transparent — not a tool)
     from tools.checkpoint_manager import CheckpointManager
+    from tools.checkpoint_manager import resolve_checkpoints_mode
+
+    _checkpoints_mode = resolve_checkpoints_mode(checkpoints_enabled)
     agent._checkpoint_mgr = CheckpointManager(
-        enabled=checkpoints_enabled,
+        enabled=_checkpoints_mode == "on",
+        auto=_checkpoints_mode == "auto",
         max_snapshots=checkpoint_max_snapshots,
         max_total_size_mb=checkpoint_max_total_size_mb,
         max_file_size_mb=checkpoint_max_file_size_mb,
