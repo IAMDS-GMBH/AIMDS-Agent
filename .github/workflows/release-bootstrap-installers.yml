@@ -44,6 +44,10 @@ on:
         required: false
         default: false
         type: boolean
+      source_ref:
+        description: "Commit to build (default: main HEAD). Stable promotion passes the candidate's commit so the stable release is rebuilt at its own version (AIS-400). Must be in main's history."
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -53,8 +57,8 @@ jobs:
   # Release model (AIS-292, docs/RELEASE.md): `./createTag.sh patch` pushes a
   # candidate tag vX.Y.Z-rc.N on main HEAD → this job re-dispatches the build
   # (pre-release). `./createTag.sh promote stable` pushes vX.Y.Z on the
-  # candidate's commit → promote-stable re-publishes the candidate's artifacts
-  # as the latest release without rebuilding.
+  # candidate's commit → promote-stable re-dispatches the build of that same
+  # commit at the stable version (AIS-400), published as the latest release.
   dispatch-from-tag:
     name: Re-dispatch build from candidate tag push
     if: github.event_name == 'push' && contains(github.ref_name, '-rc.')
@@ -114,7 +118,8 @@ jobs:
     if: github.event_name == 'push' && !contains(github.ref_name, '-rc.')
     runs-on: ${{ vars.RUNNER_LABEL }}
     permissions:
-      contents: write
+      contents: read
+      actions: write
     steps:
       - name: Checkout (tags needed to resolve the candidate)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -159,182 +164,29 @@ jobs:
           echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
           echo "Promoting $candidate ($stable_sha) → $tag"
 
-      - name: Download candidate assets
+      # AIS-400: rebuild instead of re-stamping. The candidate's binaries carry
+      # the rc version that set_version.py stamped at build time, so a promoted
+      # stable install reported itself as vX.Y.Z-rc.N. The same build path as
+      # every candidate (workflow_dispatch on main, OIDC-trusted signing) now
+      # builds the candidate's commit at the stable version and publishes it
+      # as the latest release; the publish job verifies the served manifest.
+      - name: Dispatch the stable rebuild of the candidate's commit
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          CANDIDATE: ${{ steps.resolve.outputs.candidate }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          gh release download "$CANDIDATE" --dir dist --pattern '*'
-          ls -la dist
-          if [ -z "$(ls -A dist)" ]; then
-            echo "::error::Candidate release $CANDIDATE has no assets."
-            exit 1
-          fi
-
-      # AIS-396: the candidate's manifest and asset names carry the rc version.
-      # Uploaded unchanged they make the stable release fail the clients' own
-      # manifest validation ("tag ... is not a stable release"), so every stable
-      # client falls back to the source repo and files an incident. Re-stamp the
-      # names and the manifest; payload, digests and commit stay untouched.
-      - name: Re-stamp candidate assets for the stable version
-        env:
           VERSION: ${{ steps.resolve.outputs.version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 scripts/promote_release_assets.py dist "$VERSION"
-          ls -la dist
-
-      - name: Release notes since the previous stable release
-        id: notes
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ steps.resolve.outputs.tag }}
-          CANDIDATE: ${{ steps.resolve.outputs.candidate }}
           SHA: ${{ steps.resolve.outputs.sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          notes="$RUNNER_TEMP/stable-notes.md"
-          prev="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -vx "$TAG" | sort -V | tail -1 || true)"
-          {
-            echo "Stable release $TAG — promoted from $CANDIDATE (same build, same commit ${SHA:0:7})."
-            echo
-            candidate_body="$(gh release view "$CANDIDATE" --json body --jq .body 2>/dev/null || true)"
-            if [ -n "$candidate_body" ]; then
-              echo "$candidate_body"
-              echo
-            fi
-            if [ -n "$prev" ]; then
-              echo "## Commits since $prev"
-              git log --no-merges --format='- %s (%h)' "${prev}..${SHA}" | head -200
-            fi
-          } > "$notes"
-          echo "file=$notes" >> "$GITHUB_OUTPUT"
-
-      - name: Create stable release with the candidate's assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ steps.resolve.outputs.tag }}
-          SHA: ${{ steps.resolve.outputs.sha }}
-          NOTES: ${{ steps.notes.outputs.file }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --prerelease=false --latest --notes-file "$NOTES" --title "Bootstrap Installer $TAG"
-          else
-            gh release create "$TAG" --target "$SHA" --latest --title "Bootstrap Installer $TAG" --notes-file "$NOTES"
-          fi
-          shopt -s nullglob
-          files=(dist/*)
-          gh release upload "$TAG" "${files[@]}" --clobber
-          echo "Published $TAG as latest with ${#files[@]} asset(s)."
-
-      # AIS-311: mirror the release into the public releases repository
-      # (vars.RELEASES_REPO, e.g. IAMDS-GMBH/AIMDS-Agent-Releases) so clients
-      # keep downloading releases after this repository goes private. The
-      # GitHub App "AIMDS Release Publisher" only holds Contents: write on that
-      # repository (docs/RELEASE.md). Without the app secrets the mirror is
-      # skipped with a warning and the internal release is unaffected.
-      - name: Check public release mirror configuration
-        id: mirror
-        env:
-          RELEASES_REPO: ${{ vars.RELEASES_REPO }}
-          RELEASES_APP_ID: ${{ secrets.RELEASES_APP_ID }}
-          RELEASES_APP_PRIVATE_KEY: ${{ secrets.RELEASES_APP_PRIVATE_KEY }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "${RELEASES_REPO:-}" ] || [ -z "${RELEASES_APP_ID:-}" ] || [ -z "${RELEASES_APP_PRIVATE_KEY:-}" ]; then
-            echo "::warning::Public release mirror skipped — set vars.RELEASES_REPO, secrets.RELEASES_APP_ID and secrets.RELEASES_APP_PRIVATE_KEY (see docs/RELEASE.md)."
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [[ ! "$RELEASES_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-            echo "::error::vars.RELEASES_REPO must be owner/name, got '$RELEASES_REPO'"
-            exit 1
-          fi
-          {
-            echo "enabled=true"
-            echo "owner=${RELEASES_REPO%%/*}"
-            echo "name=${RELEASES_REPO#*/}"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub App token for the public releases repository
-        id: releases_token
-        if: steps.mirror.outputs.enabled == 'true'
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets.RELEASES_APP_ID }}
-          private-key: ${{ secrets.RELEASES_APP_PRIVATE_KEY }}
-          owner: ${{ steps.mirror.outputs.owner }}
-          repositories: ${{ steps.mirror.outputs.name }}
-
-      - name: Mirror stable release to the public releases repository
-        if: steps.mirror.outputs.enabled == 'true'
-        env:
-          GH_TOKEN: ${{ steps.releases_token.outputs.token }}
-          GH_REPO: ${{ vars.RELEASES_REPO }}
-          TAG: ${{ steps.resolve.outputs.tag }}
           CANDIDATE: ${{ steps.resolve.outputs.candidate }}
-          ASSET_DIR: dist
         shell: bash
         run: |
           set -euo pipefail
-          target="$(gh api "repos/$GH_REPO" --jq .default_branch)"
-          # Public notes: the candidate's public summary only — never the
-          # internal commit list (hashes and author logins of this repo).
-          notes="$RUNNER_TEMP/public-stable-notes.md"
-          {
-            echo "Stable release $TAG — promoted from $CANDIDATE (same build)."
-            echo
-            gh release view "$CANDIDATE" --json body --jq .body 2>/dev/null || true
-          } > "$notes"
-          flags=(--prerelease=false --latest --title "Hermes $TAG" --notes-file "$notes")
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" "${flags[@]}"
-          else
-            gh release create "$TAG" --target "$target" "${flags[@]}"
-          fi
-          shopt -s nullglob globstar
-          files=("$ASSET_DIR"/**/HermesSetup* "$ASSET_DIR"/**/hermes-source-* "$ASSET_DIR"/**/hermes-release.json "$ASSET_DIR"/**/Hermes-*.zip "$ASSET_DIR"/**/Hermes-*.zip.sha256)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "::error::No assets found under $ASSET_DIR to mirror"
-            exit 1
-          fi
-          gh release upload "$TAG" "${files[@]}" --clobber
-          echo "Mirrored $TAG to $GH_REPO as latest with ${#files[@]} asset(s)."
-
-      # AIS-396: prove the published artifact is the one clients accept. The
-      # same validator the clients run, against what the mirror actually serves
-      # — a broken promotion now fails the release instead of the update check
-      # on every installation out there.
-      - name: Verify the published stable manifest
-        if: steps.mirror.outputs.enabled == 'true'
-        env:
-          RELEASES_REPO: ${{ vars.RELEASES_REPO }}
-          TAG: ${{ steps.resolve.outputs.tag }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          url="https://github.com/$RELEASES_REPO/releases/latest/download/hermes-release.json"
-          curl -fsSL --retry 3 --retry-delay 5 "$url" -o "$RUNNER_TEMP/published.json"
-          python3 - "$RUNNER_TEMP/published.json" "$TAG" "$RELEASES_REPO" <<'PY'
-          import json, sys
-          from hermes_cli.release_update import validate_manifest
-
-          path, tag, repo = sys.argv[1], sys.argv[2], sys.argv[3]
-          manifest = json.loads(open(path, encoding="utf-8").read())
-          feed = validate_manifest(manifest, channel="stable", repo=repo, release_tag=tag)
-          print(f"published stable manifest is valid: {feed.tag} ({feed.commit_sha[:7]})")
-          PY
+          gh workflow run release-bootstrap-installers.yml \
+            --ref main \
+            -f "version=$VERSION" \
+            -f "source_ref=$SHA" \
+            -f create_release=true \
+            -f prerelease=false
+          echo "Dispatched the rebuild of $CANDIDATE (${SHA:0:7}) as v$VERSION."
 
   build-installers:
     name: Build (${{ matrix.os }})
@@ -353,10 +205,27 @@ jobs:
           echo "::error::Run workflow_dispatch from refs/heads/main so Azure OIDC subject matches main."
           exit 1
 
+      # AIS-400: the stable promotion builds the candidate's commit. Signing
+      # any other commit would sign code that never went through main.
+      - name: Verify source_ref is in main's history
+        if: github.event.inputs.source_ref != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_REF: ${{ github.event.inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          status="$(gh api "repos/$GH_REPO/compare/$SOURCE_REF...main" --jq .status)"
+          if [ "$status" != "ahead" ] && [ "$status" != "identical" ]; then
+            echo "::error::source_ref '$SOURCE_REF' is not in main's history (compare status: $status)."
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/heads/main
+          ref: ${{ github.event.inputs.source_ref || 'refs/heads/main' }}
 
       - name: Clean stale build output (self-hosted Windows only)
         if: runner.os == 'Windows'
@@ -766,10 +635,27 @@ jobs:
           echo "::error::Run workflow_dispatch from refs/heads/main so the source package matches the installers."
           exit 1
 
+      # AIS-400: the stable promotion builds the candidate's commit. Signing
+      # any other commit would sign code that never went through main.
+      - name: Verify source_ref is in main's history
+        if: github.event.inputs.source_ref != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_REF: ${{ github.event.inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          status="$(gh api "repos/$GH_REPO/compare/$SOURCE_REF...main" --jq .status)"
+          if [ "$status" != "ahead" ] && [ "$status" != "identical" ]; then
+            echo "::error::source_ref '$SOURCE_REF' is not in main's history (compare status: $status)."
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/heads/main
+          ref: ${{ github.event.inputs.source_ref || 'refs/heads/main' }}
           fetch-depth: 0
           fetch-tags: true
 
@@ -851,10 +737,27 @@ jobs:
           echo "::error::Run workflow_dispatch from refs/heads/main so Azure OIDC subject matches main."
           exit 1
 
+      # AIS-400: the stable promotion builds the candidate's commit. Signing
+      # any other commit would sign code that never went through main.
+      - name: Verify source_ref is in main's history
+        if: github.event.inputs.source_ref != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_REF: ${{ github.event.inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          status="$(gh api "repos/$GH_REPO/compare/$SOURCE_REF...main" --jq .status)"
+          if [ "$status" != "ahead" ] && [ "$status" != "identical" ]; then
+            echo "::error::source_ref '$SOURCE_REF' is not in main's history (compare status: $status)."
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/heads/main
+          ref: ${{ github.event.inputs.source_ref || 'refs/heads/main' }}
           fetch-depth: 0
           fetch-tags: true
 
@@ -1143,14 +1046,14 @@ jobs:
           PRERELEASE: ${{ github.event.inputs.prerelease }}
         run: |
           set -euo pipefail
-          PRERELEASE_FLAG="--prerelease=false"
-          if [ "${PRERELEASE:-false}" = "true" ]; then PRERELEASE_FLAG="--prerelease"; fi
+          FLAGS=(--prerelease=false --latest)
+          if [ "${PRERELEASE:-false}" = "true" ]; then FLAGS=(--prerelease); fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists; updating (prerelease=${PRERELEASE:-false})..."
-            gh release edit "$TAG" "$PRERELEASE_FLAG"
+            gh release edit "$TAG" "${FLAGS[@]}"
           else
             gh release create "$TAG" \
-              "$PRERELEASE_FLAG" \
+              "${FLAGS[@]}" \
               --target "$TARGET_SHA" \
               --title "Bootstrap Installer $TAG" \
               --notes "Automated bootstrap installer release."
@@ -1171,6 +1074,13 @@ jobs:
           set +e
           prev_tag="$(gh release list --repo "$GH_REPO" --limit 100 --json tagName --jq '.[] | .tagName' 2>/dev/null | awk -v cur="$TAG" '$0 != cur { print; exit }')"
           set -e
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            # A stable release covers everything since the previous stable
+            # one, not just since its own candidate (AIS-400).
+            git fetch --tags --quiet origin || true
+            prev_tag="$( (git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$'; echo "$TAG") | sort -uV | grep -B1 -x "$TAG" | head -1)"
+            [ "$prev_tag" = "$TAG" ] && prev_tag=""
+          fi
 
           build_commit_bullets() {
             local log_range="$1"
@@ -1415,3 +1325,27 @@ jobs:
           fi
           gh release upload "$TAG" "${files[@]}" --clobber
           echo "Mirrored $TAG to $GH_REPO with ${#files[@]} asset(s)."
+
+      # AIS-396/400: prove the published stable artifact is the one clients
+      # accept. The same validator the clients run, against what the mirror
+      # actually serves — a broken stable release fails here instead of the
+      # update check on every installation out there.
+      - name: Verify the published stable manifest
+        if: steps.mirror.outputs.enabled == 'true' && github.event.inputs.prerelease != 'true'
+        env:
+          RELEASES_REPO: ${{ vars.RELEASES_REPO }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://github.com/$RELEASES_REPO/releases/latest/download/hermes-release.json"
+          curl -fsSL --retry 3 --retry-delay 5 "$url" -o "$RUNNER_TEMP/published.json"
+          python3 - "$RUNNER_TEMP/published.json" "$TAG" "$RELEASES_REPO" <<'PY'
+          import json, sys
+          from hermes_cli.release_update import validate_manifest
+
+          path, tag, repo = sys.argv[1], sys.argv[2], sys.argv[3]
+          manifest = json.loads(open(path, encoding="utf-8").read())
+          feed = validate_manifest(manifest, channel="stable", repo=repo, release_tag=tag)
+          print(f"published stable manifest is valid: {feed.tag} ({feed.commit_sha[:7]})")
+          PY

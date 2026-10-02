@@ -7,7 +7,7 @@ Installers" workflow reacts to the push.
 | Tag | Meaning | Workflow | Update channel |
 |---|---|---|---|
 | `vX.Y.Z-rc.N` | release candidate cut from `main` HEAD | builds the installers, publishes a GitHub **pre-release** | `preview` |
-| `vX.Y.Z` | stable release, promoted from a candidate | **no rebuild** — re-publishes the candidate's artifacts as the **latest** release | `stable` |
+| `vX.Y.Z` | stable release, promoted from a candidate | **rebuilds the candidate's commit** at the stable version (AIS-400) and publishes it as the **latest** release | `stable` |
 
 ```bash
 ./createTag.sh status            # highest stable, highest candidate, what HEAD is
@@ -31,12 +31,21 @@ while `v0.7.5-rc.1` exists creates `v0.7.5-rc.2`, not `v0.8.0-rc.1`.
   build workspace only. Release notes are generated from the commits since the
   previous release.
 - **Stable tag push**: finds the candidate release of the same version whose
-  tag points at the same commit, downloads its assets, creates the `vX.Y.Z`
-  release (latest, not pre-release) with those assets and the notes since the
-  previous stable release. If no matching candidate exists the job fails —
-  promote a candidate, do not tag `main` directly.
+  tag points at the same commit (it must exist — the candidate is what was
+  tested), then re-dispatches itself on `main` with `version=X.Y.Z`,
+  `source_ref=<candidate commit>` and `prerelease=false`. The build checks out
+  that commit and stamps the stable version, so the About dialog, the manifest
+  and the asset names all say `X.Y.Z` (AIS-400). The release is marked latest,
+  its notes cover the commits since the previous stable release, and the
+  published manifest is validated like the clients do. If no matching candidate
+  exists the job fails — promote a candidate, do not tag `main` directly.
+- **Trade-off:** a stable release is the same source commit as its candidate,
+  but **not the same bytes** — it is built, signed and notarized again. Promotion
+  takes as long as a candidate build and needs working signing (Apple
+  notarization, Azure).
 - `workflow_dispatch` remains as a fallback: `version` is required (`X.Y.Z` or
-  `X.Y.Z-rc.N`), `prerelease` marks the release.
+  `X.Y.Z-rc.N`), `prerelease` marks the release, and `source_ref` (optional)
+  builds an older commit of `main`'s history — any other commit is refused.
 
 ## What the client does
 
@@ -253,8 +262,8 @@ runs `scripts/build_source_package.sh <version> <out-dir>`:
 release, then mirrors the release: same tag, `--prerelease` for candidates,
 `--latest` for stable, title `Hermes <tag>`, and **public notes = the AI
 summary only** (never the commit bullets — they carry commit hashes and author
-logins). `promote-stable` mirrors the promoted `vX.Y.Z` with the candidate's
-assets and the candidate's public notes. The tag in the public repository is
+logins). A stable `vX.Y.Z` goes through the same publish path as a candidate
+(rebuilt from the candidate's commit, see above). The tag in the public repository is
 created by `gh release create --target <default branch>`; it points at the
 README commit, not at source.
 
