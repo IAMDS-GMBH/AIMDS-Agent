@@ -173,6 +173,8 @@ describe('desktop slash command curation', () => {
     expect(resolveDesktopCommand('/reset')?.surface).toEqual({ kind: 'action', action: 'new' })
     expect(resolveDesktopCommand('/resume')?.surface).toEqual({ kind: 'picker', picker: 'session' })
     expect(resolveDesktopCommand('/usage')?.surface).toEqual({ kind: 'exec' })
+    // session.compress RPC, not slash.exec (double compression + 30 s timeout).
+    expect(resolveDesktopCommand('/compress')?.surface).toEqual({ kind: 'action', action: 'compress' })
     expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'unavailable', reason: 'terminal' })
     // Skill / quick commands aren't in the registry.
     expect(resolveDesktopCommand('/gif-search')).toBeNull()

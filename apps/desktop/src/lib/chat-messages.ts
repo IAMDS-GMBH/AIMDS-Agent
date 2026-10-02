@@ -122,9 +122,33 @@ export function chatMessageText(message: ChatMessage): string {
     .join('')
 }
 
-const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
+// Inlined attachments and the AIS-456 manifest of not-inlined files both
+// follow the visible text; the UI shows only the refs.
+const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached (?:Context|Files \(not inlined\)) ---\s*\n/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
+const QUOTED_REF_RE = /^(@\w+:)(["'`])(.*)\2$/
+
+function canonicalRef(ref: string): string {
+  const quoted = QUOTED_REF_RE.exec(ref)
+
+  return quoted ? `${quoted[1]}${quoted[3]}` : ref
+}
+
+// One comparable key for a user turn, whether it is the optimistic message
+// (visible text + attachmentRefs) or the hydrated row (refs inside the text).
+export function userTurnKey(message: ChatMessage): string {
+  const text = chatMessageText(message)
+  const refs = new Set((message.attachmentRefs ?? []).map(canonicalRef))
+
+  for (const match of text.matchAll(CONTEXT_REF_RE)) {
+    refs.add(canonicalRef(match[0]))
+  }
+
+  const visible = text.replace(CONTEXT_REF_RE, ' ').replace(/\s+/g, ' ').trim()
+
+  return `${[...refs].sort().join('\n')}\n\n${visible}`
+}
 
 function textFromUnknown(value: unknown, depth = 0): string {
   if (typeof value === 'string') {
@@ -928,22 +952,31 @@ export function preserveLocalAssistantErrors(
 
   const existingIds = new Set(mergedNextMessages.map(message => message.id))
   const preserveIds = new Set<string>()
-  const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
   const tailUserInNext = [...mergedNextMessages].reverse().find(message => message.role === 'user' && !message.hidden)
-  const tailUserText = tailUserInNext ? normalize(chatMessageText(tailUserInNext)) : ''
-  const tailUserRefs = tailUserInNext ? (tailUserInNext.attachmentRefs ?? []).join('\n') : ''
+  const tailUserKey = tailUserInNext ? userTurnKey(tailUserInNext) : ''
 
   const matchesTailUserInNext = (candidate: ChatMessage) =>
-    Boolean(tailUserInNext) &&
-    normalize(chatMessageText(candidate)) === tailUserText &&
-    (candidate.attachmentRefs ?? []).join('\n') === tailUserRefs
+    Boolean(tailUserInNext) && userTurnKey(candidate) === tailUserKey
 
   const matchesUser = (left: ChatMessage, right: ChatMessage) =>
-    left.id === right.id ||
-    (left.role === 'user' &&
-      right.role === 'user' &&
-      normalize(chatMessageText(left)) === normalize(chatMessageText(right)) &&
-      (left.attachmentRefs ?? []).join('\n') === (right.attachmentRefs ?? []).join('\n'))
+    left.id === right.id || (left.role === 'user' && right.role === 'user' && userTurnKey(left) === userTurnKey(right))
+
+  const isUserInNext = (userMsg: ChatMessage) => mergedNextMessages.some(m => matchesUser(m, userMsg))
+
+  // Turns persist in order: a local user that is followed by a user already in
+  // the stored history is itself stored, even when it no longer matches (e.g.
+  // the stored row carries a rewritten attachment block).
+  let lastStoredUserIndex = -1
+
+  for (let index = currentMessages.length - 1; index >= 0; index -= 1) {
+    const candidate = currentMessages[index]
+
+    if (candidate.role === 'user' && !candidate.hidden && isUserInNext(candidate)) {
+      lastStoredUserIndex = index
+
+      break
+    }
+  }
 
   const hasAssistantAfterUser = (userMsg: ChatMessage) => {
     const userIndex = mergedNextMessages.findIndex(m => matchesUser(m, userMsg))
@@ -1002,6 +1035,19 @@ export function preserveLocalAssistantErrors(
       }
 
       if (precedingUser && hasAssistantAfterUser(precedingUser) && !message.error) {
+        continue
+      }
+
+      // A completed reply from an older turn whose user we cannot find in the
+      // stored history is a matching miss, not lagging persistence: appending it
+      // would move that whole turn below the newer ones.
+      if (
+        precedingUser &&
+        !message.error &&
+        !message.pending &&
+        index < lastStoredUserIndex &&
+        !isUserInNext(precedingUser)
+      ) {
         continue
       }
 

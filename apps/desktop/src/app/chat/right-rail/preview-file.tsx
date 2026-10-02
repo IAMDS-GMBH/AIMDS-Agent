@@ -28,6 +28,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { translateNow, useI18n } from '@/i18n'
+import { splitFrontmatter } from '@/lib/markdown-frontmatter'
 import { previewName } from '@/lib/preview-targets'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
@@ -302,11 +303,38 @@ const MARKDOWN_COMPONENTS = {
   code: MarkdownCode
 }
 
+function FrontmatterProperties({ properties }: { properties: [string, string][] }) {
+  return (
+    <dl className="mb-5 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs">
+      {properties.map(([key, value], index) => (
+        <div className="contents" key={`${key}-${index}`}>
+          <dt className="font-mono text-muted-foreground">{key}</dt>
+          <dd className="min-w-0 break-words text-foreground">{value}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
 function MarkdownPreview({ text }: { text: string }) {
+  const { body, properties } = useMemo(() => {
+    const frontmatter = splitFrontmatter(text)
+
+    if (!frontmatter) {
+      return { body: text, properties: null }
+    }
+
+    // Nested YAML stays readable as a code block instead of a property list.
+    return frontmatter.properties
+      ? { body: frontmatter.body, properties: frontmatter.properties }
+      : { body: `\`\`\`yaml\n${frontmatter.raw}\n\`\`\`\n\n${frontmatter.body}`, properties: null }
+  }, [text])
+
   return (
     <div className="preview-markdown select-text cursor-text mx-auto max-w-3xl px-4 py-3 text-sm text-foreground">
+      {properties && <FrontmatterProperties properties={properties} />}
       <Streamdown components={MARKDOWN_COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false}>
-        {text}
+        {body}
       </Streamdown>
     </div>
   )

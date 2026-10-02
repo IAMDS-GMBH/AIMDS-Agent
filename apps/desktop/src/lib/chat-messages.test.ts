@@ -168,6 +168,84 @@ describe('renderMediaTags', () => {
 })
 
 describe('preserveLocalAssistantErrors', () => {
+  const manifestTurn = [
+    'Sind doch mehr geworden',
+    '',
+    '--- Attached Files (not inlined) ---',
+    'These files are attached but not inlined.',
+    '',
+    '📄 @file:`Downloads/wikisana.tv.txt` → /Users/me/Downloads/wikisana.tv.txt (1,388 chars, ~347 tokens, 39 lines)',
+    '    | ;; Domain:     wikisana.tv.',
+    '📄 @file:`Downloads/wikisana.org.txt` → /Users/me/Downloads/wikisana.org.txt (1,460 chars, ~365 tokens, 39 lines)'
+  ].join('\n')
+
+  it('shows only refs and the visible text for a not-inlined attachment manifest', () => {
+    const [user] = toChatMessages([{ role: 'user', content: manifestTurn, timestamp: 1 }])
+
+    expect(chatMessageText(user)).toBe(
+      '@file:`Downloads/wikisana.tv.txt`\n@file:`Downloads/wikisana.org.txt`\n\nSind doch mehr geworden'
+    )
+  })
+
+  it('keeps an attachment turn in place when hydration replaces local ids after failed turns', () => {
+    // Regression (AIS-458): the optimistic attachment turn never matched its
+    // stored row, so its completed local reply and user bubble were appended
+    // below every newer turn on each hydrate.
+    const nextMessages = toChatMessages([
+      { role: 'user', content: 'first', timestamp: 1 },
+      { role: 'assistant', content: 'first answer', timestamp: 2 },
+      { role: 'user', content: manifestTurn, timestamp: 3 },
+      { role: 'assistant', content: 'Die Analyse ist abgeschlossen.', timestamp: 4 },
+      { role: 'user', content: 'OVH systems', timestamp: 5 },
+      { role: 'assistant', content: 'OVH answer', timestamp: 6 },
+      { role: 'user', content: 'ja', timestamp: 7 },
+      { role: 'user', content: 'ja', timestamp: 8 }
+    ])
+
+    const currentMessages: ChatMessage[] = [
+      { id: 'local-u1', parts: [{ text: 'first', type: 'text' }], role: 'user' },
+      { id: 'local-a1', parts: [{ text: 'first answer', type: 'text' }], role: 'assistant' },
+      {
+        attachmentRefs: ['@file:Downloads/wikisana.tv.txt', '@file:Downloads/wikisana.org.txt'],
+        id: 'local-u2',
+        parts: [{ text: 'Sind doch mehr geworden', type: 'text' }],
+        role: 'user'
+      },
+      { id: 'local-a2', parts: [{ text: 'Die Analyse ist abgeschlossen.', type: 'text' }], role: 'assistant' },
+      { id: 'local-u3', parts: [{ text: 'OVH systems', type: 'text' }], role: 'user' },
+      { id: 'local-a3', parts: [{ text: 'OVH answer', type: 'text' }], role: 'assistant' },
+      { id: 'local-u4', parts: [{ text: 'ja', type: 'text' }], role: 'user' },
+      { error: 'Connection error.', id: 'assistant-error-4', parts: [], role: 'assistant' }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(merged.slice(0, nextMessages.length).map(m => m.id)).toEqual(nextMessages.map(m => m.id))
+    expect(merged.map(m => m.id)).not.toContain('local-u2')
+    expect(merged.map(m => m.id)).not.toContain('local-a2')
+    expect(merged.at(-1)?.error).toBe('Connection error.')
+  })
+
+  it('does not append a completed older reply whose user no longer matches a stored row', () => {
+    const nextMessages: ChatMessage[] = [
+      { id: 'stored-u1', parts: [{ text: 'rewritten by the server', type: 'text' }], role: 'user' },
+      { id: 'stored-a1', parts: [{ text: 'answer 1', type: 'text' }], role: 'assistant' },
+      { id: 'stored-u2', parts: [{ text: 'second', type: 'text' }], role: 'user' },
+      { id: 'stored-a2', parts: [{ text: 'answer 2', type: 'text' }], role: 'assistant' }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      { id: 'local-u1', parts: [{ text: 'original text', type: 'text' }], role: 'user' },
+      { id: 'local-a1', parts: [{ text: 'answer 1', type: 'text' }], role: 'assistant' },
+      { id: 'local-u2', parts: [{ text: 'second', type: 'text' }], role: 'user' },
+      { id: 'local-a2', parts: [{ text: 'answer 2', type: 'text' }], role: 'assistant' }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(merged.map(m => m.id)).toEqual(['stored-u1', 'stored-a1', 'stored-u2', 'stored-a2'])
+  })
+
   it('preserves a local user+error pair when hydration omits the failed turn', () => {
     const nextMessages: ChatMessage[] = [
       {

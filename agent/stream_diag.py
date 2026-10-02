@@ -158,6 +158,38 @@ def stream_diag_summary(error: BaseException, diag: Optional[Dict[str, Any]] = N
     return summary
 
 
+#: A cut needs this long to count as a server-side timeout (an instant refusal
+#: is a different fault) and must be this fresh to belong to the current attempt.
+_GATEWAY_CUT_MIN_ELAPSED_S = 20.0
+_GATEWAY_CUT_MAX_AGE_S = 30.0
+
+
+def pre_first_byte_cut_elapsed(failure: Optional[Dict[str, Any]], *, now: Optional[float] = None) -> Optional[float]:
+    """Seconds after which a server cut the last stream before its first byte.
+
+    ``failure`` is ``agent._last_stream_failure``. Returns ``None`` unless the
+    attempt got no HTTP status and no byte, ended in a server disconnect and ran
+    long enough to be a gateway/load-balancer timeout (AIS-458: an Octavia LB
+    cut every request at ~50 s while the model was still before its first
+    token). Repeating such a cut with the same request cannot succeed.
+    """
+    if not isinstance(failure, dict):
+        return None
+    try:
+        if failure.get("http_status") is not None or int(failure.get("bytes") or 0) > 0:
+            return None
+        if "server disconnected" not in str(failure.get("chain") or "").lower():
+            return None
+        elapsed = float(failure.get("elapsed") or 0.0)
+        at = float(failure.get("at") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    current = time.time() if now is None else now
+    if elapsed < _GATEWAY_CUT_MIN_ELAPSED_S or current - at > _GATEWAY_CUT_MAX_AGE_S:
+        return None
+    return elapsed
+
+
 def log_stream_retry(
     agent: Any,
     *,
