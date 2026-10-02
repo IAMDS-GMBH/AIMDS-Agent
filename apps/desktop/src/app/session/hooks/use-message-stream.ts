@@ -39,6 +39,7 @@ import {
 } from '@/store/session'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { recordToolDiff } from '@/store/tool-diffs'
+import { applyTurnPhaseEvent, setTurnPhase } from '@/store/turn-phase'
 import type { RpcEvent } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../types'
@@ -157,6 +158,17 @@ function completionErrorText(finalText: string): string | null {
 
   return text && COMPLETION_ERROR_PATTERNS.some(re => re.test(text)) ? text : null
 }
+
+// First visible output, an error or the end of the turn ends the wait phase.
+const TURN_PHASE_CLEARING_EVENTS = new Set([
+  'error',
+  'message.complete',
+  'message.delta',
+  'message.start',
+  'reasoning.delta',
+  'thinking.delta',
+  'tool.start'
+])
 
 const SUBAGENT_EVENT_TYPES = new Set([
   'subagent.spawn_requested',
@@ -735,6 +747,18 @@ export function useMessageStream({
         event.type === 'message.complete'
       ) {
         clearBusyEscape()
+      }
+
+      // The wait indicator's phase (AIS-460) lasts until the turn shows output
+      // or ends; a stale one must not greet the next turn.
+      if (event.type === 'turn.phase') {
+        applyTurnPhaseEvent(sessionId, payload)
+
+        return
+      }
+
+      if (TURN_PHASE_CLEARING_EVENTS.has(event.type)) {
+        setTurnPhase(sessionId, null)
       }
 
       if (event.type === 'gateway.ready') {
