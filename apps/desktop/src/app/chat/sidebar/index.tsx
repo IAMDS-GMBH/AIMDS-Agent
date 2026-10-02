@@ -8,7 +8,6 @@ import {
   useSensors
 } from '@dnd-kit/core'
 import {
-  arrayMove,
   SortableContext,
   sortableKeyboardCoordinates,
   useSortable,
@@ -54,8 +53,6 @@ import {
   $sidebarOverlayMounted,
   $sidebarPinsOpen,
   $sidebarRecentsOpen,
-  $sidebarSessionOrderIds,
-  $sidebarWorkspaceOrderIds,
   pinSession,
   reorderPinnedSession,
   SESSION_SEARCH_FOCUS_EVENT,
@@ -63,8 +60,6 @@ import {
   setSidebarCronOpen,
   setSidebarPinsOpen,
   setSidebarRecentsOpen,
-  setSidebarSessionOrderIds,
-  setSidebarWorkspaceOrderIds,
   SIDEBAR_SESSIONS_PAGE_SIZE,
   toggleSidebarMessagingOpen,
   unpinSession
@@ -99,6 +94,7 @@ import type { SidebarNavItem } from '../../types'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { ProfileRail } from './profile-switcher'
+import { sessionTime, sortByLatestActivity, workspaceGroupsFor } from './session-order'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
 
@@ -157,71 +153,7 @@ const GROUP_BODY = cn('overflow-y-auto overscroll-contain', COMPACT_FLAT)
 
 const groupDndId = (id: string) => `${GROUP_DND_ID_PREFIX}${id}`
 
-const parseGroupDndId = (id: string) =>
-  id.startsWith(GROUP_DND_ID_PREFIX) ? id.slice(GROUP_DND_ID_PREFIX.length) : null
-
 const countLabel = (loaded: number, total: number) => (total > loaded ? `${loaded}/${total}` : String(loaded))
-const sessionTime = (s: SessionInfo) => s.last_active || s.started_at || 0
-
-function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: string[]): T[] {
-  if (!orderIds.length) {
-    return items
-  }
-
-  const byId = new Map(items.map(item => [getId(item), item]))
-  const seen = new Set<string>()
-  const ordered: T[] = []
-
-  for (const id of orderIds) {
-    const item = byId.get(id)
-
-    if (item) {
-      ordered.push(item)
-      seen.add(id)
-    }
-  }
-
-  // Items missing from the persisted order are new since it was last
-  // reconciled. Callers pass recency-sorted lists (newest first), so surface
-  // these at the TOP instead of burying them beneath the saved order —
-  // otherwise a brand-new session sinks to the bottom of the sidebar and reads
-  // as "my latest session never showed up".
-  const fresh = items.filter(item => !seen.has(getId(item)))
-
-  return fresh.length ? [...fresh, ...ordered] : ordered
-}
-
-function reconcileOrderIds(currentIds: string[], orderIds: string[]): string[] {
-  if (!currentIds.length) {
-    return []
-  }
-
-  if (!orderIds.length) {
-    return currentIds
-  }
-
-  const current = new Set(currentIds)
-  const retained = orderIds.filter(id => current.has(id))
-  const retainedSet = new Set(retained)
-
-  // New ids (absent from the saved order) are the newest sessions/groups; keep
-  // them ahead of the persisted order so fresh activity surfaces at the top of
-  // the sidebar rather than being appended to the bottom.
-  const fresh = currentIds.filter(id => !retainedSet.has(id))
-
-  return [...fresh, ...retained]
-}
-
-function sameIds(left: string[], right: string[]) {
-  return left.length === right.length && left.every((item, index) => item === right[index])
-}
-
-const baseName = (path: string) =>
-  path
-    .replace(/[/\\]+$/, '')
-    .split(/[/\\]/)
-    .filter(Boolean)
-    .pop()
 
 // FTS results cover sessions that aren't in the loaded page; synthesize a
 // minimal SessionInfo so they render in the same row component (resume works
@@ -247,36 +179,6 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     title: null,
     tool_call_count: 0
   }
-}
-
-function workspaceGroupsFor(
-  sessions: SessionInfo[],
-  noWorkspaceLabel: string,
-  options: { preserveSessionOrder?: boolean } = {}
-): SidebarSessionGroup[] {
-  const groups = new Map<string, SidebarSessionGroup>()
-
-  for (const session of sessions) {
-    const path = session.cwd?.trim() || ''
-    const id = path || '__no_workspace__'
-    const label = baseName(path) || path || noWorkspaceLabel
-
-    const group = groups.get(id) ?? { id, label, path: path || null, sessions: [] }
-    group.sessions.push(session)
-    groups.set(id, group)
-  }
-
-  if (!options.preserveSessionOrder) {
-    // Groups keep recency order (Map insertion = first-seen in the recency-sorted
-    // input, so an active project floats up), but rows *within* a group sort by
-    // creation time so they don't reshuffle every time a message lands — keeps
-    // muscle memory intact.
-    for (const group of groups.values()) {
-      group.sessions.sort((a, b) => b.started_at - a.started_at)
-    }
-  }
-
-  return [...groups.values()]
 }
 
 function useSortableBindings(id: string) {
@@ -377,8 +279,6 @@ export function ChatSidebar({
   // profile while scope is still ALL (persisted), the rail is hidden and they'd
   // otherwise be stuck in the grouped view with no way out.
   const showAllProfiles = multiProfile && profileScope === ALL_PROFILES
-  const agentOrderIds = useStore($sidebarSessionOrderIds)
-  const workspaceOrderIds = useStore($sidebarWorkspaceOrderIds)
   const [searchQuery, setSearchQuery] = useState('')
   const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
   const [newSessionKbdFlash, setNewSessionKbdFlash] = useState(false)
@@ -471,7 +371,7 @@ export function ChatSidebar({
   )
 
   const sortedSessions = useMemo(
-    () => [...visibleSessions].sort((a, b) => sessionTime(b) - sessionTime(a)),
+    () => sortByLatestActivity(visibleSessions),
     [visibleSessions]
   )
 
@@ -572,28 +472,16 @@ export function ChatSidebar({
     [sortedSessions, pinnedRealIdSet]
   )
 
-  useEffect(() => {
-    const next = reconcileOrderIds(
-      unpinnedAgentSessions.map(s => s.id),
-      agentOrderIds
-    )
-
-    if (!sameIds(next, agentOrderIds)) {
-      setSidebarSessionOrderIds(next)
-    }
-  }, [agentOrderIds, unpinnedAgentSessions])
-
-  const agentSessions = useMemo(
-    () => orderByIds(unpinnedAgentSessions, s => s.id, agentOrderIds),
-    [unpinnedAgentSessions, agentOrderIds]
-  )
+  // Recents always follow the latest activity (AIS-459): a saved manual order
+  // froze every session at the slot it was first seen in. Pins keep theirs.
+  const agentSessions = unpinnedAgentSessions
 
   // Recents are local-only: messaging-platform sessions are fetched as their
   // own slice ($messagingSessions) and rendered in self-managed per-platform
   // sections below, so there is no source-grouping magic to untangle here.
   const agentGroups = useMemo(
-    () => orderByIds(workspaceGroupsFor(agentSessions, s.noWorkspace), g => g.id, workspaceOrderIds),
-    [agentSessions, s.noWorkspace, workspaceOrderIds]
+    () => workspaceGroupsFor(agentSessions, s.noWorkspace),
+    [agentSessions, s.noWorkspace]
   )
 
   const loadMoreForProfileGroup = useCallback(
@@ -756,21 +644,6 @@ export function ChatSidebar({
   // and grouped views flatten into the single outer scroll instead.
   const recentsVirtualizes = !displayAgentGroups?.length && displayAgentSessions.length >= VIRTUALIZE_THRESHOLD
 
-  useEffect(() => {
-    if (!displayAgentGroups?.length || showAllProfiles) {
-      return
-    }
-
-    const next = reconcileOrderIds(
-      displayAgentGroups.map(g => g.id),
-      workspaceOrderIds
-    )
-
-    if (!sameIds(next, workspaceOrderIds)) {
-      setSidebarWorkspaceOrderIds(next)
-    }
-  }, [displayAgentGroups, showAllProfiles, workspaceOrderIds])
-
   const showSessionSkeletons = sessionsLoading && sortedSessions.length === 0
 
   const showSessionSections = showSessionSkeletons || sortedSessions.length > 0
@@ -790,44 +663,6 @@ export function ChatSidebar({
     // (lineage-root) ids, so translate before reordering.
     const dragged = sessionByAnyId.get(String(active.id))
     reorderPinnedSession(dragged ? sessionPinId(dragged) : String(active.id), newIndex)
-  }
-
-  const handleAgentDragEnd = ({ active, over }: DragEndEvent) => {
-    if (!over || active.id === over.id) {
-      return
-    }
-
-    const activeId = String(active.id)
-    const overId = String(over.id)
-    const activeGroup = parseGroupDndId(activeId)
-    const overGroup = parseGroupDndId(overId)
-
-    if (activeGroup && overGroup) {
-      const groups = displayAgentGroups ?? []
-      const oldIdx = groups.findIndex(g => g.id === activeGroup)
-      const newIdx = groups.findIndex(g => g.id === overGroup)
-
-      if (oldIdx < 0 || newIdx < 0) {
-        return
-      }
-
-      setSidebarWorkspaceOrderIds(arrayMove(groups, oldIdx, newIdx).map(g => g.id))
-
-      return
-    }
-
-    if (activeGroup || overGroup) {
-      return
-    }
-
-    const oldIdx = agentSessions.findIndex(s => s.id === activeId)
-    const newIdx = agentSessions.findIndex(s => s.id === overId)
-
-    if (oldIdx < 0 || newIdx < 0) {
-      return
-    }
-
-    setSidebarSessionOrderIds(arrayMove(agentSessions, oldIdx, newIdx).map(s => s.id))
   }
 
   return (
@@ -1031,7 +866,6 @@ export function ChatSidebar({
                 onArchiveSession={onArchiveSession}
                 onDeleteSession={onDeleteSession}
                 onNewSessionInWorkspace={showAllProfiles ? undefined : onNewSessionInWorkspace}
-                onReorder={showAllProfiles ? undefined : handleAgentDragEnd}
                 onResumeSession={onResumeSession}
                 onToggle={() => setSidebarRecentsOpen(!agentsOpen)}
                 onTogglePin={pinSession}

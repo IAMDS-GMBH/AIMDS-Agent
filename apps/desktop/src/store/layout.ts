@@ -4,6 +4,7 @@ import {
   arraysEqual,
   insertUniqueId,
   persistBoolean,
+  persistString,
   persistStringArray,
   storedBoolean,
   storedStringArray
@@ -56,8 +57,6 @@ export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states 
 })
 
 export const $pinnedSessionIds = atom(storedStringArray(SIDEBAR_PINNED_STORAGE_KEY))
-export const $sidebarSessionOrderIds = atom(storedStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY))
-export const $sidebarWorkspaceOrderIds = atom(storedStringArray(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY))
 export const $sidebarPinsOpen = atom(true)
 // Set by the PaneShell hover-reveal overlay while the sidebar is collapsed; kept
 // true the whole time it's a floating overlay (not just while shown) so the
@@ -83,8 +82,10 @@ export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 $pinnedSessionIds.subscribe(ids => persistStringArray(SIDEBAR_PINNED_STORAGE_KEY, [...ids]))
 $sidebarCronOpen.subscribe(open => persistBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY, open))
 $sidebarMessagingOpenIds.subscribe(ids => persistStringArray(SIDEBAR_MESSAGING_OPEN_STORAGE_KEY, [...ids]))
-$sidebarSessionOrderIds.subscribe(ids => persistStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY, [...ids]))
-$sidebarWorkspaceOrderIds.subscribe(ids => persistStringArray(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY, [...ids]))
+// Recents and workspace groups follow the latest activity. The saved manual
+// orders froze them at first sight (AIS-459), so drop what older builds stored.
+persistString(SIDEBAR_SESSION_ORDER_STORAGE_KEY, null)
+persistString(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY, null)
 $sidebarAgentsGrouped.subscribe(grouped => persistBoolean(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, grouped))
 $panesFlipped.subscribe(flipped => persistBoolean(PANES_FLIPPED_STORAGE_KEY, flipped))
 
@@ -157,17 +158,6 @@ export function setSidebarAgentsGrouped(grouped: boolean) {
   $sidebarAgentsGrouped.set(grouped)
 }
 
-export function setSidebarSessionOrderIds(ids: string[]) {
-  if (!arraysEqual($sidebarSessionOrderIds.get(), ids)) {
-    $sidebarSessionOrderIds.set(ids)
-  }
-}
-
-export function setSidebarWorkspaceOrderIds(ids: string[]) {
-  if (!arraysEqual($sidebarWorkspaceOrderIds.get(), ids)) {
-    $sidebarWorkspaceOrderIds.set(ids)
-  }
-}
 
 export function setSidebarResizing(resizing: boolean) {
   $isSidebarResizing.set(resizing)
