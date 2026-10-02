@@ -12,6 +12,8 @@ export interface TurnPhase {
   reason?: 'busy' | 'connection' | 'error'
   /** Last retry reason, kept while the next attempt waits. */
   retriedFor?: 'busy' | 'connection' | 'error'
+  /** When this phase (name + attempt + reason) began, in ms. */
+  since?: number
 }
 
 const PHASES = new Set<TurnPhaseName>(['compressing', 'retrying', 'switching_model', 'waiting'])
@@ -46,6 +48,11 @@ export function parseTurnPhase(payload: unknown, previous?: TurnPhase): TurnPhas
   } else if (name === 'waiting' && (phase.attempt ?? 1) > 1) {
     phase.retriedFor = previous?.retriedFor ?? previous?.reason
   }
+
+  const samePhase =
+    previous?.name === phase.name && previous?.attempt === phase.attempt && previous?.reason === phase.reason
+
+  phase.since = samePhase && previous?.since ? previous.since : Date.now()
 
   return phase
 }

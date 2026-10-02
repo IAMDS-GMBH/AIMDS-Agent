@@ -306,7 +306,8 @@ const ResponseLoadingIndicator: FC<{ sessionId?: null | string }> = ({ sessionId
   const [seed] = useState(() => Math.floor(Math.random() * 1000))
   const nerdy = resolveIsNerdyMode(tipMode, isIamds)
   const phase = sessionId ? phases[sessionId] : undefined
-  const { hint, line } = turnPhaseLine(phase, { elapsed, locale, nerdy, seed })
+  const phaseElapsed = phase?.since ? Math.max(0, Math.floor((Date.now() - phase.since) / 1000)) : elapsed
+  const { hint, line } = turnPhaseLine(phase, { elapsed, locale, nerdy, phaseElapsed, seed })
 
   return (
     <StatusRow data-slot="aui_response-loading" label={t.assistant.thread.loadingResponse}>

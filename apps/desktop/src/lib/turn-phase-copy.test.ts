@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { parseTurnPhase } from '@/store/turn-phase'
 
-import { turnPhaseLine } from './turn-phase-copy'
+import { rotatingPick, turnPhaseLine } from './turn-phase-copy'
 
 const business = { elapsed: 5, locale: 'de', nerdy: false }
 
@@ -65,6 +65,36 @@ describe('turn phase copy (AIS-460)', () => {
     const lines = new Set([0, 12, 24, 36].map(elapsed => turnPhaseLine(phase, { elapsed, locale: 'de', nerdy: true, seed: 0 }).line))
 
     expect(lines.size).toBeGreaterThan(1)
+  })
+
+  it('changes playful lines at random gaps, never on a fixed beat and never twice in a row', () => {
+    const items = ['a', 'b', 'c', 'd', 'e', 'f']
+    const changes: number[] = []
+    let previous = rotatingPick(items, 1234, 0)
+
+    for (let t = 1; t <= 600; t += 1) {
+      const current = rotatingPick(items, 1234, t)
+
+      if (current !== previous) {
+        changes.push(t)
+      }
+
+      previous = current
+    }
+
+    const gaps = changes.slice(1).map((t, i) => t - changes[i])
+
+    expect(changes.length).toBeGreaterThan(10)
+    expect(new Set(gaps).size).toBeGreaterThan(3)
+    expect(Math.min(...gaps)).toBeGreaterThanOrEqual(10)
+    expect(Math.max(...gaps)).toBeLessThanOrEqual(31)
+  })
+
+  it('starts each phase with its own pick', () => {
+    const items = Array.from({ length: 12 }, (_, i) => `line ${i}`)
+    const firstPicks = new Set(Array.from({ length: 20 }, (_, seed) => rotatingPick(items, seed * 7919, 0)))
+
+    expect(firstPicks.size).toBeGreaterThan(4)
   })
 
   it('ignores unknown phases', () => {
