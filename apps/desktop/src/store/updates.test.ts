@@ -242,6 +242,33 @@ describe('applyUpdates (desktop self-update) hand-off failures', () => {
     expect(state.applying).toBe(false)
   })
 
+  it('treats offline as its own state and retries once the machine is online (AIS-463)', async () => {
+    apply.mockResolvedValueOnce({ ok: false, error: 'offline' }).mockResolvedValueOnce({ ok: true, handedOff: true })
+
+    await applyUpdates({ channel: 'stable' } as never)
+
+    const state = $updateApply.get()
+    expect(state.stage).toBe('error')
+    expect(state.error).toBe('offline')
+    expect(state.message).toBe('')
+    expect(apply).toHaveBeenCalledTimes(1)
+
+    window.dispatchEvent(new Event('online'))
+    await vi.waitFor(() => expect(apply).toHaveBeenCalledTimes(2))
+    expect(apply.mock.calls[1][0]).toEqual({ channel: 'stable' })
+  })
+
+  it('does not retry an offline failure the user already moved past', async () => {
+    apply.mockResolvedValue({ ok: false, error: 'offline' })
+
+    await applyUpdates()
+    $updateApply.set({ applying: false, stage: 'idle', message: '', percent: null, error: null, command: null, log: [] })
+    window.dispatchEvent(new Event('online'))
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    expect(apply).toHaveBeenCalledTimes(1)
+  })
+
   it('leaves a successful hand-off to the progress stream', async () => {
     apply.mockResolvedValue({ ok: true, handedOff: true })
 

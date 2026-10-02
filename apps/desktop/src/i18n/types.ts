@@ -1247,6 +1247,8 @@ export interface Translations {
     applyingClose: string
     errorTitle: string
     errorBody: string
+    offlineTitle: string
+    offlineBody: string
     notNow: string
     applyStatus: {
       preparing: string

@@ -407,6 +407,20 @@ def _hermetic_environment(tmp_path, monkeypatch):
 # Backward-compat alias — old tests reference this fixture name. Keep it
 # as a no-op wrapper so imports don't break.
 @pytest.fixture(autouse=True)
+def _assume_online(request, monkeypatch):
+    """``hermes update`` probes GitHub before doing anything (AIS-463). Tests
+    must not depend on the real network: assume online unless a test opts
+    out with the ``real_connectivity`` marker."""
+    if request.node.get_closest_marker("real_connectivity"):
+        return
+    try:
+        import hermes_cli.connectivity as connectivity
+    except Exception:
+        return
+    monkeypatch.setattr(connectivity, "is_offline", lambda *a, **k: False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_hermes_home(_hermetic_environment):
     """Alias preserved for any test that yields this name explicitly."""
     return None

@@ -311,7 +311,8 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
       // (AIS-331 / SUP-20260914-105316 "Er sagt er restartet, restartet aber
       // nicht"). Land on the error state so the overlay shows the message,
       // the close button and Retry.
-      const message = result.message || translateNow('updates.applyStatus.failed')
+      const offline = result.error === 'offline'
+      const message = offline ? '' : result.message || translateNow('updates.applyStatus.failed')
       $updateApply.set({
         ...$updateApply.get(),
         applying: false,
@@ -319,6 +320,10 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
         error: result.error || 'apply-failed',
         message
       })
+
+      if (offline) {
+        retryApplyWhenOnline(opts)
+      }
     }
 
     return result
@@ -433,6 +438,30 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
 
     return { ok: false, error: 'apply-failed', message }
   }
+}
+
+// AIS-463: an update that found no internet connection runs again on its own
+// as soon as the machine is back online — the user does not have to click.
+let offlineRetryArmed = false
+
+function retryApplyWhenOnline(opts: DesktopUpdateApplyOptions): void {
+  if (offlineRetryArmed || typeof window === 'undefined') {
+    return
+  }
+
+  offlineRetryArmed = true
+  window.addEventListener(
+    'online',
+    () => {
+      offlineRetryArmed = false
+      const state = $updateApply.get()
+
+      if (state.stage === 'error' && state.error === 'offline') {
+        void applyUpdates(opts)
+      }
+    },
+    { once: true }
+  )
 }
 
 function ingestProgress(payload: DesktopUpdateProgress): void {

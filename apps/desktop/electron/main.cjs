@@ -2611,6 +2611,13 @@ async function applyUpdatesPosixInApp() {
     env,
     stage: 'update'
   })
+  // `hermes update` exits 75 when the machine is offline (AIS-463): nothing
+  // changed and nothing to report — the renderer says so plainly and retries
+  // once the connection is back.
+  if (updated.code === UPDATE_EXIT_OFFLINE) {
+    emitUpdateProgress({ stage: 'error', message: '', error: 'offline' })
+    return { ok: false, error: 'offline' }
+  }
   if (updated.code !== 0) {
     emitUpdateProgress({ stage: 'error', message: 'hermes update failed.', error: updated.error || 'update-failed' })
     return { ok: false, error: 'hermes update failed' }
@@ -3708,6 +3715,8 @@ const HTML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: 
 const RENDER_TITLE_MAX_CONCURRENT = 2
 const RENDER_TITLE_TIMEOUT_MS = 8000
 const RENDER_TITLE_GRACE_MS = 700
+// hermes_cli.main.UPDATE_EXIT_OFFLINE: `hermes update` found no internet connection.
+const UPDATE_EXIT_OFFLINE = 75
 // Resource types we cancel before the network even fires — keeps the hidden
 // renderer fast and cuts third-party tracking noise.
 const RENDER_TITLE_BLOCKED_RESOURCES = new Set([

@@ -107,7 +107,8 @@ const COPY = {
         'Ich mache Marie Kondo mit dem Verlauf: Was keine Freude macht, wird zusammengefasst …',
         'Verlauf wird gezippt. Verlustfrei? Sagen wir: verlustarm …',
         'Ich schreddere Beweise … äh, fasse den Verlauf zusammen …',
-        'Ich presse den Verlauf zu einem Würfel, wie WALL-E. Kompakt, aber alles drin …'
+        'Ich presse den Verlauf zu einem Würfel, wie WALL-E. Kompakt, aber alles drin …',
+        'Ich fasse den Verlauf zusammen. Spart Arbeitsspeicher – und der ist gerade teurer als Gold …'
       ],
       readingHistory: (n: number) => [
         `Ich lese ${n} Nachrichten Verlauf … und tue so, als hätte ich sie nie vergessen.`,
@@ -123,7 +124,8 @@ const COPY = {
         'Das ist nicht die Antwort, die du suchst … noch nicht. Ich lese weiter …',
         'Ich sortiere den Verlauf wie WALL-E seinen Müll: Würfel für Würfel …',
         'Die Antwort ist 42. Ich prüfe nur noch, wie die Frage lautete …',
-        'Scotty, mehr Energie auf die Leseschilde! Ich bin gleich durch …'
+        'Scotty, mehr Energie auf die Leseschilde! Ich bin gleich durch …',
+        'Ich lese den Verlauf sparsam – bei den RAM-Preisen gerade zählt jedes Byte …'
       ],
       retryAttempt: (reason: string | undefined, a: number, m: number) =>
         reason === 'busy'
@@ -140,7 +142,8 @@ const COPY = {
         reason === 'busy'
           ? [
               'Der KI-Dienst hat gerade Feierabendverkehr – kurz warten …',
-              'Beim KI-Dienst ist es voller als im Hangar des Todessterns – kurz warten …'
+              'Beim KI-Dienst ist es voller als im Hangar des Todessterns – kurz warten …',
+              'Der KI-Dienst wartet auf mehr RAM. Kostet gerade ein Vermögen – kurz warten …'
             ]
           : reason === 'connection'
             ? ['Verbindung weg. Ich puste kurz in den Router …', 'Verbindung weg. Ich komme wieder – versprochen.']
@@ -157,6 +160,7 @@ const COPY = {
         'Ich spüre eine Erschütterung der Macht … ach nein, nur deine Frage.',
         'Fluxkompensator lädt … 1,21 Gigawatt Denkleistung!',
         'Skynet ist das nicht. Ehrenwort. Ich denke nur nach …',
+        'Ich denke nach – mit so wenig RAM wie möglich. RAMflation, du weißt schon …',
         'Psst – der Toaster hat mir gerade etwas zugeflüstert …',
         'Ich prüfe kurz, ob du ein Mensch bist. Bitte keine Ampeln anklicken …',
         'Die Kaffeemaschine im Büro ist übrigens auch eine KI. Ich frage kurz nach …',
@@ -191,7 +195,8 @@ const COPY = {
         'I am Marie-Kondo-ing the conversation: whatever sparks no joy gets summarized …',
         'Zipping the conversation. Lossless? Let us say: lossy-ish …',
         'I am shredding the evidence … er, summarizing the conversation …',
-        'Crushing the conversation into a cube, WALL-E style. Compact, but it is all in there …'
+        'Crushing the conversation into a cube, WALL-E style. Compact, but it is all in there …',
+        'Summarizing the conversation. Saves memory – which costs more than gold right now …'
       ],
       readingHistory: (n: number) => [
         `I am reading ${n} messages of history … and pretending I never forgot them.`,
@@ -207,7 +212,8 @@ const COPY = {
         'This is not the answer you are looking for … yet. Still reading …',
         'Sorting the history like WALL-E sorts trash: one cube at a time …',
         'The answer is 42. I am just checking what the question was …',
-        'Scotty, more power to the reading shields! Almost through …'
+        'Scotty, more power to the reading shields! Almost through …',
+        "Reading the history frugally – at today's RAM prices every byte counts …"
       ],
       retryAttempt: (reason: string | undefined, a: number, m: number) =>
         reason === 'busy'
@@ -224,7 +230,8 @@ const COPY = {
         reason === 'busy'
           ? [
               'The AI service is stuck in rush hour – hang on …',
-              'The AI service is busier than the Death Star hangar – hang on …'
+              'The AI service is busier than the Death Star hangar – hang on …',
+              'The AI service is waiting for more RAM. It costs a fortune these days – hang on …'
             ]
           : reason === 'connection'
             ? ['Connection gone. I am blowing into the router …', "Connection gone. I'll be back – promise."]
@@ -241,6 +248,7 @@ const COPY = {
         'I sense a disturbance in the Force … oh, it is just your question.',
         'Flux capacitor charging … 1.21 gigawatts of thinking!',
         'This is not Skynet. Promise. I am just thinking …',
+        'Thinking – with as little RAM as possible. RAMflation, you know …',
         'Psst – the toaster just whispered something to me …',
         'I am checking whether you are human. Please do not click any traffic lights …',
         'By the way, the office coffee machine is an AI too. I am asking it real quick …',
