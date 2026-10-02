@@ -110,7 +110,7 @@ export function UpdatesOverlay() {
           )}
 
           {phase === 'error' && (
-            <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onReportIssue={() => handleReportIssue(`Update-Fehler: ${apply.message || 'Unbekannt'}`)} onRetry={handleInstall} />
+            <ErrorView message={apply.message} offline={apply.error === 'offline'} onDismiss={() => handleClose(false)} onReportIssue={() => handleReportIssue(`Update-Fehler: ${apply.message || 'Unbekannt'}`)} onRetry={handleInstall} />
           )}
 
           {phase === 'idle' && (
@@ -487,7 +487,19 @@ function ApplyingView({ apply, isBackend, onReportIssue }: { apply: UpdateApplyS
   )
 }
 
-function ErrorView({ message, onDismiss, onReportIssue, onRetry }: { message: string; onDismiss: () => void; onReportIssue: () => void; onRetry: () => void }) {
+function ErrorView({
+  message,
+  offline = false,
+  onDismiss,
+  onReportIssue,
+  onRetry
+}: {
+  message: string
+  offline?: boolean
+  onDismiss: () => void
+  onReportIssue: () => void
+  onRetry: () => void
+}) {
   const { t } = useI18n()
   const u = t.updates
 
@@ -496,11 +508,13 @@ function ErrorView({ message, onDismiss, onReportIssue, onRetry }: { message: st
       className="px-6 pb-6 pt-7 pr-8"
       description={
         <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
-          {message || u.errorBody}
+          {offline ? u.offlineBody : message || u.errorBody}
         </DialogDescription>
       }
       title={
-        <DialogTitle className="text-center text-xl font-semibold tracking-tight">{u.errorTitle}</DialogTitle>
+        <DialogTitle className="text-center text-xl font-semibold tracking-tight">
+          {offline ? u.offlineTitle : u.errorTitle}
+        </DialogTitle>
       }
     >
       <Button className="font-semibold" onClick={onRetry} size="lg">

@@ -7971,8 +7971,26 @@ def _current_branch_name() -> str:
     return str(proc.stdout or "").strip()
 
 
+#: ``hermes update`` exit code for "no internet connection" (EX_TEMPFAIL). The
+#: desktop shows a plain offline message and retries once it is online again
+#: instead of reporting a failed update (AIS-463).
+UPDATE_EXIT_OFFLINE = 75
+
+
 def _report_update_incident(kind: str, detail: str, *, channel: str = "", severity: str = "medium") -> None:
-    """Log + auto-report an update fallback / failure as a support case (AIS-323, best-effort)."""
+    """Log + auto-report an update fallback / failure as a support case (AIS-323, best-effort).
+
+    Not while the machine is offline: an unreachable network is not a
+    failure of the update and must not become a support case (AIS-463).
+    """
+    try:
+        from hermes_cli.connectivity import is_offline
+
+        if is_offline():
+            logger.info("incident %s not reported: no internet connection", kind)
+            return
+    except Exception:
+        pass
     try:
         from hermes_cli import __version__
         from hermes_cli.incident_report import report_incident
@@ -10168,6 +10186,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if concurrent:
                 print(_format_concurrent_instances_message(concurrent, scripts_dir))
                 sys.exit(2)
+
+    # Offline is not a failed update (AIS-463): say so plainly, change
+    # nothing, report nothing, and let the caller retry once online.
+    from hermes_cli.connectivity import is_offline
+
+    if is_offline():
+        print("✗ No internet connection — nothing was changed. The update will run once you are back online.")
+        sys.exit(UPDATE_EXIT_OFFLINE)
 
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.

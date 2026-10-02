@@ -1478,6 +1478,8 @@ export const de
     applyingClose: 'Hermes wird zum Installieren des Updates geschlossen.',
     errorTitle: 'Update nicht abgeschlossen',
     errorBody: 'Keine Sorge — nichts ging verloren. Du kannst es jetzt erneut versuchen.',
+    offlineTitle: 'Keine Internetverbindung',
+    offlineBody: 'Es wurde nichts verändert. Ich versuche das Update automatisch erneut, sobald du wieder online bist.',
     notNow: 'Nicht jetzt',
     applyStatus: {
       preparing: 'Backend wird aktualisiert…',

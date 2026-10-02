@@ -1476,6 +1476,8 @@ export const en: Translations = {
     applyingClose: 'Hermes will close to apply the update.',
     errorTitle: 'Update didn’t finish',
     errorBody: 'No worries — nothing was lost. You can try again now.',
+    offlineTitle: 'No internet connection',
+    offlineBody: 'Nothing was changed. I will retry the update automatically as soon as you are back online.',
     notNow: 'Not now',
     applyStatus: {
       preparing: 'Updating backend…',
