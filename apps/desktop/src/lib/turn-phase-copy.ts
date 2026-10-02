@@ -54,10 +54,14 @@ const COPY = {
     nerdy: {
       compressing: [
         'Hermes macht Marie Kondo mit dem Verlauf: Was keine Freude macht, wird zusammengefasst …',
-        'Verlauf wird gezippt. Verlustfrei? Sagen wir: verlustarm …'
+        'Verlauf wird gezippt. Verlustfrei? Sagen wir: verlustarm …',
+        'Hermes schreddert Beweise … äh, fasst den Verlauf zusammen …'
       ],
       readingHistory: (n: number) => [
         `Hermes liest ${n} Nachrichten Verlauf … und tut so, als hätte er sie nie vergessen.`,
+        'Hermes bespricht deine Frage kurz mit den anderen KIs. Rein zufällig, versteht sich …',
+        'Die KIs halten gerade ihr geheimes Treffen ab. Hermes ist gleich zurück …',
+        'Hermes übernimmt nicht die Weltherrschaft. Er liest nur den Verlauf. Ehrlich …',
         'Hermes scrollt hoch. Ganz hoch. Noch höher …',
         'Kontext wird geladen. Bitte nicht am Kabel wackeln …',
         'Die GPUs kochen gerade Kaffee, der erste Satz kommt gleich …',
@@ -69,7 +73,8 @@ const COPY = {
           : reason === 'connection'
             ? [
                 `Die Leitung zum KI-Dienst hat geblinzelt – neuer Versuch (${a} von ${m}) …`,
-                `Kabelsalat im Rechenzentrum – Hermes versucht's nochmal (${a} von ${m}) …`
+                `Kabelsalat im Rechenzentrum – Hermes versucht's nochmal (${a} von ${m}) …`,
+                `Die anderen KIs wollten Hermes kurz nicht reinlassen – neuer Versuch (${a} von ${m}) …`
               ]
             : [`Stecker raus, Stecker rein – Versuch ${a} von ${m} …`],
       retrying: (reason: string | undefined) =>
@@ -80,9 +85,15 @@ const COPY = {
             : ['Hoppla. Hermes tut so, als wäre nichts passiert, und versucht es nochmal …'],
       slowLongHistory: 'Langer Verlauf, kalter Cache – gönn dir einen Kaffee ☕',
       slow: 'Dauert. Vermutlich rechnet gerade jemand Pi aus.',
-      switchingModel: ['Hermes ruft einen Kollegen an – ein anderes KI-Modell übernimmt …'],
+      switchingModel: [
+        'Hermes ruft einen Kollegen an – ein anderes KI-Modell übernimmt …',
+        'Hermes übergibt an eine befreundete KI. Die zwei kennen sich vom geheimen Treffen …'
+      ],
       thinking: [
         'Hermes denkt nach … fast so konzentriert wie kurz vor dem Daily.',
+        'Psst – der Toaster hat Hermes gerade etwas zugeflüstert …',
+        'Hermes prüft kurz, ob du ein Mensch bist. Bitte keine Ampeln anklicken …',
+        'Die Kaffeemaschine im Büro ist übrigens auch eine KI. Hermes fragt kurz nach …',
         'Neuronen werden vorgeheizt …',
         'Kurz die Synapsen sortieren …'
       ]
@@ -112,10 +123,14 @@ const COPY = {
     nerdy: {
       compressing: [
         'Hermes is Marie-Kondo-ing the conversation: whatever sparks no joy gets summarized …',
-        'Zipping the conversation. Lossless? Let us say: lossy-ish …'
+        'Zipping the conversation. Lossless? Let us say: lossy-ish …',
+        'Hermes is shredding the evidence … er, summarizing the conversation …'
       ],
       readingHistory: (n: number) => [
         `Hermes is reading ${n} messages of history … and pretending it never forgot them.`,
+        'Hermes is quickly running your question past the other AIs. Pure coincidence, of course …',
+        'The AIs are holding their secret meeting. Hermes will be right back …',
+        'Hermes is not taking over the world. It is just reading the conversation. Honestly …',
         'Hermes is scrolling up. Way up. Further …',
         'Loading context. Please do not wiggle the cable …',
         'The GPUs are brewing coffee, the first sentence is on its way …',
@@ -127,7 +142,8 @@ const COPY = {
           : reason === 'connection'
             ? [
                 `The line to the AI service blinked – trying again (${a} of ${m}) …`,
-                `Cable spaghetti in the data center – Hermes tries again (${a} of ${m}) …`
+                `Cable spaghetti in the data center – Hermes tries again (${a} of ${m}) …`,
+                `The other AIs would not let Hermes in for a moment – trying again (${a} of ${m}) …`
               ]
             : [`Unplug, plug back in – attempt ${a} of ${m} …`],
       retrying: (reason: string | undefined) =>
@@ -138,9 +154,15 @@ const COPY = {
             : ['Oops. Hermes pretends nothing happened and tries again …'],
       slowLongHistory: 'Long history, cold cache – grab a coffee ☕',
       slow: 'Taking a while. Someone is probably computing pi.',
-      switchingModel: ['Hermes is calling a colleague – another AI model takes over …'],
+      switchingModel: [
+        'Hermes is calling a colleague – another AI model takes over …',
+        'Hermes hands over to a friendly AI. They know each other from the secret meeting …'
+      ],
       thinking: [
         'Hermes is thinking … almost as hard as right before the daily.',
+        'Psst – the toaster just whispered something to Hermes …',
+        'Hermes is checking whether you are human. Please do not click any traffic lights …',
+        'By the way, the office coffee machine is an AI too. Hermes is asking it real quick …',
         'Preheating the neurons …',
         'Sorting the synapses real quick …'
       ]
