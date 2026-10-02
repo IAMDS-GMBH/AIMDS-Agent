@@ -2250,7 +2250,8 @@ def build_document_guidance(valid_tool_names: "set[str] | None" = None) -> str:
         "convert one. Read Office files (docx/xlsx/pptx/odt/ods/odp) and PDFs with `read_file(<path>)`: they "
         "come back as Markdown, converted by the AIMDS-Suite Docling when it is reachable and locally otherwise "
         "(the result names the converter and, when the Suite was skipped, why). Document metadata (author, "
-        "dates, pages): `office_word(action=read_metadata)` for .docx or the AIMDS-Suite `storage_meta` tool — "
+        "dates, pages): `office_word(action=read_metadata)` for .docx; for an ingested document the AIMDS-Suite "
+        "`storage_document_meta` (processing status, extraction) and `storage_summary` tools — "
         "find them with `tool_search` when they are not listed. Never parse a document with terminal commands "
         "or ad-hoc scripts."
     )

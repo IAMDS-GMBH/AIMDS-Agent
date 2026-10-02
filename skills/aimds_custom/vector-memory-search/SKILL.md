@@ -16,13 +16,13 @@ Prevents loading complete documents into the prompt context. Enforces a step-by-
 ```
 [Stage 1: Index & Topics] ──> [Stage 2: BM25/Vector Search] ──> [Stage 3: Chunk Reading]
   storage_status()              storage_search(query)             storage_get_document(
-  storage_meta("topics")        memory_search(query)                id, offset_words=...)
+  storage_topics(limit)         memory_search(query)                id, offset_words=...)
   (~50-150 tokens)              (~150-300 tokens)                 (~200-500 tokens)
 ```
 
 ### Stage 1: Status & topic overview (very cheap)
 1. Call `storage_status()` to check the index state.
-2. For general topic questions: `storage_meta({"kind":"topics","limit":10})`.
+2. For general topic questions: `storage_topics({"limit":10})`; the documents of one topic with `storage_search_topics({"topic":"<term>"})`, new ones with `storage_recent({"limit":10})`.
 
 ### Stage 2: Targeted search (returns only IDs & one-line excerpts)
 1. Run `storage_search({"query":"provider:upload type:pdf <search terms>","limit":5})` or `memory_search({"query":"<search terms>"})`.

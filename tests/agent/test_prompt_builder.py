@@ -2202,7 +2202,8 @@ class TestDocumentGuidance:
         text = build_document_guidance({"read_file", "terminal"})
         assert text.startswith("# Documents")
         assert "`read_file(<path>)`" in text and "Docling" in text
-        assert "read_metadata" in text and "storage_meta" in text
+        assert "read_metadata" in text and "storage_document_meta" in text and "storage_summary" in text
+        assert "storage_meta`" not in text
         assert "documents/attachments/" in text and "documents/m365_attachments/" in text
         # AIS-384: SharePoint/OneDrive downloads land under m365_downloads/,
         # not m365_attachments/ (only chat/mail attachments use that folder)

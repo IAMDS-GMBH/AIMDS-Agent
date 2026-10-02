@@ -1569,7 +1569,7 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read text files with line numbers. Use offset/limit for large files. Office files (docx/xlsx/pptx/odt/ods/odp) and PDFs are returned as Markdown automatically (AIMDS-Suite Docling when reachable, local converters otherwise; the result names the converter and any Docling frontmatter as `metadata`) — never parse them with terminal commands. Document metadata beyond that: `office_word(action=read_metadata)` for .docx or the AIMDS-Suite `storage_meta` tool.",
+    "description": "Read text files with line numbers. Use offset/limit for large files. Office files (docx/xlsx/pptx/odt/ods/odp) and PDFs are returned as Markdown automatically (AIMDS-Suite Docling when reachable, local converters otherwise; the result names the converter and any Docling frontmatter as `metadata`) — never parse them with terminal commands. Document metadata beyond that: `office_word(action=read_metadata)` for .docx; the AIMDS-Suite `storage_document_meta` / `storage_summary` tools for an ingested document.",
     "parameters": {
         "type": "object",
         "properties": {

@@ -244,7 +244,8 @@ def test_document_attachment_block_names_read_file_and_metadata_tools(sample_rep
     message = result.message
     assert str(docx) in message and "unchanged" in message
     assert "`read_file(" in message and "Docling" in message
-    assert "read_metadata" in message and "storage_meta" in message
+    assert "read_metadata" in message and "storage_document_meta" in message
+    assert "storage_meta`" not in message
     assert "terminal commands" in message
     assert "not supported" not in message.lower()
 

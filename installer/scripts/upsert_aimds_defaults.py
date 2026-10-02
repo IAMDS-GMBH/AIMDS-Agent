@@ -149,12 +149,20 @@ _AIMDS_TOOL_INCLUDE_RAW = [
     "ntfy_list_topics",
     "ntfy_get_messages",
     # go-mcp-customer document store: read_file's Suite Docling path needs
-    # ingest + get_document in-process (AIS-294); search/meta let the model
-    # find what it ingested. Present only when the key has mcp_customer.
+    # ingest + get_document in-process (AIS-294); search and the metadata tools
+    # let the model find what it ingested. Present only when the key has
+    # mcp_customer. Suite 2.17 split the multi-mode storage_meta (removed with
+    # 2.18) into one tool per action (AIS-392); storage_status is the Suite's
+    # recommended entry point (index state) that the search skill starts with.
+    "storage_status",
     "storage_ingest_upload",
     "storage_get_document",
     "storage_search",
-    "storage_meta",
+    "storage_topics",
+    "storage_search_topics",
+    "storage_summary",
+    "storage_recent",
+    "storage_document_meta",
 ]
 
 _AIMDS_TOOL_INCLUDE_LEGACY = (
@@ -208,6 +216,30 @@ _AIMDS_TOOL_INCLUDE_LEGACY = (
         "memory_list",
         "memory_upsert",
         "memory_delete",
+    ),
+    # Until AIS-392: go-mcp-customer metadata through the multi-mode storage_meta.
+    (
+        "memory_context",
+        "memory_list",
+        "memory_save",
+        "memory_read",
+        "memory_search",
+        "memory_manage",
+        "memory_backlinks",
+        "memory_transfer",
+        "memory_meta",
+        "memory_agent",
+        "memory_summarize_session",
+        "skill",
+        "web_search",
+        "web_fetch",
+        "ntfy_send_notification",
+        "ntfy_list_topics",
+        "ntfy_get_messages",
+        "storage_ingest_upload",
+        "storage_get_document",
+        "storage_search",
+        "storage_meta",
     ),
 )
 

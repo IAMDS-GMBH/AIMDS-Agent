@@ -658,7 +658,8 @@ def _binary_reference_block(ref: ContextReference, path: Path) -> str:
             "Read it with `read_file(<that path>)`: Office files (docx/xlsx/pptx/odt/ods/odp) and PDFs "
             "come back as Markdown, converted by the AIMDS-Suite Docling when it is reachable and locally "
             "otherwise (the result names the converter). For document metadata (author, dates, pages) use "
-            "`office_word(action=read_metadata)` on a .docx or the AIMDS-Suite `storage_meta` tool. "
+            "`office_word(action=read_metadata)` on a .docx; an ingested document's processing status and "
+            "summary come from the AIMDS-Suite `storage_document_meta` / `storage_summary` tools. "
             "Never parse a document with terminal commands or ad-hoc scripts; do not tell the user the "
             "file type is unsupported."
         )

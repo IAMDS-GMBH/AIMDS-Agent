@@ -81,13 +81,16 @@ class TestLoadDeferredTool:
         assert _names(agent).count("mcp_dt_gh_create_issue") == 1
 
     def test_storage_get_document_loads_its_ingest_companion(self):
-        """AIS-349: get_document/meta need an ingest id → storage_ingest_upload
+        """AIS-349: get_document/summary/document_meta need an ingest id → storage_ingest_upload
         rides along, even when the search autoload cap would refuse it."""
         _register("mcp_dt_suite_mcp_customer_storage_get_document", "mcp-dt-suite")
-        _register("mcp_dt_suite_mcp_customer_storage_meta", "mcp-dt-suite")
+        _register("mcp_dt_suite_mcp_customer_storage_document_meta", "mcp-dt-suite")
         _register("mcp_dt_suite_mcp_customer_storage_ingest_upload", "mcp-dt-suite")
         agent = _agent({"mcp-dt-suite"})
         assert dt.companion_tool_names("mcp_dt_suite_mcp_customer_storage_get_document") == [
+            "mcp_dt_suite_mcp_customer_storage_ingest_upload"
+        ]
+        assert dt.companion_tool_names("mcp_dt_suite_mcp_customer_storage_summary") == [
             "mcp_dt_suite_mcp_customer_storage_ingest_upload"
         ]
         assert dt.companion_tool_names("mcp_dt_suite_mcp_customer_storage_ingest_upload") == []
@@ -97,7 +100,7 @@ class TestLoadDeferredTool:
         names = _names(agent)
         assert "mcp_dt_suite_mcp_customer_storage_ingest_upload" in names
         # Idempotent: loading meta afterwards does not duplicate the companion.
-        dt.load_deferred_tool(agent, "mcp_dt_suite_mcp_customer_storage_meta", reason="search", enforce_cap=True)
+        dt.load_deferred_tool(agent, "mcp_dt_suite_mcp_customer_storage_document_meta", reason="search", enforce_cap=True)
         assert _names(agent).count("mcp_dt_suite_mcp_customer_storage_ingest_upload") == 1
 
     def test_suffix_name_resolves_like_tool_call_does(self):

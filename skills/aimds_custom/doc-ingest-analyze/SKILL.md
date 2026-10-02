@@ -50,7 +50,7 @@ tags:
 # <Document title>
 
 ## Summary
-<summary from storage_meta(kind="summary", doc_id=...)>
+<summary from storage_summary(doc_id=...)>
 
 ## Storage reference
 - Document ID: `upload:<upload_id>`
