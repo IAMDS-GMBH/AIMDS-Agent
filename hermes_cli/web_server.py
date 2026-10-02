@@ -7919,7 +7919,9 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     db = SessionDB()
     sessions_dir = get_hermes_home() / "sessions"
     try:
-        deleted = db.delete_sessions(body.ids, sessions_dir=sessions_dir)
+        # A listed row is a whole conversation: delete every compression
+        # segment, or the chat reappears with its older history (AIS-459).
+        deleted = db.delete_sessions(body.ids, sessions_dir=sessions_dir, whole_conversation=True)
         return {"ok": True, "deleted": deleted}
     finally:
         db.close()
@@ -8083,7 +8085,8 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
     db = _open_session_db_for_profile(profile)
     sessions_dir = _sessions_dir_for_profile(profile)
     try:
-        if not db.delete_session(session_id, sessions_dir=sessions_dir):
+        # Whole conversation, like the bulk delete (AIS-459).
+        if not db.delete_session(session_id, sessions_dir=sessions_dir, whole_conversation=True):
             raise HTTPException(status_code=404, detail="Session not found")
         return {"ok": True}
     finally:
@@ -8157,7 +8160,7 @@ class SessionPrune(BaseModel):
 
 @app.post("/api/sessions/prune")
 async def prune_sessions_endpoint(body: SessionPrune):
-    """Delete ended sessions older than N days (mirrors `hermes sessions prune`)."""
+    """Delete conversations idle for more than N days (mirrors `hermes sessions prune`)."""
     if body.older_than_days < 1:
         raise HTTPException(status_code=400, detail="older_than_days must be >= 1")
     from hermes_state import SessionDB

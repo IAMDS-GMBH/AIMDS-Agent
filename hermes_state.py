@@ -3826,10 +3826,95 @@ class SessionDB:
         except OSError:
             pass
 
+    @staticmethod
+    def _is_lineage_title(child_title, parent_title) -> bool:
+        """``"<base> #n"`` titles mark compression continuations of ``<base>``.
+
+        Sessions reopened before AIS-275 were compressed again later, so the
+        parent's ``ended_at`` can postdate its first continuation; the title
+        the compression split assigned still ties them together.
+        """
+        if not child_title or not parent_title:
+            return False
+        base = re.sub(r" #\d+$", "", str(parent_title))
+        return bool(re.fullmatch(re.escape(base) + r" #\d+", str(child_title)))
+
+    @staticmethod
+    def _compression_chain_ids(conn, session_ids) -> set:
+        """Every segment of the compression chains *session_ids* belong to.
+
+        Lists project a compressed conversation onto one row (the live tip's id
+        under the root's lineage), so deleting only that id left the other
+        segments behind and the conversation came back with older history
+        (AIS-459). A continuation is a child created after its parent ended
+        with ``end_reason='compression'`` (same rule as get_compression_tip);
+        delegate/branch children are not part of the chain.
+        """
+        chain: set = set()
+        queue = [sid for sid in session_ids if isinstance(sid, str) and sid]
+        while queue:
+            sid = queue.pop()
+            if sid in chain:
+                continue
+            row = conn.execute(
+                "SELECT parent_session_id, started_at, title FROM sessions WHERE id = ?", (sid,)
+            ).fetchone()
+            if row is None:
+                continue
+            chain.add(sid)
+            parent_id = row["parent_session_id"]
+            parent = (
+                conn.execute(
+                    "SELECT ended_at, title FROM sessions WHERE id = ? AND end_reason = 'compression'",
+                    (parent_id,),
+                ).fetchone()
+                if parent_id
+                else None
+            )
+            if parent is not None and (
+                (parent["ended_at"] is not None and parent["ended_at"] <= row["started_at"])
+                or SessionDB._is_lineage_title(row["title"], parent["title"])
+            ):
+                queue.append(parent_id)
+            own = conn.execute(
+                "SELECT ended_at, title FROM sessions WHERE id = ? AND end_reason = 'compression'", (sid,)
+            ).fetchone()
+            if own is None:
+                continue
+            for child in conn.execute(
+                "SELECT id, started_at, title FROM sessions WHERE parent_session_id = ?", (sid,)
+            ).fetchall():
+                if (own["ended_at"] is not None and child["started_at"] >= own["ended_at"]) or (
+                    SessionDB._is_lineage_title(child["title"], own["title"])
+                ):
+                    queue.append(child["id"])
+        return chain
+
+    @staticmethod
+    def _subagent_child_ids(conn, session_ids) -> set:
+        """Untitled children of *session_ids*, recursively: delegate_task runs.
+
+        They belong to the conversation that spawned them; orphaned they would
+        surface as nameless chats. Branches always carry a title and stay.
+        """
+        found: set = set()
+        frontier = list(session_ids)
+        while frontier:
+            placeholders = ",".join("?" * len(frontier))
+            rows = conn.execute(
+                f"SELECT id FROM sessions WHERE parent_session_id IN ({placeholders}) "
+                "AND (title IS NULL OR title = '')",
+                frontier,
+            ).fetchall()
+            frontier = [row["id"] for row in rows if row["id"] not in found and row["id"] not in session_ids]
+            found.update(frontier)
+        return found
+
     def delete_session(
         self,
         session_id: str,
         sessions_dir: Optional[Path] = None,
+        whole_conversation: bool = False,
     ) -> bool:
         """Delete a session and all its messages.
 
@@ -3837,8 +3922,13 @@ class SessionDB:
         than cascade-deleted, so they remain accessible independently.
         When *sessions_dir* is provided, also removes on-disk transcript
         files (``.json`` / ``.jsonl`` / ``request_dump_*``) for the deleted
-        session. Returns True if the session was found and deleted.
+        session. With *whole_conversation* every segment of its compression
+        chain goes too (what a user deleting a chat in a list means).
+        Returns True if the session was found and deleted.
         """
+        if whole_conversation:
+            return self.delete_sessions([session_id], sessions_dir=sessions_dir, whole_conversation=True) > 0
+
         def _do(conn):
             cursor = conn.execute(
                 "SELECT COUNT(*) FROM sessions WHERE id = ?", (session_id,)
@@ -3906,6 +3996,7 @@ class SessionDB:
         self,
         session_ids: List[str],
         sessions_dir: Optional[Path] = None,
+        whole_conversation: bool = False,
     ) -> int:
         """Delete every session in *session_ids* in a single transaction.
 
@@ -3927,6 +4018,11 @@ class SessionDB:
           outside the DB transaction when *sessions_dir* is provided,
           matching :meth:`prune_sessions` and
           :meth:`delete_empty_sessions`.
+
+        * With *whole_conversation* each ID takes every segment of its
+          compression chain and its untitled subagent runs with it; titled
+          children (branches) are orphaned as usual. The count stays one per
+          requested ID.
 
         Returns the count of sessions that actually existed and were
         deleted (may be less than ``len(session_ids)`` if some IDs were
@@ -3954,6 +4050,10 @@ class SessionDB:
             existing = [row["id"] for row in cursor.fetchall()]
             if not existing:
                 return 0
+            requested = len(existing)
+            if whole_conversation:
+                chain = self._compression_chain_ids(conn, existing)
+                existing = sorted(chain | self._subagent_child_ids(conn, chain))
 
             existing_placeholders = ",".join("?" * len(existing))
             # Orphan children whose parent is in the kill list so the
@@ -3975,7 +4075,7 @@ class SessionDB:
                 existing,
             )
             removed_ids.extend(existing)
-            return len(existing)
+            return requested
 
         count = self._execute_write(_do)
         for sid in removed_ids:
@@ -4074,54 +4174,106 @@ class SessionDB:
             self._remove_session_files(sessions_dir, sid)
         return count
 
+    #: Sources whose sessions are never ended explicitly: a closed desktop or
+    #: terminal leaves them open, so idle time is what makes them prunable.
+    _PRUNE_OPEN_SOURCES = ("tui", "cli")
+
     def prune_sessions(
         self,
         older_than_days: int = 90,
         source: str = None,
         sessions_dir: Optional[Path] = None,
     ) -> int:
-        """Delete sessions older than N days. Returns count of deleted sessions.
+        """Delete conversations idle for more than N days. Returns the count.
 
-        Only prunes ended sessions (not active ones).  Child sessions outside
-        the prune window are orphaned (parent_session_id set to NULL) rather
-        than cascade-deleted.  When *sessions_dir* is provided, also removes
-        on-disk transcript files (``.json`` / ``.jsonl`` /
-        ``request_dump_*``) for every pruned session, outside the DB
-        transaction.
+        A conversation is a whole compression chain, aged by its newest
+        message across all segments (falling back to the start time), so an
+        old chat that is still in use survives and a pruned one leaves no
+        segment behind (AIS-459). Archived conversations are kept. A
+        conversation qualifies when its latest segment has ended, or comes
+        from a local source that never ends sessions (``tui``/``cli``) —
+        messaging sessions stay open on purpose and are only pruned once
+        ended. *source* filters on the conversation's first segment. Other
+        children go with it when untitled (subagent runs); titled ones
+        (branches) are orphaned rather than deleted. When
+        *sessions_dir* is provided, also removes on-disk transcript files
+        (``.json`` / ``.jsonl`` / ``request_dump_*``) for every pruned session,
+        outside the DB transaction.
         """
         cutoff = time.time() - (older_than_days * 86400)
         removed_ids: list[str] = []
 
         def _do(conn):
-            if source:
-                cursor = conn.execute(
-                    """SELECT id FROM sessions
-                       WHERE started_at < ? AND ended_at IS NOT NULL AND source = ?""",
-                    (cutoff, source),
-                )
-            else:
-                cursor = conn.execute(
-                    "SELECT id FROM sessions WHERE started_at < ? AND ended_at IS NOT NULL",
-                    (cutoff,),
-                )
-            session_ids = {row["id"] for row in cursor.fetchall()}
-
-            if not session_ids:
+            rows = {
+                row["id"]: row
+                for row in conn.execute(
+                    "SELECT id, parent_session_id, started_at, ended_at, end_reason, source, archived, title FROM sessions"
+                ).fetchall()
+            }
+            if not rows:
                 return 0
+            last_message = {
+                row["session_id"]: row["last_ts"]
+                for row in conn.execute(
+                    "SELECT session_id, MAX(timestamp) AS last_ts FROM messages GROUP BY session_id"
+                ).fetchall()
+            }
 
-            # Orphan any sessions whose parent is about to be deleted
-            placeholders = ",".join("?" * len(session_ids))
-            conn.execute(
-                f"UPDATE sessions SET parent_session_id = NULL "
-                f"WHERE parent_session_id IN ({placeholders})",
-                list(session_ids),
-            )
+            def continues(child) -> bool:
+                parent = rows.get(child["parent_session_id"]) if child["parent_session_id"] else None
+                if not parent or parent["end_reason"] != "compression":
+                    return False
+                return (
+                    parent["ended_at"] is not None and child["started_at"] >= parent["ended_at"]
+                ) or self._is_lineage_title(child["title"], parent["title"])
 
-            for sid in session_ids:
-                conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
-                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
-                removed_ids.append(sid)
-            return len(session_ids)
+            continuations: dict = {}
+            for row in rows.values():
+                if continues(row):
+                    continuations.setdefault(row["parent_session_id"], []).append(row["id"])
+
+            pruned = 0
+            for root in rows.values():
+                if continues(root):
+                    continue  # reached through its chain's root
+                chain = [root["id"]]
+                index = 0
+                while index < len(chain):
+                    chain.extend(continuations.get(chain[index], ()))
+                    index += 1
+                segments = [rows[sid] for sid in chain]
+                if source and root["source"] != source:
+                    continue
+                if any(seg["archived"] for seg in segments):
+                    continue
+                tip = max(segments, key=lambda seg: seg["started_at"] or 0)
+                if tip["ended_at"] is None and tip["source"] not in self._PRUNE_OPEN_SOURCES:
+                    continue
+                last_activity = max(
+                    max(last_message.get(seg["id"]) or 0, seg["started_at"] or 0) for seg in segments
+                )
+                if last_activity >= cutoff:
+                    continue
+
+                # Subagent runs go along only when they are idle as well.
+                chain = chain + sorted(
+                    sid
+                    for sid in self._subagent_child_ids(conn, chain)
+                    if sid in rows
+                    and max(last_message.get(sid) or 0, rows[sid]["started_at"] or 0) < cutoff
+                )
+                placeholders = ",".join("?" * len(chain))
+                # Orphan the other children (branches) of the conversation
+                conn.execute(
+                    f"UPDATE sessions SET parent_session_id = NULL "
+                    f"WHERE parent_session_id IN ({placeholders}) AND id NOT IN ({placeholders})",
+                    chain + chain,
+                )
+                conn.execute(f"DELETE FROM messages WHERE session_id IN ({placeholders})", chain)
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({placeholders})", chain)
+                removed_ids.extend(chain)
+                pruned += 1
+            return pruned
 
         count = self._execute_write(_do)
         # Clean up on-disk files outside the DB transaction

@@ -156,10 +156,19 @@ export async function listSessions(
   minMessages = 0,
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent',
-  offset = 0
+  offset = 0,
+  filter: SessionSourceFilter = {}
 ): Promise<PaginatedSessions> {
+  const sourceParam = filter.source ? `&source=${encodeURIComponent(filter.source)}` : ''
+
+  const excludeParam = filter.excludeSources?.length
+    ? `&exclude_sources=${encodeURIComponent(filter.excludeSources.join(','))}`
+    : ''
+
   const result = await window.hermesDesktop.api<PaginatedSessions>({
-    path: `/api/sessions?limit=${limit}&offset=${Math.max(0, offset)}&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`,
+    path:
+      `/api/sessions?limit=${limit}&offset=${Math.max(0, offset)}&min_messages=${Math.max(0, minMessages)}` +
+      `&archived=${archived}&order=${order}${sourceParam}${excludeParam}`,
     timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
 

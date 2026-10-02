@@ -1442,8 +1442,10 @@ class TestPruneSessions:
         assert session["id"] == "new"
 
     def test_prune_skips_active_sessions(self, db):
+        # Started long ago, never ended, but still in use: kept (AIS-459 ages
+        # conversations by their newest message, not their start).
         db.create_session(session_id="active", source="cli")
-        # Backdate but don't end
+        db.append_message("active", "user", "still here")
         db._conn.execute(
             "UPDATE sessions SET started_at = ? WHERE id = ?",
             (time.time() - 200 * 86400, "active"),
@@ -1453,6 +1455,66 @@ class TestPruneSessions:
         pruned = db.prune_sessions(older_than_days=90)
         assert pruned == 0
         assert db.get_session("active") is not None
+
+    def _backdate(self, db, session_id, days, *, messages=True):
+        ts = time.time() - days * 86400
+        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (ts, session_id))
+        if messages:
+            db._conn.execute("UPDATE messages SET timestamp = ? WHERE session_id = ?", (ts, session_id))
+        db._conn.commit()
+
+    def test_prune_removes_idle_open_desktop_sessions_but_keeps_open_messaging(self, db):
+        # The desktop/terminal never end their sessions; messaging ones stay
+        # open on purpose and are only pruned once ended.
+        for sid, src in [("idle_tui", "tui"), ("idle_tg", "telegram")]:
+            db.create_session(session_id=sid, source=src)
+            db.append_message(sid, "user", "hi")
+            self._backdate(db, sid, 200)
+
+        assert db.prune_sessions(older_than_days=90) == 1
+        assert db.get_session("idle_tui") is None
+        assert db.get_session("idle_tg") is not None
+
+    def test_prune_keeps_archived_conversations(self, db):
+        db.create_session(session_id="kept", source="tui")
+        db.end_session("kept", end_reason="done")
+        db._conn.execute("UPDATE sessions SET archived = 1 WHERE id = 'kept'")
+        self._backdate(db, "kept", 200, messages=False)
+
+        assert db.prune_sessions(older_than_days=90) == 0
+        assert db.get_session("kept") is not None
+
+    def _compressed_chain(self, db, root_days, tip_message_days):
+        db.create_session(session_id="root", source="tui")
+        db.append_message("root", "user", "first")
+        self._backdate(db, "root", root_days)
+        db.end_session("root", end_reason="compression")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at = ? WHERE id = 'root'", (time.time() - (root_days - 1) * 86400,)
+        )
+        db.create_session(session_id="tip", source="tui", parent_session_id="root")
+        db.append_message("tip", "user", "later")
+        self._backdate(db, "tip", tip_message_days)
+        # the tip started right after the root ended
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = 'tip'", (time.time() - (root_days - 1) * 86400 + 1,)
+        )
+        db._conn.execute(
+            "UPDATE messages SET timestamp = ? WHERE session_id = 'tip'", (time.time() - tip_message_days * 86400,)
+        )
+        db._conn.commit()
+
+    def test_prune_keeps_an_old_compressed_chat_that_is_still_active(self, db):
+        self._compressed_chain(db, root_days=200, tip_message_days=1)
+
+        assert db.prune_sessions(older_than_days=90) == 0
+        assert db.get_session("root") is not None and db.get_session("tip") is not None
+
+    def test_prune_removes_every_segment_of_an_idle_compressed_chat(self, db):
+        self._compressed_chain(db, root_days=300, tip_message_days=200)
+
+        assert db.prune_sessions(older_than_days=90) == 1
+        assert db.get_session("root") is None and db.get_session("tip") is None
 
     def test_prune_with_source_filter(self, db):
         for sid, src in [("old_cli", "cli"), ("old_tg", "telegram")]:
@@ -1667,6 +1729,70 @@ class TestBulkDeleteSessions:
         assert deleted == 2
         assert not (tmp_path / "s1.jsonl").exists()
         assert not (tmp_path / "s2.json").exists()
+
+
+class TestDeleteWholeConversation:
+    """AIS-459: deleting a listed (compressed) chat removes every segment.
+
+    Lists show a compression chain as one row carrying the tip's id; deleting
+    only that id brought the conversation back with its older segments.
+    """
+
+    def _chain(self, db):
+        now = time.time()
+        db.create_session(session_id="root", source="tui")
+        db.append_message("root", "user", "first")
+        db.end_session("root", end_reason="compression")
+        db._conn.execute("UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'root'", (now - 300, now - 200))
+        db.create_session(session_id="mid", source="tui", parent_session_id="root")
+        db.append_message("mid", "user", "second")
+        db.end_session("mid", end_reason="compression")
+        db._conn.execute("UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'mid'", (now - 199, now - 100))
+        db.create_session(session_id="tip", source="tui", parent_session_id="mid")
+        db.append_message("tip", "user", "third")
+        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'tip'", (now - 99,))
+        # a delegate child started while the root was live: not a segment
+        db.create_session(session_id="delegate", source="tui", parent_session_id="root")
+        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'delegate'", (now - 250,))
+        db._conn.commit()
+
+    def test_bulk_delete_by_tip_removes_the_whole_chain(self, db):
+        self._chain(db)
+        db.create_session(session_id="branch", source="tui", parent_session_id="tip")
+        db.set_session_title("branch", "A branch")
+
+        assert db.delete_sessions(["tip"], whole_conversation=True) == 1
+        # every segment and the untitled subagent run go …
+        for sid in ("root", "mid", "tip", "delegate"):
+            assert db.get_session(sid) is None, sid
+        # … a titled branch is the user's own chat and stays, orphaned
+        survivor = db.get_session("branch")
+        assert survivor is not None and survivor["parent_session_id"] is None
+
+    def test_single_delete_by_root_removes_the_whole_chain(self, db):
+        self._chain(db)
+
+        assert db.delete_session("root", whole_conversation=True) is True
+        assert [db.get_session(sid) for sid in ("root", "mid", "tip")] == [None, None, None]
+
+    def test_plain_delete_keeps_the_old_per_row_contract(self, db):
+        self._chain(db)
+
+        assert db.delete_sessions(["tip"]) == 1
+        assert db.get_session("root") is not None and db.get_session("mid") is not None
+
+    def test_lineage_title_ties_a_reopened_parent_to_its_continuation(self, db):
+        # Before AIS-275 a parent could be reopened and re-ended later, so its
+        # ended_at postdates the continuation; the "#n" title still links them.
+        self._chain(db)
+        db.set_session_title("root", "Plan")
+        db.set_session_title("mid", "Plan #2")
+        db.set_session_title("tip", "Plan #3")
+        db._conn.execute("UPDATE sessions SET ended_at = ? WHERE id = 'root'", (time.time(),))
+        db._conn.commit()
+
+        assert db.delete_sessions(["root"], whole_conversation=True) == 1
+        assert [db.get_session(sid) for sid in ("root", "mid", "tip")] == [None, None, None]
 
 
 class TestDeleteEmptySessions:
