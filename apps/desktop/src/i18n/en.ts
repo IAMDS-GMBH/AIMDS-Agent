@@ -1960,6 +1960,8 @@ export const en: Translations = {
     stopFailed: 'Stop failed',
     regenerateFailed: 'Regenerate failed',
     editFailed: 'Edit failed',
+    rewindBeforeCompression:
+      'This message is before the last summary of the conversation and can no longer be edited here. Tip: branch into a new chat from here.',
     resumeFailed: 'Resume failed',
     nothingToBranch: 'Nothing to branch',
     branchNeedsChat: 'Start or resume a chat before branching.',

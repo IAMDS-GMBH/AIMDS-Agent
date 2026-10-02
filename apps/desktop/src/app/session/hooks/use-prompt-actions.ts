@@ -384,8 +384,15 @@ function appendText(message: AppendMessage): string {
     .trim()
 }
 
-function visibleUserOrdinal(messages: readonly ChatMessage[], end: number): number {
-  return messages.slice(0, end).filter(m => m.role === 'user' && !m.hidden).length
+// Edit/regenerate target as "how many user messages follow it": the gateway
+// counts from the end, so the ancestor prefix shown after a compression no
+// longer shifts the cut (AIS-461).
+function visibleUsersAfter(messages: readonly ChatMessage[], index: number): number {
+  return messages.slice(index + 1).filter(m => m.role === 'user' && !m.hidden).length
+}
+
+function isBeforeCompressionError(err: unknown): boolean {
+  return /before the last context compression/i.test(err instanceof Error ? err.message : String(err))
 }
 
 export function usePromptActions({
@@ -1584,7 +1591,8 @@ export function usePromptActions({
           : messages.slice(absoluteUserIndex + 1).find(message => message.role === 'assistant')
 
       const branchGroupId = targetAssistant?.branchGroupId ?? branchGroupForUser(userMessage)
-      const truncateBeforeUserOrdinal = visibleUserOrdinal(messages, absoluteUserIndex)
+      const usersAfterTarget = visibleUsersAfter(messages, absoluteUserIndex)
+      const messagesBefore = messages
 
       clearNotifications()
       updateSessionState(activeSessionId, state => {
@@ -1614,18 +1622,25 @@ export function usePromptActions({
         await requestGateway('prompt.submit', {
           session_id: activeSessionId,
           text: userText,
-          truncate_before_user_ordinal: truncateBeforeUserOrdinal
+          truncate_before_user_from_end: usersAfterTarget
         })
       } catch (err) {
+        // Nothing was cut on the gateway: show the transcript as it was.
         updateSessionState(activeSessionId, state => ({
           ...state,
           busy: false,
-          awaitingResponse: false
+          awaitingResponse: false,
+          messages: [...messagesBefore]
         }))
-        notifyError(err, copy.regenerateFailed)
+
+        if (isBeforeCompressionError(err)) {
+          notify({ kind: 'error', message: copy.rewindBeforeCompression, title: copy.regenerateFailed })
+        } else {
+          notifyError(err, copy.regenerateFailed)
+        }
       }
     },
-    [activeSessionId, copy.regenerateFailed, requestGateway, updateSessionState]
+    [activeSessionId, copy.regenerateFailed, copy.rewindBeforeCompression, requestGateway, updateSessionState]
   )
 
   const editMessage = useCallback(
@@ -1666,39 +1681,42 @@ export function usePromptActions({
         messages: [...state.messages.slice(0, sourceIndex), editedMessage]
       }))
 
-      const submit = (truncateOrdinal?: number) =>
-        requestGateway('prompt.submit', {
+      try {
+        await requestGateway('prompt.submit', {
           session_id: sessionId,
           text,
-          ...(truncateOrdinal !== undefined && { truncate_before_user_ordinal: truncateOrdinal })
+          ...(!isFailedTurn && { truncate_before_user_from_end: visibleUsersAfter(messages, sourceIndex) })
         })
-
-      const isStaleTargetError = (err: unknown) =>
-        /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
-
-      try {
-        await submit(isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex))
       } catch (err) {
-        let surfaced = err
-
-        if (!isFailedTurn && isStaleTargetError(err)) {
-          try {
-            await submit()
-
-            return
-          } catch (retryErr) {
-            surfaced = retryErr
-          }
-        }
-
+        // A refused cut changed nothing on the gateway: never fall back to a
+        // plain append (the old turns would stay in the model's context and
+        // come back on the next load) — restore the transcript instead.
         setMutableRef(busyRef, false)
         setBusy(false)
         setAwaitingResponse(false)
-        updateSessionState(sessionId, state => ({ ...state, busy: false, awaitingResponse: false }))
-        notifyError(surfaced, copy.editFailed)
+        updateSessionState(sessionId, state => ({
+          ...state,
+          busy: false,
+          awaitingResponse: false,
+          messages: [...messages]
+        }))
+
+        if (isBeforeCompressionError(err)) {
+          notify({ kind: 'error', message: copy.rewindBeforeCompression, title: copy.editFailed })
+        } else {
+          notifyError(err, copy.editFailed)
+        }
       }
     },
-    [activeSessionId, activeSessionIdRef, busyRef, copy.editFailed, requestGateway, updateSessionState]
+    [
+      activeSessionId,
+      activeSessionIdRef,
+      busyRef,
+      copy.editFailed,
+      copy.rewindBeforeCompression,
+      requestGateway,
+      updateSessionState
+    ]
   )
 
   const handleThreadMessagesChange = useCallback(

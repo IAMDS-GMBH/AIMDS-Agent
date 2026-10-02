@@ -5552,11 +5552,26 @@ def _(rid, params: dict) -> dict:
 # ── Methods: prompt ──────────────────────────────────────────────────
 
 
+def _is_compaction_summary(message: dict) -> bool:
+    content = message.get("content")
+    if not isinstance(content, str):
+        return False
+    try:
+        from agent.context_compressor import LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX
+    except Exception:
+        return False
+    return content.startswith(SUMMARY_PREFIX) or content.startswith(LEGACY_SUMMARY_PREFIX)
+
+
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     sid, text = params.get("session_id", ""), params.get("text", "")
     display_text = params.get("display_text", "")
     truncate_user_ordinal = params.get("truncate_before_user_ordinal")
+    # Edit/regenerate from the desktop: how many user messages follow the
+    # target. Counting from the end is immune to the ancestor prefix the
+    # client displays after a compression (AIS-461).
+    truncate_from_end = params.get("truncate_before_user_from_end")
     session, err = _sess_nowait(params, rid)
     if err:
         return err
@@ -5568,7 +5583,26 @@ def _(rid, params: dict) -> dict:
     with session["history_lock"]:
         if session.get("running"):
             return _err(rid, 4009, "session busy")
-        if truncate_user_ordinal is not None:
+        cut_at = None
+        if truncate_from_end is not None:
+            try:
+                from_end = int(truncate_from_end)
+            except (TypeError, ValueError):
+                return _err(rid, 4004, "truncate_before_user_from_end must be an integer")
+            if from_end < 0:
+                return _err(rid, 4004, "truncate_before_user_from_end must be >= 0")
+            history = session.get("history", [])
+            # A compaction summary (standalone or merged into the first tail
+            # message) is not a user turn the client shows: never cut at it.
+            user_indices = [
+                i
+                for i, m in enumerate(history)
+                if m.get("role") == "user" and not _is_compaction_summary(m)
+            ]
+            if from_end >= len(user_indices):
+                return _err(rid, 4019, "target user message is before the last context compression")
+            cut_at = user_indices[len(user_indices) - 1 - from_end]
+        elif truncate_user_ordinal is not None:
             try:
                 ordinal = int(truncate_user_ordinal)
             except (TypeError, ValueError):
@@ -5577,7 +5611,9 @@ def _(rid, params: dict) -> dict:
             user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
             if ordinal >= len(user_indices):
                 return _err(rid, 4018, "target user message is no longer in session history")
-            truncated = history[: user_indices[ordinal]]
+            cut_at = user_indices[ordinal]
+        if cut_at is not None:
+            truncated = history[:cut_at]
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1
             if (db := _get_db()) is not None:

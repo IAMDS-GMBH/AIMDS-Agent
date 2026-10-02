@@ -1962,6 +1962,8 @@ export const de
     stopFailed: 'Stoppen fehlgeschlagen',
     regenerateFailed: 'Neu generieren fehlgeschlagen',
     editFailed: 'Bearbeiten fehlgeschlagen',
+    rewindBeforeCompression:
+      'Diese Nachricht liegt vor der letzten Zusammenfassung des Verlaufs und lässt sich hier nicht mehr bearbeiten. Tipp: Von hier aus in einen neuen Chat abzweigen.',
     resumeFailed: 'Fortsetzen fehlgeschlagen',
     nothingToBranch: 'Nichts zum Verzweigen',
     branchNeedsChat: 'Chat starten oder fortsetzen, bevor verzweigt wird.',

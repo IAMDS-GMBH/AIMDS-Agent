@@ -1696,6 +1696,7 @@ export interface Translations {
     stopFailed: string
     regenerateFailed: string
     editFailed: string
+    rewindBeforeCompression: string
     resumeFailed: string
     nothingToBranch: string
     branchNeedsChat: string
