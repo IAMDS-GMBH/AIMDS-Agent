@@ -2,16 +2,16 @@ import { describe, expect, it } from 'vitest'
 
 import { parseTurnPhase } from '@/store/turn-phase'
 
-import { turnPhaseLine } from './turn-phase-copy'
+import { rotatingPick, turnPhaseLine } from './turn-phase-copy'
 
 const business = { elapsed: 5, locale: 'de', nerdy: false }
 
 describe('turn phase copy (AIS-460)', () => {
-  it('says plainly that Hermes reads a long history, and explains a long wait', () => {
+  it('says plainly that the agent reads a long history, and explains a long wait', () => {
     const phase = parseTurnPhase({ attempt: 1, max_attempts: 3, messages: 79, phase: 'waiting' })
 
     expect(turnPhaseLine(phase ?? undefined, business)).toEqual({
-      line: 'Hermes liest den bisherigen Verlauf (79 Nachrichten) …'
+      line: 'Ich lese den bisherigen Verlauf (79 Nachrichten) …'
     })
     expect(turnPhaseLine(phase ?? undefined, { ...business, elapsed: 45 }).hint).toBe(
       'Bei einem langen Verlauf dauert die erste Antwort etwas länger.'
@@ -32,15 +32,15 @@ describe('turn phase copy (AIS-460)', () => {
     const en = { ...business, locale: 'en' }
 
     expect(turnPhaseLine(parseTurnPhase({ phase: 'compressing' }) ?? undefined, en).line).toBe(
-      'Hermes is summarizing the conversation so far so it can continue …'
+      'I am summarizing the conversation so far so we can keep going …'
     )
     expect(turnPhaseLine(parseTurnPhase({ phase: 'switching_model' }) ?? undefined, en).line).toBe(
-      'Hermes is switching to another AI model …'
+      'I am switching to another AI model …'
     )
   })
 
   it('falls back to a plain sentence without any phase event', () => {
-    expect(turnPhaseLine(undefined, business)).toEqual({ line: 'Hermes denkt nach …' })
+    expect(turnPhaseLine(undefined, business)).toEqual({ line: 'Ich denke nach …' })
   })
 
   it('never shows technical words in business mode', () => {
@@ -55,7 +55,7 @@ describe('turn phase copy (AIS-460)', () => {
       for (const raw of phases) {
         const { hint, line } = turnPhaseLine(parseTurnPhase(raw) ?? undefined, { elapsed: 60, locale, nerdy: false })
 
-        expect(`${line} ${hint ?? ''}`).not.toMatch(/token|cache|fallback|http|api/i)
+        expect(`${line} ${hint ?? ''}`).not.toMatch(/token|cache|fallback|http|api|hermes/i)
       }
     }
   })
@@ -65,6 +65,36 @@ describe('turn phase copy (AIS-460)', () => {
     const lines = new Set([0, 12, 24, 36].map(elapsed => turnPhaseLine(phase, { elapsed, locale: 'de', nerdy: true, seed: 0 }).line))
 
     expect(lines.size).toBeGreaterThan(1)
+  })
+
+  it('changes playful lines at random gaps, never on a fixed beat and never twice in a row', () => {
+    const items = ['a', 'b', 'c', 'd', 'e', 'f']
+    const changes: number[] = []
+    let previous = rotatingPick(items, 1234, 0)
+
+    for (let t = 1; t <= 600; t += 1) {
+      const current = rotatingPick(items, 1234, t)
+
+      if (current !== previous) {
+        changes.push(t)
+      }
+
+      previous = current
+    }
+
+    const gaps = changes.slice(1).map((t, i) => t - changes[i])
+
+    expect(changes.length).toBeGreaterThan(10)
+    expect(new Set(gaps).size).toBeGreaterThan(3)
+    expect(Math.min(...gaps)).toBeGreaterThanOrEqual(10)
+    expect(Math.max(...gaps)).toBeLessThanOrEqual(31)
+  })
+
+  it('starts each phase with its own pick', () => {
+    const items = Array.from({ length: 12 }, (_, i) => `line ${i}`)
+    const firstPicks = new Set(Array.from({ length: 20 }, (_, seed) => rotatingPick(items, seed * 7919, 0)))
+
+    expect(firstPicks.size).toBeGreaterThan(4)
   })
 
   it('ignores unknown phases', () => {
