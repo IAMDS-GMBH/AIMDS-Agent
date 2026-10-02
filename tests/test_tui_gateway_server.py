@@ -8367,3 +8367,16 @@ def test_gateway_compress_dropped_by_concurrent_edit_still_fills_the_child(tmp_p
     assert removed == 0
     resumed = db.get_messages_as_conversation("parent-child")
     assert [m["content"] for m in resumed] == [m["content"] for m in history]
+
+
+def test_agent_turn_phase_reaches_the_desktop_as_its_own_event():
+    """AIS-460: phases go out as turn.phase, never through status.update,
+    whose free text other drivers print verbatim."""
+    with patch("tui_gateway.server._emit") as emit:
+        server._agent_cbs("sid")["turn_phase_callback"]({"phase": "retrying", "attempt": 2, "max_attempts": 3})
+
+    assert emit.call_args_list[-1].args == (
+        "turn.phase",
+        "sid",
+        {"phase": "retrying", "attempt": 2, "max_attempts": 3},
+    )

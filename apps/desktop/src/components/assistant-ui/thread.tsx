@@ -88,12 +88,15 @@ import { LinkifiedText } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
+import { turnPhaseLine } from '@/lib/turn-phase-copy'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
+import { $tipMode, detectIsIamds, resolveIsNerdyMode } from '@/store/tip-mode'
+import { $turnPhaseBySession } from '@/store/turn-phase'
 import { $voicePlayback } from '@/store/voice-playback'
 
 type ThreadLoadingState = 'response' | 'session'
@@ -172,7 +175,7 @@ export const Thread: FC<{
           clampToComposer={clampToComposer}
           components={messageComponents}
           emptyPlaceholder={emptyPlaceholder}
-          loadingIndicator={loading === 'response' ? <ResponseLoadingIndicator /> : null}
+          loadingIndicator={loading === 'response' ? <ResponseLoadingIndicator sessionId={sessionId} /> : null}
           sessionKey={sessionKey}
         />
         {loading === 'session' && <CenteredThreadSpinner />}
@@ -291,14 +294,29 @@ const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentProp
   </div>
 )
 
-const ResponseLoadingIndicator: FC = () => {
-  const { t } = useI18n()
+// Until the first output arrives, say in plain words what the turn is doing
+// (reading a long history, retrying, summarizing, switching models) — from the
+// agent's turn.phase events (AIS-460). Humor follows the loading screen's switch.
+const ResponseLoadingIndicator: FC<{ sessionId?: null | string }> = ({ sessionId }) => {
+  const { locale, t } = useI18n()
   const elapsed = useElapsedSeconds()
+  const phases = useStore($turnPhaseBySession)
+  const tipMode = useStore($tipMode)
+  const [isIamds] = useState(detectIsIamds)
+  const [seed] = useState(() => Math.floor(Math.random() * 1000))
+  const nerdy = resolveIsNerdyMode(tipMode, isIamds)
+  const phase = sessionId ? phases[sessionId] : undefined
+  const { hint, line } = turnPhaseLine(phase, { elapsed, locale, nerdy, seed })
 
   return (
     <StatusRow data-slot="aui_response-loading" label={t.assistant.thread.loadingResponse}>
-      <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
-      <ActivityTimerText seconds={elapsed} />
+      <span aria-hidden="true" className="dither inline-block size-3 shrink-0 rounded-[2px] text-midground/80 animate-pulse" />
+      <span className="flex min-w-0 flex-col">
+        <span className="min-w-0">
+          {line} <ActivityTimerText seconds={elapsed} />
+        </span>
+        {hint && <span className="text-xs text-muted-foreground/60">{hint}</span>}
+      </span>
     </StatusRow>
   )
 }

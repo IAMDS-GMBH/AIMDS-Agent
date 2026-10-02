@@ -13,6 +13,8 @@ import type { MutableRefObject } from 'react'
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $turnPhaseBySession } from '@/store/turn-phase'
+
 import type { ClientSessionState } from '../../types'
 
 import { useMessageStream } from './use-message-stream'
@@ -152,5 +154,32 @@ describe('useMessageStream (AIS-275)', () => {
     })
 
     expect(hydrateFromStoredSession).not.toHaveBeenCalled()
+  })
+})
+
+describe('useMessageStream turn phases (AIS-460)', () => {
+  afterEach(() => {
+    cleanup()
+    $turnPhaseBySession.set({})
+  })
+
+  it('keeps the latest phase per session and drops it with the first output', () => {
+    const { captured } = makeHarness()
+
+    act(() => {
+      captured.current!.handleGatewayEvent({
+        type: 'turn.phase',
+        session_id: 'sid-1',
+        payload: { attempt: 2, max_attempts: 3, messages: 79, phase: 'waiting' }
+      })
+    })
+
+    expect($turnPhaseBySession.get()['sid-1']).toMatchObject({ attempt: 2, messages: 79, name: 'waiting' })
+
+    act(() => {
+      captured.current!.handleGatewayEvent({ type: 'message.start', session_id: 'sid-1', payload: {} })
+    })
+
+    expect($turnPhaseBySession.get()['sid-1']).toBeUndefined()
   })
 })

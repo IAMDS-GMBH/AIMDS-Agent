@@ -327,6 +327,9 @@ def compress_context(
     agent._emit_status(
         "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
     )
+    _emit_phase = getattr(agent, "_emit_turn_phase", None)
+    if callable(_emit_phase):
+        _emit_phase("compressing", messages=_pre_msg_count)
 
     # ── Compression lock ────────────────────────────────────────────────
     # Atomic, state.db-backed lock per session_id.  Without this, two

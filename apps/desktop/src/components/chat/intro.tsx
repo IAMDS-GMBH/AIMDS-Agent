@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type CSSProperties, useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { $tipMode, resolveIsNerdyMode } from '@/store/tip-mode'
+import { $tipMode, detectIsIamds, resolveIsNerdyMode } from '@/store/tip-mode'
 
 import { CronBriefCard } from './cron-brief-card'
 import introCopyJsonl from './intro-copy.jsonl?raw'
@@ -283,26 +283,6 @@ const IAMDS_NERDY_TIPS_OF_THE_DAY: Tip[] = [
     en: '💡 Tip of the Day: Reading logs beats guessing – the answer is usually three lines above the error.'
   }
 ]
-
-function detectIsIamds(): boolean {
-  try {
-    if (typeof window !== 'undefined') {
-      const cached = localStorage.getItem('is_iamds_endpoint')
-
-      if (cached === 'true') {return true}
-
-      if (cached === 'false') {return false}
-
-      if (typeof window.location?.href === 'string' && window.location.href.toLowerCase().includes('iamds.com')) {
-        return true
-      }
-    }
-  } catch {
-    // Ignore
-  }
-
-  return false
-}
 
 function resolveCopy(personality?: string, seed?: number): IntroCopy {
   const personalityKey = normalizeKey(personality)

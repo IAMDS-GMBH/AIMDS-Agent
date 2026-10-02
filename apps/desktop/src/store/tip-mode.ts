@@ -45,3 +45,24 @@ export function resolveIsNerdyMode(tipMode: TipMode, defaultIsIamds: boolean): b
 
   return defaultIsIamds
 }
+
+/** IAMDS-internal client: the connecting overlay caches what it detected. */
+export function detectIsIamds(): boolean {
+  try {
+    if (typeof window !== 'undefined') {
+      const cached = localStorage.getItem('is_iamds_endpoint')
+
+      if (cached === 'true') {return true}
+
+      if (cached === 'false') {return false}
+
+      if (typeof window.location?.href === 'string' && window.location.href.toLowerCase().includes('iamds.com')) {
+        return true
+      }
+    }
+  } catch {
+    // Ignore
+  }
+
+  return false
+}
