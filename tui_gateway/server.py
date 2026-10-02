@@ -9853,8 +9853,12 @@ def _(rid, params: dict) -> dict:
 
         def go(mgr, cwd):
             directory, resolved = _resolve_checkpoint(mgr, cwd, target)
+            restored_from = next(
+                (c for c in _session_checkpoints(mgr, cwd) if c.get("hash") == resolved), {}
+            )
             result = mgr.restore(directory, resolved, file_path=file_path or None)
             result["dir"] = directory
+            result["timestamp"] = restored_from.get("timestamp", "")
             if result.get("success") and not file_path and not keep_history:
                 removed = 0
                 with session["history_lock"]:

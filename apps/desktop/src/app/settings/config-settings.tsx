@@ -30,7 +30,7 @@ import { $tipMode, setTipMode } from '@/store/tip-mode'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
-import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
+import { CONTROL_TEXT, EMPTY_SELECT_VALUE, ENUM_OPTION_LABELS, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { fieldCopyForSchemaKey } from './field-copy'
 import { enumOptionsFor, getNested, prettyName, setNested } from './helpers'
 import { ModelSettings } from './model-settings'
@@ -775,7 +775,7 @@ export function ConfigSettings({
                     : enumOptionsFor(key, getNested(config, key), config)
                 }
                 onChange={value => updateConfig(setNested(config, key, value))}
-                optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
+                optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : ENUM_OPTION_LABELS[key]}
                 schema={field}
                 schemaKey={key}
                 value={getNested(config, key)}

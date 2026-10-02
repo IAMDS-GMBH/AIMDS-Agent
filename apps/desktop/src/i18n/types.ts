@@ -1737,6 +1737,18 @@ export interface Translations {
       failed: (error: string) => string
       timedOut: string
     }
+    rollback: {
+      off: string
+      autoWaiting: (messages: number) => string
+      none: string
+      listTitle: string
+      listHint: string
+      restored: (when: string, dir: string) => string
+      restoredFile: (file: string) => string
+      noChanges: string
+      failed: (error: string) => string
+      usage: string
+    }
   }
 
   errors: {
