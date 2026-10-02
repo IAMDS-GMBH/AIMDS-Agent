@@ -216,7 +216,12 @@ jobs:
           SOURCE_REF: ${{ github.event.inputs.source_ref }}
         run: |
           set -euo pipefail
-          status="$(gh api "repos/$GH_REPO/compare/$SOURCE_REF...main" --jq .status)"
+          # curl, not gh: the self-hosted Windows runner has no GitHub CLI
+          # (Git Bash ships curl and sed; jq is not guaranteed either).
+          status="$(curl -fsSL --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GH_REPO/compare/$SOURCE_REF...main" \
+            | sed -n 's/^  "status": "\([a-z]*\)",*$/\1/p' | head -1)"
           if [ "$status" != "ahead" ] && [ "$status" != "identical" ]; then
             echo "::error::source_ref '$SOURCE_REF' is not in main's history (compare status: $status)."
             exit 1
@@ -646,7 +651,12 @@ jobs:
           SOURCE_REF: ${{ github.event.inputs.source_ref }}
         run: |
           set -euo pipefail
-          status="$(gh api "repos/$GH_REPO/compare/$SOURCE_REF...main" --jq .status)"
+          # curl, not gh: the self-hosted Windows runner has no GitHub CLI
+          # (Git Bash ships curl and sed; jq is not guaranteed either).
+          status="$(curl -fsSL --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GH_REPO/compare/$SOURCE_REF...main" \
+            | sed -n 's/^  "status": "\([a-z]*\)",*$/\1/p' | head -1)"
           if [ "$status" != "ahead" ] && [ "$status" != "identical" ]; then
             echo "::error::source_ref '$SOURCE_REF' is not in main's history (compare status: $status)."
             exit 1
@@ -748,7 +758,12 @@ jobs:
           SOURCE_REF: ${{ github.event.inputs.source_ref }}
         run: |
           set -euo pipefail
-          status="$(gh api "repos/$GH_REPO/compare/$SOURCE_REF...main" --jq .status)"
+          # curl, not gh: the self-hosted Windows runner has no GitHub CLI
+          # (Git Bash ships curl and sed; jq is not guaranteed either).
+          status="$(curl -fsSL --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GH_REPO/compare/$SOURCE_REF...main" \
+            | sed -n 's/^  "status": "\([a-z]*\)",*$/\1/p' | head -1)"
           if [ "$status" != "ahead" ] && [ "$status" != "identical" ]; then
             echo "::error::source_ref '$SOURCE_REF' is not in main's history (compare status: $status)."
             exit 1
