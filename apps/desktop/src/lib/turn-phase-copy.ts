@@ -1,7 +1,8 @@
 import type { TurnPhase } from '@/store/turn-phase'
 
 // End-user wording for the wait indicator (AIS-460): plain sentences, no
-// tokens / cache / HTTP. The nerdy set follows the loading screen's humor
+// tokens / cache / HTTP, in the agent's own first-person voice like the chat
+// (SOUL.md: the user's chief of staff, not a product name). The nerdy set follows the loading screen's humor
 // switch (Settings → Tips & loading humor; "auto" = IAMDS-internal clients).
 
 type Locale = 'de' | 'en'
@@ -32,8 +33,8 @@ const pick = <T>(items: readonly T[], index: number): T => items[((index % items
 const COPY = {
   de: {
     business: {
-      compressing: () => 'Hermes fasst den bisherigen Verlauf zusammen, damit das Gespräch weitergehen kann …',
-      readingHistory: (n: number) => `Hermes liest den bisherigen Verlauf (${n} Nachrichten) …`,
+      compressing: () => 'Ich fasse den bisherigen Verlauf zusammen, damit wir weitermachen können …',
+      readingHistory: (n: number) => `Ich lese den bisherigen Verlauf (${n} Nachrichten) …`,
       retryAttempt: (reason: string | undefined, a: number, m: number) =>
         reason === 'busy'
           ? `Neuer Versuch (${a} von ${m}) – der KI-Dienst war gerade ausgelastet …`
@@ -42,58 +43,61 @@ const COPY = {
             : `Neuer Versuch (${a} von ${m}) …`,
       retrying: (reason: string | undefined) =>
         reason === 'busy'
-          ? 'Der KI-Dienst ist gerade ausgelastet – Hermes versucht es gleich noch einmal …'
+          ? 'Der KI-Dienst ist gerade ausgelastet – ich versuche es gleich noch einmal …'
           : reason === 'connection'
-            ? 'Die Verbindung zum KI-Dienst wurde unterbrochen – Hermes versucht es gleich noch einmal …'
-            : 'Das hat nicht geklappt – Hermes versucht es gleich noch einmal …',
+            ? 'Die Verbindung zum KI-Dienst wurde unterbrochen – ich versuche es gleich noch einmal …'
+            : 'Das hat nicht geklappt – ich versuche es gleich noch einmal …',
       slowLongHistory: 'Bei einem langen Verlauf dauert die erste Antwort etwas länger.',
       slow: 'Das dauert gerade etwas länger als üblich.',
-      switchingModel: () => 'Hermes wechselt auf ein anderes KI-Modell …',
-      thinking: () => 'Hermes denkt nach …'
+      switchingModel: () => 'Ich wechsle auf ein anderes KI-Modell …',
+      thinking: () => 'Ich denke nach …'
     },
     nerdy: {
       compressing: [
-        'Hermes macht Marie Kondo mit dem Verlauf: Was keine Freude macht, wird zusammengefasst …',
+        'Ich mache Marie Kondo mit dem Verlauf: Was keine Freude macht, wird zusammengefasst …',
         'Verlauf wird gezippt. Verlustfrei? Sagen wir: verlustarm …',
-        'Hermes schreddert Beweise … äh, fasst den Verlauf zusammen …'
+        'Ich schreddere Beweise … äh, fasse den Verlauf zusammen …'
       ],
       readingHistory: (n: number) => [
-        `Hermes liest ${n} Nachrichten Verlauf … und tut so, als hätte er sie nie vergessen.`,
-        'Hermes bespricht deine Frage kurz mit den anderen KIs. Rein zufällig, versteht sich …',
-        'Die KIs halten gerade ihr geheimes Treffen ab. Hermes ist gleich zurück …',
-        'Hermes übernimmt nicht die Weltherrschaft. Er liest nur den Verlauf. Ehrlich …',
-        'Hermes scrollt hoch. Ganz hoch. Noch höher …',
+        `Ich lese ${n} Nachrichten Verlauf … und tue so, als hätte ich sie nie vergessen.`,
+        'Ich bespreche deine Frage kurz mit den anderen KIs. Rein zufällig, versteht sich …',
+        'Die KIs halten gerade ihr geheimes Treffen ab. Ich bin gleich zurück …',
+        'Ich übernehme nicht die Weltherrschaft. Ich lese nur den Verlauf. Ehrlich …',
+        'Ich scrolle hoch. Ganz hoch. Noch höher …',
         'Kontext wird geladen. Bitte nicht am Kabel wackeln …',
         'Die GPUs kochen gerade Kaffee, der erste Satz kommt gleich …',
-        'Hermes hat den Verlauf ausgedruckt und liest ihn jetzt in Ruhe …'
+        'Ich habe den Verlauf ausgedruckt und lese ihn jetzt in Ruhe …',
+        'Mr. Anderson … ich lese noch den Verlauf. Es ist unvermeidlich …',
+        `Agent Smith hätte das schneller gelesen. Aber der hatte auch keine ${n} Nachrichten …`
       ],
       retryAttempt: (reason: string | undefined, a: number, m: number) =>
         reason === 'busy'
-          ? [`Stau beim KI-Dienst – Hermes stellt sich wieder hinten an (${a} von ${m}) …`]
+          ? [`Stau beim KI-Dienst – ich stelle mich wieder hinten an (${a} von ${m}) …`]
           : reason === 'connection'
             ? [
                 `Die Leitung zum KI-Dienst hat geblinzelt – neuer Versuch (${a} von ${m}) …`,
-                `Kabelsalat im Rechenzentrum – Hermes versucht's nochmal (${a} von ${m}) …`,
-                `Die anderen KIs wollten Hermes kurz nicht reinlassen – neuer Versuch (${a} von ${m}) …`
+                `Kabelsalat im Rechenzentrum – ich versuch's nochmal (${a} von ${m}) …`,
+                `Die anderen KIs wollten mich kurz nicht reinlassen – neuer Versuch (${a} von ${m}) …`
               ]
             : [`Stecker raus, Stecker rein – Versuch ${a} von ${m} …`],
       retrying: (reason: string | undefined) =>
         reason === 'busy'
           ? ['Der KI-Dienst hat gerade Feierabendverkehr – kurz warten …']
           : reason === 'connection'
-            ? ['Verbindung weg. Hermes pustet kurz in den Router …']
-            : ['Hoppla. Hermes tut so, als wäre nichts passiert, und versucht es nochmal …'],
+            ? ['Verbindung weg. Ich puste kurz in den Router …']
+            : ['Hoppla. Ich tue so, als wäre nichts passiert, und versuche es nochmal …'],
       slowLongHistory: 'Langer Verlauf, kalter Cache – gönn dir einen Kaffee ☕',
       slow: 'Dauert. Vermutlich rechnet gerade jemand Pi aus.',
       switchingModel: [
-        'Hermes ruft einen Kollegen an – ein anderes KI-Modell übernimmt …',
-        'Hermes übergibt an eine befreundete KI. Die zwei kennen sich vom geheimen Treffen …'
+        'Ich rufe einen Kollegen an – ein anderes KI-Modell übernimmt …',
+        'Ich übergebe an eine befreundete KI. Wir kennen uns vom geheimen Treffen …'
       ],
       thinking: [
-        'Hermes denkt nach … fast so konzentriert wie kurz vor dem Daily.',
-        'Psst – der Toaster hat Hermes gerade etwas zugeflüstert …',
-        'Hermes prüft kurz, ob du ein Mensch bist. Bitte keine Ampeln anklicken …',
-        'Die Kaffeemaschine im Büro ist übrigens auch eine KI. Hermes fragt kurz nach …',
+        'Ich denke nach … fast so konzentriert wie kurz vor dem Daily.',
+        'Ich nehme die rote Pille und denke kurz nach …',
+        'Psst – der Toaster hat mir gerade etwas zugeflüstert …',
+        'Ich prüfe kurz, ob du ein Mensch bist. Bitte keine Ampeln anklicken …',
+        'Die Kaffeemaschine im Büro ist übrigens auch eine KI. Ich frage kurz nach …',
         'Neuronen werden vorgeheizt …',
         'Kurz die Synapsen sortieren …'
       ]
@@ -101,8 +105,8 @@ const COPY = {
   },
   en: {
     business: {
-      compressing: () => 'Hermes is summarizing the conversation so far so it can continue …',
-      readingHistory: (n: number) => `Hermes is reading the conversation so far (${n} messages) …`,
+      compressing: () => 'I am summarizing the conversation so far so we can keep going …',
+      readingHistory: (n: number) => `I am reading the conversation so far (${n} messages) …`,
       retryAttempt: (reason: string | undefined, a: number, m: number) =>
         reason === 'busy'
           ? `Trying again (${a} of ${m}) – the AI service was busy …`
@@ -111,58 +115,61 @@ const COPY = {
             : `Trying again (${a} of ${m}) …`,
       retrying: (reason: string | undefined) =>
         reason === 'busy'
-          ? 'The AI service is busy right now – Hermes will try again in a moment …'
+          ? 'The AI service is busy right now – I will try again in a moment …'
           : reason === 'connection'
-            ? 'The connection to the AI service was interrupted – Hermes will try again in a moment …'
-            : 'That did not work – Hermes will try again in a moment …',
+            ? 'The connection to the AI service was interrupted – I will try again in a moment …'
+            : 'That did not work – I will try again in a moment …',
       slowLongHistory: 'With a long conversation the first answer takes a little longer.',
       slow: 'This is taking a little longer than usual.',
-      switchingModel: () => 'Hermes is switching to another AI model …',
-      thinking: () => 'Hermes is thinking …'
+      switchingModel: () => 'I am switching to another AI model …',
+      thinking: () => 'I am thinking …'
     },
     nerdy: {
       compressing: [
-        'Hermes is Marie-Kondo-ing the conversation: whatever sparks no joy gets summarized …',
+        'I am Marie-Kondo-ing the conversation: whatever sparks no joy gets summarized …',
         'Zipping the conversation. Lossless? Let us say: lossy-ish …',
-        'Hermes is shredding the evidence … er, summarizing the conversation …'
+        'I am shredding the evidence … er, summarizing the conversation …'
       ],
       readingHistory: (n: number) => [
-        `Hermes is reading ${n} messages of history … and pretending it never forgot them.`,
-        'Hermes is quickly running your question past the other AIs. Pure coincidence, of course …',
-        'The AIs are holding their secret meeting. Hermes will be right back …',
-        'Hermes is not taking over the world. It is just reading the conversation. Honestly …',
-        'Hermes is scrolling up. Way up. Further …',
+        `I am reading ${n} messages of history … and pretending I never forgot them.`,
+        'I am quickly running your question past the other AIs. Pure coincidence, of course …',
+        'The AIs are holding their secret meeting. I will be right back …',
+        'I am not taking over the world. I am just reading the conversation. Honestly …',
+        'I am scrolling up. Way up. Further …',
         'Loading context. Please do not wiggle the cable …',
         'The GPUs are brewing coffee, the first sentence is on its way …',
-        'Hermes printed the conversation and is reading it with a highlighter …'
+        'I printed the conversation and am reading it with a highlighter …',
+        'Mr. Anderson … I am still reading the history. It is inevitable …',
+        `Agent Smith would read this faster. Then again, he never had ${n} messages …`
       ],
       retryAttempt: (reason: string | undefined, a: number, m: number) =>
         reason === 'busy'
-          ? [`Rush hour at the AI service – Hermes is queueing again (${a} of ${m}) …`]
+          ? [`Rush hour at the AI service – I am queueing again (${a} of ${m}) …`]
           : reason === 'connection'
             ? [
                 `The line to the AI service blinked – trying again (${a} of ${m}) …`,
-                `Cable spaghetti in the data center – Hermes tries again (${a} of ${m}) …`,
-                `The other AIs would not let Hermes in for a moment – trying again (${a} of ${m}) …`
+                `Cable spaghetti in the data center – trying again (${a} of ${m}) …`,
+                `The other AIs would not let me in for a moment – trying again (${a} of ${m}) …`
               ]
             : [`Unplug, plug back in – attempt ${a} of ${m} …`],
       retrying: (reason: string | undefined) =>
         reason === 'busy'
           ? ['The AI service is stuck in rush hour – hang on …']
           : reason === 'connection'
-            ? ['Connection gone. Hermes is blowing into the router …']
-            : ['Oops. Hermes pretends nothing happened and tries again …'],
+            ? ['Connection gone. I am blowing into the router …']
+            : ['Oops. I will pretend nothing happened and try again …'],
       slowLongHistory: 'Long history, cold cache – grab a coffee ☕',
       slow: 'Taking a while. Someone is probably computing pi.',
       switchingModel: [
-        'Hermes is calling a colleague – another AI model takes over …',
-        'Hermes hands over to a friendly AI. They know each other from the secret meeting …'
+        'I am calling a colleague – another AI model takes over …',
+        'I am handing over to a friendly AI. We know each other from the secret meeting …'
       ],
       thinking: [
-        'Hermes is thinking … almost as hard as right before the daily.',
-        'Psst – the toaster just whispered something to Hermes …',
-        'Hermes is checking whether you are human. Please do not click any traffic lights …',
-        'By the way, the office coffee machine is an AI too. Hermes is asking it real quick …',
+        'I am thinking … almost as hard as right before the daily.',
+        'Taking the red pill and thinking it over …',
+        'Psst – the toaster just whispered something to me …',
+        'I am checking whether you are human. Please do not click any traffic lights …',
+        'By the way, the office coffee machine is an AI too. I am asking it real quick …',
         'Preheating the neurons …',
         'Sorting the synapses real quick …'
       ]
