@@ -17,7 +17,8 @@
 #   ./createTag.sh promote stable [--dry-run] [--yes]
 #       main only. Tags the exact commit of the highest candidate whose version
 #       is above the highest stable tag as vX.Y.Z (no bump, no new code). The
-#       workflow re-publishes that candidate's artifacts as the latest release.
+#       workflow rebuilds that candidate's commit at the stable version and
+#       publishes it as the latest release (AIS-400).
 #
 #   ./createTag.sh status
 #       Shows the highest stable tag, the current candidate and what HEAD is.
