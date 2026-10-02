@@ -2514,6 +2514,12 @@ def run_conversation(
         agent._current_api_request_id = api_request_id
 
         while retry_count < max_retries:
+            agent._emit_turn_phase(
+                "waiting",
+                attempt=retry_count + 1,
+                max_attempts=max_retries,
+                messages=len(messages),
+            )
             # ── Nous Portal rate limit guard ──────────────────────
             # If another session already recorded that Nous is rate-
             # limited, skip the API call entirely.  Each attempt
@@ -5165,6 +5171,15 @@ def run_conversation(
                     agent._buffer_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
                 else:
                     agent._buffer_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...")
+                agent._emit_turn_phase(
+                    "retrying",
+                    attempt=retry_count + 1,
+                    max_attempts=max_retries,
+                    reason="busy" if is_rate_limited else (
+                        "connection" if classified.reason == FailoverReason.timeout else "error"
+                    ),
+                    wait_s=round(wait_time),
+                )
                 logger.warning(
                     "Retrying API call in %ss (attempt %s/%s) %s error=%s",
                     wait_time,

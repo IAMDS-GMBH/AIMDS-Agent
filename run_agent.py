@@ -397,6 +397,7 @@ class AIAgent:
         status_callback: callable = None,
         notice_callback: callable = None,
         notice_clear_callback: callable = None,
+        turn_phase_callback: callable = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         service_tier: str = None,
@@ -471,6 +472,7 @@ class AIAgent:
             status_callback=status_callback,
             notice_callback=notice_callback,
             notice_clear_callback=notice_clear_callback,
+            turn_phase_callback=turn_phase_callback,
             max_tokens=max_tokens,
             reasoning_config=reasoning_config,
             service_tier=service_tier,
@@ -817,6 +819,23 @@ class AIAgent:
                 self.status_callback("warn", message)
             except Exception:
                 logger.debug("status_callback error in _emit_warning", exc_info=True)
+
+    def _emit_turn_phase(self, phase: str, **data) -> None:
+        """Tell the driver what the turn is doing before any output exists.
+
+        Structured on purpose (``waiting`` / ``retrying`` / ``compressing`` /
+        ``switching_model`` plus counts): the desktop turns it into a plain
+        sentence for end users in their language (AIS-460). Separate from
+        ``status_callback``, whose free text other drivers print verbatim.
+        Never raises.
+        """
+        callback = getattr(self, "turn_phase_callback", None)
+        if not callback:
+            return
+        try:
+            callback({"phase": phase, **data})
+        except Exception:
+            logger.debug("turn_phase_callback error", exc_info=True)
 
     def _emit_notice(self, notice) -> None:
         """Fire a structured ``AgentNotice`` to the active driver (TUI / CLI).
@@ -4328,7 +4347,10 @@ class AIAgent:
     def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
         """Forwarder — see ``agent.chat_completion_helpers.try_activate_fallback``."""
         from agent.chat_completion_helpers import try_activate_fallback
-        return try_activate_fallback(self, reason)
+        activated = try_activate_fallback(self, reason)
+        if activated:
+            self._emit_turn_phase("switching_model")
+        return activated
 
     def _has_pending_fallback(self) -> bool:
         """Whether a fallback provider is actually available to switch to.
