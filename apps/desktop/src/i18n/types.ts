@@ -1517,6 +1517,9 @@ export interface Translations {
     openInDefaultApp: string
     officeDocumentDescription: string
     jsonYamlDocumentDescription: string
+    convertingDocument: string
+    convertedDocumentNote: string
+    convertDocumentFailed: string
     viewAsSource: string
     previewAnyway: string
     truncated: string

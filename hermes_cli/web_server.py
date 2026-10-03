@@ -1583,6 +1583,39 @@ async def read_managed_file(request: Request, path: str):
     }
 
 
+_DOCUMENT_PREVIEW_MAX_CHARS = 400_000
+
+
+@app.get("/api/files/preview-document")
+async def preview_managed_document(request: Request, path: str):
+    """Markdown rendering of an Office file for the desktop preview (AIS-397).
+
+    Same converter and cache as ``read_file``, so a preview warms the cache for
+    the agent and vice versa.
+    """
+    from tools.document_convert import DocumentConvertError, convert_document, is_convertible_document
+
+    _policy, target, display_path = _resolve_managed_path(path, request)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    if not is_convertible_document(target):
+        raise HTTPException(status_code=415, detail="Not a convertible document")
+    try:
+        result = await asyncio.to_thread(convert_document, target)
+    except DocumentConvertError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    markdown = result.markdown
+    truncated = len(markdown) > _DOCUMENT_PREVIEW_MAX_CHARS
+    return {
+        "path": display_path,
+        "markdown": markdown[:_DOCUMENT_PREVIEW_MAX_CHARS] if truncated else markdown,
+        "truncated": truncated,
+        "backend": result.backend,
+        "cached": result.cached,
+        "warnings": list(result.warnings or []),
+    }
+
+
 @app.post("/api/files/upload")
 async def upload_managed_file(payload: ManagedFileUpload, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
