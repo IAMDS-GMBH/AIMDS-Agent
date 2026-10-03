@@ -4341,6 +4341,16 @@ def _(rid, params: dict) -> dict:
         display_history = db.get_messages_as_conversation(
             target, include_ancestors=True
         )
+        # AIS-469: slimmed messages come back from the Suite memory so the
+        # resumed agent and the transcript see the full text.
+        try:
+            from agent.session_sync import has_markers, hydrate_messages
+
+            if has_markers(display_history):
+                hydrate_messages(display_history)
+                hydrate_messages(history)
+        except Exception:
+            logger.debug("session resume: hydration skipped", exc_info=True)
         display_history_prefix = display_history[
             : max(0, len(display_history) - len(history))
         ]

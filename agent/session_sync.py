@@ -48,8 +48,23 @@ RUN_MAX_SESSIONS = 8
 #: Minimum seconds between runs (the ticker fires every 60 s).
 RUN_INTERVAL_SECONDS = 55.0
 
+#: Slimming: messages of fully synced chats idle this long are replaced locally
+#: by a marker + short hint; the full text stays in the Suite memory.
+SLIM_AFTER_DAYS_DEFAULT = 30
+SLIM_KEEP_LAST = 20
+SLIM_MIN_CHARS = 800
+SLIM_HINT_CHARS = 200
+#: Never sent to the server (it would overwrite the stored text); recognised
+#: by the trigger, the slimmer and the hydrator.
+MARKER_PREFIX = "⟦synced:"
+_MARKER = re.compile(r"^⟦synced:(?P<remote>[^|⟧]+)\|(?P<mid>[^⟧]+)⟧ ?")
+
 _BASE64_DATA = re.compile(r"data:[\w.+-]+/[\w.+-]+;base64,[A-Za-z0-9+/=\s]{64,}")
 _run_lock = threading.Lock()
+#: remote id -> (fetched at, {message_id: text}); resume hydrates the agent
+#: history and the display history from one read.
+_hydrate_cache: Dict[str, Tuple[float, Dict[str, str]]] = {}
+_HYDRATE_TTL = 120.0
 _last_run = 0.0
 
 
@@ -101,6 +116,8 @@ def transcript_text(msg: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     if role not in ("user", "assistant", "tool"):
         return None
     text = _flatten(msg.get("content")).strip()
+    if text.startswith(MARKER_PREFIX):
+        return None  # slimmed locally — the server holds the full text
     if role == "user" and _is_compaction_summary(text):
         return None
     if role == "assistant" and _is_compaction_summary(text):
@@ -271,6 +288,153 @@ def run_once(db: Any, remote: SessionRemote, *, max_sessions: int = RUN_MAX_SESS
     return stats
 
 
+# ── slimming (local history shrinks to markers + hints) ─────────────────
+
+
+_COPY = {
+    "en": {"more": " … [{n} more characters in the Suite memory]",
+           "offline": " [archived in the Suite memory — unavailable right now]"},
+    "de": {"more": " … [{n} weitere Zeichen im Suite-Memory]",
+           "offline": " [im Suite-Memory archiviert — gerade nicht erreichbar]"},
+}
+
+
+def _copy(key: str) -> str:
+    """User-facing text in the display language (display.language)."""
+    lang = "en"
+    try:
+        from hermes_cli.config import load_config
+
+        lang = str(((load_config() or {}).get("display") or {}).get("language") or "en")[:2].lower()
+    except Exception:
+        pass
+    return _COPY.get(lang, _COPY["en"])[key]
+
+
+def marker(remote_id: str, message_id: str, text: str) -> str:
+    hint = " ".join(text.split())[:SLIM_HINT_CHARS]
+    more = len(text) - len(hint)
+    tail = _copy("more").format(n=more) if more > 0 else ""
+    return f"{MARKER_PREFIX}{remote_id}|{message_id}⟧ {hint}{tail}"
+
+
+def slim_once(db: Any, *, after_days: int, limit: int = 10) -> int:
+    """Shrink long assistant/tool messages of fully synced, idle chats.
+
+    Kept whole: user messages, the last SLIM_KEEP_LAST messages, anything
+    shorter than SLIM_MIN_CHARS, multimodal content. Runs only on sessions
+    that are clean (every message acknowledged by the server); a message
+    arriving meanwhile aborts that session's slimming.
+    """
+    if after_days <= 0:
+        return 0
+    slimmed = 0
+    for sid in db.sync_slim_candidates(time.time() - after_days * 86400, limit=limit):
+        rows = db.sync_messages(sid)
+        remote_id = db.sync_remote_id(sid)
+        replacements = []
+        for ordinal, row in enumerate(rows[: max(0, len(rows) - SLIM_KEEP_LAST)]):
+            content = row.get("content")
+            if row.get("role") not in ("assistant", "tool") or not isinstance(content, str):
+                continue
+            if content.startswith(MARKER_PREFIX) or len(content) < SLIM_MIN_CHARS:
+                continue
+            if transcript_text(row) is None:
+                continue  # never sent (e.g. a compaction summary) — keep it
+            replacements.append((row["id"], marker(remote_id, f"{sid}:{ordinal}", content)))
+        if replacements:
+            slimmed += db.sync_slim_apply(sid, replacements)
+    return slimmed
+
+
+#: The server repeats this many characters of a part at the start of the next
+#: (go-mcp-memory vector.DefaultPartOverlap); whitespace trimming shifts it a little.
+PART_OVERLAP = 200
+
+
+def _merge_parts(parts: List[str], overlap: int = PART_OVERLAP) -> str:
+    """Join a message's stored parts, dropping the overlap the server added.
+
+    Of all prefix/suffix matches the one closest to the known overlap wins —
+    in repetitive text a longer match is a coincidence, not the overlap.
+    """
+    out = parts[0] if parts else ""
+    for nxt in parts[1:]:
+        best, best_dist = 0, None
+        for k in range(min(len(out), len(nxt), overlap * 2), 0, -1):
+            if out.endswith(nxt[:k]):
+                dist = abs(k - overlap)
+                if best_dist is None or dist < best_dist:
+                    best, best_dist = k, dist
+        out = out + ("" if best else " ") + nxt[best:]
+    return out
+
+
+def has_markers(messages: List[Dict[str, Any]]) -> bool:
+    return any(isinstance(m.get("content"), str) and m["content"].startswith(MARKER_PREFIX) for m in messages or [])
+
+
+def hydrate_messages(messages: List[Dict[str, Any]], remote: Optional["SessionRemote"] = None,
+                     max_pages: int = 25) -> List[Dict[str, Any]]:
+    """Replace slimmed markers by the full text from the Suite memory, in place.
+
+    Offline or without the memory tool the hint stays, marked as archived.
+    """
+    wanted: Dict[str, set] = {}
+    for m in messages or []:
+        c = m.get("content")
+        if isinstance(c, str):
+            hit = _MARKER.match(c)
+            if hit:
+                wanted.setdefault(hit["remote"], set()).add(hit["mid"])
+    if not wanted:
+        return messages
+    texts: Dict[str, str] = {}
+    now = time.monotonic()
+    for remote_id in list(wanted):
+        cached = _hydrate_cache.get(remote_id)
+        if cached and now - cached[0] < _HYDRATE_TTL and wanted[remote_id] <= set(cached[1]):
+            texts.update(cached[1])
+            del wanted[remote_id]
+    if wanted and remote is None:
+        remote = SessionRemote.for_process()
+    if remote is not None:
+        for remote_id, ids in wanted.items():
+            try:
+                parts: Dict[str, List[Tuple[int, str]]] = {}
+                from_seq = 0
+                for _ in range(max_pages):
+                    page = remote.call({"action": "read", "session_id": remote_id, "from_seq": from_seq, "limit": 200})
+                    for ch in page.get("chunks") or []:
+                        if ch.get("message_id") in ids:
+                            parts.setdefault(ch["message_id"], []).append((int(ch.get("part") or 0), str(ch.get("content") or "")))
+                    if page.get("next_seq") is None:
+                        break
+                    from_seq = int(page["next_seq"])
+                fetched = {mid: _merge_parts([t for _, t in sorted(ps)]) for mid, ps in parts.items()}
+                _hydrate_cache[remote_id] = (now, fetched)
+                texts.update(fetched)
+            except Exception as exc:
+                logger.info("session sync: hydrating %s failed: %s", remote_id, exc)
+    for m in messages or []:
+        c = m.get("content")
+        if not isinstance(c, str):
+            continue
+        hit = _MARKER.match(c)
+        if not hit:
+            continue
+        full = texts.get(hit["mid"])
+        if full is not None:
+            if m.get("role") == "tool" and full.startswith("["):
+                full = full.split("] ", 1)[-1]  # drop the "[tool_name] " label added for the transcript
+            elif m.get("role") == "assistant":
+                full = re.sub(r"\n?\[tools: [^\]]*\]$", "", full)
+            m["content"] = full
+        else:
+            m["content"] = c[hit.end():] + _copy("offline")
+    return messages
+
+
 def enabled() -> bool:
     try:
         from hermes_cli.config import load_config
@@ -279,6 +443,16 @@ def enabled() -> bool:
         return bool(mem.get("session_sync", True))
     except Exception:
         return True
+
+
+def slim_after_days() -> int:
+    try:
+        from hermes_cli.config import load_config
+
+        mem = (load_config() or {}).get("memory") or {}
+        return int(mem.get("session_slim_after_days", SLIM_AFTER_DAYS_DEFAULT))
+    except Exception:
+        return SLIM_AFTER_DAYS_DEFAULT
 
 
 def maybe_run(db: Any = None) -> Optional[Dict[str, int]]:
@@ -300,7 +474,8 @@ def maybe_run(db: Any = None) -> Optional[Dict[str, int]]:
             db = SessionDB()
         db.sync_mark_backfill()
         stats = run_once(db, remote)
-        if stats["messages"] or stats["deletes"] or stats["errors"]:
+        stats["slimmed"] = slim_once(db, after_days=slim_after_days())
+        if stats["messages"] or stats["deletes"] or stats["errors"] or stats["slimmed"]:
             logger.info("session sync: %s", stats)
         return stats
     except Exception as exc:
@@ -310,4 +485,7 @@ def maybe_run(db: Any = None) -> Optional[Dict[str, int]]:
         _run_lock.release()
 
 
-__all__ = ["SessionRemote", "build_messages", "enabled", "maybe_run", "run_once", "sync_session", "transcript_text"]
+__all__ = [
+    "MARKER_PREFIX", "SessionRemote", "build_messages", "enabled", "has_markers", "hydrate_messages",
+    "marker", "maybe_run", "run_once", "slim_once", "sync_session", "transcript_text",
+]

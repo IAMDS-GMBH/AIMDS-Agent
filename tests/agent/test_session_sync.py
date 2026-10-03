@@ -33,6 +33,17 @@ class FakeRemote:
                     del store[k]
         elif args["action"] == "delete":
             self.sessions.pop(sid, None)
+        elif args["action"] == "read":
+            # Like the server: long messages come back as overlapping parts.
+            chunks = []
+            for mid, text in store.items():
+                size, overlap, start, part = 1600, 200, 0, 0
+                while True:
+                    chunks.append({"message_id": mid, "part": part, "content": text[start:start + size].strip()})
+                    if start + size >= len(text):
+                        break
+                    start, part = start + size - overlap, part + 1
+            return {"chunks": chunks}
         return {"ok": True}
 
     def appended_ids(self):
@@ -213,3 +224,78 @@ def test_session_summary_lands_on_the_synced_transcript(monkeypatch):
     monkeypatch.setattr(mf, "_remote_session_id", lambda sid: "root" if sid == "tip" else sid)
     res = facade.summarize_session(summary="Umzug geplant", session_id="tip")
     assert res.ok and sent["session_id"] == "root"
+
+
+# ── slimming + hydration ────────────────────────────────────────────────
+
+
+def _age(db, sid, days):
+    old = time.time() - days * 86400
+    db._execute_write(lambda c: c.execute("UPDATE messages SET timestamp = ? WHERE session_id = ?", (old, sid)))
+
+
+def _long_chat(db, sid, n_pairs=15):
+    db.create_session(sid, "tui")
+    for i in range(n_pairs):
+        db.append_message(sid, "user", f"Frage {i}")
+        db.append_message(sid, "assistant", f"Antwort {i}: " + ("Details zur Migration der Postfächer. " * 90))
+
+
+def test_slim_replaces_old_long_messages_and_hydrate_restores_them(db):
+    _long_chat(db, "s7")
+    r = FakeRemote()
+    run(db, r)
+    original = {m["id"]: m["content"] for m in db.sync_messages("s7")}
+    _age(db, "s7", 40)
+
+    n = session_sync.slim_once(db, after_days=30)
+    rows = db.sync_messages("s7")
+    slimmed = [m for m in rows if str(m["content"]).startswith(session_sync.MARKER_PREFIX)]
+    # 30 messages, last 20 kept, of the first 10 only the 5 long assistant ones go.
+    assert n == 5 and len(slimmed) == 5
+    assert all(m["role"] == "assistant" for m in slimmed)
+    assert all(not str(m["content"]).startswith(session_sync.MARKER_PREFIX) for m in rows[-20:])
+    assert "Details zur Migration" in slimmed[0]["content"]  # the hint
+    assert "Suite" in slimmed[0]["content"]  # "… [N more characters in the Suite memory]" (display language)
+
+    # Slimming is not a change to sync: the session stays clean, nothing is re-sent.
+    calls_before = len(r.calls)
+    assert db.sync_due_sessions() == [] and run(db, r)["messages"] == 0 and len(r.calls) == calls_before
+
+    restored = session_sync.hydrate_messages([dict(m) for m in rows], remote=r)
+    for m in restored:
+        assert " ".join(m["content"].split()) == " ".join(original[m["id"]].split())
+
+
+def test_markers_are_never_sent_even_after_a_rewrite(db):
+    _long_chat(db, "s8", n_pairs=12)
+    r = FakeRemote()
+    run(db, r)
+    _age(db, "s8", 40)
+    session_sync.slim_once(db, after_days=30)
+    full_before = dict(r.sessions["s8"])
+
+    # A rewrite that carries the markers (e.g. replace_messages while offline).
+    rows = db.sync_messages("s8")
+    db.replace_messages("s8", [{"role": m["role"], "content": m["content"]} for m in rows])
+    run(db, r)
+    sent = [m for c in r.calls for m in c.get("messages", [])]
+    assert not any(m["content"].startswith(session_sync.MARKER_PREFIX) for m in sent)
+    assert r.sessions["s8"] == full_before, "the server copy must keep the full text"
+
+
+def test_no_slimming_for_recent_or_unsynced_chats(db):
+    _long_chat(db, "recent")
+    _long_chat(db, "unsynced")
+    _age(db, "unsynced", 40)
+    run(db, FakeRemote(fail=True))  # unsynced stays dirty
+    _long_chat(db, "synced_recent")
+    assert session_sync.slim_once(db, after_days=30) == 0
+    assert session_sync.slim_once(db, after_days=0) == 0
+
+
+def test_hydrate_offline_keeps_the_hint(db):
+    msgs = [{"role": "assistant", "content": session_sync.marker("root", "s:3", "Lange Antwort " * 50)}]
+    out = session_sync.hydrate_messages(msgs, remote=FakeRemote(fail=True))
+    assert not out[0]["content"].startswith(session_sync.MARKER_PREFIX)
+    assert out[0]["content"].startswith("Lange Antwort") and "Suite" in out[0]["content"]

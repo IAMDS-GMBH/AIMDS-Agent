@@ -572,7 +572,8 @@ CREATE TRIGGER IF NOT EXISTS messages_sync_insert AFTER INSERT ON messages BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_sync_update AFTER UPDATE OF content, active, role ON messages
-WHEN old.content IS NOT new.content OR old.active IS NOT new.active OR old.role IS NOT new.role BEGIN
+WHEN (old.content IS NOT new.content OR old.active IS NOT new.active OR old.role IS NOT new.role)
+     AND COALESCE(new.content, '') NOT LIKE '⟦synced:%' BEGIN
     UPDATE sessions SET sync_dirty = 1, sync_gen = sync_gen + 1 WHERE id = new.session_id;
 END;
 
@@ -4293,6 +4294,44 @@ class SessionDB:
             "UPDATE session_sync_tombstones SET attempts = ?, last_error = ?, next_at = ? WHERE id = ?",
             (attempts, str(error)[:500], time.time() + delay, tombstone_id),
         ))
+
+    def sync_slim_candidates(self, idle_before: float, limit: int = 20) -> List[str]:
+        """Fully synced chats whose newest message is older than *idle_before*."""
+        placeholders = ",".join("?" * len(self.SYNC_SOURCES))
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT s.id FROM sessions s
+                WHERE s.source IN ({placeholders})
+                  AND s.sync_dirty = 0 AND s.synced_upto > 0 AND s.synced_gen = s.sync_gen
+                  AND COALESCE((SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id),
+                               s.started_at) < ?
+                  AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id AND m.active = 1
+                              AND m.role IN ('assistant', 'tool') AND m.content NOT LIKE '⟦synced:%')
+                ORDER BY s.started_at ASC LIMIT ?
+                """,
+                [*self.SYNC_SOURCES, idle_before, limit],
+            ).fetchall()
+        return [r["id"] for r in rows]
+
+    def sync_slim_apply(self, session_id: str, replacements: List[Tuple[int, str]]) -> int:
+        """Replace message contents by their synced-memory markers, only while
+        the session is still clean (a new message meanwhile aborts)."""
+        def _do(conn):
+            ok = conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ? AND sync_dirty = 0 AND synced_gen = sync_gen",
+                (session_id,),
+            ).fetchone()
+            if not ok:
+                return 0
+            n = 0
+            for msg_id, marker in replacements:
+                n += conn.execute(
+                    "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND content NOT LIKE '⟦synced:%'",
+                    (marker, msg_id, session_id),
+                ).rowcount
+            return n
+        return self._execute_write(_do)
 
     def sync_status(self) -> Dict[str, Any]:
         """Counts for the settings page / diagnostics."""

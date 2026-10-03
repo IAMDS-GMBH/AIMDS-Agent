@@ -8084,6 +8084,12 @@ async def get_session_messages(session_id: str, profile: Optional[str] = None):
         sid = db.get_compression_tip(sid) or sid
         sid = db.resolve_resume_session_id(sid)
         messages = db.get_messages(sid, include_ancestors=True)
+        # AIS-469: messages slimmed to a marker load their text from the
+        # Suite memory (off the event loop; offline shows the hint).
+        from agent.session_sync import has_markers, hydrate_messages
+
+        if has_markers(messages):
+            messages = await asyncio.to_thread(hydrate_messages, messages)
         return {"session_id": sid, "messages": messages}
     finally:
         db.close()
