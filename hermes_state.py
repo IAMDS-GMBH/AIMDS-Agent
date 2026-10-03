@@ -471,7 +471,32 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_error TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    -- AIS-469: sync of the transcript to the Suite memory (memory_session).
+    -- sync_dirty is set by triggers on every message change; sync_gen counts
+    -- non-append changes (edit, rewind, replace) that force a re-send;
+    -- synced_upto is the number of active messages the remote holds.
+    sync_dirty INTEGER NOT NULL DEFAULT 0,
+    sync_gen INTEGER NOT NULL DEFAULT 0,
+    synced_gen INTEGER NOT NULL DEFAULT 0,
+    synced_upto INTEGER NOT NULL DEFAULT 0,
+    sync_remote TEXT,
+    sync_error TEXT,
+    sync_attempts INTEGER NOT NULL DEFAULT 0,
+    sync_next_at REAL,
+    synced_at REAL,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
+);
+
+-- AIS-469: remote deletes still to send (the session row is gone locally).
+CREATE TABLE IF NOT EXISTS session_sync_tombstones (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    remote_session_id TEXT NOT NULL,
+    op TEXT NOT NULL,
+    from_message_id TEXT,
+    created_at REAL NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_at REAL,
+    last_error TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -535,6 +560,25 @@ CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+"""
+
+# AIS-469: every message change marks its session for the transcript sync,
+# whichever code path wrote it (append, replace, rewind, restore, delete).
+# Appends only mark dirty; anything else also bumps sync_gen so the worker
+# re-sends the session (the server ignores unchanged messages).
+SYNC_TRIGGER_SQL = """
+CREATE TRIGGER IF NOT EXISTS messages_sync_insert AFTER INSERT ON messages BEGIN
+    UPDATE sessions SET sync_dirty = 1 WHERE id = new.session_id AND sync_dirty = 0;
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_sync_update AFTER UPDATE OF content, active, role ON messages
+WHEN old.content IS NOT new.content OR old.active IS NOT new.active OR old.role IS NOT new.role BEGIN
+    UPDATE sessions SET sync_dirty = 1, sync_gen = sync_gen + 1 WHERE id = new.session_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_sync_delete AFTER DELETE ON messages BEGIN
+    UPDATE sessions SET sync_dirty = 1, sync_gen = sync_gen + 1 WHERE id = old.session_id;
+END;
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -1027,6 +1071,12 @@ class SessionDB:
         # migration was skipped (e.g. due to version renumbering), the
         # column gets created here.
         self._reconcile_columns(cursor)
+
+        # Sync triggers reference reconciler-added session columns (AIS-469).
+        try:
+            cursor.executescript(SYNC_TRIGGER_SQL)
+        except sqlite3.OperationalError as exc:
+            logger.warning("session sync triggers not created: %s", exc)
 
         # Indexes that reference reconciler-added columns must be created
         # AFTER _reconcile_columns runs — declaring them in SCHEMA_SQL
@@ -3935,6 +3985,7 @@ class SessionDB:
             )
             if cursor.fetchone()[0] == 0:
                 return False
+            self._sync_tombstones_for(conn, [session_id])
             # Orphan child sessions so FK constraint is satisfied
             conn.execute(
                 "UPDATE sessions SET parent_session_id = NULL "
@@ -4056,6 +4107,9 @@ class SessionDB:
                 existing = sorted(chain | self._subagent_child_ids(conn, chain))
 
             existing_placeholders = ",".join("?" * len(existing))
+            # The user deleted these chats: delete the synced transcripts too
+            # (prune_sessions does not — local retention keeps the remote copy).
+            self._sync_tombstones_for(conn, existing)
             # Orphan children whose parent is in the kill list so the
             # FK constraint stays satisfied. Pin children whose parent
             # is itself in the kill list rather than NULL-ing parents
@@ -4081,6 +4135,181 @@ class SessionDB:
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count
+
+    # ── Transcript sync to the Suite memory (AIS-469) ────────────────────
+
+    #: Sources whose sessions are synced: interactive chats only — cron runs
+    #: and messaging adapters are not user conversations to recall.
+    SYNC_SOURCES = ("tui", "cli", "acp")
+
+    @staticmethod
+    def _sync_tombstones_for(conn, session_ids) -> None:
+        """Queue remote deletes for sessions about to be deleted by the user."""
+        if not session_ids:
+            return
+        placeholders = ",".join("?" * len(session_ids))
+        rows = conn.execute(
+            f"SELECT id, sync_remote, synced_upto FROM sessions "
+            f"WHERE id IN ({placeholders}) AND synced_upto > 0",
+            list(session_ids),
+        ).fetchall()
+        now = time.time()
+        remotes_deleted = set()
+        for row in rows:
+            remote = row["sync_remote"] or row["id"]
+            if remote == row["id"] or remote in session_ids:
+                if remote in remotes_deleted:
+                    continue
+                remotes_deleted.add(remote)
+                conn.execute(
+                    "INSERT INTO session_sync_tombstones (remote_session_id, op, created_at) VALUES (?, 'delete', ?)",
+                    (remote, now),
+                )
+            else:
+                # One segment of a conversation whose root survives.
+                conn.execute(
+                    "INSERT INTO session_sync_tombstones (remote_session_id, op, from_message_id, created_at) "
+                    "VALUES (?, 'truncate', ?, ?)",
+                    (remote, f"{row['id']}:0", now),
+                )
+
+    def sync_mark_backfill(self, flag_key: str = "session_sync_backfill_v1") -> int:
+        """Once per database: mark every existing chat for sync. Returns the count."""
+        def _do(conn):
+            if conn.execute("SELECT 1 FROM state_meta WHERE key = ?", (flag_key,)).fetchone():
+                return 0
+            placeholders = ",".join("?" * len(self.SYNC_SOURCES))
+            cur = conn.execute(
+                f"UPDATE sessions SET sync_dirty = 1 WHERE source IN ({placeholders}) "
+                "AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = sessions.id)",
+                list(self.SYNC_SOURCES),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO state_meta (key, value) VALUES (?, ?)", (flag_key, str(time.time()))
+            )
+            return cur.rowcount
+        return self._execute_write(_do)
+
+    def sync_due_sessions(self, limit: int = 10, now: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Chats with unsynced changes whose retry time has come, oldest first.
+
+        Oldest first matters: the segments of a compressed conversation share
+        one remote transcript and must arrive in order. Untitled children of a
+        non-compression parent (delegate runs) are not user chats and skip.
+        """
+        now = time.time() if now is None else now
+        placeholders = ",".join("?" * len(self.SYNC_SOURCES))
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT s.id, s.title, s.sync_gen, s.synced_gen, s.synced_upto, s.sync_remote, s.sync_attempts
+                FROM sessions s LEFT JOIN sessions p ON p.id = s.parent_session_id
+                WHERE s.sync_dirty = 1
+                  AND (s.sync_next_at IS NULL OR s.sync_next_at <= ?)
+                  AND s.source IN ({placeholders})
+                  AND NOT (s.parent_session_id IS NOT NULL
+                           AND COALESCE(p.end_reason, '') <> 'compression'
+                           AND COALESCE(s.title, '') = '')
+                ORDER BY s.started_at ASC
+                LIMIT ?
+                """,
+                [now, *self.SYNC_SOURCES, limit],
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def sync_remote_id(self, session_id: str) -> str:
+        """The conversation root: all compression segments share one remote transcript."""
+        with self._lock:
+            chain = self._compression_chain_ids(self._conn, [session_id])
+            if len(chain) <= 1:
+                return session_id
+            placeholders = ",".join("?" * len(chain))
+            row = self._conn.execute(
+                f"SELECT id FROM sessions WHERE id IN ({placeholders}) ORDER BY started_at ASC LIMIT 1",
+                list(chain),
+            ).fetchone()
+        return row["id"] if row else session_id
+
+    def sync_messages(self, session_id: str) -> List[Dict[str, Any]]:
+        """Active messages of one session in order (the sync source of truth)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, role, content, tool_name, tool_calls, timestamp FROM messages "
+                "WHERE session_id = ? AND active = 1 ORDER BY id",
+                (session_id,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["content"] = self._decode_content(d["content"])  # multimodal parts as a list
+            out.append(d)
+        return out
+
+    def sync_record(self, session_id: str, *, gen: int, upto: int, remote: str) -> None:
+        """The remote now holds the first *upto* active messages as of *gen*."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET synced_gen = ?, synced_upto = ?, sync_remote = ?, sync_error = NULL, "
+                "sync_attempts = 0, sync_next_at = NULL, synced_at = ? WHERE id = ?",
+                (gen, upto, remote, time.time(), session_id),
+            )
+        self._execute_write(_do)
+
+    def sync_clear_dirty(self, session_id: str, *, gen: int, count: int) -> bool:
+        """Clear the dirty flag unless the session changed meanwhile (atomic)."""
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE sessions SET sync_dirty = 0 WHERE id = ? AND sync_gen = ? AND synced_gen = ? "
+                "AND (SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1) = ?",
+                (session_id, gen, gen, session_id, count),
+            )
+            return cur.rowcount > 0
+        return self._execute_write(_do)
+
+    def sync_fail(self, session_id: str, error: str, *, attempts: int) -> None:
+        """Back off exponentially (30 s … 1 h) after a failed sync."""
+        delay = min(3600.0, 30.0 * (2 ** max(0, attempts - 1)))
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET sync_error = ?, sync_attempts = ?, sync_next_at = ? WHERE id = ?",
+                (str(error)[:500], attempts, time.time() + delay, session_id),
+            )
+        self._execute_write(_do)
+
+    def sync_tombstones_due(self, limit: int = 20) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM session_sync_tombstones WHERE next_at IS NULL OR next_at <= ? ORDER BY id LIMIT ?",
+                (time.time(), limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def sync_tombstone_done(self, tombstone_id: int) -> None:
+        self._execute_write(lambda conn: conn.execute("DELETE FROM session_sync_tombstones WHERE id = ?", (tombstone_id,)))
+
+    def sync_tombstone_fail(self, tombstone_id: int, error: str, *, attempts: int) -> None:
+        delay = min(3600.0, 30.0 * (2 ** max(0, attempts - 1)))
+        self._execute_write(lambda conn: conn.execute(
+            "UPDATE session_sync_tombstones SET attempts = ?, last_error = ?, next_at = ? WHERE id = ?",
+            (attempts, str(error)[:500], time.time() + delay, tombstone_id),
+        ))
+
+    def sync_status(self) -> Dict[str, Any]:
+        """Counts for the settings page / diagnostics."""
+        placeholders = ",".join("?" * len(self.SYNC_SOURCES))
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT SUM(CASE WHEN synced_upto > 0 AND sync_dirty = 0 THEN 1 ELSE 0 END) AS synced, "
+                f"SUM(CASE WHEN sync_dirty = 1 THEN 1 ELSE 0 END) AS pending, "
+                f"SUM(CASE WHEN sync_error IS NOT NULL THEN 1 ELSE 0 END) AS failing, MAX(synced_at) AS last "
+                f"FROM sessions WHERE source IN ({placeholders})",
+                list(self.SYNC_SOURCES),
+            ).fetchone()
+            tomb = self._conn.execute("SELECT COUNT(*) FROM session_sync_tombstones").fetchone()[0]
+        return {
+            "synced": row["synced"] or 0, "pending": row["pending"] or 0,
+            "failing": row["failing"] or 0, "last_synced_at": row["last"], "pending_deletes": tomb,
+        }
 
     def count_empty_sessions(self) -> int:
         """Return the count of empty, non-active, non-archived sessions.

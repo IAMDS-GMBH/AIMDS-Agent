@@ -412,7 +412,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     userProfileEnabled: 'User Profile',
     memoryCharLimit: 'Memory Budget',
     userCharLimit: 'Profile Budget',
-    provider: 'Memory Provider'
+    provider: 'Memory Provider',
+    sessionSync: 'Sync Chats to Suite Memory'
   },
   context: {
     engine: 'Context Engine'
@@ -475,7 +476,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   memory: {
     memoryEnabled: 'Save durable memories that can help future sessions.',
-    userProfileEnabled: 'Maintain a compact profile of user preferences.'
+    userProfileEnabled: 'Maintain a compact profile of user preferences.',
+    sessionSync:
+      'Mirror every chat into your Suite memory (stored encrypted, searchable) so you can find and continue it on other devices, e.g. OpenWebUI. Deleting a chat here deletes it there too.'
   },
   context: {
     engine: 'Strategy for managing long conversations near the context limit.'
@@ -565,6 +568,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'memory.memory_char_limit',
       'memory.user_char_limit',
       'memory.provider',
+      'memory.session_sync',
       'context.engine',
       'compression.enabled',
       'compression.threshold',

@@ -143,6 +143,13 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
         except Exception as e:
             _log.debug("Desktop cron tick error: %s", e)
         try:
+            # AIS-469: mirror chat transcripts into the Suite memory.
+            from agent.session_sync import maybe_run as maybe_run_session_sync
+
+            maybe_run_session_sync()
+        except Exception as e:
+            _log.debug("Session sync tick error: %s", e)
+        try:
             from hermes_cli.iamds_suite import maybe_run_suite_health_check
 
             results = maybe_run_suite_health_check()
