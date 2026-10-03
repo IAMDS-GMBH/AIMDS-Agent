@@ -1099,9 +1099,20 @@ jobs:
             echo "Release $TAG already exists; updating (prerelease=${PRERELEASE:-false})..."
             gh release edit "$TAG" "${FLAGS[@]}"
           else
+            # An existing tag is released as is. Passing --target as well
+            # makes GitHub treat the call as pointing a ref at that commit;
+            # when the commit's .github/workflows differ from main (a stable
+            # rebuild of an older candidate), that needs the `workflows`
+            # scope, which GITHUB_TOKEN never has → HTTP 403 "Resource not
+            # accessible by integration" (v0.7.9 promotion, AIS-400).
+            if git rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null; then
+              TARGET_ARGS=(--verify-tag)
+            else
+              TARGET_ARGS=(--target "$TARGET_SHA")
+            fi
             gh release create "$TAG" \
               "${FLAGS[@]}" \
-              --target "$TARGET_SHA" \
+              "${TARGET_ARGS[@]}" \
               --title "Bootstrap Installer $TAG" \
               --notes "Automated bootstrap installer release."
           fi
