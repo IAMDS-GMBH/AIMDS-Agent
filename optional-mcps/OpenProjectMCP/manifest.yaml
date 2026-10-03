@@ -4,14 +4,17 @@ manifest_version: 1
 
 name: OpenProjectMCP
 description: >-
-  Read and manage OpenProject Community Edition work packages and time
-  entries: search, create, update (including moving between projects),
-  delete, comment, relate and book time. Every write is preview-then-confirm;
-  project scope is enforced by allowlists.
+  Read and manage OpenProject Community Edition projects, work packages,
+  boards, meetings and time entries with the AIMDS Suite's pm_* tool
+  contract (go-mcp-openproject): search, create, update (including moving
+  between projects), comment, relate and book time. Project scope is
+  enforced by read/write allowlists.
 source: https://github.com/IAMDS-GMBH/AIMDS-Agent/tree/main/optional-mcps/OpenProjectMCP
 
-# Registered names use the short prefix (`mcp_op_search_work_packages`)
-# instead of `mcp_OpenProjectMCP_...` (AIS-327).
+# Registered names use the short prefix (`mcp_op_pm_search_work_packages`)
+# instead of `mcp_OpenProjectMCP_...` (AIS-327). Since AIS-479 the tool names
+# are the Suite's `pm_*` contract, so local and Suite tools share the suffix
+# (`mcp_op_pm_list_work_packages` / `mcp_AIMDSSuiteMCP_mcp_openproject-pm_list_work_packages`).
 tool_prefix: op
 
 transport:
@@ -45,8 +48,7 @@ auth:
     tokens under Administration -> API and webhooks. OPENPROJECT_READ_PROJECTS
     "*" reads every project the token can see; leave OPENPROJECT_WRITE_PROJECTS
     empty for a read-only setup and list project identifiers (or "*") to allow
-    writes there. Every write tool validates first and only executes when called
-    again with confirm=true.
+    writes there. Write tools outside that list answer with an error naming it.
   env:
     - name: OPENPROJECT_BASE_URL
       prompt: "OpenProject URL (e.g. https://openproject.example.com)"
@@ -62,48 +64,84 @@ auth:
       required: false
       secret: false
     - name: OPENPROJECT_WRITE_PROJECTS
-      # AIS-330: an empty value is a legitimate read-only setup; the server
-      # then registers no write tools at all. Say so in the prompt.
-      prompt: "Writable projects (identifiers, globs or * — EMPTY = read-only: no create/update/comment/time-booking tools will be available)"
+      # AIS-330: an empty value is a legitimate read-only setup. Since AIS-479
+      # the write tools stay registered (Suite contract parity) and refuse
+      # with an error naming this setting. Say so in the prompt.
+      prompt: "Writable projects (identifiers, globs or * — EMPTY = read-only: create/update/comment/time-booking is refused)"
       default: ""
       required: false
       secret: false
 
 tools:
+  # AIS-479: the AIMDS Suite go-mcp-openproject contract (26 pm_* tools,
+  # contract/go-mcp-openproject.tools.json) plus pm_delete_work_package.
   default_enabled:
-    - list_projects
-    - project_context
-    - search_work_packages
-    - get_work_package
-    - list_time_entries
-    - create_work_package
-    - update_work_package
-    - delete_work_package
-    - add_comment
-    - manage_relation
-    - log_time
-  # AIS-410: tool names of the replaced openproject-ce-mcp. A replaced install
-  # starts from default_enabled; these keep a hand-edited include list working.
+    - pm_link_status
+    - pm_link_account
+    - pm_unlink_account
+    - pm_list_reference_data
+    - pm_list_users
+    - pm_list_projects
+    - pm_get_project
+    - pm_list_work_packages
+    - pm_search_work_packages
+    - pm_get_work_package
+    - pm_create_work_package
+    - pm_update_work_package
+    - pm_comment_work_package
+    - pm_list_work_package_activity
+    - pm_list_work_package_relations
+    - pm_create_work_package_relation
+    - pm_delete_work_package
+    - pm_list_boards
+    - pm_get_board
+    - pm_list_meetings
+    - pm_get_meeting
+    - pm_create_meeting
+    - pm_add_meeting_agenda_item
+    - pm_list_time_entries
+    - pm_create_time_entry
+    - pm_update_time_entry
+    - pm_delete_time_entry
+  # Hand-edited include lists keep working: the pre-AIS-479 names of this
+  # server (AIS-408) and of the replaced openproject-ce-mcp (AIS-410) are
+  # rewritten to their pm_* counterpart on `hermes update`.
   renamed:
-    get_project_work_package_context: project_context
-    list_work_packages: search_work_packages
-    list_my_open_work_packages: search_work_packages
-    get_work_packages: search_work_packages
-    create_subtask: create_work_package
-    add_work_package_comment: add_comment
-    get_work_package_activities: get_work_package
-    get_work_package_relations: get_work_package
-    create_work_package_relation: manage_relation
-    list_time_entry_activities: project_context
-    create_time_entry: log_time
-    update_time_entry: log_time
-    list_types: project_context
-    list_statuses: project_context
-    list_priorities: project_context
-    list_versions: project_context
+    # this server before AIS-479
+    list_projects: pm_list_projects
+    project_context: pm_list_reference_data
+    search_work_packages: pm_search_work_packages
+    get_work_package: pm_get_work_package
+    list_time_entries: pm_list_time_entries
+    create_work_package: pm_create_work_package
+    update_work_package: pm_update_work_package
+    delete_work_package: pm_delete_work_package
+    add_comment: pm_comment_work_package
+    manage_relation: pm_create_work_package_relation
+    log_time: pm_create_time_entry
+    # openproject-ce-mcp
+    get_current_user: pm_link_status
+    get_project: pm_get_project
+    get_project_work_package_context: pm_get_project
+    list_work_packages: pm_list_work_packages
+    list_my_open_work_packages: pm_list_work_packages
+    get_work_packages: pm_list_work_packages
+    create_subtask: pm_create_work_package
+    add_work_package_comment: pm_comment_work_package
+    get_work_package_activities: pm_list_work_package_activity
+    get_work_package_relations: pm_list_work_package_relations
+    create_work_package_relation: pm_create_work_package_relation
+    list_time_entry_activities: pm_list_reference_data
+    create_time_entry: pm_create_time_entry
+    update_time_entry: pm_update_time_entry
+    delete_time_entry: pm_delete_time_entry
+    list_types: pm_list_reference_data
+    list_statuses: pm_list_reference_data
+    list_priorities: pm_list_reference_data
+    list_boards: pm_list_boards
+    list_meetings: pm_list_meetings
   removed:
-    - get_current_user
-    - get_project
+    - list_versions
     - get_version
     - list_work_package_attachments
     - get_attachment_content
@@ -111,27 +149,25 @@ tools:
     - list_work_package_wiki_links
     - create_work_package_wiki_link
     - delete_work_package_wiki_link
-    - list_boards
-    - list_meetings
     - list_views
     - execute_query
 
 post_install: |
   OpenProject MCP has been configured. Tools are registered as
-  mcp_op_<tool> (e.g. mcp_op_search_work_packages).
+  mcp_op_<tool> (e.g. mcp_op_pm_search_work_packages) and follow the AIMDS
+  Suite's pm_* tool contract.
 
   - Read scope comes from OPENPROJECT_READ_PROJECTS; writes stay disabled until
-    OPENPROJECT_WRITE_PROJECTS lists projects (then restart Hermes). Without it
-    the server registers NO create/update/comment/time-booking tools. Every
-    write is preview-then-confirm.
-  - Time tracking works like Jira + Tempo: log_time books on a work package,
-    with start and end time ('09:00'-'10:30') when the user names them, else
-    as a duration (1.5 or '1h30m'); a confirmed booking is stored locally at
-    once. Exact times need "exact time tracking" enabled by an OpenProject
-    administrator (Administration -> Time and costs); without it the duration
-    is booked and the tool says so.
-  - Searches and time listings default to the current user; pass 'all' for
-    everyone's.
+    OPENPROJECT_WRITE_PROJECTS lists projects. The write tools are always
+    listed but refuse projects outside that list with an error naming it.
+  - Writes run directly (no preview step); pm_create_work_package warns when
+    the same subject was created in the project within the last 15 minutes.
+  - Time tracking works like Jira + Tempo: pm_create_time_entry books on a
+    work package or project, with start and end time when the user names
+    them, else as a duration (PT1H30M, 1.5 or '1h30m'). Exact times need
+    "exact time tracking" enabled by an OpenProject administrator
+    (Administration -> Time and costs); without it the duration is booked and
+    the tool says so.
   - Display ids such as AIS-408 need OpenProject 17.5+ (semantic ids);
     numeric ids always work.
 

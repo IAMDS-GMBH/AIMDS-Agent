@@ -182,7 +182,7 @@ class TestShortPrefixServers:
                             lambda name: "OpenProjectMCP" if name.startswith("mcp_op_") else None)
         cfg = ShapeConfig(max_items=25, per_server={"OpenProjectMCP": {"max_items": 2}})
         payload = {"results": [{"id": i} for i in range(10)]}
-        out = json.loads(_shape(payload, tool="mcp_op_list_work_packages", config=cfg))["result"]
+        out = json.loads(_shape(payload, tool="mcp_op_pm_list_work_packages", config=cfg))["result"]
         assert len(out["results"]) == 2
         other = json.loads(_shape(payload, tool="mcp_Other_list", config=cfg))["result"]
         assert len(other["results"]) == 10
