@@ -4,7 +4,7 @@
 
 # Hermes Agent ☤
 <p align="center">
-  <a href="https://github.com/IAMDS-GMBH/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+  <a href="https://github.com/IAMDS-GMBH/AIMDS-Agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
 </p>
 
 > [!NOTE]
