@@ -350,7 +350,7 @@ export function ReportIssueDialog({
 
   return (
     <>
-      <Dialog onOpenChange={handleClose} open={open}>
+      <Dialog floating onOpenChange={handleClose} open={open}>
         <DialogContent className="max-w-md gap-4 p-5">
           <DialogHeader>
             <DialogTitle icon={HelpCircle}>{copy.title}</DialogTitle>

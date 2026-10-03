@@ -111,10 +111,21 @@ import { useKeybinds } from './hooks/use-keybinds'
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from './layout-constants'
 import { ModelPickerOverlay } from './model-picker-overlay'
 import { ModelVisibilityOverlay } from './model-visibility-overlay'
+import { DetachableOverlay } from './overlays/detachable-overlay'
 import { RightSidebarPane } from './right-sidebar'
 import { $terminalTakeover } from './right-sidebar/store'
 import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persistent'
-import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE, TODOS_ROUTE } from './routes'
+import {
+  AGENTS_ROUTE,
+  COMMAND_CENTER_ROUTE,
+  CRON_ROUTE,
+  NEW_CHAT_ROUTE,
+  PROFILES_ROUTE,
+  routeSessionId,
+  sessionRoute,
+  SETTINGS_ROUTE,
+  TODOS_ROUTE
+} from './routes'
 import { SessionPickerOverlay } from './session-picker-overlay'
 import { SessionSwitcher } from './session-switcher'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
@@ -1204,11 +1215,17 @@ export function DesktopController() {
       <CommandPalette />
       <SessionSwitcher />
 
-      {settingsOpen && (
+      <DetachableOverlay
+        closeToPreviousRoute={closeOverlayToPreviousRoute}
+        route={SETTINGS_ROUTE}
+        routeOpen={settingsOpen}
+        view="settings"
+      >
+        {onClose => (
         <Suspense fallback={null}>
           <SettingsView
             gateway={gatewayRef.current}
-            onClose={closeOverlayToPreviousRoute}
+            onClose={onClose}
             onConfigSaved={() => {
               void refreshHermesConfig()
               void refreshCurrentModel()
@@ -1223,40 +1240,69 @@ export function DesktopController() {
             }}
           />
         </Suspense>
-      )}
+        )}
+      </DetachableOverlay>
 
-      {commandCenterOpen && (
-        <Suspense fallback={null}>
-          <CommandCenterView
-            initialSection={commandCenterInitialSection}
-            onClose={closeOverlayToPreviousRoute}
-            onDeleteSession={removeSession}
-            onNavigateRoute={path => navigate(path)}
-            onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
-          />
-        </Suspense>
-      )}
+      <DetachableOverlay
+        closeToPreviousRoute={closeOverlayToPreviousRoute}
+        route={COMMAND_CENTER_ROUTE}
+        routeOpen={commandCenterOpen}
+        view="command-center"
+      >
+        {onClose => (
+          <Suspense fallback={null}>
+            <CommandCenterView
+              initialSection={commandCenterInitialSection}
+              onClose={onClose}
+              onDeleteSession={removeSession}
+              onNavigateRoute={path => navigate(path)}
+              onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
+            />
+          </Suspense>
+        )}
+      </DetachableOverlay>
 
-      {agentsOpen && (
-        <Suspense fallback={null}>
-          <AgentsView onClose={closeOverlayToPreviousRoute} />
-        </Suspense>
-      )}
+      <DetachableOverlay
+        closeToPreviousRoute={closeOverlayToPreviousRoute}
+        route={AGENTS_ROUTE}
+        routeOpen={agentsOpen}
+        view="agents"
+      >
+        {onClose => (
+          <Suspense fallback={null}>
+            <AgentsView onClose={onClose} />
+          </Suspense>
+        )}
+      </DetachableOverlay>
 
-      {cronOpen && (
-        <Suspense fallback={null}>
-          <CronView
-            onClose={closeOverlayToPreviousRoute}
-            onOpenSession={(sessionId, profile) => navigate(sessionRoute(sessionId, profile))}
-          />
-        </Suspense>
-      )}
+      <DetachableOverlay
+        closeToPreviousRoute={closeOverlayToPreviousRoute}
+        route={CRON_ROUTE}
+        routeOpen={cronOpen}
+        view="cron"
+      >
+        {onClose => (
+          <Suspense fallback={null}>
+            <CronView
+              onClose={onClose}
+              onOpenSession={(sessionId, profile) => navigate(sessionRoute(sessionId, profile))}
+            />
+          </Suspense>
+        )}
+      </DetachableOverlay>
 
-      {profilesOpen && (
-        <Suspense fallback={null}>
-          <ProfilesView onClose={closeOverlayToPreviousRoute} />
-        </Suspense>
-      )}
+      <DetachableOverlay
+        closeToPreviousRoute={closeOverlayToPreviousRoute}
+        route={PROFILES_ROUTE}
+        routeOpen={profilesOpen}
+        view="profiles"
+      >
+        {onClose => (
+          <Suspense fallback={null}>
+            <ProfilesView onClose={onClose} />
+          </Suspense>
+        )}
+      </DetachableOverlay>
     </>
   )
 

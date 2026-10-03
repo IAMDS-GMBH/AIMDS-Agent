@@ -4,10 +4,23 @@ import * as React from 'react'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 import { X } from '@/lib/icons'
+import { beginPointerDrag, clampToViewport, isDragExempt } from '@/lib/pointer-drag'
 import { cn } from '@/lib/utils'
 
-function Dialog({ ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) {
-  return <DialogPrimitive.Root data-slot="dialog" {...props} />
+// A floating dialog (AIS-398) is non-modal: no backdrop, the app behind it
+// stays usable, clicks outside don't close it, and its header drags it.
+const DialogFloatingContext = React.createContext(false)
+
+function Dialog({
+  floating = false,
+  modal,
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Root> & { floating?: boolean }) {
+  return (
+    <DialogFloatingContext.Provider value={floating}>
+      <DialogPrimitive.Root data-slot="dialog" modal={floating ? false : modal} {...props} />
+    </DialogFloatingContext.Provider>
+  )
 }
 
 function DialogTrigger({ ...props }: React.ComponentProps<typeof DialogPrimitive.Trigger>) {
@@ -38,16 +51,62 @@ function DialogOverlay({ className, ...props }: React.ComponentProps<typeof Dial
 function DialogContent({
   className,
   children,
+  onEscapeKeyDown,
+  onFocusOutside,
+  onInteractOutside,
+  onPointerDown,
+  onPointerDownOutside,
   showCloseButton = true,
+  style,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
 }) {
   const { t } = useI18n()
+  const floating = React.useContext(DialogFloatingContext)
+  const [offset, setOffset] = React.useState({ x: 0, y: 0 })
+
+  const keepOpen = <E extends { preventDefault: () => void }>(handler?: (event: E) => void) =>
+    floating
+      ? (event: E) => {
+          handler?.(event)
+          event.preventDefault()
+        }
+      : handler
+
+  // Esc typed in the app behind a floating dialog belongs to the app.
+  const escapeInsideOnly = (event: KeyboardEvent) => {
+    onEscapeKeyDown?.(event)
+
+    if (floating && !(event.target instanceof Element && event.target.closest('[data-slot="dialog-content"]'))) {
+      event.preventDefault()
+    }
+  }
+
+  const startDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    onPointerDown?.(event)
+
+    const target = event.target as Element | null
+    const onChrome = target === event.currentTarget || Boolean(target?.closest('[data-slot="dialog-header"]'))
+
+    if (!floating || event.defaultPrevented || !onChrome || isDragExempt(target)) {
+      return
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect()
+    const start = offset
+
+    beginPointerDrag(event, {
+      onMove: (dx, dy) => {
+        const { left, top } = clampToViewport(rect.left + dx, rect.top + dy, rect.width, rect.height)
+        setOffset({ x: start.x + left - rect.left, y: start.y + top - rect.top })
+      }
+    })
+  }
 
   return (
     <DialogPortal>
-      <DialogOverlay />
+      {!floating && <DialogOverlay />}
       <DialogPrimitive.Content
         className={cn(
           // Cap height at 85vh and let long content scroll inside the dialog
@@ -56,7 +115,18 @@ function DialogContent({
           'fixed left-1/2 top-1/2 z-[130] pointer-events-auto grid max-h-[85vh] w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-3 overflow-y-auto rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) p-4 text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
           className
         )}
+        data-floating={floating ? '' : undefined}
         data-slot="dialog-content"
+        onEscapeKeyDown={escapeInsideOnly}
+        onFocusOutside={keepOpen(onFocusOutside)}
+        onInteractOutside={keepOpen(onInteractOutside)}
+        onPointerDown={startDrag}
+        onPointerDownOutside={keepOpen(onPointerDownOutside)}
+        style={
+          floating
+            ? { translate: `calc(-50% + ${offset.x}px) calc(-50% + ${offset.y}px)`, ...style }
+            : style
+        }
         {...props}
       >
         {children}
@@ -79,9 +149,11 @@ function DialogContent({
 }
 
 function DialogHeader({ className, ...props }: React.ComponentProps<'div'>) {
+  const floating = React.useContext(DialogFloatingContext)
+
   return (
     <div
-      className={cn('flex flex-col gap-1 text-center sm:text-left', className)}
+      className={cn('flex flex-col gap-1 text-center sm:text-left', floating && 'cursor-grab select-none', className)}
       data-slot="dialog-header"
       {...props}
     />

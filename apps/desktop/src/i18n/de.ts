@@ -78,6 +78,8 @@ export const de
     choose: 'Auswählen',
     clear: 'Löschen',
     close: 'Schließen',
+    dockWindow: 'Wieder als Vollansicht andocken',
+    floatWindow: 'Als Fenster lösen (Chat dahinter bleibt bedienbar)',
     collapse: 'Einklappen',
     confirm: 'Bestätigen',
     connect: 'Verbinden',

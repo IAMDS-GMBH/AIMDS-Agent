@@ -77,6 +77,8 @@ export const en: Translations = {
     choose: 'Choose',
     clear: 'Clear',
     close: 'Close',
+    dockWindow: 'Dock back to full view',
+    floatWindow: 'Detach as a window (keep using the chat behind it)',
     collapse: 'Collapse',
     confirm: 'Confirm',
     connect: 'Connect',

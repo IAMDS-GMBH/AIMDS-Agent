@@ -92,6 +92,8 @@ export interface Translations {
     choose: string
     clear: string
     close: string
+    dockWindow: string
+    floatWindow: string
     collapse: string
     confirm: string
     connect: string
