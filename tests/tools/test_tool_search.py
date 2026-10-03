@@ -1732,6 +1732,40 @@ class TestLargeServerOpenProject:
         ranked = json.loads(ts.dispatch_tool_search({"query": "arbeitspaket erstellen"}, current_tool_defs=defs))
         assert ranked["mode"] == "ranked" and "source_total" not in ranked
 
+    def test_pm_contract_tools_are_found(self, monkeypatch):
+        """AIS-479: the bundled server exposes the Suite's pm_* names
+        (`mcp_op_pm_*`); German queries still reach the right tool."""
+        import importlib.util
+        from pathlib import Path
+
+        import tools.tool_search as ts
+        from tools.tool_search import search_catalog
+
+        monkeypatch.delenv("OPENPROJECT_BASE_URL", raising=False)
+        path = Path(__file__).resolve().parents[2] / "optional-mcps" / "OpenProjectMCP" / "server.py"
+        spec = importlib.util.spec_from_file_location("op_server_for_search", path)
+        server = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(server)
+        monkeypatch.setattr(ts, "_get_mcp_server_metadata", lambda: {})
+        monkeypatch.setattr(ts, "_get_dynamic_mcp_keywords_map", lambda: {})
+        monkeypatch.setattr(ts, "_get_dynamic_skill_keywords_map", lambda: {})
+        monkeypatch.setattr(ts, "_manifest_default_tools", lambda source: [])
+        defs = []
+        for tool in server.tool_definitions():
+            name = f"mcp_op_{tool['name']}"
+            self._register(name, "mcp-OpenProjectMCP", tool["description"])
+            defs.append(_td(name, tool["description"].split(". ")[0]))
+        for tool, desc in _JIRA_TOOLS.items():
+            self._register(f"mcp_AtlassianMCP_{tool}", "mcp-AtlassianMCP", desc)
+            defs.append(_td(f"mcp_AtlassianMCP_{tool}", desc))
+        catalog = ts.build_catalog(defs)
+        top = lambda q, n=3: [h.name for h in search_catalog(catalog, q, limit=n)]
+        assert "mcp_op_pm_search_work_packages" in top("openproject arbeitspakete suchen")
+        assert top("arbeitspaket erstellen")[0] == "mcp_op_pm_create_work_package"
+        assert "mcp_op_pm_create_time_entry" in top("zeit buchen openproject")
+        assert "mcp_op_pm_comment_work_package" in top("openproject kommentar hinzufügen")
+        assert "mcp_op_pm_list_time_entries" in top("openproject time entries")
+
     def test_alias_normalization(self):
         from tools.tool_search import _normalize_source_key
         assert _normalize_source_key("arbeitspakete") == "openprojectmcp"

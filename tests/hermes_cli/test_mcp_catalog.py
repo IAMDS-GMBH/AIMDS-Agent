@@ -2596,9 +2596,14 @@ class TestVersionPinsAndToolPrefix:
         assert env["OPENPROJECT_READ_PROJECTS"].default == "*"
         assert env["OPENPROJECT_WRITE_PROJECTS"].required is False and env["OPENPROJECT_WRITE_PROJECTS"].default == ""
         assert entry.tools.default_enabled is not None
-        assert len(entry.tools.default_enabled) == 11
-        assert {"search_work_packages", "log_time", "delete_work_package"} <= set(entry.tools.default_enabled)
-        assert entry.tools.renamed["create_time_entry"] == "log_time"
+        # AIS-479: the Suite's 26 pm_* contract tools + pm_delete_work_package.
+        assert len(entry.tools.default_enabled) == 27
+        assert all(t.startswith("pm_") for t in entry.tools.default_enabled)
+        assert {"pm_search_work_packages", "pm_create_time_entry", "pm_delete_work_package"} <= set(entry.tools.default_enabled)
+        # the pre-AIS-479 names and the replaced openproject-ce-mcp names migrate
+        assert entry.tools.renamed["log_time"] == "pm_create_time_entry"
+        assert entry.tools.renamed["create_time_entry"] == "pm_create_time_entry"
+        assert entry.tools.renamed["search_work_packages"] == "pm_search_work_packages"
         # every renamed target is a tool the server really has
         assert set(entry.tools.renamed.values()) <= set(entry.tools.default_enabled)
 

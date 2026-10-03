@@ -2609,13 +2609,16 @@ _JIRA_WRITE_SUFFIXES = (
     "jira_create_issue", "jira_update_issue", "jira_add_comment",
     "jira_transition_issue", "jira_add_worklog",
 )
+# AIS-479: the OpenProject pm_* contract, shared by the bundled server
+# (`mcp_op_pm_create_work_package`) and the Suite's go-mcp-openproject
+# (`mcp_AIMDSSuiteMCP_mcp_openproject-pm_create_work_package`).
 _OPENPROJECT_WRITE_SUFFIXES = (
-    "create_work_package", "update_work_package", "add_work_package_comment",
-    "create_time_entry", "log_time", "add_comment",
+    "pm_create_work_package", "pm_update_work_package", "pm_comment_work_package",
+    "pm_create_time_entry", "pm_update_time_entry",
 )
 _OPENPROJECT_READ_SUFFIXES = (
-    "list_work_packages", "search_work_packages", "get_work_package",
-    "list_projects", "list_my_open_work_packages",
+    "pm_list_work_packages", "pm_search_work_packages", "pm_get_work_package",
+    "pm_list_projects",
 )
 
 MCP_PERMISSION_BYPASS_GUIDANCE = (
@@ -2632,8 +2635,8 @@ MCP_PERMISSION_BYPASS_GUIDANCE = (
 
 OPENPROJECT_READ_ONLY_GUIDANCE = (
     "# OpenProject is read-only in this session\n"
-    "The OpenProject MCP server is loaded, but none of its write tools (create_work_package, "
-    "update_work_package, add_comment, log_time) is registered: the server "
+    "The OpenProject MCP server is loaded, but none of its write tools (pm_create_work_package, "
+    "pm_update_work_package, pm_comment_work_package, pm_create_time_entry) is registered: the server "
     "was configured without a write scope (OPENPROJECT_WRITE_PROJECTS). Do not try to create, "
     "update, comment on, transition or book time on work packages, and do not search for such "
     "tools — they do not exist in this session. Tell the user that write access must first be "
@@ -2677,7 +2680,7 @@ def build_ticket_routing_guidance(valid_tool_names: "set[str] | None" = None) ->
     if not jira_write or not op_write:
         return ""
     tempo_create = _resolve_tool_by_suffix(names, "createWorklog") or _resolve_tool_by_suffix(names, "jira_add_worklog")
-    op_time = _resolve_tool_by_suffix(names, "log_time") or _resolve_tool_by_suffix(names, "create_time_entry")
+    op_time = _resolve_tool_by_suffix(names, "pm_create_time_entry")
     has_clarify = "clarify" in names
     time_line = ""
     if tempo_create or op_time:

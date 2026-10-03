@@ -226,33 +226,40 @@ def test_strip_html_for_teams_bodies():
 
 
 def test_resolve_tool_finds_short_prefix_names_via_registry(monkeypatch):
-    """AIS-327: `mcp_op_list_time_entries` belongs to OpenProjectMCP although
+    """AIS-327: `mcp_op_pm_list_time_entries` belongs to OpenProjectMCP although
     the name never says so — the registry provenance decides."""
     import cron.brief_sources.base as base
     import tools.mcp_tool as mt
 
     monkeypatch.setattr(mt, "get_mcp_server_for_tool",
                         lambda name: "OpenProjectMCP" if name.startswith("mcp_op_") else None)
-    names = {"mcp_op_list_time_entries", "mcp_AtlassianMCP_jira_search"}
-    assert base.resolve_tool(names, "OpenProjectMCP", "list_time_entries") == "mcp_op_list_time_entries"
-    assert base.resolve_tool(names, "AtlassianMCP", "list_time_entries") is None
+    names = {"mcp_op_pm_list_time_entries", "mcp_AtlassianMCP_jira_search"}
+    assert base.resolve_tool(names, "OpenProjectMCP", "pm_list_time_entries") == "mcp_op_pm_list_time_entries"
+    assert base.resolve_tool(names, "AtlassianMCP", "pm_list_time_entries") is None
 
 
 def test_openproject_aggregates_booked_hours_per_working_day(monkeypatch):
-    """AIS-409: OpenProject time entries feed the brief like Tempo worklogs."""
+    """AIS-409: OpenProject time entries feed the brief like Tempo worklogs;
+    AIS-479: pm_* contract rows (ISO hours, numeric ids) and paging."""
     import tools.mcp_tool as mt
     from cron.brief_sources.openproject import OpenProjectAdapter
 
     monkeypatch.setattr(mt, "get_mcp_server_for_tool",
                         lambda name: "OpenProjectMCP" if name.startswith("mcp_op_") else None)
     calls = []
-    _ctx.responses = {"mcp_op_list_time_entries": {"complete": True, "time_entries": [
-        {"id": 1, "spent_on": "2026-09-07", "hours": 4.0, "work_package_id": "EXT-70"},
-        {"id": 2, "spent_on": "2026-09-07", "hours": 4.0, "work_package_id": "AIS-408"},
-    ]}}
-    ctx = _ctx(["mcp_op_list_time_entries"], calls, status={"OpenProjectMCP": {"connected": True}},
+    pages = {
+        1: {"has_more": True, "next_offset": 2, "time_entries": [
+            {"id": 1, "spent_on": "2026-09-07", "hours": "PT4H", "work_package_id": 17054, "work_package_display_id": "EXT-70"},
+        ]},
+        2: {"has_more": False, "next_offset": None, "time_entries": [
+            {"id": 2, "spent_on": "2026-09-07", "hours": "PT3H30M", "duration_seconds": 14400, "work_package_id": 17699},
+        ]},
+    }
+    _ctx.responses = {"mcp_op_pm_list_time_entries": lambda args: pages[args.get("offset", 1)]}
+    ctx = _ctx(["mcp_op_pm_list_time_entries"], calls, status={"OpenProjectMCP": {"connected": True}},
                store=_Store(targets={"2026-09-07": 8.0}))
     items = OpenProjectAdapter().fetch(bc.build_window("morning-brief", NOW, {}), ctx)
-    assert calls[0][1] == {"date_from": "2026-09-07", "date_to": "2026-09-07", "user": "me"}
+    assert calls[0][1] == {"spent_on_from": "2026-09-07", "spent_on_to": "2026-09-07", "user": "me", "limit": 200}
+    assert calls[1][1]["offset"] == 2
     assert len(items) == 1 and items[0].source == "openproject" and items[0].status == "complete"
-    assert items[0].extra["by_work_package"] == {"AIS-408": 4.0, "EXT-70": 4.0}
+    assert items[0].extra["by_work_package"] == {"17699": 4.0, "EXT-70": 4.0}

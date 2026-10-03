@@ -130,7 +130,7 @@ def resolve_tool(tool_names: Iterable[str], server: str, suffix: str) -> Optiona
             continue
         if server_l in low:
             return name
-        # Servers with a short `tool_prefix` (AIS-327): `mcp_op_list_time_entries`
+        # Servers with a short `tool_prefix` (AIS-327): `mcp_op_pm_list_time_entries`
         # belongs to OpenProjectMCP although the name never says so.
         if get_mcp_server_for_tool is not None:
             owner = get_mcp_server_for_tool(name) or ""

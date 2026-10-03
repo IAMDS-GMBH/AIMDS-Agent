@@ -1038,3 +1038,14 @@ def test_booking_import_never_overwrites_a_day_the_user_recorded(tmp_path, monke
         wt.execute_workdays({"action": "absences", "op": "import_from_bookings"}, db_path=db)
     rows = dict(sqlite3.connect(str(db)).execute("SELECT day, source FROM absences").fetchall())
     assert rows == {"2026-09-09": "user", "2026-09-10": "bookings:INTERNAL_URLAUB_%"}
+
+
+def test_old_openproject_worklog_pattern_also_matches_pm_tool_names():
+    from tools.workdays_tool import _split_patterns
+
+    assert _split_patterns("mcp_op_list_time_entries, mcp_TempoMCP_retrieveWorklogs") == [
+        "mcp_op_list_time_entries",
+        "mcp_TempoMCP_retrieveWorklogs",
+        "mcp_op_pm_list_time_entries",
+    ]
+    assert _split_patterns(["mcp_op_pm_list_time_entries"]) == ["mcp_op_pm_list_time_entries"]
