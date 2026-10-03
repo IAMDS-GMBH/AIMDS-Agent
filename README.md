@@ -7,6 +7,9 @@
   <a href="https://github.com/IAMDS-GMBH/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
 </p>
 
+> [!NOTE]
+> **Public releases live in [IAMDS-GMBH/AIMDS-Agent-Releases](https://github.com/IAMDS-GMBH/AIMDS-Agent-Releases/releases).** This repository holds the source; every release is mirrored there: installers (`HermesSetup.*`), desktop zips, the source archive and `hermes-release.json`. The release marked **Latest** is the current stable release (`vX.Y.Z`); preview candidates (`vX.Y.Z-rc.N`) are published there as pre-releases. Installed clients update from that repository. How releases are cut: [docs/RELEASE.md](docs/RELEASE.md).
+
 **The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
 
 Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [NovitaAI](https://novita.ai) (AI-native cloud for Model API, Agent Sandbox, and GPU Cloud), [NVIDIA NIM](https://build.nvidia.com) (Nemotron), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in.
