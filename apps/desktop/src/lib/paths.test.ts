@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { FILE_PATH_RE, findBarePaths, isBareFilePath, isLinkablePathContext } from './paths'
+import { FILE_PATH_RE, findBarePaths, isBareFilePath, isLinkablePathContext, isRelativeFilePath } from './paths'
 
 const paths = (text: string) => findBarePaths(text).map(match => match.path)
 
@@ -49,5 +49,24 @@ describe('isBareFilePath', () => {
     expect(isBareFilePath('open /tmp/report.pdf now')).toBe(false)
     expect(isBareFilePath('/tmp/dir')).toBe(false)
     expect(isBareFilePath('npm run build')).toBe(false)
+  })
+})
+
+describe('isRelativeFilePath', () => {
+  it('accepts home- or cwd-relative paths with a folder and an extension', () => {
+    expect(isRelativeFilePath('Documents/AIMDS-Suite-Vault/projects/quantisana-wikisana-umzug-mail-mapping.md')).toBe(true)
+    expect(isRelativeFilePath('projects/plan.md')).toBe(true)
+    expect(isRelativeFilePath('.hermes/config.yaml')).toBe(true)
+  })
+
+  it('leaves rooted paths, bare names, hosts and prose alone', () => {
+    expect(isRelativeFilePath('~/notes/today.md')).toBe(false)
+    expect(isRelativeFilePath('/tmp/report.md')).toBe(false)
+    expect(isRelativeFilePath('./out/index.html')).toBe(false)
+    expect(isRelativeFilePath('package.json')).toBe(false)
+    expect(isRelativeFilePath('projects/plan')).toBe(false)
+    expect(isRelativeFilePath('github.com/org/readme.md')).toBe(false)
+    expect(isRelativeFilePath('see projects/plan.md')).toBe(false)
+    expect(isRelativeFilePath('a/b')).toBe(false)
   })
 })

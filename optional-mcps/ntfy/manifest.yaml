@@ -4,7 +4,7 @@ manifest_version: 1
 name: NtfyMCP
 disabled: false
 description: ntfy pub/sub messaging integration for push notifications, Cron topic polling, and Inter-Agent communication. On the AIMDS-Suite it configures itself (server <suite>/ntfy, VirtualKey auth, private topic) — leave the prompts empty.
-source: https://github.com/IAMDS-GMBH/hermes-agent/tree/main/optional-mcps/ntfy
+source: https://github.com/IAMDS-GMBH/AIMDS-Agent/tree/main/optional-mcps/ntfy
 
 transport:
   type: stdio

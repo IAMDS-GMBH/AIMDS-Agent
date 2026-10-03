@@ -22,6 +22,17 @@ export function isBareFilePath(value: string): boolean {
   return BARE_PATH_RE.test(value.trim())
 }
 
+// A relative path with at least one folder and a file extension
+// (`Documents/Vault/projects/plan.md`, `.hermes/config.yaml`). Only for inline
+// code: the assistant often writes vault paths relative to the home directory,
+// and the backticks make the intent explicit. Prose keeps the rooted-only rule.
+// A first segment that looks like a host (`github.com/…`) stays code.
+const RELATIVE_PATH_RE = /^(?!\.\.?\/)(?![^/]+\.[A-Za-z]{2,}\/)\.?[^\s"'`<>()/\\.~][^\s"'`<>()]*\/[^\s"'`<>()]*\.[A-Za-z0-9]{1,8}$/
+
+export function isRelativeFilePath(value: string): boolean {
+  return RELATIVE_PATH_RE.test(value.trim())
+}
+
 // A match is "linkable" unless it's already the target of a markdown link
 // (`](/x.md`), an autolink (`</x.md`) or the path part of a URL (`://x/y.md`).
 export function isLinkablePathContext(text: string, pathIndex: number): boolean {

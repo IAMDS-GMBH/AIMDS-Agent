@@ -39,7 +39,7 @@ import {
   mediaPathFromMarkdownHref,
   mediaStreamUrl
 } from '@/lib/media'
-import { isBareFilePath } from '@/lib/paths'
+import { isBareFilePath, isRelativeFilePath } from '@/lib/paths'
 import { pathFromMarkdownHref, previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { cn } from '@/lib/utils'
 
@@ -358,7 +358,7 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 function MarkdownCode({ children, className, ...props }: ComponentProps<'code'>) {
   const text = childrenToText(children)
 
-  if (text && isBareFilePath(text)) {
+  if (text && (isBareFilePath(text) || isRelativeFilePath(text))) {
     return <InlinePathLink code path={text.trim()} />
   }
 

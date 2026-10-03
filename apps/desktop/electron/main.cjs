@@ -112,6 +112,7 @@ const {
   uninstallArgsForMode
 } = require('./desktop-uninstall.cjs')
 const { isPackagedInstallPath: isPackagedInstallPathUnderRoots } = require('./workspace-cwd.cjs')
+const { previewPathCandidates } = require('./preview-path.cjs')
 const {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -4031,10 +4032,10 @@ function expandUserPath(filePath) {
 async function previewFileTarget(rawTarget, baseDir) {
   const raw = String(rawTarget || '').trim()
   const base = baseDir ? path.resolve(expandUserPath(baseDir)) : resolveHermesCwd()
-  let resolved = resolveRequestedPathForIpc(/^file:/i.test(raw) ? raw : expandUserPath(raw), {
-    baseDir: base,
-    purpose: 'Preview target'
-  })
+  const candidates = previewPathCandidates(/^file:/i.test(raw) ? raw : expandUserPath(raw), base, app.getPath('home')).map(
+    candidate => resolveRequestedPathForIpc(candidate, { baseDir: base, purpose: 'Preview target' })
+  )
+  let resolved = candidates.find(candidate => fileExists(candidate) || directoryExists(candidate)) || candidates[0]
 
   if (directoryExists(resolved)) {
     resolved = path.join(resolved, 'index.html')
