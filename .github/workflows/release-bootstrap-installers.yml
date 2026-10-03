@@ -355,6 +355,22 @@ jobs:
           $tokenCount = if ($tokens) { $tokens.Count } else { 0 }
           Write-Host ('install.ps1 syntax OK ({0} tokens)' -f $tokenCount)
 
+      # The self-hosted Windows runner instances run as SYSTEM and would all
+      # share one npm cache. build-installers and build-desktop run in
+      # parallel on two instances: both restored the same npm cache archive
+      # into that directory at once (1400+ "Cannot open: File exists"), then
+      # ran npm ci against it at the same time, and one checkout got a
+      # half-written node_modules/@babel/types/lib/index.d.ts (TS1490 "File
+      # appears to be binary", AIS-400 stable rebuild). One cache per
+      # instance, kept next to its workspace, so jobs never share it.
+      - name: Use a per-instance npm cache (self-hosted Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $cache = Join-Path (Split-Path $env:RUNNER_WORKSPACE -Parent) 'npm-cache'
+          Add-Content -Path $env:GITHUB_ENV -Value "npm_config_cache=$cache" -Encoding ascii
+          Write-Host "npm cache: $cache"
+
       - name: Setup Node.js
         uses: actions/setup-node@v7.0.0 # v6
         with:
@@ -812,6 +828,22 @@ jobs:
           fi
           echo "version=$clean" >> "$GITHUB_OUTPUT"
           echo "Desktop app version: $clean"
+
+      # The self-hosted Windows runner instances run as SYSTEM and would all
+      # share one npm cache. build-installers and build-desktop run in
+      # parallel on two instances: both restored the same npm cache archive
+      # into that directory at once (1400+ "Cannot open: File exists"), then
+      # ran npm ci against it at the same time, and one checkout got a
+      # half-written node_modules/@babel/types/lib/index.d.ts (TS1490 "File
+      # appears to be binary", AIS-400 stable rebuild). One cache per
+      # instance, kept next to its workspace, so jobs never share it.
+      - name: Use a per-instance npm cache (self-hosted Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $cache = Join-Path (Split-Path $env:RUNNER_WORKSPACE -Parent) 'npm-cache'
+          Add-Content -Path $env:GITHUB_ENV -Value "npm_config_cache=$cache" -Encoding ascii
+          Write-Host "npm cache: $cache"
 
       - name: Setup Node.js
         uses: actions/setup-node@v7.0.0 # v6
