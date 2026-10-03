@@ -766,7 +766,7 @@ _ACTION_VERB_SYNONYMS: Dict[str, Tuple[str, ...]] = {
     "hole": ("download", "get", "fetch"),
     "holen": ("download", "get", "fetch"),
     # Ticket / work-package verbs (AIS-327): "Arbeitspakete suchen" must reach
-    # search_work_packages, not whichever sibling shares the most trigrams.
+    # (pm_)search_work_packages, not whichever sibling shares the most trigrams.
     # Generic verbs (search, create, list, …) are excluded from the synonym
     # name boost on purpose; a verb the user *typed* is a different signal.
     "such": ("search", "find"),

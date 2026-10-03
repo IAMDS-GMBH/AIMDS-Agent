@@ -665,6 +665,12 @@ export const en: Translations = {
       emptyTitle: 'No MCP servers',
       emptyDesc: 'Add a stdio or HTTP server to expose MCP tools.',
       disabled: 'disabled',
+      openProjectViaSuite: 'via Suite',
+      openProjectSuiteServes: (instance, login) =>
+        `The Suite serves ${instance}${login ? ` (linked as ${login})` : ''}; this local server's tools are hidden and come back when the Suite is unavailable.`,
+      openProjectLocalServes: instance =>
+        `This local server serves ${instance}. The Suite account is not linked yet; Hermes links it automatically with this token.`,
+      openProjectAutoLinkFailed: error => `Automatic Suite linking failed (${error}); this local server stays active.`,
       editServer: 'Edit server',
       name: 'Name',
       serverJson: 'Server JSON',

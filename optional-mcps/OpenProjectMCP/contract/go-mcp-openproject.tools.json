@@ -1,0 +1,777 @@
+{
+  "source": "IAMDS-GMBH/AIMDS-Suite container/go-mcp-openproject",
+  "commit": "36f81421",
+  "tools": [
+    {
+      "description": "Get a one-time link_url where the user connects (or replaces) their own OpenProject account — they enter their personal access token on that page, never in the chat. pm_link_status already returns a link_url when the account is not linked; use this tool to replace an existing link or token. Give the user exactly the returned link_url — never build a link yourself and never send the user to the OpenProject instance or its API. It is valid for about 10 minutes and only once. Afterwards call pm_link_status. No arguments.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "pm_link_account"
+    },
+    {
+      "description": "Check whether the user's OpenProject account is linked. Linked: tell the user the linked name/login so they can spot a wrong account. Not linked: the result contains a one-time link_url — give the user exactly that URL (never build one yourself); they enter their personal access token there, never in the chat, and the page shows right away whether it worked. Then call pm_link_status again. No arguments.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "pm_link_status"
+    },
+    {
+      "description": "Remove the user's linked OpenProject personal access token. No arguments.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "pm_unlink_account"
+    },
+    {
+      "description": "List OpenProject's statuses, types, priorities, and time-entry activities in one call — the values needed to fill in status/type/priority fields on pm_create_work_package/pm_update_work_package, or the activity field on pm_create_time_entry/pm_update_time_entry. Served from a cache refreshed every ~30 minutes. Optional: kind (\"statuses\"|\"types\"|\"priorities\"|\"activities\"|\"all\", default \"all\").",
+      "inputSchema": {
+        "properties": {
+          "kind": {
+            "description": "Which reference list to return. Defaults to all four.",
+            "enum": [
+              "statuses",
+              "types",
+              "priorities",
+              "activities",
+              "all"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "pm_list_reference_data"
+    },
+    {
+      "description": "Resolve people by name/email for assignee/responsible fields, or list a project's members. Served from a cached directory refreshed every ~5 minutes. Optional: query (free-text name/email match), project (id or identifier, scopes to that project's members).",
+      "inputSchema": {
+        "properties": {
+          "project": {
+            "description": "Project id or identifier to scope results to that project's members.",
+            "type": "string"
+          },
+          "query": {
+            "description": "Free-text match against name or email.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "pm_list_users"
+    },
+    {
+      "description": "List/search visible OpenProject projects. Optional: search (matches name or identifier).",
+      "inputSchema": {
+        "properties": {
+          "search": {
+            "description": "Free-text match against project name or identifier.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "pm_list_projects"
+    },
+    {
+      "description": "Get one project's summary, optionally including its members (who's on it). Required: project (id or identifier). Optional: include_members (bool, default false).",
+      "inputSchema": {
+        "properties": {
+          "include_members": {
+            "description": "When true, also return the project's members and their roles.",
+            "type": "boolean"
+          },
+          "project": {
+            "description": "Project id or identifier.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "type": "object"
+      },
+      "name": "pm_get_project"
+    },
+    {
+      "description": "List work packages with structured filters (project, status, assignee, type, priority, date ranges). Use pm_search_work_packages instead for free-text relevance search. No required arguments (an empty call lists everything visible).",
+      "inputSchema": {
+        "properties": {
+          "assignee": {
+            "description": "Assignee id, login, or \"me\".",
+            "type": "string"
+          },
+          "created_from": {
+            "description": "Creation date range start, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "created_on": {
+            "description": "Exact creation date, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "created_to": {
+            "description": "Creation date range end, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "due_from": {
+            "description": "Due date range start, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "due_on": {
+            "description": "Exact due date, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "due_to": {
+            "description": "Due date range end, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "group_by": {
+            "description": "Field to group results by, e.g. \"status\".",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Max results per page (default 50, hard ceiling 200).",
+            "type": "integer"
+          },
+          "offset": {
+            "description": "1-based page offset for pagination.",
+            "type": "integer"
+          },
+          "open_only": {
+            "description": "Restrict to not-closed work packages.",
+            "type": "boolean"
+          },
+          "priority": {
+            "description": "Exact priority name or id.",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project id or identifier to scope results to.",
+            "type": "string"
+          },
+          "select": {
+            "description": "Restrict each result to these field names (id, subject, status, type, priority, assignee, project, due_date, ...).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "sort_by": {
+            "description": "Sort criteria, e.g. [\"status:desc\",\"priority:asc\"].",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "status": {
+            "description": "Exact status name or id (not a meta-value like 'open'/'closed' — use open_only for that).",
+            "type": "string"
+          },
+          "type": {
+            "description": "Exact work package type name or id.",
+            "type": "string"
+          },
+          "updated_from": {
+            "description": "Update date range start, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "updated_on": {
+            "description": "Exact update date, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "updated_to": {
+            "description": "Update date range end, YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "pm_list_work_packages"
+    },
+    {
+      "description": "Search work packages by free text, optionally combined with the same structured filters as pm_list_work_packages. Required: query.",
+      "inputSchema": {
+        "properties": {
+          "assignee": {
+            "description": "Assignee id, login, or \"me\".",
+            "type": "string"
+          },
+          "created_from": {
+            "description": "Creation date range start, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "created_on": {
+            "description": "Exact creation date, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "created_to": {
+            "description": "Creation date range end, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "due_from": {
+            "description": "Due date range start, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "due_on": {
+            "description": "Exact due date, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "due_to": {
+            "description": "Due date range end, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "group_by": {
+            "description": "Field to group results by, e.g. \"status\".",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Max results per page (default 50, hard ceiling 200).",
+            "type": "integer"
+          },
+          "offset": {
+            "description": "1-based page offset for pagination.",
+            "type": "integer"
+          },
+          "open_only": {
+            "description": "Restrict to not-closed work packages.",
+            "type": "boolean"
+          },
+          "priority": {
+            "description": "Exact priority name or id.",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project id or identifier to scope results to.",
+            "type": "string"
+          },
+          "query": {
+            "description": "Free-text search query.",
+            "type": "string"
+          },
+          "select": {
+            "description": "Restrict each result to these field names (id, subject, status, type, priority, assignee, project, due_date, ...).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "sort_by": {
+            "description": "Sort criteria, e.g. [\"status:desc\",\"priority:asc\"].",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "status": {
+            "description": "Exact status name or id (not a meta-value like 'open'/'closed' — use open_only for that).",
+            "type": "string"
+          },
+          "type": {
+            "description": "Exact work package type name or id.",
+            "type": "string"
+          },
+          "updated_from": {
+            "description": "Update date range start, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "updated_on": {
+            "description": "Exact update date, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "updated_to": {
+            "description": "Update date range end, YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "pm_search_work_packages"
+    },
+    {
+      "description": "Get one work package by id, including its full description. Required: id. Optional: text_limit (truncate the description).",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "Work package id.",
+            "type": "integer"
+          },
+          "text_limit": {
+            "description": "Truncate the description to this many characters.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "pm_get_work_package"
+    },
+    {
+      "description": "Create a work package. Required: project (id or identifier), type (name or id), subject. Optional: description, status, priority, assignee (id, login, or \"me\"), parent (id), start_date, due_date (YYYY-MM-DD), estimated_time (ISO-8601 duration, e.g. \"PT8H\").",
+      "inputSchema": {
+        "properties": {
+          "assignee": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "due_date": {
+            "type": "string"
+          },
+          "estimated_time": {
+            "type": "string"
+          },
+          "parent": {
+            "type": "integer"
+          },
+          "priority": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "start_date": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "type",
+          "subject"
+        ],
+        "type": "object"
+      },
+      "name": "pm_create_work_package"
+    },
+    {
+      "description": "Update fields on an existing work package (status, priority, assignee, subject, description, dates). Required: id. At least one other field should be set. lock_version is fetched automatically if omitted.",
+      "inputSchema": {
+        "properties": {
+          "assignee": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "due_date": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "lock_version": {
+            "description": "Optional; fetched automatically if omitted.",
+            "type": "integer"
+          },
+          "priority": {
+            "type": "string"
+          },
+          "start_date": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "pm_update_work_package"
+    },
+    {
+      "description": "Add a comment to a work package. Required: id, comment. Optional: notify (bool, default false).",
+      "inputSchema": {
+        "properties": {
+          "comment": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "notify": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "comment"
+        ],
+        "type": "object"
+      },
+      "name": "pm_comment_work_package"
+    },
+    {
+      "description": "List the comment/activity log for a work package, most recent first. Required: id. Optional: limit, text_limit (truncate each entry).",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "text_limit": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "pm_list_work_package_activity"
+    },
+    {
+      "description": "List a work package's relations (blocks, precedes, relates to, ...). Required: id.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "pm_list_work_package_relations"
+    },
+    {
+      "description": "Create a relation between two work packages. Required: id, related_to_id, relation_type (one of relates, blocks, blocked, precedes, follows, duplicates, duplicated, includes, partof, requires, required).",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "The work package the relation is created from.",
+            "type": "integer"
+          },
+          "related_to_id": {
+            "description": "The work package to relate to.",
+            "type": "integer"
+          },
+          "relation_type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "related_to_id",
+          "relation_type"
+        ],
+        "type": "object"
+      },
+      "name": "pm_create_work_package_relation"
+    },
+    {
+      "description": "List saved boards (work package views). Optional: project (id or identifier, scopes to that project's boards), search (name match).",
+      "inputSchema": {
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "search": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "pm_list_boards"
+    },
+    {
+      "description": "Get a board's definition (columns/filters/group_by) and, by default, the work packages it currently matches — OpenProject boards are saved filtered views, not separate swimlane resources. Required: id. Optional: include_work_packages (default true), limit.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "include_work_packages": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "pm_get_board"
+    },
+    {
+      "description": "List meetings. Optional: project (id or identifier), from/to (YYYY-MM-DD, filtered client-side — the OpenProject API has no server-side date filter for meetings yet), state (open|draft|in_progress|cancelled|closed).",
+      "inputSchema": {
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "project": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "open",
+              "draft",
+              "in_progress",
+              "cancelled",
+              "closed"
+            ],
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "pm_list_meetings"
+    },
+    {
+      "description": "Get a meeting with its full agenda, flattened: sections → agenda items → outcomes (minutes/action items) in one readable tree. Required: id. Note: OpenProject's current API exposes no participants/attendees relation — attendee lists are not available here.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "pm_get_meeting"
+    },
+    {
+      "description": "Create a one-time meeting (recurring meetings are not supported by this tool). Required: project, title. Optional: start_time (ISO-8601 datetime), duration (ISO-8601 duration, e.g. \"PT1H\"), location.",
+      "inputSchema": {
+        "properties": {
+          "duration": {
+            "type": "string"
+          },
+          "location": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "start_time": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "title"
+        ],
+        "type": "object"
+      },
+      "name": "pm_create_meeting"
+    },
+    {
+      "description": "Add an agenda item to a meeting, or record an outcome (minutes/action item) on an existing agenda item. Required: meeting_id, and either title (creates a new item) or agenda_item_id (attaches an outcome to that item). Optional: work_package_id (links the new item to a work package), notes (item notes, or the outcome text when targeting agenda_item_id), outcome_kind (\"information\"|\"work_package\", only meaningful with agenda_item_id).",
+      "inputSchema": {
+        "properties": {
+          "agenda_item_id": {
+            "type": "integer"
+          },
+          "meeting_id": {
+            "type": "integer"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "outcome_kind": {
+            "enum": [
+              "information",
+              "work_package"
+            ],
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "work_package_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "meeting_id"
+        ],
+        "type": "object"
+      },
+      "name": "pm_add_meeting_agenda_item"
+    },
+    {
+      "description": "List logged time entries with structured filters. Required: at least one of project, work_package_id. Optional: user (id, login, or \"me\"), spent_on_from/spent_on_to (YYYY-MM-DD range), limit, offset. work_package_id is filtered client-side (OpenProject's API has no server-side filter for it), so scope with project/spent_on_from/spent_on_to when possible to keep the scan small.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "description": "Max results per page (default 50, hard ceiling 200).",
+            "type": "integer"
+          },
+          "offset": {
+            "description": "1-based page offset for pagination.",
+            "type": "integer"
+          },
+          "project": {
+            "description": "Project id or identifier.",
+            "type": "string"
+          },
+          "spent_on_from": {
+            "description": "Date range start, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "spent_on_to": {
+            "description": "Date range end, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "user": {
+            "description": "User id, login, or \"me\".",
+            "type": "string"
+          },
+          "work_package_id": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "pm_list_time_entries"
+    },
+    {
+      "description": "Log time spent on a work package or project. Required: activity, spent_on (YYYY-MM-DD), and at least one of work_package_id/project, plus either hours (ISO-8601 duration, e.g. \"PT8H\") or both start_time and end_time (hours is computed locally from the clock times; OpenProject always derives the end time itself and never accepts it directly). Optional: comment, user (log on behalf of another user — id, login, or \"me\"), start_time alongside hours to also record when the work began, ongoing (bool, only valid with start_time and no end_time — marks the entry as still running). start_time/end_time only work if the OpenProject instance has \"allow tracking of start and end times\" enabled.",
+      "inputSchema": {
+        "properties": {
+          "activity": {
+            "description": "Activity name or id — see pm_list_reference_data(kind=\"activities\").",
+            "type": "string"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "end_time": {
+            "description": "ISO-8601 date-time work ended — used only to compute hours locally, never sent to OpenProject.",
+            "type": "string"
+          },
+          "hours": {
+            "description": "ISO-8601 duration, e.g. \"PT8H\" or \"PT1H30M\".",
+            "type": "string"
+          },
+          "ongoing": {
+            "description": "Mark as still running. Only valid with start_time and no end_time.",
+            "type": "boolean"
+          },
+          "project": {
+            "description": "Project id or identifier.",
+            "type": "string"
+          },
+          "spent_on": {
+            "description": "Date the time was spent, YYYY-MM-DD.",
+            "type": "string"
+          },
+          "start_time": {
+            "description": "ISO-8601 date-time work began (instance-setting-dependent).",
+            "type": "string"
+          },
+          "user": {
+            "description": "Log time on behalf of this user (id, login, or \"me\"). Defaults to the caller.",
+            "type": "string"
+          },
+          "work_package_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "activity",
+          "spent_on"
+        ],
+        "type": "object"
+      },
+      "name": "pm_create_time_entry"
+    },
+    {
+      "description": "Update an existing time entry. Required: id. Optional: activity, spent_on, hours, comment, ongoing, start_time+end_time together (to recompute hours from clock times), user. lock_version is fetched automatically if omitted.",
+      "inputSchema": {
+        "properties": {
+          "activity": {
+            "type": "string"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "end_time": {
+            "description": "Requires start_time in the same call; hours is recomputed locally.",
+            "type": "string"
+          },
+          "hours": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "lock_version": {
+            "description": "Optional; fetched automatically if omitted.",
+            "type": "integer"
+          },
+          "ongoing": {
+            "type": "boolean"
+          },
+          "spent_on": {
+            "type": "string"
+          },
+          "start_time": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "pm_update_time_entry"
+    },
+    {
+      "description": "Delete a time entry. Required: id.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "pm_delete_time_entry"
+    }
+  ]
+}

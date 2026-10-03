@@ -5218,7 +5218,7 @@ class TestSchemaCompaction:
     def test_description_note_survives_compaction(self):
         from tools.mcp_tool import _convert_mcp_schema
 
-        schema = _convert_mcp_schema("OpenProjectMCP", _make_mcp_tool("create_time_entry", _LONG_DESC))
+        schema = _convert_mcp_schema("OpenProjectMCP", _make_mcp_tool("pm_create_time_entry", _LONG_DESC))
         assert "Tempo createWorklog" in schema["description"]
         assert "Tempo createWorklog" in schema["_full_description"]
 

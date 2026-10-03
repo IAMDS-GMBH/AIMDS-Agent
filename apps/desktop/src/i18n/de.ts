@@ -666,6 +666,12 @@ export const de
       emptyTitle: 'Keine MCP-Server',
       emptyDesc: 'Stdio- oder HTTP-Server hinzufügen, um MCP-Tools bereitzustellen.',
       disabled: 'deaktiviert',
+      openProjectViaSuite: 'über Suite',
+      openProjectSuiteServes: (instance, login) =>
+        `Die Suite bedient ${instance}${login ? ` (verknüpft als ${login})` : ''}; die Tools dieses lokalen Servers sind ausgeblendet und kommen zurück, wenn die Suite nicht erreichbar ist.`,
+      openProjectLocalServes: instance =>
+        `Dieser lokale Server bedient ${instance}. Das Suite-Konto ist noch nicht verknüpft; Hermes verknüpft es automatisch mit diesem Token.`,
+      openProjectAutoLinkFailed: error => `Automatische Suite-Verknüpfung fehlgeschlagen (${error}); dieser lokale Server bleibt aktiv.`,
       editServer: 'Server bearbeiten',
       name: 'Name',
       serverJson: 'Server-JSON',

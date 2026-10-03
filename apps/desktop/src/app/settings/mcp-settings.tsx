@@ -26,6 +26,64 @@ interface McpSettingsProps {
 
 type McpServers = Record<string, Record<string, unknown>>
 
+/** AIS-479: which OpenProject tool set serves which domain. */
+interface OpenProjectSuiteStatus {
+  fresh: boolean
+  suite_available: boolean
+  suite_linked: boolean
+  suite_instance: string
+  suite_login: string
+  locals: { name: string; instance: string }[]
+  hide_local: string[]
+  hide_suite: boolean
+  auto_link_error: string
+}
+
+function useOpenProjectSuiteStatus(): OpenProjectSuiteStatus | null {
+  const [status, setStatus] = useState<OpenProjectSuiteStatus | null>(null)
+
+  useEffect(() => {
+    let active = true
+
+    window.hermesDesktop
+      ?.api<OpenProjectSuiteStatus>({ path: '/api/openproject/suite-status' })
+      .then(result => {
+        if (active) {
+          setStatus(result)
+        }
+      })
+      .catch(() => undefined)
+
+    return () => {
+      active = false
+    }
+  }, [])
+
+  return status
+}
+
+function openProjectNote(
+  status: OpenProjectSuiteStatus | null,
+  serverName: string,
+  m: { openProjectSuiteServes: (i: string, l: string) => string; openProjectLocalServes: (i: string) => string; openProjectAutoLinkFailed: (e: string) => string }
+): string | null {
+  const local = status?.fresh ? status.locals.find(item => item.name === serverName) : undefined
+
+  if (!status || !local || !status.suite_available) {
+    return null
+  }
+
+  if (status.hide_local.includes(serverName)) {
+    return m.openProjectSuiteServes(status.suite_instance || local.instance, status.suite_login)
+  }
+
+  if (status.hide_suite) {
+    return status.auto_link_error ? m.openProjectAutoLinkFailed(status.auto_link_error) : m.openProjectLocalServes(local.instance)
+  }
+
+  return null
+}
+
 const EMPTY_SERVER = {
   command: '',
   args: [],
@@ -50,6 +108,7 @@ const transportLabel = (server: Record<string, unknown>) =>
 export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
   const { t } = useI18n()
   const m = t.settings.mcp
+  const openProjectStatus = useOpenProjectSuiteStatus()
   const activeSessionId = useStore($activeSessionId)
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
@@ -252,6 +311,9 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
                     <div className="mt-1 flex items-center gap-1.5">
                       <Pill>{transportLabel(server)}</Pill>
                       {server.disabled === true && <Pill>{m.disabled}</Pill>}
+                      {openProjectStatus?.fresh && openProjectStatus.hide_local.includes(serverName) && (
+                        <Pill>{m.openProjectViaSuite}</Pill>
+                      )}
                     </div>
                   </button>
                 )
@@ -265,6 +327,11 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
             <Wrench className="size-4 text-muted-foreground" />
             {selected ? m.editServer : m.newServer}
           </div>
+          {selected && openProjectNote(openProjectStatus, selected, m) && (
+            <p className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+              {openProjectNote(openProjectStatus, selected, m)}
+            </p>
+          )}
           <label className="grid gap-1.5">
             <span className="text-xs text-muted-foreground">{m.name}</span>
             <Input onChange={event => setName(event.currentTarget.value)} placeholder="filesystem" value={name} />
