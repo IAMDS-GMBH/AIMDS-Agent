@@ -2203,6 +2203,16 @@ DEFAULT_CONFIG = {
         "engine": "compressor",
     },
 
+    # AIS-479: the bundled OpenProjectMCP and the Suite go-mcp-openproject share
+    # the pm_* tool contract; per OpenProject domain the model sees one set.
+    "openproject": {
+        # Same domain in the Suite and linked there → hide the local tools;
+        # not linked yet → hide the Suite pm_* tools until it is.
+        "prefer_suite": True,
+        # Link the Suite account automatically with the local token (no chat).
+        "auto_link": True,
+    },
+
     # Persistent memory -- bounded curated memory injected into system prompt
     "memory": {
         "memory_enabled": True,

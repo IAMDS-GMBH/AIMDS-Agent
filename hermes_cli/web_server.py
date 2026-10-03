@@ -150,6 +150,13 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
         except Exception as e:
             _log.debug("Session sync tick error: %s", e)
         try:
+            # AIS-479: one OpenProject tool set per domain, Suite preferred.
+            from agent.openproject_suite import maybe_run as maybe_run_openproject_suite
+
+            maybe_run_openproject_suite()
+        except Exception as e:
+            _log.debug("OpenProject suite tick error: %s", e)
+        try:
             from hermes_cli.iamds_suite import maybe_run_suite_health_check
 
             results = maybe_run_suite_health_check()
@@ -1581,6 +1588,14 @@ async def read_managed_file(request: Request, path: str):
         "data_url": f"data:{mime_type};base64,{encoded}",
         **_managed_response_meta(policy),
     }
+
+
+@app.get("/api/openproject/suite-status")
+async def openproject_suite_status():
+    """Which OpenProject tool set serves which domain (AIS-479), for settings."""
+    from agent.openproject_suite import status
+
+    return await asyncio.to_thread(status)
 
 
 _DOCUMENT_PREVIEW_MAX_CHARS = 400_000

@@ -304,6 +304,17 @@ class ToolRegistry:
                 self._toolset_checks[toolset] = check_fn
             self._generation += 1
 
+    def set_toolset_check(self, toolset: str, check_fn: Callable) -> None:
+        """Replace the toolset-level availability check.
+
+        ``register`` keeps the first tool's ``check_fn`` for the toolset; when
+        tool checks carry per-tool conditions (AIS-479 hides single MCP
+        tools), the toolset needs the plain availability check instead.
+        """
+        with self._lock:
+            self._toolset_checks[toolset] = check_fn
+            self._generation += 1
+
     def deregister(self, name: str) -> None:
         """Remove a tool from the registry.
 

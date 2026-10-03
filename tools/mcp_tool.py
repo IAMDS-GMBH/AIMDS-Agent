@@ -4654,13 +4654,27 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
     return _handler
 
 
-def _make_check_fn(server_name: str):
-    """Return a check function that verifies the MCP connection is alive."""
+def _make_check_fn(server_name: str, mcp_tool_name: str = ""):
+    """Return a check function that verifies the MCP connection is alive.
+
+    OpenProject ``pm_*`` tools are additionally hidden when the same domain is
+    served by the other side (local server vs. Suite, AIS-479).
+    """
 
     def _check() -> bool:
         with _lock:
             server = _servers.get(server_name)
-        return server is not None and server.session is not None
+        if server is None or server.session is None:
+            return False
+        if mcp_tool_name:
+            try:
+                from agent.openproject_suite import tool_hidden
+
+                if tool_hidden(server_name, mcp_tool_name):
+                    return False
+            except Exception:
+                pass
+        return True
 
     return _check
 
@@ -4878,19 +4892,15 @@ _MCP_TOOL_DESCRIPTION_NOTES: Dict[Tuple[str, str], str] = {
     # openproject-ce-mcp (AIS-327): OpenProject tracks time the same way Jira +
     # Tempo do — time entries on a work package. Name the Tempo counterpart so
     # timesheet questions land here for OpenProject projects.
-    ("OpenProjectMCP", "list_time_entries"): (
+    ("OpenProjectMCP", "pm_list_time_entries"): (
         " OpenProject counterpart of Tempo retrieveWorklogs: use it for timesheet, "
         "hour-total and missing-day questions on OpenProject projects."
     ),
-    ("OpenProjectMCP", "log_time"): (
-        " OpenProject counterpart of Tempo createWorklog; the saved entry is "
-        "stored locally at once, so a report right after the booking needs no re-fetch."
-    ),
-    ("OpenProjectMCP", "create_time_entry"): (
+    ("OpenProjectMCP", "pm_create_time_entry"): (
         " OpenProject counterpart of Tempo createWorklog: book time on a work "
         "package (work_package_id, spent_on YYYY-MM-DD, hours as ISO 8601 e.g. "
-        "PT1H30M, activity from list_time_entry_activities). Preview first, then "
-        "call again with confirm=true."
+        "PT1H30M, activity from pm_list_reference_data kind=activities). The saved "
+        "entry is stored locally at once, so a report right after the booking needs no re-fetch."
     ),
     ("AtlassianMCP", "jira_add_worklog"): (
         " NOTE: always pass an explicit `started` timestamp reflecting when "
@@ -5906,7 +5916,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             toolset=toolset_name,
             schema=schema,
             handler=_make_tool_handler(name, mcp_tool.name, server.tool_timeout, provider=config.get("provider")),
-            check_fn=_make_check_fn(name),
+            check_fn=_make_check_fn(name, mcp_tool.name),
             is_async=False,
             description=full_description,
         )
@@ -5924,6 +5934,10 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
         "get_prompt": _make_get_prompt_handler,
     }
     check_fn = _make_check_fn(name)
+    if registered_names:
+        # Per-tool checks may hide single tools (AIS-479); the toolset itself
+        # is available whenever the session is.
+        registry.set_toolset_check(toolset_name, check_fn)
     for entry in _select_utility_schemas(name, server, config):
         schema = entry["schema"]
         handler_key = entry["handler_key"]
