@@ -519,7 +519,12 @@ class MemoryFacade:
             tool = self._tool("memory_summarize_session")
             if tool:
                 try:
-                    result = self._call(tool, {"summary": summary, "decisions": decisions, "tags": tags})
+                    args: Dict[str, Any] = {"summary": summary, "decisions": decisions, "tags": tags}
+                    if session_id:
+                        # AIS-469: lands on the session memory that holds the
+                        # synced transcript (keyed by the conversation root).
+                        args["session_id"] = _remote_session_id(session_id)
+                    result = self._call(tool, args)
                     if self._ok(result):
                         return SaveResult(True, MODE_MCP, ref=self._slug_from(result))
                 except Exception as exc:
@@ -593,6 +598,16 @@ def _transcript_excerpt(messages: List[Dict[str, Any]], max_chars: int = 24000) 
         parts.append(f"{role}: {text[:1500]}")
     joined = "\n".join(parts)
     return joined[-max_chars:]
+
+
+def _remote_session_id(session_id: str) -> str:
+    """Conversation root of *session_id* — the key of its synced transcript."""
+    try:
+        from hermes_state import SessionDB
+
+        return SessionDB().sync_remote_id(session_id) or session_id
+    except Exception:
+        return session_id
 
 
 def summarize_session_into_memory(agent, messages: List[Dict[str, Any]], *, reason: str) -> Optional[SaveResult]:

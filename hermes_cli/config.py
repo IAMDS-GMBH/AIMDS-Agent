@@ -2245,6 +2245,14 @@ DEFAULT_CONFIG = {
         # Session-end summary (memory_summarize_session) only for sessions
         # with at least this many user turns.
         "session_summary_min_turns": 4,
+        # AIS-469: mirror every chat transcript into the Suite memory
+        # (memory_session) in the background, so it can be found and continued
+        # on other devices. Needs the Suite memory MCP; no-op without it.
+        "session_sync": True,
+        # Once a synced chat is idle this many days, its long assistant/tool
+        # messages are replaced locally by a marker + short hint (the full
+        # text stays in the Suite memory and loads back on open). 0 = never.
+        "session_slim_after_days": 30,
         # If memory_context reports missing/stale context, add a compact local
         # workspace fallback (thisweek summary, findings tail, active/waiting
         # projects from frontmatter) instead of broad file preloads.

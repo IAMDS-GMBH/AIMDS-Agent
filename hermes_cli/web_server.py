@@ -143,6 +143,13 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
         except Exception as e:
             _log.debug("Desktop cron tick error: %s", e)
         try:
+            # AIS-469: mirror chat transcripts into the Suite memory.
+            from agent.session_sync import maybe_run as maybe_run_session_sync
+
+            maybe_run_session_sync()
+        except Exception as e:
+            _log.debug("Session sync tick error: %s", e)
+        try:
             from hermes_cli.iamds_suite import maybe_run_suite_health_check
 
             results = maybe_run_suite_health_check()
@@ -8077,6 +8084,12 @@ async def get_session_messages(session_id: str, profile: Optional[str] = None):
         sid = db.get_compression_tip(sid) or sid
         sid = db.resolve_resume_session_id(sid)
         messages = db.get_messages(sid, include_ancestors=True)
+        # AIS-469: messages slimmed to a marker load their text from the
+        # Suite memory (off the event loop; offline shows the hint).
+        from agent.session_sync import has_markers, hydrate_messages
+
+        if has_markers(messages):
+            messages = await asyncio.to_thread(hydrate_messages, messages)
         return {"session_id": sid, "messages": messages}
     finally:
         db.close()
