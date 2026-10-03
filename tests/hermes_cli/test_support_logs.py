@@ -40,7 +40,7 @@ def test_send_logs_defaults_upload_url_and_anonymous_auth(tmp_path, monkeypatch,
             return False
 
         def read(self):
-            return b'{"job_id":"job-123","reference_id":"SUP-2026-001"}'
+            return b'{"job_id":"job-123","reference_id":"SUP-2026-001","edit_token":"tok-abc"}'
 
     def _fake_urlopen(req, timeout=0):
         captured["url"] = req.full_url
@@ -57,6 +57,9 @@ def test_send_logs_defaults_upload_url_and_anonymous_auth(tmp_path, monkeypatch,
     assert payload["ok"] is True
     assert captured["url"] == "https://suite-support.iamds.com/api/v1/upload"
     assert captured["headers"]["Authorization"] == "Bearer anonymous"
+    # AIS-399: the desktop keeps the token to edit/withdraw the case later.
+    assert payload["edit_token"] == "tok-abc"
+    assert payload["upload_url"] == "https://suite-support.iamds.com/api/v1/upload"
 
 
 def test_send_logs_uses_custom_url_and_api_key(tmp_path, monkeypatch, capsys):
@@ -102,6 +105,7 @@ def test_send_logs_uses_custom_url_and_api_key(tmp_path, monkeypatch, capsys):
     assert payload["ok"] is True
     assert captured["url"] == "https://custom-support.example.com/api/v1/upload"
     assert captured["headers"]["Authorization"] == "Bearer my-key"
+    assert payload["edit_token"] is None
 
 
 def test_send_logs_uploads_redacted_bundle(tmp_path, monkeypatch, capsys):

@@ -881,6 +881,8 @@ def run_send_logs(args) -> int:
             "status_code": upload["status_code"],
             "elapsed_ms": upload["elapsed_ms"],
             "reference_id": upload.get("reference_id"),
+            # Lets the reporter edit or withdraw the case while it is open (AIS-399).
+            "edit_token": (upload.get("server") or {}).get("edit_token") if isinstance(upload.get("server"), dict) else None,
             "server": upload.get("server"),
         }
         if json_mode:

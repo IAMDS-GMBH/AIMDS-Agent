@@ -113,6 +113,7 @@ const {
 } = require('./desktop-uninstall.cjs')
 const { isPackagedInstallPath: isPackagedInstallPathUnderRoots } = require('./workspace-cwd.cjs')
 const { previewPathCandidates } = require('./preview-path.cjs')
+const { editSupportCase, withdrawSupportCase } = require('./support-cases.cjs')
 const {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -7371,6 +7372,9 @@ ipcMain.handle('hermes:logs:rendererError', async (_event, payload) => {
 })
 ipcMain.handle('hermes:support:sendLogs', async (_event, payload) => runSupportLogUpload(payload))
 ipcMain.handle('hermes:support:reportIssue', async (_event, payload) => runSupportLogUpload(payload))
+ipcMain.handle('hermes:support:editCase', async (_event, payload) => editSupportCase(payload))
+ipcMain.handle('hermes:support:withdrawCase', async (_event, payload) => withdrawSupportCase(payload))
+
 ipcMain.handle('hermes:support:sendTelemetry', async (_event, payload) => sendClientTelemetry(payload))
 
 function normalizeTelemetryUrl(url) {

@@ -19,7 +19,7 @@ import { useI18n } from '@/i18n'
 import { AlertCircle, CheckCircle2, Globe, HelpCircle, ImageIcon, X } from '@/lib/icons'
 import { $feedbackPromptsEnabled, enableFeedbackPrompts } from '@/store/feedback-prompts'
 import { notify } from '@/store/notifications'
-import { addSupportTicket } from '@/store/support-tickets'
+import { addSupportTicket, editSupportTicket, type SavedSupportTicket } from '@/store/support-tickets'
 
 interface AttachedFile {
   id: string
@@ -33,6 +33,8 @@ export interface ReportIssueDialogProps {
   defaultCategory?: string
   defaultSeverity?: string
   defaultSummary?: string
+  /** AIS-399: edit this already sent report instead of sending a new one. */
+  editTicket?: SavedSupportTicket | null
   installType?: 'fresh_install' | 'update'
   onOpenChange: (open: boolean) => void
   open: boolean
@@ -44,6 +46,7 @@ export function ReportIssueDialog({
   defaultCategory = 'other',
   defaultSeverity = 'medium',
   defaultSummary = '',
+  editTicket = null,
   installType,
   onOpenChange,
   open,
@@ -77,6 +80,18 @@ export function ReportIssueDialog({
     translateSuccess: 'Erfolgreich ins Englische übersetzt.',
     close: 'Schließen',
     errorTitle: 'Senden fehlgeschlagen',
+    editTitle: 'Meldung bearbeiten',
+    editDescription: 'Ändern Sie Ihre Meldung, solange sie offen ist. Logs und Anhänge bleiben wie gesendet.',
+    saveChanges: 'Änderungen speichern',
+    saving: 'Wird gespeichert…',
+    editSaved: 'Ihre Meldung wurde aktualisiert.',
+    edit: 'Bearbeiten',
+    withdraw: 'Zurückziehen',
+    withdrawConfirmTitle: 'Meldung zurückziehen?',
+    withdrawConfirmBody: 'Nutzen Sie das, wenn sich das Problem erledigt hat.',
+    withdrawn: 'Meldung zurückgezogen.',
+    caseClosed: 'Diese Meldung ist bereits abgeschlossen und kann nicht mehr geändert werden.',
+    caseProcessing: 'Die Meldung wird noch verarbeitet. Bitte gleich noch einmal versuchen.',
     categories: {
       chat_issue: 'Chat & Antworten (Problem im Chat / KI antwortet nicht)',
       mcp_tools: 'MCP & Tools (Werkzeug oder Server nicht gefunden / fehlerhaft)',
@@ -118,6 +133,18 @@ export function ReportIssueDialog({
   const [error, setError] = useState<string | null>(null)
   const [referenceId, setReferenceId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const editing = Boolean(editTicket)
+
+  // Edit mode starts from what was sent (AIS-399).
+  useEffect(() => {
+    if (open && editTicket) {
+      setCategory(editTicket.category || defaultCategory)
+      setSeverity(editTicket.severity || defaultSeverity)
+      setSummary(editTicket.summary || '')
+      setDescription(editTicket.description || '')
+      setError(null)
+    }
+  }, [defaultCategory, defaultSeverity, editTicket, open])
 
   useEffect(() => {
     if (open) {
@@ -250,7 +277,7 @@ export function ReportIssueDialog({
   // AIS-344: show the user what the bundle will carry — the signals the
   // incident digest found and the file list with sizes — before sending.
   useEffect(() => {
-    if (!open) {return}
+    if (!open || editing) {return}
     const desktop = window.hermesDesktop
     const fn = desktop?.reportIssue
 
@@ -282,7 +309,7 @@ export function ReportIssueDialog({
     return () => {
       cancelled = true
     }
-  }, [open, category, contextType, fullLogs, installType, includeSession, sessionId])
+  }, [open, editing, category, contextType, fullLogs, installType, includeSession, sessionId])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -291,6 +318,34 @@ export function ReportIssueDialog({
 
     setLoading(true)
     setError(null)
+
+    if (editTicket) {
+      try {
+        const result = await editSupportTicket(editTicket, {
+          category,
+          description: description.trim(),
+          severity,
+          summary: summary.trim()
+        })
+
+        if (result.ok) {
+          notify({ kind: 'success', message: copy.editSaved })
+          onOpenChange(false)
+        } else {
+          setError(
+            result.code === 409
+              ? /closed/i.test(result.error || '')
+                ? copy.caseClosed
+                : copy.caseProcessing
+              : result.error || copy.errorTitle
+          )
+        }
+      } finally {
+        setLoading(false)
+      }
+
+      return
+    }
 
     try {
       const desktop = window.hermesDesktop
@@ -318,13 +373,16 @@ export function ReportIssueDialog({
         const refId = res.reference_id || res.referenceId || 'SUP-SUCCESS'
         setReferenceId(refId)
         addSupportTicket({
-          jobId: (res as any).job_id || (res as any).jobId || refId,
-          caseId: (res as any).support_case_id || refId,
+          jobId: res.job_id || (res as any).jobId || refId,
+          caseId: res.support_case_id || refId,
           referenceId: refId,
           summary: summary.trim(),
+          description: description.trim(),
           category,
           severity,
-          createdAt: Date.now()
+          createdAt: Date.now(),
+          editToken: res.edit_token || undefined,
+          uploadUrl: res.upload_url
         })
       } else {
         setError(res.error || 'Upload vom Support-Server abgelehnt.')
@@ -353,8 +411,8 @@ export function ReportIssueDialog({
       <Dialog floating onOpenChange={handleClose} open={open}>
         <DialogContent className="max-w-md gap-4 p-5">
           <DialogHeader>
-            <DialogTitle icon={HelpCircle}>{copy.title}</DialogTitle>
-            <DialogDescription>{copy.description}</DialogDescription>
+            <DialogTitle icon={HelpCircle}>{editing ? copy.editTitle : copy.title}</DialogTitle>
+            <DialogDescription>{editing ? copy.editDescription : copy.description}</DialogDescription>
           </DialogHeader>
 
           {referenceId ? (
@@ -455,6 +513,8 @@ export function ReportIssueDialog({
                 />
               </div>
 
+              {!editing && (
+              <>
               {/* Screenshots / Attachments section */}
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-center justify-between">
@@ -588,13 +648,15 @@ export function ReportIssueDialog({
                   size="xs"
                 />
               </div>
+              </>
+              )}
 
               <DialogFooter className="mt-2 pt-2 border-t border-border">
                 <Button disabled={loading} onClick={handleClose} type="button" variant="outline">
                   {copy.close}
                 </Button>
                 <Button disabled={loading || !summary.trim()} type="submit">
-                  {loading ? copy.submitting : copy.submit}
+                  {editing ? (loading ? copy.saving : copy.saveChanges) : loading ? copy.submitting : copy.submit}
                 </Button>
               </DialogFooter>
             </form>

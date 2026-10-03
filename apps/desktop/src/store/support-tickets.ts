@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import type { DesktopSupportCaseResult } from '@/global'
 import { notify } from '@/store/notifications'
 
 export interface SavedSupportTicket {
@@ -7,11 +8,17 @@ export interface SavedSupportTicket {
   caseId?: string
   referenceId?: string
   summary?: string
+  /** What the reporter wrote, kept locally so the edit form can prefill it. */
+  description?: string
   category?: string
   severity?: string
   createdAt: number
   status?: string
   resolvedAt?: number
+  /** AIS-399: lets the reporter edit/withdraw the case; reports from older
+   * clients or servers have none and stay read-only. */
+  editToken?: string
+  uploadUrl?: string
 }
 
 const STORAGE_KEY = 'hermes_support_tickets_history'
@@ -79,13 +86,94 @@ export function addSupportTicket(ticket: Omit<SavedSupportTicket, 'createdAt'> &
     severity: ticket.severity || 'medium',
     createdAt: ticket.createdAt || Date.now(),
     status: ticket.status || 'OPEN',
-    resolvedAt: ticket.resolvedAt
+    resolvedAt: ticket.resolvedAt,
+    description: ticket.description,
+    editToken: ticket.editToken || undefined,
+    uploadUrl: ticket.uploadUrl
   }
 
   const current = $supportTickets.get()
   const filtered = current.filter(t => t.jobId !== item.jobId && t.caseId !== item.caseId)
   const updated = [item, ...filtered].slice(0, 30)
   persistTickets(updated)
+}
+
+/** Whether the reporter can still edit or withdraw this ticket. */
+export function canEditSupportTicket(ticket: SavedSupportTicket): boolean {
+  return Boolean(ticket.editToken && ticket.caseId) && !isTicketResolved(ticket.status)
+}
+
+function patchSupportTicket(jobId: string, patch: Partial<SavedSupportTicket>) {
+  persistTickets($supportTickets.get().map(t => (t.jobId === jobId ? { ...t, ...patch } : t)))
+}
+
+export interface SupportTicketEdit {
+  summary: string
+  description: string
+  category: string
+  severity: string
+}
+
+function caseRequest(ticket: SavedSupportTicket) {
+  return { caseId: ticket.caseId || '', editToken: ticket.editToken || '', uploadUrl: ticket.uploadUrl }
+}
+
+// A 409 "already closed" means the support team resolved it meanwhile.
+function syncClosedTicket(ticket: SavedSupportTicket, result: DesktopSupportCaseResult) {
+  if (result.code === 409 && /closed/i.test(result.error || '')) {
+    patchSupportTicket(ticket.jobId, { editToken: undefined, resolvedAt: Date.now(), status: 'RESOLVED' })
+  }
+}
+
+export async function editSupportTicket(
+  ticket: SavedSupportTicket,
+  edit: SupportTicketEdit
+): Promise<DesktopSupportCaseResult> {
+  const fn = window.hermesDesktop?.editSupportCase
+
+  if (!fn) {
+    return { code: 0, error: 'unavailable', ok: false }
+  }
+
+  const result = await fn({
+    ...caseRequest(ticket),
+    category: edit.category,
+    severity: edit.severity,
+    summary: edit.summary,
+    userDescription: edit.description
+  })
+
+  if (result.ok) {
+    patchSupportTicket(ticket.jobId, {
+      category: edit.category,
+      description: edit.description,
+      severity: edit.severity,
+      status: result.status || ticket.status,
+      summary: edit.summary
+    })
+  } else {
+    syncClosedTicket(ticket, result)
+  }
+
+  return result
+}
+
+export async function withdrawSupportTicket(ticket: SavedSupportTicket): Promise<DesktopSupportCaseResult> {
+  const fn = window.hermesDesktop?.withdrawSupportCase
+
+  if (!fn) {
+    return { code: 0, error: 'unavailable', ok: false }
+  }
+
+  const result = await fn(caseRequest(ticket))
+
+  if (result.ok) {
+    removeSupportTicket(ticket.jobId)
+  } else {
+    syncClosedTicket(ticket, result)
+  }
+
+  return result
 }
 
 export function removeSupportTicket(jobId: string) {

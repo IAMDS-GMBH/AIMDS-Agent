@@ -61,6 +61,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   logRendererError: payload => ipcRenderer.invoke('hermes:logs:rendererError', payload),
   sendSupportLogs: payload => ipcRenderer.invoke('hermes:support:sendLogs', payload),
   reportIssue: payload => ipcRenderer.invoke('hermes:support:reportIssue', payload),
+  editSupportCase: payload => ipcRenderer.invoke('hermes:support:editCase', payload),
+  withdrawSupportCase: payload => ipcRenderer.invoke('hermes:support:withdrawCase', payload),
   sendTelemetry: payload => ipcRenderer.invoke('hermes:support:sendTelemetry', payload),
   readDir: dirPath => ipcRenderer.invoke('hermes:fs:readDir', dirPath),
   gitRoot: startPath => ipcRenderer.invoke('hermes:fs:gitRoot', startPath),
