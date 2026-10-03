@@ -244,3 +244,82 @@ def test_hosted_policy_locks_to_opt_data(monkeypatch):
 
     assert str(policy.locked_root) == "/opt/data"
     assert policy.can_change_path is False
+
+
+def _fake_convert(markdown, calls=None):
+    from tools.document_convert import ConvertResult
+
+    def convert(path, **_kwargs):
+        if calls is not None:
+            calls.append(str(path))
+        return ConvertResult(markdown, "markitdown", "/cache/x.md", str(path), cached=True, warnings=["w1"])
+
+    return convert
+
+
+def test_preview_document_returns_markdown(forced_files_client, monkeypatch):
+    import tools.document_convert as document_convert
+
+    client, root = forced_files_client
+    doc = root / "report.docx"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_bytes(b"PK\x03\x04 not really a docx")
+    calls = []
+    monkeypatch.setattr(document_convert, "convert_document", _fake_convert("# Title\n\nBody", calls))
+
+    res = client.get("/api/files/preview-document", params={"path": str(doc)})
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["markdown"] == "# Title\n\nBody"
+    assert body["truncated"] is False
+    assert body["backend"] == "markitdown"
+    assert body["cached"] is True
+    assert body["warnings"] == ["w1"]
+    assert calls == [str(doc.resolve())]
+
+
+def test_preview_document_truncates_huge_markdown(forced_files_client, monkeypatch):
+    import tools.document_convert as document_convert
+
+    client, root = forced_files_client
+    doc = root / "big.xlsx"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_bytes(b"PK")
+    huge = "x" * (web_server._DOCUMENT_PREVIEW_MAX_CHARS + 10)
+    monkeypatch.setattr(document_convert, "convert_document", _fake_convert(huge))
+
+    body = client.get("/api/files/preview-document", params={"path": str(doc)}).json()
+
+    assert body["truncated"] is True
+    assert len(body["markdown"]) == web_server._DOCUMENT_PREVIEW_MAX_CHARS
+
+
+def test_preview_document_rejects_other_files_and_reports_conversion_errors(forced_files_client, monkeypatch):
+    import tools.document_convert as document_convert
+
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    text = root / "notes.txt"
+    text.write_text("hi")
+    assert client.get("/api/files/preview-document", params={"path": str(text)}).status_code == 415
+    assert client.get("/api/files/preview-document", params={"path": str(root / "missing.docx")}).status_code == 404
+
+    doc = root / "broken.pptx"
+    doc.write_bytes(b"PK")
+
+    def fail(_path, **_kwargs):
+        raise document_convert.DocumentConvertError("no backend could read broken.pptx")
+
+    monkeypatch.setattr(document_convert, "convert_document", fail)
+    res = client.get("/api/files/preview-document", params={"path": str(doc)})
+    assert res.status_code == 422
+    assert "broken.pptx" in res.json()["detail"]
+
+
+def test_preview_document_stays_under_forced_root(forced_files_client, tmp_path):
+    client, _root = forced_files_client
+    outside = tmp_path / "outside.docx"
+    outside.write_bytes(b"PK")
+
+    assert client.get("/api/files/preview-document", params={"path": str(outside)}).status_code == 403

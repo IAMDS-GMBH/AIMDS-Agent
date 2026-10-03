@@ -12,6 +12,7 @@ import { SystemStatusContent } from '@/app/settings/gateway-settings'
 import { PageLoader } from '@/components/page-loader'
 import { ReportIssueDialog } from '@/components/report-issue-dialog'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { getLogs, getStatus, getUsageAnalytics } from '@/hermes'
@@ -20,7 +21,15 @@ import { useI18n } from '@/i18n'
 import { Activity, AlertCircle, BarChart3, HelpCircle, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify } from '@/store/notifications'
-import { $supportTickets, checkSupportTicketsStatus, clearResolvedSupportTickets, isTicketResolved } from '@/store/support-tickets'
+import {
+  $supportTickets,
+  canEditSupportTicket,
+  checkSupportTicketsStatus,
+  clearResolvedSupportTickets,
+  isTicketResolved,
+  type SavedSupportTicket,
+  withdrawSupportTicket
+} from '@/store/support-tickets'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -85,6 +94,8 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
 
   // Support state
   const [reportIssueOpen, setReportIssueOpen] = useState(false)
+  const [editingTicket, setEditingTicket] = useState<SavedSupportTicket | null>(null)
+  const [withdrawingTicket, setWithdrawingTicket] = useState<SavedSupportTicket | null>(null)
   const [supportFilter, setSupportFilter] = useState<'ALL' | 'OPEN' | 'IN_PROGRESS' | 'RESOLVED'>('ALL')
   const [supportRefreshing, setSupportRefreshing] = useState(false)
   const supportTickets = useStore($supportTickets)
@@ -457,6 +468,21 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
 
                           <div className="flex items-center justify-between border-t border-border/40 pt-2 mt-1 text-xs text-muted-foreground">
                             <span>Kategorie: {ticket.category || 'other'} · Schweregrad: {ticket.severity || 'medium'}</span>
+                            {canEditSupportTicket(ticket) && (
+                              <span className="flex shrink-0 items-center gap-1">
+                                <Button onClick={() => setEditingTicket(ticket)} size="xs" variant="ghost">
+                                  {t.reportIssue.edit}
+                                </Button>
+                                <Button
+                                  className="text-destructive hover:text-destructive"
+                                  onClick={() => setWithdrawingTicket(ticket)}
+                                  size="xs"
+                                  variant="ghost"
+                                >
+                                  {t.reportIssue.withdraw}
+                                </Button>
+                              </span>
+                            )}
                           </div>
                         </div>
                       )
@@ -470,6 +496,42 @@ export function CommandCenterView({ initialSection, onClose }: CommandCenterView
       </OverlaySplitLayout>
 
       <ReportIssueDialog onOpenChange={setReportIssueOpen} open={reportIssueOpen} />
+      <ReportIssueDialog
+        editTicket={editingTicket}
+        onOpenChange={open => {
+          if (!open) {
+            setEditingTicket(null)
+          }
+        }}
+        open={Boolean(editingTicket)}
+      />
+      <ConfirmDialog
+        confirmLabel={t.reportIssue.withdraw}
+        description={t.reportIssue.withdrawConfirmBody}
+        destructive
+        onClose={() => setWithdrawingTicket(null)}
+        onConfirm={async () => {
+          if (!withdrawingTicket) {
+            return
+          }
+
+          const result = await withdrawSupportTicket(withdrawingTicket)
+
+          if (!result.ok) {
+            throw new Error(
+              result.code === 409
+                ? /closed/i.test(result.error || '')
+                  ? t.reportIssue.caseClosed
+                  : t.reportIssue.caseProcessing
+                : result.error || t.reportIssue.errorTitle
+            )
+          }
+
+          notify({ kind: 'success', message: t.reportIssue.withdrawn })
+        }}
+        open={Boolean(withdrawingTicket)}
+        title={t.reportIssue.withdrawConfirmTitle}
+      />
     </OverlayView>
   )
 }

@@ -137,7 +137,10 @@ export function PreviewEmptyState({
 interface LocalPreviewState {
   binary?: boolean
   byteSize?: number
+  /** Markdown converted from an Office file by the backend (AIS-397). */
+  converted?: boolean
   dataUrl?: string
+  documentError?: string
   error?: string
   language?: string
   loading: boolean
@@ -518,7 +521,11 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
   )
 }
 
-const OFFICE_EXT_RE = /\.(docx?|xlsx?|pptx?|vsd[xz]?|odt|ods|odp|pdf|rtf|msg|eml|csv)$/i
+// Opened in the default app only. PDFs normally arrive as previewKind 'pdf'
+// and render in the web preview; the regex covers targets without a kind.
+const OFFICE_EXT_RE = /\.(vsd[xz]?|pdf|rtf|msg|eml)$/i
+// Converted to Markdown by the backend, the same converter read_file uses.
+const CONVERTIBLE_DOCUMENT_EXT_RE = /\.(docx?|xlsx?|pptx?|odt|ods|odp)$/i
 const DATA_LINK_EXT_RE = /\.(json|yaml|yml)$/i
 
 function isOfficeDocument(target: PreviewTarget, filePath: string): boolean {
@@ -540,6 +547,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   // preview target switched document kinds, crashing the boundary with React
   // #310/#300 (AIS-276).
   const officeDoc = isOfficeDocument(target, filePath)
+  const isDocument = !officeDoc && (target.previewKind === 'document' || CONVERTIBLE_DOCUMENT_EXT_RE.test(filePath))
   const dataDoc = isJsonOrYamlDocument(target, filePath) && !forcePreview
 
   const isImage = target.previewKind === 'image'
@@ -549,7 +557,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   // when the file is forcibly previewed past the binary refusal screen.
   const isText = target.previewKind === 'text' || target.previewKind === 'binary' || target.previewKind === 'html'
 
-  const blockedByTarget = !isImage && !forcePreview && (target.binary || target.large)
+  const blockedByTarget = !isImage && !isDocument && !forcePreview && (target.binary || target.large)
 
   useEffect(() => {
     let active = true
@@ -558,6 +566,32 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
       if (officeDoc || dataDoc) {
         // Document empty-state paths render no file content.
         setState({ loading: false })
+
+        return
+      }
+
+      if (isDocument) {
+        setState({ loading: true })
+
+        try {
+          const result = await window.hermesDesktop.api<{ markdown: string; truncated?: boolean }>({
+            path: `/api/files/preview-document?path=${encodeURIComponent(filePath)}`
+          })
+
+          if (active) {
+            setState({
+              converted: true,
+              language: 'markdown',
+              loading: false,
+              text: result.markdown,
+              truncated: result.truncated
+            })
+          }
+        } catch (error) {
+          if (active) {
+            setState({ documentError: error instanceof Error ? error.message : String(error), loading: false })
+          }
+        }
 
         return
       }
@@ -628,6 +662,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     dataDoc,
     filePath,
     forcePreview,
+    isDocument,
     isImage,
     isText,
     officeDoc,
@@ -637,7 +672,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     target.text
   ])
 
-  if (officeDoc) {
+  if (officeDoc || (isDocument && state.documentError)) {
     const handleOpen = () => {
       if (window.hermesDesktop?.openPath) {
         void window.hermesDesktop.openPath(filePath)
@@ -655,6 +690,11 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         body={
           <div className="grid gap-2">
             <span className="break-all font-mono text-xs text-muted-foreground">{filePath}</span>
+            {state.documentError && (
+              <span className="text-xs text-muted-foreground/80">
+                {t.preview.convertDocumentFailed} {state.documentError}
+              </span>
+            )}
             <span className="text-xs text-muted-foreground/80">{t.preview.officeDocumentDescription}</span>
           </div>
         }
@@ -696,15 +736,23 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
 
   if (state.loading) {
-    return <PageLoader label={t.preview.loading} />
+    return <PageLoader label={isDocument ? t.preview.convertingDocument : t.preview.loading} />
   }
 
   if (state.error) {
-    return <PreviewEmptyState body={state.error} title={t.preview.unavailable} />
+    // An image format this system can't decode (HEIC/TIFF without an OS
+    // thumbnailer) still opens in the default app.
+    const openAction =
+      isImage && window.hermesDesktop?.openPath
+        ? { label: t.preview.openInDefaultApp, onClick: () => void window.hermesDesktop?.openPath?.(filePath) }
+        : undefined
+
+    return <PreviewEmptyState body={state.error} primaryAction={openAction} title={t.preview.unavailable} />
   }
 
   if (
     !isImage &&
+    !isDocument &&
     !forcePreview &&
     (target.binary || target.large || state.binary || (state.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
   ) {
@@ -738,15 +786,15 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     )
   }
 
-  if (isText && state.text !== undefined) {
+  if ((isText || isDocument) && state.text !== undefined) {
     const isMarkdown = (state.language || target.language) === 'markdown'
     const showRendered = isMarkdown && !renderMarkdownAsSource
 
   const contentNode = (
     <div className="h-full overflow-auto bg-transparent">
-      {state.truncated && (
+      {(state.truncated || state.converted) && (
         <div className="border-b border-border/60 bg-muted/35 px-3 py-1.5 text-[0.68rem] text-muted-foreground">
-          {t.preview.truncated}
+          {state.converted ? t.preview.convertedDocumentNote : t.preview.truncated}
         </div>
       )}
       <PreviewToggle

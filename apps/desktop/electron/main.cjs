@@ -113,6 +113,7 @@ const {
 } = require('./desktop-uninstall.cjs')
 const { isPackagedInstallPath: isPackagedInstallPathUnderRoots } = require('./workspace-cwd.cjs')
 const { previewPathCandidates } = require('./preview-path.cjs')
+const { editSupportCase, withdrawSupportCase } = require('./support-cases.cjs')
 const {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -471,9 +472,13 @@ function getTitleBarOverlayOptions() {
 
 const MEDIA_MIME_TYPES = {
   '.avi': 'video/x-msvideo',
+  '.avif': 'image/avif',
   '.bmp': 'image/bmp',
   '.flac': 'audio/flac',
   '.gif': 'image/gif',
+  '.heic': 'image/heic',
+  '.heif': 'image/heif',
+  '.ico': 'image/x-icon',
   '.jpeg': 'image/jpeg',
   '.jpg': 'image/jpeg',
   '.m4a': 'audio/mp4',
@@ -483,14 +488,24 @@ const MEDIA_MIME_TYPES = {
   '.mp4': 'video/mp4',
   '.ogg': 'audio/ogg',
   '.opus': 'audio/ogg; codecs=opus',
+  '.pdf': 'application/pdf',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
+  '.tif': 'image/tiff',
+  '.tiff': 'image/tiff',
   '.wav': 'audio/wav',
   '.webm': 'video/webm',
   '.webp': 'image/webp'
 }
 
 const PREVIEW_HTML_EXTENSIONS = new Set(['.html', '.htm'])
+// Office files the backend converts to Markdown for the preview (AIS-397);
+// the same set `read_file` converts (tools/document_convert.py).
+const PREVIEW_DOCUMENT_EXTENSIONS = new Set(['.doc', '.docx', '.odp', '.ods', '.odt', '.ppt', '.pptx', '.xls', '.xlsx'])
+// Image formats Chromium can't decode; the OS thumbnailer (QuickLook on macOS,
+// the shell on Windows) renders them to PNG instead.
+const OS_DECODED_IMAGE_EXTENSIONS = new Set(['.heic', '.heif', '.tif', '.tiff'])
+const OS_DECODED_IMAGE_MAX_PX = 4096
 const PREVIEW_WATCH_DEBOUNCE_MS = 120
 const LOCAL_PREVIEW_HOSTS = new Set(['0.0.0.0', '127.0.0.1', '::1', '[::1]', 'localhost'])
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -3666,6 +3681,25 @@ function fetchPublicJson(url, options = {}) {
   })
 }
 
+async function osDecodedImageDataUrl(filePath) {
+  let image = null
+
+  try {
+    image = await nativeImage.createThumbnailFromPath(filePath, {
+      height: OS_DECODED_IMAGE_MAX_PX,
+      width: OS_DECODED_IMAGE_MAX_PX
+    })
+  } catch {
+    image = null
+  }
+
+  if (!image || image.isEmpty()) {
+    throw new Error(`This system cannot render ${path.extname(filePath).slice(1).toUpperCase()} images inline.`)
+  }
+
+  return image.toDataURL()
+}
+
 function mimeTypeForPath(filePath) {
   const ext = path.extname(filePath || '').toLowerCase()
 
@@ -4052,7 +4086,17 @@ async function previewFileTarget(rawTarget, baseDir) {
   const metadata = previewFileMetadata(resolved, mimeType)
   const isHtml = PREVIEW_HTML_EXTENSIONS.has(ext)
   const isImage = mimeType.startsWith('image/')
-  const previewKind = isHtml ? 'html' : isImage ? 'image' : metadata.binary ? 'binary' : 'text'
+  const previewKind = isHtml
+    ? 'html'
+    : isImage
+      ? 'image'
+      : ext === '.pdf'
+        ? 'pdf'
+        : PREVIEW_DOCUMENT_EXTENSIONS.has(ext)
+          ? 'document'
+          : metadata.binary
+            ? 'binary'
+            : 'text'
 
   return {
     binary: metadata.binary,
@@ -6952,6 +6996,9 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
     maxBytes: DATA_URL_READ_MAX_BYTES,
     purpose: 'File preview'
   })
+  if (OS_DECODED_IMAGE_EXTENSIONS.has(path.extname(resolvedPath).toLowerCase())) {
+    return osDecodedImageDataUrl(resolvedPath)
+  }
   const data = await fs.promises.readFile(resolvedPath)
   return `data:${mimeTypeForPath(resolvedPath)};base64,${data.toString('base64')}`
 })
@@ -7325,6 +7372,9 @@ ipcMain.handle('hermes:logs:rendererError', async (_event, payload) => {
 })
 ipcMain.handle('hermes:support:sendLogs', async (_event, payload) => runSupportLogUpload(payload))
 ipcMain.handle('hermes:support:reportIssue', async (_event, payload) => runSupportLogUpload(payload))
+ipcMain.handle('hermes:support:editCase', async (_event, payload) => editSupportCase(payload))
+ipcMain.handle('hermes:support:withdrawCase', async (_event, payload) => withdrawSupportCase(payload))
+
 ipcMain.handle('hermes:support:sendTelemetry', async (_event, payload) => sendClientTelemetry(payload))
 
 function normalizeTelemetryUrl(url) {

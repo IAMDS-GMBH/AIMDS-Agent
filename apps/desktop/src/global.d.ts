@@ -100,6 +100,15 @@ declare global {
         /** Build the bundle and return its signals/files without uploading. */
         dryRun?: boolean
       }) => Promise<DesktopSupportLogSendResult>
+      /** AIS-399: change an own open support case (edit token from the upload). */
+      editSupportCase?: (payload: DesktopSupportCaseRequest & {
+        category?: string
+        severity?: string
+        summary?: string
+        userDescription?: string
+      }) => Promise<DesktopSupportCaseResult>
+      /** AIS-399: withdraw an own open support case. */
+      withdrawSupportCase?: (payload: DesktopSupportCaseRequest) => Promise<DesktopSupportCaseResult>
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
       terminal: {
@@ -214,9 +223,28 @@ export interface DesktopSupportBundleFile {
   content_category?: string
 }
 
+export interface DesktopSupportCaseRequest {
+  caseId: string
+  editToken: string
+  uploadUrl?: string
+}
+
+export interface DesktopSupportCaseResult {
+  ok: boolean
+  /** HTTP status; 0 when the request never reached the server. */
+  code: number
+  error?: string
+  status?: string
+}
+
 export interface DesktopSupportLogSendResult {
   ok: boolean
   error?: string
+  job_id?: string
+  support_case_id?: string
+  /** AIS-399: lets the reporter edit or withdraw the case while it is open. */
+  edit_token?: string | null
+  upload_url?: string
   reference_id?: string
   referenceId?: string
   status_code?: number
@@ -524,7 +552,7 @@ export interface HermesPreviewTarget {
   language?: string
   mimeType?: string
   path?: string
-  previewKind?: 'binary' | 'html' | 'image' | 'text'
+  previewKind?: 'binary' | 'document' | 'html' | 'image' | 'pdf' | 'text'
   renderMode?: 'preview' | 'source'
   source: string
   url: string

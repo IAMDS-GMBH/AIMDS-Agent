@@ -44,6 +44,18 @@ export interface Translations {
     translateSuccess?: string
     close: string
     errorTitle: string
+    editTitle: string
+    editDescription: string
+    saveChanges: string
+    saving: string
+    editSaved: string
+    edit: string
+    withdraw: string
+    withdrawConfirmTitle: string
+    withdrawConfirmBody: string
+    withdrawn: string
+    caseClosed: string
+    caseProcessing: string
     categories: {
       chat_issue: string
       mcp_tools: string
@@ -92,6 +104,8 @@ export interface Translations {
     choose: string
     clear: string
     close: string
+    dockWindow: string
+    floatWindow: string
     collapse: string
     confirm: string
     connect: string
@@ -1517,6 +1531,9 @@ export interface Translations {
     openInDefaultApp: string
     officeDocumentDescription: string
     jsonYamlDocumentDescription: string
+    convertingDocument: string
+    convertedDocumentNote: string
+    convertDocumentFailed: string
     viewAsSource: string
     previewAnyway: string
     truncated: string

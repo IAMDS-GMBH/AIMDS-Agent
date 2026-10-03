@@ -161,7 +161,12 @@ export function PreviewPane({
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<PreviewLoadErrorState | null>(null)
   const [localReloadKey, setLocalReloadKey] = useState(0)
-  const isWebPreview = target.kind === 'url' || (target.previewKind === 'html' && target.renderMode !== 'source')
+  // PDFs render in the same guest: Chromium's built-in viewer (AIS-397).
+  const isPdfPreview = target.kind === 'file' && target.previewKind === 'pdf'
+
+  const isWebPreview =
+    target.kind === 'url' || isPdfPreview || (target.previewKind === 'html' && target.renderMode !== 'source')
+
   const currentLabel = compactUrl(currentUrl)
 
   const previewLabel =
@@ -304,7 +309,7 @@ export function PreviewPane({
     }
 
     const tools: TitlebarTool[] = [
-      ...(isWebPreview
+      ...(isWebPreview && !isPdfPreview
         ? [
             {
               active: consoleOpen,
@@ -327,7 +332,7 @@ export function PreviewPane({
     setTitlebarToolGroup(TITLEBAR_GROUP_ID, tools)
 
     return () => setTitlebarToolGroup(TITLEBAR_GROUP_ID, [])
-  }, [consoleOpen, consoleState, copy, devtoolsOpen, isWebPreview, setTitlebarToolGroup, toggleDevTools])
+  }, [consoleOpen, consoleState, copy, devtoolsOpen, isPdfPreview, isWebPreview, setTitlebarToolGroup, toggleDevTools])
 
   useEffect(() => {
     if (!consoleOpen) {
@@ -712,7 +717,7 @@ export function PreviewPane({
             />
           )}
 
-          {isWebPreview && consoleOpen && (
+          {isWebPreview && !isPdfPreview && consoleOpen && (
             <PreviewConsolePanel
               consoleBodyRef={consoleBodyRef}
               consoleShouldStickRef={consoleShouldStickRef}
