@@ -571,6 +571,10 @@ export interface Translations {
       emptyTitle: string
       emptyDesc: string
       disabled: string
+      openProjectViaSuite: string
+      openProjectSuiteServes: (instance: string, login: string) => string
+      openProjectLocalServes: (instance: string) => string
+      openProjectAutoLinkFailed: (error: string) => string
       editServer: string
       name: string
       serverJson: string
