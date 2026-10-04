@@ -28,7 +28,7 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 
 ## Install
 
-Download the **Hermes installer** (`.dmg` on macOS, `.exe` on Windows) from the link provided by your IAMDS contact.
+Download the **Hermes installer** (`.dmg` on macOS, `.exe` on Windows) from the link provided by your IAMDS contact. The desktop app needs macOS 13 (Ventura) or newer, or 64-bit Windows 10/11.
 
 For scripted/manual installs, run `scripts/install.sh` (macOS/Linux) or `scripts/install.ps1` (Windows) from the release archive of [AIMDS-Agent-Releases](https://github.com/IAMDS-GMBH/AIMDS-Agent-Releases); both install the latest stable release from that repository (`--branch preview` for candidates, `--tag vX.Y.Z` for an exact version).
 

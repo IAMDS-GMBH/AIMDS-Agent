@@ -52,6 +52,10 @@ const CANONICAL_SOUL_REL_PATH: &str = "installer/skills-hidden/aimds-loadout/ide
 /// may hold this flag at a time.
 static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
 
+/// `hermes desktop --build-only` exit code for "OS too old for the desktop
+/// app" (hermes_cli/desktop_asset.py EXIT_DESKTOP_OS_UNSUPPORTED).
+const DESKTOP_OS_UNSUPPORTED_EXIT: i32 = 76;
+
 /// Frontend → Rust: kick off the update flow. Mirrors `start_bootstrap`'s
 /// fire-and-forget shape; progress arrives on the `bootstrap` event channel.
 #[tauri::command]
@@ -348,8 +352,11 @@ async fn run_update(app: AppHandle) -> Result<()> {
     )
     .await?;
     let rebuild_ms = started.elapsed().as_millis() as u64;
+    // AIS-443: exit 76 = this OS is too old for the new desktop app (Electron
+    // 44 needs macOS 13). The backend update stands; keep the installed app.
+    let desktop_unsupported = rebuild.exit_code == Some(DESKTOP_OS_UNSUPPORTED_EXIT);
 
-    if rebuild.exit_code != Some(0) {
+    if rebuild.exit_code != Some(0) && !desktop_unsupported {
         let msg = format!(
             "Rebuilding the desktop app failed (exit {:?}). The update was \
              applied but the app could not be rebuilt; run `hermes desktop` \
@@ -372,7 +379,21 @@ async fn run_update(app: AppHandle) -> Result<()> {
         );
         return Err(anyhow!(msg));
     }
-    emit_stage(&app, "rebuild", StageState::Succeeded, Some(rebuild_ms), None);
+    if desktop_unsupported {
+        emit_stage(
+            &app,
+            "rebuild",
+            StageState::Succeeded,
+            Some(rebuild_ms),
+            Some(
+                "This macOS version is too old for the new desktop app (macOS 13 or newer needed); \
+                 the installed app stays as it is."
+                    .into(),
+            ),
+        );
+    } else {
+        emit_stage(&app, "rebuild", StageState::Succeeded, Some(rebuild_ms), None);
+    }
 
     // Keep SOUL.md aligned on every update/reinstall. The update path does not
     // run the installer's config stage, so enforce the canonical identity file
@@ -390,7 +411,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
         ),
     );
 
-    let launch_target = if let Some(target_app) = target_app {
+    let launch_target = if let Some(target_app) = target_app.filter(|_| !desktop_unsupported) {
         let started = Instant::now();
         emit_stage(&app, "install", StageState::Running, None, None);
         match install_macos_app_update(&app, &install_root, &target_app).await {
@@ -423,6 +444,9 @@ async fn run_update(app: AppHandle) -> Result<()> {
                 return Err(anyhow!(msg));
             }
         }
+    } else if desktop_unsupported {
+        // Relaunch the app that was running; nothing was swapped.
+        target_app_from_args(std::env::args().skip(1))
     } else {
         None
     };

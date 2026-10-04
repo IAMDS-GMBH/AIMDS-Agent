@@ -46,6 +46,34 @@ RELEASE_DIRS = {
 }
 
 
+#: Electron 44 (AIS-443) needs macOS 13 Ventura; it no longer starts on 12.
+MIN_MACOS_DESKTOP = (13, 0)
+#: ``hermes desktop --build-only`` exits with this when the OS is too old, so
+#: the desktop updater keeps the running app instead of swapping in one that
+#: cannot start.
+EXIT_DESKTOP_OS_UNSUPPORTED = 76
+
+
+def desktop_os_unsupported(system: Optional[str] = None, mac_version: Optional[str] = None) -> Optional[str]:
+    """Why this OS cannot run the current desktop app, or ``None`` if it can."""
+    system = system or _platform.system()
+    if system != "Darwin":
+        return None
+    version = mac_version if mac_version is not None else _platform.mac_ver()[0]
+    try:
+        parts = tuple(int(p) for p in str(version).split(".")[:2])
+    except ValueError:
+        return None
+    if not parts or parts < MIN_MACOS_DESKTOP:
+        floor = ".".join(str(p) for p in MIN_MACOS_DESKTOP)
+        return (
+            f"The Hermes desktop app needs macOS {floor} (Ventura) or newer; this Mac runs macOS {version}. "
+            "The installed app keeps working with the updated backend, but it receives no further desktop "
+            "updates until macOS is upgraded."
+        )
+    return None
+
+
 def desktop_platform_key(system: Optional[str] = None, machine: Optional[str] = None) -> Optional[str]:
     """``mac-arm64`` / ``mac-x64`` / ``win-x64`` / ``win-arm64``; ``None`` where no asset exists."""
     system = system or sys.platform
