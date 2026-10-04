@@ -143,7 +143,10 @@ export const en: Translations = {
     hints: {
       backendSlowStart: 'The Hermes backend is still starting — the first start after an update can take a moment.',
       macosDocumentsPermission:
-        'macOS is asking for access to your Documents folder — please click “Allow” so Hermes can open its workspace.'
+        'macOS is asking for access to your Documents folder — please click “Allow” so Hermes can open its workspace.',
+      macosPermissionHidden:
+        'No dialog visible? It may be behind other windows — or allow “Documents Folder” for Hermes in System Settings.',
+      openPrivacySettings: 'Open System Settings'
     },
     failure: {
       title: "Hermes couldn't start",

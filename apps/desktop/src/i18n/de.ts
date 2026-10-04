@@ -144,7 +144,10 @@ export const de
     hints: {
       backendSlowStart: 'Das Hermes-Backend startet noch – der erste Start nach einem Update kann etwas dauern.',
       macosDocumentsPermission:
-        'macOS fragt nach Zugriff auf deinen Ordner „Dokumente“ – bitte auf „Erlauben“ klicken, damit Hermes seinen Arbeitsbereich öffnen kann.'
+        'macOS fragt nach Zugriff auf deinen Ordner „Dokumente“ – bitte auf „Erlauben“ klicken, damit Hermes seinen Arbeitsbereich öffnen kann.',
+      macosPermissionHidden:
+        'Kein Dialog zu sehen? Er kann hinter anderen Fenstern liegen – oder in den Systemeinstellungen „Ordner Dokumente“ für Hermes erlauben.',
+      openPrivacySettings: 'Systemeinstellungen öffnen'
     },
     failure: {
       title: 'Hermes konnte nicht gestartet werden',

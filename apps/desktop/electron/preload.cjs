@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
+  openPrivacySettings: () => ipcRenderer.invoke('hermes:openPrivacySettings'),
   showItemInFolder: filePath => ipcRenderer.invoke('hermes:showItemInFolder', filePath),
   openPath: filePath => ipcRenderer.invoke('hermes:openPath', filePath),
   relaunchApp: () => ipcRenderer.invoke('hermes:app:relaunch'),

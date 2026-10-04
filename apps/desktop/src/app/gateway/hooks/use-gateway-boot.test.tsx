@@ -313,3 +313,56 @@ describe('useGatewayBoot initial-boot dead ends (AIS-352)', () => {
     expect($gatewayState.get()).toBe('open')
   })
 })
+
+describe('useGatewayBoot waiting on the macOS permission (AIS-482)', () => {
+  function lateConnection() {
+    let resolveConn: (value: unknown) => void = () => undefined
+    const desktop = fakeDesktop()
+    const conn = { authMode: 'token' as const, baseUrl: 'http://127.0.0.1:9120', profile: 'default', token: 't', wsUrl: 'ws://127.0.0.1:9120/api/ws?token=t' }
+    desktop.getConnection = vi.fn(
+      () =>
+        new Promise(resolve => {
+          resolveConn = resolve
+        })
+    ) as unknown as typeof desktop.getConnection
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    return { resolve: () => resolveConn(conn) }
+  }
+
+  it('the watchdog never fires while the main process waits on the permission dialog', async () => {
+    lateConnection()
+    render(<Harness />)
+    await flushAsync()
+    $desktopBoot.set({ ...$desktopBoot.get(), phase: 'backend.permission', message: 'click Allow' })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60 * 60_000)
+    })
+
+    expect($desktopBoot.get().error).toBeNull()
+  })
+
+  it('a backend that comes up after the watchdog still connects instead of staying on CONNECTING', async () => {
+    const late = lateConnection()
+    render(<Harness />)
+    await flushAsync()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(241_000)
+    })
+    expect($desktopBoot.get().error).toBeTruthy()
+
+    await act(async () => {
+      late.resolve()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await flushAsync()
+    await flushAsync()
+
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(0)
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+    expect($desktopBoot.get().phase).toBe('renderer.ready')
+  })
+})

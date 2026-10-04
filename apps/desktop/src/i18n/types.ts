@@ -158,6 +158,8 @@ export interface Translations {
     hints: {
       backendSlowStart: string
       macosDocumentsPermission: string
+      macosPermissionHidden: string
+      openPrivacySettings: string
     }
     failure: {
       title: string
