@@ -142,6 +142,14 @@ def save_state(state: Dict[str, Any]) -> None:
     except OSError as exc:
         logger.debug("openproject suite: state not saved (%s)", exc)
     _invalidate_cache()
+    # This process sees the new decision at once; other processes within the
+    # registry's check_fn TTL (~30 s).
+    try:
+        from tools.registry import invalidate_check_fn_cache
+
+        invalidate_check_fn_cache()
+    except Exception:
+        pass
 
 
 def _invalidate_cache() -> None:

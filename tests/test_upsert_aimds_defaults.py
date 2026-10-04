@@ -561,3 +561,18 @@ def test_v19_moves_checkpoints_from_the_shipped_false_to_auto():
     cfg = {"checkpoints": False}
     assert mod._one_shot_v19(cfg, None) and cfg["checkpoints"] == {"enabled": "auto"}
     assert mod._one_shot_v19({}, None) == []
+
+
+def test_suite_include_list_carries_session_sync_and_openproject_contract():
+    """AIS-469/479: the enforced AIMDSSuiteMCP include list filtered out
+    memory_session (session sync was a silent no-op) and every pm_* tool."""
+    import json
+
+    out = upsert_aimds_defaults({"mcp_servers": {"AIMDSSuiteMCP": {"url": "https://suite.example/litellm/mcp/"}}})
+    include = out["mcp_servers"]["AIMDSSuiteMCP"]["tools"]["include"]
+
+    assert "memory_session" in include
+    snapshot = Path(__file__).resolve().parents[1] / "optional-mcps" / "OpenProjectMCP" / "contract" / "go-mcp-openproject.tools.json"
+    contract = [t["name"] for t in json.loads(snapshot.read_text(encoding="utf-8"))["tools"]]
+    assert len(contract) == 26
+    assert set(contract) <= set(include)
