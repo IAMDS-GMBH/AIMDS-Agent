@@ -158,3 +158,20 @@ def test_desktop_build_is_skipped_for_a_current_prebuilt_app(tmp_path, monkeypat
     # A different release on disk → the marker no longer matches → normal decision (stamp missing → build).
     write_release_marker(root, channel="stable", tag="v1.2.4", version="1.2.4", commit_sha=COMMIT, sha256="a" * 64, build_id="b")
     assert main_mod._desktop_build_needed(desktop_dir, root, source_mode=False) is True
+
+
+# ── AIS-443: Electron 44 needs macOS 13 ─────────────────────────────────
+
+
+def test_desktop_os_unsupported_only_below_macos_13():
+    from hermes_cli.desktop_asset import desktop_os_unsupported
+
+    assert desktop_os_unsupported("Darwin", "12.7.6") and "macOS 13" in desktop_os_unsupported("Darwin", "12.7.6")
+    assert desktop_os_unsupported("Darwin", "11.0") is not None
+    assert desktop_os_unsupported("Darwin", "13.0") is None
+    assert desktop_os_unsupported("Darwin", "15.4.1") is None
+    assert desktop_os_unsupported("Darwin", "26.1") is None
+    assert desktop_os_unsupported("Windows", "") is None
+    assert desktop_os_unsupported("Linux", "") is None
+    # An unreadable version never blocks.
+    assert desktop_os_unsupported("Darwin", "unknown") is None

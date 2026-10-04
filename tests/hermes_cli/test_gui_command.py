@@ -626,3 +626,37 @@ def test_stop_desktop_build_lock_no_release_dir(tmp_path, monkeypatch):
     with patch("psutil.process_iter") as it:
         assert cli_main._stop_desktop_processes_locking_build(desktop_dir) == []
     it.assert_not_called()
+
+
+def test_build_on_too_old_macos_exits_76_without_building(tmp_path, monkeypatch):
+    """AIS-443: Electron 44 needs macOS 13 — never build an app that cannot start."""
+    import hermes_cli.desktop_asset as desktop_asset
+
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.setattr(desktop_asset._platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(desktop_asset._platform, "mac_ver", lambda: ("12.7.6", ("", "", ""), "arm64"))
+
+    with patch.object(cli_main.subprocess, "run") as run, pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(build_only=True))
+
+    assert exc.value.code == desktop_asset.EXIT_DESKTOP_OS_UNSUPPORTED == 76
+    run.assert_not_called()
+
+
+def test_prebuilt_desktop_is_not_installed_on_too_old_macos(tmp_path, monkeypatch, capsys):
+    import hermes_cli.desktop_asset as desktop_asset
+
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+    monkeypatch.setattr(desktop_asset._platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(desktop_asset._platform, "mac_ver", lambda: ("12.7.6", ("", "", ""), "arm64"))
+    monkeypatch.setattr(
+        desktop_asset, "install_desktop_asset", lambda *a, **k: pytest.fail("must not install on macOS 12")
+    )
+
+    feed = argparse.Namespace(tag="v0.8.0", desktop={"mac-arm64": object()})
+    cli_main._install_prebuilt_desktop_after_release(feed, "stable")
+
+    assert "macOS 13" in capsys.readouterr().out

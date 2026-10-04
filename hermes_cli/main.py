@@ -4871,9 +4871,14 @@ def _install_prebuilt_desktop_after_release(feed, channel: str) -> None:
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
     if _desktop_packaged_executable(desktop_dir) is None and not _desktop_dist_exists(desktop_dir):
         return
-    from hermes_cli.desktop_asset import desktop_platform_key, install_desktop_asset
+    from hermes_cli.desktop_asset import desktop_os_unsupported, desktop_platform_key, install_desktop_asset
     from hermes_cli.release_update import ReleaseFeedError
 
+    unsupported = desktop_os_unsupported()
+    if unsupported:
+        # AIS-443: never swap in an app this OS cannot start.
+        print(f"  ℹ {unsupported}")
+        return
     key = desktop_platform_key()
     if not key or key not in feed.desktop:
         print(f"  ℹ {feed.tag} ships no prebuilt desktop app for this platform ({key or sys.platform}); building it locally")
@@ -5206,6 +5211,15 @@ def cmd_gui(args: argparse.Namespace):
     source_mode = getattr(args, "source", False)
     skip_build = getattr(args, "skip_build", False)
     force_build = getattr(args, "force_build", False)
+
+    from hermes_cli.desktop_asset import EXIT_DESKTOP_OS_UNSUPPORTED, desktop_os_unsupported
+
+    unsupported = desktop_os_unsupported()
+    if unsupported and not skip_build:
+        # AIS-443: building would produce an app this OS cannot start; the
+        # desktop updater sees the exit code and keeps the running app.
+        print(f"✗ {unsupported}")
+        sys.exit(EXIT_DESKTOP_OS_UNSUPPORTED)
 
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 

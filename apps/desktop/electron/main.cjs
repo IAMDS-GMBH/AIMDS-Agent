@@ -4,6 +4,7 @@ const {
   Menu,
   Notification,
   clipboard,
+  ClipboardItem,
   dialog,
   ipcMain,
   nativeImage,
@@ -114,6 +115,7 @@ const {
 const { isPackagedInstallPath: isPackagedInstallPathUnderRoots } = require('./workspace-cwd.cjs')
 const { previewPathCandidates } = require('./preview-path.cjs')
 const { editSupportCase, withdrawSupportCase } = require('./support-cases.cjs')
+const { readClipboardImagePng, writeClipboardImage, writeClipboardText } = require('./clipboard-compat.cjs')
 const {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -2645,6 +2647,16 @@ async function applyUpdatesPosixInApp() {
     env,
     stage: 'rebuild'
   })
+  // AIS-443: `hermes desktop --build-only` exits 76 when this OS is too old
+  // for the new Electron (macOS < 13). Keep the running app, say why.
+  if (rebuilt.code === 76) {
+    emitUpdateProgress({
+      stage: 'done',
+      message: 'Backend updated. This macOS version is too old for the new desktop app (macOS 13 or newer needed); the current app stays installed.',
+      percent: 100
+    })
+    return { ok: true, backendUpdated: true, desktopUnsupported: true }
+  }
   if (rebuilt.code !== 0) {
     emitUpdateProgress({
       stage: 'error',
@@ -4015,7 +4027,15 @@ async function copyImageFromUrl(rawUrl) {
   const { buffer } = await resourceBufferFromUrl(rawUrl)
   const image = nativeImage.createFromBuffer(buffer)
   if (image.isEmpty()) throw new Error('Could not read image')
-  clipboard.writeImage(image)
+  await writeClipboardImage(clipboard, ClipboardItem, image)
+}
+
+// Since Electron 43 file dialogs without a defaultPath open in Downloads and
+// the OS no longer restores the last folder (AIS-443) — remember it here.
+const lastDialogDirs = { open: '', save: '' }
+
+function rememberDialogDir(kind, filePath) {
+  if (filePath) lastDialogDirs[kind] = path.dirname(filePath)
 }
 
 async function saveImageFromUrl(rawUrl) {
@@ -4023,9 +4043,10 @@ async function saveImageFromUrl(rawUrl) {
   const fallbackName = filenameFromUrl(rawUrl, `image${extensionForMimeType(mimeType) || '.png'}`)
   const result = await dialog.showSaveDialog(mainWindow, {
     title: 'Save Image',
-    defaultPath: fallbackName
+    defaultPath: path.join(lastDialogDirs.save || app.getPath('downloads'), fallbackName)
   })
   if (result.canceled || !result.filePath) return false
+  rememberDialogDir('save', result.filePath)
   await fs.promises.writeFile(result.filePath, buffer)
   return true
 }
@@ -4574,7 +4595,7 @@ function installContextMenu(window) {
         },
         {
           label: 'Copy Image Address',
-          click: () => clipboard.writeText(params.srcURL)
+          click: () => void writeClipboardText(clipboard, params.srcURL).catch(error => rememberLog(`Copy failed: ${error.message}`))
         },
         {
           label: 'Save Image As...',
@@ -4594,7 +4615,7 @@ function installContextMenu(window) {
         },
         {
           label: 'Copy Link',
-          click: () => clipboard.writeText(params.linkURL)
+          click: () => void writeClipboardText(clipboard, params.linkURL).catch(error => rememberLog(`Copy failed: ${error.message}`))
         }
       )
     }
@@ -7045,17 +7066,21 @@ ipcMain.handle('hermes:selectPaths', async (_event, options = {}) => {
 
   const result = await dialog.showOpenDialog(mainWindow, {
     title: options?.title || 'Add context',
-    defaultPath: resolvedDefaultPath,
+    defaultPath: resolvedDefaultPath || lastDialogDirs.open || undefined,
     properties,
     filters: Array.isArray(options?.filters) ? options.filters : undefined
   })
 
   if (result.canceled) return []
+  // A picked directory is itself the place to come back to.
+  if (result.filePaths[0]) {
+    lastDialogDirs.open = options?.directories ? result.filePaths[0] : path.dirname(result.filePaths[0])
+  }
   return result.filePaths
 })
 
-ipcMain.handle('hermes:writeClipboard', (_event, text) => {
-  clipboard.writeText(String(text || ''))
+ipcMain.handle('hermes:writeClipboard', async (_event, text) => {
+  await writeClipboardText(clipboard, String(text || ''))
   return true
 })
 
@@ -7070,12 +7095,12 @@ ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
 })
 
 ipcMain.handle('hermes:saveClipboardImage', async () => {
-  const image = clipboard.readImage()
-  if (!image || image.isEmpty()) {
+  const png = await readClipboardImagePng(clipboard, nativeImage)
+  if (!png) {
     return ''
   }
 
-  return writeComposerImage(image.toPNG(), '.png')
+  return writeComposerImage(png, '.png')
 })
 
 ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>
