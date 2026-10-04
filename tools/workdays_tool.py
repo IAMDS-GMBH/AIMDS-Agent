@@ -583,8 +583,17 @@ FORMULA = (
 def _split_patterns(value: Any) -> List[str]:
     """Comma-separated string or list → list of SQL LIKE patterns."""
     if isinstance(value, (list, tuple)):
-        return [str(v).strip() for v in value if str(v).strip()]
-    return [v.strip() for v in str(value or "").split(",") if v.strip()]
+        patterns = [str(v).strip() for v in value if str(v).strip()]
+    else:
+        patterns = [v.strip() for v in str(value or "").split(",") if v.strip()]
+    # AIS-479: the local OpenProject server's list_time_entries became
+    # pm_list_time_entries; profiles saved before keep matching new records.
+    for pattern in list(patterns):
+        if "op_list_time_entries" in pattern:
+            renamed = pattern.replace("op_list_time_entries", "op_pm_list_time_entries")
+            if renamed not in patterns:
+                patterns.append(renamed)
+    return patterns
 
 
 def _like_sql(column: str, patterns: List[str]) -> str:

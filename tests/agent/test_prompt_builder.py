@@ -1957,7 +1957,7 @@ class TestBuildTicketRoutingGuidance:
     """AIS-327: per-project routing only while Jira AND OpenProject can write."""
 
     JIRA = "mcp_AtlassianMCP_jira_create_issue"
-    OP = "mcp_op_create_work_package"
+    OP = "mcp_op_pm_create_work_package"
 
     def test_empty_without_both_systems_or_the_tool(self):
         from agent.prompt_builder import build_ticket_routing_guidance as g
@@ -1967,25 +1967,26 @@ class TestBuildTicketRoutingGuidance:
         assert g({self.JIRA, self.OP, "clarify"}) == ""
         # AIS-330: OpenProject reachable but without a write tool is no longer
         # silent — the read-only block replaces the routing guidance.
-        assert g({"mcp_AtlassianMCP_jira_search", "mcp_op_list_work_packages", "ticket_routing"}).startswith(
+        assert g({"mcp_AtlassianMCP_jira_search", "mcp_op_pm_list_work_packages", "ticket_routing"}).startswith(
             "# OpenProject is read-only in this session"
         )
 
     def test_full_guidance_with_both_systems(self):
         from agent.prompt_builder import build_ticket_routing_guidance as g
-        text = g({self.JIRA, self.OP, "ticket_routing", "clarify", "mcp_TempoMCP_createWorklog", "mcp_op_create_time_entry"})
+        text = g({self.JIRA, self.OP, "ticket_routing", "clarify", "mcp_TempoMCP_createWorklog", "mcp_op_pm_create_time_entry"})
         assert text.startswith("# Ticket routing: Jira and OpenProject are both connected")
         assert "ticket_routing(action='get'" in text
         assert "`clarify`" in text and "set_default" in text and "from now on always" in text
         assert "external customer" in text and "never guess" in text
-        assert "mcp_TempoMCP_createWorklog" in text and "mcp_op_create_time_entry" in text
+        assert "mcp_TempoMCP_createWorklog" in text and "mcp_op_pm_create_time_entry" in text
 
-    def test_in_repo_server_books_time_via_log_time(self):
-        """AIS-409: the in-repo OpenProjectMCP books with `log_time`."""
+    def test_suite_pm_tools_route_the_same_way(self):
+        """AIS-479: the Suite's go-mcp-openproject exposes the same pm_* contract."""
         from agent.prompt_builder import build_ticket_routing_guidance as g
-        text = g({self.JIRA, self.OP, "ticket_routing", "clarify", "mcp_TempoMCP_createWorklog", "mcp_op_log_time"})
-        assert "OpenProject projects via `mcp_op_log_time`" in text
-        assert g({"mcp_AtlassianMCP_jira_search", "mcp_op_search_work_packages", "mcp_op_log_time"}) == ""
+        suite = "mcp_AIMDSSuiteMCP_mcp_openproject-pm_"
+        text = g({self.JIRA, f"{suite}create_work_package", f"{suite}create_time_entry", "ticket_routing", "clarify"})
+        assert f"OpenProject projects via `{suite}create_time_entry`" in text
+        assert g({"mcp_AtlassianMCP_jira_search", "mcp_op_pm_search_work_packages", "mcp_op_pm_create_time_entry"}) == ""
 
     def test_without_clarify_the_model_must_not_write(self):
         from agent.prompt_builder import build_ticket_routing_guidance as g
@@ -2003,18 +2004,18 @@ class TestOpenProjectReadOnlyGuidance:
 
     def test_read_tools_without_write_tools_yield_read_only_block(self):
         from agent.prompt_builder import build_ticket_routing_guidance as g, OPENPROJECT_READ_ONLY_GUIDANCE
-        text = g({"mcp_op_list_work_packages", "mcp_op_search_work_packages", "ticket_routing", "clarify"})
+        text = g({"mcp_op_pm_list_work_packages", "mcp_op_pm_search_work_packages", "ticket_routing", "clarify"})
         assert text == OPENPROJECT_READ_ONLY_GUIDANCE
         assert "OPENPROJECT_WRITE_PROJECTS" in text and "do not search for such tools" in text
 
     def test_block_does_not_need_the_routing_tool(self):
         from agent.prompt_builder import build_ticket_routing_guidance as g
-        assert g({"mcp_op_get_work_package"}).startswith("# OpenProject is read-only")
+        assert g({"mcp_op_pm_get_work_package"}).startswith("# OpenProject is read-only")
 
     def test_write_tools_present_keep_previous_behaviour(self):
         from agent.prompt_builder import build_ticket_routing_guidance as g
-        assert g({"mcp_op_list_work_packages", "mcp_op_update_work_package"}) == ""
-        text = g({"mcp_op_list_work_packages", "mcp_op_update_work_package",
+        assert g({"mcp_op_pm_list_work_packages", "mcp_op_pm_update_work_package"}) == ""
+        text = g({"mcp_op_pm_list_work_packages", "mcp_op_pm_update_work_package",
                   "mcp_AtlassianMCP_jira_create_issue", "ticket_routing"})
         assert text.startswith("# Ticket routing: Jira and OpenProject are both connected")
 

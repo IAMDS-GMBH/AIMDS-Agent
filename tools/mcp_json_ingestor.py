@@ -180,6 +180,9 @@ def _ingest_write_through(
     deleted = None
     if isinstance(payload, dict):
         deleted = next((payload.get(k) for k in _DELETED_ID_KEYS if payload.get(k) not in (None, "")), None)
+        # pm_delete_time_entry answers {"deleted": true, "id": N} (AIS-479).
+        if deleted is None and payload.get("deleted") is True and payload.get("id") not in (None, ""):
+            deleted = payload["id"]
     fallback_ref = _reference_key_from_args(tool_args)
     records = []
     if deleted is None:
@@ -452,6 +455,29 @@ def _seconds_between(start: str, end: str) -> int:
     return seconds if seconds > 0 else 0
 
 
+def _local_clock(value: str) -> Optional[str]:
+    """``2026-09-02T06:30:00Z`` -> ``08:30`` in the user's timezone (hermes_time);
+    None when the value is not a date-time with an offset."""
+    from datetime import datetime
+
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        return moment.strftime("%H:%M")
+    try:
+        from hermes_time import get_timezone
+
+        tz = get_timezone()
+    except Exception:  # pragma: no cover - hermes_time always importable in-tree
+        tz = None
+    return (moment.astimezone(tz) if tz else moment.astimezone()).strftime("%H:%M")
+
+
 def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fallback_ref: str = "") -> Tuple:
     """Extract structured fields from a single item dict.
 
@@ -470,14 +496,17 @@ def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fall
     # Reference Key (issue key, ticket key, case ID, etc.) — for per-issue
     # tools (jira_get_worklog) the key is only in the request, not the reply.
     issue = norm.get("issue")
-    # OpenProject time entries (openproject-ce-mcp `list_time_entries`) carry
-    # `work_package_id` + `spent_on` + `hours` as an ISO 8601 duration
-    # (PT1H30M) — the Tempo-equivalent shape for AIS-327's time tracking parity.
+    # OpenProject time entries (`pm_list_time_entries`, Suite and bundled
+    # server) carry `work_package_id` + `spent_on` + `hours` as an ISO 8601
+    # duration (PT1H30M) — the Tempo-equivalent shape for AIS-327's time
+    # tracking parity. The bundled server adds `work_package_display_id`
+    # (AIS-408), which beats the bare numeric id (AIS-479).
     # A stable source identity (``source_key``/``calendar_key`` stamped by the
     # server: group id, mailbox, calendar id) beats display names — rows of one
     # calendar share one key however it was addressed (AIS-344).
     ref_key = (
-        _pick(norm, "sourcekey", "calendarkey", "issuekey", "key", "ticketid", "caseid", "workpackageid", "calendarname")
+        _pick(norm, "sourcekey", "calendarkey", "issuekey", "key", "ticketid", "caseid", "workpackagedisplayid",
+              "workpackageid", "calendarname")
         or (issue if isinstance(issue, str) else (issue or {}).get("key") if isinstance(issue, dict) else None)
         or fallback_ref
         or ""
@@ -494,7 +523,12 @@ def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fall
         timestamp = event_start
     if isinstance(timestamp, dict):
         timestamp = _graph_datetime(timestamp) or ""
-    start_time = _pick(norm, "starttime")
+    # AIS-479: the bundled OpenProject server sends the local clock time as
+    # ``start_time_local``; ``start_time`` is then the API's ISO date-time
+    # (Suite contract), which is converted to the user's local clock here.
+    start_time = _pick(norm, "starttimelocal", "starttime")
+    if isinstance(start_time, str) and "T" in start_time:
+        start_time = _local_clock(start_time)
     if timestamp and start_time and isinstance(timestamp, str) and isinstance(start_time, str) \
             and re.fullmatch(r"\d{4}-\d{2}-\d{2}", timestamp.strip()) and re.fullmatch(r"\d{2}:\d{2}(:\d{2})?", start_time.strip()):
         timestamp = f"{timestamp.strip()}T{start_time.strip()}"
@@ -523,7 +557,8 @@ def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fall
             duration = _seconds_between(event_start, str(event_end))
 
     # Category / Type / Status
-    category = _pick(norm, "category", "categories", "type", "status", "casestatus") or "default"
+    # ``activity``: OpenProject time entries (pm_list_time_entries, AIS-479).
+    category = _pick(norm, "category", "categories", "activity", "type", "status", "casestatus") or "default"
     if isinstance(category, dict):
         category = category.get("name") or category.get("value") or "default"
     elif isinstance(category, list):  # Graph ``categories: [...]``
@@ -590,9 +625,11 @@ def should_ingest_tool(tool_name: str) -> bool:
 # lists those entries — the workdays report and sql read that tool's rows.
 # Suffix of the write tool -> suffix of the listing tool (same server prefix).
 _WRITE_THROUGH_SUFFIXES = (
-    ("log_time", "list_time_entries"),  # in-repo OpenProjectMCP (AIS-408)
-    ("create_time_entry", "list_time_entries"),  # openproject-ce-mcp
+    # OpenProject pm_* contract (AIS-479): Suite go-mcp-openproject and the
+    # bundled OpenProjectMCP — `pm_create_time_entry` -> `pm_list_time_entries`.
+    ("create_time_entry", "list_time_entries"),
     ("update_time_entry", "list_time_entries"),
+    ("delete_time_entry", "list_time_entries"),
     ("bulkCreateWorklogs", "retrieveWorklogs"),  # TempoMCP
     ("createWorklog", "retrieveWorklogs"),
     ("updateWorklog", "retrieveWorklogs"),
@@ -684,7 +721,7 @@ _DATE_WINDOW_KEY_PAIRS = (
     ("startdate", "enddate"),
     ("datefrom", "dateto"),
     ("from", "to"),
-    ("spentonfrom", "spentonto"),  # openproject-ce-mcp list_time_entries
+    ("spentonfrom", "spentonto"),  # OpenProject pm_list_time_entries (AIS-479)
     ("start", "end"),
     ("starttimeiso", "endtimeiso"),  # m365_get_events / calendarView (AIS-339)
 )

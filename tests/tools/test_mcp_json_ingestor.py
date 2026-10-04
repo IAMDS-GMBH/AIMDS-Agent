@@ -256,7 +256,7 @@ def test_graph_value_collections_become_rows(tmp_path: Path):
 
 
 def test_openproject_time_entries_map_like_tempo_worklogs(tmp_path: Path):
-    """AIS-327: openproject-ce-mcp `list_time_entries` rows carry `spent_on`,
+    """AIS-327: OpenProject `pm_list_time_entries` rows carry `spent_on`,
     `work_package_id` and `hours` as an ISO 8601 duration — the same kind of
     time tracking as Jira + Tempo, so the `workdays` report must be able to
     sum them from mcp_records."""
@@ -270,7 +270,7 @@ def test_openproject_time_entries_map_like_tempo_worklogs(tmp_path: Path):
              "activity": "Development", "user": "Johannes Huchler", "work_package_id": "WSA-3"},
         ],
     })
-    count = try_auto_ingest_json(payload, tool_name="mcp_op_list_time_entries",
+    count = try_auto_ingest_json(payload, tool_name="mcp_op_pm_list_time_entries",
                                  tool_use_id="tc_op", db_path=db_file)
     assert int(count) == 2
     rows = sqlite3.connect(str(db_file)).execute(
@@ -515,40 +515,56 @@ def _rows(db_file):
 
 
 def test_booking_upserts_into_the_listing_tools_rows(tmp_path: Path):
+    """AIS-479: pm_create_time_entry / pm_update_time_entry return the saved row."""
     db_file = tmp_path / "state.db"
-    listing = json.dumps({"window": {"start": "2026-09-01", "end": "2026-09-30"}, "complete": True,
-                          "time_entries": [_op_row(10, "2026-09-02", 2.0)]})
-    try_auto_ingest_json(listing, tool_name="mcp_op_list_time_entries", tool_use_id="t1", db_path=db_file,
-                         tool_args={"date_from": "2026-09-01", "date_to": "2026-09-30"})
+    listing = json.dumps({"complete": True, "time_entries": [_op_row(10, "2026-09-02", 2.0)]})
+    try_auto_ingest_json(listing, tool_name="mcp_op_pm_list_time_entries", tool_use_id="t1", db_path=db_file,
+                         tool_args={"spent_on_from": "2026-09-01", "spent_on_to": "2026-09-30"})
 
-    booked = json.dumps({"state": "created", "time_entry": _op_row(11, "2026-09-24", 1.5),
-                         "time_entries": [_op_row(11, "2026-09-24", 1.5)]})
-    assert int(try_auto_ingest_json(booked, tool_name="mcp_op_log_time", tool_use_id="t2", db_path=db_file)) == 1
+    booked = json.dumps(_op_row(11, "2026-09-24", 1.5))
+    assert int(try_auto_ingest_json(booked, tool_name="mcp_op_pm_create_time_entry", tool_use_id="t2", db_path=db_file)) == 1
 
-    changed = json.dumps({"state": "updated", "time_entries": [_op_row(10, "2026-09-02", 3.0)]})
-    try_auto_ingest_json(changed, tool_name="mcp_op_log_time", tool_use_id="t3", db_path=db_file)
+    changed = json.dumps(_op_row(10, "2026-09-02", 3.0))
+    try_auto_ingest_json(changed, tool_name="mcp_op_pm_update_time_entry", tool_use_id="t3", db_path=db_file)
 
     assert _rows(db_file) == [
-        ("10", "mcp_op_list_time_entries", "AIS-408", "2026-09-02", 10800),
-        ("11", "mcp_op_list_time_entries", "AIS-408", "2026-09-24", 5400),
+        ("10", "mcp_op_pm_list_time_entries", "AIS-408", "2026-09-02", 10800),
+        ("11", "mcp_op_pm_list_time_entries", "AIS-408", "2026-09-24", 5400),
     ]
+
+
+def test_suite_contract_rows_with_iso_hours_and_start_time(tmp_path: Path, monkeypatch):
+    """AIS-479: Suite pm_list_time_entries rows: ISO hours, numeric id, API start time."""
+    monkeypatch.setenv("HERMES_TIMEZONE", "Europe/Berlin")
+    import hermes_time
+
+    hermes_time.reset_cache()
+    db_file = tmp_path / "state.db"
+    row = {"id": 7, "spent_on": "2026-09-02", "hours": "PT1H30M", "start_time": "2026-09-02T06:30:00Z",
+           "work_package_id": 17054, "activity": "Development", "user": "Johannes Huchler", "comment": ""}
+    try_auto_ingest_json(json.dumps({"time_entries": [row], "total": 1, "has_more": False, "next_offset": None}),
+                         tool_name="mcp_AIMDSSuiteMCP_mcp_openproject-pm_list_time_entries", tool_use_id="t1", db_path=db_file)
+    assert sqlite3.connect(str(db_file)).execute(
+        "SELECT reference_key, timestamp, duration_seconds, category FROM mcp_records").fetchall() == [
+        ("17054", "2026-09-02T08:30", 5400, "Development")]
+    hermes_time.reset_cache()
 
 
 def test_deleted_booking_is_removed_from_the_listing_rows(tmp_path: Path):
     db_file = tmp_path / "state.db"
     try_auto_ingest_json(json.dumps({"time_entries": [_op_row(10, "2026-09-02", 2.0), _op_row(11, "2026-09-03", 1.0)]}),
-                         tool_name="mcp_op_list_time_entries", tool_use_id="t1", db_path=db_file)
-    deleted = json.dumps({"state": "deleted", "deleted_time_entry_id": 11, "time_entry": _op_row(11, "2026-09-03", 1.0)})
-    assert int(try_auto_ingest_json(deleted, tool_name="mcp_op_log_time", tool_use_id="t2", db_path=db_file)) == 0
+                         tool_name="mcp_op_pm_list_time_entries", tool_use_id="t1", db_path=db_file)
+    deleted = json.dumps({"deleted": True, "id": 11})
+    assert int(try_auto_ingest_json(deleted, tool_name="mcp_op_pm_delete_time_entry", tool_use_id="t2", db_path=db_file)) == 0
     assert [r[0] for r in _rows(db_file)] == ["10"]
 
 
 def test_previews_are_never_ingested(tmp_path: Path):
     db_file = tmp_path / "state.db"
     for payload, tool in (
-        ({"state": "preview", "ready": True, "would": {"spent_on": "2026-09-24", "hours": 1.5}}, "mcp_op_log_time"),
-        ({"state": "duplicate", "work_package": {"id": 1, "subject": "x"}}, "mcp_op_create_work_package"),
-        ({"action": "update", "confirmed": False, "requires_confirmation": True, "payload": {"subject": "x"}}, "mcp_op_update_work_package"),
+        ({"state": "preview", "ready": True, "would": {"spent_on": "2026-09-24", "hours": 1.5}}, "mcp_X_create_time_entry"),
+        ({"state": "duplicate", "work_package": {"id": 1, "subject": "x"}}, "mcp_X_create_work_package"),
+        ({"action": "update", "confirmed": False, "requires_confirmation": True, "payload": {"subject": "x"}}, "mcp_X_update_work_package"),
     ):
         assert int(try_auto_ingest_json(json.dumps(payload), tool_name=tool, tool_use_id="p", db_path=db_file)) == 0
     assert not db_file.exists() or _rows(db_file) == []
@@ -563,7 +579,10 @@ def test_booking_echo_without_date_or_duration_is_not_a_record(tmp_path: Path):
 def test_write_through_targets():
     from tools.mcp_json_ingestor import write_through_target
 
-    assert write_through_target("mcp_op_log_time") == "mcp_op_list_time_entries"
+    assert write_through_target("mcp_op_pm_create_time_entry") == "mcp_op_pm_list_time_entries"
+    assert write_through_target("mcp_op_pm_delete_time_entry") == "mcp_op_pm_list_time_entries"
+    assert write_through_target("mcp_AIMDSSuiteMCP_mcp_openproject-pm_update_time_entry") == \
+        "mcp_AIMDSSuiteMCP_mcp_openproject-pm_list_time_entries"
     assert write_through_target("mcp_TempoMCP_createWorklog") == "mcp_TempoMCP_retrieveWorklogs"
     assert write_through_target("mcp_AtlassianMCP_jira_add_worklog") == "mcp_AtlassianMCP_jira_get_worklog"
-    assert write_through_target("mcp_op_list_time_entries") is None
+    assert write_through_target("mcp_op_pm_list_time_entries") is None
