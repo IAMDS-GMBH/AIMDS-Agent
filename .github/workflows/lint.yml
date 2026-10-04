@@ -9,12 +9,14 @@ name: Lint (ruff + ty)
 #      enforcement fails.
 
 on:
+  # AIS-480: PR only (the advisory diff is a PR comment anyway) and only when
+  # Python or its lint config changes; no re-run after merge or release.
   pull_request:
     branches: [main]
-  push:
-    branches: [main]
-  release:
-    types: [published]
+    paths:
+      - "**/*.py"
+      - "pyproject.toml"
+      - ".github/workflows/lint.yml"
 
 permissions:
   contents: read

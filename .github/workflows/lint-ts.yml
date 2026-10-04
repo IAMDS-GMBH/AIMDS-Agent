@@ -13,13 +13,11 @@ on:
       - 'ui-tui/**'
       - 'package-lock.json'
       - '.github/workflows/lint-ts.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'apps/desktop/**'
-      - 'ui-tui/**'
-      - 'package-lock.json'
-      - '.github/workflows/lint-ts.yml'
+  # AIS-480: no re-run after merge; the PR run linted the same tree.
+
+concurrency:
+  group: lint-ts-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:

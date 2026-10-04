@@ -3,9 +3,13 @@ name: Supply Chain Audit
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-  # No paths filter — the jobs must always run so required checks
-  # report a status (path-gated workflows leave checks "pending" forever
-  # when no matching files change, which blocks merge).
+  # No paths filter: the scanner reads the whole PR diff, any file can carry
+  # a payload.
+
+# AIS-480: a newer push to the same PR cancels the older audit.
+concurrency:
+  group: supply-chain-audit-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   pull-requests: write

@@ -12,11 +12,7 @@ on:
     paths:
       - "apps/bootstrap-installer/**"
       - ".github/workflows/bootstrap-installer-check.yml"
-  push:
-    branches: [main]
-    paths:
-      - "apps/bootstrap-installer/**"
-      - ".github/workflows/bootstrap-installer-check.yml"
+  # AIS-480: no re-run after merge; the release workflow builds it anyway.
 
 permissions:
   contents: read

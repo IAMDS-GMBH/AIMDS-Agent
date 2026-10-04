@@ -11,17 +11,7 @@ on:
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/typecheck.yml"
-  push:
-    branches: [main]
-    paths:
-      - "ui-tui/**"
-      - "web/**"
-      - "apps/**"
-      - "package.json"
-      - "package-lock.json"
-      - ".github/workflows/typecheck.yml"
-  release:
-    types: [published]
+  # AIS-480: no re-run after merge or release; the PR run checked the tree.
 
 permissions:
   contents: read
