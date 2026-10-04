@@ -55,6 +55,11 @@ on:
     - cron: '0 9 * * 1'
   workflow_dispatch:
 
+# AIS-480: a newer push to the same PR cancels the older scan.
+concurrency:
+  group: osv-scanner-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   # Required by the reusable workflow to upload SARIF to the Security tab.
   actions: read

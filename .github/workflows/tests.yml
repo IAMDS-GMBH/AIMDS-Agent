@@ -6,12 +6,23 @@ on:
   # commit to it starts exactly one run — never a push run plus a PR run.
   pull_request:
     branches: [main]
-  # Post-merge run on main keeps the duration cache (save-durations) fresh
-  # and catches merge-order breakage.
-  push:
-    branches: [main]
-  release:
-    types: [published]
+    # AIS-480: changes no Python test can see skip the 9-job run. The tests
+    # DO read apps/desktop/electron, apps/bootstrap-installer, web/src and
+    # skill/prompt markdown, so only these stay out. The ruleset has no
+    # required checks, so a skipped run never blocks a merge.
+    paths-ignore:
+      - "website/**"
+      - "docs/**"
+      - "*.md"
+      - "apps/desktop/src/**"
+      - "apps/desktop/public/**"
+      - "apps/desktop/assets/**"
+      - "ui-tui/src/**"
+  # AIS-480: no full re-run after every squash merge (same tree the PR just
+  # tested) or release publish. One nightly run on main catches merge-order
+  # breakage and keeps the duration cache (save-durations) fresh.
+  schedule:
+    - cron: "17 2 * * *"
   workflow_dispatch:
 
 permissions:
