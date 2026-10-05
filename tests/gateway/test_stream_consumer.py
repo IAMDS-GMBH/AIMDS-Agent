@@ -9,6 +9,16 @@ import pytest
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
+async def _wait_until(predicate, timeout: float = 5.0) -> None:
+    """Poll instead of a fixed sleep: a loaded CI runner can miss an 80 ms window."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        if loop.time() > deadline:
+            raise AssertionError("condition not reached in time")
+        await asyncio.sleep(0.01)
+
+
 # ── _clean_for_display unit tests ────────────────────────────────────────
 
 
@@ -524,9 +534,11 @@ class TestSegmentBreakOnToolBoundary:
 
         consumer.on_delta("Hello")
         task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.08)
+        await _wait_until(lambda: adapter.send.call_count >= 1)
         consumer.on_delta(" world")
-        await asyncio.sleep(0.08)
+        # Flood-control failures back off and retry; only after the strikes
+        # run out does the consumer switch to "send the tail at finish".
+        await _wait_until(lambda: consumer._fallback_final_send)
         consumer.finish()
         await task
 
