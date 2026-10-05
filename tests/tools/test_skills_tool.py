@@ -1287,3 +1287,45 @@ class TestSkillViewCollisionDetection:
         result = json.loads(raw)
         assert result["success"] is True
         assert "LOCAL BODY" in result["content"]
+
+
+# ── AIS-484: skills for tools that are not set up stay out of listings ──
+
+
+_JIRA_REQ = "metadata:\n  hermes:\n    requires_tools:\n      - jira_search\n"
+
+
+def test_skills_list_hides_skills_whose_required_tools_are_missing(tmp_path):
+    _make_skill(tmp_path, "jira-flow", frontmatter_extra=_JIRA_REQ)
+    _make_skill(tmp_path, "plain")
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path), patch.object(
+        skills_tool_module, "reachable_tool_names", return_value={"terminal", "mcp_AIMDSSuiteMCP_memory_search"}
+    ):
+        names = [s["name"] for s in json.loads(skills_list())["skills"]]
+    assert names == ["plain"]
+
+
+def test_skills_list_shows_them_once_the_tools_exist(tmp_path):
+    _make_skill(tmp_path, "jira-flow", frontmatter_extra=_JIRA_REQ)
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path), patch.object(
+        skills_tool_module, "reachable_tool_names", return_value={"mcp_AtlassianMCP_jira_search"}
+    ):
+        skills = json.loads(skills_list())["skills"]
+    assert [s["name"] for s in skills] == ["jira-flow"]
+    assert "_conditions" not in skills[0]  # internal key never reaches the model
+
+
+def test_filter_skills_by_tools_keeps_everything_without_a_tool_view(tmp_path):
+    _make_skill(tmp_path, "jira-flow", frontmatter_extra=_JIRA_REQ)
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        skills = _find_all_skills(include_conditions=True)
+        assert skills_tool_module.filter_skills_by_tools(skills, None) == skills
+        assert skills_tool_module.filter_skills_by_tools(skills, set()) == []
+        # Default listings carry no conditions key.
+        assert "_conditions" not in _find_all_skills()[0]
+
+
+def test_bundled_jira_worklog_skill_requires_a_jira_tool():
+    root = Path(__file__).resolve().parents[2]
+    fm, _ = _parse_frontmatter((root / "skills/productivity/jira-worklog-monthly/SKILL.md").read_text())
+    assert "jira_get_worklog" in fm["metadata"]["hermes"]["requires_tools"]

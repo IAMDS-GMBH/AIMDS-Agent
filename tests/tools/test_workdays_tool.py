@@ -987,7 +987,9 @@ class TestEstimateSourcesUsersAbsences:
         _seed_titled(db, rows)
         out = json.loads(wt.execute_workdays({"action": "estimate_profile"}, db_path=db))
         prop = out["proposal"]
-        assert set(prop["worklog_source_tool"].split(", ")) == {OP, TEMPO}  # calendar events are not bookings
+        # calendar events are not bookings; the legacy OpenProject name gains
+        # the server-neutral pm_* pattern (AIS-483)
+        assert set(prop["worklog_source_tool"].split(", ")) == {OP, "%pm_list_time_entries", TEMPO}
         assert prop["worklog_user"] == "Johannes Huchler"
         assert prop["vacation_booking_patterns"] == ["INTERNAL_URLAUB_%"]
         assert prop["sick_booking_patterns"] == ["INTERNAL_KRANK_%"]
@@ -1045,7 +1047,51 @@ def test_old_openproject_worklog_pattern_also_matches_pm_tool_names():
 
     assert _split_patterns("mcp_op_list_time_entries, mcp_TempoMCP_retrieveWorklogs") == [
         "mcp_op_list_time_entries",
+        "%pm_list_time_entries",
         "mcp_TempoMCP_retrieveWorklogs",
-        "mcp_op_pm_list_time_entries",
     ]
-    assert _split_patterns(["mcp_op_pm_list_time_entries"]) == ["mcp_op_pm_list_time_entries"]
+
+
+SUITE_OP = "mcp_AIMDSSuiteMCP_mcp_openproject_pm_list_time_entries"
+
+
+def test_openproject_worklog_patterns_cover_suite_and_local_names():
+    """AIS-483: the Suite and the bundled server list the same time entries
+    under two names; a profile naming either matches both."""
+    from tools.workdays_tool import _split_patterns, _sql_like
+
+    for saved in ("mcp_op_pm_list_time_entries", SUITE_OP, "mcp_op_pm_list_time_entries, " + SUITE_OP):
+        assert _split_patterns(saved) == ["%pm_list_time_entries"]
+    for name in ("mcp_op_pm_list_time_entries", SUITE_OP):
+        assert _sql_like(name.lower(), "%pm_list_time_entries")
+    assert _split_patterns("mcp_TempoMCP_%, %time_entries%") == ["mcp_TempoMCP_%", "%time_entries%"]
+
+
+def test_report_counts_suite_rows_for_a_profile_saved_with_the_local_name(tmp_path, monkeypatch):
+    profile = dict(BY, worklog_source_tool="mcp_op_pm_list_time_entries", worklog_user="Johannes Huchler",
+                   _source="memory (mcp)")
+    monkeypatch.setattr(wt, "_profile_from_memory", lambda: profile)
+    wt._profile_cache.update({"at": 0.0, "profile": None})
+    db = tmp_path / "s.db"
+    _seed_titled(db, [
+        _row("1", "mcp_op_pm_list_time_entries", "EXT-70", "2026-09-07", 3),
+        _row("2", SUITE_OP, "17054", "2026-09-08", 5),
+    ])
+    out = json.loads(wt.execute_workdays({"action": "report", "start": "2026-09-07", "end": "2026-09-11"}, db_path=db))
+    assert out["totals"]["actual"] == 8.0
+
+
+def test_estimate_proposes_one_pattern_for_both_openproject_servers(tmp_path):
+    from datetime import date as _date, timedelta as _td
+    base = _date.today() - _td(weeks=6)
+    base -= _td(days=base.weekday())
+    rows = []
+    for w in range(4):
+        for dd in range(5):
+            day = (base + _td(days=w * 7 + dd)).isoformat()
+            tool = "mcp_op_pm_list_time_entries" if w < 2 else SUITE_OP
+            rows.append(_row(f"r{w}{dd}", tool, "EXT-70", day, 8, "EVN Ongoing JH"))
+    db = tmp_path / "s.db"
+    _seed_titled(db, rows)
+    out = json.loads(wt.execute_workdays({"action": "estimate_profile"}, db_path=db))
+    assert out["proposal"]["worklog_source_tool"] == "%pm_list_time_entries"

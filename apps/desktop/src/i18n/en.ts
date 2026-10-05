@@ -674,6 +674,9 @@ export const en: Translations = {
       openProjectLocalServes: instance =>
         `This local server serves ${instance}. The Suite account is not linked yet; Hermes links it automatically with this token.`,
       openProjectAutoLinkFailed: error => `Automatic Suite linking failed (${error}); this local server stays active.`,
+      openProjectReplacedTitle: 'OpenProject now runs through the AIMDS Suite',
+      openProjectReplacedBody: (instance, login) =>
+        `${instance || 'OpenProject'} is connected through the Suite${login ? ` as ${login}` : ''}; the local OpenProject connection and its token were removed.`,
       editServer: 'Edit server',
       name: 'Name',
       serverJson: 'Server JSON',

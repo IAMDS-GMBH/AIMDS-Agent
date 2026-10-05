@@ -675,6 +675,9 @@ export const de
       openProjectLocalServes: instance =>
         `Dieser lokale Server bedient ${instance}. Das Suite-Konto ist noch nicht verknüpft; Hermes verknüpft es automatisch mit diesem Token.`,
       openProjectAutoLinkFailed: error => `Automatische Suite-Verknüpfung fehlgeschlagen (${error}); dieser lokale Server bleibt aktiv.`,
+      openProjectReplacedTitle: 'OpenProject läuft jetzt über die AIMDS Suite',
+      openProjectReplacedBody: (instance, login) =>
+        `${instance || 'OpenProject'} ist über die Suite verbunden${login ? ` (als ${login})` : ''}; die lokale OpenProject-Verbindung und ihr Token wurden entfernt.`,
       editServer: 'Server bearbeiten',
       name: 'Name',
       serverJson: 'Server-JSON',

@@ -2107,6 +2107,17 @@ def run_conversation(
         autoload_for_message(agent, original_user_message)
     except Exception as _autoload_exc:
         logger.debug("message-link autoload skipped: %s", _autoload_exc)
+    # A ticket key or link (PRO-6, …/work_packages/123) loads the ticket tools
+    # of the reachable systems and adds one API-only hint line, so the model
+    # looks it up directly instead of searching elsewhere first (AIS-485).
+    try:
+        from agent.reference_hints import ticket_reference_hint
+
+        _ticket_hint = ticket_reference_hint(agent, original_user_message)
+        if _ticket_hint:
+            _plugin_user_context = f"{_plugin_user_context}\n\n{_ticket_hint}" if _plugin_user_context else _ticket_hint
+    except Exception as _ref_exc:
+        logger.debug("ticket reference hint skipped: %s", _ref_exc)
 
     _enforce_initial_memory_context_call(
         agent,

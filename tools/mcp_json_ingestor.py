@@ -389,8 +389,23 @@ def _extract_items(data: Any) -> List[Dict[str, Any]]:
     return []
 
 
+# ISO 8601 duration as OpenProject sends ``hours`` (pm_* contract): "PT1H30M",
+# "PT0.5H", "P1DT2H" (a day is 24 h there, not a Jira work day).
+_ISO_DURATION_RE = re.compile(
+    r"P(?:(\d+(?:[.,]\d+)?)D)?(?:T(?:(\d+(?:[.,]\d+)?)H)?(?:(\d+(?:[.,]\d+)?)M)?(?:(\d+(?:[.,]\d+)?)S)?)?"
+)
+
+
+def _parse_iso_duration(text: str) -> Optional[int]:
+    match = _ISO_DURATION_RE.fullmatch(text.strip().upper())
+    if not match or not any(match.groups()):
+        return None
+    d, h, m, s = (float(g.replace(",", ".")) if g else 0.0 for g in match.groups())
+    return int(round(d * 86400 + h * 3600 + m * 60 + s))
+
+
 def _parse_duration(value: Any) -> int:
-    """Seconds from an int, a numeric string, or a Jira-style "1h 30m"."""
+    """Seconds from an int, a numeric string, an ISO 8601 duration or a Jira-style "1h 30m"."""
     if isinstance(value, bool):
         return 0
     if isinstance(value, (int, float)):
@@ -402,6 +417,9 @@ def _parse_duration(value: Any) -> int:
         return int(float(text))
     except ValueError:
         pass
+    iso = _parse_iso_duration(text)
+    if iso is not None:
+        return iso
     total = 0
     for amount, unit in re.findall(r"(\d+(?:[.,]\d+)?)\s*([wdhm])", text):
         amount = float(amount.replace(",", "."))
@@ -504,6 +522,10 @@ def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fall
     # A stable source identity (``source_key``/``calendar_key`` stamped by the
     # server: group id, mailbox, calendar id) beats display names — rows of one
     # calendar share one key however it was addressed (AIS-344).
+    # The Suite answers ``work_package_id: 0`` for a project-level booking
+    # (Go ``Link.ID()`` of an empty link, AIS-483) — that is no reference.
+    if norm.get("workpackageid") in (0, "0"):
+        norm.pop("workpackageid")
     ref_key = (
         _pick(norm, "sourcekey", "calendarkey", "issuekey", "key", "ticketid", "caseid", "workpackagedisplayid",
               "workpackageid", "calendarname")

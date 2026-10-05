@@ -136,6 +136,7 @@ import { useCwdActions } from './session/hooks/use-cwd-actions'
 import { useHermesConfig } from './session/hooks/use-hermes-config'
 import { useMessageStream } from './session/hooks/use-message-stream'
 import { useModelControls } from './session/hooks/use-model-controls'
+import { useOpenProjectSuiteNotice } from './session/hooks/use-openproject-suite-notice'
 import { usePreviewRouting } from './session/hooks/use-preview-routing'
 import { usePromptActions } from './session/hooks/use-prompt-actions'
 import {
@@ -880,6 +881,7 @@ export function DesktopController() {
   // query param). Listen on that same backend so completion toasts are reliable
   // even when the active chat profile points at a pooled backend.
   useCronCompletionListener(handleCronJobCompleted)
+  useOpenProjectSuiteNotice(gatewayState === 'open')
 
   // AIS-394: the periodic Suite key health check pushes this event once a
   // non-self-healing 401/403 is confirmed. Toast + native notification, no

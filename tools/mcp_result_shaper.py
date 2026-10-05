@@ -95,10 +95,11 @@ class ShapeConfig:
     def for_tool(self, tool_name: str) -> "ShapeConfig":
         """Resolve per-server / per-tool overrides (tool wins over server)."""
         overrides: Dict[str, Any] = {}
-        server = _server_of(tool_name)
-        for key, cfg in (self.per_server or {}).items():
-            if server and str(key).lower() == server.lower() and isinstance(cfg, dict):
-                overrides.update(cfg)
+        servers = [s.lower() for s in _servers_of(tool_name)]
+        for server in servers:  # gateway first, the OpenProject entry on top
+            for key, cfg in (self.per_server or {}).items():
+                if str(key).lower() == server and isinstance(cfg, dict):
+                    overrides.update(cfg)
         for key, cfg in (self.per_tool or {}).items():
             if _tool_matches(tool_name, str(key)) and isinstance(cfg, dict):
                 overrides.update(cfg)
@@ -174,12 +175,40 @@ def _server_of(tool_name: str) -> str:
         return segment
 
 
+def _servers_of(tool_name: str) -> list:
+    """The server plus, for an OpenProject ``pm_*`` tool, the logical
+    ``OpenProjectMCP`` (AIS-483): a ``per_server: {OpenProjectMCP: …}`` entry
+    also shapes the Suite's ``mcp_AIMDSSuiteMCP_mcp_openproject_pm_*``."""
+    server = _server_of(tool_name)
+    servers = [server] if server else []
+    try:
+        from tools.openproject_names import LOCAL_SERVER, is_openproject_tool
+
+        if is_openproject_tool(tool_name) and LOCAL_SERVER.lower() not in (s.lower() for s in servers):
+            servers.append(LOCAL_SERVER)
+    except Exception:
+        pass
+    return servers
+
+
 def _tool_matches(tool_name: str, pattern: str) -> bool:
     name = str(tool_name or "")
     if name == pattern or fnmatch.fnmatchcase(name, pattern):
         return True
-    # Bare suffix (``m365_list_drive_files``) matches the prefixed name.
-    return name.endswith(f"_{pattern}")
+    # Bare suffix (``m365_list_drive_files``) matches the prefixed name; the
+    # Suite gateway separates service and tool with ``-``
+    # (``mcp_openproject-pm_list_time_entries``).
+    if name.endswith(f"_{pattern}") or name.endswith(f"-{pattern}"):
+        return True
+    # AIS-483: a rule for one OpenProject server's pm_* tool
+    # (``mcp_op_pm_list_time_entries``) applies to the other server's twin.
+    try:
+        from tools.openproject_names import is_openproject_tool, pm_suffix
+
+        suffix = pm_suffix(name)
+        return bool(suffix) and suffix == pm_suffix(pattern) and is_openproject_tool(name) and is_openproject_tool(pattern)
+    except Exception:
+        return False
 
 
 def _is_dropped_key(key: Any, patterns: Tuple[str, ...]) -> bool:

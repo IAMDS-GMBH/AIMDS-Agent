@@ -2611,7 +2611,7 @@ _JIRA_WRITE_SUFFIXES = (
 )
 # AIS-479: the OpenProject pm_* contract, shared by the bundled server
 # (`mcp_op_pm_create_work_package`) and the Suite's go-mcp-openproject
-# (`mcp_AIMDSSuiteMCP_mcp_openproject-pm_create_work_package`).
+# (`mcp_AIMDSSuiteMCP_mcp_openproject_pm_create_work_package`).
 _OPENPROJECT_WRITE_SUFFIXES = (
     "pm_create_work_package", "pm_update_work_package", "pm_comment_work_package",
     "pm_create_time_entry", "pm_update_time_entry",
@@ -2633,9 +2633,11 @@ MCP_PERMISSION_BYPASS_GUIDANCE = (
     "step you should not take instead of surfacing the limitation.\n"
 )
 
+# Local server only (AIS-483): OPENPROJECT_WRITE_PROJECTS is the bundled
+# server's setting; the Suite's write access is the user's linked account.
 OPENPROJECT_READ_ONLY_GUIDANCE = (
     "# OpenProject is read-only in this session\n"
-    "The OpenProject MCP server is loaded, but none of its write tools (pm_create_work_package, "
+    "The local OpenProject MCP server is loaded, but none of its write tools (pm_create_work_package, "
     "pm_update_work_package, pm_comment_work_package, pm_create_time_entry) is registered: the server "
     "was configured without a write scope (OPENPROJECT_WRITE_PROJECTS). Do not try to create, "
     "update, comment on, transition or book time on work packages, and do not search for such "
@@ -2656,31 +2658,79 @@ def _resolve_tool_by_suffix(names: "set[str]", suffix: str) -> str | None:
     return None
 
 
-def build_ticket_routing_guidance(valid_tool_names: "set[str] | None" = None) -> str:
-    """Per-project routing between Jira and OpenProject (AIS-327).
+def _openproject_tools_of(names: "set[str]", suffixes: "tuple[str, ...]", kind: str) -> "list[str]":
+    """Registered OpenProject tools of one server kind ("suite"/"local") for *suffixes*."""
+    from tools.openproject_names import openproject_kind, openproject_tools
 
-    Injected only while BOTH ticket systems can write (a Jira write tool and
-    an OpenProject write tool are reachable) AND the ``ticket_routing`` core
-    tool is present. With a single system there is nothing to decide, so the
-    block — and the question to the user — disappears on its own once one
-    server is removed.
+    return [t for s in suffixes for t in openproject_tools(names, s) if openproject_kind(t) == kind]
+
+
+def _ticket_systems_line(names: "set[str]", op_tools: "dict[str, dict[str, list[str]]]") -> str:
+    """AIS-483: which ticket systems this session reaches, one entry tool each.
+
+    Built from the registered names only; an empty string without any.
+    """
+    parts = []
+    jira = _resolve_tool_by_suffix(names, "jira_search") or next(
+        (n for n in sorted(names) if isinstance(n, str) and "jira_" in n.lower() and n.startswith("mcp_")), None)
+    if jira:
+        parts.append(f"Jira (`{jira}`)")
+    labels = {"suite": "OpenProject via the AIMDS Suite", "local": "OpenProject, local server"}
+    for kind in ("suite", "local"):
+        read, write = op_tools[kind]["read"], op_tools[kind]["write"]
+        entry = (read or write or [None])[0]
+        if entry:
+            parts.append(f"{labels[kind]} (`{entry}`{'' if write else ', read-only'})")
+    if not parts:
+        return ""
+    text = "# Ticket systems in this session: " + "; ".join(parts) + "."
+    if len(parts) == 1:
+        return text + " Tickets/work items mean this system unless the user names another."
+    text += " Tickets/work items without a named system: check every reachable system and label each result with its system."
+    if op_tools["suite"]["read"] + op_tools["suite"]["write"] and op_tools["local"]["read"] + op_tools["local"]["write"]:
+        text += " For OpenProject use the AIMDS Suite tools; the local server is the fallback."
+    return text
+
+
+def build_ticket_routing_guidance(valid_tool_names: "set[str] | None" = None) -> str:
+    """Ticket systems of the session plus per-project routing (AIS-327/483).
+
+    The "ticket systems" line names every reachable system — Jira, OpenProject
+    via the AIMDS Suite (preferred), OpenProject's local server — also when
+    there is only one. The routing block is injected only while BOTH systems
+    can write (a Jira write tool and an OpenProject write tool are reachable)
+    AND the ``ticket_routing`` core tool is present. With a single system
+    there is nothing to decide, so that block — and the question to the user
+    — disappears on its own once one server is removed.
     """
     names = set(valid_tool_names or set())
-    op_write = [t for t in (_resolve_tool_by_suffix(names, s) for s in _OPENPROJECT_WRITE_SUFFIXES) if t]
-    op_read = [t for t in (_resolve_tool_by_suffix(names, s) for s in _OPENPROJECT_READ_SUFFIXES) if t]
-    if op_read and not op_write:
-        # AIS-330: the server is loaded but was configured without a write
-        # scope, so every write tool is absent. Silently returning "" here
-        # left the model routing AIS work to OpenProject and burning ten
-        # retries on a tool that cannot exist (SUP-20260914-152536).
-        return OPENPROJECT_READ_ONLY_GUIDANCE
+    op_tools = {
+        kind: {"read": _openproject_tools_of(names, _OPENPROJECT_READ_SUFFIXES, kind),
+               "write": _openproject_tools_of(names, _OPENPROJECT_WRITE_SUFFIXES, kind)}
+        for kind in ("suite", "local")
+    }
+    op_write = op_tools["suite"]["write"] + op_tools["local"]["write"]
+    systems = _ticket_systems_line(names, op_tools)
+    blocks = [b for b in (_ticket_routing_block(names, op_write, op_tools), systems) if b]
+    return "\n".join(blocks)
+
+
+def _ticket_routing_block(names: "set[str]", op_write: "list[str]", op_tools: "dict[str, dict[str, list[str]]]") -> str:
+    if op_tools["local"]["read"] and not op_write:
+        # AIS-330: the local server is loaded but was configured without a
+        # write scope, so every write tool is absent. Silently returning ""
+        # here left the model routing AIS work to OpenProject and burning ten
+        # retries on a tool that cannot exist (SUP-20260914-152536). Never for
+        # the Suite: OPENPROJECT_WRITE_PROJECTS is a local setting (AIS-483).
+        return OPENPROJECT_READ_ONLY_GUIDANCE.rstrip("\n")
     if "ticket_routing" not in names:
         return ""
     jira_write = [t for t in (_resolve_tool_by_suffix(names, s) for s in _JIRA_WRITE_SUFFIXES) if t]
     if not jira_write or not op_write:
         return ""
     tempo_create = _resolve_tool_by_suffix(names, "createWorklog") or _resolve_tool_by_suffix(names, "jira_add_worklog")
-    op_time = _resolve_tool_by_suffix(names, "pm_create_time_entry")
+    op_time = next(iter(_openproject_tools_of(names, ("pm_create_time_entry",), "suite")
+                        + _openproject_tools_of(names, ("pm_create_time_entry",), "local")), None)
     has_clarify = "clarify" in names
     time_line = ""
     if tempo_create or op_time:

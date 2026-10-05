@@ -1477,7 +1477,7 @@ class TestSkillsInCatalog:
         import tools.tool_search as ts
         seen = {}
 
-        def fake_find_all_skills(skip_disabled=False, include_source=False):
+        def fake_find_all_skills(skip_disabled=False, include_source=False, include_conditions=False):
             seen["skip_disabled"] = skip_disabled
             return [{"name": "x", "description": "y", "category": "c", "updated_at": 1}]
 
@@ -1488,7 +1488,7 @@ class TestSkillsInCatalog:
 
     def test_dispatch_lists_skills_only_when_the_session_can_read_them(self, monkeypatch):
         import tools.tool_search as ts
-        monkeypatch.setattr(ts, "local_skill_catalog_entries", lambda: self._SKILLS)
+        monkeypatch.setattr(ts, "local_skill_catalog_entries", lambda available_tools=None: self._SKILLS)
         from tools.registry import registry
         registry.register(name="mcp_SkillsSrv_worklog_tool", toolset="mcp-SkillsSrv",
                           schema=_td("mcp_SkillsSrv_worklog_tool", "worklog tool")["function"],
@@ -1766,6 +1766,72 @@ class TestLargeServerOpenProject:
         assert "mcp_op_pm_comment_work_package" in top("openproject kommentar hinzufügen")
         assert "mcp_op_pm_list_time_entries" in top("openproject time entries")
 
+    _SUITE_PM = {
+        "pm_list_projects": "List/search visible OpenProject projects.",
+        "pm_search_work_packages": "Search work packages by text with optional filters.",
+        "pm_create_work_package": "Create a work package in a project.",
+        "pm_list_time_entries": "List logged time entries with structured filters.",
+        "pm_create_time_entry": "Log time spent on a work package or project.",
+    }
+
+    def _suite_catalog(self, monkeypatch, with_local: bool):
+        """AIS-483: the Suite's go-mcp-openproject behind the AIMDSSuiteMCP gateway."""
+        import tools.tool_search as ts
+        from tools.registry import registry
+
+        monkeypatch.setattr(ts, "_get_mcp_server_metadata", lambda: {})
+        monkeypatch.setattr(ts, "_get_dynamic_mcp_keywords_map", lambda: {})
+        monkeypatch.setattr(ts, "_get_dynamic_skill_keywords_map", lambda: {})
+        monkeypatch.setattr(ts, "_manifest_default_tools", lambda source: [
+            "pm_list_projects", "pm_search_work_packages",
+        ] if source == "mcp-OpenProjectMCP" else [])
+        tools = [(f"mcp_AIMDSSuiteMCP_mcp_openproject_{t}", "mcp-AIMDSSuiteMCP", d) for t, d in self._SUITE_PM.items()]
+        tools += [("mcp_AIMDSSuiteMCP_mcp_memory-memory_search", "mcp-AIMDSSuiteMCP", "Search the memory vault."),
+                  ("mcp_AIMDSSuiteMCP_mcp_customer-storage_list", "mcp-AIMDSSuiteMCP", "List customer storage files.")]
+        if with_local:
+            tools += [(f"mcp_op_{t}", "mcp-OpenProjectMCP", d) for t, d in self._SUITE_PM.items()]
+        tools += [(f"mcp_AtlassianMCP_{t}", "mcp-AtlassianMCP", d) for t, d in _JIRA_TOOLS.items()]
+        defs = []
+        for name, toolset, desc in tools:
+            self._register(name, toolset, desc)
+            defs.append(_td(name, desc))
+        catalog = ts.build_catalog(defs)
+        for name, _toolset, _desc in tools:
+            registry.deregister(name)
+        return catalog
+
+    def test_suite_pm_tools_answer_to_openproject_aliases(self, monkeypatch):
+        catalog = self._suite_catalog(monkeypatch, with_local=False)
+        entry = next(e for e in catalog if e.name.endswith("openproject_pm_list_time_entries"))
+        assert {"openproject", "openprojectmcp", "arbeitspakete"} <= entry._server_tokens
+        memory = next(e for e in catalog if e.name.endswith("memory_search"))
+        assert "openproject" not in memory._server_tokens
+
+    def test_suite_only_openproject_queries(self, monkeypatch):
+        from tools.tool_search import search_catalog
+        catalog = self._suite_catalog(monkeypatch, with_local=False)
+        top = lambda q, n=3: [h.name for h in search_catalog(catalog, q, limit=n)]
+        suite = "mcp_AIMDSSuiteMCP_mcp_openproject_"
+        assert f"{suite}pm_list_time_entries" in top("openproject time entries")
+        assert f"{suite}pm_create_time_entry" in top("zeit buchen openproject")
+        assert f"{suite}pm_search_work_packages" in top("openproject arbeitspakete suchen")
+        browse = top("openproject", 10)
+        assert browse[:2] == [f"{suite}pm_list_projects", f"{suite}pm_search_work_packages"]
+        assert set(browse) == {f"{suite}{t}" for t in self._SUITE_PM}  # no memory/storage tools
+
+    def test_suite_preferred_when_both_servers_are_registered(self, monkeypatch):
+        from tools.tool_search import search_catalog
+        catalog = self._suite_catalog(monkeypatch, with_local=True)
+        top = lambda q, n=3: [h.name for h in search_catalog(catalog, q, limit=n)]
+        suite = "mcp_AIMDSSuiteMCP_mcp_openproject_"
+        ranked = top("openproject time entries", 4)
+        assert ranked.index(f"{suite}pm_list_time_entries") < ranked.index("mcp_op_pm_list_time_entries")
+        browse = top("openproject", 20)
+        assert browse[:len(self._SUITE_PM)] == sorted(
+            (f"{suite}{t}" for t in self._SUITE_PM),
+            key=lambda n: ({"pm_list_projects": 0, "pm_search_work_packages": 1}.get(n[n.index("pm_"):], 9), n))
+        assert set(browse[len(self._SUITE_PM):]) == {f"mcp_op_{t}" for t in self._SUITE_PM}
+
     def test_alias_normalization(self):
         from tools.tool_search import _normalize_source_key
         assert _normalize_source_key("arbeitspakete") == "openprojectmcp"
@@ -1893,3 +1959,29 @@ class TestAIS330Diagnostics(TestLargeServerOpenProject):
         self._patch_mcp(monkeypatch, status=[], prefixes={}, registered={}, missing={})
         _, _, err = resolve_underlying_call({"name": "nope_tool", "arguments": {}})
         assert err == "Tool 'nope_tool' is not registered or found. Use tool_search to find the exact registered tool name."
+
+
+# ── AIS-484: skills for tools the session cannot reach stay out of search ──
+
+
+def test_skill_catalog_drops_skills_whose_required_tools_are_missing(tmp_path, monkeypatch):
+    import tools.skills_tool as skills_tool
+    from tools import tool_search as ts
+
+    for name, extra in (("jira-flow", "metadata:\n  hermes:\n    requires_tools:\n      - jira_search\n"), ("plain", "")):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "SKILL.md").write_text(f"---\nname: {name}\ndescription: Desc {name}.\n{extra}---\n\nbody\n")
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", tmp_path)
+
+    def tool(name):
+        return {"type": "function", "function": {"name": name, "description": "", "parameters": {}}}
+
+    current = [tool("skill_view"), tool("tool_search")]
+    without = [s["name"] for s in ts._skills_in_scope(current, [tool("mcp_AIMDSSuiteMCP_memory_search")])]
+    with_jira = [s["name"] for s in ts._skills_in_scope(current, [tool("mcp_AtlassianMCP_jira_search")])]
+    explicit = [s["name"] for s in ts._skills_in_scope(current, filter_by_tools=False)]
+
+    assert "jira-flow" not in without and "plain" in without
+    assert "jira-flow" in with_jira
+    assert "jira-flow" in explicit  # tool_describe by name still finds it

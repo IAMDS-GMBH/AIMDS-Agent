@@ -1959,12 +1959,12 @@ class TestBuildTicketRoutingGuidance:
     JIRA = "mcp_AtlassianMCP_jira_create_issue"
     OP = "mcp_op_pm_create_work_package"
 
-    def test_empty_without_both_systems_or_the_tool(self):
+    def test_no_routing_without_both_systems_or_the_tool(self):
         from agent.prompt_builder import build_ticket_routing_guidance as g
         assert g(None) == ""
-        assert g({self.JIRA, "ticket_routing", "clarify"}) == ""
-        assert g({self.OP, "ticket_routing", "clarify"}) == ""
-        assert g({self.JIRA, self.OP, "clarify"}) == ""
+        assert "# Ticket routing" not in g({self.JIRA, "ticket_routing", "clarify"})
+        assert "# Ticket routing" not in g({self.OP, "ticket_routing", "clarify"})
+        assert "# Ticket routing" not in g({self.JIRA, self.OP, "clarify"})
         # AIS-330: OpenProject reachable but without a write tool is no longer
         # silent — the read-only block replaces the routing guidance.
         assert g({"mcp_AtlassianMCP_jira_search", "mcp_op_pm_list_work_packages", "ticket_routing"}).startswith(
@@ -1983,10 +1983,18 @@ class TestBuildTicketRoutingGuidance:
     def test_suite_pm_tools_route_the_same_way(self):
         """AIS-479: the Suite's go-mcp-openproject exposes the same pm_* contract."""
         from agent.prompt_builder import build_ticket_routing_guidance as g
-        suite = "mcp_AIMDSSuiteMCP_mcp_openproject-pm_"
+        suite = "mcp_AIMDSSuiteMCP_mcp_openproject_pm_"
         text = g({self.JIRA, f"{suite}create_work_package", f"{suite}create_time_entry", "ticket_routing", "clarify"})
         assert f"OpenProject projects via `{suite}create_time_entry`" in text
-        assert g({"mcp_AtlassianMCP_jira_search", "mcp_op_pm_search_work_packages", "mcp_op_pm_create_time_entry"}) == ""
+        assert "# Ticket routing" not in g(
+            {"mcp_AtlassianMCP_jira_search", "mcp_op_pm_search_work_packages", "mcp_op_pm_create_time_entry"})
+
+    def test_suite_time_booking_preferred_over_the_local_server(self):
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        suite = "mcp_AIMDSSuiteMCP_mcp_openproject_pm_"
+        text = g({self.JIRA, self.OP, "mcp_op_pm_create_time_entry", f"{suite}create_work_package",
+                  f"{suite}create_time_entry", "ticket_routing", "clarify"})
+        assert f"OpenProject projects via `{suite}create_time_entry`" in text
 
     def test_without_clarify_the_model_must_not_write(self):
         from agent.prompt_builder import build_ticket_routing_guidance as g
@@ -2005,8 +2013,19 @@ class TestOpenProjectReadOnlyGuidance:
     def test_read_tools_without_write_tools_yield_read_only_block(self):
         from agent.prompt_builder import build_ticket_routing_guidance as g, OPENPROJECT_READ_ONLY_GUIDANCE
         text = g({"mcp_op_pm_list_work_packages", "mcp_op_pm_search_work_packages", "ticket_routing", "clarify"})
-        assert text == OPENPROJECT_READ_ONLY_GUIDANCE
+        assert text.startswith(OPENPROJECT_READ_ONLY_GUIDANCE)
         assert "OPENPROJECT_WRITE_PROJECTS" in text and "do not search for such tools" in text
+
+    def test_read_only_block_is_never_used_for_the_suite(self):
+        """AIS-483: OPENPROJECT_WRITE_PROJECTS is the local server's setting."""
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        suite = "mcp_AIMDSSuiteMCP_mcp_openproject_pm_"
+        text = g({f"{suite}list_work_packages", f"{suite}search_work_packages", "ticket_routing", "clarify"})
+        assert "OPENPROJECT_WRITE_PROJECTS" not in text and "read-only in this session" not in text
+        assert f"OpenProject via the AIMDS Suite (`{suite}list_work_packages`, read-only)" in text
+        # Suite writes cover a local server without write tools
+        text = g({f"{suite}create_work_package", "mcp_op_pm_list_work_packages"})
+        assert "OPENPROJECT_WRITE_PROJECTS" not in text
 
     def test_block_does_not_need_the_routing_tool(self):
         from agent.prompt_builder import build_ticket_routing_guidance as g
@@ -2014,14 +2033,53 @@ class TestOpenProjectReadOnlyGuidance:
 
     def test_write_tools_present_keep_previous_behaviour(self):
         from agent.prompt_builder import build_ticket_routing_guidance as g
-        assert g({"mcp_op_pm_list_work_packages", "mcp_op_pm_update_work_package"}) == ""
+        assert g({"mcp_op_pm_list_work_packages", "mcp_op_pm_update_work_package"}).startswith(
+            "# Ticket systems in this session: OpenProject, local server (`mcp_op_pm_list_work_packages`).")
         text = g({"mcp_op_pm_list_work_packages", "mcp_op_pm_update_work_package",
                   "mcp_AtlassianMCP_jira_create_issue", "ticket_routing"})
         assert text.startswith("# Ticket routing: Jira and OpenProject are both connected")
 
-    def test_no_openproject_at_all_stays_empty(self):
+    def test_no_openproject_names_jira_only(self):
         from agent.prompt_builder import build_ticket_routing_guidance as g
-        assert g({"mcp_AtlassianMCP_jira_search", "ticket_routing"}) == ""
+        assert g({"mcp_AtlassianMCP_jira_search", "ticket_routing"}) == (
+            "# Ticket systems in this session: Jira (`mcp_AtlassianMCP_jira_search`). "
+            "Tickets/work items mean this system unless the user names another."
+        )
+
+
+class TestTicketSystemsLine:
+    """AIS-483: the session's reachable ticket systems, Suite OpenProject first."""
+
+    SUITE = "mcp_AIMDSSuiteMCP_mcp_openproject_pm_"
+
+    def test_all_three_systems(self):
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        text = g({"mcp_AtlassianMCP_jira_search", "mcp_AtlassianMCP_jira_create_issue",
+                  f"{self.SUITE}list_work_packages", f"{self.SUITE}create_work_package",
+                  "mcp_op_pm_list_work_packages", "mcp_op_pm_create_work_package"})
+        assert text == (
+            "# Ticket systems in this session: Jira (`mcp_AtlassianMCP_jira_search`); "
+            f"OpenProject via the AIMDS Suite (`{self.SUITE}list_work_packages`); "
+            "OpenProject, local server (`mcp_op_pm_list_work_packages`). "
+            "Tickets/work items without a named system: check every reachable system and label each "
+            "result with its system. For OpenProject use the AIMDS Suite tools; the local server is the fallback."
+        )
+
+    def test_suite_only(self):
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        text = g({f"{self.SUITE}search_work_packages", f"{self.SUITE}comment_work_package"})
+        assert text.startswith(f"# Ticket systems in this session: OpenProject via the AIMDS Suite (`{self.SUITE}search_work_packages`).")
+        assert "local server" not in text
+
+    def test_routing_block_comes_first(self):
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        text = g({"mcp_AtlassianMCP_jira_create_issue", f"{self.SUITE}create_work_package", "ticket_routing", "clarify"})
+        assert text.startswith("# Ticket routing: Jira and OpenProject are both connected")
+        assert "\n# Ticket systems in this session: Jira (`mcp_AtlassianMCP_jira_create_issue`); OpenProject via the AIMDS Suite" in text
+
+    def test_unrelated_pm_tools_are_not_openproject(self):
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        assert g({"mcp_Other_pm_list_work_packages", "read_file"}) == ""
 
 
 class TestBuildMcpStatusPrompt:

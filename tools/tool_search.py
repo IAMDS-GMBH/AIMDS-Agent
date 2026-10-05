@@ -46,7 +46,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 logger = logging.getLogger("tools.tool_search")
 
@@ -394,6 +394,9 @@ class CatalogEntry:
 from hermes_text_vector import build_vector as _shared_build_vector
 from hermes_text_vector import compute_idf as _shared_compute_idf
 from hermes_text_vector import cosine as _shared_cosine
+from tools.openproject_names import SUITE as _OP_SUITE
+from tools.openproject_names import openproject_kind as _openproject_kind
+from tools.openproject_names import pm_suffix as _pm_suffix
 
 # Unicode-aware: German umlauts must stay inside a token, otherwise
 # "präsentation" tokenizes to ["pr", "sentation"] and every synonym key
@@ -551,12 +554,19 @@ def _get_mcp_server_metadata() -> Dict[str, Dict[str, Any]]:
 SKILL_HIT_CAP = 2  # skill hits per search unless the query asks for skills
 
 
-def local_skill_catalog_entries() -> List[Dict[str, Any]]:
-    """Installed skills as catalog input (``kind="skill"``), disabled ones excluded."""
-    try:
-        from tools.skills_tool import _find_all_skills
+def local_skill_catalog_entries(available_tools: Optional[Set[str]] = None) -> List[Dict[str, Any]]:
+    """Installed skills as catalog input (``kind="skill"``), disabled ones excluded.
 
-        skills = _find_all_skills(skip_disabled=False, include_source=True)
+    With ``available_tools`` (the session's reachable tool names), skills whose
+    ``requires_tools`` / ``fallback_for_*`` conditions fail are left out —
+    the same rule as the system-prompt skill index, so a Jira skill is never
+    found without Jira tools (AIS-484).
+    """
+    try:
+        from tools.skills_tool import _find_all_skills, filter_skills_by_tools
+
+        skills = _find_all_skills(skip_disabled=False, include_source=True, include_conditions=True)
+        skills = filter_skills_by_tools(skills, available_tools)
     except Exception:
         return []
     out: List[Dict[str, Any]] = []
@@ -656,6 +666,10 @@ def build_catalog(
                 alias for alias, target in SOURCE_ALIASES.items()
                 if re.sub(r"[^a-z0-9]", "", target.lower()) == server_key
             )
+        # AIS-483: the Suite's OpenProject tools (`…_mcp_openproject-pm_*`
+        # behind AIMDSSuiteMCP) are named by "openproject"/"arbeitspaket" too.
+        if source == "mcp" and _openproject_kind(name):
+            server_tokens.update(_openproject_alias_tokens())
         entry = CatalogEntry(
             name=name,
             description=desc,
@@ -1011,6 +1025,8 @@ SOURCE_ALIASES: Dict[str, str] = {
     "git": "GithubMCP",
     # openproject-ce-mcp catalog entry (AIS-327). "jira" stays with
     # AtlassianMCP: Jira remains the working system until a project migrates.
+    # The Suite's pm_* tools answer to these aliases too (AIS-483, see
+    # _openproject_alias_tokens / _match_full_source).
     "openproject": "OpenProjectMCP",
     "openprojectmcp": "OpenProjectMCP",
     "workpackage": "OpenProjectMCP",
@@ -1021,6 +1037,14 @@ SOURCE_ALIASES: Dict[str, str] = {
     "aimdssuite": "AIMDSSuiteMCP",
     "aimdssuitemcp": "AIMDSSuiteMCP",
 }
+
+_OPENPROJECT_SERVER = "OpenProjectMCP"
+_OPENPROJECT_KEY = "openprojectmcp"
+
+
+def _openproject_alias_tokens() -> set:
+    """Server tokens that name OpenProject, for the Suite's pm_* tools too."""
+    return {_OPENPROJECT_KEY} | {a for a, t in SOURCE_ALIASES.items() if t == _OPENPROJECT_SERVER}
 
 
 def _prefix_source_aliases() -> Dict[str, str]:
@@ -1085,10 +1109,26 @@ def _match_full_source(catalog: List[CatalogEntry], query_lower: str) -> List[Ca
     for entry in catalog:
         if entry.source_name:
             by_source.setdefault(entry.source_name, []).append(entry)
+    hits: List[CatalogEntry] = []
     for source_name, entries in by_source.items():
         if _normalize_source_key(source_name) == norm_query:
-            return _order_source_browse(source_name, entries)
-    return []
+            hits = _order_source_browse(source_name, entries)
+            break
+    if norm_query == _OPENPROJECT_KEY:
+        # AIS-483: "openproject" browses the Suite's pm_* tools first, then
+        # the bundled server's — the same contract under two names.
+        suite = [e for e in catalog if e.kind == "tool" and _openproject_kind(e.name) == _OP_SUITE]
+        if suite:
+            defaults = [t.lower() for t in _manifest_default_tools(f"mcp-{_OPENPROJECT_SERVER}")]
+            rank = {t: i for i, t in reversed(list(enumerate(defaults)))}
+
+            def _key(e: CatalogEntry):
+                hit = rank.get(_pm_suffix(e.name).lower())
+                return (0, hit, e.name) if hit is not None else (1, 0, e.name)
+
+            seen = {e.name for e in suite}
+            hits = sorted(suite, key=_key) + [e for e in hits if e.name not in seen]
+    return hits
 
 
 # A server-browse result is capped at this many hits (see search_catalog);
@@ -1356,6 +1396,10 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
                 continue
             if norm_qt == _normalize_source_key(entry.source_name) or norm_qt in entry.source_name.lower():
                 boost += 30.0
+                break
+            if norm_qt == _OPENPROJECT_KEY and _openproject_kind(entry.name):
+                # Either OpenProject server; the Suite wins a tie (AIS-483).
+                boost += 31.0 if _openproject_kind(entry.name) == _OP_SUITE else 30.0
                 break
 
         # Utility tool de-prioritization: boilerplate MCP utility tools shouldn't drown domain tools
@@ -1719,12 +1763,22 @@ def _format_search_hit(entry: CatalogEntry) -> Dict[str, Any]:
     return hit
 
 
-def _skills_in_scope(current_tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Local skills join the catalog only when the session can read them."""
+def _skills_in_scope(
+    current_tool_defs: List[Dict[str, Any]],
+    deferrable: Optional[List[Dict[str, Any]]] = None,
+    *,
+    filter_by_tools: bool = True,
+) -> List[Dict[str, Any]]:
+    """Local skills join the catalog only when the session can read them, and
+    (for search) only those whose required tools the session can reach
+    (AIS-484). An explicit lookup by name stays unfiltered, like skill_view."""
     names = {(td.get("function") or {}).get("name", "") for td in current_tool_defs}
     if "skill_view" not in names and "skills_read" not in names:
         return []
-    return local_skill_catalog_entries()
+    if not filter_by_tools:
+        return local_skill_catalog_entries()
+    reachable = names | {(td.get("function") or {}).get("name", "") for td in (deferrable or [])}
+    return local_skill_catalog_entries(reachable - {""})
 
 
 def dispatch_tool_search(args: Dict[str, Any],
@@ -1761,7 +1815,7 @@ def dispatch_tool_search(args: Dict[str, Any],
                 deferrable = live_deferrable
         except Exception:
             pass
-    skills = _skills_in_scope(current_tool_defs)
+    skills = _skills_in_scope(current_tool_defs, deferrable)
     catalog = _cached_catalog(deferrable, skills)
     # Skills compete for the same slots; fetch a little deeper so the cap
     # does not leave the result short of tools.
@@ -1939,7 +1993,7 @@ def dispatch_tool_describe(args: Dict[str, Any],
 
     resolved_name, entry, err = _resolve_tool_entry(raw_name)
     if err or entry is None or not resolved_name:
-        for sk in _skills_in_scope(current_tool_defs):
+        for sk in _skills_in_scope(current_tool_defs, filter_by_tools=False):
             if sk["name"].lower() == raw_name.lower():
                 return json.dumps({
                     "name": sk["name"],

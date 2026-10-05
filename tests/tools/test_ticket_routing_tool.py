@@ -96,10 +96,24 @@ class TestAvailability:
         assert sorted(tr.configured_ticket_families(cfg)) == ["jira", "openproject"]
 
     def test_check_fn_reads_config(self, monkeypatch):
+        monkeypatch.setattr(tr, "registered_ticket_families", lambda tool_names=None: [])
         monkeypatch.setattr(tr, "configured_ticket_families", lambda config=None: ["jira", "openproject"])
         assert tr.check_ticket_routing_requirements() is True
         monkeypatch.setattr(tr, "configured_ticket_families", lambda config=None: ["jira"])
         assert tr.check_ticket_routing_requirements() is False
+
+    def test_suite_openproject_counts_as_openproject(self, monkeypatch):
+        """AIS-483: the Suite's config entry is the generic gateway; its
+        registered pm_* tools make OpenProject a second family next to Jira."""
+        suite = "mcp_AIMDSSuiteMCP_mcp_openproject_pm_create_work_package"
+        assert tr.registered_ticket_families([suite]) == ["openproject"]
+        assert sorted(tr.registered_ticket_families(["mcp_AtlassianMCP_jira_search", suite])) == ["jira", "openproject"]
+        assert tr.registered_ticket_families(["mcp_AIMDSSuiteMCP_mcp_memory-memory_search", "mcp_X_pm_list_projects"]) == []
+        gateway_only = {"mcp_servers": {"AtlassianMCP": {"command": "uvx"}, "AIMDSSuiteMCP": {"url": "https://suite/mcp"}}}
+        assert tr.configured_ticket_families(gateway_only) == ["jira"]
+        monkeypatch.setattr(tr, "configured_ticket_families", lambda config=None: ["jira"])
+        monkeypatch.setattr(tr, "registered_ticket_families", lambda tool_names=None: ["openproject"])
+        assert tr.check_ticket_routing_requirements() is True
 
     def test_registered_as_core_tool(self):
         from toolsets import _HERMES_CORE_TOOLS, TOOLSETS

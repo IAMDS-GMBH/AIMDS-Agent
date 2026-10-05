@@ -284,6 +284,16 @@ _TOOLSET_CONFIG_KEYS = (
 )
 
 
+def _openproject_decision_fingerprint():
+    """Which OpenProject tool set is hidden right now (AIS-479), or None."""
+    try:
+        from agent.openproject_suite import decision_fingerprint
+
+        return decision_fingerprint()
+    except Exception:
+        return None
+
+
 def _toolset_config_fingerprint():
     """Stable hash of the toolset-relevant part of config.yaml (None when unreadable)."""
     try:
@@ -352,6 +362,9 @@ def get_tool_definitions(
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
             bool(skip_tool_search_assembly),
+            # AIS-479: the per-domain OpenProject decision hides MCP tools via
+            # check_fn; a cached result from before a switch must not live on.
+            _openproject_decision_fingerprint(),
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:

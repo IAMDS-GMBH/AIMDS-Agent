@@ -5222,6 +5222,20 @@ class TestSchemaCompaction:
         assert "Tempo createWorklog" in schema["description"]
         assert "Tempo createWorklog" in schema["_full_description"]
 
+    def test_openproject_notes_reach_the_suite_tools(self):
+        """AIS-483: the Suite's go-mcp-openproject (`mcp_openproject-pm_*`
+        behind AIMDSSuiteMCP) gets the same notes as the bundled server."""
+        from tools.mcp_tool import _lookup_tool_description_note as note
+
+        local = note("OpenProjectMCP", "pm_list_time_entries")
+        assert local and "Tempo retrieveWorklogs" in local
+        assert note("AIMDSSuiteMCP", "mcp_openproject-pm_list_time_entries", provider="iamds") == local
+        assert note("AIMDSSuiteMCP", "mcp_openproject-pm_create_time_entry") == note("OpenProjectMCP", "pm_create_time_entry")
+        assert note("AIMDSSuiteMCP", "mcp_openproject-pm_get_work_package") is None
+        # other servers' pm_* names stay untouched
+        assert note("SomeOtherMCP", "pm_list_time_entries") is None
+        assert note("AIMDSSuiteMCP", "mcp_other-pm_list_time_entries") is None
+
     def test_server_override_disables_compaction(self):
         from tools.mcp_tool import _convert_mcp_schema
 

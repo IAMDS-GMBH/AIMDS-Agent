@@ -115,9 +115,18 @@ class SourceAdapter:
 # helpers shared by adapters
 # ----------------------------------------------------------------------
 def resolve_tool(tool_names: Iterable[str], server: str, suffix: str) -> Optional[str]:
-    """Registered name for ``suffix`` on ``server`` (``mcp_<server>_<suffix>``), tolerant of sanitising."""
+    """Registered name for ``suffix`` on ``server`` (``mcp_<server>_<suffix>``), tolerant of sanitising.
+
+    OpenProject ``pm_*`` tools resolve by their suffix on either server
+    (AIS-483): the Suite's ``mcp_AIMDSSuiteMCP_mcp_openproject_pm_*`` first,
+    then the bundled server's ``mcp_op_pm_*``.
+    """
     wanted = suffix.lower()
     server_l = server.lower()
+    if "openproject" in server_l and wanted.startswith("pm_"):
+        from tools.openproject_names import find_openproject_tool
+
+        return find_openproject_tool(tool_names, wanted, skip_hidden=True)
     try:
         from tools.mcp_tool import get_mcp_server_for_tool
     except Exception:  # pragma: no cover - cron without the tools package
@@ -130,8 +139,8 @@ def resolve_tool(tool_names: Iterable[str], server: str, suffix: str) -> Optiona
             continue
         if server_l in low:
             return name
-        # Servers with a short `tool_prefix` (AIS-327): `mcp_op_pm_list_time_entries`
-        # belongs to OpenProjectMCP although the name never says so.
+        # Servers with a short `tool_prefix` (AIS-327): `mcp_op_x` belongs to
+        # the server whose prefix is `op` although the name never says so.
         if get_mcp_server_for_tool is not None:
             owner = get_mcp_server_for_tool(name) or ""
             if owner.lower() == server_l:

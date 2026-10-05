@@ -4891,7 +4891,10 @@ _MCP_TOOL_DESCRIPTION_NOTES: Dict[Tuple[str, str], str] = {
     ("TempoMCP", "deleteWorklog"): (" Delete a Tempo worklog by id."),
     # openproject-ce-mcp (AIS-327): OpenProject tracks time the same way Jira +
     # Tempo do — time entries on a work package. Name the Tempo counterpart so
-    # timesheet questions land here for OpenProject projects.
+    # timesheet questions land here for OpenProject projects. Keyed by the
+    # local catalog name, the notes also reach the Suite's go-mcp-openproject
+    # (`mcp_openproject-pm_*` behind AIMDSSuiteMCP), see
+    # _lookup_tool_description_note (AIS-483).
     ("OpenProjectMCP", "pm_list_time_entries"): (
         " OpenProject counterpart of Tempo retrieveWorklogs: use it for timesheet, "
         "hour-total and missing-day questions on OpenProject projects."
@@ -4963,6 +4966,17 @@ def _lookup_tool_description_note(
             note = _MCP_TOOL_DESCRIPTION_NOTES.get((catalog_name, tool_name))
             if note is not None:
                 return note
+    # AIS-483: the OpenProject pm_* contract is the same on the bundled server
+    # and the Suite (raw name `mcp_openproject-pm_list_time_entries`), so its
+    # notes follow the `pm_*` suffix — only for OpenProject tools, other
+    # servers' `pm_*` names stay untouched.
+    if "openproject" in f"{server_name} {tool_name}".lower():
+        from tools.openproject_names import LOCAL_SERVER, pm_suffix
+
+        suffix = pm_suffix(tool_name)
+        note = _MCP_TOOL_DESCRIPTION_NOTES.get((LOCAL_SERVER, suffix)) if suffix else None
+        if note is not None:
+            return note
     if str(provider or "").strip().lower() in ("iamds", "aimds", "aimdssuitemcp") or server_name in ("AIMDSSuiteMCP", "AIMDS", "IAMDS"):
         note = _MCP_TOOL_DESCRIPTION_NOTES.get(("AIMDSSuiteMCP", tool_name)) or _MCP_TOOL_DESCRIPTION_NOTES.get(("AIMDS", tool_name))
         if note is not None:
