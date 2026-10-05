@@ -51,6 +51,9 @@ class TestMinimaxM3StaleCacheGuard:
         import importlib
         import agent.model_metadata as mm
         importlib.reload(mm)
+        # The reload drops conftest's offline fetcher stubs; the fall-through
+        # would otherwise POST /api/show to api.minimaxi.com (AIS-487).
+        monkeypatch.setattr(mm, "_query_ollama_api_show", lambda *a, **k: None)
         base = "https://api.minimaxi.com/anthropic"
         mm.save_context_length("MiniMax-M3", base, 204_800)
         ctx = mm.get_model_context_length(

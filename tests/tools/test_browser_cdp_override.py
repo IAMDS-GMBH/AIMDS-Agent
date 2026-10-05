@@ -65,6 +65,8 @@ class TestResolveCdpOverride:
         monkeypatch.setattr(browser_tool, "_session_last_activity", {})
         monkeypatch.setattr(browser_tool, "_start_browser_cleanup_thread", lambda: None)
         monkeypatch.setattr(browser_tool, "_update_session_activity", lambda task_id: None)
+        # The CDP supervisor thread would dial the websocket at example-host.
+        monkeypatch.setattr(browser_tool, "_ensure_cdp_supervisor", lambda task_id: None)
         monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: "")
         monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: provider)
 

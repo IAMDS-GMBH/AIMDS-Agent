@@ -67,3 +67,23 @@ def disable_lazy_stt_install():
     """
     with patch("tools.transcription_tools._try_lazy_install_stt", return_value=False):
         yield
+
+
+@pytest.fixture
+def no_oauth_metadata_prefetch(monkeypatch):
+    """Skip the MCP OAuth provider's pre-flight AS discovery.
+
+    ``_initialize`` with stored tokens but no cached metadata fetches the
+    server's ``/.well-known`` documents over HTTP — for tests that is a real
+    request to the fake server URL (example.com). Tests of the discovery
+    itself route ``httpx.AsyncClient`` instead and do not use this fixture.
+    """
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS
+
+    if _HERMES_PROVIDER_CLS is None:
+        return
+
+    async def _skip(self):
+        return None
+
+    monkeypatch.setattr(_HERMES_PROVIDER_CLS, "_prefetch_oauth_metadata", _skip)

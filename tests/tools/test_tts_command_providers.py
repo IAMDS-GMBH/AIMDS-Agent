@@ -483,7 +483,11 @@ class TestTextToSpeechToolWithCommandProvider:
                 "broken": {"type": "command", "command": "   "},
             },
         }
-        with patch("tools.tts_tool._load_tts_config", return_value=cfg):
+        async def _offline_edge(*_args, **_kwargs):  # built-in default: Edge TTS (network)
+            raise ConnectionError("speech.platform.bing.com unreachable")
+
+        with patch("tools.tts_tool._load_tts_config", return_value=cfg), \
+             patch("tools.tts_tool._generate_edge_tts", _offline_edge):
             result = text_to_speech_tool(text="hi", output_path=str(tmp_path / "x.mp3"))
         data = json.loads(result)
         # The response should not carry the command-provider error text.

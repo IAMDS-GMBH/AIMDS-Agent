@@ -6,6 +6,8 @@ All tests use synthetic inputs — no filesystem or live server required.
 
 import sys
 import os
+
+import pytest
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -446,6 +448,7 @@ class TestDetectLocalServerTypeAuth:
         }
 
 
+@pytest.mark.real_fetchers  # tests the fetcher itself (transport mocked)
 class TestFetchEndpointModelMetadataLmStudio:
     """fetch_endpoint_model_metadata should use LM Studio's native models endpoint."""
 

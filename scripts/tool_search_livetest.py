@@ -17,6 +17,13 @@ Each scenario runs twice:
   - tool_search DISABLED (all tools loaded directly)
 
 Output: ./out/<scenario_id>__<enabled|disabled>.json
+
+Target model (all optional, read from the environment):
+  LIVETEST_BASE_URL  OpenAI-compatible base URL (fallback: VLLM_IAMDS_BASE_URL,
+                     then https://vllm.iamds.com; "/v1" is appended if missing)
+  LIVETEST_MODEL     model id (default: first id from ``GET <base_url>/models``)
+  LIVETEST_API_KEY   bearer key (fallback: VLLM_IAMDS_API_KEY; for an
+                     openrouter.ai base URL also OPENROUTER_API_KEY)
 """
 
 from __future__ import annotations
@@ -39,6 +46,72 @@ ORIGINAL_AUTH = Path.home() / ".hermes" / "auth.json"
 _THIS_DIR = Path(__file__).resolve().parent
 _WORKTREE_ROOT = _THIS_DIR.parent
 sys.path.insert(0, str(_WORKTREE_ROOT))
+
+# ---------------------------------------------------------------------------
+# Live target (base URL / model / key) — configurable via env
+# ---------------------------------------------------------------------------
+
+# Same names and fallback as the ``live_llm`` test fixture (tests/conftest.py).
+DEFAULT_LIVETEST_BASE_URL = "https://vllm.iamds.com"
+
+
+def _openai_v1_base(url: str) -> str:
+    url = (url or "").strip().rstrip("/")
+    return url if url.endswith("/v1") else url + "/v1"
+
+
+def _is_openrouter(base_url: str) -> bool:
+    from urllib.parse import urlparse
+    host = (urlparse(base_url).hostname or "").lower()
+    return host == "openrouter.ai" or host.endswith(".openrouter.ai")
+
+
+def _resolve_api_key(base_url: str) -> str:
+    for name in ("LIVETEST_API_KEY", "VLLM_IAMDS_API_KEY"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    if _is_openrouter(base_url):
+        return os.environ.get("OPENROUTER_API_KEY", "").strip()
+    return ""
+
+
+def _first_listed_model(base_url: str, api_key: str) -> str:
+    """First model id from the endpoint's OpenAI-style ``GET /models``."""
+    import requests
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    resp = requests.get(base_url.rstrip("/") + "/models", headers=headers, timeout=20)
+    resp.raise_for_status()
+    payload = resp.json()
+    items = payload.get("data") if isinstance(payload, dict) else payload
+    for item in items or []:
+        model_id = item.get("id") if isinstance(item, dict) else None
+        if model_id:
+            return str(model_id)
+    raise SystemExit(f"{base_url}/models returned no model ids; set LIVETEST_MODEL")
+
+
+def resolve_live_target() -> Dict[str, str]:
+    """Base URL, model, key and provider label for this run (from env)."""
+    base_url = _openai_v1_base(
+        os.environ.get("LIVETEST_BASE_URL")
+        or os.environ.get("VLLM_IAMDS_BASE_URL")
+        or DEFAULT_LIVETEST_BASE_URL
+    )
+    api_key = _resolve_api_key(base_url)
+    if not api_key:
+        raise SystemExit(
+            "No API key: set LIVETEST_API_KEY (or VLLM_IAMDS_API_KEY; "
+            "OPENROUTER_API_KEY for an openrouter.ai base URL)."
+        )
+    model = (os.environ.get("LIVETEST_MODEL") or "").strip() or _first_listed_model(base_url, api_key)
+    provider = "openrouter" if _is_openrouter(base_url) else "custom"
+    return {"base_url": base_url, "model": model, "api_key": api_key, "provider": provider}
+
+
+# Resolved once in main(); read by setup_isolated_home / run_one_scenario.
+LIVE_TARGET: Dict[str, str] = {}
 
 # ---------------------------------------------------------------------------
 # Fake MCP tools — realistic shape, varied difficulty for retrieval
@@ -266,8 +339,8 @@ SCENARIOS: List[Dict[str, Any]] = [
 def setup_isolated_home(enabled: bool) -> Path:
     """Create a fresh ~/.hermes/ for one test, copying minimal credentials.
 
-    Also reads OPENROUTER_API_KEY from the user's real ``~/.hermes/.env`` so
-    the agent can authenticate against OpenRouter inside the isolated home.
+    The live target (base URL / model / key) comes from ``LIVE_TARGET``; the
+    key is passed to the agent explicitly, never written to the temp home.
     """
     home_dir = Path(tempfile.mkdtemp(prefix="hermes_ts_live_"))
     hermes_home = home_dir / ".hermes"
@@ -276,24 +349,11 @@ def setup_isolated_home(enabled: bool) -> Path:
     if ORIGINAL_AUTH.exists():
         shutil.copy(ORIGINAL_AUTH, hermes_home / "auth.json")
 
-    # Copy .env so OPENROUTER_API_KEY (or others) are visible to the agent
-    # running inside the isolated home.
-    real_env_file = Path.home() / ".hermes" / ".env"
-    if real_env_file.exists():
-        shutil.copy(real_env_file, hermes_home / ".env")
-        # Also load the real user env into this process so the provider
-        # resolver can authenticate. We go through the canonical loader
-        # (python-dotenv under the hood) rather than parsing the file by
-        # hand — it never materializes the secret in a local variable in
-        # this module, which both avoids a hand-rolled parser bug and keeps
-        # static analysis from tainting the transcript records with the key.
-        from hermes_cli.env_loader import load_hermes_dotenv
-        load_hermes_dotenv(hermes_home=str(Path.home() / ".hermes"))
-
     cfg = {
         "model": {
-            "provider": "openrouter",
-            "model": "anthropic/claude-haiku-4.5",
+            "provider": LIVE_TARGET["provider"],
+            "base_url": LIVE_TARGET["base_url"],
+            "default": LIVE_TARGET["model"],
         },
         "tools": {
             "tool_search": {
@@ -399,8 +459,10 @@ def run_one_scenario(scenario: Dict[str, Any], enabled: bool, out_dir: Path) -> 
     try:
         from run_agent import AIAgent
         agent = AIAgent(
-            provider="openrouter",
-            model="anthropic/claude-haiku-4.5",
+            provider=LIVE_TARGET["provider"],
+            base_url=LIVE_TARGET["base_url"],
+            api_key=LIVE_TARGET["api_key"],
+            model=LIVE_TARGET["model"],
             enabled_toolsets=None,  # Default = all available toolsets, including the registered mcp-fake tools
             quiet_mode=True,
             save_trajectories=False,
@@ -439,7 +501,7 @@ def run_one_scenario(scenario: Dict[str, Any], enabled: bool, out_dir: Path) -> 
         "scenario_id": scenario["id"],
         "scenario_description": scenario["description"],
         "tool_search_enabled": enabled,
-        "model": "anthropic/claude-haiku-4.5 (via openrouter)",
+        "model": f"{LIVE_TARGET['model']} (via {LIVE_TARGET['base_url']})",
         "prompt": scenario["prompt"],
         "expected_underlying_tools": scenario.get("expected_underlying_tools", []),
         "n_fake_tools_registered": n_registered,
@@ -464,19 +526,25 @@ def run_one_scenario(scenario: Dict[str, Any], enabled: bool, out_dir: Path) -> 
 def _redact_secrets(text: str) -> str:
     """Strip anything secret-shaped from text before it is stored or printed.
 
-    The harness runs against a real OpenRouter key, and ``error`` can carry a
+    The harness runs against a real API key, and ``error`` can carry a
     full traceback that — for an auth failure — may echo a request header or
     URL containing the key. We never want a credential landing in a checked-in
     transcript or the console, so we mask:
-      * the live OPENROUTER_API_KEY value, if present in the environment, and
+      * the live key values (LIVETEST_API_KEY, VLLM_IAMDS_API_KEY,
+        OPENROUTER_API_KEY and the resolved target key), and
       * any ``sk-``/``sk-or-`` style bearer token by pattern.
     """
     if not text:
         return text
     out = text
-    live_key = os.environ.get("OPENROUTER_API_KEY")
-    if live_key and len(live_key) >= 8:
-        out = out.replace(live_key, "[REDACTED]")
+    live_keys = {
+        os.environ.get(name, "")
+        for name in ("LIVETEST_API_KEY", "VLLM_IAMDS_API_KEY", "OPENROUTER_API_KEY")
+    }
+    live_keys.add(LIVE_TARGET.get("api_key", ""))
+    for live_key in live_keys:
+        if live_key and len(live_key) >= 8:
+            out = out.replace(live_key, "[REDACTED]")
     out = re.sub(r"sk-[A-Za-z0-9_\-]{12,}", "[REDACTED]", out)
     out = re.sub(r"(?i)(authorization|bearer)\s*[:=]\s*\S+", r"\1: [REDACTED]", out)
     return out
@@ -543,6 +611,15 @@ def _extract_bridge_calls(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
 
 def main():
+    # Make keys kept in the user's ~/.hermes/.env (VLLM_IAMDS_API_KEY,
+    # OPENROUTER_API_KEY, ...) visible to the target resolution. The canonical
+    # loader never materializes a secret in a local variable of this module.
+    if (Path.home() / ".hermes" / ".env").exists():
+        from hermes_cli.env_loader import load_hermes_dotenv
+        load_hermes_dotenv(hermes_home=str(Path.home() / ".hermes"))
+    LIVE_TARGET.update(resolve_live_target())
+    print(f"Live target: {LIVE_TARGET['model']} via {LIVE_TARGET['base_url']}")
+
     out_dir = _THIS_DIR / "out"
     out_dir.mkdir(exist_ok=True)
     print(f"Writing transcripts to: {out_dir}")

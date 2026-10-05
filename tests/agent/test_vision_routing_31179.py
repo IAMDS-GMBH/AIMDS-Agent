@@ -51,6 +51,26 @@ def isolated_home(monkeypatch):
         if k.endswith("_API_KEY") or k.endswith("_TOKEN"):
             monkeypatch.delenv(k, raising=False)
 
+    # "deepseek-v4-pro is text-only" comes from the models.dev catalog. Pin
+    # that entry instead of reading the live registry (AIS-487).
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda *a, **k: {
+            "deepseek": {
+                "id": "deepseek",
+                "models": {
+                    "deepseek-v4-pro": {
+                        "id": "deepseek-v4-pro",
+                        "tool_call": True,
+                        "attachment": False,
+                        "modalities": {"input": ["text"], "output": ["text"]},
+                        "limit": {"context": 1_000_000, "output": 384_000},
+                    },
+                },
+            },
+        },
+    )
+
     yield hermes_home
     shutil.rmtree(test_home, ignore_errors=True)
 

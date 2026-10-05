@@ -2,6 +2,8 @@
 
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from hermes_cli.nous_account import NousPortalAccountInfo
 from hermes_cli.models import (
     OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
@@ -722,6 +724,7 @@ class TestCheckNousFreeTierCache:
         assert _FREE_TIER_CACHE_TTL <= 300
 
 
+@pytest.mark.real_fetchers  # tests the Portal fetch + cache itself (transport mocked)
 class TestNousRecommendedModels:
     """Tests for fetch_nous_recommended_models + get_nous_recommended_aux_model."""
 

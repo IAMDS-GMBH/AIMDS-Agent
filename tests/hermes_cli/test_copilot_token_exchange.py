@@ -18,6 +18,7 @@ def _clear_jwt_cache():
     mod._jwt_cache.clear()
 
 
+@pytest.mark.real_fetchers  # tests the exchange itself (urlopen mocked)
 class TestExchangeCopilotToken:
     """Tests for exchange_copilot_token()."""
 

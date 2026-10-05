@@ -464,8 +464,20 @@ def test_xai_loopback_login_manual_paste_missing_code_raises(monkeypatch):
     assert exc.value.code == "xai_code_missing"
 
 
+def _record_browser_opens(monkeypatch) -> list:
+    """The loopback path calls ``webbrowser.open(authorize_url)`` on any
+    desktop (macOS/Windows, Linux with $DISPLAY) — a full test run once opened
+    the real xAI consent page (AIS-487). Record the call instead."""
+    opened: list = []
+    monkeypatch.setattr(
+        auth_mod.webbrowser, "open", lambda url, *_a, **_k: opened.append(url) or False
+    )
+    return opened
+
+
 def test_xai_loopback_login_timeout_falls_back_to_manual_paste(monkeypatch):
     """Loopback timeout should accept a bare Grok Build code paste."""
+    _record_browser_opens(monkeypatch)
     monkeypatch.setattr(
         auth_mod, "_xai_oauth_discovery",
         lambda *_a, **_k: {
@@ -602,6 +614,7 @@ def test_xai_wait_for_callback_accepts_ready_stdin_code(monkeypatch):
 
 def test_xai_loopback_login_timeout_noninteractive_reraises(monkeypatch):
     """Non-interactive stdin must keep the original timeout error."""
+    _record_browser_opens(monkeypatch)
     monkeypatch.setattr(
         auth_mod, "_xai_oauth_discovery",
         lambda *_a, **_k: {

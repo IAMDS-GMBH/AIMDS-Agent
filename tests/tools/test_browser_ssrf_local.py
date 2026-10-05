@@ -15,6 +15,9 @@ import pytest
 
 from tools import browser_tool
 
+# Navigation runs the SSRF floor, which resolves public hostnames (example.com).
+pytestmark = pytest.mark.usefixtures("fake_public_dns")
+
 
 def _make_browser_result(url="https://example.com"):
     """Return a mock successful browser command result."""

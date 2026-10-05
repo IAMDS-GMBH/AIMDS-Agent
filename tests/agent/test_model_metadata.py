@@ -12,6 +12,7 @@ Coverage levels:
 
 import time
 
+import pytest
 import yaml
 from unittest.mock import patch, MagicMock
 
@@ -322,6 +323,7 @@ class TestCodexOAuthContextLength:
                     "(models.dev leakage?)"
                 )
 
+    @pytest.mark.real_fetchers  # exercises the Codex /models probe (requests mocked)
     def test_live_probe_overrides_fallback(self):
         """When a token is provided, the live /models probe is preferred
         and its context_window drives the result."""
@@ -1495,6 +1497,9 @@ class TestGrok43StaleCacheGuard:
         import importlib
         import agent.model_metadata as mm
         importlib.reload(mm)
+        # The reload drops conftest's offline fetcher stubs; the stale-cache
+        # fall-through would otherwise POST /api/show to api.x.ai.
+        monkeypatch.setattr(mm, "_query_ollama_api_show", lambda *a, **k: None)
         base = "https://api.x.ai/v1"
         mm.save_context_length("grok-4.3", base, 256_000)
         ctx = mm.get_model_context_length(

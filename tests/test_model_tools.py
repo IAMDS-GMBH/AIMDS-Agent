@@ -31,8 +31,14 @@ class TestHandleFunctionCall:
         assert "totally_fake_tool_xyz" in result["error"]
 
     def test_exception_returns_json_error(self):
-        # Even if something goes wrong, should return valid JSON
-        result = handle_function_call("web_search", None)  # None args may cause issues
+        # Even if something goes wrong, should return valid JSON. Without keys
+        # web_search falls through to Parallel's free hosted MCP — make that
+        # unreachable instead of calling search.parallel.ai (AIS-487).
+        with patch(
+            "plugins.web.parallel.provider._mcp_call",
+            side_effect=ConnectionError("search.parallel.ai unreachable"),
+        ):
+            result = handle_function_call("web_search", None)  # None args may cause issues
         parsed = json.loads(result)
         assert isinstance(parsed, dict)
         assert "error" in parsed

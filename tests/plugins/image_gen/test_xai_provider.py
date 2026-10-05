@@ -287,7 +287,9 @@ class TestGenerate:
             "data": [{"url": "https://xai.image/test.png"}],
         }
 
-        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post:
+        # The returned URL is cached locally via save_url_image (a real GET).
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
+             patch("plugins.image_gen.xai.save_url_image", return_value=Path("/tmp/xai_test.png")):
             provider = XAIImageGenProvider()
             provider.generate(prompt="test")
 
@@ -309,7 +311,9 @@ class TestGenerate:
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json.return_value = {"data": [{"url": "https://xai.image/test.png"}]}
 
-        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post:
+        # The returned URL is cached locally via save_url_image (a real GET).
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
+             patch("plugins.image_gen.xai.save_url_image", return_value=Path("/tmp/xai_test.png")):
             provider = XAIImageGenProvider()
             provider.generate(prompt="test")
 

@@ -22,6 +22,9 @@ def config_home(tmp_path, monkeypatch):
     env_file = home / ".env"
     env_file.write_text("")
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # The api-key provider flow probes ``<base_url>/models`` (api.z.ai,
+    # api.moonshot.ai …); offline it falls back to the curated list.
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: None)
     # Clear env vars that could interfere
     monkeypatch.delenv("HERMES_MODEL", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)

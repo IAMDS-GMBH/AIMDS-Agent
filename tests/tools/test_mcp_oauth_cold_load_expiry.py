@@ -215,6 +215,7 @@ class TestGetTokensReconstructsExpiresIn:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("no_oauth_metadata_prefetch")  # no real /.well-known fetch
 @pytest.mark.asyncio
 async def test_initialize_seeds_token_expiry_time_from_stored_tokens(
     tmp_path, monkeypatch
@@ -280,6 +281,7 @@ async def test_initialize_seeds_token_expiry_time_from_stored_tokens(
     assert provider.context.token_expiry_time <= time.time() + 7200 + 5
 
 
+@pytest.mark.usefixtures("no_oauth_metadata_prefetch")  # no real /.well-known fetch
 @pytest.mark.asyncio
 async def test_initialize_flags_expired_token_as_invalid(tmp_path, monkeypatch):
     """After _initialize, an expired-on-disk token must report is_token_valid=False.

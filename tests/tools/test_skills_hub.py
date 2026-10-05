@@ -337,7 +337,8 @@ class TestSkillsShSource:
         assert all(r.source == "skills.sh" for r in results)
 
     @patch.object(GitHubSource, "fetch")
-    def test_fetch_delegates_to_github_source_and_relabels_bundle(self, mock_fetch):
+    @patch.object(SkillsShSource, "_fetch_detail_page", return_value=None)  # no skills.sh GET
+    def test_fetch_delegates_to_github_source_and_relabels_bundle(self, _mock_detail, mock_fetch):
         mock_fetch.return_value = SkillBundle(
             name="vercel-react-best-practices",
             files={"SKILL.md": "# Test"},
@@ -354,7 +355,8 @@ class TestSkillsShSource:
         mock_fetch.assert_called_once_with("vercel-labs/agent-skills/vercel-react-best-practices")
 
     @patch.object(GitHubSource, "fetch")
-    def test_fetch_accepts_common_skills_sh_prefix_typo(self, mock_fetch):
+    @patch.object(SkillsShSource, "_fetch_detail_page", return_value=None)  # no skills.sh GET
+    def test_fetch_accepts_common_skills_sh_prefix_typo(self, _mock_detail, mock_fetch):
         expected_identifier = "anthropics/skills/frontend-design"
         mock_fetch.side_effect = lambda identifier: SkillBundle(
             name="frontend-design",
@@ -406,7 +408,8 @@ class TestSkillsShSource:
         mock_inspect.assert_called_once_with("vercel-labs/agent-skills/vercel-react-best-practices")
 
     @patch.object(GitHubSource, "inspect")
-    def test_inspect_accepts_common_skills_sh_prefix_typo(self, mock_inspect):
+    @patch.object(SkillsShSource, "_fetch_detail_page", return_value=None)  # no skills.sh GET
+    def test_inspect_accepts_common_skills_sh_prefix_typo(self, _mock_detail, mock_inspect):
         expected_identifier = "anthropics/skills/frontend-design"
         mock_inspect.side_effect = lambda identifier: SkillMeta(
             name="frontend-design",
@@ -427,7 +430,8 @@ class TestSkillsShSource:
 
     @patch.object(GitHubSource, "_list_skills_in_repo")
     @patch.object(GitHubSource, "inspect")
-    def test_inspect_falls_back_to_repo_skill_catalog_when_slug_differs(self, mock_inspect, mock_list_skills):
+    @patch.object(SkillsShSource, "_fetch_detail_page", return_value=None)  # no skills.sh GET
+    def test_inspect_falls_back_to_repo_skill_catalog_when_slug_differs(self, _mock_detail, mock_inspect, mock_list_skills):
         resolved = SkillMeta(
             name="vercel-react-best-practices",
             description="React rules",

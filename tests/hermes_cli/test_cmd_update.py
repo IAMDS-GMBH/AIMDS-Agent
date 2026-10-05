@@ -898,7 +898,7 @@ def test_update_tag_channels_check_out_the_channel_tag(channel, expected, monkey
     tags = ["v0.7.3", "v0.7.4", "v0.7.5-rc.1", "v0.7.5-rc.2", "junk"]
     checked_out = []
     monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda *a, **k: "git", raising=False)
-    with patch("hermes_cli.main.detect_install_method", return_value="git", create=True), \
+    with patch("hermes_cli.config.detect_install_method", return_value="git"), \
          patch("subprocess.run", side_effect=_tags_side_effect(tags, checked_out)), \
          patch("hermes_cli.main._stash_local_changes_if_needed", return_value=None), \
          patch("hermes_cli.main._sync_canonical_soul_after_update", return_value=None), \
@@ -963,7 +963,7 @@ def _tag_channel_side_effect(tags, *, head_sha="headsha", tag_sha="tagsha", chec
 
 
 def _run_tag_channel_update(side_effect, channel="stable"):
-    with patch("hermes_cli.main.detect_install_method", return_value="git", create=True), \
+    with patch("hermes_cli.config.detect_install_method", return_value="git"), \
          patch("subprocess.run", side_effect=side_effect), \
          patch("hermes_cli.main._stash_local_changes_if_needed", return_value=None), \
          patch("hermes_cli.main._sync_canonical_soul_after_update", return_value=None), \
@@ -1122,7 +1122,7 @@ def test_update_tag_checkout_restores_autostash(capsys):
          patch("hermes_cli.main._create_pre_update_snapshot", return_value=None), \
          patch("hermes_cli.main._guard_new_code_or_rollback", return_value=None), \
          patch("hermes_cli.main._restore_stashed_changes", return_value=None) as restore, \
-         patch("hermes_cli.main.detect_install_method", return_value="git", create=True), \
+         patch("hermes_cli.config.detect_install_method", return_value="git"), \
          patch("subprocess.run", side_effect=_tag_channel_side_effect(["v0.7.4"], calls=calls)), \
          patch("hermes_cli.main._stash_local_changes_if_needed", return_value="stash@{0}"), \
          patch("hermes_cli.main._sync_canonical_soul_after_update", return_value=None), \
@@ -1321,7 +1321,7 @@ def test_update_check_stable_answers_from_manifest_when_origin_lacks_the_tag(cap
     calls = []
     side_effect = _tag_channel_side_effect(["v0.7.4"], head_sha="headsha", calls=calls)
     with patch("hermes_cli.release_update.fetch_release_feed", return_value=_release_feed("v0.7.6")), \
-         patch("hermes_cli.main.detect_install_method", return_value="git", create=True), \
+         patch("hermes_cli.config.detect_install_method", return_value="git"), \
          patch("subprocess.run", side_effect=side_effect), \
          patch("hermes_cli.config.recommended_update_command", return_value="hermes update"):
         _cmd_update_check("stable", branch_explicit=True)
@@ -1337,7 +1337,7 @@ def test_update_check_stable_on_manifest_commit_is_up_to_date(capsys):
 
     side_effect = _tag_channel_side_effect(["v0.7.4"], head_sha=_RELEASE_SHA)
     with patch("hermes_cli.release_update.fetch_release_feed", return_value=_release_feed("v0.7.6")), \
-         patch("hermes_cli.main.detect_install_method", return_value="git", create=True), \
+         patch("hermes_cli.config.detect_install_method", return_value="git"), \
          patch("subprocess.run", side_effect=side_effect):
         _cmd_update_check("stable")
     assert "✓ Already up to date." in capsys.readouterr().out
@@ -1348,7 +1348,7 @@ def test_update_check_stable_refuses_repointed_tag(capsys):
 
     side_effect = _tag_channel_side_effect(["v0.7.5"], tag_sha="f" * 40)
     with patch("hermes_cli.release_update.fetch_release_feed", return_value=_release_feed("v0.7.5")), \
-         patch("hermes_cli.main.detect_install_method", return_value="git", create=True), \
+         patch("hermes_cli.config.detect_install_method", return_value="git"), \
          patch("subprocess.run", side_effect=side_effect):
         with pytest.raises(SystemExit) as exc:
             _cmd_update_check("stable")

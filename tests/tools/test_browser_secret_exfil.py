@@ -28,6 +28,7 @@ class TestBrowserSecretExfil:
         parsed = json.loads(result)
         assert parsed["success"] is False
 
+    @pytest.mark.usefixtures("fake_public_dns")  # SSRF pre-flight resolves the host (AIS-487)
     def test_allows_normal_url(self):
         """Normal URLs pass the secret check (may fail for other reasons)."""
         from tools.browser_tool import browser_navigate
@@ -76,9 +77,14 @@ class TestWebExtractSecretExfil:
         assert "Blocked" in parsed["error"]
 
     @pytest.mark.asyncio
-    async def test_allows_normal_url(self):
+    @pytest.mark.usefixtures("fake_public_dns")  # SSRF pre-flight resolves the host (AIS-487)
+    async def test_allows_normal_url(self, monkeypatch):
         from tools.web_tools import web_extract_tool
-        # This will fail due to no API key, but should NOT be blocked by secret check
+        # No extract provider resolves (the keyless default would fetch
+        # example.com for real): fails for a config reason, but must NOT be
+        # blocked by the secret check.
+        monkeypatch.setattr("agent.web_search_registry.get_provider", lambda name: None)
+        monkeypatch.setattr("agent.web_search_registry.get_active_extract_provider", lambda: None)
         result = await web_extract_tool(urls=["https://example.com"])
         parsed = json.loads(result)
         # Should fail for API/config reason, not secret blocking

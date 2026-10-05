@@ -895,6 +895,10 @@ class TestSyncTurn:
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(config))
         monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+        # The append-capability probe would GET <api_url>/version ("http://x").
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version", lambda *a, **kw: None
+        )
 
         p = HindsightMemoryProvider()
         p.initialize(

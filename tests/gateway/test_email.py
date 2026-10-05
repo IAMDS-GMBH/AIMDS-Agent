@@ -490,7 +490,9 @@ class TestDispatchMessage(unittest.TestCase):
                 del os.environ["EMAIL_ALLOWED_USERS"]
 
             adapter = self._make_adapter()
-            adapter._message_handler = MagicMock()
+            # Return no reply: a MagicMock result would be mailed back over
+            # real SMTP to smtp.test.com.
+            adapter._message_handler = AsyncMock(return_value=None)
 
             msg_data = {
                 "uid": b"101",

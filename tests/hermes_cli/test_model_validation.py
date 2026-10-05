@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from hermes_cli.models import (
     azure_foundry_model_api_mode,
     copilot_model_api_mode,
@@ -254,6 +256,7 @@ class TestFetchApiModels:
         assert probe["resolved_base_url"] == "http://localhost:8000/v1"
         assert probe["used_fallback"] is True
 
+    @pytest.mark.real_fetchers  # goes through fetch_github_model_catalog (urlopen mocked)
     def test_probe_api_models_uses_copilot_catalog(self):
         class _Resp:
             def __enter__(self):
