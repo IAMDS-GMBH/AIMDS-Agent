@@ -580,20 +580,34 @@ FORMULA = (
 )
 
 
+#: Both OpenProject servers' time-entry listings (`_` is LIKE's one-char wildcard).
+OPENPROJECT_WORKLOG_PATTERN = "%pm_list_time_entries"
+
+
 def _split_patterns(value: Any) -> List[str]:
     """Comma-separated string or list → list of SQL LIKE patterns."""
     if isinstance(value, (list, tuple)):
         patterns = [str(v).strip() for v in value if str(v).strip()]
     else:
         patterns = [v.strip() for v in str(value or "").split(",") if v.strip()]
-    # AIS-479: the local OpenProject server's list_time_entries became
-    # pm_list_time_entries; profiles saved before keep matching new records.
-    for pattern in list(patterns):
-        if "op_list_time_entries" in pattern:
-            renamed = pattern.replace("op_list_time_entries", "op_pm_list_time_entries")
-            if renamed not in patterns:
-                patterns.append(renamed)
-    return patterns
+    # OpenProject time entries arrive under two names for the same contract
+    # (AIS-483): the bundled server's `mcp_op_pm_list_time_entries` and the
+    # Suite's `mcp_AIMDSSuiteMCP_mcp_openproject_pm_list_time_entries`. A
+    # pattern naming either becomes the server-neutral one; the pre-AIS-479
+    # `…op_list_time_entries` stays for old rows and gains it too. Rows of
+    # both servers share the OpenProject id (mcp_records' primary key), so
+    # one booking is never counted twice.
+    out: List[str] = []
+    for pattern in patterns:
+        low = pattern.lower()
+        if low.endswith("pm_list_time_entries") or low.endswith("pm_list_time_entries%"):
+            pattern = OPENPROJECT_WORKLOG_PATTERN
+        elif "op_list_time_entries" in low and pattern not in out:
+            out.append(pattern)
+            pattern = OPENPROJECT_WORKLOG_PATTERN
+        if pattern not in out:
+            out.append(pattern)
+    return out
 
 
 def _like_sql(column: str, patterns: List[str]) -> str:
@@ -1562,7 +1576,9 @@ def _act_estimate(args: Dict[str, Any], db_path: Optional[Path] = None) -> str:
         absences = _absence_candidates(conn, tools)
         profile = load_profile() or {}
         missing = [k for k in ("region", "weekly_hours", "days_per_week") if not profile.get(k)]
-        proposal: Dict[str, Any] = {"worklog_source_tool": ", ".join(tools)}
+        # Exact tool names, except OpenProject's: the Suite and the bundled
+        # server list the same entries under two names (AIS-483).
+        proposal: Dict[str, Any] = {"worklog_source_tool": ", ".join(_split_patterns(tools))}
         if proposed_days:
             proposal["work_weekdays"] = [_DAY_ABBR[d].lower() for d in proposed_days]
         if snapped is not None:

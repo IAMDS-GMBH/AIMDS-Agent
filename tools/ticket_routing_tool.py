@@ -1,6 +1,7 @@
 """Ticket-system routing per project (AIS-327).
 
-While Jira (AtlassianMCP / TempoMCP) and OpenProject (OpenProjectMCP) are both
+While Jira (AtlassianMCP / TempoMCP) and OpenProject (the AIMDS Suite's
+go-mcp-openproject behind AIMDSSuiteMCP, or the bundled OpenProjectMCP) are both
 connected, the agent must not guess which system a ticket, comment or time
 booking belongs to. This tool is the deterministic memory for that decision:
 
@@ -17,8 +18,10 @@ the default moved to OpenProject. Nothing here ever falls back silently: with
 neither a mapping nor a default the answer is "ask".
 
 The tool is registered only when at least two ticket-system families are
-configured (``check_ticket_routing_requirements``), so single-system installs
-pay no schema tokens.
+configured or registered (``check_ticket_routing_requirements``), so
+single-system installs pay no schema tokens. The Suite's OpenProject is only
+visible in its registered ``pm_*`` tools — its config entry is the generic
+gateway (AIS-483).
 """
 
 from __future__ import annotations
@@ -296,10 +299,39 @@ def configured_ticket_families(config: Optional[Dict[str, Any]] = None) -> List[
     return found
 
 
+def registered_ticket_families(tool_names: Optional[List[str]] = None) -> List[str]:
+    """Ticket-system families with registered tools: Jira/Tempo tools, and
+    OpenProject ``pm_*`` tools of either server — the Suite's
+    ``mcp_AIMDSSuiteMCP_mcp_openproject_pm_*`` counts as OpenProject although
+    its config entry is the generic gateway (AIS-483)."""
+    if tool_names is None:
+        try:
+            from tools.registry import registry
+
+            tool_names = registry.get_all_tool_names()
+        except Exception:
+            return []
+    from tools.openproject_names import is_openproject_tool
+
+    found: List[str] = []
+    for name in tool_names or []:
+        low = str(name or "").lower()
+        if not low.startswith("mcp_"):
+            continue
+        if "openproject" not in found and is_openproject_tool(name):
+            found.append("openproject")
+        elif "jira" not in found and ("jira_" in low or "tempo" in low):
+            found.append("jira")
+        if len(found) == len(SYSTEMS):
+            break
+    return found
+
+
 def check_ticket_routing_requirements() -> bool:
-    """Only offer the tool when two ticket-system families are configured."""
+    """Only offer the tool when two ticket-system families are reachable."""
     try:
-        return len(configured_ticket_families()) >= 2
+        families = set(configured_ticket_families()) | set(registered_ticket_families())
+        return len(families) >= 2
     except Exception:
         return False
 

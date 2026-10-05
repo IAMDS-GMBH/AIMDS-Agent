@@ -32,7 +32,9 @@ def env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mcp_tool, "_load_mcp_config", lambda: LOCAL_CFG)
     monkeypatch.setattr(ops, "suite_root", lambda: "https://suite.example.com")
-    monkeypatch.setattr(ops, "_find_suite_tool", lambda suffix: f"mcp_AIMDSSuiteMCP_mcp_openproject-{suffix}")
+    monkeypatch.setattr(ops, "_find_suite_tool", lambda suffix: f"mcp_AIMDSSuiteMCP_mcp_openproject_{suffix}")
+    # The Suite resolves display ids (AIS-486) unless a test says otherwise.
+    monkeypatch.setattr(ops, "suite_accepts_display_ids", lambda: True)
     ops._invalidate_cache()
     calls = {"tool": [], "post": []}
 
@@ -317,3 +319,129 @@ def test_tool_definition_cache_follows_the_decision(env):
     ops.run_once()
     ops._invalidate_cache()
     assert model_tools._openproject_decision_fingerprint() is None
+
+
+# ── AIS-483: the Suite replaces the local server ─────────────────────────
+
+def _write_home(tmp_path, servers):
+    import yaml
+
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"mcp_servers": servers}), encoding="utf-8")
+    (tmp_path / ".env").write_text(
+        "OPENPROJECT_BASE_URL=https://op.example.com\nOPENPROJECT_API_TOKEN=local-tok\n"
+        "OTHER_OP_TOKEN=t2\nKEEP_ME=1\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.fixture
+def real_config(tmp_path, monkeypatch, env):
+    import tools.mcp_tool as mcp_tool
+
+    servers = {
+        "OpenProjectMCP": {
+            "command": "/x/python",
+            "args": ["/x/optional-mcps/OpenProjectMCP/server.py"],
+            "env": {"OPENPROJECT_BASE_URL": "${OPENPROJECT_BASE_URL}", "OPENPROJECT_API_TOKEN": "${OPENPROJECT_API_TOKEN}"},
+        },
+        "OpenProjectMCP-other": {
+            "command": "/x/python",
+            "args": ["/x/optional-mcps/OpenProjectMCP/server.py"],
+            "env": {"OPENPROJECT_BASE_URL": "https://other.example.com", "OPENPROJECT_API_TOKEN": "${OTHER_OP_TOKEN}"},
+        },
+    }
+    _write_home(tmp_path, servers)
+    # local_servers() reads the interpolated config; keep the fixture's view.
+    monkeypatch.setattr(mcp_tool, "_load_mcp_config", lambda: LOCAL_CFG)
+    disconnected = []
+    monkeypatch.setattr(mcp_tool, "disconnect_mcp_server", lambda name: disconnected.append(name) or True)
+    return tmp_path, disconnected
+
+
+def test_linked_same_domain_uninstalls_the_local_server_and_leaves_a_notice(real_config, env):
+    import yaml
+
+    home, disconnected = real_config
+    _, set_suite, _ = env
+    set_suite({"linked": True, "instance": "https://op.example.com", "op_login": "jh"})
+
+    state = ops.run_once()
+
+    cfg = yaml.safe_load((home / "config.yaml").read_text())
+    assert "OpenProjectMCP" not in cfg["mcp_servers"]
+    assert "OpenProjectMCP-other" in cfg["mcp_servers"]  # other domain stays
+    assert disconnected == ["OpenProjectMCP"]
+    dotenv = (home / ".env").read_text()
+    assert "OPENPROJECT_API_TOKEN" not in dotenv  # only that server used it
+    assert "OTHER_OP_TOKEN=t2" in dotenv and "KEEP_ME=1" in dotenv
+    assert state["notice"]["removed"] == ["OpenProjectMCP"]
+    assert state["notice"]["login"] == "jh"
+    assert state["hide_local"] == []
+    assert ops.status()["notice"]["kind"] == "local_replaced"
+
+
+def test_shared_credentials_stay_when_another_server_still_uses_them(real_config, env):
+    import yaml
+
+    home, _ = real_config
+    cfg = yaml.safe_load((home / "config.yaml").read_text())
+    cfg["mcp_servers"]["OpenProjectMCP-other"]["env"]["OPENPROJECT_API_TOKEN"] = "${OPENPROJECT_API_TOKEN}"
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    _, set_suite, _ = env
+    set_suite({"linked": True, "instance": "https://op.example.com"})
+
+    ops.run_once()
+
+    assert "OPENPROJECT_API_TOKEN=local-tok" in (home / ".env").read_text()
+
+
+def test_no_uninstall_when_not_linked_or_switched_off(real_config, env):
+    import yaml
+
+    home, _ = real_config
+    _, set_suite, set_post = env
+    set_suite({"linked": False, "link_url": LINK_URL})
+    set_post({"info": (200, {"valid": True, "instance_url": "https://op.example.com"}), "submit": (422, {"error": "token_invalid"})})
+    ops.run_once()
+    assert "OpenProjectMCP" in yaml.safe_load((home / "config.yaml").read_text())["mcp_servers"]
+
+    set_suite({"linked": True, "instance": "https://op.example.com"})
+    state = ops.run_once(config={"openproject": {"remove_local": False}})
+    assert "OpenProjectMCP" in yaml.safe_load((home / "config.yaml").read_text())["mcp_servers"]
+    assert state["hide_local"] == ["OpenProjectMCP"] and "notice" not in state
+
+
+
+def test_suite_without_display_id_support_does_not_replace_the_local_server(real_config, env, monkeypatch):
+    """AIS-485: the local server resolves PRO-6-style keys; until the Suite
+    does (AIS-486), both stay and nothing is uninstalled."""
+    import yaml
+
+    home, _ = real_config
+    _, set_suite, _ = env
+    monkeypatch.setattr(ops, "suite_accepts_display_ids", lambda: False)
+    set_suite({"linked": True, "instance": "https://op.example.com", "op_login": "jh"})
+
+    state = ops.run_once()
+
+    assert state["hide_local"] == [] and state["hide_suite"] is False
+    assert "notice" not in state
+    assert "OpenProjectMCP" in yaml.safe_load((home / "config.yaml").read_text())["mcp_servers"]
+
+
+def test_display_id_support_is_read_from_the_suite_schema(monkeypatch):
+    from tools.registry import registry
+
+    class _Entry:
+        def __init__(self, id_schema):
+            self.schema = {"parameters": {"properties": {"id": id_schema}}}
+
+    monkeypatch.setattr(ops, "_find_suite_tool", lambda suffix: "mcp_AIMDSSuiteMCP_mcp_openproject_pm_get_work_package")
+    for id_schema, expected in (
+        ({"type": "integer"}, False),
+        ({"type": ["integer", "string"]}, True),
+        ({"anyOf": [{"type": "integer"}, {"type": "string"}]}, True),
+        ({"type": "string"}, True),
+    ):
+        monkeypatch.setattr(registry, "get_entry", lambda name, _s=id_schema: _Entry(_s))
+        assert ops.suite_accepts_display_ids() is expected

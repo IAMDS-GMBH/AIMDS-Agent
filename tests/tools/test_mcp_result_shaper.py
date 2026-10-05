@@ -188,6 +188,33 @@ class TestShortPrefixServers:
         assert len(other["results"]) == 10
 
 
+class TestSuiteOpenProject:
+    """AIS-483: OpenProject rules shape the Suite's pm_* results too."""
+
+    SUITE = "mcp_AIMDSSuiteMCP_mcp_openproject_pm_list_work_packages"
+
+    def _rows(self, tool, cfg):
+        payload = {"results": [{"id": i} for i in range(10)]}
+        return len(json.loads(_shape(payload, tool=tool, config=cfg))["result"]["results"])
+
+    def test_per_server_openproject_entry_applies_to_suite_tools(self, monkeypatch):
+        import tools.mcp_tool as mt
+
+        monkeypatch.setattr(mt, "get_mcp_server_for_tool",
+                            lambda name: "AIMDSSuiteMCP" if name.startswith("mcp_AIMDSSuiteMCP_") else None)
+        cfg = ShapeConfig(max_items=25, per_server={"OpenProjectMCP": {"max_items": 2}, "AIMDSSuiteMCP": {"max_items": 5}})
+        assert self._rows(self.SUITE, cfg) == 2  # the OpenProject entry is the more specific one
+        assert self._rows("mcp_AIMDSSuiteMCP_mcp_customer-storage_list", cfg) == 5
+
+    def test_per_tool_rules_match_either_name_form(self):
+        for key in ("pm_list_work_packages", "mcp_op_pm_list_work_packages"):
+            cfg = ShapeConfig(max_items=25, per_tool={key: {"max_items": 3}})
+            assert self._rows(self.SUITE, cfg) == 3, key
+            assert self._rows("mcp_op_pm_list_work_packages", cfg) == 3, key
+        cfg = ShapeConfig(max_items=25, per_tool={"mcp_op_pm_list_work_packages": {"max_items": 3}})
+        assert self._rows("mcp_Other_pm_list_work_packages", cfg) == 10
+
+
 class TestListByteBudget:
     """AIS-344: a listing of 31 compact rows must not be cut at 25 — the
     calendar the user asked for sat behind the cut. Big rows still cap."""

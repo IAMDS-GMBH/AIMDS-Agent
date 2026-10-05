@@ -577,6 +577,8 @@ export interface Translations {
       openProjectSuiteServes: (instance: string, login: string) => string
       openProjectLocalServes: (instance: string) => string
       openProjectAutoLinkFailed: (error: string) => string
+      openProjectReplacedTitle: string
+      openProjectReplacedBody: (instance: string, login: string) => string
       editServer: string
       name: string
       serverJson: string

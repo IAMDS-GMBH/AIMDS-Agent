@@ -2211,6 +2211,10 @@ DEFAULT_CONFIG = {
         "prefer_suite": True,
         # Link the Suite account automatically with the local token (no chat).
         "auto_link": True,
+        # AIS-483: once the Suite serves the same domain for the linked
+        # account, uninstall the local OpenProjectMCP (and its credentials)
+        # and tell the user once.
+        "remove_local": True,
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt

@@ -263,3 +263,88 @@ def test_openproject_aggregates_booked_hours_per_working_day(monkeypatch):
     assert calls[1][1]["offset"] == 2
     assert len(items) == 1 and items[0].source == "openproject" and items[0].status == "complete"
     assert items[0].extra["by_work_package"] == {"17699": 4.0, "EXT-70": 4.0}
+
+
+SUITE_OP = "mcp_AIMDSSuiteMCP_mcp_openproject_"
+
+
+def _suite_owner(monkeypatch):
+    import tools.mcp_tool as mt
+
+    monkeypatch.setattr(mt, "get_mcp_server_for_tool", lambda name: (
+        "OpenProjectMCP" if name.startswith("mcp_op_") else "AIMDSSuiteMCP" if name.startswith("mcp_AIMDSSuiteMCP_") else None))
+
+
+def test_openproject_brief_uses_the_suite_per_project(monkeypatch):
+    """AIS-483: the Suite's pm_list_time_entries requires a project, so the
+    brief lists the visible projects first; its next_offset (offset + count)
+    is ignored in favour of the next page number."""
+    from cron.brief_sources.openproject import OpenProjectAdapter
+
+    _suite_owner(monkeypatch)
+    calls = []
+    full_page = [{"id": 1000 + i, "spent_on": "2026-09-05", "hours": "PT0H", "work_package_id": 1} for i in range(199)]
+    entries = {
+        ("1", 1): {"has_more": True, "next_offset": 201, "time_entries": full_page + [
+            {"id": 1, "spent_on": "2026-09-07", "hours": "PT4H", "work_package_id": 17054}]},
+        ("1", 2): {"has_more": True, "next_offset": 202, "time_entries": [
+            {"id": 3, "spent_on": "2026-09-07", "hours": "PT0H", "work_package_id": 17054}]},
+        ("2", 1): {"has_more": False, "next_offset": None, "time_entries": [
+            {"id": 2, "spent_on": "2026-09-07", "hours": "PT2H30M", "work_package_id": 0}]},
+    }
+    _ctx.responses = {
+        f"{SUITE_OP}pm_list_projects": {"projects": [{"id": 1, "identifier": "suite", "active": True},
+                                                     {"id": 2, "identifier": "ops", "active": True},
+                                                     {"id": 3, "identifier": "old", "active": False}]},
+        f"{SUITE_OP}pm_list_time_entries": lambda args: entries[(args["project"], args.get("offset", 1))],
+    }
+    tools = [f"{SUITE_OP}pm_list_projects", f"{SUITE_OP}pm_list_time_entries", "mcp_op_pm_list_time_entries"]
+    ctx = _ctx(tools, calls, status={"AIMDSSuiteMCP": {"connected": True}, "OpenProjectMCP": {"connected": True}},
+               store=_Store(targets={"2026-09-07": 8.0}))
+    adapter = OpenProjectAdapter()
+    assert adapter.availability(ctx) is None
+    items = adapter.fetch(bc.build_window("morning-brief", NOW, {}), ctx)
+    assert [c[0] for c in calls] == [f"{SUITE_OP}pm_list_projects"] + [f"{SUITE_OP}pm_list_time_entries"] * 3
+    assert calls[1][1] == {"spent_on_from": "2026-09-07", "spent_on_to": "2026-09-07", "user": "me", "limit": 200, "project": "1"}
+    assert calls[2][1]["offset"] == 2
+    assert items[0].extra["hours"] == 6.5 and items[0].status == "partial"
+    assert items[0].extra["by_work_package"] == {"17054": 4.0, "?": 2.5}
+
+
+def test_openproject_brief_falls_back_to_the_local_server(monkeypatch):
+    """Suite down (or its pm_* tools hidden until the account is linked) →
+    the bundled server answers, without the per-project loop."""
+    import agent.openproject_suite as ops
+    from cron.brief_sources.openproject import OpenProjectAdapter
+
+    _suite_owner(monkeypatch)
+    tools = [f"{SUITE_OP}pm_list_projects", f"{SUITE_OP}pm_list_time_entries", "mcp_op_pm_list_time_entries"]
+    _ctx.responses = {"mcp_op_pm_list_time_entries": {"has_more": False, "time_entries": []}}
+    down = _ctx(tools, [], status={"AIMDSSuiteMCP": {"connected": False}, "OpenProjectMCP": {"connected": True}})
+    assert OpenProjectAdapter().resolve(down, "pm_list_time_entries") == "mcp_op_pm_list_time_entries"
+    assert OpenProjectAdapter().availability(down) is None
+
+    monkeypatch.setattr(ops, "tool_hidden", lambda server, tool: server == "AIMDSSuiteMCP")
+    calls = []
+    hidden = _ctx(tools, calls, status={"AIMDSSuiteMCP": {"connected": True}, "OpenProjectMCP": {"connected": True}})
+    OpenProjectAdapter().fetch(bc.build_window("morning-brief", NOW, {}), hidden)
+    assert [c[0] for c in calls] == ["mcp_op_pm_list_time_entries"]
+
+
+def test_openproject_brief_availability_names_the_missing_pieces(monkeypatch):
+    from cron.brief_sources.openproject import OpenProjectAdapter
+
+    _suite_owner(monkeypatch)
+    status = {"AIMDSSuiteMCP": {"connected": True}}
+    only_list = _ctx([f"{SUITE_OP}pm_list_time_entries"], [], status=status)
+    assert OpenProjectAdapter().availability(only_list).detail == "tool not in tools.include: pm_list_projects"
+    assert OpenProjectAdapter().availability(_ctx([], [], status={})).detail == "not configured"
+    assert OpenProjectAdapter().availability(
+        _ctx([], [], status={"OpenProjectMCP": {"connected": True}})).detail == "tool not in tools.include: pm_list_time_entries"
+
+
+def test_resolve_tool_prefers_the_suite_for_openproject(monkeypatch):
+    _suite_owner(monkeypatch)
+    names = {"mcp_op_pm_list_time_entries", f"{SUITE_OP}pm_list_time_entries", "mcp_AtlassianMCP_jira_search"}
+    assert resolve_tool(names, "OpenProjectMCP", "pm_list_time_entries") == f"{SUITE_OP}pm_list_time_entries"
+    assert resolve_tool({"mcp_op_pm_list_time_entries"}, "OpenProjectMCP", "pm_list_time_entries") == "mcp_op_pm_list_time_entries"

@@ -15,6 +15,9 @@ one of them:
   link, ``api/submit`` stores the token).
 * Different domains, Suite down, stale check → both stay as they are; a
   duplicate tool set is the safe failure, a missing one is not.
+* Once the Suite serves a local server's domain for the linked account, that
+  local server is uninstalled (config entry, its credentials) and the user
+  gets a one-time notice (AIS-483) — the Suite now holds the token.
 
 Everything here is deterministic backend code on the desktop ticker. The model
 is never asked to do any of it; it only sees the resulting tool set.
@@ -74,6 +77,18 @@ def enabled(config: Optional[dict] = None) -> bool:
             config = load_config() or {}
         section = config.get("openproject") or {}
         return bool(section.get("prefer_suite", True)) if isinstance(section, dict) else True
+    except Exception:
+        return True
+
+
+def remove_local_enabled(config: Optional[dict] = None) -> bool:
+    try:
+        if config is None:
+            from hermes_cli.config import load_config
+
+            config = load_config() or {}
+        section = config.get("openproject") or {}
+        return bool(section.get("remove_local", True)) if isinstance(section, dict) else True
     except Exception:
         return True
 
@@ -259,6 +274,36 @@ def _find_suite_tool(suffix: str) -> Optional[str]:
     return None
 
 
+def _schema_accepts_string(schema: Any) -> bool:
+    if not isinstance(schema, dict):
+        return False
+    kind = schema.get("type")
+    if kind == "string" or (isinstance(kind, list) and "string" in kind):
+        return True
+    return any(_schema_accepts_string(alt) for alt in (schema.get("anyOf") or schema.get("oneOf") or []))
+
+
+def suite_accepts_display_ids() -> bool:
+    """Does the Suite's ``pm_get_work_package`` take ``PRO-6``-style ids?
+
+    The local server resolves display ids, the Suite server only took integer
+    ids at first (AIS-486). Until its schema allows a string id, the local
+    server stays available as the fallback for ticket keys (AIS-485).
+    """
+    name = _find_suite_tool("pm_get_work_package")
+    if not name:
+        return False
+    try:
+        from tools.registry import registry
+
+        entry = registry.get_entry(name)
+        schema = getattr(entry, "schema", None) or {}
+        params = schema.get("parameters") or schema.get("inputSchema") or {}
+        return _schema_accepts_string((params.get("properties") or {}).get("id"))
+    except Exception:
+        return False
+
+
 def _call_suite_tool(tool_name: str, args: Dict[str, Any]) -> Any:
     import run_agent as _ra
 
@@ -344,7 +389,8 @@ def _decide(state: Dict[str, Any], locals_: List[Dict[str, str]]) -> None:
         instance = suite.get("instance") or ""
         same = [srv["name"] for srv in locals_ if instance and srv["instance"] == instance]
         if suite.get("linked"):
-            hide_local = same
+            if suite.get("display_ids"):
+                hide_local = same
         elif same or (suite.get("needs_base_url") and locals_):
             # Not linked yet: the local server serves this domain until the
             # auto-link went through, the unlinked Suite tools would only
@@ -383,7 +429,12 @@ def _auto_link(state: Dict[str, Any], link_base: str, root: str, locals_: List[D
     if status == 200 and data.get("ok"):
         link.update({"linked_at": time.time(), "op_login": data.get("op_login"), "server": local["name"]})
         link.pop("last_error", None)
-        suite.update({"linked": True, "op_login": data.get("op_login"), "instance": instance or local["instance"]})
+        suite.update({
+            "linked": True,
+            "op_login": data.get("op_login"),
+            "instance": instance or local["instance"],
+            "display_ids": suite_accepts_display_ids(),
+        })
         logger.info("openproject suite: linked the Suite account as %s using %s", data.get("op_login"), local["name"])
     else:
         error = str(data.get("error") or f"http_{status}")
@@ -394,6 +445,63 @@ def _auto_link(state: Dict[str, Any], link_base: str, root: str, locals_: List[D
         link["next_at"] = time.time() + delay
         logger.warning("openproject suite: auto-link failed (%s); local OpenProject stays active", error)
     state["auto_link"] = link
+
+
+_ENV_REF_RE = re.compile(r"\$\{([A-Z0-9_]+)\}")
+
+
+def _env_refs(cfg: Any) -> set:
+    refs: set = set()
+    env = cfg.get("env") if isinstance(cfg, dict) else None
+    for value in (env or {}).values():
+        refs.update(_ENV_REF_RE.findall(str(value)))
+    return refs
+
+
+def uninstall_local_servers(names: List[str]) -> List[str]:
+    """Disconnect and uninstall local OpenProject servers the Suite replaced.
+
+    Removes the config entry and the ``${VAR}`` credentials only that server
+    referenced (other servers keep theirs). Returns the removed names.
+    """
+    if not names:
+        return []
+    try:
+        from hermes_cli.config import load_config, remove_env_value
+        from hermes_cli.mcp_catalog import uninstall_entry
+    except Exception as exc:
+        logger.warning("openproject suite: cannot uninstall the local server (%s)", exc)
+        return []
+    servers = (load_config() or {}).get("mcp_servers") or {}
+    removed: List[str] = []
+    for name in names:
+        cfg = servers.get(name)
+        if not isinstance(cfg, dict):
+            continue
+        try:
+            from tools.mcp_tool import disconnect_mcp_server
+
+            disconnect_mcp_server(name)
+        except Exception:
+            pass
+        try:
+            if uninstall_entry(name):
+                removed.append(name)
+        except Exception as exc:
+            logger.warning("openproject suite: uninstalling %s failed: %s", name, exc)
+    if removed:
+        still_used: set = set()
+        for other, cfg in servers.items():
+            if other not in removed:
+                still_used |= _env_refs(cfg)
+        for name in removed:
+            for var in sorted(_env_refs(servers.get(name)) - still_used):
+                try:
+                    remove_env_value(var)
+                except Exception:
+                    pass
+        logger.info("openproject suite: removed the local OpenProject server(s) %s — the Suite serves the domain", removed)
+    return removed
 
 
 def run_once(*, config: Optional[dict] = None, now: Optional[float] = None) -> Dict[str, Any]:
@@ -415,6 +523,9 @@ def run_once(*, config: Optional[dict] = None, now: Optional[float] = None) -> D
                 "instance": instance_key(payload.get("instance")),
                 "own_instance": bool(payload.get("own_instance")),
                 "op_login": payload.get("op_login"),
+                # Only a Suite that resolves ticket keys replaces the local
+                # server (hide + uninstall); until then both stay (AIS-485).
+                "display_ids": suite_accepts_display_ids(),
             }
         elif payload.get("link_url"):
             suite = {"available": True, "linked": False}
@@ -450,6 +561,20 @@ def run_once(*, config: Optional[dict] = None, now: Optional[float] = None) -> D
     else:
         state["next_check_at"] = now + NO_SUITE_RECHECK_SECONDS
     _decide(state, locals_)
+    if state.get("hide_local") and suite.get("linked") and remove_local_enabled(config):
+        removed = uninstall_local_servers(list(state["hide_local"]))
+        if removed:
+            remaining = [s for s in locals_ if s["name"] not in removed]
+            state["locals"] = [{"name": s["name"], "instance": s["instance"]} for s in remaining]
+            state["notice"] = {
+                "id": f"openproject-suite-{int(now)}",
+                "kind": "local_replaced",
+                "removed": removed,
+                "instance": suite.get("instance") or "",
+                "login": suite.get("op_login") or "",
+                "at": now,
+            }
+            _decide(state, remaining)
     save_state(state)
     return state
 
@@ -493,11 +618,15 @@ def status() -> Dict[str, Any]:
         "hide_local": state.get("hide_local") or [],
         "hide_suite": bool(state.get("hide_suite")),
         "auto_link_error": link.get("last_error") or "",
+        # AIS-483: shown once by the desktop (keyed by id).
+        "notice": state.get("notice") or None,
     }
 
 
 __all__ = [
     "auto_link_enabled",
+    "remove_local_enabled",
+    "uninstall_local_servers",
     "enabled",
     "instance_key",
     "is_pm_tool",

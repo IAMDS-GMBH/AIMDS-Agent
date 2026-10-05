@@ -543,11 +543,57 @@ def test_suite_contract_rows_with_iso_hours_and_start_time(tmp_path: Path, monke
     row = {"id": 7, "spent_on": "2026-09-02", "hours": "PT1H30M", "start_time": "2026-09-02T06:30:00Z",
            "work_package_id": 17054, "activity": "Development", "user": "Johannes Huchler", "comment": ""}
     try_auto_ingest_json(json.dumps({"time_entries": [row], "total": 1, "has_more": False, "next_offset": None}),
-                         tool_name="mcp_AIMDSSuiteMCP_mcp_openproject-pm_list_time_entries", tool_use_id="t1", db_path=db_file)
+                         tool_name="mcp_AIMDSSuiteMCP_mcp_openproject_pm_list_time_entries", tool_use_id="t1", db_path=db_file)
     assert sqlite3.connect(str(db_file)).execute(
         "SELECT reference_key, timestamp, duration_seconds, category FROM mcp_records").fetchall() == [
         ("17054", "2026-09-02T08:30", 5400, "Development")]
     hermes_time.reset_cache()
+
+
+SUITE_LIST = "mcp_AIMDSSuiteMCP_mcp_openproject_pm_list_time_entries"
+
+
+def _go_row(entry_id, spent_on, hours, wp_id=17054, start_time=""):
+    """Exactly go-mcp-openproject's timeEntryRow (internal/tools/timeentries.go)."""
+    return {"id": entry_id, "comment": "Review", "spent_on": spent_on, "hours": hours, "start_time": start_time,
+            "ongoing": False, "project": "AIMDS Suite", "work_package_id": wp_id, "activity": "Development",
+            "user": "Johannes Huchler", "created_at": "2026-09-02T16:00:00.000Z", "lock_version": 0}
+
+
+def test_suite_go_time_entry_rows_map_to_worktime_records(tmp_path: Path):
+    """AIS-483: the Suite's contract rows (no duration_seconds, no subject,
+    ISO hours, work_package_id 0 for a project-level booking) feed the same
+    mcp_records columns the workdays report sums."""
+    db_file = tmp_path / "state.db"
+    listing = {"time_entries": [_go_row(7, "2026-09-02", "PT1H30M"), _go_row(8, "2026-09-03", "P1DT2H"),
+                                _go_row(9, "2026-09-04", "PT0.5H", wp_id=0)],
+               "total": 3, "has_more": False, "next_offset": None}
+    assert int(try_auto_ingest_json(json.dumps(listing), tool_name=SUITE_LIST, tool_use_id="t1", db_path=db_file)) == 3
+    rows = sqlite3.connect(str(db_file)).execute(
+        "SELECT id, reference_key, timestamp, user_id, duration_seconds, category, comment FROM mcp_records ORDER BY id"
+    ).fetchall()
+    assert rows == [
+        ("7", "17054", "2026-09-02", "Johannes Huchler", 5400, "Development", "Review"),
+        ("8", "17054", "2026-09-03", "Johannes Huchler", 93600, "Development", "Review"),
+        ("9", "", "2026-09-04", "Johannes Huchler", 1800, "Development", "Review"),
+    ]
+
+
+def test_suite_booking_writes_through_and_replaces_the_local_twin(tmp_path: Path):
+    """AIS-483: pm_create_time_entry on the Suite answers the bare row; it lands
+    in the Suite listing's rows. The same OpenProject id fetched earlier via
+    the bundled server is replaced, never counted twice."""
+    db_file = tmp_path / "state.db"
+    try_auto_ingest_json(json.dumps({"time_entries": [_op_row(10, "2026-09-02", 2.0)]}),
+                         tool_name="mcp_op_pm_list_time_entries", tool_use_id="t1", db_path=db_file)
+    booked = json.dumps(_go_row(10, "2026-09-02", "PT3H"))
+    assert int(try_auto_ingest_json(booked, tool_name="mcp_AIMDSSuiteMCP_mcp_openproject_pm_create_time_entry",
+                                    tool_use_id="t2", db_path=db_file)) == 1
+    assert _rows(db_file) == [("10", SUITE_LIST, "17054", "2026-09-02", 10800)]
+    deleted = json.dumps({"deleted": True, "id": 10})
+    try_auto_ingest_json(deleted, tool_name="mcp_AIMDSSuiteMCP_mcp_openproject_pm_delete_time_entry",
+                         tool_use_id="t3", db_path=db_file)
+    assert _rows(db_file) == []
 
 
 def test_deleted_booking_is_removed_from_the_listing_rows(tmp_path: Path):
@@ -581,8 +627,8 @@ def test_write_through_targets():
 
     assert write_through_target("mcp_op_pm_create_time_entry") == "mcp_op_pm_list_time_entries"
     assert write_through_target("mcp_op_pm_delete_time_entry") == "mcp_op_pm_list_time_entries"
-    assert write_through_target("mcp_AIMDSSuiteMCP_mcp_openproject-pm_update_time_entry") == \
-        "mcp_AIMDSSuiteMCP_mcp_openproject-pm_list_time_entries"
+    assert write_through_target("mcp_AIMDSSuiteMCP_mcp_openproject_pm_update_time_entry") == \
+        "mcp_AIMDSSuiteMCP_mcp_openproject_pm_list_time_entries"
     assert write_through_target("mcp_TempoMCP_createWorklog") == "mcp_TempoMCP_retrieveWorklogs"
     assert write_through_target("mcp_AtlassianMCP_jira_add_worklog") == "mcp_AtlassianMCP_jira_get_worklog"
     assert write_through_target("mcp_op_pm_list_time_entries") is None
