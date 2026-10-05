@@ -55,6 +55,7 @@ import { useTheme } from '@/themes'
 import { extractDroppedFiles, HERMES_PATHS_MIME, partitionDroppedFiles } from '../hooks/use-composer-actions'
 
 import { AttachmentList } from './attachments'
+import { setComposerText } from './composer-text'
 import { ContextMenu } from './context-menu'
 import { ComposerControls } from './controls'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
@@ -287,7 +288,7 @@ export function ChatBar({
       const next = `${base}${sep}${value}`
 
       draftRef.current = next
-      aui.composer().setText(next)
+      setComposerText(aui, next)
 
       const editor = editorRef.current
 
@@ -455,7 +456,7 @@ export function ChatBar({
     const nextDraft = `${currentDraft}${sep}${text}`
 
     draftRef.current = nextDraft
-    aui.composer().setText(nextDraft)
+    setComposerText(aui, nextDraft)
 
     // Push the new text into the contentEditable editor directly. Setting the
     // assistant-ui composer state alone is not enough: the draft→editor sync
@@ -488,7 +489,7 @@ export function ChatBar({
     }
 
     draftRef.current = nextDraft
-    aui.composer().setText(nextDraft)
+    setComposerText(aui, nextDraft)
     requestMainFocus()
 
     return true
@@ -546,7 +547,7 @@ export function ChatBar({
     document.execCommand('insertText', false, pastedText)
     const nextDraft = composerPlainText(event.currentTarget)
     draftRef.current = nextDraft
-    aui.composer().setText(nextDraft)
+    setComposerText(aui, nextDraft)
   }
 
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
@@ -611,7 +612,7 @@ export function ChatBar({
 
     if (nextDraft !== draftRef.current) {
       draftRef.current = nextDraft
-      aui.composer().setText(nextDraft)
+      setComposerText(aui, nextDraft)
     }
 
     window.setTimeout(refreshTrigger, 0)
@@ -672,7 +673,7 @@ export function ChatBar({
       renderComposerContents(editor, prefix)
       placeCaretEnd(editor)
       draftRef.current = composerPlainText(editor)
-      aui.composer().setText(draftRef.current)
+      setComposerText(aui, draftRef.current)
       closeTrigger()
       runAction()
       requestMainFocus()
@@ -701,7 +702,7 @@ export function ChatBar({
 
     const finish = () => {
       draftRef.current = composerPlainText(editor)
-      aui.composer().setText(draftRef.current)
+      setComposerText(aui, draftRef.current)
       requestMainFocus()
       keepTriggerOpen ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
     }
@@ -1093,7 +1094,7 @@ export function ChatBar({
   }
 
   const clearDraft = useCallback(() => {
-    aui.composer().setText('')
+    setComposerText(aui, '')
     draftRef.current = ''
 
     if (editorRef.current) {
@@ -1103,7 +1104,7 @@ export function ChatBar({
 
   const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
     draftRef.current = text
-    aui.composer().setText(text)
+    setComposerText(aui, text)
     $composerAttachments.set(cloneAttachments(attachments))
 
     const editor = editorRef.current
@@ -1430,7 +1431,7 @@ export function ChatBar({
 
       if (domText !== draftRef.current) {
         draftRef.current = domText
-        aui.composer().setText(domText)
+        setComposerText(aui, domText)
       }
     }
 
