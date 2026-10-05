@@ -220,6 +220,33 @@ def m365_granted_tier(app: Any, account: Any) -> Optional[str]:
     return None
 
 
+def _legacy_m365_token_cache_path() -> Path:
+    """Pre-AIS-418 cache location (``~/.hermes``), migrated once on Windows.
+
+    A separate seam so the test suite can point it away from the developer's
+    real sign-in (tests redirect HERMES_HOME but not HOME)."""
+    return Path.home() / ".hermes" / "m365_token_cache.bin"
+
+
+def _msal_cache_has_accounts() -> bool:
+    """True when the shared MSAL cache file lists at least one account.
+
+    Read straight from the file: constructing a ``PublicClientApplication``
+    fetches the authority's OpenID configuration from login.microsoftonline.com,
+    which a session without a Microsoft 365 sign-in must not pay for (every
+    system-prompt build asks for the signed-in identity).
+    """
+    try:
+        path = get_m365_token_cache_path()
+        if not path.is_file():
+            return False
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except Exception:
+        return False
+    accounts = data.get("Account") if isinstance(data, dict) else None
+    return bool(accounts)
+
+
 def get_m365_token_cache_path() -> Path:
     """Return absolute path to the shared M365 MSAL token cache file."""
     from hermes_constants import get_hermes_home
@@ -232,7 +259,7 @@ def get_m365_token_cache_path() -> Path:
     if not path.exists():
         # A sign-in stored under ~/.hermes while a server still resolved that
         # on Windows: copy it once instead of asking to sign in again.
-        legacy = Path.home() / ".hermes" / path.name
+        legacy = _legacy_m365_token_cache_path()
         try:
             if legacy.is_file() and legacy.resolve() != path.resolve():
                 import shutil
@@ -245,6 +272,8 @@ def get_m365_token_cache_path() -> Path:
 
 def has_valid_msal_cache() -> bool:
     """Return True if the shared M365 MSAL cache file exists and contains accounts."""
+    if not _msal_cache_has_accounts():
+        return False
     try:
         app = get_msal_app()
         return bool(app.get_accounts())
@@ -254,6 +283,8 @@ def has_valid_msal_cache() -> bool:
 
 def list_msal_accounts() -> list[dict[str, Any]]:
     """Return a list of all M365 accounts currently stored in the MSAL cache."""
+    if not _msal_cache_has_accounts():
+        return []
     try:
         app = get_msal_app()
         accounts = app.get_accounts()
@@ -280,6 +311,8 @@ def get_msal_account_by_identifier(account_identifier: Optional[str] = None) -> 
 
     If account_identifier is None or empty, returns the first/default account if available.
     """
+    if not _msal_cache_has_accounts():
+        return None
     try:
         app = get_msal_app()
         accounts = app.get_accounts()

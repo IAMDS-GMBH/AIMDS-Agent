@@ -16,6 +16,9 @@ from hermes_cli.m365_auth import (
 
 def test_has_valid_msal_cache_returns_true_when_accounts_exist(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "m365_token_cache.bin").write_text(
+        json.dumps({"Account": {"acc1": {"username": "user@contoso.com"}}}), encoding="utf-8"
+    )
     with patch("hermes_cli.m365_auth.get_msal_app") as mock_get_app:
         mock_app = MagicMock()
         mock_app.get_accounts.return_value = [{"username": "user@contoso.com"}]
@@ -47,9 +50,31 @@ def test_get_msal_app_deserializes_existing_cache(tmp_path, monkeypatch):
     dummy_cache = {"Account": {"acc1": {"realm": "organizations"}}}
     cache_path.write_text(json.dumps(dummy_cache), encoding="utf-8")
 
-    app = get_msal_app()
+    # A real PublicClientApplication fetches the authority's OpenID
+    # configuration from login.microsoftonline.com on construction.
+    import msal
+
+    with patch.object(msal, "PublicClientApplication", side_effect=lambda **kw: MagicMock(**kw)) as pca:
+        app = get_msal_app()
     assert app is not None
     assert app.client_id == "41c29967-8ee6-4fac-b484-e87460272bda"
+    assert pca.call_args.kwargs["authority"] == "https://login.microsoftonline.com/organizations"
+    assert "acc1" in pca.call_args.kwargs["token_cache"].serialize()
+
+
+def test_no_msal_app_without_cached_account(tmp_path, monkeypatch):
+    """Without a sign-in nothing constructs MSAL — construction is a network
+    round-trip the system-prompt builder would otherwise pay every turn."""
+    from hermes_cli.m365_auth import get_msal_account_by_identifier, list_msal_accounts
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.m365_auth.get_msal_app") as mock_get_app:
+        assert has_valid_msal_cache() is False
+        assert list_msal_accounts() == []
+        assert get_msal_account_by_identifier("someone") is None
+        (tmp_path / "m365_token_cache.bin").write_text(json.dumps({"Account": {}}), encoding="utf-8")
+        assert list_msal_accounts() == []
+    mock_get_app.assert_not_called()
 
 
 def test_save_msal_cache_is_atomic(tmp_path):

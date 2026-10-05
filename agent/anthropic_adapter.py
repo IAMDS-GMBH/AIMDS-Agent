@@ -911,6 +911,14 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     return None
 
 
+def _claude_code_credentials_path() -> Path:
+    """Claude Code's credential file (``~/.claude/.credentials.json``).
+
+    A single seam for reading and writing it, so the test suite can keep the
+    developer's real Claude Code sign-in out of unit tests (AIS-487)."""
+    return Path.home() / ".claude" / ".credentials.json"
+
+
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials.
 
@@ -931,7 +939,7 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
         return kc_creds
 
     # Fall back to JSON file
-    cred_path = Path.home() / ".claude" / ".credentials.json"
+    cred_path = _claude_code_credentials_path()
     if cred_path.exists():
         try:
             data = json.loads(cred_path.read_text(encoding="utf-8"))
@@ -1065,7 +1073,7 @@ def _write_claude_code_credentials(
     as valid.  Claude Code >=2.1.81 gates on the presence of ``"user:inference"``
     in the stored scopes before it will use the token.
     """
-    cred_path = Path.home() / ".claude" / ".credentials.json"
+    cred_path = _claude_code_credentials_path()
     try:
         # Read existing file to preserve other fields
         existing = {}
