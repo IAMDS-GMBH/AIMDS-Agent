@@ -1675,7 +1675,7 @@ SEARCH_FILES_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "pattern": {"type": "string", "description": "Regex for content search or glob for file search."},
+            "pattern": {"type": "string", "description": "Content search: regex (ripgrep syntax; a plain word works, '*' is not a wildcard). File search: glob."},
             "target": {"type": "string", "enum": ["content", "files"], "description": "content or files.", "default": "content"},
             "path": {"type": "string", "description": "Directory or file path to search.", "default": "."},
             "file_glob": {"type": "string", "description": "Optional file filter for content search."},
