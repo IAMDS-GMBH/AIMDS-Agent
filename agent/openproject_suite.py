@@ -63,7 +63,7 @@ _run_lock = threading.Lock()
 _state_lock = threading.Lock()
 _cached_state: Dict[str, Any] = {}
 _cached_at = 0.0
-_cached_mtime: Optional[float] = None
+_cached_signature: Optional[tuple] = None
 
 
 # --------------------------------------------------------------------------- helpers
@@ -168,26 +168,30 @@ def save_state(state: Dict[str, Any]) -> None:
 
 
 def _invalidate_cache() -> None:
-    global _cached_at
+    global _cached_at, _cached_signature
     with _state_lock:
         _cached_at = 0.0
+        _cached_signature = None
 
 
 def _current_state() -> Dict[str, Any]:
     """The persisted decision, re-read at most every few seconds (check_fn path)."""
-    global _cached_state, _cached_at, _cached_mtime
+    global _cached_state, _cached_at, _cached_signature
     now = time.monotonic()
     with _state_lock:
         if now - _cached_at < STATE_RELOAD_SECONDS:
             return _cached_state
         _cached_at = now
         try:
-            mtime = _state_path().stat().st_mtime
+            st = _state_path().stat()
         except OSError:
-            _cached_state, _cached_mtime = {}, None
+            _cached_state, _cached_signature = {}, None
             return _cached_state
-        if mtime != _cached_mtime:
-            _cached_state, _cached_mtime = load_state(), mtime
+        # mtime alone misses two writes within the filesystem's timestamp
+        # granularity (seen on the CI runner); os.replace also changes the inode.
+        signature = (st.st_mtime_ns, st.st_size, st.st_ino)
+        if signature != _cached_signature:
+            _cached_state, _cached_signature = load_state(), signature
         return _cached_state
 
 
