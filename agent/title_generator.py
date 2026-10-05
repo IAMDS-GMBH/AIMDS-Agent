@@ -5,6 +5,7 @@ adds latency to the user-facing reply.
 """
 
 import logging
+import os
 import re
 import threading
 from typing import Callable, Optional
@@ -266,6 +267,10 @@ def maybe_auto_title(
     - No title is already set
     """
     if not session_db or not session_id or not user_message or not assistant_response:
+        return
+    # Kill switch (the test suite sets it process-wide: these threads outlive
+    # their test and call the auxiliary model).
+    if os.environ.get("HERMES_DISABLE_AUTO_TITLE", "").strip().lower() in ("1", "true", "yes"):
         return
 
     # Count user messages in history to detect first exchange.

@@ -1,5 +1,6 @@
 """Tests for agent.title_generator — auto-generated session titles."""
 
+import pytest
 from unittest.mock import MagicMock, patch
 
 
@@ -8,6 +9,13 @@ from agent.title_generator import (
     auto_title_session,
     maybe_auto_title,
 )
+
+
+@pytest.fixture(autouse=True)
+def _auto_title_enabled(monkeypatch):
+    """tests/conftest.py disables session-title threads process-wide; the
+    title generator's own tests need the real entry point."""
+    monkeypatch.delenv("HERMES_DISABLE_AUTO_TITLE", raising=False)
 
 
 class TestGenerateTitle:
@@ -371,3 +379,14 @@ class TestMaybeAutoTitle:
 
     def test_skips_if_no_session_db(self):
         maybe_auto_title(None, "sess-1", "hello", "response", [])  # no db
+
+
+
+def test_kill_switch_starts_no_thread(monkeypatch):
+    from unittest.mock import MagicMock, patch
+
+    monkeypatch.setenv("HERMES_DISABLE_AUTO_TITLE", "1")
+    db = MagicMock()
+    with patch("agent.title_generator.threading.Thread") as thread:
+        maybe_auto_title(db, "sess-1", "hello", "hi there", [{"role": "user", "content": "hello"}])
+    thread.assert_not_called()

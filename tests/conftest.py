@@ -731,6 +731,12 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
     )
     _install_network_guard()  # see "Network guard (AIS-487)" below
     _install_browser_guard()  # never opens the developer's browser
+    # No fire-and-forget session-title threads: they call the auxiliary model
+    # (the Suite / a test's fake base URL) and outlive their test, so a late
+    # one trips the network guard in whatever test runs next (flaky errors in
+    # tui_gateway and ACP tests). Process-wide, because a per-test monkeypatch
+    # is undone before such a thread looks. Title tests unset it themselves.
+    os.environ["HERMES_DISABLE_AUTO_TITLE"] = "1"
     # Session-wide baseline of _hermetic_environment 4c/4f for threads that
     # outlive their test (its monkeypatch is undone by then) and for
     # subprocesses: no developer GitHub CLI / Codex CLI login either way.

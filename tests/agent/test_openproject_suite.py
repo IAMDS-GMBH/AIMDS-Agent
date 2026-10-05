@@ -28,6 +28,9 @@ LINK_URL = "https://suite.example.com/connect/openproject/#one-time"
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # The decision file is this test's alone, however the home is resolved
+    # (a shared one leaked a previous test's decision on the CI runner).
+    monkeypatch.setattr(ops, "_state_path", lambda: tmp_path / "openproject_suite.json")
     import tools.mcp_tool as mcp_tool
 
     monkeypatch.setattr(mcp_tool, "_load_mcp_config", lambda: LOCAL_CFG)
@@ -319,6 +322,27 @@ def test_tool_definition_cache_follows_the_decision(env):
     ops.run_once()
     ops._invalidate_cache()
     assert model_tools._openproject_decision_fingerprint() is None
+
+
+def test_decision_reloads_when_another_process_rewrites_within_one_timestamp(env, tmp_path):
+    """Two writes inside the filesystem's mtime granularity must not leave
+    the cached decision stale (CI flake on test_tool_definition_cache_follows_the_decision)."""
+    import os
+    import time as _time
+
+    path = tmp_path / "openproject_suite.json"
+    stamp = 1_700_000_000_000_000_000
+    path.write_text(json.dumps({"checked_at": _time.time(), "hide_local": ["OpenProjectMCP"]}))
+    os.utime(path, ns=(stamp, stamp))
+    ops._invalidate_cache()
+    assert ops.decision_fingerprint() == (("OpenProjectMCP",), False)
+
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"checked_at": _time.time()}))
+    os.replace(tmp, path)  # what save_state does in the other process
+    os.utime(path, ns=(stamp, stamp))
+    ops._cached_at = 0.0  # reload interval elapsed; the signature is kept
+    assert ops.decision_fingerprint() is None
 
 
 # ── AIS-483: the Suite replaces the local server ─────────────────────────
