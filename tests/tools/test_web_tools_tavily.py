@@ -206,6 +206,7 @@ class TestWebExtractTavily:
         from agent.web_search_registry import _reset_for_tests
         _reset_for_tests()
 
+    @pytest.mark.usefixtures("fake_public_dns")  # SSRF pre-flight resolves the host (AIS-487)
     def test_extract_dispatches_to_tavily(self):
         mock_response = MagicMock()
         mock_response.json.return_value = {

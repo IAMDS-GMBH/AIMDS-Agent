@@ -25,6 +25,9 @@ def suite_env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(iamds_suite, "_flag_path", lambda: home / "state" / "iamds_suite_auth.json")
     monkeypatch.setattr(iamds_suite, "_mcp_status_for", lambda base_url: {"name": "AIMDSSuiteMCP", "url": "", "url_matches": None, "connected": None})
+    # The ntfy auto-config asks the Suite for the key's user (suite.iamds.com);
+    # offline that lookup yields {}.
+    monkeypatch.setattr(iamds_suite, "fetch_suite_key_info", lambda *a, **k: {})
     try:
         from hermes_cli.config import invalidate_env_cache
 

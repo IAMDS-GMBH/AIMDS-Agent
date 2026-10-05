@@ -18,6 +18,8 @@ def _reset_session_state(monkeypatch):
     monkeypatch.setattr(browser_tool, "_cloud_provider_resolved", False)
     monkeypatch.setattr(browser_tool, "_start_browser_cleanup_thread", lambda: None)
     monkeypatch.setattr(browser_tool, "_update_session_activity", lambda t: None)
+    # The CDP supervisor thread would dial the session's websocket (AIS-487).
+    monkeypatch.setattr(browser_tool, "_ensure_cdp_supervisor", lambda t: None)
 
 
 class TestCloudProviderRuntimeFallback:

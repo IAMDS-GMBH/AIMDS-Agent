@@ -262,9 +262,12 @@ class TestWebSearchUsesSearchBackend:
         monkeypatch.setattr(web_tools, "_get_search_backend", tracking_get_search)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "firecrawl"})
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fake")
+        # No provider resolves: the real Firecrawl plugin would POST the query
+        # to api.firecrawl.dev with the fake key.
+        monkeypatch.setattr("agent.web_search_registry.get_provider", lambda name: None)
+        monkeypatch.setattr("agent.web_search_registry.get_active_search_provider", lambda: None)
 
-        # The function will fail at Firecrawl client level but we just
-        # need to verify _get_search_backend was called
+        # We only need to verify _get_search_backend was called
         try:
             web_tools.web_search_tool("test", 1)
         except Exception:
@@ -393,6 +396,7 @@ class TestDispatchersTriggerPluginDiscovery:
 
         return _restore
 
+    @pytest.mark.usefixtures("fake_public_dns")  # is_safe_url pre-flight on example.com
     def test_web_extract_tool_runs_discovery_before_registry_lookup(self, monkeypatch):
         """``web_extract_tool`` must invoke ``_ensure_web_plugins_loaded()``
         before looking up the configured backend so the registry is

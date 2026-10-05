@@ -1,8 +1,8 @@
 # Tool Search live test harness
 
-Runs five scenarios against a real model (Claude Haiku 4.5 via OpenRouter) to
-verify that the bridge tools work end-to-end. Records transcripts in
-`scripts/out/`.
+Runs the scenarios below against a real model on an OpenAI-compatible endpoint
+(default: the IAMDS vLLM at `https://vllm.iamds.com`) to verify that the
+bridge tools work end-to-end. Records transcripts in `scripts/out/`.
 
 ## Running
 
@@ -12,7 +12,32 @@ python3 scripts/tool_search_livetest.py        # runs all 5 scenarios x 2 modes
 python3 scripts/analyze_livetest.py            # side-by-side report
 ```
 
-Requires `OPENROUTER_API_KEY` set or present in `~/.hermes/.env`.
+### Target model
+
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `LIVETEST_BASE_URL` | `VLLM_IAMDS_BASE_URL`, then `https://vllm.iamds.com` | OpenAI-compatible base URL (`/v1` appended if missing) |
+| `LIVETEST_MODEL` | first id from `GET <base_url>/models` | model id to test |
+| `LIVETEST_API_KEY` | `VLLM_IAMDS_API_KEY` | bearer key (for an openrouter.ai base URL `OPENROUTER_API_KEY` is also accepted) |
+
+Keys may also live in `~/.hermes/.env`; the harness loads it before resolving
+the target. The key is passed to the agent directly and redacted from every
+transcript.
+
+```bash
+# IAMDS vLLM (default)
+VLLM_IAMDS_API_KEY=... python3 scripts/tool_search_livetest.py
+
+# OpenRouter, as in the 2026-05 baseline
+LIVETEST_BASE_URL=https://openrouter.ai/api/v1 \
+LIVETEST_MODEL=anthropic/claude-haiku-4.5 \
+OPENROUTER_API_KEY=... python3 scripts/tool_search_livetest.py
+```
+
+These are the same names the test suite's `live_llm` fixture uses (repo
+variable `VLLM_IAMDS_BASE_URL`, repo secret `VLLM_IAMDS_API_KEY`). A CI job for
+this harness would only need that secret; base URL and model fall back to the
+defaults above. The harness is not wired into CI.
 
 ## What it verifies
 

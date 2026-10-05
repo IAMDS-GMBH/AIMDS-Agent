@@ -157,6 +157,7 @@ def _mock_aiohttp_download(raw_bytes: bytes):
 # Tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("fake_public_dns")  # is_safe_url pre-flight resolves the CDN host
 class TestIncomingDocumentHandling:
 
     @pytest.mark.asyncio
@@ -386,6 +387,7 @@ class TestIncomingDocumentHandling:
         assert event.media_types == ["image/png"]
 
 
+@pytest.mark.usefixtures("fake_public_dns")  # is_safe_url pre-flight resolves the CDN host
 class TestAllowAnyAttachment:
     """Cover the discord.allow_any_attachment config flag.
 

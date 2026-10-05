@@ -34,6 +34,7 @@ import pytest
 pytest.importorskip("mcp.client.auth.oauth2", reason="MCP SDK 1.26.0+ required")
 
 
+@pytest.mark.usefixtures("no_oauth_metadata_prefetch")  # no real /.well-known fetch
 @pytest.mark.asyncio
 async def test_hermes_provider_forwards_asend_values(tmp_path, monkeypatch):
     """The wrapper MUST forward ``.asend(response)`` into the inner generator.
@@ -115,6 +116,7 @@ async def test_hermes_provider_forwards_asend_values(tmp_path, monkeypatch):
         await flow.asend(fake_response)
 
 
+@pytest.mark.usefixtures("no_oauth_metadata_prefetch")  # no real /.well-known fetch
 @pytest.mark.asyncio
 async def test_hermes_provider_forwards_401_triggers_refresh(tmp_path, monkeypatch):
     """A 401 response MUST flow into the inner generator and trigger the

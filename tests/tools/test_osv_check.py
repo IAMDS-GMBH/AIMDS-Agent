@@ -13,6 +13,10 @@ from tools.osv_check import (
     _query_osv,
 )
 
+# These tests drive the OSV query itself (transport mocked) — keep the real
+# _query_osv instead of conftest's offline stand-in.
+pytestmark = pytest.mark.real_fetchers
+
 
 class TestInferEcosystem:
     def test_npx(self):
@@ -172,6 +176,7 @@ class TestCheckPackageForMalware:
             assert call_data["package"]["name"] == "mcp-server-fetch"
 
 
+@pytest.mark.network  # real OSV API: runs only with HERMES_LIVE_TESTS=1 (AIS-487)
 class TestLiveOsvQuery:
     """Live integration test against the real OSV API. Skipped if offline."""
 

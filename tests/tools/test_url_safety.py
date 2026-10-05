@@ -494,6 +494,7 @@ class TestIsAlwaysBlockedUrl:
 
     # -- Things the floor must NOT block ----------------------------------------
 
+    @pytest.mark.usefixtures("fake_public_dns")  # SSRF pre-flight resolves the host (AIS-487)
     def test_public_url_not_blocked(self):
         assert is_always_blocked_url("https://example.com/path") is False
 

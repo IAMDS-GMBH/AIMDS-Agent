@@ -1,6 +1,8 @@
 import json
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
 
 
@@ -77,6 +79,7 @@ def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypat
     ]
 
 
+@pytest.mark.real_fetchers  # tests the Codex /models fetch itself (transport mocked)
 def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
     """Regression: gpt-5.3-codex-spark is returned by the live Codex backend
     with ``supported_in_api: false`` because it isn't in the public OpenAI

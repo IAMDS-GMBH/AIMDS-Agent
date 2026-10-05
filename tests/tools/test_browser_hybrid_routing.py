@@ -36,6 +36,7 @@ def _reset_routing_state(monkeypatch):
 class TestNavigationSessionKey:
     """Tests for _navigation_session_key URL-based routing decisions."""
 
+    @pytest.mark.usefixtures("fake_public_dns")  # SSRF pre-flight resolves the host (AIS-487)
     def test_public_url_uses_bare_task_id(self, monkeypatch):
         """Public URL with cloud provider configured → bare task_id (cloud)."""
         monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: Mock())

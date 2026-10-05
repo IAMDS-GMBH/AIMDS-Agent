@@ -3120,6 +3120,7 @@ class TestMatrixReadReceipts:
 # Media normalization
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("fake_public_dns")  # is_safe_url pre-flight resolves the CDN host
 class TestMatrixImageOnlyMediaNormalization:
     def setup_method(self):
         self.adapter = _make_adapter()

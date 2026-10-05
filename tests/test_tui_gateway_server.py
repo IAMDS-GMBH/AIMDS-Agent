@@ -9,9 +9,19 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
+
+
+@pytest.fixture(autouse=True)
+def _no_background_title_generation(monkeypatch):
+    """A completed prompt starts a fire-and-forget title thread that calls the
+    default auxiliary model (the AIMDS Suite) — over the network and possibly
+    after the test ended. Tests of the title hook patch maybe_auto_title."""
+    monkeypatch.setattr("agent.title_generator.auto_title_session", lambda *a, **k: None)
 
 
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
@@ -703,7 +713,10 @@ def test_voice_toggle_tts_branch_also_carries_record_key(monkeypatch):
         ),
     )
     monkeypatch.setenv("HERMES_VOICE", "1")
-    monkeypatch.delenv("HERMES_VOICE_TTS", raising=False)
+    # Own the var (setenv, not delenv of an unset var): the toggle writes
+    # os.environ directly, and a leaked "1" makes every later prompt test
+    # speak its reply through edge-tts (speech.platform.bing.com).
+    monkeypatch.setenv("HERMES_VOICE_TTS", "0")
 
     tts_resp = server.dispatch(
         {"id": "voice-tts", "method": "voice.toggle", "params": {"action": "tts"}}

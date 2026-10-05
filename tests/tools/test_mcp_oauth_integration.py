@@ -18,6 +18,7 @@ import pytest
 pytest.importorskip("mcp.client.auth.oauth2", reason="MCP SDK 1.26.0+ required")
 
 
+@pytest.mark.usefixtures("no_oauth_metadata_prefetch")  # no real /.well-known fetch
 @pytest.mark.asyncio
 async def test_external_refresh_picked_up_without_restart(tmp_path, monkeypatch):
     """Simulate Cthulhu's cron workflow end-to-end.

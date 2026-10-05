@@ -23,6 +23,12 @@ from tools.homeassistant_tool import (
 )
 
 
+def _unreachable_home_assistant(coro):
+    """``_run_async`` stand-in: the HA instance is unreachable (no real HTTP)."""
+    coro.close()
+    raise ConnectionError("Cannot connect to host homeassistant.local:8123")
+
+
 # ---------------------------------------------------------------------------
 # Sample HA state data (matches real HA /api/states response shape)
 # ---------------------------------------------------------------------------
@@ -231,9 +237,10 @@ class TestDomainBlocklist:
         assert "error" in result
         assert "blocked" in result["error"].lower()
 
-    def test_safe_domain_not_blocked(self):
-        """Safe domains like 'light' should not be blocked (will fail on network, not blocklist)."""
-        # This will try to make a real HTTP call and fail, but the important thing
+    @patch("tools.homeassistant_tool._run_async", side_effect=_unreachable_home_assistant)
+    def test_safe_domain_not_blocked(self, _offline_ha):
+        """Safe domains like 'light' should not be blocked (fail on the network, not the blocklist)."""
+        # The HA call fails like an unreachable instance; the important thing
         # is it does NOT return a "blocked" error
         result = json.loads(_handle_call_service({
             "domain": "light", "service": "turn_on", "entity_id": "light.test"
@@ -295,9 +302,10 @@ class TestEntityIdValidation:
         assert "error" in result
         assert "Invalid entity_id" in result["error"]
 
-    def test_call_service_allows_no_entity_id(self):
+    @patch("tools.homeassistant_tool._run_async", side_effect=_unreachable_home_assistant)
+    def test_call_service_allows_no_entity_id(self, _offline_ha):
         """Some services (like scene.turn_on) don't need entity_id."""
-        # Will fail on network, but should NOT fail on entity_id validation
+        # Fails like an unreachable instance, but NOT on entity_id validation
         result = json.loads(_handle_call_service({
             "domain": "scene", "service": "turn_on"
         }))

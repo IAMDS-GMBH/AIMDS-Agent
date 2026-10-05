@@ -9,7 +9,19 @@ always either a bug or prompt-injection-controlled
 
 import json
 
+import pytest
+
 from tools.tts_tool import text_to_speech_tool
+
+
+@pytest.fixture(autouse=True)
+def _offline_edge_tts(monkeypatch):
+    """Paths that pass the guard reach the default Edge TTS provider, which
+    streams from speech.platform.bing.com. Fail it like an offline machine."""
+    async def _unreachable(*_args, **_kwargs):
+        raise ConnectionError("speech.platform.bing.com unreachable")
+
+    monkeypatch.setattr("tools.tts_tool._generate_edge_tts", _unreachable)
 
 
 def test_output_path_rejects_traversal_escape():

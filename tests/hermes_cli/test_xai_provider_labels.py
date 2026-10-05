@@ -4,8 +4,14 @@ from hermes_cli.models import provider_label
 from hermes_cli.providers import get_label
 
 
-def test_xai_oauth_provider_label_is_not_collapsed_to_api_key_label():
+def test_xai_oauth_provider_label_is_not_collapsed_to_api_key_label(monkeypatch):
     """The model picker must distinguish xAI API-key and OAuth providers."""
+    # The API-key label ("xAI") comes from the models.dev catalog: pin it
+    # instead of reading the live registry (AIS-487).
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda *a, **k: {"xai": {"id": "xai", "name": "xAI", "env": ["XAI_API_KEY"], "models": {}}},
+    )
     assert get_label("xai") == "xAI"
     assert get_label("xai-oauth") == "xAI Grok OAuth (SuperGrok / Premium+)"
     assert get_label("grok-oauth") == "xAI Grok OAuth (SuperGrok / Premium+)"
