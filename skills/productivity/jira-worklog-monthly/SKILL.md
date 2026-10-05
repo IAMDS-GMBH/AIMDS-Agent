@@ -7,6 +7,7 @@ metadata:
     requires_tools:
       - worklog
       - sql
+      - jira_get_worklog
 ---
 
 # Jira & Tempo Monthly Worklog & Comment Pagination Strategy

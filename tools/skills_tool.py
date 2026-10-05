@@ -632,7 +632,7 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
 
 
 def _find_all_skills(
-    *, skip_disabled: bool = False, include_source: bool = False
+    *, skip_disabled: bool = False, include_source: bool = False, include_conditions: bool = False
 ) -> List[Dict[str, Any]]:
     """Recursively find all skills in ~/.hermes/skills/ and external dirs.
 
@@ -712,6 +712,18 @@ def _find_all_skills(
                     "description": description,
                     "category": category,
                 }
+                # AIS-484: requires/fallback conditions, so listings can hide
+                # skills whose MCP tools are not set up. Internal key, never
+                # serialised to the model.
+                if include_conditions:
+                    try:
+                        from agent.skill_utils import extract_skill_conditions
+
+                        conditions = extract_skill_conditions(frontmatter)
+                        if any(conditions.values()):
+                            entry["_conditions"] = conditions
+                    except Exception:
+                        pass
                 if include_source:
                     entry["path"] = str(skill_md)
                     try:
@@ -730,6 +742,42 @@ def _find_all_skills(
                 continue
 
     return skills
+
+
+def reachable_tool_names() -> Set[str]:
+    """Tools this process can actually call (check_fn passing)."""
+    try:
+        names = {getattr(e, "name", "") for e in registry._snapshot_entries()}
+        defs = registry.get_definitions({n for n in names if n}, quiet=True)
+        return {(d.get("function") or {}).get("name", "") for d in defs} - {""}
+    except Exception:
+        return set()
+
+
+def filter_skills_by_tools(
+    skills: List[Dict[str, Any]],
+    tool_names: Optional[Set[str]],
+    toolsets: Optional[Set[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Drop skills whose requires/fallback conditions fail for ``tool_names``
+    (AIS-484) — the same rule the system-prompt skill index applies, so a
+    Jira skill never surfaces without Jira tools. ``None`` keeps everything."""
+    if tool_names is None:
+        return skills
+    from agent.prompt_builder import _skill_should_show
+
+    if toolsets is None:
+        toolsets = {
+            ts for ts in (registry.get_toolset_for_tool(name) for name in tool_names) if ts
+        }
+    return [
+        s for s in skills
+        if not s.get("_conditions") or _skill_should_show(s["_conditions"], set(tool_names), set(toolsets))
+    ]
+
+
+def _public_skill(skill: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in skill.items() if not k.startswith("_")}
 
 
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -765,7 +813,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
             )
 
         # Find all skills
-        all_skills = _find_all_skills()
+        all_skills = _find_all_skills(include_conditions=True)
 
         if not all_skills:
             return json.dumps(
@@ -782,8 +830,13 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         if category:
             all_skills = [s for s in all_skills if s.get("category") == category]
 
+        # AIS-484: skills for tools this process cannot reach stay out.
+        reachable = reachable_tool_names()
+        if reachable:
+            all_skills = filter_skills_by_tools(all_skills, reachable)
+
         # Sort by category then name
-        all_skills = _sort_skills(all_skills)
+        all_skills = [_public_skill(s) for s in _sort_skills(all_skills)]
 
         # Extract unique categories
         categories = sorted(
