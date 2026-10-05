@@ -298,3 +298,22 @@ def test_status_endpoint_reports_the_decision(env):
     assert body["hide_local"] == ["OpenProjectMCP"]
     assert body["suite_login"] == "jh"
     assert {"name": "OpenProjectMCP", "instance": "https://op.example.com"} in body["locals"]
+
+
+def test_tool_definition_cache_follows_the_decision(env):
+    """AIS-479: get_tool_definitions memoises the check_fn-filtered result;
+    its key must change when the OpenProject decision does."""
+    import model_tools
+
+    _, set_suite, _ = env
+    assert model_tools._openproject_decision_fingerprint() is None
+
+    set_suite({"linked": True, "instance": "https://op.example.com"})
+    ops.run_once()
+    ops._invalidate_cache()
+    assert model_tools._openproject_decision_fingerprint() == (("OpenProjectMCP",), False)
+
+    set_suite({"linked": True, "instance": "https://elsewhere.example.com"})
+    ops.run_once()
+    ops._invalidate_cache()
+    assert model_tools._openproject_decision_fingerprint() is None

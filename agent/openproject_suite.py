@@ -183,6 +183,17 @@ def _fresh(state: Dict[str, Any]) -> bool:
         return False
 
 
+def decision_fingerprint() -> Optional[tuple]:
+    """What is hidden now — part of the tool-definition cache key, so a
+    switch (or the decision going stale) re-assembles the tool list."""
+    state = _current_state()
+    if not state or not _fresh(state):
+        return None
+    hide_local = tuple(sorted(state.get("hide_local") or []))
+    hide_suite = bool(state.get("hide_suite"))
+    return (hide_local, hide_suite) if hide_local or hide_suite else None
+
+
 def tool_hidden(server_name: str, mcp_tool_name: str) -> bool:
     """check_fn hook: hide this server's ``pm_*`` tool for the current turn?"""
     if not is_pm_tool(mcp_tool_name):
