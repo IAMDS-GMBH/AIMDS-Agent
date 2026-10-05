@@ -9,6 +9,7 @@ project tickets) and other state tables cleanly without executing terminal/bash 
 
 import json
 import logging
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -60,6 +61,56 @@ def _default_db_path() -> Path:
     return get_hermes_home() / "state.db"
 
 
+_TABLE_REF_RE = re.compile(r"\b(?:from|join|into|update|table)\s+[\"`\[]?([A-Za-z_][A-Za-z0-9_]*)", re.I)
+_MAX_TABLES_LISTED = 40
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> List[str]:
+    return [row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')]
+
+
+def _schema_hint(conn: sqlite3.Connection, query: str, exc: Exception) -> str:
+    """Real schema for a failed query, so the model stops guessing names.
+
+    A guessed column ("no such column: subject") used to come back as a bare
+    SQLite error; the model retried with the next guess and then answered
+    from nothing. Deterministic: the referenced tables' actual columns, or the
+    list of tables when the table itself does not exist.
+    """
+    message = str(exc).lower()
+    if "no such column" not in message and "no such table" not in message:
+        return ""
+    try:
+        existing = {
+            row[0].lower(): row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table','view') "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        }
+        referenced = []
+        for name in _TABLE_REF_RE.findall(query):
+            real = existing.get(name.lower())
+            if real and real not in referenced:
+                referenced.append(real)
+        parts = [f"{t}({', '.join(_table_columns(conn, t))})" for t in referenced]
+        if not parts:
+            names = list(existing.values())
+            shown = ", ".join(names[:_MAX_TABLES_LISTED])
+            more = f" … (+{len(names) - _MAX_TABLES_LISTED})" if len(names) > _MAX_TABLES_LISTED else ""
+            return f" Tables: {shown}{more}."
+        hint = " Columns: " + "; ".join(parts) + "."
+        if "mcp_records" in referenced:
+            hint += (
+                " Tool-specific fields (subject, status, project, …) are inside raw_data: "
+                "json_extract(raw_data, '$.<field>'); title holds the subject/summary. "
+                "Inspect one row first: SELECT raw_data FROM mcp_records WHERE tool_name = '…' LIMIT 1."
+            )
+        return hint
+    except sqlite3.Error:
+        return ""
+
+
 def execute_sql(
     query: str,
     db_path: Optional[Path] = None,
@@ -79,6 +130,7 @@ def execute_sql(
     path = db_path or _default_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    conn: Optional[sqlite3.Connection] = None
     try:
         conn = sqlite3.connect(str(path), timeout=10.0)
         conn.set_authorizer(_sql_authorizer)
@@ -128,7 +180,8 @@ def execute_sql(
         logger.debug("SQL execution failed: %s", exc)
         if "not authorized" in str(exc).lower():
             return tool_error(f"Modification denied: System tables ({', '.join(sorted(READ_ONLY_TABLES))}) are read-only.")
-        return tool_error(f"SQLite error: {exc}")
+        hint = _schema_hint(conn, query, exc) if conn is not None else ""
+        return tool_error(f"SQLite error: {exc}.{hint}" if hint else f"SQLite error: {exc}")
 
 
 def check_sql_requirements() -> bool:
@@ -147,7 +200,8 @@ SQL_SCHEMA = {
         "2. Budget & Financial Calculations: SELECT 50000 - SUM(amount) AS remaining_budget, ROUND(SUM(amount)/50000.0 * 100, 2) AS pct_used FROM ...;\n"
         "3. Arbitrary Arithmetic & Formulas: SELECT ROUND((174.5 / 160.0 - 1.0) * 100, 2) AS deviation_pct;\n\n"
         "Available tables:\n"
-        "- mcp_records: (id, tool_name, reference_key, timestamp, user_id, duration_seconds, category, comment, raw_data, created_at) — "
+        "- mcp_records: (id, tool_name, tool_use_id, reference_key, title, timestamp, user_id, duration_seconds, category, comment, raw_data, created_at) — "
+        "title = subject/summary of the row; every other tool-specific field is in raw_data (json_extract(raw_data, '$.status')); "
         "a MIRROR of past tool fetches, not live data: a fetch replaces only its requested date window; created_at = when a row was last "
         "seen upstream. If the user says upstream data changed, re-fetch the affected range; stale-range repair: "
         "DELETE FROM mcp_records WHERE tool_name='...' AND substr(timestamp,1,10) BETWEEN '...' AND '...', then re-fetch.\n"
