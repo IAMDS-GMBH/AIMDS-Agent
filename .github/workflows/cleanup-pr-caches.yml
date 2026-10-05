@@ -1,0 +1,38 @@
+name: Cleanup PR caches
+
+# Deletes all GitHub Actions caches of a pull request once it is closed or merged.
+# PR caches can only be used by that PR, but they count toward the 10 GB repo limit
+# and push the caches of the default branch out (DEVOPS-108).
+#
+# pull_request_target so the token can delete caches for PRs from forks and Dependabot
+# as well. This is safe here: the job never checks out or runs code from the PR.
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    name: Delete caches of the closed PR
+    runs-on: ${{ vars.RUNNER_LABEL }}
+    steps:
+      - name: Delete caches of refs/pull/${{ github.event.pull_request.number }}/merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: |
+          ids="$(gh cache list --ref "$REF" --limit 1000 --json id --jq '.[].id')"
+          if [ -z "$ids" ]; then
+            echo "No caches for $REF"
+            exit 0
+          fi
+          count=0
+          for id in $ids; do
+            gh cache delete "$id"
+            count=$((count + 1))
+          done
+          echo "Deleted $count caches for $REF"

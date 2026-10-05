@@ -375,7 +375,10 @@ jobs:
         uses: actions/setup-node@v7.0.0 # v6
         with:
           node-version: 22
-          cache: npm
+          # GitHub npm cache only on the GitHub-hosted macOS runner. The self-hosted
+          # Windows runner keeps its per-instance npm cache on local disk, and the
+          # Linux runner has ~/.npm on its persistent cache volume (DEVOPS-108).
+          cache: ${{ runner.os == 'macOS' && 'npm' || '' }}
 
       - name: Install npm dependencies
         run: npm ci
@@ -849,7 +852,10 @@ jobs:
         uses: actions/setup-node@v7.0.0 # v6
         with:
           node-version: 22
-          cache: npm
+          # GitHub npm cache only on the GitHub-hosted macOS runner. The self-hosted
+          # Windows runner keeps its per-instance npm cache on local disk, and the
+          # Linux runner has ~/.npm on its persistent cache volume (DEVOPS-108).
+          cache: ${{ runner.os == 'macOS' && 'npm' || '' }}
 
       - name: Install npm dependencies
         run: npm ci
