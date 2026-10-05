@@ -375,9 +375,9 @@ def build_data_handling_guidance(valid_tool_names: "set[str] | None" = None) -> 
     if has_sql:
         rungs.append(
             "Large or structured tool results are auto-ingested into SQLite `mcp_records` "
-            "(~/.hermes/state.db; columns id, tool_name, tool_use_id, reference_key, timestamp, "
+            "(~/.hermes/state.db; columns id, tool_name, tool_use_id, reference_key, title, timestamp, "
             "user_id, duration_seconds, category, comment, raw_data — raw_data is the full JSON "
-            "row). A tool result ending in `[ingested N rows → mcp_records …]` or carrying a "
+            "row; other fields via json_extract(raw_data, '$.<field>')). A tool result ending in `[ingested N rows → mcp_records …]` or carrying a "
             "`_shaped` block is a bounded view: the complete rows are in the table — "
             "`SELECT raw_data FROM mcp_records WHERE tool_use_id = '<id>'` — do not re-fetch, "
             "parse the JSON by hand, or read a persisted-output file back. Aggregate, sum, group "

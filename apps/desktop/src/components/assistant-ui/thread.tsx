@@ -27,6 +27,7 @@ import {
   useState
 } from 'react'
 
+import { setComposerText } from '@/app/chat/composer/composer-text'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from '@/app/chat/composer/drop-affordance'
 import {
   type ComposerInsertMode,
@@ -1091,7 +1092,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
       const next = `${base}${sep}${value}`
 
       draftRef.current = next
-      aui.composer().setText(next)
+      setComposerText(aui, next)
 
       const editor = editorRef.current
 
@@ -1151,7 +1152,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       if (nextDraft !== draftRef.current) {
         draftRef.current = nextDraft
-        aui.composer().setText(nextDraft)
+        setComposerText(aui, nextDraft)
       }
 
       return nextDraft
@@ -1228,7 +1229,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       const finish = () => {
         draftRef.current = composerPlainText(editor)
-        aui.composer().setText(draftRef.current)
+        setComposerText(aui, draftRef.current)
         requestEditFocus()
         starter ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
       }
@@ -1288,7 +1289,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
       }
 
       draftRef.current = nextDraft
-      aui.composer().setText(nextDraft)
+      setComposerText(aui, nextDraft)
       requestEditFocus()
 
       return true

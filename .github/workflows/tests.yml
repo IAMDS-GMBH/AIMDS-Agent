@@ -160,16 +160,22 @@ jobs:
         with:
           pattern: test-durations-slice-*
           path: durations
-          merge-multiple: true
+          # One directory per slice: every artifact holds a file named
+          # test_durations.json, and merge-multiple extracted them onto the
+          # same path (one slice survived, or the JSON came out interleaved).
+          merge-multiple: false
 
       - name: Merge into single durations file
         run: |
           python3 -c "
           import json, glob, os
           merged = {}
-          for f in glob.glob('durations/*test_durations.json'):
-            with open(f) as fh:
-              merged.update(json.load(fh))
+          for f in sorted(glob.glob('durations/*/test_durations.json')):
+            try:
+              with open(f) as fh:
+                merged.update(json.load(fh))
+            except ValueError as exc:
+              print(f'::warning::skipping unreadable {f}: {exc}')
           with open('test_durations.json', 'w') as fh:
             json.dump(merged, fh, indent=2, sort_keys=True)
           print(f'Merged {len(merged)} file durations')

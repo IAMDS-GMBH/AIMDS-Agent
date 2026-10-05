@@ -25,6 +25,7 @@ Usage:
     result = file_ops.search("TODO", path=".", file_glob="*.py")
 """
 
+import logging
 import os
 import re
 import difflib
@@ -39,6 +40,8 @@ from agent.file_safety import (
     build_write_denied_prefixes,
     is_write_denied as _shared_is_write_denied,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +245,7 @@ class SearchResult:
     total_count: int = 0
     truncated: bool = False
     error: Optional[str] = None
+    note: Optional[str] = None
     
     def to_dict(self) -> dict:
         result = {"total_count": self.total_count}
@@ -258,6 +262,8 @@ class SearchResult:
             result["truncated"] = True
         if self.error:
             result["error"] = self.error
+        if self.note:
+            result["note"] = self.note
         return result
 
 
@@ -653,6 +659,29 @@ def normalize_read_pagination(offset: Any = DEFAULT_READ_OFFSET,
     normalized_limit = _coerce_int(limit, DEFAULT_READ_LIMIT)
     normalized_limit = max(1, min(normalized_limit, max_lines))
     return normalized_offset, normalized_limit
+
+
+_REGEX_ERROR_MARKERS = (
+    "regex parse error",           # ripgrep
+    "repetition operator missing expression",
+    "invalid preceding regular expression",  # GNU grep
+    "unmatched ( or \\(",
+    "unmatched [",
+    "invalid regular expression",
+)
+
+
+def _regex_error_hint(message: str) -> str:
+    """One deterministic hint for the classic glob-as-regex mistake ("*DevOps*")."""
+    lowered = message.lower()
+    if not any(marker in lowered for marker in _REGEX_ERROR_MARKERS):
+        return ""
+    return (
+        "\nHint: content search takes a regular expression (ripgrep syntax), not a glob. "
+        "'*' is not a wildcard: search for the plain word (DevOps), use '.*' between parts "
+        "(Dev.*Ops), and escape literal ( ) [ ] . * + ? with a backslash. File-name globs go "
+        "with target='files' or file_glob."
+    )
 
 
 def normalize_search_pagination(offset: Any = DEFAULT_SEARCH_OFFSET,
@@ -1920,9 +1949,39 @@ class ShellFileOperations(FileOperations):
         
         if target == "files":
             return self._search_files(pattern, path, limit, offset)
-        else:
-            return self._search_content(pattern, path, file_glob, limit, offset, 
-                                        output_mode, context)
+
+        cloud = self._cloud_search_plan(path)
+        if cloud is not None and cloud.refuse:
+            return SearchResult(error=cloud.refuse, total_count=0)
+        result = self._search_content(pattern, path, file_glob, limit, offset,
+                                      output_mode, context, cloud=cloud)
+        if cloud is not None and cloud.active and not result.error:
+            result.note = cloud.note()
+        return result
+
+    def _cloud_guard_enabled(self) -> bool:
+        """Only a local Windows backend sees OneDrive placeholders directly."""
+        from tools.environments.local import _IS_WINDOWS, LocalEnvironment
+
+        return _IS_WINDOWS and isinstance(self.env, LocalEnvironment)
+
+    def _cloud_search_plan(self, path: str):
+        """Skip online-only OneDrive files so a content search never downloads them."""
+        try:
+            if not self._cloud_guard_enabled():
+                return None
+            from tools import cloud_sync_guard
+            from tools.environments.local import _msys_to_windows_path
+
+            roots = cloud_sync_guard.sync_roots()
+            if not roots:
+                return None
+            base = _msys_to_windows_path(getattr(self.env, "cwd", None) or self.cwd)
+            native = _msys_to_windows_path(path)
+            return cloud_sync_guard.plan_content_search(os.path.join(base, native), roots)
+        except Exception as exc:  # the guard must never break search itself
+            logger.debug("cloud sync guard skipped: %s", exc)
+            return None
     
     def _search_files(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name pattern (glob-like)."""
@@ -2054,15 +2113,23 @@ class ShellFileOperations(FileOperations):
         )
     
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
-                        limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
+                        limit: int, offset: int, output_mode: str, context: int,
+                        cloud=None) -> SearchResult:
         """Search for content inside files (grep-like)."""
         # Try ripgrep first (fast), fallback to grep (slower but works)
         if self._has_command('rg'):
             return self._search_with_rg(pattern, path, file_glob, limit, offset, 
-                                        output_mode, context)
+                                        output_mode, context, cloud=cloud)
         elif self._has_command('grep'):
+            if cloud is not None and cloud.cloud_only_files:
+                return SearchResult(
+                    error=f"{path} contains {len(cloud.cloud_only_files)} online-only (OneDrive) file(s); "
+                          "grep cannot skip them and would download them. Install ripgrep (rg), "
+                          "search a folder with downloaded files, or search file names (target='files').",
+                    total_count=0,
+                )
             return self._search_with_grep(pattern, path, file_glob, limit, offset,
-                                          output_mode, context)
+                                          output_mode, context, cloud=cloud)
         else:
             # Neither rg nor grep available (Windows without Git Bash, etc.)
             return SearchResult(
@@ -2071,7 +2138,8 @@ class ShellFileOperations(FileOperations):
             )
     
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
-                        limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
+                        limit: int, offset: int, output_mode: str, context: int,
+                        cloud=None) -> SearchResult:
         """Search using ripgrep."""
         cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
         
@@ -2079,6 +2147,16 @@ class ShellFileOperations(FileOperations):
         for sys_dir in ("Music", "Movies", "Pictures", "Library", ".Trash"):
             cmd_parts.extend(["--glob", self._escape_shell_arg(f"!{sys_dir}/**")])
             cmd_parts.extend(["--glob", self._escape_shell_arg(f"!**/{sys_dir}/**")])
+
+        ignore_file = None
+        if cloud is not None:
+            for rel in cloud.skipped_roots:
+                cmd_parts.extend(["--glob", self._escape_shell_arg(f"!{rel}/**")])
+            if cloud.cloud_only_files:
+                from tools.cloud_sync_guard import write_ignore_file
+
+                ignore_file = write_ignore_file(cloud.cloud_only_files)
+                cmd_parts.extend(["--ignore-file", self._escape_shell_arg(ignore_file)])
         
         # Add context if requested
         if context > 0:
@@ -2110,7 +2188,14 @@ class ShellFileOperations(FileOperations):
         # truncating head cleanly (exit 0 on SIGPIPE), so pipefail does not
         # introduce false errors on a successful-but-truncated search.
         cmd = "set -o pipefail; " + " ".join(cmd_parts)
-        result = self._exec(cmd, timeout=60)
+        try:
+            result = self._exec(cmd, timeout=60)
+        finally:
+            if ignore_file:
+                try:
+                    os.unlink(ignore_file)
+                except OSError:
+                    pass
 
         # _exec merges stderr into stdout (stderr=subprocess.STDOUT), so rg's
         # diagnostic lines ("rg: <file>: <error>", "rg: regex parse error:")
@@ -2124,7 +2209,7 @@ class ShellFileOperations(FileOperations):
         # usable match payload remains. Otherwise we keep the real matches.
         if result.exit_code == 2 and not payload.strip():
             error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
-            return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
+            return SearchResult(error=f"Search failed: {error_msg}{_regex_error_hint(error_msg)}", total_count=0)
 
         # Parse the diagnostic-free payload so error text never becomes a match.
         stdout = payload
@@ -2190,7 +2275,8 @@ class ShellFileOperations(FileOperations):
             )
     
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
-                          limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
+                          limit: int, offset: int, output_mode: str, context: int,
+                          cloud=None) -> SearchResult:
         """Fallback search using grep."""
         cmd_parts = ["grep", "-rnH"]  # -H forces filename even for single-file searches
         
@@ -2199,6 +2285,9 @@ class ShellFileOperations(FileOperations):
         cmd_parts.append("--exclude-dir='.*'")
         for sys_dir in ("Music", "Movies", "Pictures", "Library", ".Trash"):
             cmd_parts.extend(["--exclude-dir", self._escape_shell_arg(sys_dir)])
+        # grep matches --exclude-dir against directory base names only.
+        for rel in (cloud.skipped_roots if cloud is not None else ()):
+            cmd_parts.extend(["--exclude-dir", self._escape_shell_arg(rel.rsplit("/", 1)[-1])])
         
         # Add context if requested
         if context > 0:
@@ -2242,7 +2331,7 @@ class ShellFileOperations(FileOperations):
         # usable match payload remains.
         if result.exit_code == 2 and not payload.strip():
             error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
-            return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
+            return SearchResult(error=f"Search failed: {error_msg}{_regex_error_hint(error_msg)}", total_count=0)
 
         stdout = payload
         if output_mode == "files_only":

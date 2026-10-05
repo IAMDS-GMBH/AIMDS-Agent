@@ -107,3 +107,35 @@ def test_default_db_path_follows_hermes_home_at_call_time(tmp_path: Path, monkey
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     execute_sql("INSERT INTO mcp_records (id, reference_key) VALUES ('h', 'A-1')")
     assert (tmp_path / "home" / "state.db").exists()
+
+
+def test_unknown_column_lists_real_columns(tmp_path: Path):
+    """A guessed column must come back with the table's actual schema."""
+    db_file = tmp_path / "state.db"
+    res = json.loads(execute_sql("SELECT subject FROM mcp_records WHERE tool_name LIKE '%pm_%'", db_path=db_file))
+    err = res["error"]
+    assert "no such column: subject" in err
+    assert "mcp_records(" in err and "raw_data" in err and "title" in err
+    assert "json_extract(raw_data" in err
+
+
+def test_unknown_column_in_join_lists_each_table(tmp_path: Path):
+    db_file = tmp_path / "state.db"
+    execute_sql("CREATE TABLE notes (id TEXT, body TEXT)", db_path=db_file)
+    res = json.loads(execute_sql(
+        "SELECT n.missing FROM notes n JOIN mcp_records m ON m.id = n.id", db_path=db_file))
+    assert "notes(id, body)" in res["error"]
+    assert "mcp_records(" in res["error"]
+
+
+def test_unknown_table_lists_tables(tmp_path: Path):
+    db_file = tmp_path / "state.db"
+    res = json.loads(execute_sql("SELECT * FROM work_packages", db_path=db_file))
+    assert "no such table: work_packages" in res["error"]
+    assert "Tables:" in res["error"] and "mcp_records" in res["error"]
+
+
+def test_other_errors_carry_no_schema_hint(tmp_path: Path):
+    db_file = tmp_path / "state.db"
+    res = json.loads(execute_sql("SELEC 1", db_path=db_file))
+    assert "Columns:" not in res["error"] and "Tables:" not in res["error"]
