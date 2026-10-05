@@ -42,9 +42,26 @@ import type { RpcEvent } from '@/types/hermes'
 // retries, so a slow-but-healthy boot is never cut short from here.
 export const BOOT_WATCHDOG_MS = 240_000
 
-function withBootWatchdog<T>(promise: Promise<T>, ms: number, message: () => string): Promise<T> {
+// The main process waits on the user here (macOS Files & Folders dialog);
+// that wait has no deadline, so neither has the watchdog (AIS-482).
+export const BOOT_WAITING_ON_USER_PHASES = new Set(['backend.permission'])
+
+export class BootWatchdogTimeout extends Error {}
+
+export function withBootWatchdog<T>(
+  promise: Promise<T>,
+  ms: number,
+  message: () => string,
+  waitingOnUser: () => boolean = () => BOOT_WAITING_ON_USER_PHASES.has($desktopBoot.get().phase)
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(message())), ms)
+    let timer: ReturnType<typeof setTimeout>
+
+    const arm = () => {
+      timer = setTimeout(() => (waitingOnUser() ? arm() : reject(new BootWatchdogTimeout(message()))), ms)
+    }
+
+    arm()
     promise.then(
       value => {
         clearTimeout(timer)
@@ -349,9 +366,22 @@ export function useGatewayBoot({
 
     async function boot() {
       try {
-        const conn = await withBootWatchdog(desktop.getConnection(), BOOT_WATCHDOG_MS, () =>
-          translateNow('boot.errors.startupTimedOut')
-        )
+        const connection = desktop.getConnection()
+        let conn: Awaited<typeof connection>
+
+        try {
+          conn = await withBootWatchdog(connection, BOOT_WATCHDOG_MS, () => translateNow('boot.errors.startupTimedOut'))
+        } catch (err) {
+          if (!(err instanceof BootWatchdogTimeout) || cancelled) {
+            throw err
+          }
+
+          // AIS-482: say it takes too long, but keep waiting — a backend that
+          // comes up late (a permission answered after minutes) still boots
+          // instead of leaving the window on CONNECTING for good.
+          failDesktopBoot(err.message)
+          conn = await connection
+        }
 
         if (cancelled) {
           return

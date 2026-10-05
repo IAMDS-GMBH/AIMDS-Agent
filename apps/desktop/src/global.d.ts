@@ -60,6 +60,8 @@ declare global {
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
+      /** AIS-482: System Settings → Privacy & Security → Files and Folders (macOS). */
+      openPrivacySettings?: () => Promise<boolean>
       showItemInFolder?: (filePath: string) => Promise<boolean>
       openPath?: (filePath: string) => Promise<string>
       relaunchApp?: () => Promise<{ ok: boolean }>

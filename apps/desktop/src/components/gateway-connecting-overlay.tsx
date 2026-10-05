@@ -446,8 +446,10 @@ export function GatewayConnectingOverlay() {
   // AIS-352: while the main process waits on a macOS permission dialog or a
   // slow first start, say so instead of cycling the team messages — the user
   // has to act (click "Allow") or at least knows why nothing happens.
+  const waitingOnPermission = boot.phase === 'backend.permission'
+
   const stageHint =
-    boot.phase === 'backend.permission'
+    waitingOnPermission
       ? t.boot.hints.macosDocumentsPermission
       : boot.phase === 'backend.wait.slow'
         ? t.boot.hints.backendSlowStart
@@ -633,6 +635,22 @@ export function GatewayConnectingOverlay() {
           <div className="h-full bg-(--theme-primary) transition-all duration-300 ease-out" style={{ width: `${progressPct}%` }} />
         </div>
         <p className="mt-2 text-xs text-(--ui-text-secondary)">{stageHint ?? currentMessage}</p>
+        {waitingOnPermission && (
+          // AIS-482: the dialog can hide behind other windows; the same grant
+          // works from System Settings, and the waiting probe picks it up.
+          <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-(--ui-text-secondary)">
+            <span>{t.boot.hints.macosPermissionHidden}</span>
+            {window.hermesDesktop?.openPrivacySettings && (
+              <button
+                className="rounded-md border border-(--ui-stroke-secondary) px-2.5 py-1 font-medium text-foreground hover:bg-(--chrome-action-hover)"
+                onClick={() => void window.hermesDesktop?.openPrivacySettings?.()}
+                type="button"
+              >
+                {t.boot.hints.openPrivacySettings}
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

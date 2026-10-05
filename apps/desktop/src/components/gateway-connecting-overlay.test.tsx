@@ -1,5 +1,5 @@
-import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -146,5 +146,31 @@ describe('connecting overlay vs recovery surface', () => {
     expect(isRecoveryShown()).toBe(true)
     expect(screen.getByText(/use local gateway|lokales gateway/i)).toBeTruthy()
     expect(isConnectingShown()).toBe(false)
+  })
+})
+
+describe('macOS permission wait (AIS-482)', () => {
+  afterEach(() => {
+    delete (window as { hermesDesktop?: unknown }).hermesDesktop
+  })
+
+  it('offers System Settings while the main process waits on the Documents permission', () => {
+    const openPrivacySettings = vi.fn(async () => true)
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = { openPrivacySettings }
+    $desktopBoot.set({ ...$desktopBoot.get(), phase: 'backend.permission', running: true, visible: true })
+
+    render(<GatewayConnectingOverlay />)
+
+    fireEvent.click(screen.getByRole('button', { name: /System Settings|Systemeinstellungen/ }))
+    expect(openPrivacySettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows no settings button in other boot phases', () => {
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = { openPrivacySettings: vi.fn() }
+    $desktopBoot.set({ ...$desktopBoot.get(), phase: 'backend.wait', running: true, visible: true })
+
+    render(<GatewayConnectingOverlay />)
+
+    expect(screen.queryByRole('button', { name: /System Settings|Systemeinstellungen/ })).toBeNull()
   })
 })

@@ -7123,6 +7123,14 @@ ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
   mainWindow?.setTitleBarOverlay?.(getTitleBarOverlayOptions())
 })
 
+// AIS-482: a fixed target, not a renderer-supplied URL — openExternal stays
+// limited to http(s)/mailto/file.
+ipcMain.handle('hermes:openPrivacySettings', async () => {
+  if (process.platform !== 'darwin') return false
+  await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders')
+  return true
+})
+
 ipcMain.handle('hermes:openExternal', (_event, url) => {
   if (!openExternalUrl(url)) {
     throw new Error('Invalid external URL')
