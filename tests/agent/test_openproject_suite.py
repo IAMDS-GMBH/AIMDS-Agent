@@ -28,6 +28,9 @@ LINK_URL = "https://suite.example.com/connect/openproject/#one-time"
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # The decision file is this test's alone, however the home is resolved
+    # (a shared one leaked a previous test's decision on the CI runner).
+    monkeypatch.setattr(ops, "_state_path", lambda: tmp_path / "openproject_suite.json")
     import tools.mcp_tool as mcp_tool
 
     monkeypatch.setattr(mcp_tool, "_load_mcp_config", lambda: LOCAL_CFG)
