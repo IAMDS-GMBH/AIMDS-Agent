@@ -16,12 +16,17 @@ from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
 
 
-@pytest.fixture(autouse=True)
-def _no_background_title_generation(monkeypatch):
+@pytest.fixture(autouse=True, scope="module")
+def _no_background_title_generation():
     """A completed prompt starts a fire-and-forget title thread that calls the
-    default auxiliary model (the AIMDS Suite) — over the network and possibly
-    after the test ended. Tests of the title hook patch maybe_auto_title."""
-    monkeypatch.setattr("agent.title_generator.auto_title_session", lambda *a, **k: None)
+    default auxiliary model (the AIMDS Suite) over the network. The prompt
+    threads outlive their test, so a per-test patch was already undone when a
+    late thread reached the title hook (flaky network-guard errors in later
+    tests). Module scope keeps the stub up for every thread this file starts.
+    Tests of the title hook patch maybe_auto_title themselves."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("agent.title_generator.auto_title_session", lambda *a, **k: None)
+        yield
 
 
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
