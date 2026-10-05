@@ -69,16 +69,22 @@ class TestAtomicYamlWriteConcurrency:
         target = tmp_path / "config.yaml"
         order: list[str] = []
 
+        first_holds_lock = threading.Event()
+
         def _hold_lock(name, hold_time):
             with advisory_file_lock(target, timeout=5.0):
                 order.append(f"{name}-start")
+                if name == "first":
+                    first_holds_lock.set()
                 time.sleep(hold_time)
                 order.append(f"{name}-end")
 
         t1 = threading.Thread(target=_hold_lock, args=("first", 0.1))
         t2 = threading.Thread(target=_hold_lock, args=("second", 0.0))
         t1.start()
-        time.sleep(0.02)  # ensure t1 acquires the lock first
+        # Start the second writer only once the first really holds the lock;
+        # a fixed 20 ms sleep lost that race on a loaded CI runner.
+        assert first_holds_lock.wait(timeout=5)
         t2.start()
         t1.join(timeout=10)
         t2.join(timeout=10)
