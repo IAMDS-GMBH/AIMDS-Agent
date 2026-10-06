@@ -407,6 +407,46 @@ class TestSuiteBackend:
         gate = dc.suite_availability()
         assert gate.state == suite.DOCLING_ENDPOINT_UNAVAILABLE and "retry in" in gate.reason
 
+    def test_ingest_rejection_after_upload_sets_cooldown(self, monkeypatch, tmp_path):
+        """AIS-502: "upload not found or expired" after a successful upload pauses the Suite.
+
+        Before, every read uploaded the file again and left an orphaned staged copy.
+        """
+        _prod_key(monkeypatch)
+        monkeypatch.setattr(suite, "fetch_suite_health", lambda base, **kw: (HEALTH_UP, 200, ""))
+        calls = _install_suite_tools(monkeypatch)
+        import tools.registry as registry_module
+
+        def ingest_handler(args, **kw):
+            calls.append(("ingest", dict(args)))
+            if args.get("upload_id"):
+                return json.dumps({"error": f"upload not found or expired: {args['upload_id']}"})
+            return json.dumps({"result": json.dumps({"upload_url": "https://suite.example.test/customer-storage/upload"})})
+
+        registry_module.registry._entries[0].handler = ingest_handler
+        posts = []
+        import httpx
+
+        monkeypatch.setattr(httpx, "post", lambda *a, **k: (posts.append(1), _Response(200, {"upload_id": "u1"}))[1])
+        first = dc.convert_document(_docx(tmp_path / "a.docx"))
+        assert first.backend.startswith("local-")
+        assert first.suite_state == "ingest_rejected"
+        assert "upload not found or expired" in first.suite_reason
+        gate = dc.suite_availability()
+        assert gate.state == suite.DOCLING_ENDPOINT_UNAVAILABLE and "ingest rejected" in gate.reason
+        # a second document converts locally without another upload
+        second = dc.convert_document(_docx(tmp_path / "b.docx", paragraphs=("Other",)))
+        assert second.backend.startswith("local-") and len(posts) == 1
+
+    def test_unexpected_suite_error_sets_cooldown(self, monkeypatch, tmp_path):
+        _prod_key(monkeypatch)
+        monkeypatch.setattr(suite, "fetch_suite_health", lambda base, **kw: (HEALTH_UP, 200, ""))
+        _install_suite_tools(monkeypatch)
+        monkeypatch.setattr(dc, "_call_suite_tool", lambda suffix, args: (_ for _ in ()).throw(OSError("boom")))
+        result = dc.convert_document(_docx(tmp_path / "plan.docx"))
+        assert result.backend.startswith("local-") and result.suite_state == "error"
+        assert "retry in" in dc.suite_availability().reason
+
     def test_upload_401_marks_reauth(self, monkeypatch, tmp_path):
         _prod_key(monkeypatch)
         monkeypatch.setattr(suite, "fetch_suite_health", lambda base, **kw: (HEALTH_UP, 200, ""))

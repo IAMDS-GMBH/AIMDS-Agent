@@ -71,7 +71,7 @@ def find_existing(key: str, *, facade: Any = None) -> Optional[Dict[str, Any]]:
         for hit in facade.search(f"tag:{key}", limit=5) or []:
             tags = hit.get("tags") or []
             text = " ".join(str(v) for v in (hit.get("title"), hit.get("slug"), hit.get("content")) if v)
-            if key in tags or key in text:
+            if key in tags or key.lower() in tags or key in text:
                 return hit
     except Exception as exc:
         logger.debug("report lookup for %s failed: %s", key, exc)

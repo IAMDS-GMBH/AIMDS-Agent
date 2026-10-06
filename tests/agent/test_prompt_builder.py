@@ -2043,7 +2043,8 @@ class TestOpenProjectReadOnlyGuidance:
         from agent.prompt_builder import build_ticket_routing_guidance as g
         assert g({"mcp_AtlassianMCP_jira_search", "ticket_routing"}) == (
             "# Ticket systems in this session: Jira (`mcp_AtlassianMCP_jira_search`). "
-            "Tickets/work items mean this system unless the user names another."
+            "Tickets/work items mean this system unless the user names another. "
+            "The user's own items: Jira `currentUser()` — never guess logins, names or ids."
         )
 
 
@@ -2062,7 +2063,9 @@ class TestTicketSystemsLine:
             f"OpenProject via the AIMDS Suite (`{self.SUITE}list_work_packages`); "
             "OpenProject, local server (`mcp_op_pm_list_work_packages`). "
             "Tickets/work items without a named system: check every reachable system and label each "
-            "result with its system. For OpenProject use the AIMDS Suite tools; the local server is the fallback."
+            "result with its system. For OpenProject use the AIMDS Suite tools; the local server is the fallback. "
+            "The user's own items: Jira `currentUser()`, OpenProject `assignee=\"me\"` — never guess logins, "
+            "names or ids. OpenProject `project` takes an id or identifier; resolve a project name via pm_list_projects."
         )
 
     def test_suite_only(self):
@@ -2076,6 +2079,14 @@ class TestTicketSystemsLine:
         text = g({"mcp_AtlassianMCP_jira_create_issue", f"{self.SUITE}create_work_package", "ticket_routing", "clarify"})
         assert text.startswith("# Ticket routing: Jira and OpenProject are both connected")
         assert "\n# Ticket systems in this session: Jira (`mcp_AtlassianMCP_jira_create_issue`); OpenProject via the AIMDS Suite" in text
+
+    def test_openproject_self_reference_without_jira(self):
+        """AIS-502: guessed logins/names made the assignee filter fail with HTTP 400."""
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        text = g({f"{self.SUITE}list_work_packages"})
+        assert 'OpenProject `assignee="me"` — never guess logins, names or ids.' in text
+        assert "pm_list_projects" in text
+        assert "currentUser()" not in text
 
     def test_unrelated_pm_tools_are_not_openproject(self):
         from agent.prompt_builder import build_ticket_routing_guidance as g

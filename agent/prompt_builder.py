@@ -2568,7 +2568,7 @@ def build_jira_guidance(valid_tool_names: "set[str] | None" = None) -> str:
 
     guidance = (
         "# Jira Query & Result Optimization Strategy\n"
-        "- **Scope queries to active user**: When querying tickets, worklogs, or timesheets (e.g. 'my tickets', 'vacation', 'working hours'), ALWAYS filter JQL or query parameters by the active user (e.g., `assignee = currentUser()`, `worklogAuthor = currentUser()`, or filter by user ID/name). Do NOT fetch unfiltered company-wide or team-wide ticket lists unless explicitly asked!\n"
+        "- **Scope queries to active user**: When querying tickets, worklogs, or timesheets (e.g. 'my tickets', 'vacation', 'working hours'), ALWAYS filter JQL or query parameters by the active user via the server's self-reference (`assignee = currentUser()`, `worklogAuthor = currentUser()`) — never guess a login, name or account ID. Do NOT fetch unfiltered company-wide or team-wide ticket lists unless explicitly asked!\n"
         "- **Keep JQL specific**: Use precise JQL filters (e.g., `project = AIS AND assignee = currentUser() AND statusCategory != Done`). Avoid broad or unbounded JQL queries.\n"
         "- **Limit result count**: Always pass `limit` set to 10 or 15 (maximum 20) per search call to prevent large payload context overruns.\n"
         "- **Select essential fields only**: Always use `fields` parameter to request specific fields (e.g., `fields=\"key,summary,status,priority,assignee,updated\"`) rather than fetching full issue structures.\n"
@@ -2684,12 +2684,19 @@ def _ticket_systems_line(names: "set[str]", op_tools: "dict[str, dict[str, list[
     if not parts:
         return ""
     text = "# Ticket systems in this session: " + "; ".join(parts) + "."
+    # AIS-502: "my tickets" via the server's self-reference — a guessed login
+    # or display name made OpenProject's assignee filter fail with HTTP 400.
+    has_op = any(op_tools[k]["read"] + op_tools[k]["write"] for k in op_tools)
+    self_refs = (["Jira `currentUser()`"] if jira else []) + (["OpenProject `assignee=\"me\"`"] if has_op else [])
+    tail = f" The user's own items: {', '.join(self_refs)} — never guess logins, names or ids."
+    if has_op:
+        tail += " OpenProject `project` takes an id or identifier; resolve a project name via pm_list_projects."
     if len(parts) == 1:
-        return text + " Tickets/work items mean this system unless the user names another."
+        return text + " Tickets/work items mean this system unless the user names another." + tail
     text += " Tickets/work items without a named system: check every reachable system and label each result with its system."
     if op_tools["suite"]["read"] + op_tools["suite"]["write"] and op_tools["local"]["read"] + op_tools["local"]["write"]:
         text += " For OpenProject use the AIMDS Suite tools; the local server is the fallback."
-    return text
+    return text + tail
 
 
 def build_ticket_routing_guidance(valid_tool_names: "set[str] | None" = None) -> str:
