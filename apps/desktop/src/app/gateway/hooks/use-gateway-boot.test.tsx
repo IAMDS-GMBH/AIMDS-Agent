@@ -366,3 +366,67 @@ describe('useGatewayBoot waiting on the macOS permission (AIS-482)', () => {
     expect($desktopBoot.get().phase).toBe('renderer.ready')
   })
 })
+
+describe('useGatewayBoot after wake from sleep (AIS-519)', () => {
+  // Right after a wake the socket connects, but the backend's REST calls can
+  // still fail while it waits on the network. That must not raise the boot
+  // failure overlay — its Retry would restart a healthy backend.
+  function RefreshHarness(props: { refreshHermesConfig: () => Promise<void>; refreshSessions: () => Promise<void> }) {
+    useGatewayBoot({
+      handleGatewayEvent: () => undefined,
+      onConnectionReady: () => undefined,
+      onGatewayReady: () => undefined,
+      refreshHermesConfig: props.refreshHermesConfig,
+      refreshSessions: props.refreshSessions
+    })
+
+    return null
+  }
+
+  it('a failing settings refresh after the socket opened completes the boot without an error', async () => {
+    const refreshHermesConfig = vi.fn(async () => {
+      throw new Error('request timed out')
+    })
+
+    const refreshSessions = vi.fn(async () => undefined)
+
+    render(<RefreshHarness refreshHermesConfig={refreshHermesConfig} refreshSessions={refreshSessions} />)
+    await flushAsync()
+    await flushAsync()
+
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+    expect($desktopBoot.get().running).toBe(false)
+  })
+
+  it('the failed refresh is retried until it succeeds', async () => {
+    let fail = true
+
+    const refreshHermesConfig = vi.fn(async () => {
+      if (fail) {
+        throw new Error('request timed out')
+      }
+    })
+
+    const refreshSessions = vi.fn(async () => undefined)
+
+    render(<RefreshHarness refreshHermesConfig={refreshHermesConfig} refreshSessions={refreshSessions} />)
+    await flushAsync()
+    await flushAsync()
+    expect(refreshSessions).not.toHaveBeenCalled()
+
+    fail = false
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000)
+    })
+
+    expect(refreshHermesConfig).toHaveBeenCalledTimes(2)
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+
+    // Nothing pending any more: no further retries.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000)
+    })
+    expect(refreshHermesConfig).toHaveBeenCalledTimes(2)
+  })
+})

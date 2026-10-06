@@ -41,6 +41,8 @@ import type { RpcEvent } from '@/types/hermes'
 // the main process's own local readiness deadline (180 s) plus the spawn
 // retries, so a slow-but-healthy boot is never cut short from here.
 export const BOOT_WATCHDOG_MS = 240_000
+/** AIS-519: retries for settings/sessions that failed right after connecting. */
+const REFRESH_RETRY_LIMIT = 6
 
 // The main process waits on the user here (macOS Files & Folders dialog);
 // that wait has no deadline, so neither has the watchdog (AIS-482).
@@ -146,6 +148,41 @@ export function useGatewayBoot({
     // genuinely changes between reads).
     const gatewayOpen = () => gateway.connectionState === 'open'
 
+    // AIS-519: settings/sessions that failed to load right after connecting
+    // are fetched again — on a timer with backoff and on every wake signal.
+    let refreshPending = false
+    let refreshRetryTimer: ReturnType<typeof setTimeout> | null = null
+    let refreshRetryAttempt = 0
+
+    const retryRefresh = async () => {
+      if (cancelled || !refreshPending || !gatewayOpen()) {
+        return
+      }
+
+      try {
+        await callbacksRef.current.refreshHermesConfig()
+        await callbacksRef.current.refreshSessions()
+        refreshPending = false
+        refreshRetryAttempt = 0
+      } catch {
+        scheduleRefreshRetry()
+      }
+    }
+
+    function scheduleRefreshRetry() {
+      if (cancelled || refreshRetryTimer !== null || refreshRetryAttempt >= REFRESH_RETRY_LIMIT) {
+        return
+      }
+
+      // 5s, 10s, 20s … capped at 60s.
+      const delay = Math.min(60_000, 5_000 * 2 ** refreshRetryAttempt)
+      refreshRetryAttempt += 1
+      refreshRetryTimer = setTimeout(() => {
+        refreshRetryTimer = null
+        void retryRefresh()
+      }, delay)
+    }
+
     const clearReconnectTimer = () => {
       if (reconnectTimer !== null) {
         clearTimeout(reconnectTimer)
@@ -240,6 +277,8 @@ export function useGatewayBoot({
 
       if (!gatewayOpen()) {
         void attemptReconnect()
+      } else if (refreshPending) {
+        void retryRefresh()
       }
     }
 
@@ -418,24 +457,39 @@ export function useGatewayBoot({
           $activeGatewayProfile.set('default')
         }
 
-        setDesktopBootStep({
-          phase: 'renderer.config',
-          message: translateNow('boot.steps.loadingSettings'),
-          progress: 97
-        })
-        await ensureDefaultWorkspaceCwd()
-        await callbacksRef.current.refreshHermesConfig()
+        // AIS-519: the socket is open, so the backend is up. Settings and the
+        // session list are loaded over REST next; right after a wake from sleep
+        // those calls can fail while the backend still waits on the network. A
+        // failure here is a notice plus a retry, never a boot failure — the
+        // failure overlay's Retry would restart a healthy backend.
+        try {
+          setDesktopBootStep({
+            phase: 'renderer.config',
+            message: translateNow('boot.steps.loadingSettings'),
+            progress: 97
+          })
+          await ensureDefaultWorkspaceCwd()
+          await callbacksRef.current.refreshHermesConfig()
 
-        if (cancelled) {
-          return
+          if (cancelled) {
+            return
+          }
+
+          setDesktopBootStep({
+            phase: 'renderer.sessions',
+            message: translateNow('boot.steps.loadingSessions'),
+            progress: 99
+          })
+          await callbacksRef.current.refreshSessions()
+        } catch (err) {
+          if (cancelled) {
+            return
+          }
+
+          refreshPending = true
+          notifyError(err, translateNow('boot.errors.refreshAfterConnectFailed'))
+          scheduleRefreshRetry()
         }
-
-        setDesktopBootStep({
-          phase: 'renderer.sessions',
-          message: translateNow('boot.steps.loadingSessions'),
-          progress: 99
-        })
-        await callbacksRef.current.refreshSessions()
 
         completeDesktopBoot()
         bootCompleted = true
@@ -454,6 +508,11 @@ export function useGatewayBoot({
     return () => {
       cancelled = true
       clearReconnectTimer()
+
+      if (refreshRetryTimer !== null) {
+        clearTimeout(refreshRetryTimer)
+      }
+
       clearInterval(keepaliveTimer)
       offWorking()
       offAttention()

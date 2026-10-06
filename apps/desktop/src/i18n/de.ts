@@ -137,6 +137,7 @@ export const de
       backgroundExitedDuringStartup: 'Hermes-Hintergrundprozess beim Start beendet.',
       backendStopped: 'Backend gestoppt',
       desktopBootFailed: 'Desktop-Start fehlgeschlagen',
+      refreshAfterConnectFailed: 'Einstellungen oder Chats konnten noch nicht geladen werden – Hermes versucht es gleich erneut.',
       gatewaySignInRequired: 'Gateway-Anmeldung erforderlich',
       ipcBridgeUnavailable: 'Desktop-IPC-Bridge nicht verfügbar.',
       startupTimedOut: 'Hermes ist nicht rechtzeitig fertig gestartet.'
