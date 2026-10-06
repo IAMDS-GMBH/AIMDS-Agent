@@ -964,17 +964,28 @@ def init_agent(
         agent._fallback_chain = [fallback_model]
     else:
         agent._fallback_chain = []
+    _configured_chain = [f for f in agent._fallback_chain if not f.get("auto_fallback")]
+    # AIS-503: an AIMDS Suite primary gets an automatic chain (Suite router,
+    # cheap models of the key, another configured provider) around the
+    # configured one, resolved lazily at activation.
+    try:
+        from agent.auto_fallback import with_auto_fallbacks
+
+        agent._fallback_chain = with_auto_fallbacks(agent.provider, agent.model, agent._fallback_chain)
+    except Exception as exc:
+        logger.debug("automatic fallback chain skipped: %s", exc)
+        agent._fallback_chain = _configured_chain
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
     # Legacy attribute kept for backward compat (tests, external callers)
     agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
-    if agent._fallback_chain and not agent.quiet_mode:
-        if len(agent._fallback_chain) == 1:
-            fb = agent._fallback_chain[0]
+    if _configured_chain and not agent.quiet_mode:
+        if len(_configured_chain) == 1:
+            fb = _configured_chain[0]
             print(f"🔄 Fallback model: {fb['model']} ({fb['provider']})")
         else:
-            print(f"🔄 Fallback chain ({len(agent._fallback_chain)} providers): " +
-                  " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
+            print(f"🔄 Fallback chain ({len(_configured_chain)} providers): " +
+                  " → ".join(f"{f['model']} ({f['provider']})" for f in _configured_chain))
 
     # Operating posture (general / coding / developer) — resolved ONCE per
     # session and shared by the prompt builder and the conversation loop

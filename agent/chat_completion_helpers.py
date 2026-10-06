@@ -1107,10 +1107,19 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
     fb = agent._fallback_chain[agent._fallback_index]
     agent._fallback_index += 1
+    if fb.get("auto_fallback"):
+        # AIS-503: automatic entries resolve now — against the key's model
+        # list and the providers configured at this moment.
+        from agent.auto_fallback import resolve_entry
+
+        resolved = resolve_entry(agent, fb, reason=reason)
+        if resolved is None:
+            return agent._try_activate_fallback(reason)
+        fb = resolved
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:
-        return agent._try_activate_fallback()  # skip invalid, try next
+        return agent._try_activate_fallback(reason)  # skip invalid, try next
 
     # Skip entries that resolve to the current (provider, model) — falling
     # back to the same backend that just failed loops the failure. Compare
@@ -1125,7 +1134,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback skip: chain entry %s/%s matches current provider/model",
             fb_provider, fb_model,
         )
-        return agent._try_activate_fallback()
+        return agent._try_activate_fallback(reason)
     if (
         fb_base_url_for_dedup
         and current_base_url
@@ -1136,7 +1145,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback skip: chain entry base_url %s matches current backend",
             fb_base_url_for_dedup,
         )
-        return agent._try_activate_fallback()
+        return agent._try_activate_fallback(reason)
 
     # Use centralized router for client construction.
     # raw_codex=True because the main agent needs direct responses.stream()
@@ -1167,7 +1176,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             logger.warning(
                 "Fallback to %s failed: provider not configured",
                 fb_provider)
-            return agent._try_activate_fallback()  # try next in chain
+            return agent._try_activate_fallback(reason)  # try next in chain
         try:
             from hermes_cli.model_normalize import normalize_model_for_provider
 
@@ -1326,18 +1335,31 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 api_mode=agent.api_mode,
             )
 
-        agent._buffer_status(
-            f"🔄 Primary model failed — switching to fallback: "
-            f"{fb_model} via {fb_provider}"
-        )
+        if fb.get("auto_fallback"):
+            # AIS-503: say which model failed and that Hermes chose the
+            # replacement itself; the incident makes it visible to support.
+            agent._buffer_status(
+                f"🔄 {old_model} is not available right now — continuing with "
+                f"{fb_model} via {fb_provider} (automatic fallback)"
+            )
+            from agent.auto_fallback import report
+
+            report(agent, old_model, {**fb, "model": fb_model, "provider": fb_provider},
+                   reason=getattr(reason, "value", "") or "")
+        else:
+            agent._buffer_status(
+                f"🔄 Primary model failed — switching to fallback: "
+                f"{fb_model} via {fb_provider}"
+            )
         logger.info(
-            "Fallback activated: %s → %s (%s)",
+            "Fallback activated: %s → %s (%s)%s",
             old_model, fb_model, fb_provider,
+            f" [automatic: {fb['auto_fallback']}]" if fb.get("auto_fallback") else "",
         )
         return True
     except Exception as e:
         logger.error("Failed to activate fallback %s: %s", fb_model, e)
-        return agent._try_activate_fallback()  # try next in chain
+        return agent._try_activate_fallback(reason)  # try next in chain
 
 
 
