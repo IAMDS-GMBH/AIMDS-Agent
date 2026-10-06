@@ -116,6 +116,9 @@ def is_suite_provider(provider: Optional[str]) -> bool:
 
 # --------------------------------------------------------------------------- model choice (AIS-456)
 
+#: The Suite router — LiteLLM picks the model per request; always offered
+#: to Suite keys, so it is the first automatic fallback (AIS-503).
+SUITE_AUTO_MODEL = "AIMDS-Suite-Auto"
 #: The Suite's routing aliases: LiteLLM picks the model per request.
 SUITE_AUTO_MODEL_IDS = frozenset({"aimds-suite-auto", "auto", "iamds-auto"})
 #: Fast-model preference over today's LiteLLM catalog, used only when the

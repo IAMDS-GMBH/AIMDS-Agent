@@ -1639,6 +1639,13 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             entry for entry in fallback_chain
             if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
         ]
+    # AIS-503: the automatic part follows the new primary.
+    try:
+        from agent.auto_fallback import with_auto_fallbacks
+
+        fallback_chain = with_auto_fallbacks(new_provider, new_model, fallback_chain)
+    except Exception as exc:
+        logger.debug("automatic fallback chain skipped: %s", exc)
     agent._fallback_chain = fallback_chain
     agent._fallback_model = fallback_chain[0] if fallback_chain else None
 
