@@ -105,7 +105,11 @@ def test_m365_prefers_snapshot_tool_and_drops_bodies():
                         {"id": "m2", "received": "2026-09-08T06:30:00Z", "from_name": "Bob", "subject": "Read one", "isRead": True}],
         "todos": [{"id": "t1", "title": "Pay", "status": "notStarted", "due": "2026-09-09"},
                   {"id": "t2", "title": "Done thing", "status": "completed"}],
-        "teams": {"chats": [{"chat_id": "c1", "topic": "Team", "messages": [{"from": "Eve", "created": "2026-09-08T07:00:00Z", "preview": "ping"}]}]},
+        "teams": {"chats": [{"chat_id": "c1", "topic": "Team", "messages": [
+            {"from": "Eve", "created": "2026-09-08T07:00:00Z", "preview": "ping"},
+            # AIS-516: the user's own message is no news in their brief
+            {"from": "Me", "created": "2026-09-08T07:05:00Z", "preview": "pong", "from_me": True},
+        ]}]},
         "errors": [{"source": "teams", "error": "partial"}],
     }
     _ctx.responses = {"mcp_MSOffice365MCP_m365_brief_snapshot": snap}
@@ -118,7 +122,7 @@ def test_m365_prefers_snapshot_tool_and_drops_bodies():
     kinds = sorted((i.kind, i.key) for i in items)
     assert kinds == [("chat", "c1:2026-09-08T09:00+02:00:Eve"), ("event", "2026-09-08T0845-Daily"), ("mail", "m1"), ("task", "t1")]
     dump = json.dumps([i.__dict__ for i in items], default=str)
-    assert "SECRET BODY" not in dump and "Read one" not in dump and "Done thing" not in dump
+    assert "SECRET BODY" not in dump and "Read one" not in dump and "Done thing" not in dump and "pong" not in dump
     assert adapter.partial_errors == ["teams: partial"]
 
 
