@@ -127,11 +127,23 @@ def test_shared_descriptions_follow_the_suite(local_tools):
     suite = _snapshot()
     verbatim = {"pm_list_work_packages", "pm_search_work_packages", "pm_comment_work_package", "pm_list_boards",
                 "pm_get_board", "pm_list_meetings", "pm_get_meeting", "pm_create_meeting",
-                "pm_add_meeting_agenda_item", "pm_delete_time_entry", "pm_list_reference_data", "pm_list_users"}
+                "pm_add_meeting_agenda_item", "pm_delete_time_entry", "pm_list_reference_data", "pm_list_users",
+                "pm_get_work_package", "pm_list_work_package_activity"}
     for name in verbatim:
         assert local_tools[name]["description"] == suite[name]["description"], name
     for name in set(suite) - verbatim - {"pm_link_account", "pm_link_status", "pm_unlink_account", "pm_list_time_entries"}:
         assert local_tools[name]["description"].startswith(suite[name]["description"].split(". ")[0]), name
+
+
+def test_work_package_filter_descriptions_follow_the_suite(local_tools):
+    """The filter semantics (strict names, open/closed, open_only, groups) are
+    the Suite's since AIS-494, so their parameter texts are too."""
+    suite = _snapshot()
+    for name in ("pm_list_work_packages", "pm_search_work_packages"):
+        local_props = local_tools[name]["inputSchema"]["properties"]
+        for prop, spec in suite[name]["inputSchema"]["properties"].items():
+            if "description" in spec:
+                assert local_props[prop].get("description") == spec["description"], (name, prop)
 
 
 def test_manifest_enables_exactly_the_server_tools(monkeypatch):

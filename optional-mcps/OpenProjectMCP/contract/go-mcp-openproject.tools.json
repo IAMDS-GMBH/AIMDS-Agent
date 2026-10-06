@@ -1,6 +1,6 @@
 {
   "source": "IAMDS-GMBH/AIMDS-Suite container/go-mcp-openproject",
-  "commit": "36f81421",
+  "commit": "0c124f2b",
   "tools": [
     {
       "description": "Get a one-time link_url where the user connects (or replaces) their own OpenProject account — they enter their personal access token on that page, never in the chat. pm_link_status already returns a link_url when the account is not linked; use this tool to replace an existing link or token. Give the user exactly the returned link_url — never build a link yourself and never send the user to the OpenProject instance or its API. It is valid for about 10 minutes and only once. Afterwards call pm_link_status. No arguments.",
@@ -129,7 +129,7 @@
             "type": "string"
           },
           "group_by": {
-            "description": "Field to group results by, e.g. \"status\".",
+            "description": "Field to group results by, e.g. \"status\": adds groups [{value, count}] over the whole result.",
             "type": "string"
           },
           "limit": {
@@ -141,11 +141,11 @@
             "type": "integer"
           },
           "open_only": {
-            "description": "Restrict to not-closed work packages.",
+            "description": "Restrict to not-closed work packages (statuses with is_closed=false, see pm_list_reference_data). An explicit status still applies.",
             "type": "boolean"
           },
           "priority": {
-            "description": "Exact priority name or id.",
+            "description": "Priority name (case-insensitive) or id.",
             "type": "string"
           },
           "project": {
@@ -167,11 +167,11 @@
             "type": "array"
           },
           "status": {
-            "description": "Exact status name or id (not a meta-value like 'open'/'closed' — use open_only for that).",
+            "description": "Status name (case-insensitive) or id, or \"open\"/\"closed\". Unknown names are rejected with the valid list.",
             "type": "string"
           },
           "type": {
-            "description": "Exact work package type name or id.",
+            "description": "Work package type name (case-insensitive) or id.",
             "type": "string"
           },
           "updated_from": {
@@ -224,7 +224,7 @@
             "type": "string"
           },
           "group_by": {
-            "description": "Field to group results by, e.g. \"status\".",
+            "description": "Field to group results by, e.g. \"status\": adds groups [{value, count}] over the whole result.",
             "type": "string"
           },
           "limit": {
@@ -236,11 +236,11 @@
             "type": "integer"
           },
           "open_only": {
-            "description": "Restrict to not-closed work packages.",
+            "description": "Restrict to not-closed work packages (statuses with is_closed=false, see pm_list_reference_data). An explicit status still applies.",
             "type": "boolean"
           },
           "priority": {
-            "description": "Exact priority name or id.",
+            "description": "Priority name (case-insensitive) or id.",
             "type": "string"
           },
           "project": {
@@ -266,11 +266,11 @@
             "type": "array"
           },
           "status": {
-            "description": "Exact status name or id (not a meta-value like 'open'/'closed' — use open_only for that).",
+            "description": "Status name (case-insensitive) or id, or \"open\"/\"closed\". Unknown names are rejected with the valid list.",
             "type": "string"
           },
           "type": {
-            "description": "Exact work package type name or id.",
+            "description": "Work package type name (case-insensitive) or id.",
             "type": "string"
           },
           "updated_from": {
@@ -294,12 +294,19 @@
       "name": "pm_search_work_packages"
     },
     {
-      "description": "Get one work package by id, including its full description. Required: id. Optional: text_limit (truncate the description).",
+      "description": "Get one work package by id or display id (e.g. \"AIS-469\"), including its full description. Required: id. Optional: text_limit (truncate the description).",
       "inputSchema": {
         "properties": {
           "id": {
-            "description": "Work package id.",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Work package id or display id (e.g. 17806 or \"AIS-469\")."
           },
           "text_limit": {
             "description": "Truncate the description to this many characters.",
@@ -314,7 +321,7 @@
       "name": "pm_get_work_package"
     },
     {
-      "description": "Create a work package. Required: project (id or identifier), type (name or id), subject. Optional: description, status, priority, assignee (id, login, or \"me\"), parent (id), start_date, due_date (YYYY-MM-DD), estimated_time (ISO-8601 duration, e.g. \"PT8H\").",
+      "description": "Create a work package. Required: project (id or identifier), type (name or id), subject. Optional: description, status, priority, assignee (id, login, or \"me\"), parent (id or display id), start_date, due_date (YYYY-MM-DD), estimated_time (ISO-8601 duration, e.g. \"PT8H\").",
       "inputSchema": {
         "properties": {
           "assignee": {
@@ -330,7 +337,15 @@
             "type": "string"
           },
           "parent": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Parent work package id or display id."
           },
           "priority": {
             "type": "string"
@@ -374,7 +389,15 @@
             "type": "string"
           },
           "id": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Work package id or display id (e.g. 17806 or \"AIS-469\")."
           },
           "lock_version": {
             "description": "Optional; fetched automatically if omitted.",
@@ -408,7 +431,15 @@
             "type": "string"
           },
           "id": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Work package id or display id (e.g. 17806 or \"AIS-469\")."
           },
           "notify": {
             "type": "boolean"
@@ -423,11 +454,19 @@
       "name": "pm_comment_work_package"
     },
     {
-      "description": "List the comment/activity log for a work package, most recent first. Required: id. Optional: limit, text_limit (truncate each entry).",
+      "description": "List the comment/activity log for a work package, oldest first (limit keeps the most recent entries). Required: id (or display id). Optional: limit, text_limit (truncate each entry).",
       "inputSchema": {
         "properties": {
           "id": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Work package id or display id (e.g. 17806 or \"AIS-469\")."
           },
           "limit": {
             "type": "integer"
@@ -448,7 +487,15 @@
       "inputSchema": {
         "properties": {
           "id": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Work package id or display id (e.g. 17806 or \"AIS-469\")."
           }
         },
         "required": [
@@ -463,12 +510,26 @@
       "inputSchema": {
         "properties": {
           "id": {
-            "description": "The work package the relation is created from.",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "The work package the relation is created from (id or display id)."
           },
           "related_to_id": {
-            "description": "The work package to relate to.",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "The work package to relate to (id or display id)."
           },
           "relation_type": {
             "type": "string"
@@ -620,7 +681,15 @@
             "type": "string"
           },
           "work_package_id": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Work package to link the new agenda item to (id or display id)."
           }
         },
         "required": [
@@ -631,7 +700,7 @@
       "name": "pm_add_meeting_agenda_item"
     },
     {
-      "description": "List logged time entries with structured filters. Required: at least one of project, work_package_id. Optional: user (id, login, or \"me\"), spent_on_from/spent_on_to (YYYY-MM-DD range), limit, offset. work_package_id is filtered client-side (OpenProject's API has no server-side filter for it), so scope with project/spent_on_from/spent_on_to when possible to keep the scan small.",
+      "description": "List logged time entries with structured filters. No required arguments: without project/work_package_id it lists every entry the user can read across all projects (scope with spent_on_from/spent_on_to). Optional: project, work_package_id (id or display id), user (id, login, or \"me\"), spent_on_from/spent_on_to (YYYY-MM-DD range), limit, offset (page number). work_package_id is filtered client-side (OpenProject's API has no server-side filter for it), so scope with project/spent_on_from/spent_on_to when possible to keep the scan small.",
       "inputSchema": {
         "properties": {
           "limit": {
@@ -659,7 +728,15 @@
             "type": "string"
           },
           "work_package_id": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Work package id or display id (e.g. 17806 or \"AIS-469\")."
           }
         },
         "type": "object"
@@ -706,7 +783,15 @@
             "type": "string"
           },
           "work_package_id": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Work package id or display id (e.g. 17806 or \"AIS-469\")."
           }
         },
         "required": [

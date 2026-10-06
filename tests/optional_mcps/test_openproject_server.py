@@ -29,9 +29,14 @@ PROJECTS = [
     {"_type": "Project", "id": 46, "identifier": "PRO", "name": "Projektmanagement", "active": True, "public": False},
     {"_type": "Project", "id": 109, "identifier": "MOAP", "name": "Mother of all Projects", "active": True, "public": True},
 ]
-STATUSES = [{"id": 15, "name": "Backlog"}, {"id": 17, "name": "In Progress"}, {"id": 18, "name": "In Review"}, {"id": 12, "name": "Done"}]
-TYPES = [{"id": 1, "name": "Task"}, {"id": 7, "name": "Bug"}]
-PRIORITIES = [{"id": 8, "name": "Normal"}, {"id": 9, "name": "High"}]
+# Done is not a closed status on this instance; Rejected is (AIS-494: is_closed).
+STATUSES = [{"id": 15, "name": "Backlog", "isClosed": False, "isDefault": True},
+            {"id": 17, "name": "In Progress", "isClosed": False, "isDefault": False},
+            {"id": 18, "name": "In Review", "isClosed": False, "isDefault": False},
+            {"id": 12, "name": "Done", "isClosed": False, "isDefault": False},
+            {"id": 14, "name": "Rejected", "isClosed": True, "isDefault": False}]
+TYPES = [{"id": 1, "name": "Task", "isDefault": True}, {"id": 7, "name": "Bug", "isDefault": False}]
+PRIORITIES = [{"id": 8, "name": "Normal", "isDefault": True}, {"id": 9, "name": "High", "isDefault": False}]
 ACTIVITIES = [{"id": 3, "name": "Development"}, {"id": 5, "name": "Support"}]
 USERS = [
     {"id": 14, "name": "Johannes Huchler", "login": "jhuchler", "email": "jh@example.com"},
@@ -100,6 +105,8 @@ class FakeOpenProject:
         self.conflicts = 0
         self.patch_project = None
         self.errors = {}
+        self.groups = None
+        self.activity_user_titles = True
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         url = urlparse(str(request.url))
@@ -156,7 +163,10 @@ class FakeOpenProject:
                 ids = next(f["id"]["values"] for f in filters if "id" in f)
                 return ok(_collection([_wp(int(i), display=f"EXT-{i}") for i in ids]))
             items = self.search_results
-            return ok(_collection(items, offset, size, self.wp_total))
+            payload = _collection(items, offset, size, self.wp_total)
+            if "groupBy" in query and self.groups is not None:
+                payload["groups"] = self.groups
+            return ok(payload)
         if method == "GET" and path.startswith("work_packages/") and path.count("/") == 1:
             ref = path.split("/", 1)[1]
             if ref in self.work_packages:
@@ -179,10 +189,17 @@ class FakeOpenProject:
         if method == "POST" and path.endswith("/activities"):
             return ok({}, 201)
         if method == "GET" and path.endswith("/activities"):
+            titled = self.activity_user_titles
             return ok(_collection([
-                {"id": 1, "createdAt": "2026-01-01T00:00:00Z", "comment": {"raw": "first comment"}, "_links": {"user": {"href": "/api/v3/users/14", "title": "Johannes Huchler"}}},
-                {"id": 2, "createdAt": "2026-01-02T00:00:00Z", "comment": {"raw": "second, a much longer comment"}, "_links": {"user": {"href": "/api/v3/users/20", "title": "Tobias Hehl"}}},
+                {"id": 1, "createdAt": "2026-01-01T00:00:00Z", "comment": {"raw": "first comment"},
+                 "_links": {"user": {"href": "/api/v3/users/14", **({"title": "Johannes Huchler"} if titled else {})}}},
+                {"id": 2, "createdAt": "2026-01-02T00:00:00Z", "comment": {"raw": "second, a much longer comment"},
+                 "_links": {"user": {"href": "/api/v3/users/20", **({"title": "Tobias Hehl"} if titled else {})}}},
+                {"id": 3, "createdAt": "2026-01-03T00:00:00Z", "comment": {"raw": "third"},
+                 "_links": {"user": {"href": "/api/v3/users/31", **({"title": "Former Colleague"} if titled else {})}}},
             ]))
+        if method == "GET" and path.startswith("users/") and path.split("/", 1)[1].isdigit():
+            return ok({"id": int(path.split("/", 1)[1]), "name": "Former Colleague", "login": "", "email": ""})
         if method == "GET" and path.endswith("/relations"):
             return ok(_collection([{"id": 5, "type": "blocks", "_links": {
                 "from": {"href": "/api/v3/work_packages/17699", "title": "Own server"},
@@ -316,8 +333,9 @@ def test_link_status_reports_the_token_owner(op):
 def test_link_status_unconfigured_points_to_hermes_settings(monkeypatch):
     server = _load(monkeypatch)
     monkeypatch.delenv("OPENPROJECT_API_TOKEN")
-    text = fail(server, "pm_link_status")
-    assert "Settings -> MCP -> OpenProjectMCP" in text and "link_url" not in text
+    data = ok(server, "pm_link_status")  # an expected state, not isError (AIS-486)
+    assert data["linked"] is False and data["action_required"] == "configure_account"
+    assert "Settings -> MCP -> OpenProjectMCP" in data["next_step"] and "link_url" not in data
 
 
 def test_link_status_with_rejected_token(op):
@@ -342,11 +360,13 @@ def test_reference_data_with_activity_fallback(op):
     server, fake = op
     data = ok(server, "pm_list_reference_data")
     assert list(data) == ["activities", "priorities", "statuses", "types"]
-    assert data["statuses"][0] == {"id": 15, "name": "Backlog"}
+    assert data["statuses"][0] == {"id": 15, "is_closed": False, "is_default": True, "name": "Backlog"}
+    assert [s["name"] for s in data["statuses"] if s["is_closed"]] == ["Rejected"]  # Done is not closed here
+    assert data["types"][1] == {"id": 7, "is_default": False, "name": "Bug"}
     assert data["activities"] == ACTIVITIES  # global endpoint 404 -> project form
     assert requests(fake, "POST", "time_entries/form")
     only = ok(server, "pm_list_reference_data", kind="priorities")
-    assert only == {"priorities": [{"id": 8, "name": "Normal"}, {"id": 9, "name": "High"}]}
+    assert only == {"priorities": [{"id": 8, "is_default": True, "name": "Normal"}, {"id": 9, "is_default": False, "name": "High"}]}
 
 
 def test_reference_data_is_cached(op):
@@ -416,9 +436,10 @@ def test_list_work_packages_resolves_filters_and_paginates(op):
     assert json.loads(call_[2]["sortBy"]) == [["updatedAt", "desc"]]
     assert (call_[2]["offset"], call_[2]["pageSize"]) == ("2", "50")
     row = data["work_packages"][0]
-    assert set(row) == {"id", "subject", "status", "type", "priority", "project", "assignee", "responsible", "parent_id",
-                        "author", "start_date", "due_date", "created_at", "updated_at"}
-    assert row["parent_id"] == 0 and row["due_date"] == "" and row["project"] == "AIMDS Suite"
+    assert set(row) == {"id", "display_id", "subject", "status", "type", "priority", "project", "assignee", "responsible",
+                        "parent_id", "parent_display_id", "author", "start_date", "due_date", "created_at", "updated_at"}
+    assert row["parent_id"] == 0 and row["parent_display_id"] == "" and row["due_date"] == "" and row["project"] == "AIMDS Suite"
+    assert "groups" not in data
 
 
 def test_last_page_has_no_next_offset_and_limit_is_capped(op):
@@ -449,12 +470,16 @@ def test_search_sends_the_search_filter_and_requires_query(op):
 def test_unknown_status_names_the_allowed_values(op):
     server, _ = op
     text = fail(server, "pm_list_work_packages", status="Waiting")
-    assert "Unknown OpenProject status 'Waiting'" in text and "Backlog, In Progress" in text
+    assert text == ('Unknown OpenProject status "Waiting". Allowed: Backlog, In Progress, In Review, Done, Rejected — '
+                    'see pm_list_reference_data(kind="statuses").')
 
 
 def test_unknown_assignee_is_an_error(op):
     server, _ = op
-    assert "pm_list_users" in fail(server, "pm_list_work_packages", assignee="nobody")
+    assert fail(server, "pm_list_work_packages", assignee="nobody") == \
+        'Unknown OpenProject user "nobody" — use "me", a numeric id, a login or a name from pm_list_users.'
+    # Exact (case-insensitive) login, name or email only, like the Suite (AIS-494).
+    assert "Unknown OpenProject user" in fail(server, "pm_list_work_packages", assignee="Tobias")
 
 
 def test_get_work_package_with_text_limit_and_display_id(op):
@@ -464,21 +489,27 @@ def test_get_work_package_with_text_limit_and_display_id(op):
     assert row["description_length"] == len("A long description of the work") and row["lock_version"] == 2
     assert row["display_id"] == "AIS-408"
     full = ok(server, "pm_get_work_package", id=17054)
-    assert full["description_truncated"] is False and "display_id" not in full
+    assert full["description_truncated"] is False and full["display_id"] == "17054"
 
 
 def test_get_work_package_errors(op):
     server, _ = op
     assert fail(server, "pm_get_work_package") == "id is required"
-    assert fail(server, "pm_get_work_package", id="abc") == "invalid arguments: id must be an integer"
+    assert fail(server, "pm_get_work_package", id="abc") == \
+        'invalid arguments: "abc" is neither a work package id nor a display id like "AIS-469"'
+    assert fail(server, "pm_get_work_package", id=1.5) == \
+        'invalid arguments: work package id must be a number or a display id like "AIS-469"'
+    assert fail(server, "pm_get_work_package", id=-3) == "id is required"
     assert fail(server, "pm_get_work_package", id=1).startswith("Not found in OpenProject: openproject: not found:")
 
 
 def test_activity_limit_and_text_limit(op):
     server, _ = op
-    data = ok(server, "pm_list_work_package_activity", id=17699, limit=1, text_limit=6)
-    assert data == {"activity": [{"id": 2, "user": "Tobias Hehl", "created_at": "2026-01-02T00:00:00Z",
-                                  "comment": "second", "comment_truncated": True}]}
+    data = ok(server, "pm_list_work_package_activity", id=17699, limit=2, text_limit=6)
+    assert data == {"activity": [
+        {"id": 2, "user": "Tobias Hehl", "created_at": "2026-01-02T00:00:00Z", "comment": "second", "comment_truncated": True},
+        {"id": 3, "user": "Former Colleague", "created_at": "2026-01-03T00:00:00Z", "comment": "third"},
+    ]}
 
 
 def test_relations_list_and_create(op):
@@ -491,6 +522,146 @@ def test_relations_list_and_create(op):
     post = requests(fake, "POST", "work_packages/17699/relations")[-1]
     assert post[3] == {"type": "precedes", "_links": {"to": {"href": "/api/v3/work_packages/17054"}}}
     assert "Allowed: relates" in fail(server, "pm_create_work_package_relation", id=17699, related_to_id=17054, relation_type="parent")
+
+
+# ─── Suite parity: go-mcp-openproject 0.4.0 (AIS-486, AIS-494) ────────────────
+
+
+WP_REF_PARAMS = {
+    "pm_get_work_package": ["id"], "pm_update_work_package": ["id", "parent"], "pm_comment_work_package": ["id"],
+    "pm_list_work_package_activity": ["id"], "pm_list_work_package_relations": ["id"],
+    "pm_create_work_package_relation": ["id", "related_to_id"], "pm_create_work_package": ["parent"],
+    "pm_delete_work_package": ["id"], "pm_add_meeting_agenda_item": ["work_package_id"],
+    "pm_list_time_entries": ["work_package_id"], "pm_create_time_entry": ["work_package_id"],
+}
+
+
+def test_every_work_package_id_parameter_takes_a_display_id(op):
+    server, _ = op
+    schemas = {t["name"]: t["inputSchema"]["properties"] for t in server.tool_definitions()}
+    for name, params in WP_REF_PARAMS.items():
+        for param in params:
+            assert schemas[name][param]["anyOf"] == [{"type": "integer"}, {"type": "string"}], (name, param)
+
+
+@pytest.mark.parametrize("ref", ["AIS-408", "ais-408", "#AIS-408", "#17699", "17699"])
+def test_display_id_spellings_resolve_to_the_numeric_id(op, ref):
+    server, fake = op
+    assert ok(server, "pm_comment_work_package", id=ref, comment="x") == {"commented": True, "id": 17699}
+    assert requests(fake, "POST", "work_packages/17699/activities")
+
+
+def test_display_ids_in_relations_activity_agenda_and_time_entries(op):
+    server, fake = op
+    ok(server, "pm_create_work_package_relation", id="AIS-408", related_to_id="AIS-408", relation_type="relates")
+    assert requests(fake, "POST", "work_packages/17699/relations")[-1][3]["_links"]["to"] == {"href": "/api/v3/work_packages/17699"}
+    assert ok(server, "pm_list_work_package_relations", id="AIS-408")["relations"][0]["id"] == 5
+    assert len(ok(server, "pm_list_work_package_activity", id="AIS-408")["activity"]) == 3
+    item = ok(server, "pm_add_meeting_agenda_item", meeting_id=4, title="Topic", work_package_id="AIS-408")
+    assert item["agenda_item"]["work_package_id"] == 17699
+    ok(server, "pm_list_time_entries", work_package_id="AIS-408")
+    filters = json.loads(requests(fake, "GET", "time_entries")[-1][2]["filters"])
+    assert {"entity_id": {"operator": "=", "values": ["17699"]}} in filters
+    assert fail(server, "pm_get_work_package", id="AIS-1").startswith("Not found in OpenProject")
+
+
+def test_update_by_display_id_fetches_the_work_package_once(op):
+    server, fake = op
+    ok(server, "pm_update_work_package", id="AIS-408", subject="Renamed")
+    assert len(requests(fake, "GET", "work_packages/AIS-408")) == 1
+    assert not requests(fake, "GET", "work_packages/17699")
+    assert requests(fake, "PATCH", "work_packages/17699")[-1][3]["lockVersion"] == 2
+
+
+def test_rows_carry_display_id_and_parent_display_id(op):
+    server, fake = op
+    child = _wp(17711, display="AIS-411")
+    child["_links"]["parent"] = {"href": "/api/v3/work_packages/17699", "title": "Own server", "displayId": "AIS-408"}
+    fake.search_results = [child]
+    row = ok(server, "pm_list_work_packages")["work_packages"][0]
+    assert (row["display_id"], row["parent_id"], row["parent_display_id"]) == ("AIS-411", 17699, "AIS-408")
+    assert ok(server, "pm_list_work_packages", select=["display_id", "parent_display_id"])["work_packages"][0] == {
+        "display_id": "AIS-411", "parent_display_id": "AIS-408"}
+
+
+def test_group_by_returns_groups_over_the_whole_result(op):
+    server, fake = op
+    fake.groups = [{"_type": "GroupBy", "value": "In Progress", "count": 12, "_links": {}},
+                   {"_type": "GroupBy", "value": None, "count": 3, "_links": {}}]
+    data = ok(server, "pm_list_work_packages", group_by="status")
+    assert requests(fake, "GET", "work_packages")[-1][2]["groupBy"] == "status"
+    assert data["groups"] == [{"value": "In Progress", "count": 12}, {"value": "", "count": 3}]
+    fake.groups = None
+    assert ok(server, "pm_search_work_packages", query="server", group_by="type")["groups"] == []
+
+
+def test_search_returns_an_exact_match_for_a_key_or_id(op):
+    server, fake = op
+    data = ok(server, "pm_search_work_packages", query="ais-408", select=["id", "display_id"])
+    assert data["exact_match"] == {"id": 17699, "display_id": "AIS-408"}
+    assert {"search": {"operator": "**", "values": ["ais-408"]}} in json.loads(requests(fake, "GET", "work_packages")[-1][2]["filters"])
+    assert ok(server, "pm_search_work_packages", query="#17054")["exact_match"]["subject"] == "EVN Ongoing"
+    assert "exact_match" not in ok(server, "pm_search_work_packages", query="AIS-1")  # 404 -> no exact match
+    calls = len(fake.calls)
+    assert "exact_match" not in ok(server, "pm_search_work_packages", query="login timeout")
+    assert not [c for c in fake.calls[calls:] if c[1].startswith("work_packages/")]  # no lookup for free text
+
+
+def test_search_exact_match_respects_the_read_list(monkeypatch):
+    server = _load(monkeypatch, read="AIS,PRO")
+    fake = FakeOpenProject()
+    client = httpx.Client(transport=httpx.MockTransport(fake), base_url="https://op.example.com/api/v3/")
+    monkeypatch.setattr(server, "_http", lambda: client)
+    assert "exact_match" not in ok(server, "pm_search_work_packages", query="17695")  # MOAP
+    assert ok(server, "pm_search_work_packages", query="17054")["exact_match"]["id"] == 17054
+
+
+@pytest.mark.parametrize("status,expected", [
+    ("open", {"status": {"operator": "o", "values": []}}),
+    ("Closed", {"status": {"operator": "c", "values": []}}),
+    ("in review", {"status": {"operator": "=", "values": ["18"]}}),
+    ("12", {"status": {"operator": "=", "values": ["12"]}}),
+])
+def test_status_names_and_open_closed_operators(op, status, expected):
+    server, fake = op
+    ok(server, "pm_list_work_packages", status=status)
+    filters = json.loads(requests(fake, "GET", "work_packages")[-1][2]["filters"])
+    assert [f for f in filters if "status" in f] == [expected]
+
+
+def test_status_names_must_match_exactly(op):
+    server, _ = op
+    assert fail(server, "pm_list_work_packages", status="Progress").startswith('Unknown OpenProject status "Progress".')
+    assert fail(server, "pm_create_work_package", project="PRO", type="Bu", subject="x").startswith('Unknown OpenProject type "Bu".')
+
+
+def test_open_only_never_drops_an_explicit_status(op):
+    server, fake = op
+    ok(server, "pm_list_work_packages", status="Done", open_only=True)  # Done is not closed here
+    filters = json.loads(requests(fake, "GET", "work_packages")[-1][2]["filters"])
+    assert [f for f in filters if "status" in f] == [{"status": {"operator": "=", "values": ["12"]}}]
+    ok(server, "pm_list_work_packages", status="open", open_only=True)
+    filters = json.loads(requests(fake, "GET", "work_packages")[-1][2]["filters"])
+    assert [f for f in filters if "status" in f] == [{"status": {"operator": "o", "values": []}}]
+
+
+def test_open_only_contradicts_a_closed_status(op):
+    server, fake = op
+    calls = len(requests(fake, "GET", "work_packages"))
+    assert fail(server, "pm_list_work_packages", status="Rejected", open_only=True) == \
+        'status "Rejected" is a closed status, which contradicts open_only=true'
+    assert fail(server, "pm_search_work_packages", query="x", status="closed", open_only=True) == \
+        'status "closed" contradicts open_only=true'
+    assert len(requests(fake, "GET", "work_packages")) == calls  # rejected before the request
+
+
+def test_activity_user_names_for_href_only_links(op):
+    server, fake = op
+    fake.activity_user_titles = False
+    data = ok(server, "pm_list_work_package_activity", id=17699)
+    assert [a["user"] for a in data["activity"]] == ["Johannes Huchler", "Tobias Hehl", "Former Colleague"]
+    assert len(requests(fake, "GET", "users/31")) == 1  # not in the directory -> fetched once
+    assert not requests(fake, "GET", "users/14")
 
 
 # ─── Work packages: writes ────────────────────────────────────────────────────
@@ -670,9 +841,14 @@ def test_network_errors_are_request_failures(op, monkeypatch):
 
 
 def test_unconfigured_server_says_where_to_configure(monkeypatch):
+    """The local "not linked": a structured result without isError (AIS-486)."""
     server = _load(monkeypatch)
     monkeypatch.delenv("OPENPROJECT_BASE_URL")
-    assert fail(server, "pm_list_projects").startswith("No OpenProject instance is configured yet.")
+    for name, args in (("pm_list_projects", {}), ("pm_list_work_packages", {"status": "Done"}),
+                       ("pm_get_work_package", {"id": "AIS-408"})):
+        data = ok(server, name, **args)
+        assert data["linked"] is False and data["action_required"] == "configure_account", name
+        assert data["next_step"].startswith("No OpenProject instance is configured yet.")
 
 
 # ─── Boards and meetings ──────────────────────────────────────────────────────
