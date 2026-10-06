@@ -6161,6 +6161,28 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     return _existing_tool_names()
 
 
+def refresh_mcp_server_tools(name: str, timeout: float = 15) -> bool:
+    """Re-list one connected server's tools and update the registry.
+
+    The Suite's MCP gateway (LiteLLM) sends no ``tools/list_changed`` when a
+    backend is redeployed, so a running Hermes kept the old schemas until a
+    restart (AIS-504: the OpenProject display-id gate never saw 0.5). Never
+    raises; ``True`` when the refresh ran.
+    """
+    if not _MCP_AVAILABLE:
+        return False
+    with _lock:
+        server = _servers.get(name)
+    if server is None or getattr(server, "session", None) is None:
+        return False
+    try:
+        _run_on_mcp_loop(server._refresh_tools, timeout=timeout)
+        return True
+    except Exception as exc:
+        logger.debug("MCP server '%s': tool refresh failed: %s", name, exc)
+        return False
+
+
 def disconnect_mcp_server(name: str) -> bool:
     """Shut down one connected MCP server and drop it from the registry.
 

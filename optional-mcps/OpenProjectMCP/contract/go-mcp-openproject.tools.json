@@ -1,6 +1,6 @@
 {
   "source": "IAMDS-GMBH/AIMDS-Suite container/go-mcp-openproject",
-  "commit": "0c124f2b",
+  "commit": "dc8a6a0f",
   "tools": [
     {
       "description": "Get a one-time link_url where the user connects (or replaces) their own OpenProject account — they enter their personal access token on that page, never in the chat. pm_link_status already returns a link_url when the account is not linked; use this tool to replace an existing link or token. Give the user exactly the returned link_url — never build a link yourself and never send the user to the OpenProject instance or its API. It is valid for about 10 minutes and only once. Afterwards call pm_link_status. No arguments.",
@@ -51,7 +51,7 @@
       "inputSchema": {
         "properties": {
           "project": {
-            "description": "Project id or identifier to scope results to that project's members.",
+            "description": "Project identifier (e.g. \"AIS\"), name or numeric id to list that project's members. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
             "type": "string"
           },
           "query": {
@@ -85,7 +85,7 @@
             "type": "boolean"
           },
           "project": {
-            "description": "Project id or identifier.",
+            "description": "Project identifier (e.g. \"AIS\"), name or numeric id. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
             "type": "string"
           }
         },
@@ -97,7 +97,7 @@
       "name": "pm_get_project"
     },
     {
-      "description": "List work packages with structured filters (project, status, assignee, type, priority, date ranges). Use pm_search_work_packages instead for free-text relevance search. No required arguments (an empty call lists everything visible).",
+      "description": "List work packages with structured filters (project, status, assignee, type, priority, date ranges). Use pm_search_work_packages instead for free-text relevance search. No required arguments (an empty call lists everything visible). Each row carries `key` (e.g. \"AIS-499\" — name work packages by it towards users and pass it to other tools; its prefix is the project identifier) and the numeric `id`.",
       "inputSchema": {
         "properties": {
           "assignee": {
@@ -149,7 +149,7 @@
             "type": "string"
           },
           "project": {
-            "description": "Project id or identifier to scope results to.",
+            "description": "Project identifier (e.g. \"AIS\"), name or numeric id to scope results to. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
             "type": "string"
           },
           "select": {
@@ -192,7 +192,7 @@
       "name": "pm_list_work_packages"
     },
     {
-      "description": "Search work packages by free text, optionally combined with the same structured filters as pm_list_work_packages. Required: query.",
+      "description": "Search work packages by free text, optionally combined with the same structured filters as pm_list_work_packages. Required: query. A query that is a key (\"AIS-499\") or id also returns that work package as exact_match. Rows carry `key` and the numeric `id`.",
       "inputSchema": {
         "properties": {
           "assignee": {
@@ -244,7 +244,7 @@
             "type": "string"
           },
           "project": {
-            "description": "Project id or identifier to scope results to.",
+            "description": "Project identifier (e.g. \"AIS\"), name or numeric id to scope results to. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
             "type": "string"
           },
           "query": {
@@ -294,7 +294,7 @@
       "name": "pm_search_work_packages"
     },
     {
-      "description": "Get one work package by id or display id (e.g. \"AIS-469\"), including its full description. Required: id. Optional: text_limit (truncate the description).",
+      "description": "Get one work package by key (e.g. \"AIS-469\") or numeric id, including its full description. Required: id. Optional: text_limit (truncate the description).",
       "inputSchema": {
         "properties": {
           "id": {
@@ -306,7 +306,7 @@
                 "type": "string"
               }
             ],
-            "description": "Work package id or display id (e.g. 17806 or \"AIS-469\")."
+            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
           },
           "text_limit": {
             "description": "Truncate the description to this many characters.",
@@ -321,7 +321,7 @@
       "name": "pm_get_work_package"
     },
     {
-      "description": "Create a work package. Required: project (id or identifier), type (name or id), subject. Optional: description, status, priority, assignee (id, login, or \"me\"), parent (id or display id), start_date, due_date (YYYY-MM-DD), estimated_time (ISO-8601 duration, e.g. \"PT8H\").",
+      "description": "Create a work package. Required: project (id or identifier), type (name or id), subject. Optional: description, status, priority, assignee (id, login, or \"me\"), parent (key like \"AIS-469\" or numeric id), start_date, due_date (YYYY-MM-DD), estimated_time (ISO-8601 duration, e.g. \"PT8H\").",
       "inputSchema": {
         "properties": {
           "assignee": {
@@ -345,12 +345,13 @@
                 "type": "string"
               }
             ],
-            "description": "Parent work package id or display id."
+            "description": "Parent work package key (e.g. \"AIS-8\") or numeric id."
           },
           "priority": {
             "type": "string"
           },
           "project": {
+            "description": "Project identifier (e.g. \"AIS\"), name or numeric id. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
             "type": "string"
           },
           "start_date": {
@@ -397,7 +398,7 @@
                 "type": "string"
               }
             ],
-            "description": "Work package id or display id (e.g. 17806 or \"AIS-469\")."
+            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
           },
           "lock_version": {
             "description": "Optional; fetched automatically if omitted.",
@@ -439,7 +440,7 @@
                 "type": "string"
               }
             ],
-            "description": "Work package id or display id (e.g. 17806 or \"AIS-469\")."
+            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
           },
           "notify": {
             "type": "boolean"
@@ -454,7 +455,7 @@
       "name": "pm_comment_work_package"
     },
     {
-      "description": "List the comment/activity log for a work package, oldest first (limit keeps the most recent entries). Required: id (or display id). Optional: limit, text_limit (truncate each entry).",
+      "description": "List the comment/activity log for a work package, oldest first (limit keeps the most recent entries). Required: id (key like \"AIS-469\" or numeric id). Optional: limit, text_limit (truncate each entry).",
       "inputSchema": {
         "properties": {
           "id": {
@@ -466,7 +467,7 @@
                 "type": "string"
               }
             ],
-            "description": "Work package id or display id (e.g. 17806 or \"AIS-469\")."
+            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
           },
           "limit": {
             "type": "integer"
@@ -495,7 +496,7 @@
                 "type": "string"
               }
             ],
-            "description": "Work package id or display id (e.g. 17806 or \"AIS-469\")."
+            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
           }
         },
         "required": [
@@ -518,7 +519,7 @@
                 "type": "string"
               }
             ],
-            "description": "The work package the relation is created from (id or display id)."
+            "description": "The work package the relation is created from (key like \"AIS-469\" or numeric id)."
           },
           "related_to_id": {
             "anyOf": [
@@ -529,7 +530,7 @@
                 "type": "string"
               }
             ],
-            "description": "The work package to relate to (id or display id)."
+            "description": "The work package to relate to (key like \"AIS-469\" or numeric id)."
           },
           "relation_type": {
             "type": "string"
@@ -549,6 +550,7 @@
       "inputSchema": {
         "properties": {
           "project": {
+            "description": "Project identifier (e.g. \"AIS\"), name or numeric id. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
             "type": "string"
           },
           "search": {
@@ -581,7 +583,7 @@
       "name": "pm_get_board"
     },
     {
-      "description": "List meetings. Optional: project (id or identifier), from/to (YYYY-MM-DD, filtered client-side — the OpenProject API has no server-side date filter for meetings yet), state (open|draft|in_progress|cancelled|closed).",
+      "description": "List meetings. Optional: project (identifier, name or id), from/to (YYYY-MM-DD, filtered client-side — the OpenProject API has no server-side date filter for meetings yet), state (open|draft|in_progress|cancelled|closed).",
       "inputSchema": {
         "properties": {
           "from": {
@@ -594,6 +596,7 @@
             "type": "integer"
           },
           "project": {
+            "description": "Project identifier (e.g. \"AIS\"), name or numeric id to filter by. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
             "type": "string"
           },
           "state": {
@@ -640,6 +643,7 @@
             "type": "string"
           },
           "project": {
+            "description": "Project identifier (e.g. \"AIS\"), name or numeric id. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
             "type": "string"
           },
           "start_time": {
@@ -689,7 +693,7 @@
                 "type": "string"
               }
             ],
-            "description": "Work package to link the new agenda item to (id or display id)."
+            "description": "Work package to link the new agenda item to (key like \"AIS-469\" or numeric id)."
           }
         },
         "required": [
@@ -700,7 +704,7 @@
       "name": "pm_add_meeting_agenda_item"
     },
     {
-      "description": "List logged time entries with structured filters. No required arguments: without project/work_package_id it lists every entry the user can read across all projects (scope with spent_on_from/spent_on_to). Optional: project, work_package_id (id or display id), user (id, login, or \"me\"), spent_on_from/spent_on_to (YYYY-MM-DD range), limit, offset (page number). work_package_id is filtered client-side (OpenProject's API has no server-side filter for it), so scope with project/spent_on_from/spent_on_to when possible to keep the scan small.",
+      "description": "List logged time entries with structured filters. No required arguments: without project/work_package_id it lists every entry the user can read across all projects (scope with spent_on_from/spent_on_to). Optional: project, work_package_id (key like \"AIS-469\" or numeric id), user (id, login, or \"me\"), spent_on_from/spent_on_to (YYYY-MM-DD range), limit, offset (page number). work_package_id is filtered client-side (OpenProject's API has no server-side filter for it), so scope with project/spent_on_from/spent_on_to when possible to keep the scan small.",
       "inputSchema": {
         "properties": {
           "limit": {
@@ -712,7 +716,7 @@
             "type": "integer"
           },
           "project": {
-            "description": "Project id or identifier.",
+            "description": "Project identifier (e.g. \"AIS\"), name or numeric id. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
             "type": "string"
           },
           "spent_on_from": {
@@ -736,7 +740,7 @@
                 "type": "string"
               }
             ],
-            "description": "Work package id or display id (e.g. 17806 or \"AIS-469\")."
+            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
           }
         },
         "type": "object"
@@ -767,7 +771,7 @@
             "type": "boolean"
           },
           "project": {
-            "description": "Project id or identifier.",
+            "description": "Project identifier (e.g. \"AIS\"), name or numeric id. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
             "type": "string"
           },
           "spent_on": {
@@ -791,7 +795,7 @@
                 "type": "string"
               }
             ],
-            "description": "Work package id or display id (e.g. 17806 or \"AIS-469\")."
+            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
           }
         },
         "required": [

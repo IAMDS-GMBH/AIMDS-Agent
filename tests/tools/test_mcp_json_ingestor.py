@@ -268,17 +268,22 @@ def test_openproject_time_entries_map_like_tempo_worklogs(tmp_path: Path):
              "activity": "Development", "user": "Johannes Huchler", "work_package_id": 17},
             {"id": 502, "hours": "PT8H", "spent_on": "2026-09-15", "comment": "",
              "activity": "Development", "user": "Johannes Huchler", "work_package_id": "WSA-3"},
+            # AIS-504: go-mcp-openproject 0.5 names the work package by key
+            {"id": 503, "hours": "PT1H", "spent_on": "2026-09-16", "comment": "",
+             "activity": "Development", "user": "Johannes Huchler", "work_package_id": 17850,
+             "work_package_key": "AIS-504"},
         ],
     })
     count = try_auto_ingest_json(payload, tool_name="mcp_op_pm_list_time_entries",
                                  tool_use_id="tc_op", db_path=db_file)
-    assert int(count) == 2
+    assert int(count) == 3
     rows = sqlite3.connect(str(db_file)).execute(
         "SELECT id, reference_key, timestamp, duration_seconds, user_id FROM mcp_records ORDER BY id"
     ).fetchall()
     assert rows == [
         ("501", "17", "2026-09-14", 5400, "Johannes Huchler"),
         ("502", "WSA-3", "2026-09-15", 28800, "Johannes Huchler"),
+        ("503", "AIS-504", "2026-09-16", 3600, "Johannes Huchler"),
     ]
 
 

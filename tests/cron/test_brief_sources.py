@@ -257,6 +257,8 @@ def test_openproject_aggregates_booked_hours_per_working_day(monkeypatch):
         ]},
         2: {"has_more": False, "next_offset": None, "time_entries": [
             {"id": 2, "spent_on": "2026-09-07", "hours": "PT3H30M", "duration_seconds": 14400, "work_package_id": 17699},
+            # AIS-504: go-mcp-openproject 0.5 names the work package by key
+            {"id": 3, "spent_on": "2026-09-07", "hours": "PT1H", "work_package_id": 17850, "work_package_key": "AIS-504"},
         ]},
     }
     _ctx.responses = {"mcp_op_pm_list_time_entries": lambda args: pages[args.get("offset", 1)]}
@@ -266,7 +268,7 @@ def test_openproject_aggregates_booked_hours_per_working_day(monkeypatch):
     assert calls[0][1] == {"spent_on_from": "2026-09-07", "spent_on_to": "2026-09-07", "user": "me", "limit": 200}
     assert calls[1][1]["offset"] == 2
     assert len(items) == 1 and items[0].source == "openproject" and items[0].status == "complete"
-    assert items[0].extra["by_work_package"] == {"17699": 4.0, "EXT-70": 4.0}
+    assert items[0].extra["by_work_package"] == {"17699": 4.0, "AIS-504": 1.0, "EXT-70": 4.0}
 
 
 SUITE_OP = "mcp_AIMDSSuiteMCP_mcp_openproject_"

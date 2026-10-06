@@ -146,6 +146,20 @@ def test_work_package_filter_descriptions_follow_the_suite(local_tools):
                 assert local_props[prop].get("description") == spec["description"], (name, prop)
 
 
+def test_project_and_work_package_parameter_descriptions_follow_the_suite(local_tools):
+    """Every ``project`` parameter resolves identifier, name, id or key and
+    every work package reference takes a key, like the Suite (AIS-499)."""
+    suite = _snapshot()
+    checked = 0
+    for name, tool in suite.items():
+        local_props = local_tools[name]["inputSchema"]["properties"]
+        for prop, spec in tool["inputSchema"].get("properties", {}).items():
+            if "description" in spec and (prop == "project" or "anyOf" in spec):
+                assert local_props[prop].get("description") == spec["description"], (name, prop)
+                checked += 1
+    assert checked >= 20
+
+
 def test_manifest_enables_exactly_the_server_tools(monkeypatch):
     import yaml
 

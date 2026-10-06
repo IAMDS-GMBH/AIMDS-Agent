@@ -5634,3 +5634,33 @@ def test_stdio_env_carries_the_agent_hermes_home(monkeypatch, tmp_path):
     assert env["HERMES_HOME"] == str(tmp_path / "hermes")
     assert "OPENAI_API_KEY" not in env and env["M365_CLIENT_ID"] == "x"
     assert _build_safe_env({"HERMES_HOME": "/custom"})["HERMES_HOME"] == "/custom"
+
+
+class TestRefreshMcpServerTools:
+    """AIS-504: re-list one server's tools on demand (no list_changed from LiteLLM)."""
+
+    def test_unknown_or_disconnected_server_is_a_no_op(self):
+        from tools import mcp_tool
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), patch("tools.mcp_tool._servers", {}):
+            assert mcp_tool.refresh_mcp_server_tools("AIMDSSuiteMCP") is False
+        server = MagicMock(session=None)
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), patch("tools.mcp_tool._servers", {"S": server}):
+            assert mcp_tool.refresh_mcp_server_tools("S") is False
+
+    def test_runs_the_refresh_on_the_mcp_loop(self):
+        from tools import mcp_tool
+
+        server = MagicMock()
+        ran = []
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), patch("tools.mcp_tool._servers", {"S": server}), \
+                patch("tools.mcp_tool._run_on_mcp_loop", side_effect=lambda f, timeout=30: ran.append((f, timeout))):
+            assert mcp_tool.refresh_mcp_server_tools("S", timeout=5) is True
+        assert ran == [(server._refresh_tools, 5)]
+
+    def test_a_failing_refresh_never_raises(self):
+        from tools import mcp_tool
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), patch("tools.mcp_tool._servers", {"S": MagicMock()}), \
+                patch("tools.mcp_tool._run_on_mcp_loop", side_effect=RuntimeError("loop gone")):
+            assert mcp_tool.refresh_mcp_server_tools("S") is False

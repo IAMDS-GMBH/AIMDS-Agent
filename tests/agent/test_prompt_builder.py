@@ -2065,7 +2065,8 @@ class TestTicketSystemsLine:
             "Tickets/work items without a named system: check every reachable system and label each "
             "result with its system. For OpenProject use the AIMDS Suite tools; the local server is the fallback. "
             "The user's own items: Jira `currentUser()`, OpenProject `assignee=\"me\"` — never guess logins, "
-            "names or ids. OpenProject `project` takes an id or identifier; resolve a project name via pm_list_projects."
+            "names or ids. OpenProject `project` takes an id, identifier, name or ticket key. "
+            "Name work packages by their `key` (e.g. AIS-499), not the numeric id."
         )
 
     def test_suite_only(self):
@@ -2085,7 +2086,7 @@ class TestTicketSystemsLine:
         from agent.prompt_builder import build_ticket_routing_guidance as g
         text = g({f"{self.SUITE}list_work_packages"})
         assert 'OpenProject `assignee="me"` — never guess logins, names or ids.' in text
-        assert "pm_list_projects" in text
+        assert "Name work packages by their `key`" in text
         assert "currentUser()" not in text
 
     def test_unrelated_pm_tools_are_not_openproject(self):
