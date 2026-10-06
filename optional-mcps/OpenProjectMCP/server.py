@@ -26,6 +26,10 @@ Local differences to the Suite server, by design:
   token's OpenProject user; ``pm_link_account`` / ``pm_unlink_account`` explain
   where the token is configured and change nothing. Errors that tell the
   Suite's model to call ``pm_link_*`` point to the Hermes settings instead.
+  The local counterpart of the Suite's "not linked" state is a missing URL or
+  token: like the Suite (AIS-486) every tool then answers
+  ``{linked: false, action_required: "configure_account", next_step}``
+  without ``isError`` — an expected state, not a failed call.
 - All 26 contract tools are always registered (the tool list matches the
   Suite). A read-only setup (empty ``OPENPROJECT_WRITE_PROJECTS``) or a
   project outside the write list makes the write tools return a clear error
@@ -40,20 +44,23 @@ Local differences to the Suite server, by design:
   the result.
 - Extras: ``pm_delete_work_package`` (write allow-list applies) and the
   optional ``project`` (move), ``type``, ``parent`` and ``estimated_time``
-  parameters of ``pm_update_work_package``. Integer work package ids also
-  accept display ids such as ``AIS-408``; ``hours`` also accepts ``1.5`` /
+  parameters of ``pm_update_work_package``; ``hours`` also accepts ``1.5`` /
   ``1h30m``; ``start_time``/``end_time`` also accept local clock times
-  (``09:00``) on ``spent_on``. ``pm_list_time_entries`` works without
-  ``project``/``work_package_id`` (all readable projects) and adds
-  ``duration_seconds``, ``work_package_subject``, local clock times and
+  (``09:00``) on ``spent_on``; ``assignee`` takes ``none``/``unassigned``
+  (filter: no assignee, update: clear it). ``pm_list_time_entries`` adds
+  ``duration_seconds``, ``work_package_display_id``, local clock times and
   page aggregates (``total_hours``, ``booked_days``, ``by_work_package``,
   ``complete``) for the worktime pipeline.
-- Names are resolved more strictly than in the Suite: an unknown
-  status/type/priority/assignee name is an error listing the allowed values
-  instead of being silently dropped.
-- Pagination: ``offset`` is OpenProject's 1-based page number, as the
-  contract documents; ``next_offset`` is therefore ``offset + 1`` (the Suite
-  computes ``offset + count``, which skips pages).
+
+Shared with the Suite since go-mcp-openproject 0.4.0 (AIS-486/AIS-494), kept
+identical here: display ids (``AIS-408``) for every work package id
+parameter, time entries across all projects, ``offset`` as the 1-based page
+number with ``next_offset = offset + 1``, strict case-insensitive
+status/type/priority/assignee names, ``open``/``closed`` statuses and
+``open_only`` that never drops an explicit status, ``groups`` for
+``group_by``, ``display_id``/``parent_display_id`` in every work package row,
+``exact_match`` in search, activity user names and reference data with
+``is_closed``/``is_default``.
 """
 
 from __future__ import annotations
@@ -317,7 +324,13 @@ def _list(path: str, params: Optional[Dict[str, Any]], offset: int, limit: int) 
     total = int(payload.get("total") or 0)
     page_size = int(payload.get("pageSize") or limit) or limit
     has_more = offset * page_size < total
-    return items, {"total": total, "count": len(items), "offset": offset, "has_more": has_more}
+    # groupBy requests carry one bucket per value with its count across the
+    # whole result, not just this page (AIS-494).
+    groups = [
+        {"value": "" if g.get("value") is None else str(g.get("value")), "count": int(g.get("count") or 0)}
+        for g in (payload.get("groups") or []) if isinstance(g, dict)
+    ]
+    return items, {"total": total, "count": len(items), "offset": offset, "has_more": has_more, "groups": groups}
 
 
 def _next_offset(page: Dict[str, Any]) -> Optional[int]:
@@ -454,14 +467,51 @@ def _arg_list(args: Dict[str, Any], key: str) -> List[str]:
 
 
 _DISPLAY_ID_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*-\d+")
+_WP_NUMBER_ERROR = "invalid arguments: work package id must be a number or a display id like \"AIS-469\""
+
+
+def _parse_wp_ref(text: str) -> str:
+    """Go ``parseWPRef``: "17806", "#17806" or a display id ("ais-469" ->
+    "AIS-469"); "" when empty or not positive. Anything else is an error."""
+    text = text.strip()
+    if text.startswith("#"):
+        text = text[1:]
+    if not text:
+        return ""
+    if re.fullmatch(r"[+-]?\d+", text):
+        return str(int(text)) if int(text) > 0 else ""
+    if _DISPLAY_ID_RE.fullmatch(text):
+        return text.upper()
+    raise ToolFailure(
+        f"invalid arguments: {json.dumps(text, ensure_ascii=False)} is neither a work package id "
+        "nor a display id like \"AIS-469\""
+    )
+
+
+def _arg_wp_ref(args: Dict[str, Any], key: str) -> str:
+    """Go ``wpRef`` (AIS-486): a work package reference as OpenProject's
+    ``work_packages/<ref>`` path accepts it — the numeric id or the display id."""
+    value = args.get(key)
+    if value is None or value == "":
+        return ""
+    if isinstance(value, str):
+        return _parse_wp_ref(value)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ToolFailure(_WP_NUMBER_ERROR)
+    if isinstance(value, float) and not value.is_integer():
+        raise ToolFailure(_WP_NUMBER_ERROR)
+    return str(int(value)) if value > 0 else ""
 
 
 def _arg_wp_id(args: Dict[str, Any], key: str) -> int:
-    """A work package id: a number, '#123', or a display id like 'AIS-408'."""
-    value = args.get(key)
-    if isinstance(value, str) and _DISPLAY_ID_RE.fullmatch(value.strip()):
-        return int(_request("GET", f"work_packages/{value.strip().upper()}").get("id") or 0)
-    return _arg_int(args, key)
+    """Go ``resolveWorkPackageID``: a numeric id costs no request, a display
+    id is looked up once."""
+    ref = _arg_wp_ref(args, key)
+    if not ref:
+        return 0
+    if ref.isdigit():
+        return int(ref)
+    return int(_get_wp(ref).get("id") or 0)
 
 
 # ─── Caches ───────────────────────────────────────────────────────────────────
@@ -493,6 +543,19 @@ def _cached(key: str, loader: Callable[[], Any], ttl: float) -> Any:
 def _ref_items(items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Go ``RefItem``: ``{id, name}``."""
     return [{"id": int(i.get("id") or 0), "name": str(i.get("name") or "")} for i in items]
+
+
+def _ref_rows(items: Iterable[Dict[str, Any]], *, statuses: bool = False) -> List[Dict[str, Any]]:
+    """Go ``refRows`` (AIS-494): snake_case rows with ``is_default``; statuses
+    also carry ``is_closed``, which tells what ``open_only`` means here."""
+    rows = []
+    for i in items:
+        row: Dict[str, Any] = {"id": int(i.get("id") or 0), "name": str(i.get("name") or ""),
+                               "is_default": bool(i.get("isDefault"))}
+        if statuses:
+            row["is_closed"] = bool(i.get("isClosed"))
+        rows.append(_sorted(row))
+    return rows
 
 
 def _statuses() -> List[Dict[str, Any]]:
@@ -610,22 +673,39 @@ _REF_KINDS = {
 }
 
 
-def _resolve_ref(kind: str, value: str) -> int:
-    """Go ``resolveRefID``, strict: a numeric id, else the (cached) name.
-    An unknown name is an error naming the allowed values — the Suite drops
-    it silently and OpenProject then applies its default."""
+def _resolve_ref_item(kind: str, value: str) -> Dict[str, Any]:
+    """Go ``resolveRefStrict`` (AIS-494): a numeric id or a case-insensitive
+    name -> the cached reference item. An unknown name is an error listing the
+    valid values: a filter or field is never dropped silently."""
     value = value.strip()
-    if re.fullmatch(r"\d+", value):
-        return int(value)
     loader, plural = _REF_KINDS[kind]
-    items = loader()
-    found = _pick(items, value, "name")
+    try:
+        items, load_error = loader(), None
+    except NotConfigured:
+        raise
+    except OPError as exc:
+        items, load_error = [], exc
+    if re.fullmatch(r"[+-]?\d+", value):
+        number = int(value)
+        # Reference data unavailable or id not listed: trust the id.
+        return next((i for i in items if int(i.get("id") or 0) == number), {"id": number, "name": ""})
+    if load_error is not None:
+        raise ToolFailure(
+            f"Could not load OpenProject {plural} to resolve {json.dumps(value, ensure_ascii=False)}: {load_error}"
+        )
+    folded = value.casefold()
+    found = next((i for i in items if str(i.get("name") or "").casefold() == folded), None)
     if found:
-        return int(found.get("id") or 0)
-    allowed = ", ".join(str(i.get("name")) for i in items) or "none"
+        return found
+    allowed = ", ".join(str(i.get("name") or "") for i in items)
     raise ToolFailure(
-        f"Unknown OpenProject {kind} '{value}'. Allowed: {allowed} — see pm_list_reference_data(kind=\"{plural}\")."
+        f"Unknown OpenProject {kind} {json.dumps(value, ensure_ascii=False)}. Allowed: {allowed} — "
+        f"see pm_list_reference_data(kind=\"{plural}\")."
     )
+
+
+def _resolve_ref(kind: str, value: str) -> int:
+    return int(_resolve_ref_item(kind, value).get("id") or 0)
 
 
 def _resolve_activity(value: str, *, project_id: int = 0, wp_id: int = 0) -> int:
@@ -654,21 +734,56 @@ def _resolve_activity(value: str, *, project_id: int = 0, wp_id: int = 0) -> int
 
 
 def _resolve_user_id(value: str) -> Optional[int]:
-    """Go ``resolveAssigneeID``: "me" | numeric id | login | name | email.
-    None for the clear words ('none', 'unassigned'); unknown names raise."""
+    """Go ``resolveAssigneeStrict``: "me" | numeric id | exact (case-insensitive)
+    login, name or email. None for the clear words ('none', 'unassigned', a
+    local extension); unknown names raise."""
     value = value.strip()
     if value.casefold() in _CLEAR_WORDS:
         return None
     if value.casefold() == "me":
         return int(_me().get("id") or 0)
-    if re.fullmatch(r"\d+", value):
+    if re.fullmatch(r"[+-]?\d+", value):
         return int(value)
-    found = _pick(_user_directory(), value, "name", "login", "email")
-    if found:
-        return int(found["id"])
+    folded = value.casefold()
+    for user in _user_directory():
+        if folded in (user["login"].casefold(), user["name"].casefold(), user["email"].casefold()):
+            return int(user["id"])
     raise ToolFailure(
-        f"OpenProject user '{value}' was not found — call pm_list_users(query=…) to find the right person."
+        f"Unknown OpenProject user {json.dumps(value, ensure_ascii=False)} — use \"me\", a numeric id, "
+        "a login or a name from pm_list_users."
     )
+
+
+class _UserNames:
+    """Go ``userNames`` (AIS-494): display names for user links within one
+    tool call. Some instances send activity user links with an href only; the
+    cached directory comes first, a user it lacks is fetched once."""
+
+    def __init__(self) -> None:
+        self._directory: Optional[Dict[int, str]] = None
+        self._seen: Dict[int, str] = {}
+
+    def name(self, link: Dict[str, Any]) -> str:
+        if link.get("title"):
+            return str(link["title"])
+        user_id = _href_id(link)
+        if not user_id:
+            return ""
+        if user_id in self._seen:
+            return self._seen[user_id]
+        if self._directory is None:
+            try:
+                self._directory = {u["id"]: u["name"] for u in _user_directory()}
+            except OPError:
+                self._directory = {}
+        name = self._directory.get(user_id, "")
+        if not name:
+            try:
+                name = str(_request("GET", f"users/{user_id}").get("name") or "")
+            except OPError:
+                name = ""
+        self._seen[user_id] = name
+        return name
 
 
 # ─── Projects and scope ───────────────────────────────────────────────────────
@@ -823,8 +938,10 @@ def _members(project_id: int) -> List[Dict[str, Any]]:
 # ─── Work packages ────────────────────────────────────────────────────────────
 
 
-def _get_wp(wp_id: int) -> Dict[str, Any]:
-    return _request("GET", f"work_packages/{wp_id}")
+def _get_wp(ref: Any) -> Dict[str, Any]:
+    """A work package by numeric id or display id: OpenProject resolves both
+    on the same path (Go ``GetWorkPackageByRef``)."""
+    return _request("GET", f"work_packages/{ref}")
 
 
 def _wp_project(wp: Dict[str, Any]) -> Dict[str, Any]:
@@ -832,17 +949,19 @@ def _wp_project(wp: Dict[str, Any]) -> Dict[str, Any]:
     return project or {"id": 0, "identifier": "?", "name": _link_title(wp, "project")}
 
 
-def _readable_wp(wp_id: int) -> Dict[str, Any]:
-    wp = _get_wp(wp_id)
+def _readable_wp(ref: Any) -> Dict[str, Any]:
+    wp = _get_wp(ref)
     if not _read_unrestricted():
         _require_readable(_wp_project(wp))
     return wp
 
 
 def _wp_row(wp: Dict[str, Any], select: Optional[List[str]] = None) -> Dict[str, Any]:
-    """Go ``projectRow``; ``display_id`` is added when the instance has semantic ids."""
+    """Go ``projectRow``: every row carries ``display_id`` and
+    ``parent_display_id`` (AIS-494), empty where the instance has none."""
     full: Dict[str, Any] = {
         "id": int(wp.get("id") or 0),
+        "display_id": str(wp.get("displayId") or ""),
         "subject": str(wp.get("subject") or ""),
         "status": _link_title(wp, "status"),
         "type": _link_title(wp, "type"),
@@ -851,15 +970,13 @@ def _wp_row(wp: Dict[str, Any], select: Optional[List[str]] = None) -> Dict[str,
         "assignee": _link_title(wp, "assignee"),
         "responsible": _link_title(wp, "responsible"),
         "parent_id": _href_id(_link(wp, "parent")),
+        "parent_display_id": str(_link(wp, "parent").get("displayId") or ""),
         "author": _link_title(wp, "author"),
         "start_date": str(wp.get("startDate") or ""),
         "due_date": str(wp.get("dueDate") or ""),
         "created_at": str(wp.get("createdAt") or ""),
         "updated_at": str(wp.get("updatedAt") or ""),
     }
-    display = str(wp.get("displayId") or "")
-    if display and display != str(full["id"]):
-        full["display_id"] = display
     full = _sorted(full)
     if not select:
         return full
@@ -893,13 +1010,24 @@ def _wp_query(args: Dict[str, Any], *, query: str = "") -> Dict[str, Any]:
             filters.append({"project": {"operator": "=", "values": readable}})
     if query:
         filters.append({"search": {"operator": "**", "values": [query]}})
-    status = _arg_str(args, "status")
-    if _arg_bool(args, "open_only"):
+    # An explicit status always applies; open_only only narrows when there is
+    # none and contradicts a closed one (AIS-494: open_only used to drop the
+    # status and return every open work package).
+    status, open_only = _arg_str(args, "status"), bool(_arg_bool(args, "open_only"))
+    if status.casefold() == "open" or (open_only and not status):
         filters.append({"status": {"operator": "o", "values": []}})
-    elif status.casefold() in ("open", "closed"):
-        filters.append({"status": {"operator": "o" if status.casefold() == "open" else "c", "values": []}})
+    elif status.casefold() == "closed":
+        if open_only:
+            raise ToolFailure("status \"closed\" contradicts open_only=true")
+        filters.append({"status": {"operator": "c", "values": []}})
     elif status:
-        filters.append({"status": {"operator": "=", "values": [str(_resolve_ref("status", status))]}})
+        item = _resolve_ref_item("status", status)
+        if open_only and item.get("isClosed"):
+            raise ToolFailure(
+                f"status {json.dumps(str(item.get('name') or ''), ensure_ascii=False)} is a closed status, "
+                "which contradicts open_only=true"
+            )
+        filters.append({"status": {"operator": "=", "values": [str(int(item.get("id") or 0))]}})
     assignee = _arg_str(args, "assignee")
     if assignee.casefold() == "me":
         filters.append({"assignee": {"operator": "=", "values": ["me"]}})
@@ -933,16 +1061,43 @@ def _wp_query(args: Dict[str, Any], *, query: str = "") -> Dict[str, Any]:
     return params
 
 
+def _exact_match(query: str, select: List[str]) -> Optional[Dict[str, Any]]:
+    """Go ``exactWorkPackageMatch`` (AIS-494): the work package a search query
+    names by id or display id ("AIS-487", "#17806") — full-text search does not
+    match keys. None when the query is no such reference or nothing (readable)
+    matches."""
+    try:
+        ref = _parse_wp_ref(query)
+    except ToolFailure:
+        return None
+    if not ref:
+        return None
+    try:
+        wp = _get_wp(ref)
+    except (NotFound, Forbidden):
+        return None
+    if not _readable_link(wp):
+        return None
+    return _wp_row(wp, select)
+
+
 def _list_wps(args: Dict[str, Any], query: str = "") -> Dict[str, Any]:
+    """Go ``workPackageListResult``, shared by list and search."""
     params = _wp_query(args, query=query)
-    items, page = _list("work_packages", params, _arg_int(args, "offset"), _arg_int(args, "limit"))
     select = _arg_list(args, "select")
-    return _sorted({
+    exact = _exact_match(query, select) if query else None
+    items, page = _list("work_packages", params, _arg_int(args, "offset"), _arg_int(args, "limit"))
+    out: Dict[str, Any] = {
         "work_packages": [_wp_row(wp, select) for wp in items],
         "total": page["total"],
         "has_more": page["has_more"],
         "next_offset": _next_offset(page),
-    })
+    }
+    if _arg_str(args, "group_by"):
+        out["groups"] = page["groups"]
+    if exact is not None:
+        out["exact_match"] = exact
+    return _sorted(out)
 
 
 def _recent_duplicate(project_id: int, subject: str) -> Optional[Dict[str, Any]]:
@@ -1280,7 +1435,26 @@ def _int(description: str) -> Dict[str, Any]:
     return {"type": "integer", "description": description}
 
 
+def _wp_ref(description: str = "") -> Dict[str, Any]:
+    """Go ``wpRefSchema``: a work package id or display id parameter."""
+    return {
+        "anyOf": [{"type": "integer"}, {"type": "string"}],
+        "description": description or "Work package id or display id (e.g. 17806 or \"AIS-469\").",
+    }
+
+
 # ─── Identity ─────────────────────────────────────────────────────────────────
+
+
+def _not_configured(err: NotConfigured) -> Dict[str, Any]:
+    """Go ``notLinkedResult`` (AIS-486), local flavour: no URL/token yet is an
+    expected state, not a failed call, so it is NOT flagged isError."""
+    return _sorted({
+        "linked": False,
+        "action_required": "configure_account",
+        "next_step": _map_error(err),
+        "local": True,
+    })
 
 
 _LOCAL_TOKEN_TEXT = (
@@ -1309,7 +1483,7 @@ def pm_link_account(_args: Dict[str, Any]) -> Any:
 def pm_link_status(_args: Dict[str, Any]) -> Any:
     cfg = _config()
     if not cfg["base_url"] or not cfg["token"]:
-        raise NotConfigured("openproject: instance URL not configured")
+        return _not_configured(NotConfigured("openproject: instance URL not configured"))
     me = _request("GET", "users/me")
     return _sorted({
         "linked": True,
@@ -1352,11 +1526,11 @@ def pm_list_reference_data(args: Dict[str, Any]) -> Any:
     kind = _arg_str(args, "kind") or "all"
     out: Dict[str, Any] = {}
     if kind in ("all", "statuses"):
-        out["statuses"] = _ref_items(_statuses())
+        out["statuses"] = _ref_rows(_statuses(), statuses=True)
     if kind in ("all", "types"):
-        out["types"] = _ref_items(_types())
+        out["types"] = _ref_rows(_types())
     if kind in ("all", "priorities"):
-        out["priorities"] = _ref_items(_priorities())
+        out["priorities"] = _ref_rows(_priorities())
     if kind in ("all", "activities"):
         out["activities"] = _activities()
     return _sorted(out)
@@ -1434,11 +1608,15 @@ def pm_get_project(args: Dict[str, Any]) -> Any:
 def _filter_properties() -> Dict[str, Any]:
     return {
         "project": _str("Project id or identifier to scope results to."),
-        "status": _str("Exact status name or id (not a meta-value like 'open'/'closed' — use open_only for that)."),
-        "open_only": {"type": "boolean", "description": "Restrict to not-closed work packages."},
+        "status": _str("Status name (case-insensitive) or id, or \"open\"/\"closed\". Unknown names are rejected with the valid list."),
+        "open_only": {
+            "type": "boolean",
+            "description": "Restrict to not-closed work packages (statuses with is_closed=false, see pm_list_reference_data). "
+                           "An explicit status still applies.",
+        },
         "assignee": _str("Assignee id, login, or \"me\"."),
-        "type": _str("Exact work package type name or id."),
-        "priority": _str("Exact priority name or id."),
+        "type": _str("Work package type name (case-insensitive) or id."),
+        "priority": _str("Priority name (case-insensitive) or id."),
         "created_on": _str("Exact creation date, YYYY-MM-DD."),
         "created_from": _str("Creation date range start, YYYY-MM-DD."),
         "created_to": _str("Creation date range end, YYYY-MM-DD."),
@@ -1449,7 +1627,7 @@ def _filter_properties() -> Dict[str, Any]:
         "due_from": _str("Due date range start, YYYY-MM-DD."),
         "due_to": _str("Due date range end, YYYY-MM-DD."),
         "sort_by": {"type": "array", "items": {"type": "string"}, "description": "Sort criteria, e.g. [\"status:desc\",\"priority:asc\"]."},
-        "group_by": _str("Field to group results by, e.g. \"status\"."),
+        "group_by": _str("Field to group results by, e.g. \"status\": adds groups [{value, count}] over the whole result."),
         "select": {
             "type": "array", "items": {"type": "string"},
             "description": "Restrict each result to these field names (id, subject, status, type, priority, assignee, project, due_date, ...).",
@@ -1484,19 +1662,19 @@ def pm_search_work_packages(args: Dict[str, Any]) -> Any:
 
 @tool(
     "pm_get_work_package",
-    "Get one work package by id, including its full description. Required: id (also a display id such as \"AIS-408\"). "
+    "Get one work package by id or display id (e.g. \"AIS-469\"), including its full description. Required: id. "
     "Optional: text_limit (truncate the description).",
     {
-        "id": _int("Work package id."),
+        "id": _wp_ref(),
         "text_limit": _int("Truncate the description to this many characters."),
     },
     ["id"],
 )
 def pm_get_work_package(args: Dict[str, Any]) -> Any:
-    wp_id = _arg_wp_id(args, "id")
-    if not wp_id:
+    ref = _arg_wp_ref(args, "id")
+    if not ref:
         raise ToolFailure("id is required")
-    wp = _readable_wp(wp_id)
+    wp = _readable_wp(ref)
     desc, truncated, length = _text_limit(_raw(wp.get("description")), _arg_int(args, "text_limit"))
     row = _wp_row(wp)
     row.update({
@@ -1511,12 +1689,13 @@ def pm_get_work_package(args: Dict[str, Any]) -> Any:
 @tool(
     "pm_create_work_package",
     "Create a work package. Required: project (id or identifier), type (name or id), subject. "
-    "Optional: description, status, priority, assignee (id, login, or \"me\"), parent (id), start_date, due_date (YYYY-MM-DD), "
+    "Optional: description, status, priority, assignee (id, login, or \"me\"), parent (id or display id), start_date, due_date (YYYY-MM-DD), "
     "estimated_time (ISO-8601 duration, e.g. \"PT8H\"). If the same subject was created in this project within the last "
     "15 minutes, the result carries a warning and possible_duplicate — check it before creating again.",
     {
         "project": _S, "type": _S, "subject": _S, "description": _S, "status": _S, "priority": _S,
-        "assignee": _S, "parent": _I, "start_date": _S, "due_date": _S, "estimated_time": _S,
+        "assignee": _S, "parent": _wp_ref("Parent work package id or display id."), "start_date": _S, "due_date": _S,
+        "estimated_time": _S,
     },
     ["project", "type", "subject"],
 )
@@ -1572,22 +1751,24 @@ def pm_create_work_package(args: Dict[str, Any]) -> Any:
     "Required: id. At least one other field should be set. lock_version is fetched automatically if omitted. "
     "Local extras: project (move it to another project), type, parent (id; 0 clears), estimated_time; assignee \"none\" clears it.",
     {
-        "id": _I, "subject": _S, "description": _S, "status": _S, "priority": _S, "assignee": _S,
+        "id": _wp_ref(), "subject": _S, "description": _S, "status": _S, "priority": _S, "assignee": _S,
         "start_date": _S, "due_date": _S,
         "lock_version": _int("Optional; fetched automatically if omitted."),
         "project": _str("Local extension: move the work package to this project (id or identifier)."),
         "type": _str("Local extension: new work package type (name or id)."),
-        "parent": _int("Local extension: new parent work package id; 0 removes the parent."),
+        "parent": _wp_ref("Local extension: new parent work package id or display id; 0 removes the parent."),
         "estimated_time": _str("Local extension: ISO-8601 duration, e.g. \"PT8H\"."),
     },
     ["id"],
 )
 def pm_update_work_package(args: Dict[str, Any]) -> Any:
-    wp_id = _arg_wp_id(args, "id")
-    if not wp_id:
+    ref = _arg_wp_ref(args, "id")
+    if not ref:
         raise ToolFailure("id is required")
     _require_writes_enabled()
-    current = _get_wp(wp_id)
+    # One fetch covers the lock_version, the write check and a display id.
+    current = _get_wp(ref)
+    wp_id = int(current.get("id") or 0)
     source = _wp_project(current)
     _require_writable(source)
     lock_version = _arg_int(args, "lock_version") or int(current.get("lockVersion") or 0)
@@ -1651,16 +1832,18 @@ def pm_update_work_package(args: Dict[str, Any]) -> Any:
 @tool(
     "pm_comment_work_package",
     "Add a comment to a work package. Required: id, comment. Optional: notify (bool, default false).",
-    {"id": _I, "comment": _S, "notify": _B},
+    {"id": _wp_ref(), "comment": _S, "notify": _B},
     ["id", "comment"],
 )
 def pm_comment_work_package(args: Dict[str, Any]) -> Any:
-    wp_id = _arg_wp_id(args, "id")
+    ref = _arg_wp_ref(args, "id")
     comment = str(args.get("comment") or "")
-    if not wp_id or not comment.strip():
+    if not ref or not comment.strip():
         raise ToolFailure("id and comment are required")
     _require_writes_enabled()
-    _require_writable(_wp_project(_get_wp(wp_id)))
+    current = _get_wp(ref)
+    wp_id = int(current.get("id") or 0)
+    _require_writable(_wp_project(current))
     notify = "true" if _arg_bool(args, "notify") else "false"
     _request("POST", f"work_packages/{wp_id}/activities", params={"notify": notify}, body={"comment": {"raw": comment}})
     return _sorted({"commented": True, "id": wp_id})
@@ -1668,8 +1851,9 @@ def pm_comment_work_package(args: Dict[str, Any]) -> Any:
 
 @tool(
     "pm_list_work_package_activity",
-    "List the comment/activity log for a work package, most recent first. Required: id. Optional: limit, text_limit (truncate each entry).",
-    {"id": _I, "limit": _I, "text_limit": _I},
+    "List the comment/activity log for a work package, oldest first (limit keeps the most recent entries). "
+    "Required: id (or display id). Optional: limit, text_limit (truncate each entry).",
+    {"id": _wp_ref(), "limit": _I, "text_limit": _I},
     ["id"],
 )
 def pm_list_work_package_activity(args: Dict[str, Any]) -> Any:
@@ -1683,12 +1867,13 @@ def pm_list_work_package_activity(args: Dict[str, Any]) -> Any:
     if 0 < limit < len(items):
         items = items[len(items) - limit :]
     text_limit = _arg_int(args, "text_limit")
+    names = _UserNames()
     rows = []
     for activity in items:
         text, truncated, _ = _text_limit(_raw(activity.get("comment")), text_limit)
         row = {
             "id": int(activity.get("id") or 0),
-            "user": _link_title(activity, "user"),
+            "user": names.name(_link(activity, "user")),
             "created_at": str(activity.get("createdAt") or ""),
             "comment": text,
         }
@@ -1710,7 +1895,7 @@ def _relation_out(rel: Dict[str, Any]) -> Dict[str, Any]:
 @tool(
     "pm_list_work_package_relations",
     "List a work package's relations (blocks, precedes, relates to, ...). Required: id.",
-    {"id": _I},
+    {"id": _wp_ref()},
     ["id"],
 )
 def pm_list_work_package_relations(args: Dict[str, Any]) -> Any:
@@ -1728,22 +1913,24 @@ def pm_list_work_package_relations(args: Dict[str, Any]) -> Any:
     "Create a relation between two work packages. Required: id, related_to_id, relation_type "
     "(one of relates, blocks, blocked, precedes, follows, duplicates, duplicated, includes, partof, requires, required).",
     {
-        "id": _int("The work package the relation is created from."),
-        "related_to_id": _int("The work package to relate to."),
+        "id": _wp_ref("The work package the relation is created from (id or display id)."),
+        "related_to_id": _wp_ref("The work package to relate to (id or display id)."),
         "relation_type": _S,
     },
     ["id", "related_to_id", "relation_type"],
 )
 def pm_create_work_package_relation(args: Dict[str, Any]) -> Any:
-    wp_id = _arg_wp_id(args, "id")
-    related = _arg_wp_id(args, "related_to_id")
+    ref, related_ref = _arg_wp_ref(args, "id"), _arg_wp_ref(args, "related_to_id")
     relation_type = _arg_str(args, "relation_type").lower()
-    if not wp_id or not related or not relation_type:
+    if not ref or not related_ref or not relation_type:
         raise ToolFailure("id, related_to_id, and relation_type are required")
     if relation_type not in _RELATION_TYPES:
         raise ToolFailure(f"Unknown relation_type '{relation_type}'. Allowed: {', '.join(_RELATION_TYPES)}.")
     _require_writes_enabled()
-    _require_writable(_wp_project(_get_wp(wp_id)))
+    current = _get_wp(ref)
+    wp_id = int(current.get("id") or 0)
+    _require_writable(_wp_project(current))
+    related = _arg_wp_id(args, "related_to_id")
     rel = _request(
         "POST",
         f"work_packages/{wp_id}/relations",
@@ -1756,15 +1943,17 @@ def pm_create_work_package_relation(args: Dict[str, Any]) -> Any:
     "pm_delete_work_package",
     "Local extension (not in the AIMDS Suite): permanently delete a work package, including its children and time entries. "
     "Required: id. Only after the user explicitly asked for the deletion.",
-    {"id": _int("Work package id (also a display id such as \"AIS-408\").")},
+    {"id": _wp_ref()},
     ["id"],
 )
 def pm_delete_work_package(args: Dict[str, Any]) -> Any:
-    wp_id = _arg_wp_id(args, "id")
-    if not wp_id:
+    ref = _arg_wp_ref(args, "id")
+    if not ref:
         raise ToolFailure("id is required")
     _require_writes_enabled()
-    _require_writable(_wp_project(_get_wp(wp_id)))
+    current = _get_wp(ref)
+    wp_id = int(current.get("id") or 0)
+    _require_writable(_wp_project(current))
     _request("DELETE", f"work_packages/{wp_id}")
     return _sorted({"deleted": True, "id": wp_id})
 
@@ -1995,7 +2184,8 @@ def pm_create_meeting(args: Dict[str, Any]) -> Any:
     "Optional: work_package_id (links the new item to a work package), notes (item notes, or the outcome text when targeting agenda_item_id), "
     "outcome_kind (\"information\"|\"work_package\", only meaningful with agenda_item_id).",
     {
-        "meeting_id": _I, "title": _S, "agenda_item_id": _I, "work_package_id": _I, "notes": _S,
+        "meeting_id": _I, "title": _S, "agenda_item_id": _I,
+        "work_package_id": _wp_ref("Work package to link the new agenda item to (id or display id)."), "notes": _S,
         "outcome_kind": {"type": "string", "enum": ["information", "work_package"]},
     },
     ["meeting_id"],
@@ -2033,14 +2223,16 @@ def pm_add_meeting_agenda_item(args: Dict[str, Any]) -> Any:
 
 @tool(
     "pm_list_time_entries",
-    "List logged time entries with structured filters. Optional: project, work_package_id (without either, every readable "
-    "project is listed), user (id, login, or \"me\"), spent_on_from/spent_on_to (YYYY-MM-DD range), limit, offset. "
+    "List logged time entries with structured filters. No required arguments: without project/work_package_id it lists "
+    "every entry the user can read across all projects (scope with spent_on_from/spent_on_to). Optional: project, "
+    "work_package_id (id or display id), user (id, login, or \"me\"), spent_on_from/spent_on_to (YYYY-MM-DD range), limit, "
+    "offset (page number). "
     "Scope with project/spent_on_from/spent_on_to when possible to keep the scan small. Besides the contract fields each "
     "entry has duration_seconds and work_package_subject; total_hours, booked_days and by_work_package sum up the "
     "returned page, complete says whether that page is the whole result.",
     {
         "project": _str("Project id or identifier."),
-        "work_package_id": _I,
+        "work_package_id": _wp_ref(),
         "user": _str("User id, login, or \"me\"."),
         "spent_on_from": _str("Date range start, YYYY-MM-DD."),
         "spent_on_to": _str("Date range end, YYYY-MM-DD."),
@@ -2110,7 +2302,7 @@ def _time_entry_project(entry: Dict[str, Any]) -> Dict[str, Any]:
         "hours": _str("ISO-8601 duration, e.g. \"PT8H\" or \"PT1H30M\"."),
         "start_time": _str("ISO-8601 date-time work began (instance-setting-dependent)."),
         "end_time": _str("ISO-8601 date-time work ended — used only to compute hours locally, never sent to OpenProject."),
-        "work_package_id": _I,
+        "work_package_id": _wp_ref(),
         "project": _str("Project id or identifier."),
         "comment": _S,
         "user": _str("Log time on behalf of this user (id, login, or \"me\"). Defaults to the caller."),
@@ -2276,6 +2468,8 @@ def call_tool_sync(name: str, arguments: Optional[Dict[str, Any]]) -> types.Call
         return _text_result(entry[2](dict(arguments or {})))
     except ToolFailure as exc:
         return _error_result(str(exc))
+    except NotConfigured as exc:
+        return _text_result(_not_configured(exc))
     except OPError as exc:
         return _error_result(_map_error(exc))
     except Exception as exc:  # noqa: BLE001 - every failure must reach the model as text
