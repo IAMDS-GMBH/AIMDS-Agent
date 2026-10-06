@@ -2606,6 +2606,22 @@ def _unwrap_exception(exc: BaseException) -> BaseException:
     return current
 
 
+def _is_cancellation(exc: Any) -> bool:
+    """Whether *exc* is a cancellation, also wrapped in an exception group.
+
+    AIS-502: 0.7.8 still filed "connect — CancelledError" incidents — the
+    cancel arrived inside an anyio TaskGroup's exception group (or as the
+    concurrent.futures class), which the bare isinstance check missed.
+    """
+    if not isinstance(exc, BaseException):
+        return False
+    cancelled = (asyncio.CancelledError, concurrent.futures.CancelledError)
+    if isinstance(exc, cancelled):
+        return True
+    subs = getattr(exc, "exceptions", None)
+    return bool(subs) and all(_is_cancellation(e) for e in subs)
+
+
 def _iamds_provider_for_server(server_name: str, config: Optional[dict] = None) -> Optional[str]:
     """Return the canonical aimds-suite-* provider a server is tagged with, else None."""
     try:
@@ -6082,7 +6098,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             return_exceptions=True,
         )
         for name, result in zip(server_names, results):
-            if isinstance(result, asyncio.CancelledError):
+            if _is_cancellation(result):
                 # Cancelled from outside (discovery budget, shutdown, a reload
                 # racing this run), not refused by the server: say so and do
                 # not file a "connect — CancelledError" incident that names

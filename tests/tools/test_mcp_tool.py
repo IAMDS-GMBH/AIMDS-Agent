@@ -4,6 +4,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 """
 
 import asyncio
+import concurrent.futures
 import json
 import threading
 import time
@@ -1389,6 +1390,11 @@ class TestToolsetInjection:
         async def connect(name, config):
             if name == "cancelled":
                 raise asyncio.CancelledError()
+            if name == "grouped":
+                # AIS-502: an anyio TaskGroup wraps the cancel in a group
+                raise BaseExceptionGroup("unhandled errors in a TaskGroup", [asyncio.CancelledError()])
+            if name == "futures":
+                raise concurrent.futures.CancelledError()
             if name == "refused":
                 raise ConnectionError("cannot reach server")
             server = MCPServerTask(name)
@@ -1398,6 +1404,8 @@ class TestToolsetInjection:
 
         fake_config = {
             "cancelled": {"command": "slow"},
+            "grouped": {"command": "slow"},
+            "futures": {"command": "slow"},
             "refused": {"command": "bad"},
             "good": {"command": "npx", "args": []},
         }
@@ -1417,8 +1425,9 @@ class TestToolsetInjection:
 
         assert "mcp_good_ping" in result
         assert [call.args[:2] for call in report.call_args_list] == [("refused", "connect")]
-        assert "MCP server 'cancelled': connect was cancelled" in caplog.text
-        assert "Failed to connect to MCP server 'cancelled'" not in caplog.text
+        for name in ("cancelled", "grouped", "futures"):
+            assert f"MCP server '{name}': connect was cancelled" in caplog.text
+            assert f"Failed to connect to MCP server '{name}'" not in caplog.text
 
     def test_partial_failure_retry_on_second_call(self):
         """Failed servers are retried on subsequent discover_mcp_tools() calls."""
