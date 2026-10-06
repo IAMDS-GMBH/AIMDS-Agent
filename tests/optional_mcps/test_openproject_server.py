@@ -76,7 +76,8 @@ def _time_entry(eid, spent_on, hours, wp=17054, start=None, project=107, entity=
         "user": {"href": "/api/v3/users/14", "title": "Johannes Huchler"},
         "activity": {"href": "/api/v3/time_entries/activities/3", "title": "Development"},
     }
-    links["entity" if entity else "workPackage"] = {"href": f"/api/v3/work_packages/{wp}", "title": "EVN Ongoing"}
+    if wp:
+        links["entity" if entity else "workPackage"] = {"href": f"/api/v3/work_packages/{wp}", "title": "EVN Ongoing"}
     return {
         "id": eid, "spentOn": spent_on, "hours": hours, "startTime": start, "lockVersion": 1,
         "createdAt": "2026-09-01T10:00:00Z", "comment": {"format": "plain", "raw": "work"}, "_links": links,
@@ -107,6 +108,12 @@ class FakeOpenProject:
         self.errors = {}
         self.groups = None
         self.activity_user_titles = True
+        self.projects = list(PROJECTS)  # the cached project list
+        self.hidden_projects = []  # found by GET projects/{ref}, not listed
+        self.batch_keys = {17699: "AIS-408"}  # display ids of the key batch lookup, else EXT-<id>
+        self.hidden_ids = set()  # work packages the key batch lookup does not return
+        self.global_activities = None  # the instance-wide activity collection (404 when None)
+        self.agenda_items = [{"id": 27, "title": "Discuss", "notes": {"raw": "Some notes."}, "itemType": "simple", "_links": {}}]
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         url = urlparse(str(request.url))
@@ -128,10 +135,10 @@ class FakeOpenProject:
         offset = int(query.get("offset") or 1)
         size = int(query.get("pageSize") or 50)
         if (method, path) == ("GET", "projects"):
-            return ok(_collection(PROJECTS))
+            return ok(_collection(self.projects))
         if method == "GET" and path.startswith("projects/") and path.count("/") == 1:
             ref = path.split("/", 1)[1]
-            for p in PROJECTS:
+            for p in self.projects + self.hidden_projects:
                 if ref in (str(p["id"]), p["identifier"]):
                     return ok(p)
             return err(404, "The requested resource could not be found.")
@@ -144,7 +151,7 @@ class FakeOpenProject:
         if (method, path) == ("GET", "priorities"):
             return ok(_collection(PRIORITIES))
         if (method, path) == ("GET", "time_entries/activities"):
-            return err(404, "not found")
+            return ok(_collection(self.global_activities)) if self.global_activities else err(404, "not found")
         if (method, path) == ("GET", "users"):
             return err(403, "You are not authorized") if self.users_forbidden else ok(_collection(USERS))
         if (method, path) == ("GET", "principals"):
@@ -160,8 +167,8 @@ class FakeOpenProject:
         if (method, path) == ("GET", "work_packages"):
             filters = json.loads(query.get("filters", "[]"))
             if any("id" in f for f in filters):
-                ids = next(f["id"]["values"] for f in filters if "id" in f)
-                return ok(_collection([_wp(int(i), display=f"EXT-{i}") for i in ids]))
+                ids = [int(i) for i in next(f["id"]["values"] for f in filters if "id" in f)]
+                return ok(_collection([_wp(i, display=self.batch_keys.get(i, f"EXT-{i}")) for i in ids if i not in self.hidden_ids]))
             items = self.search_results
             payload = _collection(items, offset, size, self.wp_total)
             if "groupBy" in query and self.groups is not None:
@@ -234,7 +241,7 @@ class FakeOpenProject:
             return ok(_collection([{"id": 9, "notes": {"raw": ""}, "kind": "work_package",
                                     "_links": {"workPackage": {"href": "/api/v3/work_packages/17686"}}}]))
         if method == "GET" and path.endswith("/agenda_items"):
-            return ok(_collection([{"id": 27, "title": "Discuss", "notes": {"raw": "Some notes."}, "itemType": "simple", "_links": {}}]))
+            return ok(_collection(self.agenda_items))
         if (method, path) == ("POST", "meetings"):
             return ok({"id": 8, "title": body["title"], "startTime": body.get("startTime"), "duration": 1.0, "state": "open",
                        "_links": {"project": dict(body["_links"]["project"], title="AIMDS Suite")}}, 201)
@@ -406,7 +413,7 @@ def test_project_by_name_and_closest_candidates(op):
     server, _ = op
     assert ok(server, "pm_get_project", project="projektmanagement")["project"]["identifier"] == "PRO"
     text = fail(server, "pm_get_project", project="PM")
-    assert text.startswith("Not found in OpenProject: openproject: not found:")
+    assert text.startswith('Unknown OpenProject project "PM" (parameter project) — use an identifier or id from pm_list_projects.')
     assert "PRO (Projektmanagement, id 46)" in text
 
 
@@ -436,9 +443,9 @@ def test_list_work_packages_resolves_filters_and_paginates(op):
     assert json.loads(call_[2]["sortBy"]) == [["updatedAt", "desc"]]
     assert (call_[2]["offset"], call_[2]["pageSize"]) == ("2", "50")
     row = data["work_packages"][0]
-    assert set(row) == {"id", "display_id", "subject", "status", "type", "priority", "project", "assignee", "responsible",
-                        "parent_id", "parent_display_id", "author", "start_date", "due_date", "created_at", "updated_at"}
-    assert row["parent_id"] == 0 and row["parent_display_id"] == "" and row["due_date"] == "" and row["project"] == "AIMDS Suite"
+    assert set(row) == {"key", "id", "subject", "status", "type", "priority", "project", "assignee", "responsible",
+                        "parent_key", "parent_id", "author", "start_date", "due_date", "created_at", "updated_at"}
+    assert row["parent_id"] == 0 and row["parent_key"] == "" and row["due_date"] == "" and row["project"] == "AIMDS Suite"
     assert "groups" not in data
 
 
@@ -482,23 +489,23 @@ def test_unknown_assignee_is_an_error(op):
     assert "Unknown OpenProject user" in fail(server, "pm_list_work_packages", assignee="Tobias")
 
 
-def test_get_work_package_with_text_limit_and_display_id(op):
+def test_get_work_package_with_text_limit_and_key(op):
     server, _ = op
     row = ok(server, "pm_get_work_package", id="AIS-408", text_limit=6)
     assert row["description"] == "A long" and row["description_truncated"] is True
     assert row["description_length"] == len("A long description of the work") and row["lock_version"] == 2
-    assert row["display_id"] == "AIS-408"
+    assert (row["key"], row["id"]) == ("AIS-408", 17699)
     full = ok(server, "pm_get_work_package", id=17054)
-    assert full["description_truncated"] is False and full["display_id"] == "17054"
+    assert full["description_truncated"] is False and full["key"] == "17054"
 
 
 def test_get_work_package_errors(op):
     server, _ = op
     assert fail(server, "pm_get_work_package") == "id is required"
     assert fail(server, "pm_get_work_package", id="abc") == \
-        'invalid arguments: "abc" is neither a work package id nor a display id like "AIS-469"'
+        'invalid arguments: "abc" is neither a work package key like "AIS-469" nor a numeric id'
     assert fail(server, "pm_get_work_package", id=1.5) == \
-        'invalid arguments: work package id must be a number or a display id like "AIS-469"'
+        'invalid arguments: work package id must be a key like "AIS-469" or a number'
     assert fail(server, "pm_get_work_package", id=-3) == "id is required"
     assert fail(server, "pm_get_work_package", id=1).startswith("Not found in OpenProject: openproject: not found:")
 
@@ -515,10 +522,11 @@ def test_activity_limit_and_text_limit(op):
 def test_relations_list_and_create(op):
     server, fake = op
     rel = ok(server, "pm_list_work_package_relations", id=17699)["relations"][0]
-    assert rel == {"id": 5, "type": "blocks", "_links": {"from": {"href": "/api/v3/work_packages/17699", "title": "Own server"},
-                                                          "to": {"href": "/api/v3/work_packages/17054", "title": "EVN Ongoing"}}}
+    assert rel == {"id": 5, "type": "blocks", "from_key": "AIS-408", "from_id": 17699, "from_subject": "Own server",
+                   "to_key": "EXT-17054", "to_id": 17054, "to_subject": "EVN Ongoing"}
     created = ok(server, "pm_create_work_package_relation", id=17699, related_to_id=17054, relation_type="precedes")
-    assert created["id"] == 6 and created["type"] == "precedes"
+    assert created == {"id": 6, "type": "precedes", "from_key": "AIS-408", "from_id": 17699, "from_subject": "x",
+                       "to_key": "EXT-17054", "to_id": 17054, "to_subject": "y"}
     post = requests(fake, "POST", "work_packages/17699/relations")[-1]
     assert post[3] == {"type": "precedes", "_links": {"to": {"href": "/api/v3/work_packages/17054"}}}
     assert "Allowed: relates" in fail(server, "pm_create_work_package_relation", id=17699, related_to_id=17054, relation_type="parent")
@@ -547,7 +555,7 @@ def test_every_work_package_id_parameter_takes_a_display_id(op):
 @pytest.mark.parametrize("ref", ["AIS-408", "ais-408", "#AIS-408", "#17699", "17699"])
 def test_display_id_spellings_resolve_to_the_numeric_id(op, ref):
     server, fake = op
-    assert ok(server, "pm_comment_work_package", id=ref, comment="x") == {"commented": True, "id": 17699}
+    assert ok(server, "pm_comment_work_package", id=ref, comment="x") == {"commented": True, "key": "AIS-408", "id": 17699}
     assert requests(fake, "POST", "work_packages/17699/activities")
 
 
@@ -573,15 +581,23 @@ def test_update_by_display_id_fetches_the_work_package_once(op):
     assert requests(fake, "PATCH", "work_packages/17699")[-1][3]["lockVersion"] == 2
 
 
-def test_rows_carry_display_id_and_parent_display_id(op):
+def test_rows_carry_key_id_parent_key_and_parent_id(op):
+    """AIS-499: rows name work packages by key next to the numeric id; the
+    0.4.0 display_id/parent_display_id are gone."""
     server, fake = op
     child = _wp(17711, display="AIS-411")
     child["_links"]["parent"] = {"href": "/api/v3/work_packages/17699", "title": "Own server", "displayId": "AIS-408"}
-    fake.search_results = [child]
-    row = ok(server, "pm_list_work_packages")["work_packages"][0]
-    assert (row["display_id"], row["parent_id"], row["parent_display_id"]) == ("AIS-411", 17699, "AIS-408")
-    assert ok(server, "pm_list_work_packages", select=["display_id", "parent_display_id"])["work_packages"][0] == {
-        "display_id": "AIS-411", "parent_display_id": "AIS-408"}
+    # An instance without per-project numbering: the key is the id as text.
+    plain = _wp(17712)
+    del plain["displayId"]
+    plain["_links"]["parent"] = {"href": "/api/v3/work_packages/17711", "title": "Child"}
+    fake.search_results = [child, plain]
+    rows = ok(server, "pm_list_work_packages")["work_packages"]
+    assert [(r["key"], r["id"], r["parent_key"], r["parent_id"]) for r in rows] == [
+        ("AIS-411", 17711, "AIS-408", 17699), ("17712", 17712, "17711", 17711)]
+    assert not {"display_id", "parent_display_id"} & set(rows[0])
+    assert ok(server, "pm_list_work_packages", select=["key", "parent_key"])["work_packages"][0] == {
+        "key": "AIS-411", "parent_key": "AIS-408"}
 
 
 def test_group_by_returns_groups_over_the_whole_result(op):
@@ -597,8 +613,8 @@ def test_group_by_returns_groups_over_the_whole_result(op):
 
 def test_search_returns_an_exact_match_for_a_key_or_id(op):
     server, fake = op
-    data = ok(server, "pm_search_work_packages", query="ais-408", select=["id", "display_id"])
-    assert data["exact_match"] == {"id": 17699, "display_id": "AIS-408"}
+    data = ok(server, "pm_search_work_packages", query="ais-408", select=["id", "key"])
+    assert data["exact_match"] == {"id": 17699, "key": "AIS-408"}
     assert {"search": {"operator": "**", "values": ["ais-408"]}} in json.loads(requests(fake, "GET", "work_packages")[-1][2]["filters"])
     assert ok(server, "pm_search_work_packages", query="#17054")["exact_match"]["subject"] == "EVN Ongoing"
     assert "exact_match" not in ok(server, "pm_search_work_packages", query="AIS-1")  # 404 -> no exact match
@@ -662,6 +678,186 @@ def test_activity_user_names_for_href_only_links(op):
     assert [a["user"] for a in data["activity"]] == ["Johannes Huchler", "Tobias Hehl", "Former Colleague"]
     assert len(requests(fake, "GET", "users/31")) == 1  # not in the directory -> fetched once
     assert not requests(fake, "GET", "users/14")
+
+
+# ─── Suite parity: go-mcp-openproject 0.5.1 (AIS-499, AIS-511) ────────────────
+
+
+def _server_with(monkeypatch, **env):
+    server = _load(monkeypatch, **env)
+    fake = FakeOpenProject()
+    client = httpx.Client(transport=httpx.MockTransport(fake), base_url="https://op.example.com/api/v3/")
+    monkeypatch.setattr(server, "_http", lambda: client)
+    return server, fake
+
+
+def key_lookups(fake):
+    """The id lists of the batched key lookups (GET work_packages filtered by id)."""
+    return [f["id"]["values"] for _, _, query, _ in requests(fake, "GET", "work_packages")
+            for f in json.loads(query.get("filters", "[]")) if "id" in f]
+
+
+@pytest.mark.parametrize("ref", ["46", "PRO", "pro", "Projektmanagement", "PROJEKTMANAGEMENT", " pro ", "PRO-12", "pro-12"])
+def test_project_parameter_resolves_id_identifier_name_and_key(op, ref):
+    server, fake = op
+    assert ok(server, "pm_get_project", project=ref)["project"]["id"] == 46
+    assert not [c for c in fake.calls if c[1].startswith("projects/")]  # served from the cached list
+
+
+def test_identifier_that_looks_like_a_key_wins_over_its_prefix(op):
+    server, fake = op
+    fake.projects += [{"_type": "Project", "id": 131, "identifier": "release", "name": "Releases", "active": True, "public": False},
+                      {"_type": "Project", "id": 130, "identifier": "release-2026", "name": "Release 2026", "active": True, "public": False}]
+    assert ok(server, "pm_get_project", project="release-2026")["project"]["id"] == 130
+    assert ok(server, "pm_get_project", project="release-7")["project"]["id"] == 131
+
+
+def test_project_outside_the_cached_list_uses_the_exact_lookup(op):
+    server, fake = op
+    fake.hidden_projects = [{"_type": "Project", "id": 300, "identifier": "ARCHIVE", "name": "Archive", "active": False, "public": False}]
+    assert ok(server, "pm_get_project", project="ARCHIVE")["project"]["id"] == 300
+    assert requests(fake, "GET", "projects/ARCHIVE")
+
+
+def test_unknown_project_names_the_parameter_and_the_closest_projects(op):
+    server, _ = op
+    assert fail(server, "pm_list_work_packages", project="manage") == (
+        'Unknown OpenProject project "manage" (parameter project) — use an identifier or id from pm_list_projects. '
+        "Closest: PRO (Projektmanagement, id 46)")
+    # An identifier contained in the value counts as close too.
+    assert fail(server, "pm_list_time_entries", project="ais-board").endswith("Closest: AIS (AIMDS Suite, id 107)")
+    # Nothing shares text: the first projects of the list.
+    assert fail(server, "pm_create_meeting", project="NOPE-17", title="x").endswith(
+        "Closest: AIS (AIMDS Suite, id 107), PRO (Projektmanagement, id 46), MOAP (Mother of all Projects, id 109)")
+
+
+def test_unknown_project_without_a_project_list(op):
+    server, fake = op
+    fake.errors[("GET", "projects")] = (500, {"message": "boom"})
+    assert ok(server, "pm_get_project", project="AIS")["project"]["id"] == 107  # the exact lookup still works
+    assert fail(server, "pm_get_project", project="nope") == \
+        'Unknown OpenProject project "nope" (parameter project) — use an identifier or id from pm_list_projects.'
+
+
+def test_every_project_parameter_resolves_the_same_way(op):
+    server, fake = op
+
+    def last_filters(path):
+        return json.loads(requests(fake, "GET", path)[-1][2]["filters"])
+
+    ok(server, "pm_list_work_packages", project="aimds suite")
+    assert {"project": {"operator": "=", "values": ["107"]}} in last_filters("work_packages")
+    ok(server, "pm_search_work_packages", query="x", project="AIS-408")
+    assert {"project": {"operator": "=", "values": ["107"]}} in last_filters("work_packages")
+    ok(server, "pm_list_time_entries", project="pro")
+    assert {"project": {"operator": "=", "values": ["46"]}} in last_filters("time_entries")
+    ok(server, "pm_list_boards", project="mother of all projects")
+    assert {"project": {"operator": "=", "values": ["109"]}} in last_filters("queries")
+    assert ok(server, "pm_list_users", project="ais")["project"] == "AIS"  # the identifier, not the raw value
+    ok(server, "pm_create_work_package", project="projektmanagement", type="Task", subject="x")
+    assert requests(fake, "POST", "projects/46/work_packages")
+    ok(server, "pm_create_meeting", project="pro-5", title="Retro")
+    assert requests(fake, "POST", "meetings")[-1][3]["_links"]["project"] == {"href": "/api/v3/projects/46"}
+    ok(server, "pm_create_time_entry", activity="Development", spent_on="2026-09-24", hours="PT1H", project="Aimds Suite")
+    assert requests(fake, "POST", "time_entries")[-1][3]["_links"]["project"] == {"href": "/api/v3/projects/107"}
+    assert not [c for c in fake.calls if c[0] == "GET" and c[1].startswith("projects/")]
+
+
+def test_project_resolution_respects_the_allow_lists(monkeypatch):
+    server, fake = _server_with(monkeypatch, read="AIS,PRO", write="AIS")
+    # Outside the read list: found by any spelling, then refused as before.
+    for ref in ("moap", "Mother of all Projects", "MOAP-3", "109"):
+        assert "outside the projects this assistant may read" in fail(server, "pm_list_work_packages", project=ref), ref
+    # An unknown value never suggests an unreadable project.
+    text = fail(server, "pm_get_project", project="mother")
+    assert text.endswith("Closest: AIS (AIMDS Suite, id 107), PRO (Projektmanagement, id 46)") and "MOAP" not in text
+    # Readable but not writable: the name resolves, the write is refused.
+    assert "Writes are disabled for project PRO" in fail(server, "pm_create_work_package", project="projektmanagement",
+                                                         type="Task", subject="x")
+    assert ok(server, "pm_create_work_package", project="ais", type="Task", subject="x")["id"] == 17710
+
+
+def test_relations_carry_keys_from_one_batched_lookup(op):
+    server, fake = op
+    fake.hidden_ids = {17054}  # not visible to the token: the key falls back to the id
+    rel = ok(server, "pm_list_work_package_relations", id="AIS-408")["relations"][0]
+    assert rel == {"id": 5, "type": "blocks", "from_key": "AIS-408", "from_id": 17699, "from_subject": "Own server",
+                   "to_key": "17054", "to_id": 17054, "to_subject": "EVN Ongoing"}
+    assert key_lookups(fake) == [["17054", "17699"]]  # both ends, one request
+    calls = len(fake.calls)
+    row = server._relation_row({"id": 7, "type": "relates", "_links": {
+        "from": {"href": "/api/v3/work_packages/17699", "displayId": "AIS-408"}, "to": {"href": None}}})
+    assert (row["from_key"], row["to_key"], row["to_id"]) == ("AIS-408", "", 0)
+    assert len(fake.calls) == calls  # keys in the links: no lookup
+
+
+def test_time_entries_carry_work_package_key_from_one_batched_lookup(op):
+    server, fake = op
+    fake.time_entries = [_time_entry(1, "2026-09-01", "PT1H", wp=17054), _time_entry(2, "2026-09-01", "PT2H", wp=17699, entity=False),
+                         _time_entry(3, "2026-09-02", "PT1H", wp=17054), _time_entry(4, "2026-09-02", "PT30M", wp=None)]
+    data = ok(server, "pm_list_time_entries")
+    assert [(r["work_package_key"], r["work_package_id"]) for r in data["time_entries"]] == [
+        ("EXT-17054", 17054), ("AIS-408", 17699), ("EXT-17054", 17054), ("", 0)]
+    assert key_lookups(fake) == [["17054", "17699"]]  # the whole page, one request
+    assert [(b["work_package_key"], b["hours"]) for b in data["by_work_package"]] == [
+        ("EXT-17054", 2.0), ("AIS-408", 2.0), ("", 0.5)]
+    # Created and updated entries carry the key as well (the fake books on 17054).
+    created = ok(server, "pm_create_time_entry", activity="Development", spent_on="2026-09-24", hours="PT1H", work_package_id="AIS-408")
+    assert (created["work_package_key"], created["work_package_id"]) == ("EXT-17054", 17054)
+    assert ok(server, "pm_update_time_entry", id=55, hours="PT2H")["work_package_key"] == "EXT-17054"
+
+
+def test_agenda_items_carry_work_package_key_from_one_batched_lookup(op):
+    server, fake = op
+    fake.agenda_items = [
+        {"id": 27, "title": "Discuss", "notes": {"raw": ""}, "itemType": "simple", "_links": {}},
+        {"id": 28, "title": "Ticket", "notes": {"raw": ""}, "itemType": "work_package",
+         "_links": {"workPackage": {"href": "/api/v3/work_packages/17699", "title": "Own server"}}},
+    ]
+    items = ok(server, "pm_get_meeting", id=4)["agenda_items"]
+    assert "work_package_key" not in items[0] and items[0]["outcomes"][0]["work_package_key"] == "EXT-17686"
+    assert (items[1]["work_package_key"], items[1]["work_package_id"]) == ("AIS-408", 17699)
+    assert key_lookups(fake) == [["17686", "17699"]]  # items and outcomes, one request
+    plain = ok(server, "pm_add_meeting_agenda_item", meeting_id=4, title="No ticket")["agenda_item"]
+    assert (plain["work_package_key"], plain["work_package_id"]) == ("", 0)
+    assert len(key_lookups(fake)) == 1  # nothing to look up
+
+
+@pytest.mark.parametrize("ref,expected", [("AIS", [4]), ("aimds suite", [4]), ("107", [4]), ("AIS-408", [4]), ("moap", [5])])
+def test_meetings_filter_by_project_id(op, ref, expected):
+    """The Suite compared the project with the link title (the name), so an
+    identifier filtered out every meeting (AIS-499); both compare ids now."""
+    server, _ = op
+    assert [m["id"] for m in ok(server, "pm_list_meetings", project=ref)["meetings"]] == expected
+
+
+def test_non_admin_directory_and_own_login_via_users_me(op):
+    server, fake = op
+    fake.users_forbidden = True  # /users is admin-only; principals hide login and e-mail
+    for ref, user_id in (("Tobias Hehl", 20), ("jhuchler", 14), ("JH@example.com", 14)):
+        ok(server, "pm_list_work_packages", assignee=ref)
+        filters = json.loads(requests(fake, "GET", "work_packages")[-1][2]["filters"])
+        assert {"assignee": {"operator": "=", "values": [str(user_id)]}} in filters, ref
+    assert requests(fake, "GET", "principals") and requests(fake, "GET", "users/me")
+    # Someone else's hidden login stays unknown.
+    assert fail(server, "pm_list_work_packages", assignee="thehl").startswith('Unknown OpenProject user "thehl"')
+
+
+def test_own_login_resolves_without_any_directory(op):
+    server, fake = op
+    fake.users_forbidden = True
+    fake.errors[("GET", "principals")] = (403, {"message": "forbidden"})
+    ok(server, "pm_create_time_entry", activity="Development", spent_on="2026-09-24", hours="PT1H", project="AIS", user="jhuchler")
+    assert requests(fake, "POST", "time_entries")[-1][3]["_links"]["user"] == {"href": "/api/v3/users/14"}
+    assert fail(server, "pm_list_work_packages", assignee="Tobias Hehl").startswith('Unknown OpenProject user "Tobias Hehl"')
+
+
+def test_activities_are_id_name_rows(op):
+    """AIS-511: time-entry activities are {id, name}, whatever the API adds."""
+    server, fake = op
+    fake.global_activities = [{"_type": "TimeEntriesActivity", "id": 3, "name": "Development", "position": 1, "default": True,
+                               "_links": {"self": {"href": "/api/v3/time_entries/activities/3"}}}]
+    assert ok(server, "pm_list_reference_data", kind="activities") == {"activities": [{"id": 3, "name": "Development"}]}
 
 
 # ─── Work packages: writes ────────────────────────────────────────────────────
@@ -737,11 +933,12 @@ def test_move_to_another_project_and_ignored_move(op, monkeypatch):
 
 def test_comment_and_delete(op):
     server, fake = op
-    assert ok(server, "pm_comment_work_package", id=17699, comment="Looks good", notify=True) == {"commented": True, "id": 17699}
+    assert ok(server, "pm_comment_work_package", id=17699, comment="Looks good", notify=True) == \
+        {"commented": True, "key": "AIS-408", "id": 17699}
     post = requests(fake, "POST", "work_packages/17699/activities")[-1]
     assert post[2] == {"notify": "true"} and post[3] == {"comment": {"raw": "Looks good"}}
     assert fail(server, "pm_comment_work_package", id=17699) == "id and comment are required"
-    assert ok(server, "pm_delete_work_package", id=17699) == {"deleted": True, "id": 17699}
+    assert ok(server, "pm_delete_work_package", id=17699) == {"deleted": True, "key": "AIS-408", "id": 17699}
     assert requests(fake, "DELETE", "work_packages/17699")
 
 
@@ -874,12 +1071,14 @@ def test_meetings_list_get_create_and_agenda(op):
     assert set(listed["meetings"][0]) == {"id", "title", "startTime", "duration", "location", "state", "_links"}
     got = ok(server, "pm_get_meeting", id=4)
     assert got["agenda_items"] == [{"id": 27, "title": "Discuss", "notes": "Some notes.", "type": "simple",
-                                    "outcomes": [{"id": 9, "notes": "", "type": "work_package", "work_package_id": 17686}]}]
+                                    "outcomes": [{"id": 9, "notes": "", "type": "work_package", "work_package_key": "EXT-17686",
+                                                  "work_package_id": 17686}]}]
     assert "attendee" in got["note"]
     created = ok(server, "pm_create_meeting", project="AIS", title="Retro", start_time="2026-10-01T09:00:00Z", duration="PT1H")
     assert created["id"] == 8 and requests(fake, "POST", "meetings")[-1][3]["duration"] == "PT1H"
     item = ok(server, "pm_add_meeting_agenda_item", meeting_id=4, title="Topic", notes="n", work_package_id=17699)
-    assert item == {"agenda_item": {"id": 28, "notes": "n", "title": "Topic", "type": "simple", "work_package_id": 17699}}
+    assert item == {"agenda_item": {"id": 28, "notes": "n", "title": "Topic", "type": "simple", "work_package_key": "AIS-408",
+                                    "work_package_id": 17699}}
     outcome = ok(server, "pm_add_meeting_agenda_item", meeting_id=4, agenda_item_id=27, notes="Decided", outcome_kind="information")
     assert outcome == {"outcome": {"id": 10, "notes": "Decided", "type": "information"}}
     assert requests(fake, "POST", "meetings/4/agenda_items/27/outcomes")[-1][3] == {"notes": "Decided", "kind": "information"}
@@ -905,8 +1104,9 @@ def test_list_time_entries_contract_fields_and_extras(op):
         "user": "Johannes Huchler", "project": "AIMDS Suite", "comment": "work", "ongoing": False, "start_time": "",
         "lock_version": 1, "created_at": "2026-09-01T10:00:00Z"}
     assert row["duration_seconds"] == 5400 and row["work_package_subject"] == "EVN Ongoing"
-    assert row["work_package_display_id"] == "EXT-17054"
-    assert data["by_work_package"] == [{"work_package_id": 17054, "subject": "EVN Ongoing", "hours": 5.5, "booked_days": 2}]
+    assert row["work_package_key"] == "EXT-17054" and "work_package_display_id" not in row
+    assert data["by_work_package"] == [{"work_package_key": "EXT-17054", "work_package_id": 17054, "subject": "EVN Ongoing",
+                                        "hours": 5.5, "booked_days": 2}]
 
 
 def test_list_time_entries_paginates_by_page_number(op):
