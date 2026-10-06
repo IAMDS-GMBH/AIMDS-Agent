@@ -118,6 +118,28 @@ class TestMcpMode:
         assert calls[0][0] == "mcp_AIMDSSuiteMCP_mcp_memory_memory_save"
         assert calls[0][1]["type"] == "rule"
 
+    def test_types_and_tags_follow_the_mcp_vocabulary(self, workspace, monkeypatch):
+        """AIS-502: the Suite rejected type "report", so cron reports only reached the vault."""
+        calls = []
+
+        def fake_handle(name, args, task_id, **kw):
+            calls.append(args)
+            return json.dumps({"saved": True, "slug": "brief"})
+
+        import run_agent
+        monkeypatch.setattr(run_agent, "handle_function_call", fake_handle)
+        facade = mf.MemoryFacade.for_agent(_agent({
+            "mcp_AIMDSSuiteMCP_mcp_memory_memory_context",
+            "mcp_AIMDSSuiteMCP_mcp_memory_memory_save",
+        }))
+        facade.save(title="Weekly", content="…", type="report", tags=["cron-report", "weekly-review-2026-W41", "1x"])
+        assert calls[0]["type"] == "notes"
+        assert calls[0]["tags"] == ["cron-report", "weekly-review-2026-w41", "report"]
+        facade.save(title="Spec", content="…", type="document", tags=[])
+        assert calls[1]["type"] == "reference" and calls[1]["tags"] == ["document"]
+        facade.save(title="Call", content="…", type="meeting", tags=[])
+        assert calls[2]["type"] == "meeting" and calls[2]["tags"] == []
+
     def test_failed_mcp_save_falls_through_to_the_vault(self, workspace, monkeypatch):
         import run_agent
         monkeypatch.setattr(run_agent, "handle_function_call", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("server gone")))

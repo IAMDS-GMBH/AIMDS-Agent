@@ -324,6 +324,9 @@ def _content_cache_store(
 
 # --------------------------------------------------------------------------- suite backend
 
+#: Steps slower than this are logged (AIS-502: an unattributed 159 s read).
+_SLOW_STEP_SECONDS = 5.0
+
 _suite_lock = threading.Lock()
 _suite_cooldown_until = 0.0
 _suite_cooldown_reason = ""
@@ -527,10 +530,12 @@ def _convert_via_suite(resolved: Path, stat: os.stat_result, config: Optional[di
     """Return ``(markdown, suite_state, metadata)``; raises :class:`_SuiteUnavailable`."""
     from hermes_cli.iamds_suite import resolve_suite_endpoint
 
+    t_gate = time.monotonic()
     gate = suite_availability(config)
     if not gate.available:
         raise _SuiteUnavailable(gate.state, gate.reason)
 
+    t_prepare = time.monotonic()
     prepare = _call_suite_tool(_SUITE_INGEST_TOOL, {})
     if not isinstance(prepare, dict):
         raise _SuiteUnavailable("protocol", "storage_ingest_upload({}) returned no object")
@@ -549,11 +554,32 @@ def _convert_via_suite(resolved: Path, stat: os.stat_result, config: Optional[di
     ep = resolve_suite_endpoint(gate.provider, config=config, allow_default=True)
     if not ep.api_key:
         raise _SuiteUnavailable("needs_reauth", f"key_missing ({ep.key_env})")
-    logger.info("[AIS-294] converting %s via Suite Docling (%s, %s)", resolved.name, ep.provider_id, ep.base_url)
+    started = time.monotonic()
+    # AIS-502: per-step timings — a 159 s read_file could not be attributed.
+    logger.info(
+        "[AIS-294] converting %s via Suite Docling (%s, %s; gate %.1fs, prepare %.1fs)",
+        resolved.name, ep.provider_id, ep.base_url, t_prepare - t_gate, started - t_prepare,
+    )
     upload_id = _upload_file(upload_url, resolved, ep.api_key, ep.provider_id)
+    uploaded = time.monotonic()
 
-    _call_suite_tool(_SUITE_INGEST_TOOL, {"upload_id": upload_id})
-    document = _call_suite_tool(_SUITE_GET_DOCUMENT_TOOL, {"id": f"upload:{upload_id}", "format": "markdown"})
+    # AIS-502: the upload succeeded, so a failure here is the Suite pipeline
+    # itself (e.g. ingest not finding the caller's staged upload, 17844).
+    # Without a cooldown every read uploaded the file again and left another
+    # orphaned staged copy behind.
+    try:
+        _call_suite_tool(_SUITE_INGEST_TOOL, {"upload_id": upload_id})
+        document = _call_suite_tool(_SUITE_GET_DOCUMENT_TOOL, {"id": f"upload:{upload_id}", "format": "markdown"})
+    except _SuiteUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001 — MCP errors arrive as arbitrary exception types
+        reason = f"{type(exc).__name__}: {str(exc)[:200]}"
+        _set_suite_cooldown(f"ingest rejected the upload ({reason})")
+        raise _SuiteUnavailable("ingest_rejected", reason) from exc
+    logger.info(
+        "[AIS-294] Suite converted %s (upload %.1fs, ingest+fetch %.1fs)",
+        resolved.name, uploaded - started, time.monotonic() - uploaded,
+    )
     metadata, body = _split_frontmatter(_document_text(document))
     text = body.strip()
     if not text:
@@ -741,6 +767,7 @@ def convert_document(path: str | os.PathLike[str], *, config: Optional[dict] = N
         raise DocumentConvertError(f"Cannot read '{path}': {exc.strerror or exc}") from exc
 
     content_hash: Optional[str] = None
+    t_cache = time.monotonic()
     if use_cache:
         hit = _cache_lookup(resolved, stat)
         if hit is not None:
@@ -761,6 +788,9 @@ def convert_document(path: str | os.PathLike[str], *, config: Optional[dict] = N
                     suite_reason=content_hit.suite_reason,
                 )
 
+    if time.monotonic() - t_cache > _SLOW_STEP_SECONDS:
+        logger.info("[AIS-502] cache lookup/hash for %s took %.1fs", resolved.name, time.monotonic() - t_cache)
+
     mode = converter_mode(config)
     order = {CONVERTER_AUTO: (CONVERTER_SUITE, CONVERTER_LOCAL), CONVERTER_SUITE: (CONVERTER_SUITE,), CONVERTER_LOCAL: (CONVERTER_LOCAL,)}[mode]
 
@@ -780,6 +810,9 @@ def convert_document(path: str | os.PathLike[str], *, config: Optional[dict] = N
             except Exception as exc:  # noqa: BLE001 — never let the Suite path break a read
                 suite_state, suite_reason = "error", f"{type(exc).__name__}: {str(exc)[:200]}"
                 reasons.append(f"suite: {suite_reason}")
+                # AIS-502: an unexpected Suite error also pauses the backend —
+                # retrying it on every read only repeats the failure.
+                _set_suite_cooldown(f"conversion failed ({suite_reason})")
                 logger.warning("[AIS-294] Suite document conversion failed for %s: %s", resolved.name, exc)
                 continue
             cache_path = _cache_store(resolved, stat, markdown, BACKEND_SUITE, suite_state, metadata=metadata)

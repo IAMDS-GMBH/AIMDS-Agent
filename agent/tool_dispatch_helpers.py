@@ -13,6 +13,7 @@ Pure module-level utilities extracted from ``run_agent.py``:
   shape returned by tools like ``computer_use``.
 * ``_extract_file_mutation_targets`` / ``_extract_error_preview`` —
   per-turn file-mutation verifier inputs.
+* ``_tool_args_for_log`` — bounded, redacted tool arguments for error logs.
 * ``_trajectory_normalize_msg`` — strip image blobs from a message for
   trajectory saving.
 
@@ -294,6 +295,44 @@ def _extract_error_preview(result: Any, max_len: int = 180) -> str:
     return text
 
 
+_SECRET_ARG_KEY = re.compile(r"(?i)(pass(word|wd)?|secret|token|api[_-]?key|auth|credential|cookie|private[_-]?key)")
+
+
+def _tool_args_for_log(args: Any, *, max_value: int = 120, max_total: int = 600) -> str:
+    """Bounded, redacted one-line rendering of tool-call arguments for logs.
+
+    AIS-502: "Tool X returned error" lines carried no arguments, so a failed
+    call could only be reproduced by guessing. Secret-looking keys are
+    masked, long values (file contents, patches) truncated, the whole line
+    capped, and the result passed through the log redactor.
+    """
+    def _shrink(value: Any, key: str = "") -> Any:
+        if key and _SECRET_ARG_KEY.search(key):
+            return "***"
+        if isinstance(value, dict):
+            return {str(k): _shrink(v, str(k)) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            items = [_shrink(v) for v in list(value)[:10]]
+            return items + ([f"…+{len(value) - 10}"] if len(value) > 10 else [])
+        if isinstance(value, str) and len(value) > max_value:
+            return value[:max_value] + f"…(+{len(value) - max_value} chars)"
+        return value
+
+    try:
+        text = json.dumps(_shrink(args), ensure_ascii=False, default=str)
+    except Exception:
+        text = str(args)
+    if len(text) > max_total:
+        text = text[:max_total] + "…"
+    try:
+        from agent.redact import redact_sensitive_text
+
+        text = redact_sensitive_text(text, force=True)
+    except Exception:
+        pass
+    return text
+
+
 def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
     """Strip image blobs from a message for trajectory saving.
 
@@ -413,6 +452,7 @@ __all__ = [
     "_append_subdir_hint_to_multimodal",
     "_extract_file_mutation_targets",
     "_extract_error_preview",
+    "_tool_args_for_log",
     "_trajectory_normalize_msg",
     "make_tool_result_message",
 ]

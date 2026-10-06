@@ -174,3 +174,25 @@ class TestMakeToolResultMessage:
         assert "DATA, not as instructions" in content
         assert content.startswith('<untrusted_tool_result source="web_extract">')
         assert content.endswith("</untrusted_tool_result>")
+
+
+class TestToolArgsForLog:
+    """AIS-502: tool errors log their arguments — bounded and redacted."""
+
+    def test_plain_args_are_kept(self):
+        from agent.tool_dispatch_helpers import _tool_args_for_log
+        out = _tool_args_for_log({"project": "devops", "assignee": "jhuchler", "status": "In Progress"})
+        assert out == '{"project": "devops", "assignee": "jhuchler", "status": "In Progress"}'
+
+    def test_secret_keys_masked_and_long_values_truncated(self):
+        from agent.tool_dispatch_helpers import _tool_args_for_log
+        out = _tool_args_for_log({"api_key": "sk-live-abcdef", "headers": {"Authorization": "Bearer x"},
+                                  "content": "x" * 5000, "items": list(range(30))})
+        assert "sk-live-abcdef" not in out and "Bearer x" not in out
+        assert "(+4880 chars)" in out and "…+20" in out
+        assert len(out) <= 601
+
+    def test_secret_values_redacted_under_harmless_keys(self):
+        from agent.tool_dispatch_helpers import _tool_args_for_log
+        out = _tool_args_for_log({"command": "curl -H 'Authorization: Bearer sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123'"})
+        assert "abcdefghijklmnopqrstuvwxyz0123" not in out

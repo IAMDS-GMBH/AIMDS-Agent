@@ -65,7 +65,30 @@ _VAULT_TYPES = {
     "rule": "knowledge", "reference": "knowledge", "tool": "knowledge", "notes": "note", "note": "note",
     "report": "report", "meeting": "meeting", "idea": "idea", "document": "document", "hub": "hub",
 }
+# AIS-502: memory types the MCP memory_save accepts; anything else is mapped
+# (the Suite rejected "report", so cron reports only reached the local vault).
+_MCP_TYPES = frozenset(
+    {"notes", "person", "project", "tasks", "reference", "rule", "profile", "session", "tool", "hub", "decision", "meeting"}
+)
+_MCP_TYPE_ALIASES = {"note": "notes", "report": "notes", "idea": "notes", "document": "reference", "contact": "person"}
+# MCP tag format: [a-z][a-z0-9_-]* — non-matching tags are dropped server side.
+_MCP_TAG_INVALID = re.compile(r"[^a-z0-9_-]+")
 _WORKSPACE_MARKERS = (".workspace-template-version", "_conventions.md", "AGENTS.md")
+
+
+def _mcp_type_and_tags(type_: str, tags: List[str]) -> tuple[str, List[str]]:
+    """Map *type_* onto the MCP vocabulary and normalise *tags* to its tag format.
+
+    A mapped type survives as a tag so searches by the original type still hit.
+    """
+    raw = str(type_ or "notes").strip().lower()
+    mcp_type = raw if raw in _MCP_TYPES else _MCP_TYPE_ALIASES.get(raw, "notes")
+    out: List[str] = []
+    for tag in [*tags, *([raw] if mcp_type != raw else [])]:
+        norm = _MCP_TAG_INVALID.sub("-", str(tag).strip().lower()).strip("-")
+        if norm and norm[0].isalpha() and norm not in out:
+            out.append(norm)
+    return mcp_type, out
 
 
 def _slugify(text: str) -> str:
@@ -339,7 +362,8 @@ class MemoryFacade:
         tags = [str(t).strip() for t in (tags or []) if str(t).strip()]
 
         if self.mode == MODE_MCP and self.save_tool:
-            args: Dict[str, Any] = {"title": title, "content": content, "type": type, "tags": tags}
+            mcp_type, mcp_tags = _mcp_type_and_tags(type, tags)
+            args: Dict[str, Any] = {"title": title, "content": content, "type": mcp_type, "tags": mcp_tags}
             if priority is not None:
                 args["priority"] = int(priority)
             try:
