@@ -530,6 +530,7 @@ def test_m365_activity_feed_and_channel_tools():
     with patch.object(server, "_graph_request", side_effect=mock_feed_graph):
         feed = server.m365_get_activity_feed()
         assert len(feed["recent_chats"]) == 1
+        assert "from_me" not in feed["recent_chats"][0]["recent_messages"][0]
         assert feed["recent_chats"][0]["chat_id"] == "chat-1"
         assert len(feed["team_channels"]) == 1
         assert feed["team_channels"][0]["team_name"] == "Dev Team"
@@ -2072,6 +2073,35 @@ class TestBriefSnapshot:
         fake.calls = calls
         return fake
 
+    def test_own_messages_are_marked_from_me(self):
+        """AIS-516: the user's own Teams messages carry from_me (matched by Graph id, not name)."""
+        me = {"id": "me-id", "displayName": "Me", "userPrincipalName": "me@example.com"}
+        chat_1 = {"value": [
+            {"id": "cm-a", "messageType": "message", "createdDateTime": "2026-09-08T05:00:00Z",
+             "from": {"user": {"id": "alice-id", "displayName": "Alice"}}, "body": {"contentType": "text", "content": "ping"}},
+            {"id": "cm-b", "messageType": "message", "createdDateTime": "2026-09-08T04:00:00Z",
+             "from": {"user": {"id": "ME-ID", "displayName": "Me"}}, "body": {"contentType": "text", "content": "pong"}},
+        ]}
+        fake = self._graph({"/me": me, "/me/chats/chat-1/messages": chat_1})
+        server._MY_IDENTITY_CACHE.clear()
+        try:
+            with patch.dict(server.os.environ, {"HERMES_TIMEZONE": "Europe/Berlin"}), \
+                    patch.object(server, "_graph_request", side_effect=fake):
+                res = server.m365_brief_snapshot(*self.WINDOW, mail_top=0, todo_top=0, chats_top=5, messages_per_chat=2)
+        finally:
+            server._MY_IDENTITY_CACHE.clear()
+        msgs = next(c for c in res["teams"]["chats"] if c["chat_id"] == "chat-1")["messages"]
+        assert [(m["preview"], m.get("from_me")) for m in msgs] == [("ping", None), ("pong", True)]
+
+    def test_unknown_identity_marks_nothing(self):
+        fake = self._graph()  # no /me route: the identity lookup fails
+        server._MY_IDENTITY_CACHE.clear()
+        with patch.dict(server.os.environ, {"HERMES_TIMEZONE": "Europe/Berlin"}), \
+                patch.object(server, "_graph_request", side_effect=fake):
+            res = server.m365_brief_snapshot(*self.WINDOW, mail_top=0, todo_top=0, chats_top=5, messages_per_chat=2)
+        assert res["errors"] == []
+        assert not any(m.get("from_me") for c in res["teams"]["chats"] for m in c["messages"])
+
     def test_happy_path_trims_filters_and_orders(self):
         fake = self._graph()
         with patch.dict(server.os.environ, {"HERMES_TIMEZONE": "Europe/Berlin"}), \
@@ -2707,3 +2737,27 @@ class TestSendConfirmationAnd202:
         with patch.object(server, "_graph_request", return_value={"success": True, "status": 202}):
             res = server.m365_send_email(to=["t@example.com"], subject="S", body="b", confirm=True)
         assert res["sent"] is True and "Do not send it again" in res["note"]
+
+
+def test_m365_activity_feed_marks_own_messages():
+    """AIS-516: m365_get_activity_feed flags the signed-in user's own messages."""
+    def graph(method, endpoint, params=None, account=None, **kw):
+        if endpoint == "/me":
+            return {"id": "me-id", "displayName": "Me"}
+        if endpoint == "/me/chats":
+            return {"value": [{"id": "chat-1", "topic": "Sync", "chatType": "oneOnOne"}]}
+        if endpoint == "/me/chats/chat-1/messages":
+            return {"value": [
+                {"id": "m1", "messageType": "message", "body": {"content": "mine"}, "from": {"user": {"id": "me-id", "displayName": "Me"}}},
+                {"id": "m2", "messageType": "message", "body": {"content": "theirs"}, "from": {"user": {"id": "x", "displayName": "Alice"}}},
+            ]}
+        return {"value": []}
+
+    server._MY_IDENTITY_CACHE.clear()
+    try:
+        with patch.object(server, "_graph_request", side_effect=graph):
+            feed = server.m365_get_activity_feed()
+    finally:
+        server._MY_IDENTITY_CACHE.clear()
+    msgs = feed["recent_chats"][0]["recent_messages"]
+    assert [(m["body_preview"], m.get("from_me")) for m in msgs] == [("mine", True), ("theirs", None)]

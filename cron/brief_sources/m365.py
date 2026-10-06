@@ -176,7 +176,8 @@ class M365Adapter(SourceAdapter):
                 topic = c.get("topic") or c.get("channel") or c.get("name") or ""
                 chat_id = c.get("chat_id") or c.get("id") or clip(topic, 30)
                 for msg in (c.get("messages") or c.get("recent_messages") or [])[:3]:
-                    if not isinstance(msg, dict):
+                    # AIS-516: the user's own messages are no news in their brief.
+                    if not isinstance(msg, dict) or msg.get("from_me") is True:
                         continue
                     created = to_local(parse_dt(msg.get("created") or msg.get("created_at") or msg.get("createdDateTime"), window.tz), window.tz)
                     sender = msg.get("from") or msg.get("from_name") or ""

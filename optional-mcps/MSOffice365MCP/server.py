@@ -4349,6 +4349,7 @@ def m365_get_activity_feed(top_chats: int = 5, top_messages_per_chat: int = 3) -
         "team_channels": [],
         "errors": [],
     }
+    me_id = _my_user_id()
 
     # 1. Fetch recent chats
     try:
@@ -4377,6 +4378,7 @@ def m365_get_activity_feed(top_chats: int = 5, top_messages_per_chat: int = 3) -
                             "from": m.get("from", {}).get("user", {}).get("displayName"),
                             "created_at": _format_timestamp_local(m.get("createdDateTime")),
                             "body_preview": m.get("body", {}).get("content", "")[:200],
+                            **({"from_me": True} if _sent_by_me(m, me_id) else {}),
                         }
                         for m in msgs if m.get("messageType") == "message"
                     ],
@@ -4421,6 +4423,7 @@ def m365_get_activity_feed(top_chats: int = 5, top_messages_per_chat: int = 3) -
                                     "from": m.get("from", {}).get("user", {}).get("displayName"),
                                     "created_at": _format_timestamp_local(m.get("createdDateTime")),
                                     "body_preview": m.get("body", {}).get("content", "")[:200],
+                                    **({"from_me": True} if _sent_by_me(m, me_id) else {}),
                                 }
                                 for m in ch_msgs if m.get("messageType") == "message"
                             ],
@@ -4852,7 +4855,22 @@ def _brief_todo(task: Dict[str, Any], list_name: str) -> Dict[str, Any]:
     }
 
 
-def _brief_teams_message(msg: Dict[str, Any]) -> Dict[str, Any]:
+def _my_user_id() -> str:
+    """The signed-in user's Graph id, or "" when it cannot be read (never raises)."""
+    try:
+        return str((_my_identity() or {}).get("id") or "")
+    except Exception:
+        return ""
+
+
+def _sent_by_me(msg: Dict[str, Any], me_id: str) -> bool:
+    """Was this Teams message written by the signed-in user? (AIS-516)"""
+    frm = msg.get("from") if isinstance(msg.get("from"), dict) else {}
+    user = frm.get("user") if isinstance(frm.get("user"), dict) else {}
+    return bool(me_id) and str(user.get("id") or "").lower() == me_id.lower()
+
+
+def _brief_teams_message(msg: Dict[str, Any], me_id: str = "") -> Dict[str, Any]:
     body = msg.get("body") if isinstance(msg.get("body"), dict) else {}
     frm = msg.get("from") if isinstance(msg.get("from"), dict) else {}
     user = frm.get("user") if isinstance(frm.get("user"), dict) else {}
@@ -4860,11 +4878,15 @@ def _brief_teams_message(msg: Dict[str, Any]) -> Dict[str, Any]:
     content = body.get("content") or ""
     content_type = str(body.get("contentType") or "text").lower()
     text = _html_to_text(content) if content_type == "html" or _looks_like_html(str(content)) else str(content).strip()
-    return {
+    out = {
         "from": user.get("displayName") or app.get("displayName") or "",
         "created": _format_timestamp_local(msg.get("createdDateTime")) or (msg.get("createdDateTime") or ""),
         "preview": _truncate(_re.sub(r"\s+", " ", text).strip(), _BRIEF_PREVIEW_CHARS),
     }
+    # AIS-516: the user's own messages are no news for the user's brief.
+    if _sent_by_me(msg, me_id):
+        out["from_me"] = True
+    return out
 
 
 def _brief_window(start_time_iso: Optional[str], end_time_iso: Optional[str]) -> Tuple[str, str, str]:
@@ -4986,6 +5008,7 @@ def m365_brief_snapshot(
 
     # 4. Teams: recent chats and joined-team channels, trimmed messages only.
     if chats_top:
+        me_id = _my_user_id()
         try:
             chats_res = _graph_request("GET", "/me/chats", params={"$top": chats_top})
             for c in (chats_res.get("value", []) if isinstance(chats_res, dict) else []):
@@ -4998,7 +5021,7 @@ def m365_brief_snapshot(
                     _fail("teams", RuntimeError(f"chat {chat_id}: {err}"))
                     continue
                 msgs = [
-                    _brief_teams_message(m)
+                    _brief_teams_message(m, me_id)
                     for m in (msgs_res.get("value", []) if isinstance(msgs_res, dict) else [])
                     if isinstance(m, dict) and (m.get("messageType") or "message") == "message"
                 ]
@@ -5044,7 +5067,7 @@ def m365_brief_snapshot(
                     except Exception:
                         continue  # channel message access is commonly missing; not worth an error entry
                     msgs = [
-                        _brief_teams_message(m)
+                        _brief_teams_message(m, me_id)
                         for m in (ch_msgs_res.get("value", []) if isinstance(ch_msgs_res, dict) else [])
                         if isinstance(m, dict) and (m.get("messageType") or "message") == "message"
                     ]
