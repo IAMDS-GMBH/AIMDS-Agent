@@ -2690,7 +2690,10 @@ def _ticket_systems_line(names: "set[str]", op_tools: "dict[str, dict[str, list[
     self_refs = (["Jira `currentUser()`"] if jira else []) + (["OpenProject `assignee=\"me\"`"] if has_op else [])
     tail = f" The user's own items: {', '.join(self_refs)} — never guess logins, names or ids."
     if has_op:
-        tail += " OpenProject `project` takes an id or identifier; resolve a project name via pm_list_projects."
+        # AIS-504: go-mcp-openproject 0.5 resolves project names and ticket
+        # keys itself; users name tickets by key, so answers do too.
+        tail += (" OpenProject `project` takes an id, identifier, name or ticket key."
+                 " Name work packages by their `key` (e.g. AIS-499), not the numeric id.")
     if len(parts) == 1:
         return text + " Tickets/work items mean this system unless the user names another." + tail
     text += " Tickets/work items without a named system: check every reachable system and label each result with its system."

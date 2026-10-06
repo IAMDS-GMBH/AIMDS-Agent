@@ -138,7 +138,10 @@ class OpenProjectAdapter(SourceAdapter):
             if not day or hours <= 0:
                 continue
             per_day[day] += hours
-            wp = entry.get("work_package_display_id") or entry.get("work_package_id") or "?"
+            # AIS-504: go-mcp-openproject 0.5 names work packages by key; the
+            # bundled server's older display-id field still counts.
+            wp = (entry.get("work_package_key") or entry.get("work_package_display_id")
+                  or entry.get("work_package_id") or "?")
             per_wp[day][str(wp)] += hours
 
         items: List[BriefItem] = []

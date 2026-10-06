@@ -517,8 +517,9 @@ def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fall
     # OpenProject time entries (`pm_list_time_entries`, Suite and bundled
     # server) carry `work_package_id` + `spent_on` + `hours` as an ISO 8601
     # duration (PT1H30M) — the Tempo-equivalent shape for AIS-327's time
-    # tracking parity. The bundled server adds `work_package_display_id`
-    # (AIS-408), which beats the bare numeric id (AIS-479).
+    # tracking parity. Both servers add `work_package_key` ("AIS-499",
+    # go-mcp-openproject 0.5, AIS-504; the bundled server's older
+    # `work_package_display_id` still counts), which beats the bare numeric id.
     # A stable source identity (``source_key``/``calendar_key`` stamped by the
     # server: group id, mailbox, calendar id) beats display names — rows of one
     # calendar share one key however it was addressed (AIS-344).
@@ -527,7 +528,7 @@ def _extract_fields(item: Dict[str, Any], tool_name: str, tool_use_id: str, fall
     if norm.get("workpackageid") in (0, "0"):
         norm.pop("workpackageid")
     ref_key = (
-        _pick(norm, "sourcekey", "calendarkey", "issuekey", "key", "ticketid", "caseid", "workpackagedisplayid",
+        _pick(norm, "sourcekey", "calendarkey", "issuekey", "key", "ticketid", "caseid", "workpackagekey", "workpackagedisplayid",
               "workpackageid", "calendarname")
         or (issue if isinstance(issue, str) else (issue or {}).get("key") if isinstance(issue, dict) else None)
         or fallback_ref
