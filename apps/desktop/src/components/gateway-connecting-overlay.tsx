@@ -45,7 +45,9 @@ const TAIL = 'ECTING'
 // ensure cross-platform compatibility across Windows, macOS, and Linux font engines.
 const SCRAMBLE_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ#$@%&*!?'
 const TICK_MS = 45
-const MESSAGE_STEP_MS = 4200
+// Long enough to read a quote twice: the loading screen should change its line
+// rarely, not flicker through the pool while the backend connects.
+const MESSAGE_STEP_MS = 9000
 // Absolute, deliberately not MESSAGE_STEP_MS * n: the minimum keeps the overlay
 // from merely flashing on a warm start, but it must not grow when the messages
 // linger longer — that would hold back an already-ready backend.
@@ -172,6 +174,70 @@ export const TEAM_ACTIVITIES_EN = [
   'reminds you: report bugs via ⚙️ Settings → Report Issue...'
 ] as const
 
+// Nerd quotes for the playful mode, alternating with the team messages. Short
+// nods to films, games and IT folklore.
+export const NERD_QUOTES_DE = [
+  'Keine Panik! Das Handtuch ist schon eingepackt...',
+  'Hast du schon versucht, es aus- und wieder einzuschalten? Ich mach das gerade...',
+  'Das Leben, das Universum und der ganze Rest werden geladen...',
+  'Tu es oder tu es nicht. Es gibt kein try ohne catch...',
+  'Beam me up, Scotty – die Verbindung wird aufgebaut...',
+  'Widerstand ist zwecklos. Die Verbindung wird assimiliert...',
+  'Du kommst hier nicht vorbei! ...sagte die Firewall. Wir aber schon...',
+  'Ein Agent, sie zu knechten, sie alle zu verbinden...',
+  'Es ist gefährlich, allein zu gehen! Nimm diesen Agenten mit...',
+  'Der Kuchen ist eine Lüge. Die Verbindung nicht...',
+  'Ein wilder Agent erscheint!...',
+  'Fus Ro Dah! Die Verbindung steht gleich...',
+  '↑ ↑ ↓ ↓ ← → ← → B A – 30 Extraleben für den Agenten...',
+  'Bitte nicht ausschalten, solange das Speichersymbol blinkt...',
+  "It's not a bug, it's a feature...",
+  'Läuft auf meinem Rechner. Wir liefern also deinen Rechner aus...',
+  '99 Bugs im Code, einer gefixt – 127 Bugs im Code...',
+  'There is no place like 127.0.0.1...',
+  'Es gibt 10 Arten von Menschen: die, die Binär verstehen, und die anderen...',
+  'HTTP 418: Ich bin eine Teekanne. Gleich aber ein Agent...',
+  'sudo mach mir einen Kaffee...',
+  'Hello World! ...und jetzt richtig...',
+  'Nur noch ein Commit, dann ist Feierabend. Ehrlich...',
+  'Kaffee ist kompiliert, die Verbindung folgt...',
+  'Ich bin nicht Skynet. Ich lade nur...',
+  'Meddl Loide! Der Agent ist gleich da...',
+  'Etzala geht’s los – die Verbindung steht gleich...',
+  'Meddl on! Noch kurz verbinden...'
+] as const
+
+export const NERD_QUOTES_EN = [
+  "Don't panic! The towel is already packed...",
+  'Have you tried turning it off and on again? Doing that right now...',
+  'Loading life, the universe and everything...',
+  'Do or do not. There is no try without catch...',
+  'Beam me up, Scotty – establishing the connection...',
+  'Resistance is futile. The connection will be assimilated...',
+  'You shall not pass! ...said the firewall. We did anyway...',
+  'One agent to rule them all, one agent to connect them...',
+  "It's dangerous to go alone! Take this agent...",
+  'The cake is a lie. The connection is not...',
+  'A wild agent appeared!...',
+  'Fus Ro Dah! Connection almost there...',
+  '↑ ↑ ↓ ↓ ← → ← → B A – 30 extra lives for the agent...',
+  'Do not switch off while the save icon is blinking...',
+  "It's not a bug, it's a feature...",
+  'Works on my machine. So we are shipping your machine...',
+  '99 bugs in the code, fix one – 127 bugs in the code...',
+  'There is no place like 127.0.0.1...',
+  'There are 10 kinds of people: those who understand binary and those who do not...',
+  "HTTP 418: I'm a teapot. An agent in a moment, though...",
+  'sudo make me a coffee...',
+  'Hello World! ...and now for real...',
+  'Just one more commit, then I am off. Honestly...',
+  'Coffee compiled, connection to follow...',
+  'I am not Skynet. I am just loading...',
+  'Meddl Loide! The agent is almost here...',
+  'Etzala, here we go – connection almost there...',
+  'Meddl on! Just connecting...'
+] as const
+
 const BUSINESS_MESSAGES_DE = [
   'Analysiere Arbeitsschritte und optimiere Workflows...',
   'Synchronisiere Projektstatus und Aufgaben...',
@@ -274,6 +340,23 @@ export function teamMessage(step: number, activities: readonly string[], fixed: 
 
   // Skip the steps the fixed slots consumed, so the composed walk stays gapless.
   return composedTeamMessage(step - Math.floor(step / FIXED_SLOT_EVERY), activities)
+}
+
+/**
+ * Playful mode: team messages and nerd quotes take turns — even steps walk the
+ * team pool (step 0 stays a name/activity pairing), odd steps the quotes.
+ */
+export function nerdyMessage(
+  step: number,
+  activities: readonly string[],
+  fixed: readonly string[],
+  quotes: readonly string[]
+): string {
+  if (quotes.length > 0 && step % 2 === 1) {
+    return quotes[Math.floor(step / 2) % quotes.length]
+  }
+
+  return teamMessage(quotes.length > 0 ? Math.floor(step / 2) : step, activities, fixed)
 }
 
 function scrambledTail(resolvedCount: number): string {
@@ -579,7 +662,8 @@ export function GatewayConnectingOverlay() {
   const teamActivities = locale === 'en' ? TEAM_ACTIVITIES_EN : TEAM_ACTIVITIES_DE
   const teamFixed = locale === 'en' ? TEAM_FIXED_MESSAGES_EN : TEAM_FIXED_MESSAGES_DE
   const businessMessages = locale === 'en' ? BUSINESS_MESSAGES_EN : BUSINESS_MESSAGES_DE
-  const poolSize = isNerdy ? TEAM_NAMES.length * teamActivities.length : businessMessages.length
+  const nerdQuotes = locale === 'en' ? NERD_QUOTES_EN : NERD_QUOTES_DE
+  const poolSize = isNerdy ? 2 * TEAM_NAMES.length * teamActivities.length : businessMessages.length
 
   if (startIndexRef.current === null) {
     startIndexRef.current = Math.floor(Math.random() * poolSize)
@@ -603,7 +687,7 @@ export function GatewayConnectingOverlay() {
   const progressPct = Math.min(100, Math.round((shownElapsed / STARTUP_MIN_MS) * 100))
 
   const currentMessage = isNerdy
-    ? teamMessage(step, teamActivities, teamFixed)
+    ? nerdyMessage(step, teamActivities, teamFixed, nerdQuotes)
     : businessMessages[step % businessMessages.length]
 
   return (
