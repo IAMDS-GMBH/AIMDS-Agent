@@ -519,6 +519,14 @@ def run_once(*, config: Optional[dict] = None, now: Optional[float] = None) -> D
 
     tool = _find_suite_tool("pm_link_status") if locals_ else None
     if tool:
+        # AIS-504: the gateway announces no schema change after a Suite
+        # deploy; re-list the tools so the display-id gate sees the new one.
+        try:
+            from tools.mcp_tool import refresh_mcp_server_tools
+
+            refresh_mcp_server_tools(_SUITE_SERVER)
+        except Exception as exc:
+            logger.debug("openproject suite: tool refresh skipped (%s)", exc)
         payload = _payload(_call_suite_tool(tool, {}))
         if payload.get("linked") is True:
             suite = {

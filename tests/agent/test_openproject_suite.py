@@ -106,6 +106,23 @@ def test_linked_same_domain_hides_only_that_local_server(env):
     assert ops.status()["suite_login"] == "jh"
 
 
+def test_check_relists_the_suite_tools_before_reading_the_schema(env, monkeypatch):
+    """AIS-504: LiteLLM sends no tools/list_changed after a Suite deploy, so
+    the check re-lists the Suite tools; the display-id gate then sees 0.5."""
+    calls, set_suite, _ = env
+    set_suite({"linked": True, "instance": "https://op.example.com", "op_login": "jh"})
+    import tools.mcp_tool as mcp_tool
+
+    refreshed = []
+    monkeypatch.setattr(mcp_tool, "refresh_mcp_server_tools", lambda name, timeout=15: refreshed.append(name) or True)
+    monkeypatch.setattr(ops, "suite_accepts_display_ids", lambda: bool(refreshed))
+
+    state = ops.run_once()
+
+    assert refreshed == ["AIMDSSuiteMCP"]
+    assert state["suite"]["display_ids"] is True and state["hide_local"] == ["OpenProjectMCP"]
+
+
 def test_linked_other_domain_keeps_both(env):
     _, set_suite, _ = env
     set_suite({"linked": True, "instance": "https://elsewhere.example.com"})
