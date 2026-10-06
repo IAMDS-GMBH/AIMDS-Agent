@@ -108,7 +108,9 @@ const COPY = {
         'Verlauf wird gezippt. Verlustfrei? Sagen wir: verlustarm …',
         'Ich schreddere Beweise … äh, fasse den Verlauf zusammen …',
         'Ich presse den Verlauf zu einem Würfel, wie WALL-E. Kompakt, aber alles drin …',
-        'Ich fasse den Verlauf zusammen. Spart Arbeitsspeicher – und der ist gerade teurer als Gold …'
+        'Ich fasse den Verlauf zusammen. Spart Arbeitsspeicher – und der ist gerade teurer als Gold …',
+        'Ich lösche nur den Cache … nicht dein Gedächtnis. Versprochen …',
+        'Ich räume den Verlauf auf wie ein Tetris-Profi: Volle Reihen verschwinden …'
       ],
       readingHistory: (n: number) => [
         `Ich lese ${n} Nachrichten Verlauf … und tue so, als hätte ich sie nie vergessen.`,
@@ -125,7 +127,11 @@ const COPY = {
         'Ich sortiere den Verlauf wie WALL-E seinen Müll: Würfel für Würfel …',
         'Die Antwort ist 42. Ich prüfe nur noch, wie die Frage lautete …',
         'Scotty, mehr Energie auf die Leseschilde! Ich bin gleich durch …',
-        'Ich lese den Verlauf sparsam – bei den RAM-Preisen gerade zählt jedes Byte …'
+        'Ich lese den Verlauf sparsam – bei den RAM-Preisen gerade zählt jedes Byte …',
+        'grep -r "worum ging es nochmal" Verlauf/ …',
+        'Ich lese den Verlauf wie Gandalf die alten Schriftrollen. Mit weniger Staub …',
+        'Ich lese alles. Sogar die AGB. Na gut, fast alles …',
+        'Ich spule den Verlauf zurück wie eine VHS-Kassette. Bitte zurückspulen nicht vergessen …'
       ],
       retryAttempt: (reason: string | undefined, a: number, m: number) =>
         reason === 'busy'
@@ -143,17 +149,25 @@ const COPY = {
           ? [
               'Der KI-Dienst hat gerade Feierabendverkehr – kurz warten …',
               'Beim KI-Dienst ist es voller als im Hangar des Todessterns – kurz warten …',
-              'Der KI-Dienst wartet auf mehr RAM. Kostet gerade ein Vermögen – kurz warten …'
+              'Der KI-Dienst wartet auf mehr RAM. Kostet gerade ein Vermögen – kurz warten …',
+              'Der KI-Dienst meldet HTTP 418: Ich bin eine Teekanne. Kurz warten …'
             ]
           : reason === 'connection'
-            ? ['Verbindung weg. Ich puste kurz in den Router …', 'Verbindung weg. Ich komme wieder – versprochen.']
+            ? [
+                'Verbindung weg. Ich puste kurz in den Router …',
+                'Verbindung weg. Ich komme wieder – versprochen.',
+                'Verbindung weg. Hast du schon versucht, es aus- und wieder einzuschalten? Ich schon …'
+              ]
             : ['Hoppla. Ich tue so, als wäre nichts passiert, und versuche es nochmal …'],
       slowLongHistory: 'Langer Verlauf, kalter Cache – gönn dir einen Kaffee ☕',
       slow: 'Dauert. Vermutlich rechnet gerade jemand Pi aus.',
       switchingModel: [
         'Ich rufe einen Kollegen an – ein anderes KI-Modell übernimmt …',
         'Ich übergebe an eine befreundete KI. Wir kennen uns vom geheimen Treffen …',
-        'Ich übergebe an R2-D2. Piep-piep, gleich geht es weiter …'
+        'Ich übergebe an R2-D2. Piep-piep, gleich geht es weiter …',
+        'Wir brauchen ein größeres Boot … äh, ein anderes Modell …',
+        'Ich wähle dich, anderes KI-Modell! …',
+        'Meddl on! Ein anderes KI-Modell übernimmt …'
       ],
       thinking: [
         'Ich denke nach … fast so konzentriert wie kurz vor dem Daily.',
@@ -165,7 +179,16 @@ const COPY = {
         'Ich prüfe kurz, ob du ein Mensch bist. Bitte keine Ampeln anklicken …',
         'Die Kaffeemaschine im Büro ist übrigens auch eine KI. Ich frage kurz nach …',
         'Neuronen werden vorgeheizt …',
-        'Kurz die Synapsen sortieren …'
+        'Kurz die Synapsen sortieren …',
+        'Keine Panik. Ich denke nach – das Handtuch liegt bereit …',
+        'Tu es oder tu es nicht. Es gibt kein Versuchen. Ich tu es …',
+        'Deep Thought brauchte 7,5 Millionen Jahre. Ich beeile mich …',
+        'Ich kompiliere meine Gedanken … mit -O3, versteht sich.',
+        'Ich lese kurz einen Stack-Overflow-Thread von 2011 …',
+        'Läuft auf meinem Rechner – ich prüfe noch, ob auch auf deinem …',
+        'Ein wilder Gedanke erscheint! Ich setze Nachdenken ein …',
+        'Computer, Analyse! … sagt Picard immer. Ich bin dran.',
+        'Meddl Loide! Etzala denk ich kurz nach …'
       ]
     }
   },
@@ -196,7 +219,9 @@ const COPY = {
         'Zipping the conversation. Lossless? Let us say: lossy-ish …',
         'I am shredding the evidence … er, summarizing the conversation …',
         'Crushing the conversation into a cube, WALL-E style. Compact, but it is all in there …',
-        'Summarizing the conversation. Saves memory – which costs more than gold right now …'
+        'Summarizing the conversation. Saves memory – which costs more than gold right now …',
+        'Only clearing the cache … not your memories. Promise …',
+        'Tidying the history like a Tetris pro: full rows disappear …'
       ],
       readingHistory: (n: number) => [
         `I am reading ${n} messages of history … and pretending I never forgot them.`,
@@ -213,7 +238,11 @@ const COPY = {
         'Sorting the history like WALL-E sorts trash: one cube at a time …',
         'The answer is 42. I am just checking what the question was …',
         'Scotty, more power to the reading shields! Almost through …',
-        "Reading the history frugally – at today's RAM prices every byte counts …"
+        "Reading the history frugally – at today's RAM prices every byte counts …",
+        'grep -r "what were we talking about" history/ …',
+        'Reading the history like Gandalf reads ancient scrolls. With less dust …',
+        'I read everything. Even the terms of service. Well, almost everything …',
+        'Rewinding the history like a VHS tape. Be kind, rewind …'
       ],
       retryAttempt: (reason: string | undefined, a: number, m: number) =>
         reason === 'busy'
@@ -231,17 +260,25 @@ const COPY = {
           ? [
               'The AI service is stuck in rush hour – hang on …',
               'The AI service is busier than the Death Star hangar – hang on …',
-              'The AI service is waiting for more RAM. It costs a fortune these days – hang on …'
+              'The AI service is waiting for more RAM. It costs a fortune these days – hang on …',
+              "The AI service says HTTP 418: I'm a teapot. Hang on …"
             ]
           : reason === 'connection'
-            ? ['Connection gone. I am blowing into the router …', "Connection gone. I'll be back – promise."]
+            ? [
+                'Connection gone. I am blowing into the router …',
+                "Connection gone. I'll be back – promise.",
+                'Connection gone. Have you tried turning it off and on again? I just did …'
+              ]
             : ['Oops. I will pretend nothing happened and try again …'],
       slowLongHistory: 'Long history, cold cache – grab a coffee ☕',
       slow: 'Taking a while. Someone is probably computing pi.',
       switchingModel: [
         'I am calling a colleague – another AI model takes over …',
         'I am handing over to a friendly AI. We know each other from the secret meeting …',
-        'Handing over to R2-D2. Beep-boop, back in a moment …'
+        'Handing over to R2-D2. Beep-boop, back in a moment …',
+        "We're gonna need a bigger boat … er, a different model …",
+        'I choose you, other AI model! …',
+        'Meddl on! Another AI model takes over …'
       ],
       thinking: [
         'I am thinking … almost as hard as right before the daily.',
@@ -253,7 +290,16 @@ const COPY = {
         'I am checking whether you are human. Please do not click any traffic lights …',
         'By the way, the office coffee machine is an AI too. I am asking it real quick …',
         'Preheating the neurons …',
-        'Sorting the synapses real quick …'
+        'Sorting the synapses real quick …',
+        "Don't panic. Thinking – towel at the ready …",
+        'Do or do not. There is no try. I do …',
+        'Deep Thought took 7.5 million years. I will hurry …',
+        'Compiling my thoughts … with -O3, of course.',
+        'Quickly reading a Stack Overflow thread from 2011 …',
+        'Works on my machine – checking whether it works on yours too …',
+        'A wild thought appeared! I use Think …',
+        'Computer, analysis! … as Picard would say. On it.',
+        'Meddl Loide! Etzala, thinking real quick …'
       ]
     }
   }

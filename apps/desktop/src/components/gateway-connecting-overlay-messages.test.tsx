@@ -9,6 +9,9 @@ import { setGatewayState } from '@/store/session'
 import {
   composedTeamMessage,
   GatewayConnectingOverlay,
+  NERD_QUOTES_DE,
+  NERD_QUOTES_EN,
+  nerdyMessage,
   TEAM_ACTIVITIES_DE,
   TEAM_ACTIVITIES_EN,
   TEAM_FIXED_MESSAGES_DE,
@@ -145,6 +148,28 @@ describe('teamMessage composition', () => {
     }
 
     expect(new Set(composed).size).toBe(composed.length)
+  })
+})
+
+describe('nerdyMessage', () => {
+  it('alternates team messages and nerd quotes, starting with a team pairing', () => {
+    const at = (step: number) => nerdyMessage(step, TEAM_ACTIVITIES_DE, TEAM_FIXED_MESSAGES_DE, NERD_QUOTES_DE)
+
+    expect(at(0)).toBe(composedTeamMessage(0, TEAM_ACTIVITIES_DE))
+    expect(at(1)).toBe(NERD_QUOTES_DE[0])
+    expect(at(2)).toBe(teamMessage(1, TEAM_ACTIVITIES_DE, TEAM_FIXED_MESSAGES_DE))
+    expect(at(3)).toBe(NERD_QUOTES_DE[1])
+    expect(at(2 * NERD_QUOTES_DE.length + 1)).toBe(NERD_QUOTES_DE[0])
+  })
+
+  it('keeps the quote lists parallel across locales', () => {
+    expect(NERD_QUOTES_EN.length).toBe(NERD_QUOTES_DE.length)
+  })
+
+  it('falls back to the team walk without quotes', () => {
+    expect(nerdyMessage(3, TEAM_ACTIVITIES_DE, TEAM_FIXED_MESSAGES_DE, [])).toBe(
+      teamMessage(3, TEAM_ACTIVITIES_DE, TEAM_FIXED_MESSAGES_DE)
+    )
   })
 })
 
