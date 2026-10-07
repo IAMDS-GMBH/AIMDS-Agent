@@ -151,6 +151,7 @@ export interface Translations {
       backgroundExitedDuringStartup: string
       backendStopped: string
       desktopBootFailed: string
+      refreshAfterConnectFailed: string
       gatewaySignInRequired: string
       ipcBridgeUnavailable: string
       startupTimedOut: string
