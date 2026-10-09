@@ -124,7 +124,16 @@ SUITE_AUTO_MODEL_IDS = frozenset({"aimds-suite-auto", "auto", "iamds-auto"})
 #: Fast-model preference over today's LiteLLM catalog, used only when the
 #: key's ``/model/info`` carries no usable prices. Every entry is checked
 #: against the key's own model list (the proxy hides models per key).
+#: AIS-541: the Suite renames models (2.17.7: claude-haiku-4.5 → claude-haiku-5.5),
+#: so the preference is by *family* — the newest version the key offers —
+#: see :func:`preferred_fast_models`. The names below are today's examples.
 SUITE_FAST_MODEL_PREFERENCE = ("claude-haiku-4.5", "gpt-5-mini", "gemini-3.6-flash")
+SUITE_FAST_MODEL_FAMILIES = (
+    re.compile(r"^claude-haiku-\d+(?:\.\d+)*$", re.I),
+    re.compile(r"^gpt-\d+(?:\.\d+)*-mini$", re.I),
+    re.compile(r"^gemini-\d+(?:\.\d+)*-flash$", re.I),
+)
+_VERSIONED_MODEL_RE = re.compile(r"^(?P<prefix>.*?)-(?P<version>\d+(?:\.\d+)*)(?P<suffix>.*)$")
 #: Input tokens dominate delegated work (reading files, tool results), so
 #: the cost rank weighs them three to one against output tokens.
 _INPUT_COST_WEIGHT = 3.0
@@ -140,6 +149,79 @@ def _price(entry: Dict[str, Any], key: str) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return value
+
+
+def _version_key(model_id: str) -> tuple:
+    match = _VERSIONED_MODEL_RE.match(str(model_id or ""))
+    if not match:
+        return ()
+    return tuple(int(part) for part in match.group("version").split("."))
+
+
+def preferred_fast_models(available: List[str]) -> List[str]:
+    """The key's fast models by family preference, newest version first in each family."""
+    out: List[str] = []
+    for family in SUITE_FAST_MODEL_FAMILIES:
+        members = [m for m in available if family.match(str(m))]
+        out.extend(sorted(members, key=_version_key, reverse=True))
+    return out
+
+
+def suite_model_successor(model: str, available: List[str]) -> Optional[str]:
+    """*model* if the key offers it, else the newest model of the same family.
+
+    The family is the name without its version number: ``claude-haiku-4.5`` →
+    ``claude-haiku-*``, ``gemini-3.6-flash`` → ``gemini-*-flash``. ``None``
+    when the key offers neither the model nor a family member (AIS-541).
+    """
+    wanted = str(model or "").strip()
+    by_lower = {str(m).strip().lower(): str(m).strip() for m in available if str(m).strip()}
+    if not wanted or wanted.lower() in by_lower:
+        return by_lower.get(wanted.lower(), wanted) if wanted else None
+    match = _VERSIONED_MODEL_RE.match(wanted)
+    if not match:
+        return None
+    family = re.compile(
+        rf"^{re.escape(match.group('prefix'))}-\d+(?:\.\d+)*{re.escape(match.group('suffix'))}$", re.I
+    )
+    members = [m for m in by_lower.values() if family.match(m)]
+    return max(members, key=_version_key) if members else None
+
+
+_HEALED_MODELS: set = set()
+
+
+def heal_suite_model(provider: Optional[str], model: Optional[str], available: Optional[List[str]] = None) -> str:
+    """A configured Suite model the key no longer offers → its family successor.
+
+    Configs keep model names (``auxiliary.goal_judge.model: claude-haiku-4.5``)
+    that a Suite update retires; every call would fail until the next Hermes
+    update rewrote them. This maps them at runtime, logged once per name.
+    Non-Suite providers, the router and unknown lists stay untouched.
+    """
+    name = str(model or "")
+    if not name or not is_suite_provider(provider) or is_suite_auto_model(name):
+        return name
+    if available is None:
+        try:
+            from hermes_cli.models import cached_provider_model_ids
+
+            available = [str(m) for m in (cached_provider_model_ids(provider) or [])]
+        except Exception:
+            available = []
+    if not available:
+        return name
+    successor = suite_model_successor(name, available)
+    if successor and successor != name:
+        key = (canonical_suite_provider(provider), name.lower())
+        if key not in _HEALED_MODELS:
+            _HEALED_MODELS.add(key)
+            logger.warning(
+                "Suite model %s is no longer offered to this key on %s — using %s (AIS-541)",
+                name, provider, successor,
+            )
+        return successor
+    return name
 
 
 def rank_models_by_cost(
@@ -228,9 +310,9 @@ def pick_child_suite_model(
     ranked = rank_models_by_cost(list(by_lower.values()), metadata or {}, min_context=min_context)
     if ranked:
         return ranked[0], "cheapest"
-    for candidate in SUITE_FAST_MODEL_PREFERENCE:
-        if candidate.lower() in by_lower:
-            return by_lower[candidate.lower()], "preference"
+    preferred = preferred_fast_models(list(by_lower.values()))
+    if preferred:
+        return preferred[0], "preference"
     return main_model, "fallback-main"
 
 

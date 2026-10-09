@@ -4004,6 +4004,29 @@ def resolve_provider_client(
 
 # ── Public API ──────────────────────────────────────────────────────────────
 
+def _resolve_task_provider_model(
+    task: str = None,
+    provider: str = None,
+    model: str = None,
+    base_url: str = None,
+    api_key: str = None,
+) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """:func:`_resolve_task_provider_model_raw`, plus AIS-541: a configured
+    AIMDS Suite model the key no longer offers (``auxiliary.goal_judge.model:
+    claude-haiku-4.5`` after Suite 2.17.7) runs on its family successor
+    instead of failing every call until the next update."""
+    resolved = _resolve_task_provider_model_raw(task, provider, model, base_url, api_key)
+    try:
+        from hermes_cli.iamds_suite import heal_suite_model
+
+        healed = heal_suite_model(resolved[0], resolved[1])
+    except Exception:
+        return resolved
+    if healed and healed != resolved[1]:
+        return (resolved[0], healed) + tuple(resolved[2:])
+    return resolved
+
+
 def get_text_auxiliary_client(
     task: str = "",
     *,
@@ -4687,7 +4710,7 @@ _AUX_DIRECT_API_BASE_URLS: Dict[str, str] = {
 }
 
 
-def _resolve_task_provider_model(
+def _resolve_task_provider_model_raw(
     task: str = None,
     provider: str = None,
     model: str = None,
@@ -4833,6 +4856,37 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
     if isinstance(raw, dict):
         return dict(raw)
     return {}
+
+
+def suite_task_tags(provider: Optional[str], task: Optional[str]) -> Dict[str, Any]:
+    """LiteLLM request tags that name the Hermes role of an auxiliary call.
+
+    AIS-541: the Suite spend logs showed 3040 direct Haiku calls (Ø 84k input
+    tokens) and nothing said which Hermes role made them. LiteLLM stores
+    ``metadata.tags`` as the request's tags, so ``hermes:compression`` or
+    ``hermes:goal_judge`` becomes visible there. Only for AIMDS Suite
+    providers; other endpoints get nothing extra.
+    """
+    if not task:
+        return {}
+    try:
+        from hermes_cli.iamds_suite import is_suite_provider
+
+        if not is_suite_provider(provider):
+            return {}
+    except Exception:
+        return {}
+    return {"metadata": {"tags": ["hermes", f"hermes:{task}"]}}
+
+
+def _merge_task_tags(extra_body: Dict[str, Any], provider: Optional[str], task: Optional[str]) -> Dict[str, Any]:
+    tags = suite_task_tags(provider, task)
+    if not tags:
+        return extra_body
+    metadata = extra_body.get("metadata") if isinstance(extra_body.get("metadata"), dict) else {}
+    merged_tags = list(metadata.get("tags") or []) + [t for t in tags["metadata"]["tags"] if t not in (metadata.get("tags") or [])]
+    extra_body["metadata"] = {**metadata, "tags": merged_tags}
+    return extra_body
 
 
 # ---------------------------------------------------------------------------
@@ -5103,6 +5157,7 @@ def call_llm(
         task, provider, model, base_url, api_key)
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
+    effective_extra_body = _merge_task_tags(effective_extra_body, resolved_provider, task)
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
@@ -5607,6 +5662,7 @@ async def async_call_llm(
         task, provider, model, base_url, api_key)
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
+    effective_extra_body = _merge_task_tags(effective_extra_body, resolved_provider, task)
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
