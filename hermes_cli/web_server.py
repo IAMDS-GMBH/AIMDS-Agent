@@ -927,6 +927,12 @@ class ManagedFileDelete(BaseModel):
     recursive: bool = False
 
 
+class FeedbackTranslateRequest(BaseModel):
+    summary: str = ""
+    description: str = ""
+    target_lang: str = "en"
+
+
 _AUDIO_MIME_EXTENSIONS: Dict[str, str] = {
     "audio/aac": ".aac",
     "audio/flac": ".flac",
@@ -1700,6 +1706,33 @@ async def delete_managed_file(payload: ManagedFileDelete, request: Request):
         raise HTTPException(status_code=status_code, detail=f"Could not delete path: {exc}")
 
     return {"ok": True, "path": display_path, **_managed_response_meta(policy)}
+
+
+@app.post("/api/translate")
+async def translate_feedback(payload: FeedbackTranslateRequest):
+    """Translate a problem report for support (AIS-529).
+
+    The "Problem melden" dialog's translate button posted here since it was
+    added, but the route never existed. Failures answer 200 with ``ok: false``
+    and a reason code (``no_model``, ``timeout``, ``bad_answer``) the dialog
+    turns into a message for the user.
+    """
+    from hermes_cli.feedback_translate import (
+        MAX_DESCRIPTION_CHARS,
+        MAX_SUMMARY_CHARS,
+        TranslationUnavailable,
+        translate_report,
+    )
+
+    if len(payload.summary) > MAX_SUMMARY_CHARS or len(payload.description) > MAX_DESCRIPTION_CHARS:
+        return {"ok": False, "error": "too_long"}
+    try:
+        result = await asyncio.to_thread(
+            translate_report, payload.summary, payload.description, payload.target_lang
+        )
+    except TranslationUnavailable as exc:
+        return {"ok": False, "error": exc.reason}
+    return {"ok": True, **result}
 
 
 @app.get("/api/backend/idle")

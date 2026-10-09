@@ -249,26 +249,38 @@ export function ReportIssueDialog({
     try {
       const desktop = window.hermesDesktop
 
-      if (desktop?.api) {
-        const res = await desktop.api<{ summary?: string; description?: string }>({
-          path: '/api/translate',
-          method: 'POST',
-          body: { summary: summary.trim(), description: description.trim(), target_lang: 'en' }
-        }).catch(() => null)
+      const res = desktop?.api
+        ? await desktop
+            .api<{ ok?: boolean; error?: string; summary?: string; description?: string }>({
+              path: '/api/translate',
+              method: 'POST',
+              body: { summary: summary.trim(), description: description.trim(), target_lang: 'en' }
+            })
+            .catch(() => null)
+        : null
 
-        if (res?.summary || res?.description) {
-          if (res.summary) {setSummary(res.summary)}
+      if (res?.ok && (res.summary || res.description)) {
+        if (res.summary) {setSummary(res.summary)}
 
-          if (res.description) {setDescription(res.description)}
-          notify({ kind: 'success', message: copy.translateSuccess || 'Erfolgreich ins Englische übersetzt.' })
+        if (res.description) {setDescription(res.description)}
+        notify({ kind: 'success', message: copy.translateSuccess || 'Erfolgreich ins Englische übersetzt.' })
 
-          return
-        }
+        return
       }
 
-      notify({ kind: 'info', message: 'Übersetzungsservice ist aktuell nicht erreichbar.' })
+      // AIS-529: say why, in the user's language — the backend names the reason.
+      const reasons: Record<string, string | undefined> = {
+        no_model: copy.translateNoModel,
+        timeout: copy.translateTimeout,
+        too_long: copy.translateTooLong
+      }
+
+      notify({
+        kind: 'info',
+        message: reasons[res?.error ?? ''] || copy.translateFailed || 'Die Übersetzung hat nicht geklappt.'
+      })
     } catch {
-      notify({ kind: 'warning', message: 'Übersetzung fehlgeschlagen.' })
+      notify({ kind: 'warning', message: copy.translateFailed || 'Die Übersetzung hat nicht geklappt.' })
     } finally {
       setTranslating(false)
     }

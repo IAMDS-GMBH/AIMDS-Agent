@@ -42,6 +42,10 @@ export interface Translations {
     translateToEnglish?: string
     translating?: string
     translateSuccess?: string
+    translateNoModel?: string
+    translateTimeout?: string
+    translateTooLong?: string
+    translateFailed?: string
     close: string
     errorTitle: string
     editTitle: string
