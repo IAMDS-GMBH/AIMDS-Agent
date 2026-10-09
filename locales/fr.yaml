@@ -393,3 +393,7 @@ turn_end:
   report_yes: "Oui, signaler"
   report_no: "Non"
   report_sent: "Merci — le signalement a été envoyé au support."
+
+suite_auth:
+  # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
+  reauth_needed: "Ta connexion à {target} a expiré ou a été réinitialisée. Reconnecte-toi : Paramètres → Comptes → {target} → Se reconnecter. Pose ensuite simplement ta question à nouveau."

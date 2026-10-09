@@ -393,3 +393,7 @@ turn_end:
   report_yes: "Sim, reportar"
   report_no: "Não"
   report_sent: "Obrigado — o relatório foi enviado ao suporte."
+
+suite_auth:
+  # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
+  reauth_needed: "O teu início de sessão em {target} expirou ou foi reposto. Inicia sessão novamente: Definições → Contas → {target} → Iniciar sessão novamente. Depois faz a tua pergunta outra vez."

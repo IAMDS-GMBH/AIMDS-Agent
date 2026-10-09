@@ -288,3 +288,43 @@ def test_circuit_breaker_ignores_tool_application_errors(monkeypatch, tmp_path):
     finally:
         _cleanup(mcp_tool, "srv")
 
+
+
+def test_suite_mcp_401_files_one_case_per_lost_login(monkeypatch, tmp_path):
+    """AIS-525: while the Suite environment already waits for the user's
+    re-login, a further MCP 401 files no new support case."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from unittest.mock import patch
+
+    from hermes_cli import iamds_suite
+    from tools import mcp_tool
+    from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
+    from mcp.client.auth import OAuthFlowError
+
+    reset_manager_for_tests()
+
+    async def _no_recovery(name, token=None):
+        return False
+
+    monkeypatch.setattr(get_manager(), "handle_401", _no_recovery)
+    monkeypatch.setattr(mcp_tool, "_iamds_provider_for_server", lambda name, config=None: "aimds-suite-staging")
+    iamds_suite.clear_suite_auth_failure()
+
+    def _call():
+        return mcp_tool._handle_auth_error_and_retry(
+            "AIMDSSuiteMCP", OAuthFlowError("401"), lambda: None, "tools/call test",
+        )
+
+    try:
+        with patch("hermes_cli.auto_incidents.report_auth_401") as report:
+            assert json.loads(_call()).get("needs_reauth") is True
+            assert report.call_count == 1
+            assert iamds_suite.suite_reauth_pending("aimds-suite-staging")
+            _call()
+            assert report.call_count == 1, "no new case while the re-login is pending"
+            iamds_suite.clear_suite_auth_failure("aimds-suite-staging")
+            _call()
+            assert report.call_count == 2
+    finally:
+        _cleanup(mcp_tool, "AIMDSSuiteMCP")

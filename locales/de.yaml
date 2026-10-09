@@ -393,3 +393,7 @@ turn_end:
   report_yes: "Ja, melden"
   report_no: "Nein"
   report_sent: "Danke — die Meldung ist an den Support gegangen."
+
+suite_auth:
+  # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
+  reauth_needed: "Deine Anmeldung bei {target} ist abgelaufen oder wurde zurückgesetzt. Bitte melde dich neu an: Einstellungen → Konten → {target} → Neu anmelden. Danach kannst du deine Frage einfach noch einmal stellen."

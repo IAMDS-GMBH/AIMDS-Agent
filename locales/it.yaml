@@ -393,3 +393,7 @@ turn_end:
   report_yes: "Sì, segnala"
   report_no: "No"
   report_sent: "Grazie — la segnalazione è stata inviata al supporto."
+
+suite_auth:
+  # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
+  reauth_needed: "Il tuo accesso a {target} è scaduto o è stato reimpostato. Accedi di nuovo: Impostazioni → Account → {target} → Accedi di nuovo. Poi rifai semplicemente la domanda."

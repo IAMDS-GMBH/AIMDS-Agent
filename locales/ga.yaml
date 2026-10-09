@@ -397,3 +397,7 @@ turn_end:
   report_yes: "Sea, tuairiscigh é"
   report_no: "Ní hea"
   report_sent: "Go raibh maith agat — seoladh an tuairisc chuig an tacaíocht."
+
+suite_auth:
+  # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
+  reauth_needed: "Tá do shíniú isteach chuig {target} imithe in éag nó athshocraithe. Sínigh isteach arís: Socruithe → Cuntais → {target} → Sínigh isteach arís. Ansin cuir do cheist arís."

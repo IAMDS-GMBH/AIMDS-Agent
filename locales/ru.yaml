@@ -393,3 +393,7 @@ turn_end:
   report_yes: "Да, сообщить"
   report_no: "Нет"
   report_sent: "Спасибо — сообщение отправлено в поддержку."
+
+suite_auth:
+  # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
+  reauth_needed: "Твой вход в {target} истёк или был сброшен. Войди снова: Настройки → Учётные записи → {target} → Войти снова. Затем просто задай вопрос ещё раз."
