@@ -196,6 +196,10 @@ export const de
     updateHermes: 'Hermes aktualisieren',
     updateReadyTitle: 'Update bereit',
     updateReadyMessage: count => `${count} neue Änderung${count === 1 ? '' : 'en'} verfügbar.`,
+    updateVersionMessage: (target, current) => `Hermes ${target} ist verfügbar – du nutzt ${current}.`,
+    updateOutdatedTitle: 'Hermes ist veraltet',
+    updateOutdatedMessage: (target, current) =>
+      `Du nutzt ${current}, aktuell ist ${target}. Bitte installiere das Update – neuere Versionen beheben bekannte Fehler.`,
     seeWhatsNew: 'Neuigkeiten ansehen',
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT benötigt ELEVENLABS_API_KEY.',
@@ -458,6 +462,7 @@ export const de
       cantReach: 'Der Update-Server konnte nicht erreicht werden.',
       tapCheck: '"Jetzt prüfen" antippen, um nach Updates zu suchen.',
       updateReady: count => `Ein neues Update ist bereit (${count} Änderung${count === 1 ? '' : 'en'} enthalten).`,
+      updateReadyVersion: (target, current) => `Hermes ${target} ist verfügbar (installiert: ${current}).`,
       lastChecked: age => `Zuletzt geprüft ${age}`,
       justNowSuffix: ' · gerade eben',
       automaticUpdates: 'Automatische Updates',

@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { type Translations, useI18n } from '@/i18n'
 import { CheckCircle2, ExternalLink, Loader2, RefreshCw, Sparkles } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { currentVersionOf, targetVersionOf } from '@/store/update-gap'
 import {
   $desktopVersion,
   $updateApply,
@@ -83,7 +84,10 @@ export function AboutSettings() {
     statusLine = a.installing
     statusTone = 'available'
   } else if (behind > 0) {
-    statusLine = a.updateReady(behind)
+    // AIS-527: releases are named by version, not by a change count.
+    const current = currentVersionOf(status, version)
+    const target = targetVersionOf(status)
+    statusLine = current && target ? a.updateReadyVersion(target, current) : a.updateReady(behind)
     statusTone = 'available'
   } else if (status) {
     statusLine = a.onLatest

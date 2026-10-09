@@ -20,6 +20,7 @@ import { checkAndTriggerFeedbackPrompt, initFeedbackPrompts } from '@/store/feed
 import { dismissNotification, notify } from '@/store/notifications'
 import { $connection } from '@/store/session'
 import { checkSupportTicketsStatus } from '@/store/support-tickets'
+import { currentVersionOf, isOutdated, targetVersionOf } from '@/store/update-gap'
 import type { BackendUpdateCheckResponse } from '@/types/hermes'
 
 export interface UpdateApplyState {
@@ -79,6 +80,28 @@ const UPDATE_TOAST_ID = 'desktop-update-available'
 const UPDATE_TOAST_SNOOZE_KEY = 'hermes:update-toast-snooze-until'
 const UPDATE_TOAST_COOLDOWN_MS = 24 * 60 * 60 * 1000
 
+// AIS-527: when an update was first seen as available (cleared once up to
+// date) — a week of waiting turns the notice into one that cannot be snoozed.
+const UPDATE_AVAILABLE_SINCE_KEY = 'hermes:update-available-since'
+
+function updateAvailableSince(): number | null {
+  const since = Number(storedString(UPDATE_AVAILABLE_SINCE_KEY) || 0)
+
+  return Number.isFinite(since) && since > 0 ? since : null
+}
+
+function trackUpdateAvailable(available: boolean): void {
+  if (!available) {
+    persistString(UPDATE_AVAILABLE_SINCE_KEY, '')
+
+    return
+  }
+
+  if (updateAvailableSince() === null) {
+    persistString(UPDATE_AVAILABLE_SINCE_KEY, String(Date.now()))
+  }
+}
+
 function snoozeUpdateToast(): void {
   persistString(UPDATE_TOAST_SNOOZE_KEY, String(Date.now() + UPDATE_TOAST_COOLDOWN_MS))
 }
@@ -131,10 +154,20 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
   }
 
   if ((status.behind ?? 0) <= 0) {
+    trackUpdateAvailable(false)
+
     return
   }
 
-  if (isUpdateToastSnoozed()) {
+  trackUpdateAvailable(true)
+
+  const current = currentVersionOf(status, $desktopVersion.get())
+  const target = targetVersionOf(status)
+  // AIS-527: two or more releases behind, or a week of waiting — the notice
+  // comes back with every check instead of resting for a day.
+  const outdated = isOutdated(current, target, updateAvailableSince())
+
+  if (!outdated && isUpdateToastSnoozed()) {
     return
   }
 
@@ -144,20 +177,32 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
 
   const behind = status.behind ?? 0
 
+  const snooze = () => {
+    if (!outdated) {
+      snoozeUpdateToast()
+    }
+  }
+
+  // Releases are named by version; only a git checkout counts commits.
+  const message =
+    current && target
+      ? translateNow(outdated ? 'notifications.updateOutdatedMessage' : 'notifications.updateVersionMessage', target, current)
+      : translateNow('notifications.updateReadyMessage', behind)
+
   notify({
     action: {
       label: translateNow('notifications.seeWhatsNew'),
       onClick: () => {
-        snoozeUpdateToast()
+        snooze()
         openUpdatesWindow()
       }
     },
     durationMs: 0,
     id: UPDATE_TOAST_ID,
-    kind: 'info',
-    message: translateNow('notifications.updateReadyMessage', behind),
-    onDismiss: () => snoozeUpdateToast(),
-    title: translateNow('notifications.updateReadyTitle')
+    kind: outdated ? 'warning' : 'info',
+    message,
+    onDismiss: snooze,
+    title: translateNow(outdated ? 'notifications.updateOutdatedTitle' : 'notifications.updateReadyTitle')
   })
 }
 
