@@ -133,13 +133,9 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
-          # AIS-487: the `live_llm` fixture (tests/conftest.py) runs its few
-          # smoke tests against the IAMDS vLLM when both are available and the
-          # endpoint answers; empty (forks, secret not configured yet) or
-          # unreachable -> a loopback fake, so the job stays green. Every
-          # other host stays blocked by the test network guard.
-          VLLM_IAMDS_BASE_URL: ${{ vars.VLLM_IAMDS_BASE_URL }}
-          VLLM_IAMDS_API_KEY: ${{ secrets.VLLM_IAMDS_API_KEY }}
+          # AIS-532: the `live_llm` smoke tests run against the loopback mock in
+          # CI (no vLLM credentials here) — they test Hermes' client path, and a
+          # slow model server must not fail the job.
 
       - name: Upload per-slice durations
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
