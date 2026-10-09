@@ -393,3 +393,7 @@ turn_end:
   report_yes: "예, 보고하기"
   report_no: "아니요"
   report_sent: "감사합니다 — 보고가 지원팀에 전송되었습니다."
+
+suite_auth:
+  # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
+  reauth_needed: "{target} 로그인이 만료되었거나 초기화되었습니다. 다시 로그인해 주세요: 설정 → 계정 → {target} → 다시 로그인. 그런 다음 질문을 다시 해 주세요."

@@ -4182,8 +4182,20 @@ def run_conversation(
                         # dashboard card flips to "needs re-auth" (AIS-286).
                         try:
                             from hermes_cli.iamds_suite import mark_suite_auth_failure as _mark_suite
+                            from hermes_cli.iamds_suite import suite_label as _suite_label
 
-                            _mark_suite(agent.provider, status_code, str(api_error)[:300], source="llm")
+                            _retry.suite_reauth_known = not _mark_suite(
+                                agent.provider, status_code, str(api_error)[:300], source="llm"
+                            )
+                            # AIS-525: say it once per session in plain words —
+                            # also when a fallback model answers the turn.
+                            if not getattr(agent, "_suite_reauth_notice_shown", False):
+                                agent._suite_reauth_notice_shown = True
+                                from agent.i18n import t as _t
+
+                                agent._emit_status(
+                                    _t("suite_auth.reauth_needed", target=_suite_label(agent.provider))
+                                )
                         except Exception:
                             pass
                         agent._buffer_vprint(
@@ -5016,9 +5028,11 @@ def run_conversation(
                             f"{agent._summarize_api_error(api_error)}"
                         )
                     agent._vprint(f"{agent.log_prefix}❌ Non-retryable client error (HTTP {status_code}). Aborting.", force=True)
-                    if status_code == 401:
+                    if status_code == 401 and not _retry.suite_reauth_known:
                         # AIS-420: every credential refresh is behind us — support
                         # gets a case (background, rate-limited per provider).
+                        # AIS-525: not again while the Suite still waits for the
+                        # user's re-login; the first failure already filed it.
                         try:
                             from hermes_cli.auto_incidents import report_auth_401
 
@@ -5129,8 +5143,23 @@ def run_conversation(
                             "error": f"content_policy_blocked: {_summary}",
                         }
                     _summary = agent._summarize_api_error(api_error)
+                    _final_text = f"⚠️ API call failed (HTTP {status_code}): {_summary}"
+                    if status_code in (401, 403):
+                        # AIS-525: a rejected Suite key needs the user to sign
+                        # in again — tell them that, not the proxy's key hash.
+                        try:
+                            from hermes_cli.iamds_suite import is_suite_provider, suite_label
+
+                            if is_suite_provider(getattr(agent, "provider", "")):
+                                from agent.i18n import t as _t
+
+                                _final_text = _t(
+                                    "suite_auth.reauth_needed", target=suite_label(agent.provider)
+                                )
+                        except Exception:
+                            pass
                     return {
-                        "final_response": f"⚠️ API call failed (HTTP {status_code}): {_summary}",
+                        "final_response": _final_text,
                         "messages": messages,
                         "api_calls": api_call_count,
                         "completed": False,

@@ -2800,13 +2800,24 @@ def _handle_auth_error_and_retry(
     # needs_reauth error. Bumps the circuit breaker so the model stops
     # retrying the tool.
     _bump_server_error(server_name)
-    try:
-        from hermes_cli.auto_incidents import report_auth_401
-
-        report_auth_401("mcp", server_name, f"{op_description}: {exc}")
-    except Exception:
-        pass
     _iamds_provider = _iamds_provider_for_server(server_name)
+    # AIS-525: one case per lost Suite login — while the environment already
+    # waits for the user's re-login, a further 401 files nothing new.
+    _known_reauth = False
+    if _iamds_provider:
+        try:
+            from hermes_cli.iamds_suite import suite_reauth_pending
+
+            _known_reauth = suite_reauth_pending(_iamds_provider)
+        except Exception:
+            pass
+    if not _known_reauth:
+        try:
+            from hermes_cli.auto_incidents import report_auth_401
+
+            report_auth_401("mcp", server_name, f"{op_description}: {exc}")
+        except Exception:
+            pass
     if _iamds_provider:
         _flag_iamds_mcp_auth_failure(server_name, exc)
         _reauth_hint = (

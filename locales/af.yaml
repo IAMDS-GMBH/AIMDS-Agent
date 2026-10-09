@@ -393,3 +393,7 @@ turn_end:
   report_yes: "Ja, meld dit"
   report_no: "Nee"
   report_sent: "Dankie — die verslag is na ondersteuning gestuur."
+
+suite_auth:
+  # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
+  reauth_needed: "Jou aanmelding by {target} het verval of is teruggestel. Meld asseblief weer aan: Instellings → Rekeninge → {target} → Meld weer aan. Vra dan net jou vraag weer."

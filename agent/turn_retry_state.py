@@ -46,6 +46,9 @@ class TurnRetryState:
     nous_paid_entitlement_refresh_attempted: bool = False
     copilot_auth_retry_attempted: bool = False
     iamds_auth_retry_attempted: bool = False
+    # AIS-525: the Suite already waited for a re-login before this 401 —
+    # support has the case, do not file another one.
+    suite_reauth_known: bool = False
 
     # ── Format / payload recovery guards ─────────────────────────────────
     thinking_sig_retry_attempted: bool = False

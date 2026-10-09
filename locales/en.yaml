@@ -405,3 +405,7 @@ turn_end:
   report_yes: "Yes, report it"
   report_no: "No"
   report_sent: "Thanks — the report has been sent to support."
+
+suite_auth:
+  # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
+  reauth_needed: "Your sign-in to {target} has expired or was reset. Please sign in again: Settings → Accounts → {target} → Re-authenticate. Then just ask your question again."

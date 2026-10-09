@@ -207,6 +207,27 @@ def test_flag_file_roundtrip_and_legacy_slug(isolated_home):
     assert suite.suite_auth_failures() == {}
 
 
+def test_a_lost_login_is_new_only_once_until_cleared(isolated_home):
+    """AIS-525: one support case per lost login, not one per day."""
+    assert suite.suite_reauth_pending("aimds-suite-staging") is False
+    assert suite.mark_suite_auth_failure("aimds-suite-staging", 401, "token_not_found_in_db", source="llm") is True
+    first_since = suite.suite_auth_failures()["aimds-suite-staging"]["since"]
+    assert suite.mark_suite_auth_failure("aimds-suite-staging", 401, "again", source="mcp") is False
+    flag = suite.suite_auth_failures()["aimds-suite-staging"]
+    assert flag["since"] == first_since and flag["message"] == "again"
+    assert suite.suite_reauth_pending("iamds-litellm-staging") is True  # legacy slug
+    suite.clear_suite_auth_failure("aimds-suite-staging")
+    assert suite.suite_reauth_pending("aimds-suite-staging") is False
+    assert suite.mark_suite_auth_failure("aimds-suite-staging", 401, "after re-login", source="llm") is True
+    assert suite.mark_suite_auth_failure("openrouter", 401, "x", source="llm") is False
+
+
+def test_suite_label_names_the_environment():
+    assert suite.suite_label("aimds-suite-staging") == "AIMDS-Suite (Staging)"
+    assert suite.suite_label("iamds-litellm") == "AIMDS-Suite"
+    assert suite.suite_label("openrouter") == "AIMDS-Suite"
+
+
 # --------------------------------------------------------------------------- apply_reauth
 
 def test_apply_reauth_orchestrates_pool_mcp_and_sessions(isolated_home, monkeypatch):

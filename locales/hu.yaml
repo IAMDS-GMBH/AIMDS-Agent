@@ -393,3 +393,7 @@ turn_end:
   report_yes: "Igen, jelentem"
   report_no: "Nem"
   report_sent: "Köszönöm — a jelentés elment a támogatásnak."
+
+suite_auth:
+  # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
+  reauth_needed: "A(z) {target} bejelentkezésed lejárt vagy alaphelyzetbe állt. Jelentkezz be újra: Beállítások → Fiókok → {target} → Újbóli bejelentkezés. Utána egyszerűen tedd fel újra a kérdésed."

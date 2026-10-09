@@ -668,27 +668,52 @@ def _write_flags(data: Dict[str, Any]) -> None:
         logger.debug("could not write %s: %s", path, exc)
 
 
-def mark_suite_auth_failure(provider: str, http_status: Optional[int], message: str, *, source: str) -> None:
+def mark_suite_auth_failure(provider: str, http_status: Optional[int], message: str, *, source: str) -> bool:
     """Record that the runtime got an auth failure for a Suite environment.
 
     ``source`` is ``"llm"`` or ``"mcp"``. Read by ``/api/status`` so the
     desktop can switch the provider card to "needs re-auth" without polling
     the LiteLLM endpoint itself.
+
+    Returns True when this failure is new — the environment was not already
+    waiting for a re-login (AIS-525: support gets one case per lost login,
+    not one per day until the user signs in again). ``since`` keeps the time
+    of the first failure.
     """
     canonical = canonical_suite_provider(provider)
     if canonical is None:
-        return
+        return False
     with _FLAG_LOCK:
         flags = _read_flags()
+        previous = flags.get(canonical) if isinstance(flags.get(canonical), dict) else {}
+        newly = previous.get("state") != STATE_NEEDS_REAUTH
         flags[canonical] = {
             "state": STATE_NEEDS_REAUTH,
             "http_status": http_status,
             "message": str(message or "")[:300],
             "source": source,
-            "since": time.time(),
+            "since": time.time() if newly else previous.get("since", time.time()),
         }
         _write_flags(flags)
-    logger.info("suite auth failure recorded provider=%s status=%s source=%s", canonical, http_status, source)
+    logger.info(
+        "suite auth failure recorded provider=%s status=%s source=%s new=%s",
+        canonical, http_status, source, newly,
+    )
+    return newly
+
+
+def suite_reauth_pending(provider: Optional[str]) -> bool:
+    """True while a Suite environment waits for the user to sign in again."""
+    canonical = canonical_suite_provider(provider)
+    if canonical is None:
+        return False
+    return (suite_auth_failures().get(canonical) or {}).get("state") == STATE_NEEDS_REAUTH
+
+
+def suite_label(provider: Optional[str]) -> str:
+    """The name the user sees for a Suite environment (``AIMDS-Suite (Staging)``)."""
+    env = SUITE_ENVIRONMENTS.get(canonical_suite_provider(provider) or "")
+    return env.label if env else "AIMDS-Suite"
 
 
 def clear_suite_auth_failure(provider: Optional[str] = None) -> None:
@@ -1383,6 +1408,8 @@ __all__ = [
     "rebind_suite_mcp_for_model",
     "canonical_suite_provider",
     "clear_suite_auth_failure",
+    "suite_reauth_pending",
+    "suite_label",
     "is_suite_provider",
     "litellm_model_info_url",
     "mark_suite_auth_failure",

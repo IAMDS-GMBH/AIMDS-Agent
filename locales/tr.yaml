@@ -393,3 +393,7 @@ turn_end:
   report_yes: "Evet, bildir"
   report_no: "Hayır"
   report_sent: "Teşekkürler — bildirim desteğe gönderildi."
+
+suite_auth:
+  # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
+  reauth_needed: "{target} oturumunun süresi doldu veya sıfırlandı. Lütfen yeniden oturum aç: Ayarlar → Hesaplar → {target} → Yeniden oturum aç. Ardından sorunu tekrar sor."
