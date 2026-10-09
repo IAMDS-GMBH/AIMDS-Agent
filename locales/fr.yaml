@@ -375,3 +375,12 @@ api_error:
   # with the attachments as a file manifest.
   attachments_as_files: "📎 La requête a été interrompue côté serveur — nouvel essai avec {count} pièce(s) jointe(s) sous forme de liste de fichiers ; les fichiers sont lus par parties."
   server_cut_off: "Le service d'IA{target} est joignable, mais il a terminé cette requête sans réponse après {attempts} tentatives — la requête est probablement trop volumineuse (pièces jointes, longue conversation). Découpe le contenu en parties plus petites ou démarre un nouveau chat avec moins de pièces jointes."
+
+tool_guard:
+  # AIS-524: a tool returned the same error message again and again.
+  same_error_halt: "Je me suis arrêté : {tool} a renvoyé la même erreur {count} fois — « {error} ». Réessayer avec d'autres valeurs n'y changera rien. Vérifie la cause (par exemple les droits d'accès ou les valeurs indiquées par l'erreur) puis repose la question."
+
+stream_guard:
+  # AIS-524: the model's output degenerated into a repetition loop.
+  degenerate_retry: "♻️ La réponse a commencé à se répéter — je l'ai arrêtée et je réessaie une fois."
+  degenerate_final: "La réponse se répétait sans fin, je l'ai donc arrêtée. Repose la question, idéalement par petites étapes."

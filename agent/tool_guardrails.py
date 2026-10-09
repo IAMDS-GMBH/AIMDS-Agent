@@ -119,6 +119,13 @@ class ToolCallGuardrailConfig:
     # AIS-412: the same read-only tool called this often in one turn with
     # changing arguments (paging, guessing filters) gets a strategy hint.
     same_tool_read_warn_after: int = 8
+    # AIS-524: the same tool answering with the same error message, whatever
+    # the arguments, is a blocker no retry can fix (a booking failed 5x with
+    # "activity not found" while only the date changed, then the model
+    # degenerated). On by default, independent of ``hard_stop_enabled``.
+    same_error_halt_enabled: bool = True
+    same_error_warn_after: int = 2
+    same_error_halt_after: int = 3
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
 
@@ -139,6 +146,17 @@ class ToolCallGuardrailConfig:
         return cls(
             warnings_enabled=_as_bool(data.get("warnings_enabled"), defaults.warnings_enabled),
             hard_stop_enabled=_as_bool(data.get("hard_stop_enabled"), defaults.hard_stop_enabled),
+            same_error_halt_enabled=_as_bool(
+                data.get("same_error_halt_enabled"), defaults.same_error_halt_enabled
+            ),
+            same_error_warn_after=_positive_int(
+                warn_after.get("same_error", data.get("same_error_warn_after")),
+                defaults.same_error_warn_after,
+            ),
+            same_error_halt_after=_positive_int(
+                hard_stop_after.get("same_error", data.get("same_error_halt_after")),
+                defaults.same_error_halt_after,
+            ),
             exact_failure_warn_after=_positive_int(
                 warn_after.get("exact_failure", data.get("exact_failure_warn_after")),
                 defaults.exact_failure_warn_after,
@@ -197,6 +215,8 @@ class ToolGuardrailDecision:
     tool_name: str = ""
     count: int = 0
     signature: ToolCallSignature | None = None
+    # AIS-524: the error a ``same_error_*`` decision is about (shortened).
+    error_excerpt: str = ""
 
     @property
     def allows_execution(self) -> bool:
@@ -279,6 +299,7 @@ class ToolCallGuardrailController:
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
         self._same_tool_read_counts: dict[str, int] = {}
+        self._same_error_counts: dict[tuple[str, str], int] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -367,6 +388,10 @@ class ToolCallGuardrailController:
                     signature=signature,
                 )
 
+            same_error = self._same_error_decision(tool_name, result, signature)
+            if same_error is not None and same_error.action == "halt":
+                return same_error
+
             if self.config.hard_stop_enabled and same_count >= self.config.same_tool_failure_halt_after:
                 decision = ToolGuardrailDecision(
                     action="halt",
@@ -396,6 +421,9 @@ class ToolCallGuardrailController:
                     signature=signature,
                 )
 
+            if same_error is not None:
+                return same_error
+
             if self.config.warnings_enabled and same_count >= self.config.same_tool_failure_warn_after:
                 return ToolGuardrailDecision(
                     action="warn",
@@ -410,6 +438,8 @@ class ToolCallGuardrailController:
 
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
+        for key in [k for k in self._same_error_counts if k[0] == tool_name]:
+            del self._same_error_counts[key]
 
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
@@ -458,6 +488,54 @@ class ToolCallGuardrailController:
 
         return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
 
+    def _same_error_decision(
+        self,
+        tool_name: str,
+        result: str | None,
+        signature: ToolCallSignature,
+    ) -> ToolGuardrailDecision | None:
+        """Warn, then halt, when a tool keeps returning the same error message."""
+        if not self.config.same_error_halt_enabled or tool_name in _SAME_ERROR_EXEMPT_TOOLS:
+            return None
+        error = tool_error_message(result)
+        if not error:
+            return None
+        key = (tool_name, _sha256(_normalize_error(error)))
+        count = self._same_error_counts.get(key, 0) + 1
+        self._same_error_counts[key] = count
+        excerpt = _error_excerpt(error)
+        if count >= self.config.same_error_halt_after:
+            decision = ToolGuardrailDecision(
+                action="halt",
+                code="same_error_halt",
+                message=(
+                    f"Stopped {tool_name}: it returned the same error {count} times this turn "
+                    f"(\"{excerpt}\"). Other arguments do not change it; report the blocker."
+                ),
+                tool_name=tool_name,
+                count=count,
+                signature=signature,
+                error_excerpt=excerpt,
+            )
+            self._halt_decision = decision
+            return decision
+        if self.config.warnings_enabled and count >= self.config.same_error_warn_after:
+            return ToolGuardrailDecision(
+                action="warn",
+                code="same_error_warning",
+                message=(
+                    f"{tool_name} returned the same error {count} times: \"{excerpt}\". "
+                    "Calling it again with other arguments will not change that. Do what the "
+                    "error says (use the valid values or the lookup it names) or stop and tell "
+                    "the user what blocks you. One more identical error ends this turn."
+                ),
+                tool_name=tool_name,
+                count=count,
+                signature=signature,
+                error_excerpt=excerpt,
+            )
+        return None
+
     def _is_idempotent(self, tool_name: str) -> bool:
         if tool_name in self.config.mutating_tools:
             return False
@@ -505,6 +583,60 @@ def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
         "or a different tool that can make progress. If the blocker is external, report "
         "the blocker after one diagnostic attempt instead of repeating the same failing path."
     )
+
+
+# Shell-style tools fail with free-form output; the same text there does not
+# mean the same blocker (exploring with different commands is legitimate).
+_SAME_ERROR_EXEMPT_TOOLS = frozenset({"terminal", "execute_code", "process"})
+
+_ERROR_EXCERPT_CHARS = 240
+
+
+def tool_error_message(result: str | None) -> str:
+    """The explicit error message a tool result carries, or ``""``.
+
+    Only structured errors count: an ``error`` field (string or object with a
+    ``message``) or a plain-text result starting with ``Error``. Results that
+    merely failed (non-zero exit code, empty output) carry no message.
+    """
+    if not result:
+        return ""
+    data = safe_json_loads(result)
+    if isinstance(data, dict):
+        error = data.get("error")
+        if isinstance(error, Mapping):
+            error = error.get("message") or error.get("detail")
+        return error.strip() if isinstance(error, str) else ""
+    text = result.strip()
+    if text.startswith("Error"):
+        # Guardrail suffixes appended to earlier results must not split one
+        # error into several fingerprints.
+        return text.split("\n\n[Tool loop", 1)[0].strip()
+    return ""
+
+
+def user_tool_label(tool_name: str) -> str:
+    """Readable tool name for end users: ``mcp_<Server>_mcp_openproject_pm_x`` → ``openproject_pm_x``."""
+    name = tool_name or ""
+    if name.startswith("mcp_"):
+        parts = name.split("_", 2)
+        name = parts[2] if len(parts) == 3 else name[4:]
+        if name.startswith("mcp_"):
+            name = name[4:]
+    return name or tool_name
+
+
+def _normalize_error(error: str) -> str:
+    """Fingerprint text: case, numbers and whitespace do not make a new error."""
+    lowered = re.sub(r"\d+", "#", error.lower())
+    return re.sub(r"\s+", " ", lowered).strip()[:500]
+
+
+def _error_excerpt(error: str) -> str:
+    flat = re.sub(r"\s+", " ", error).strip()
+    if len(flat) <= _ERROR_EXCERPT_CHARS:
+        return flat
+    return flat[: _ERROR_EXCERPT_CHARS - 1].rstrip() + "…"
 
 
 def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:

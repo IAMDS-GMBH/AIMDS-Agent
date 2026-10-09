@@ -375,3 +375,12 @@ api_error:
   # with the attachments as a file manifest.
   attachments_as_files: "📎 Die Anfrage wurde serverseitig abgebrochen — neuer Versuch mit {count} Anhang/Anhängen als Dateiliste; die Dateien werden in Teilen gelesen."
   server_cut_off: "Der KI-Dienst{target} ist erreichbar, hat diese Anfrage aber nach {attempts} Versuchen ohne Antwort beendet — vermutlich ist die Anfrage zu groß (Anhänge, langer Verlauf). Teile das Material in kleinere Stücke oder starte einen neuen Chat mit weniger Anhängen."
+
+tool_guard:
+  # AIS-524: a tool returned the same error message again and again.
+  same_error_halt: "Ich habe abgebrochen: {tool} hat {count}-mal denselben Fehler gemeldet — „{error}“. Ein neuer Versuch mit anderen Werten ändert daran nichts. Prüfe die Ursache (zum Beispiel Berechtigungen oder die Werte, die der Fehler nennt) und frag dann noch einmal."
+
+stream_guard:
+  # AIS-524: the model's output degenerated into a repetition loop.
+  degenerate_retry: "♻️ Die Antwort hat angefangen, sich zu wiederholen — abgebrochen, ich versuche es noch einmal."
+  degenerate_final: "Die Antwort hat sich immer wieder wiederholt, deshalb habe ich sie abgebrochen. Bitte frag noch einmal, am besten in kleineren Schritten."

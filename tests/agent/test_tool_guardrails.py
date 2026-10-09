@@ -8,6 +8,8 @@ from agent.tool_guardrails import (
     ToolCallSignature,
     canonical_tool_args,
     classify_tool_failure,
+    tool_error_message,
+    user_tool_label,
 )
 
 
@@ -75,7 +77,9 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
 
 
 def test_default_repeated_identical_failed_call_warns_without_blocking():
-    controller = ToolCallGuardrailController()
+    # The same-error halt (AIS-524) is covered separately; this pins the
+    # exact-failure warning path on its own.
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(same_error_halt_enabled=False))
     args = {"query": "same"}
 
     decisions = []
@@ -328,3 +332,105 @@ def test_first_failure_of_a_send_tool_warns_that_it_may_have_been_delivered():
     assert decision.action == "warn" and decision.code == "send_failure_may_have_delivered"
     assert looks_like_send_tool("mcp_m365_send_chat_message") and looks_like_send_tool("replyToMessage")
     assert not looks_like_send_tool("mcp_m365_list_emails")
+
+
+# ── AIS-524: same tool, same error message, whatever the arguments ──────────
+
+_ACTIVITY_ERROR = json.dumps({
+    "error": 'OpenProject time entry activity "Development" was not found — '
+    'call pm_list_reference_data(kind="activities") for valid names.'
+})
+
+
+def test_same_error_with_changing_args_warns_then_halts_by_default():
+    controller = ToolCallGuardrailController()
+    tool = "mcp_AIMDSSuiteMCP_mcp_openproject_pm_create_time_entry"
+
+    decisions = [
+        controller.after_call(tool, {"spent_on": f"2026-10-0{day}"}, _ACTIVITY_ERROR, failed=True)
+        for day in (6, 7, 8)
+    ]
+
+    assert [d.action for d in decisions] == ["allow", "warn", "halt"]
+    assert decisions[1].code == "same_error_warning"
+    assert "valid values" in decisions[1].message
+    assert decisions[2].code == "same_error_halt"
+    assert decisions[2].count == 3
+    assert "Development" in decisions[2].error_excerpt
+    assert controller.halt_decision is decisions[2]
+
+
+def test_same_error_ignores_numbers_case_and_whitespace():
+    controller = ToolCallGuardrailController()
+    errors = [
+        '{"error": "Work package 17067 not found"}',
+        '{"error": "work package  17068 NOT found"}',
+        '{"error": "Work package 1 not found"}',
+    ]
+    actions = [
+        controller.after_call("mcp_x_get_wp", {"id": i}, err, failed=True).action
+        for i, err in enumerate(errors)
+    ]
+    assert actions[-1] == "halt"
+
+
+def test_different_errors_do_not_add_up():
+    controller = ToolCallGuardrailController()
+    first = controller.after_call("mcp_x_book", {"a": 1}, '{"error": "activity not found"}', failed=True)
+    second = controller.after_call("mcp_x_book", {"a": 2}, '{"error": "work package locked"}', failed=True)
+    third = controller.after_call("mcp_x_book", {"a": 3}, '{"error": "hours must be positive"}', failed=True)
+    assert [first.action, second.action, third.action] == ["allow", "allow", "warn"]
+    assert third.code == "same_tool_failure_warning"
+    assert controller.halt_decision is None
+
+
+def test_success_resets_the_same_error_streak():
+    controller = ToolCallGuardrailController()
+    controller.after_call("mcp_x_book", {"a": 1}, _ACTIVITY_ERROR, failed=True)
+    controller.after_call("mcp_x_book", {"a": 2}, _ACTIVITY_ERROR, failed=True)
+    controller.after_call("mcp_x_book", {"a": 3}, '{"ok": true}', failed=False)
+    again = controller.after_call("mcp_x_book", {"a": 4}, _ACTIVITY_ERROR, failed=True)
+    assert again.action == "allow"
+
+
+def test_shell_tools_and_messageless_failures_are_exempt():
+    controller = ToolCallGuardrailController()
+    for i in range(4):
+        decision = controller.after_call("terminal", {"command": f"c{i}"}, '{"error": "exit 1"}', failed=True)
+        assert decision.action != "halt"
+    for i in range(4):
+        decision = controller.after_call("mcp_x_list", {"q": i}, '{"exit_code": 1}', failed=True)
+        assert decision.action != "halt"
+    assert controller.halt_decision is None
+
+
+def test_same_error_halt_can_be_switched_off():
+    config = ToolCallGuardrailConfig.from_mapping({"same_error_halt_enabled": False})
+    controller = ToolCallGuardrailController(config)
+    actions = [
+        controller.after_call("mcp_x_book", {"a": i}, _ACTIVITY_ERROR, failed=True).action
+        for i in range(4)
+    ]
+    assert "halt" not in actions
+
+
+def test_same_error_thresholds_from_config():
+    config = ToolCallGuardrailConfig.from_mapping(
+        {"warn_after": {"same_error": 3}, "hard_stop_after": {"same_error": 4}}
+    )
+    assert (config.same_error_warn_after, config.same_error_halt_after) == (3, 4)
+
+
+def test_tool_error_message_reads_structured_errors_only():
+    assert tool_error_message('{"error": "boom"}') == "boom"
+    assert tool_error_message('{"error": {"message": "nested"}}') == "nested"
+    assert tool_error_message("Error: plain text\n\n[Tool loop warning: x]") == "Error: plain text"
+    assert tool_error_message('{"exit_code": 1}') == ""
+    assert tool_error_message("all good") == ""
+    assert tool_error_message(None) == ""
+
+
+def test_user_tool_label_strips_mcp_server_prefix():
+    assert user_tool_label("mcp_AIMDSSuiteMCP_mcp_openproject_pm_create_time_entry") == "openproject_pm_create_time_entry"
+    assert user_tool_label("mcp_MSOffice365MCP_m365_list_emails") == "m365_list_emails"
+    assert user_tool_label("web_search") == "web_search"

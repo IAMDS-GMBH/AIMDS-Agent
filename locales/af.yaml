@@ -375,3 +375,12 @@ api_error:
   # with the attachments as a file manifest.
   attachments_as_files: "📎 Die bediener het die versoek afgesny — probeer weer met {count} aanhangsel(s) as 'n lêerlys; die lêers word in dele gelees."
   server_cut_off: "Die KI-diens{target} is bereikbaar, maar het hierdie versoek ná {attempts} pogings sonder 'n antwoord beëindig — waarskynlik is die versoek te groot (aanhangsels, lang gesprek). Verdeel die materiaal in kleiner dele of begin 'n nuwe klets met minder aanhangsels."
+
+tool_guard:
+  # AIS-524: a tool returned the same error message again and again.
+  same_error_halt: "Ek het gestop: {tool} het {count} keer dieselfde fout teruggegee — \"{error}\". Weer probeer met ander waardes sal dit nie verander nie. Kyk na die oorsaak (byvoorbeeld toegangsregte of die waardes wat die fout noem) en vra weer."
+
+stream_guard:
+  # AIS-524: the model's output degenerated into a repetition loop.
+  degenerate_retry: "♻️ Die antwoord het begin om homself te herhaal — gestop, ek probeer nog een keer."
+  degenerate_final: "Die antwoord het homself aanhoudend herhaal, so ek het dit gestop. Vra asseblief weer, verkieslik in kleiner stappe."

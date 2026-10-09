@@ -70,6 +70,11 @@ def _seed_exact_failures(agent: AIAgent, tool_name: str, args: dict, count: int 
         )
 
 
+# The same-error halt (AIS-524) is on by default; tests that pin the plain
+# exact-failure warning path switch it off.
+_SAME_ERROR_OFF = {"tool_loop_guardrails": {"same_error_halt_enabled": False}}
+
+
 def _hard_stop_config(**overrides) -> dict:
     cfg = {
         "tool_loop_guardrails": {
@@ -87,7 +92,7 @@ def _hard_stop_config(**overrides) -> dict:
 
 
 def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_execution():
-    agent = _make_agent("web_search")
+    agent = _make_agent("web_search", config=_SAME_ERROR_OFF)
     args = {"query": "same"}
     _seed_exact_failures(agent, "web_search", args)
     starts = []
@@ -239,7 +244,7 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
 
 
 def test_default_run_conversation_warns_without_guardrail_halt():
-    agent = _make_agent("web_search", max_iterations=10)
+    agent = _make_agent("web_search", max_iterations=10, config=_SAME_ERROR_OFF)
     same_args = {"query": "same"}
     responses = [
         _mock_response(
@@ -353,3 +358,45 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+def test_same_error_with_changing_args_ends_the_turn_by_default_in_the_user_language(monkeypatch):
+    """AIS-524 / SUP-20261007-172008: a booking failed five times with the same
+    "activity not found" error while only the date changed. The third identical
+    error now ends the turn with a message the end user can read."""
+    monkeypatch.setenv("HERMES_LANGUAGE", "de")
+    from agent.i18n import reset_language_cache
+
+    reset_language_cache()
+    tool = "mcp_AIMDSSuiteMCP_mcp_openproject_pm_create_time_entry"
+    agent = _make_agent(tool, max_iterations=10)
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(tool, json.dumps({"spent_on": f"2026-10-0{d}"}), f"c{d}")],
+        )
+        for d in range(5, 10)
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+    error = json.dumps({"error": 'OpenProject time entry activity "Development" was not found.'})
+
+    try:
+        with (
+            patch("run_agent.handle_function_call", return_value=error) as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("buche meine Zeiten")
+    finally:
+        reset_language_cache()
+
+    assert mock_hfc.call_count == 3
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    final = result["final_response"]
+    assert final.startswith("Ich habe abgebrochen")
+    assert "openproject_pm_create_time_entry" in final
+    assert "Development" in final
+    tool_contents = [m["content"] for m in result["messages"] if m.get("role") == "tool"]
+    assert any("same_error_warning" in c for c in tool_contents)

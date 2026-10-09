@@ -379,3 +379,12 @@ api_error:
   # with the attachments as a file manifest.
   attachments_as_files: "📎 Ghearr an freastalaí an t-iarratas — triail eile le {count} ceangaltán mar liosta comhad; léitear na comhaid ina gcodanna."
   server_cut_off: "Tá an tseirbhís AI{target} ar fáil, ach chríochnaigh sí an t-iarratas seo gan freagra tar éis {attempts} iarracht — is dócha go bhfuil an t-iarratas rómhór (ceangaltáin, comhrá fada). Roinn an t-ábhar ina phíosaí níos lú nó tosaigh comhrá nua le níos lú ceangaltán."
+
+tool_guard:
+  # AIS-524: a tool returned the same error message again and again.
+  same_error_halt: "Stop mé: thug {tool} an earráid chéanna {count} uair — \"{error}\". Ní athróidh triail eile le luachanna eile é sin. Seiceáil an chúis (mar shampla cearta rochtana nó na luachanna a luann an earráid) agus fiafraigh arís."
+
+stream_guard:
+  # AIS-524: the model's output degenerated into a repetition loop.
+  degenerate_retry: "♻️ Thosaigh an freagra á athrá féin — stop mé é agus déanfaidh mé iarracht amháin eile."
+  degenerate_final: "Bhí an freagra á athrá féin arís agus arís eile, mar sin stop mé é. Fiafraigh arís, i gcéimeanna níos lú más féidir."

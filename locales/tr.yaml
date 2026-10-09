@@ -375,3 +375,12 @@ api_error:
   # with the attachments as a file manifest.
   attachments_as_files: "📎 İstek sunucu tarafında kesildi — {count} ek dosya listesi olarak bir kez daha deneniyor; dosyalar parça parça okunuyor."
   server_cut_off: "Yapay zekâ hizmeti{target} erişilebilir, ancak bu isteği {attempts} denemeden sonra yanıtsız sonlandırdı — istek büyük olasılıkla çok büyük (ekler, uzun konuşma). Malzemeyi daha küçük parçalara böl veya daha az ekle yeni bir sohbet başlat."
+
+tool_guard:
+  # AIS-524: a tool returned the same error message again and again.
+  same_error_halt: "Durdurdum: {tool} aynı hatayı {count} kez döndürdü — \"{error}\". Başka değerlerle yeniden denemek bunu değiştirmez. Nedeni kontrol et (örneğin erişim hakları veya hatanın belirttiği değerler) ve tekrar sor."
+
+stream_guard:
+  # AIS-524: the model's output degenerated into a repetition loop.
+  degenerate_retry: "♻️ Yanıt kendini tekrarlamaya başladı — durdurdum, bir kez daha deniyorum."
+  degenerate_final: "Yanıt sürekli kendini tekrarladığı için durdurdum. Lütfen tekrar sor, mümkünse daha küçük adımlarla."

@@ -375,3 +375,12 @@ api_error:
   # with the attachments as a file manifest.
   attachments_as_files: "📎 El servidor cortó la solicitud — se reintenta una vez con {count} adjunto(s) como lista de archivos; los archivos se leen por partes."
   server_cut_off: "El servicio de IA{target} está disponible, pero terminó esta solicitud sin respuesta tras {attempts} intentos — probablemente la solicitud es demasiado grande (adjuntos, conversación larga). Divide el material en partes más pequeñas o inicia un chat nuevo con menos adjuntos."
+
+tool_guard:
+  # AIS-524: a tool returned the same error message again and again.
+  same_error_halt: "Me detuve: {tool} devolvió el mismo error {count} veces — \"{error}\". Intentarlo de nuevo con otros valores no cambiará eso. Revisa la causa (por ejemplo, los permisos o los valores que indica el error) y vuelve a preguntar."
+
+stream_guard:
+  # AIS-524: the model's output degenerated into a repetition loop.
+  degenerate_retry: "♻️ La respuesta empezó a repetirse — la detuve y lo intento una vez más."
+  degenerate_final: "La respuesta se repetía una y otra vez, así que la detuve. Vuelve a preguntar, mejor en pasos más pequeños."
