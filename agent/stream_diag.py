@@ -176,9 +176,16 @@ def pre_first_byte_cut_elapsed(failure: Optional[Dict[str, Any]], *, now: Option
     if not isinstance(failure, dict):
         return None
     try:
-        if failure.get("http_status") is not None or int(failure.get("bytes") or 0) > 0:
+        if int(failure.get("bytes") or 0) > 0:
             return None
-        if "server disconnected" not in str(failure.get("chain") or "").lower():
+        chain = str(failure.get("chain") or "").lower()
+        status = failure.get("http_status")
+        # AIS-524 (SUP-20261008-131738): a proxy can also answer 200, send no
+        # byte and close the stream at its timeout — the SDK then reports an
+        # empty stream without finish_reason. Same cut, different wording.
+        disconnected = status is None and "server disconnected" in chain
+        empty_200 = status in (None, 200) and "empty stream with no finish_reason" in chain
+        if not (disconnected or empty_200):
             return None
         elapsed = float(failure.get("elapsed") or 0.0)
         at = float(failure.get("at") or 0.0)

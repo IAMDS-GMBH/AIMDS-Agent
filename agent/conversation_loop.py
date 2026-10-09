@@ -3944,6 +3944,18 @@ def run_conversation(
                             agent._buffer_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
                             _retry.restart_with_compressed_messages = True
                             break
+                    elif _repeated_cut and retry_count < max_retries - 1:
+                        # AIS-524: the same cut twice and nothing to shrink —
+                        # a third identical request only makes the user wait
+                        # another full timeout. Go straight to the last
+                        # attempt's handling: fallback model, else the
+                        # "server cut off" notice and incident.
+                        logger.warning(
+                            "%sGateway cut the request %d× after ~%.0fs before the first byte "
+                            "(~%s tokens) — skipping the remaining identical retries",
+                            agent.log_prefix, len(_gateway_cuts), _cut_elapsed, f"{approx_tokens:,}",
+                        )
+                        retry_count = max_retries - 1
 
                 if (
                     classified.reason == FailoverReason.billing
