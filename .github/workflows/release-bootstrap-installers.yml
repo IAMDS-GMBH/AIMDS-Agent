@@ -232,6 +232,21 @@ jobs:
         with:
           ref: ${{ github.event.inputs.source_ref || 'refs/heads/main' }}
 
+      - name: Trust the persistent workspace for git (self-hosted Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # The persistent workspace can end up owned by BUILTIN\Administrators
+          # while jobs run as github-runner; every later git call then fails
+          # with "detected dubious ownership" (exit 128 — v0.7.11-rc.1 failed
+          # in "Resolve bootstrap pins"). Trust it for this job's steps only,
+          # via command-scope config, so nothing persists on the runner.
+          {
+            echo "GIT_CONFIG_COUNT=1"
+            echo "GIT_CONFIG_KEY_0=safe.directory"
+            echo "GIT_CONFIG_VALUE_0=*"
+          } >> "$GITHUB_ENV"
+
       - name: Clean stale build output (self-hosted Windows only)
         if: runner.os == 'Windows'
         shell: powershell
@@ -794,6 +809,21 @@ jobs:
           ref: ${{ github.event.inputs.source_ref || 'refs/heads/main' }}
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Trust the persistent workspace for git (self-hosted Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # The persistent workspace can end up owned by BUILTIN\Administrators
+          # while jobs run as github-runner; every later git call then fails
+          # with "detected dubious ownership" (exit 128 — v0.7.11-rc.1 failed
+          # in "Resolve bootstrap pins"). Trust it for this job's steps only,
+          # via command-scope config, so nothing persists on the runner.
+          {
+            echo "GIT_CONFIG_COUNT=1"
+            echo "GIT_CONFIG_KEY_0=safe.directory"
+            echo "GIT_CONFIG_VALUE_0=*"
+          } >> "$GITHUB_ENV"
 
       - name: Resolve release version
         id: version
