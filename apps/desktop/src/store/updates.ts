@@ -248,11 +248,15 @@ function isRemoteMode(): boolean {
 
 function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
   const behind = res.behind ?? 0
+  // AIS-527: release installs answer "update available" without a commit
+  // count (behind = -1); that turned into 0, so a remote backend on a release
+  // install never got a toast or a pill.
+  const pending = behind > 0 ? behind : res.update_available ? 1 : 0
 
   return {
     supported: res.can_apply,
     message: res.message ?? undefined,
-    behind: behind > 0 ? behind : 0,
+    behind: pending,
     targetSha: res.update_available ? `backend:${res.current_version}` : undefined,
     commits: res.commits,
     fetchedAt: Date.now()

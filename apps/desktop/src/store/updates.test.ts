@@ -182,6 +182,24 @@ describe('checkBackendUpdates', () => {
     expect($backendUpdateStatus.get()?.commits?.[0]?.summary).toBe('feat: x')
   })
 
+  it('a release install without a commit count still offers the update (AIS-527)', async () => {
+    setRemote(true)
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'release',
+      current_version: '0.7.9',
+      behind: -1,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+
+    const result = await checkBackendUpdates()
+
+    expect(result?.behind).toBe(1)
+    expect(notifySpy).toHaveBeenCalled()
+  })
+
   it('honours can_apply=false (docker/nix): not supported, carries message', async () => {
     setRemote(true)
     checkHermesUpdateSpy.mockResolvedValue({
