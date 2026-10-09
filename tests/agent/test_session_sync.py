@@ -299,3 +299,34 @@ def test_hydrate_offline_keeps_the_hint(db):
     out = session_sync.hydrate_messages(msgs, remote=FakeRemote(fail=True))
     assert not out[0]["content"].startswith(session_sync.MARKER_PREFIX)
     assert out[0]["content"].startswith("Lange Antwort") and "Suite" in out[0]["content"]
+
+
+class HangingRemote(FakeRemote):
+    """memory_session that times out like the facade does (AIS-524)."""
+
+    def call(self, args):
+        self.calls.append(json.loads(json.dumps(args)))
+        raise TimeoutError("mcp_AIMDSSuiteMCP_mcp_memory_memory_session timed out after 60s")
+
+
+def test_a_timeout_stops_the_run_and_leaves_the_rest_due(db):
+    for sid in ("t1", "t2", "t3"):
+        chat(db, sid, [("user", f"hallo {sid}")])
+    hanging = HangingRemote()
+    stats = run(db, hanging)
+
+    assert len(hanging.calls) == 1, "one timeout per run, not one per session"
+    assert stats["errors"] == 1 and stats["stopped"] == 1
+    assert len(db.sync_due_sessions()) == 2  # untouched sessions go out next tick
+
+    up = FakeRemote()
+    run(db, up)
+    assert sorted(up.appended_ids()) == ["t2:0", "t3:0"]
+
+
+def test_a_plain_failure_does_not_stop_the_run(db):
+    for sid in ("f1", "f2"):
+        chat(db, sid, [("user", "hallo")])
+    down = FakeRemote(fail=True)
+    stats = run(db, down)
+    assert stats["errors"] == 2 and "stopped" not in stats

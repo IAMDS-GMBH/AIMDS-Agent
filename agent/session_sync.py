@@ -262,7 +262,14 @@ def sync_session(db: Any, remote: SessionRemote, row: Dict[str, Any]) -> int:
 
 
 def run_once(db: Any, remote: SessionRemote, *, max_sessions: int = RUN_MAX_SESSIONS) -> Dict[str, int]:
-    """Send pending deletes, then up to *max_sessions* dirty sessions."""
+    """Send pending deletes, then up to *max_sessions* dirty sessions.
+
+    A timeout ends the run (AIS-524): the abandoned call keeps running for up
+    to the MCP timeout and holds the server's request lock, so every further
+    session in the same run only queued behind it — eight 60 s waits per tick
+    while the Suite hung, delaying the user's own memory calls. The sessions
+    not tried stay due and go out with the next tick.
+    """
     stats = {"sessions": 0, "messages": 0, "deletes": 0, "errors": 0}
     for tomb in db.sync_tombstones_due():
         try:
@@ -276,6 +283,9 @@ def run_once(db: Any, remote: SessionRemote, *, max_sessions: int = RUN_MAX_SESS
             stats["errors"] += 1
             db.sync_tombstone_fail(tomb["id"], str(exc), attempts=int(tomb["attempts"] or 0) + 1)
             logger.info("session sync: remote %s of %s failed: %s", tomb["op"], tomb["remote_session_id"], exc)
+            if isinstance(exc, TimeoutError):
+                stats["stopped"] = 1
+                return stats
 
     for row in db.sync_due_sessions(limit=max_sessions):
         try:
@@ -285,6 +295,10 @@ def run_once(db: Any, remote: SessionRemote, *, max_sessions: int = RUN_MAX_SESS
             stats["errors"] += 1
             db.sync_fail(row["id"], str(exc), attempts=int(row["sync_attempts"] or 0) + 1)
             logger.info("session sync: %s failed: %s", row["id"], exc)
+            if isinstance(exc, TimeoutError):
+                logger.info("session sync: memory_session timed out — stopping this run")
+                stats["stopped"] = 1
+                break
     return stats
 
 
