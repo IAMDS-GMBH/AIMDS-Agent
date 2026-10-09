@@ -2666,6 +2666,12 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
+        # Model for jobs that do not pin one (AIS-537). "cheap": on an AIMDS
+        # Suite key the cheapest tool-capable model the key offers, instead of
+        # AIMDS-Suite-Auto (which routes agent prompts to Opus); other
+        # providers keep the main model. "main": always the main model. Or a
+        # model id.
+        "model": "cheap",
         # Wrap delivered cron responses with a header (task name) and footer
         # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,

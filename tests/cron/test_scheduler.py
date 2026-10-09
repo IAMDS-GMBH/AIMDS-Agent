@@ -3023,3 +3023,62 @@ class TestCronDeliveryTargets:
         monkeypatch.setattr(gateway_config, "load_gateway_config", _boom)
 
         assert cron_delivery_targets() == []
+
+
+class TestCronDefaultModel:
+    """AIS-537: jobs without a model ran on AIMDS-Suite-Auto, whose router sent
+    their multi-step prompts to Opus. They now run on the cheapest model the
+    Suite key offers unless cron.model says otherwise."""
+
+    _SUITE_RUNTIME = {
+        "api_key": "sk-suite",
+        "base_url": "https://suite.iamds.com/litellm/v1",
+        "provider": "aimds-suite-prod",
+        "api_mode": "chat_completions",
+    }
+    _MODELS = ["AIMDS-Suite-Auto", "claude-opus-4.8", "claude-haiku-4.5", "gpt-5-mini", "text-embedding-3-small"]
+    _METADATA = {
+        "claude-opus-4.8": {"mode": "chat", "supports_function_calling": True, "pricing": {"prompt": 15e-6, "completion": 75e-6}},
+        "claude-haiku-4.5": {"mode": "chat", "supports_function_calling": True, "pricing": {"prompt": 1e-6, "completion": 5e-6}},
+        "gpt-5-mini": {"mode": "chat", "supports_function_calling": True, "pricing": {"prompt": 0.25e-6, "completion": 2e-6}},
+        "text-embedding-3-small": {"mode": "embedding", "pricing": {"prompt": 0.02e-6, "completion": 0}},
+    }
+
+    def _run(self, tmp_path, job, *, config="model: AIMDS-Suite-Auto\n", runtime=None):
+        (tmp_path / "config.yaml").write_text(config)
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=MagicMock()), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=runtime or self._SUITE_RUNTIME), \
+             patch("hermes_cli.models.cached_provider_model_ids", return_value=self._MODELS), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value=self._METADATA), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent_cls.return_value.run_conversation.return_value = {"final_response": "ok"}
+            success, _, _, error = run_job(job)
+        assert success is True and error is None
+        return mock_agent_cls.call_args.kwargs["model"]
+
+    def test_job_without_model_runs_on_the_cheapest_suite_model(self, tmp_path):
+        assert self._run(tmp_path, {"id": "j1", "name": "Daily Task Reminder", "prompt": "hi"}) == "gpt-5-mini"
+
+    def test_a_job_that_pins_a_model_keeps_it(self, tmp_path):
+        job = {"id": "j2", "name": "pinned", "prompt": "hi", "model": "claude-opus-4.8"}
+        assert self._run(tmp_path, job) == "claude-opus-4.8"
+
+    def test_cron_model_main_keeps_the_old_behaviour(self, tmp_path):
+        config = "model: AIMDS-Suite-Auto\ncron:\n  model: main\n"
+        assert self._run(tmp_path, {"id": "j3", "name": "x", "prompt": "hi"}, config=config) == "AIMDS-Suite-Auto"
+
+    def test_cron_model_names_a_model_the_key_offers(self, tmp_path):
+        config = "model: AIMDS-Suite-Auto\ncron:\n  model: claude-haiku-4.5\n"
+        assert self._run(tmp_path, {"id": "j4", "name": "x", "prompt": "hi"}, config=config) == "claude-haiku-4.5"
+
+    def test_other_providers_keep_the_main_model(self, tmp_path):
+        runtime = {"api_key": "k", "base_url": "https://example.invalid/v1", "provider": "openrouter",
+                   "api_mode": "chat_completions"}
+        model = self._run(tmp_path, {"id": "j5", "name": "x", "prompt": "hi"},
+                          config="model: anthropic/claude-sonnet-4.5\n", runtime=runtime)
+        assert model == "anthropic/claude-sonnet-4.5"

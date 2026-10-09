@@ -66,6 +66,45 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
+def resolve_cron_model(cfg: dict, runtime: dict, main_model: str) -> tuple[str, str]:
+    """Model for a cron job that does not pin one: ``(model, reason)`` (AIS-537).
+
+    Background jobs inherited the chat's main model. On an AIMDS Suite key
+    that is ``AIMDS-Suite-Auto``, whose complexity router sends multi-step
+    agent prompts to the REASONING tier (Claude Opus): reminders and reports
+    cost about 25 $ per user and month. ``cron.model`` decides instead:
+
+    * ``cheap`` (default): on a Suite key the cheapest tool-capable chat model
+      the key offers (``/model/info`` prices, else the fast-model preference
+      list) — the same rule subagents use; other providers keep the main
+      model, Hermes knows no price list for them;
+    * ``main``: the main model (the old behaviour);
+    * a model id: that model, when the key offers it.
+    """
+    cron_cfg = cfg.get("cron") if isinstance(cfg.get("cron"), dict) else {}
+    setting = str(cron_cfg.get("model") or "cheap").strip()
+    if setting.lower() == "main":
+        return main_model, "main"
+    provider = str(runtime.get("provider") or "")
+    try:
+        from hermes_cli.iamds_suite import is_suite_provider, pick_child_suite_model
+    except Exception:
+        return main_model, "main"
+    if not is_suite_provider(provider):
+        if setting.lower() == "cheap":
+            return main_model, "main-non-suite"
+        return setting, "explicit"
+    model, reason = pick_child_suite_model(
+        provider,
+        main_model,
+        base_url=str(runtime.get("base_url") or ""),
+        api_key=str(runtime.get("api_key") or ""),
+        tier="fast",
+        explicit="" if setting.lower() == "cheap" else setting,
+    )
+    return model, reason
+
+
 def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """Toolsets a cron-spawned agent must never receive.
 
@@ -2363,6 +2402,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception as exc:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
+
+        if not job.get("model"):
+            _main_model = model
+            model, _model_reason = resolve_cron_model(_cfg, runtime, _main_model)
+            logger.info(
+                "Job '%s': model %s (cron default, %s; main model %s)",
+                job_id, model or "-", _model_reason, _main_model or "-",
+            )
 
         fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
         credential_pool = None
