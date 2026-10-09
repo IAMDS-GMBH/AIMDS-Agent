@@ -96,7 +96,7 @@ def suite_cheap_candidates(
     metadata: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[str]:
     """Cheap models of the key, cheapest first, without *exclude* and the router."""
-    from hermes_cli.iamds_suite import SUITE_FAST_MODEL_PREFERENCE, is_suite_auto_model, rank_models_by_cost
+    from hermes_cli.iamds_suite import is_suite_auto_model, preferred_fast_models, rank_models_by_cost
 
     available = list(available if available is not None else _key_models(provider))
     if metadata is None:
@@ -108,9 +108,7 @@ def suite_cheap_candidates(
             metadata = {}
     skip = {m.strip().lower() for m in exclude if m}
     by_lower = {m.lower(): m for m in available}
-    ordered = rank_models_by_cost(available, metadata or {}) + [
-        by_lower[p.lower()] for p in SUITE_FAST_MODEL_PREFERENCE if p.lower() in by_lower
-    ]
+    ordered = rank_models_by_cost(available, metadata or {}) + preferred_fast_models(list(by_lower.values()))
     out: List[str] = []
     for model in ordered:
         if model.lower() in skip or is_suite_auto_model(model) or model in out:

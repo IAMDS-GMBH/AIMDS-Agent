@@ -368,6 +368,18 @@ def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
     return done, reason, False
 
 
+def _judge_extra_body(base: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Auxiliary extra_body plus the Suite request tag ``hermes:goal_judge`` (AIS-541)."""
+    body = dict(base or {})
+    try:
+        from agent.auxiliary_client import _merge_task_tags, _resolve_task_provider_model
+
+        body = _merge_task_tags(body, _resolve_task_provider_model("goal_judge")[0], "goal_judge")
+    except Exception:
+        pass
+    return body
+
+
 def judge_goal(
     goal: str,
     last_response: str,
@@ -446,7 +458,7 @@ def judge_goal(
             temperature=0,
             max_tokens=_goal_judge_max_tokens(),
             timeout=timeout,
-            extra_body=get_auxiliary_extra_body() or None,
+            extra_body=_judge_extra_body(get_auxiliary_extra_body()) or None,
         )
     except Exception as exc:
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)

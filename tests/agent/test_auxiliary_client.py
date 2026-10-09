@@ -3903,3 +3903,39 @@ class TestAuxiliaryMaxTokensParam:
         ):
             assert auxiliary_max_tokens_param(4096, model="") == {"max_tokens": 4096}
             assert auxiliary_max_tokens_param(4096, model=None) == {"max_tokens": 4096}
+
+
+def test_retired_suite_model_in_an_aux_slot_runs_on_its_successor(monkeypatch):
+    """AIS-541: auxiliary.goal_judge.model: claude-haiku-4.5 keeps working after
+    Suite 2.17.7 renamed it to claude-haiku-5.5 — no Hermes update needed."""
+    from agent import auxiliary_client as ac
+    from hermes_cli import iamds_suite
+
+    iamds_suite._HEALED_MODELS.clear()
+    monkeypatch.setattr(
+        ac, "_resolve_task_provider_model_raw",
+        lambda *a, **k: ("aimds-suite-prod", "claude-haiku-4.5", None, None, None),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.cached_provider_model_ids",
+        lambda provider, **k: ["AIMDS-Suite-Auto", "claude-haiku-5.5", "claude-sonnet-5.5"],
+    )
+    assert ac._resolve_task_provider_model("goal_judge")[:2] == ("aimds-suite-prod", "claude-haiku-5.5")
+
+    monkeypatch.setattr(
+        ac, "_resolve_task_provider_model_raw",
+        lambda *a, **k: ("openrouter", "anthropic/claude-haiku-4.5", None, None, None),
+    )
+    assert ac._resolve_task_provider_model("goal_judge")[1] == "anthropic/claude-haiku-4.5"
+
+
+def test_suite_auxiliary_calls_carry_the_hermes_role_as_request_tag():
+    """AIS-541: the Suite spend logs must show which Hermes role made a call."""
+    from agent import auxiliary_client as ac
+
+    body = ac._merge_task_tags({}, "aimds-suite-prod", "compression")
+    assert body == {"metadata": {"tags": ["hermes", "hermes:compression"]}}
+    merged = ac._merge_task_tags({"metadata": {"tags": ["custom"], "x": 1}}, "aimds-suite-staging", "goal_judge")
+    assert merged["metadata"] == {"tags": ["custom", "hermes", "hermes:goal_judge"], "x": 1}
+    assert ac._merge_task_tags({}, "openrouter", "compression") == {}
+    assert ac._merge_task_tags({}, "aimds-suite-prod", None) == {}

@@ -576,3 +576,34 @@ def test_suite_include_list_carries_session_sync_and_openproject_contract():
     contract = [t["name"] for t in json.loads(snapshot.read_text(encoding="utf-8"))["tools"]]
     assert len(contract) == 26
     assert set(contract) <= set(include)
+
+
+class TestSuiteRenames:
+    """AIS-541: Suite 2.17.7 replaces claude-haiku-4.5/sonnet-5/opus-4.8 with 5.5."""
+
+    AFTER_2177 = ["AIMDS-Suite-Auto", "claude-haiku-5.5", "claude-sonnet-5.5", "claude-opus-5.5", "gpt-5-mini"]
+
+    def test_goal_judge_moves_to_the_new_haiku(self, models):
+        models.list[:] = self.AFTER_2177
+        cfg = {
+            "aimds_defaults_version": _VERSION,
+            "model": dict(AIMDS_MAIN),
+            "auxiliary": {"goal_judge": {"provider": "aimds-suite-prod", "model": "claude-haiku-4.5"}},
+        }
+        out, _c, _s = migrate_aimds_defaults(cfg)
+        assert _aux(out, "goal_judge")["model"] == "claude-haiku-5.5"
+
+    def test_a_managed_gui_slot_follows_the_rename(self, models):
+        models.list[:] = self.AFTER_2177
+        cfg = {
+            "aimds_defaults_version": _VERSION,
+            "model": dict(AIMDS_MAIN),
+            "auxiliary": {"compression": {"provider": "aimds-suite-prod", "model": "claude-haiku-4.5"}},
+        }
+        out, _c, _s = migrate_aimds_defaults(cfg)
+        assert _aux(out, "compression")["model"] == "claude-haiku-5.5"
+
+    def test_newest_haiku_wins_over_the_next_family(self, models):
+        models.list[:] = ["AIMDS-Suite-Auto", "gpt-5-mini", "claude-haiku-5.5", "claude-haiku-4.5"]
+        out, _c, _s = migrate_aimds_defaults({"aimds_defaults_version": 15, "model": dict(AIMDS_MAIN)})
+        assert _aux(out, "goal_judge")["model"] == "claude-haiku-5.5"

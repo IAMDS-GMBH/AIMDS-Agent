@@ -80,10 +80,18 @@ _AIMDS_ENFORCED_POLICY = (
 # see (hermes_cli.models.cached_provider_model_ids — the provider's
 # /v1/models, cached per provider + credential fingerprint), else the main
 # model. Never a model the key cannot see, never a guess.
-try:  # one list for aux slots and subagents (AIS-456)
+try:  # one rule for aux slots and subagents (AIS-456), by model family (AIS-541)
     from hermes_cli.iamds_suite import SUITE_FAST_MODEL_PREFERENCE as _AIMDS_FAST_AUX_PREFERENCE
+    from hermes_cli.iamds_suite import preferred_fast_models as _preferred_fast_models
+    from hermes_cli.iamds_suite import suite_model_successor as _suite_model_successor
 except Exception:  # bootstrap without the package on sys.path
     _AIMDS_FAST_AUX_PREFERENCE = ("claude-haiku-4.5", "gpt-5-mini", "gemini-3.6-flash")
+
+    def _preferred_fast_models(available):
+        return [m for m in _AIMDS_FAST_AUX_PREFERENCE if m.lower() in available]
+
+    def _suite_model_successor(model, available):
+        return model if str(model).lower() in available else None
 _AIMDS_AUTO_MODEL = "AIMDS-Suite-Auto"
 # Slots the Desktop GUI edits (model-settings.tsx) → one-shot, GUI owns them.
 _AIMDS_GUI_AUX_SLOTS = ("compression", "title_generation", "approval", "mcp")
@@ -414,10 +422,11 @@ def _model_list_fetcher():
 
 
 def _pick_fast_aux_model(available: list[str], main_model: str) -> str:
-    for candidate in _AIMDS_FAST_AUX_PREFERENCE:
-        if candidate.lower() in available:
-            return candidate
-    return main_model
+    # AIS-541: the newest model of the preferred families the key offers —
+    # a Suite rename (claude-haiku-4.5 → claude-haiku-5.5) no longer drops the
+    # slot to the next family or the expensive main model.
+    preferred = _preferred_fast_models(available)
+    return preferred[0] if preferred else main_model
 
 
 def _is_unconfigured_aux_slot(slot: object) -> bool:
@@ -437,7 +446,8 @@ def _is_aimds_managed_aux_slot(slot: object, cfg: dict) -> bool:
         return False
     model = str(slot.get("model") or "").strip().lower()
     ours = {m.lower() for m in _AIMDS_FAST_AUX_PREFERENCE} | {_main_model(cfg).lower(), _AIMDS_AUTO_MODEL.lower()}
-    return model in ours
+    # AIS-541: our picks follow the Suite's renames (claude-haiku-5.5, …).
+    return model in ours or bool(_preferred_fast_models([model]))
 
 
 def _aux_status_line(provider: str, model: str, available: list[str]) -> str:
@@ -478,9 +488,16 @@ def _apply_aux_policy(cfg: dict, fetch) -> list[str]:
         if existing.get("provider") != aux_provider:
             existing["provider"] = aux_provider
             changed = True
-        if available and model.lower() in preferred and model.lower() not in available:
-            existing["model"] = pick
-            changed = True
+        if available and model.lower() not in available:
+            # AIS-541: a model the key no longer offers moves to its family
+            # successor; one of our picks without a successor to today's pick.
+            successor = _suite_model_successor(model, available)
+            if successor:
+                existing["model"] = successor
+                changed = True
+            elif model.lower() in preferred:
+                existing["model"] = pick
+                changed = True
         if changed:
             lines.append(_aux_status_line(aux_provider, str(existing["model"]), available))
     return lines

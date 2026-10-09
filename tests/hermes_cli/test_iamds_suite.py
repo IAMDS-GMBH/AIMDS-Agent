@@ -689,3 +689,47 @@ def test_explicit_delegation_model_wins_only_when_the_key_offers_it():
     assert _pick("AIMDS-Suite-Auto", explicit="gpt-4o") == ("AIMDS-Suite-Auto", "inherit-auto")
     # no model list at all (offline, nothing cached): trust the configured value
     assert _pick("AIMDS-Suite-Auto", explicit="gpt-4o", available=[]) == ("gpt-4o", "explicit")
+
+
+class TestModelFamilies:
+    """AIS-541: Suite renames (2.17.7: 4.5/5/4.8 → 5.5) must not break configs."""
+
+    AFTER = ["AIMDS-Suite-Auto", "claude-haiku-5.5", "claude-sonnet-5.5", "claude-opus-5.5",
+             "claude-fable-5.1", "gpt-5-mini", "gemini-4-flash", "text-embedding-3-small"]
+
+    @pytest.mark.parametrize("old,new", [
+        ("claude-haiku-4.5", "claude-haiku-5.5"),
+        ("claude-sonnet-5", "claude-sonnet-5.5"),
+        ("claude-opus-4.8", "claude-opus-5.5"),
+        ("gemini-3.6-flash", "gemini-4-flash"),
+        ("gpt-5-mini", "gpt-5-mini"),
+    ])
+    def test_successor_by_family(self, old, new):
+        assert suite.suite_model_successor(old, self.AFTER) == new
+
+    def test_no_family_member_means_no_successor(self):
+        assert suite.suite_model_successor("mistral-large-2", self.AFTER) is None
+        assert suite.suite_model_successor("vllm-custom", self.AFTER) is None
+
+    def test_preferred_fast_models_newest_first_per_family(self):
+        available = ["gpt-5-mini", "claude-haiku-4.5", "claude-haiku-5.5", "gemini-3.6-flash", "claude-sonnet-5.5"]
+        assert suite.preferred_fast_models(available) == [
+            "claude-haiku-5.5", "claude-haiku-4.5", "gpt-5-mini", "gemini-3.6-flash",
+        ]
+
+    def test_heal_only_touches_retired_suite_models(self, caplog):
+        suite._HEALED_MODELS.clear()
+        assert suite.heal_suite_model("aimds-suite-prod", "claude-haiku-4.5", self.AFTER) == "claude-haiku-5.5"
+        assert suite.heal_suite_model("aimds-suite-prod", "claude-haiku-5.5", self.AFTER) == "claude-haiku-5.5"
+        assert suite.heal_suite_model("aimds-suite-prod", "AIMDS-Suite-Auto", self.AFTER) == "AIMDS-Suite-Auto"
+        assert suite.heal_suite_model("openrouter", "claude-haiku-4.5", self.AFTER) == "claude-haiku-4.5"
+        assert suite.heal_suite_model("aimds-suite-prod", "claude-haiku-4.5", []) == "claude-haiku-4.5"
+        suite.heal_suite_model("aimds-suite-prod", "claude-haiku-4.5", self.AFTER)
+        warnings = [r for r in caplog.records if "no longer offered" in r.getMessage()]
+        assert len(warnings) == 1  # logged once per name
+
+    def test_subagent_preference_follows_the_rename(self):
+        model, reason = suite.pick_child_suite_model(
+            "aimds-suite-prod", "claude-sonnet-5.5", tier="fast", available=self.AFTER, metadata={},
+        )
+        assert (model, reason) == ("claude-haiku-5.5", "preference")
