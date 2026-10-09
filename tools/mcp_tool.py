@@ -4073,12 +4073,22 @@ def _call_split_by_month(tool_name: str, chunks: List[Tuple[str, dict]], call_on
     extra: Dict[str, Any] = {}
     nested_months: List[Dict[str, Any]] = []
     all_complete = True
+    # AIS-524: a server that let one month run into the call timeout will
+    # not answer the next month faster — every further month would cost a
+    # full timeout again (16 months x 180 s). Skip the rest and say so.
+    timed_out_month: Optional[str] = None
     for month, chunk_args in chunks:
+        if timed_out_month is not None:
+            months.append({"month": month, "count": 0, "complete": False,
+                           "error": f"skipped: the server timed out on {timed_out_month}"})
+            continue
         try:
             raw = call_once(chunk_args)
         except Exception as exc:  # per-month failure is data, not a crash
             months.append({"month": month, "count": 0, "complete": False, "error": f"{type(exc).__name__}: {_exc_str(exc)}"})
             all_complete = False
+            if isinstance(exc, TimeoutError):
+                timed_out_month = month
             continue
         payload, was_json = _unwrap_result_envelope(raw if isinstance(raw, str) else json.dumps(raw))
         if isinstance(payload, dict) and payload.get("error") and not any(isinstance(payload.get(k), list) for k in ITEM_LIST_KEYS):
