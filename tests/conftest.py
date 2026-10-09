@@ -1568,25 +1568,25 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):  # noqa: D401
         terminalreporter.write_line(f"{nodeid}: {', '.join(sorted(by_test[nodeid]))}")
 
 
-# ── live_llm: real vLLM when reachable, loopback fake otherwise (AIS-487) ────
+# ── live_llm: loopback fake; a real vLLM only on explicit opt-in (AIS-487/532) ─
 #
-# The few tests that genuinely benefit from a real model (a smoke test of a
-# chat completion through the agent's OpenAI client path) request the
-# ``live_llm`` fixture. It yields a ``LiveLLM`` target — base URL, key, model —
-# and the test runs the same code either way:
+# The few tests that exercise a chat completion through the agent's OpenAI
+# client path request the ``live_llm`` fixture. It yields a ``LiveLLM`` target
+# — base URL, key, model — and the test runs the same code either way:
 #
-#  • live: ``VLLM_IAMDS_API_KEY`` is set and ``<base>/v1/models`` answers
-#    within a few seconds. Base URL from ``VLLM_IAMDS_BASE_URL`` (CI: a repo
-#    variable), default ``https://vllm.iamds.com``; key from the
-#    ``VLLM_IAMDS_API_KEY`` secret. The network guard opens exactly that host
-#    (and its resolved IPs) for the duration of each such test — x.ai,
-#    OpenRouter, models.dev, GitHub … stay blocked.
-#  • mock: no key, or the endpoint is unreachable/unhealthy. The target points
-#    at an OpenAI-compatible fake on 127.0.0.1 that answers ``/v1/models``
-#    and ``/v1/chat/completions`` (plain and SSE) with ``pong``.
+#  • mock (default, and always in CI): the target points at an
+#    OpenAI-compatible fake on 127.0.0.1 that answers ``/v1/models`` and
+#    ``/v1/chat/completions`` (plain and SSE) with ``pong``. The tests check
+#    Hermes' client path, not the model server — a slow vLLM must never turn
+#    CI red (AIS-532: the chat call ran into the 30 s file timeout).
+#  • live (local opt-in): ``HERMES_LIVE_TESTS=1`` and ``VLLM_IAMDS_API_KEY``
+#    set, and ``<base>/v1/models`` answers within a few seconds. Base URL from
+#    ``VLLM_IAMDS_BASE_URL``, default ``https://vllm.iamds.com``. The network
+#    guard opens exactly that host (and its resolved IPs) for the duration of
+#    each such test — x.ai, OpenRouter, models.dev, GitHub … stay blocked.
 #
-# Reachability is probed once per pytest process and cached; the chosen mode
-# is logged and printed in the terminal summary. Both env vars are captured in
+# The target is chosen once per pytest process and cached; the mode is logged
+# and printed in the terminal summary. The env vars are captured in
 # ``pytest_configure`` because ``_hermetic_environment`` blanks every
 # ``*_API_KEY`` before each test.
 
@@ -1622,6 +1622,7 @@ def _capture_live_llm_env() -> None:
     _live_llm_state["env"] = {
         "base_url": os.environ.get("VLLM_IAMDS_BASE_URL", "").strip(),
         "api_key": os.environ.get("VLLM_IAMDS_API_KEY", "").strip(),
+        "opt_in": _live_tests_enabled(),
     }
 
 
@@ -1653,6 +1654,8 @@ def _probe_live_llm() -> LiveLLM:
     import urllib.request
 
     env = _live_llm_state["env"]
+    if not env.get("opt_in"):
+        return LiveLLM(False, "", "", _LIVE_LLM_MOCK_MODEL, f"mock mode ({_LIVE_TESTS_ENV}=1 for a real vLLM)")
     base_url = _openai_v1_base(env.get("base_url") or _LIVE_LLM_DEFAULT_BASE_URL)
     api_key = env.get("api_key") or ""
     if not api_key:
@@ -1771,7 +1774,7 @@ def _live_llm_target():
 
 @pytest.fixture
 def live_llm(_live_llm_target):
-    """A real vLLM chat target when reachable, else a loopback fake.
+    """A loopback fake chat target; a real vLLM only with HERMES_LIVE_TESTS=1.
 
     Usage::
 
