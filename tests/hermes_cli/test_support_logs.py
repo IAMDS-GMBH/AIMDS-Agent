@@ -203,6 +203,7 @@ def test_send_client_telemetry(monkeypatch):
     assert "client_id" in captured["data"]
     assert "version" in captured["data"]
     assert "channel" in captured["data"]
+    assert captured["data"]["update_source"] in {"release", "git"}  # AIS-527
 
 
 def test_send_logs_with_attachment(tmp_path, monkeypatch, capsys):
