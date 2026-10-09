@@ -116,6 +116,11 @@ def _is_openai_codex_backend(agent) -> bool:
     )
 
 
+#: A wall-clock jump this much larger than the monotonic clock between two
+#: polls means the machine slept (macOS: ``time.monotonic`` pauses in sleep).
+_SLEEP_GAP_S = 30.0
+
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, str(default)))
@@ -2631,8 +2636,23 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     t.start()
     _last_heartbeat = time.time()
     _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
+    # AIS-524: the stale check runs on the wall clock on purpose — after the
+    # machine slept, the connection is dead and should be replaced at once.
+    # Track how much of the silence was sleep so the log says so instead of
+    # reporting a 928 s stall against a 300 s threshold.
+    _poll_wall, _poll_mono = time.time(), time.monotonic()
+    _slept_since_chunk = 0.0
+    _seen_chunk_t = last_chunk_time["t"]
     while t.is_alive():
         t.join(timeout=0.3)
+        _now_wall, _now_mono = time.time(), time.monotonic()
+        if last_chunk_time["t"] != _seen_chunk_t:
+            _seen_chunk_t = last_chunk_time["t"]
+            _slept_since_chunk = 0.0
+        _sleep_gap = (_now_wall - _poll_wall) - (_now_mono - _poll_mono)
+        if _sleep_gap > _SLEEP_GAP_S:
+            _slept_since_chunk += _sleep_gap
+        _poll_wall, _poll_mono = _now_wall, _now_mono
 
         # Periodic heartbeat: touch the agent's activity tracker so the
         # gateway's inactivity monitor knows we're alive while waiting
@@ -2656,18 +2676,29 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _stale_elapsed = time.time() - last_chunk_time["t"]
         if _stale_elapsed > _stream_stale_timeout:
             _est_ctx = estimate_request_context_tokens(api_kwargs)
-            logger.warning(
-                "Stream stale for %.0fs (threshold %.0fs) — no chunks received. "
-                "model=%s context=~%s tokens. Killing connection.",
-                _stale_elapsed, _stream_stale_timeout,
-                api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
-            )
-            agent._buffer_status(
-                f"⚠️ No response from provider for {int(_stale_elapsed)}s "
-                f"(model: {api_kwargs.get('model', 'unknown')}, "
-                f"context: ~{_est_ctx:,} tokens). "
-                f"Reconnecting..."
-            )
+            if _slept_since_chunk > _SLEEP_GAP_S:
+                logger.warning(
+                    "Stream dead after the machine slept ~%.0fs (%.0fs since the last chunk, "
+                    "threshold %.0fs). model=%s context=~%s tokens. Replacing the connection.",
+                    _slept_since_chunk, _stale_elapsed, _stream_stale_timeout,
+                    api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
+                )
+                agent._buffer_status(
+                    "⚠️ The connection was lost while the computer was asleep. Reconnecting..."
+                )
+            else:
+                logger.warning(
+                    "Stream stale for %.0fs (threshold %.0fs) — no chunks received. "
+                    "model=%s context=~%s tokens. Killing connection.",
+                    _stale_elapsed, _stream_stale_timeout,
+                    api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
+                )
+                agent._buffer_status(
+                    f"⚠️ No response from provider for {int(_stale_elapsed)}s "
+                    f"(model: {api_kwargs.get('model', 'unknown')}, "
+                    f"context: ~{_est_ctx:,} tokens). "
+                    f"Reconnecting..."
+                )
             try:
                 _close_request_client_once("stale_stream_kill")
             except Exception:

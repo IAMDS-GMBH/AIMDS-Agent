@@ -414,3 +414,53 @@ class TestDegenerateStream:
 
         with pytest.raises(DegenerateStreamError):
             agent._interruptible_streaming_api_call({})
+
+
+# ── AIS-524: a stall caused by machine sleep is named as such ───────────────
+
+class TestStaleStreamAfterSleep:
+    def test_wall_clock_jump_is_logged_as_sleep(self, monkeypatch, caplog):
+        import threading
+        import time as real_time
+
+        import agent.chat_completion_helpers as cch
+
+        released = threading.Event()
+        jump = {"offset": 0.0, "polls": 0}
+
+        def fake_time():
+            # After a few polls the wall clock jumps 1000 s ahead while the
+            # monotonic clock keeps going — what macOS sleep looks like.
+            jump["polls"] += 1
+            if jump["polls"] == 20:
+                jump["offset"] = 1000.0
+            return real_time.time() + jump["offset"]
+
+        monkeypatch.setattr(
+            cch, "time",
+            SimpleNamespace(time=fake_time, monotonic=real_time.monotonic, sleep=real_time.sleep),
+        )
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "180")
+
+        def _silent_stream():
+            released.wait(5)
+            raise ConnectionError("connection closed by stale-stream kill")
+            yield  # pragma: no cover
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = lambda *a, **kw: _silent_stream()
+        agent = _make_agent()
+        monkeypatch.setattr(agent, "_create_request_openai_client", lambda *a, **k: mock_client)
+        # The detector thread aborts the socket (stranger thread); that is
+        # what unblocks the stream in production.
+        monkeypatch.setattr(agent, "_abort_request_openai_client", lambda *a, **k: released.set())
+        monkeypatch.setattr(agent, "_close_request_openai_client", lambda *a, **k: None)
+        monkeypatch.setattr(agent, "_replace_primary_openai_client", lambda *a, **k: None)
+
+        with caplog.at_level("WARNING"), pytest.raises(Exception):
+            agent._interruptible_streaming_api_call({"model": "test/model", "messages": []})
+
+        assert released.is_set()
+        assert any("after the machine slept" in r.getMessage() for r in caplog.records)
+        assert not any(r.getMessage().startswith("Stream stale for") for r in caplog.records)
