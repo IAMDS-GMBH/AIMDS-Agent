@@ -195,6 +195,10 @@ export const en: Translations = {
     updateHermes: 'Update Hermes',
     updateReadyTitle: 'Update ready',
     updateReadyMessage: count => `${count} new change${count === 1 ? '' : 's'} available.`,
+    updateVersionMessage: (target, current) => `Hermes ${target} is available – you are on ${current}.`,
+    updateOutdatedTitle: 'Hermes is out of date',
+    updateOutdatedMessage: (target, current) =>
+      `You are on ${current}, the current version is ${target}. Please install the update – newer versions fix known problems.`,
     seeWhatsNew: "See what's new",
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT needs ELEVENLABS_API_KEY.',
@@ -457,6 +461,7 @@ export const en: Translations = {
       cantReach: "We couldn't reach the update server.",
       tapCheck: 'Tap "Check now" to look for updates.',
       updateReady: count => `A new update is ready (${count} change${count === 1 ? '' : 's'} included).`,
+      updateReadyVersion: (target, current) => `Hermes ${target} is available (installed: ${current}).`,
       lastChecked: age => `Last checked ${age}`,
       justNowSuffix: ' · just now',
       automaticUpdates: 'Automatic updates',

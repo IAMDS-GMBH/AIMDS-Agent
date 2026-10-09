@@ -10,8 +10,10 @@ import hermes_cli.main as hermes_main
 
 
 @pytest.fixture(autouse=True)
-def _fresh_probe():
+def _fresh_probe(monkeypatch):
     connectivity.reset_cache()
+    # The developer's own system proxy settings must not decide the tests.
+    monkeypatch.setattr("urllib.request.getproxies", lambda: {})
     yield
     connectivity.reset_cache()
 
@@ -42,6 +44,17 @@ class TestIsOffline:
 
     def test_never_offline_behind_a_proxy(self, monkeypatch):
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
+        monkeypatch.setattr(
+            connectivity.socket, "create_connection", lambda *a, **k: (_ for _ in ()).throw(OSError("blocked"))
+        )
+        assert connectivity.is_offline(timeout=0.1, use_cache=False) is False
+
+    def test_never_offline_behind_a_system_proxy(self, monkeypatch):
+        """AIS-527: a proxy from the macOS/Windows network settings, not the
+        environment — the direct probe fails there although GitHub is reachable."""
+        for var in connectivity._PROXY_VARS:
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr("urllib.request.getproxies", lambda: {"https": "http://corp-proxy:8080"})
         monkeypatch.setattr(
             connectivity.socket, "create_connection", lambda *a, **k: (_ for _ in ()).throw(OSError("blocked"))
         )

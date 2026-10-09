@@ -166,6 +166,19 @@ def _install_channel_and_patch(version: str) -> tuple[str, str, int]:
     return channel, patch_level, commits_behind_main
 
 
+def _install_update_source() -> str:
+    """``release`` for a release-managed install (marker), else ``git``."""
+    try:
+        root = get_hermes_home() / "hermes-agent"
+        if not (root / ".git").exists() and not (root / ".hermes-release.json").exists():
+            root = Path(__file__).resolve().parent.parent
+        from hermes_cli.release_marker import read_release_marker
+
+        return "release" if read_release_marker(root) else "git"
+    except Exception:
+        return "git"
+
+
 def send_client_telemetry(args: Any = None) -> dict[str, Any]:
     """Send client version telemetry to the support server.
 
@@ -203,6 +216,9 @@ def send_client_telemetry(args: Any = None) -> dict[str, Any]:
             "channel": channel,
             "patch_level": patch_level,
             "commits_behind_main": commits_behind_main,
+            # AIS-527: how this install updates — "release" (marker) or
+            # "git"; the desktop adds update_available/target_version.
+            "update_source": _install_update_source(),
         }
 
         data_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")

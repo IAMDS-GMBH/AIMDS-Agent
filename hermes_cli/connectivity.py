@@ -7,7 +7,11 @@ a short offline phase, and the user only saw "update failed". Callers ask
 
 A direct TCP connection to GitHub decides. Behind a configured proxy that
 says nothing about reachability, so the machine is never classed as offline
-there and the normal (reporting) path runs.
+there and the normal (reporting) path runs. "Configured" includes the system
+proxy settings (macOS network settings, Windows registry), not only the
+environment: behind a system proxy the direct probe always failed, the update
+exited "offline" and waited for a browser "online" event that never came
+(AIS-527).
 """
 
 from __future__ import annotations
@@ -26,9 +30,22 @@ _CACHE_SECONDS = 30.0
 _cache: dict = {"at": None, "offline": False}
 
 
+def _proxy_configured() -> bool:
+    """A proxy from the environment or the operating system's settings."""
+    if any(os.environ.get(var) for var in _PROXY_VARS):
+        return True
+    try:
+        import urllib.request
+
+        proxies = urllib.request.getproxies()
+    except Exception:
+        return False
+    return any(proxies.get(scheme) for scheme in ("https", "http", "all"))
+
+
 def is_offline(timeout: float = 3.0, *, use_cache: bool = True) -> bool:
     """True when none of GitHub's hosts accepts a TCP connection."""
-    if any(os.environ.get(var) for var in _PROXY_VARS):
+    if _proxy_configured():
         return False
     now = time.monotonic()
     cached_at: Optional[float] = _cache["at"]

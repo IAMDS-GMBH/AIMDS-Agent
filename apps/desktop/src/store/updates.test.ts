@@ -85,6 +85,58 @@ describe('maybeNotifyUpdateAvailable', () => {
     maybeNotifyUpdateAvailable(status({ behind: 0 }))
     expect(notifySpy).not.toHaveBeenCalled()
   })
+
+  // AIS-527: stable clients sat on 0.7.6-rc.11 for weeks behind a toast that
+  // said "1 new change" and rested for a day on every close.
+  const release = (over: Partial<DesktopUpdateStatus> = {}) =>
+    status({ behind: 1, releaseVersion: '0.7.9', source: 'release', targetTag: 'v0.7.10', ...over })
+
+  it('names the versions for a release install', () => {
+    maybeNotifyUpdateAvailable(release())
+    const toast = notifySpy.mock.calls.at(-1)?.[0] as { kind: string; message: string }
+    expect(toast.kind).toBe('info')
+    expect(toast.message).toContain('v0.7.10')
+    expect(toast.message).toContain('v0.7.9')
+    expect(toast.message).not.toMatch(/change/i)
+  })
+
+  it('two releases behind: a warning that a close does not snooze', () => {
+    maybeNotifyUpdateAvailable(release({ releaseVersion: '0.7.6-rc.11' }))
+    const toast = notifySpy.mock.calls.at(-1)?.[0] as { kind: string; onDismiss: () => void }
+    expect(toast.kind).toBe('warning')
+    toast.onDismiss()
+    notifySpy.mockClear()
+
+    maybeNotifyUpdateAvailable(release({ releaseVersion: '0.7.6-rc.11' }))
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('a week of waiting escalates even one release behind', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
+    maybeNotifyUpdateAvailable(release())
+    lastToast().onDismiss()
+    notifySpy.mockClear()
+
+    vi.setSystemTime(1_000 + 8 * 24 * 60 * 60 * 1000)
+    maybeNotifyUpdateAvailable(release())
+    const toast = notifySpy.mock.calls.at(-1)?.[0] as { kind: string }
+    expect(toast.kind).toBe('warning')
+  })
+
+  it('being up to date resets the waiting time', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
+    maybeNotifyUpdateAvailable(release())
+    maybeNotifyUpdateAvailable(release({ behind: 0 }))
+    lastToast().onDismiss()
+    notifySpy.mockClear()
+
+    vi.setSystemTime(1_000 + 8 * 24 * 60 * 60 * 1000)
+    maybeNotifyUpdateAvailable(release())
+    const toast = notifySpy.mock.calls.at(-1)?.[0] as { kind: string }
+    expect(toast.kind).toBe('info')
+  })
 })
 
 describe('checkBackendUpdates', () => {
@@ -128,6 +180,24 @@ describe('checkBackendUpdates', () => {
     expect(result?.commits?.[0]?.sha).toBe('abc1234')
     expect(result?.supported).toBe(true)
     expect($backendUpdateStatus.get()?.commits?.[0]?.summary).toBe('feat: x')
+  })
+
+  it('a release install without a commit count still offers the update (AIS-527)', async () => {
+    setRemote(true)
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'release',
+      current_version: '0.7.9',
+      behind: -1,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+
+    const result = await checkBackendUpdates()
+
+    expect(result?.behind).toBe(1)
+    expect(notifySpy).toHaveBeenCalled()
   })
 
   it('honours can_apply=false (docker/nix): not supported, carries message', async () => {

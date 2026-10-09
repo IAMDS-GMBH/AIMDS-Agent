@@ -1771,6 +1771,27 @@ function reportReleaseFeedFailure(error, channel, { kind, summary }) {
   })
 }
 
+// AIS-527: an update the user clicked that did not happen filed nothing —
+// four stable clients stayed on weeks-old builds and support never heard.
+// The last failed update attempt, reported with the client telemetry so
+// support sees stuck installs without asking (AIS-527).
+let lastUpdateFailure = null
+
+function reportUpdateApplyFailure(kind, summary, detail) {
+  lastUpdateFailure = { at: new Date().toISOString(), error: kind }
+  void reportAutoIncident({
+    kind,
+    summary,
+    detail: String(detail || '').slice(0, 4000),
+    contextType: 'update_error',
+    installType: 'update',
+    clientVersion: resolveHermesVersion(),
+    hermesHome: HERMES_HOME,
+    runCli: runSupportLogUpload,
+    log: rememberLog
+  })
+}
+
 async function fetchReleaseManifest(channel) {
   const manifest = await fetchReleaseManifestUncounted(channel)
   releaseFeedTransientFailures.success(normalizeChannel(channel))
@@ -1862,6 +1883,14 @@ async function checkUpdates() {
       const message = error?.message || String(error)
       if (!directoryExists(gitDir)) {
         rememberLog(`[updates] release manifest check failed (${code}): ${message}`)
+        // AIS-527: a release install has no other source — without the
+        // manifest it never sees an update, so support has to know.
+        if (!noStableReleasePublished(error, branch)) {
+          reportReleaseFeedFailure(error, branch, {
+            kind: 'update-check-release-failed',
+            summary: `desktop update check: release manifest unavailable (${code}) for a release install`
+          })
+        }
         return {
           supported: true,
           source: 'release',
@@ -1949,6 +1978,14 @@ async function checkUpdates() {
       // tag that may be stale or missing.
       const lsTags = await runGit(['ls-remote', '--tags', remote], { cwd: updateRoot })
       if (lsTags.code !== 0 || !lsTags.stdout.trim()) {
+        // AIS-527: no manifest and no tags — this install cannot see any
+        // update (e.g. a checkout of the private source repository without
+        // credentials).
+        reportUpdateApplyFailure(
+          'update-check-no-target',
+          `desktop update check: no ${branch} release manifest and git ls-remote --tags failed`,
+          firstLine(lsTags.stderr) || `exit ${lsTags.code}`
+        )
         return {
           supported: true,
           branch,
@@ -2487,6 +2524,7 @@ async function applyUpdates(opts = {}) {
         launchFailed = true
         const message = describeUpdaterLaunchFailure(err, updater)
         rememberLog(`[updates] hand-off failed: ${message}`)
+        reportUpdateApplyFailure('update-handoff-failed', 'desktop update: the updater could not be started', message)
         emitUpdateProgress({ stage: 'error', error: 'apply-failed', message, percent: null })
         handedOff = false
         updateInFlight = false
@@ -2509,6 +2547,7 @@ async function applyUpdates(opts = {}) {
     } catch (error) {
       const message = error?.message || String(error)
       rememberLog(`[updates] hand-off failed: ${message}`)
+      reportUpdateApplyFailure('update-handoff-failed', 'desktop update: hand-off to the updater failed', message)
       emitUpdateProgress({ stage: 'error', error: 'apply-failed', message, percent: null })
       throw error
     }
@@ -2637,6 +2676,11 @@ async function applyUpdatesPosixInApp() {
     return { ok: false, error: 'offline' }
   }
   if (updated.code !== 0) {
+    reportUpdateApplyFailure(
+      'update-apply-failed',
+      `desktop update: hermes update exited ${updated.code}`,
+      updated.error || ''
+    )
     emitUpdateProgress({ stage: 'error', message: 'hermes update failed.', error: updated.error || 'update-failed' })
     return { ok: false, error: 'hermes update failed' }
   }
@@ -2658,6 +2702,11 @@ async function applyUpdatesPosixInApp() {
     return { ok: true, backendUpdated: true, desktopUnsupported: true }
   }
   if (rebuilt.code !== 0) {
+    reportUpdateApplyFailure(
+      'update-rebuild-failed',
+      `desktop update: hermes desktop --build-only exited ${rebuilt.code}`,
+      rebuilt.error || ''
+    )
     emitUpdateProgress({
       stage: 'error',
       message: 'Backend updated, but the desktop rebuild failed. Restart Hermes to retry.',
@@ -7434,6 +7483,9 @@ async function sendClientTelemetry(updateInfo = null) {
     let channel = branch || 'main'
     let patchLevel = version
     let commitsBehindMain = 0
+    // AIS-527: say plainly whether an update is waiting instead of
+    // overloading commits_behind_main (release checks put a yes/no 1 there).
+    const updateState = {}
 
     if (updateInfo) {
       // A release-tag checkout reports the literal "HEAD" — keep the
@@ -7443,6 +7495,11 @@ async function sendClientTelemetry(updateInfo = null) {
       }
       if (updateInfo.currentSha) patchLevel = updateInfo.currentSha.slice(0, 10)
       if (typeof updateInfo.behind === 'number') commitsBehindMain = updateInfo.behind
+      updateState.update_source = updateInfo.source || 'git'
+      updateState.update_available = typeof updateInfo.behind === 'number' && updateInfo.behind !== 0
+      const target = updateInfo.targetVersion || updateInfo.targetTag || ''
+      if (target) updateState.target_version = String(target).replace(/^v/, '')
+      if (updateInfo.error) updateState.last_check_error = String(updateInfo.error)
     } else {
       // A release-managed install (AIS-312) has no usable git history: the
       // marker is the identity, the configured (coerced) channel the channel.
@@ -7477,7 +7534,9 @@ async function sendClientTelemetry(updateInfo = null) {
       version,
       channel,
       patch_level: patchLevel,
-      commits_behind_main: commitsBehindMain
+      commits_behind_main: commitsBehindMain,
+      ...updateState,
+      ...(lastUpdateFailure ? { last_apply_error: lastUpdateFailure.error, last_apply_at: lastUpdateFailure.at } : {})
     }
 
     const telemetryUrl = normalizeTelemetryUrl(process.env.SUPPORT_UPLOAD_URL)
