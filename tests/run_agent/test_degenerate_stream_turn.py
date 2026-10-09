@@ -51,16 +51,19 @@ def _german(monkeypatch):
     from agent.i18n import reset_language_cache
 
     monkeypatch.setenv("HERMES_LANGUAGE", "de")
+    monkeypatch.setattr(AIAgent, "_spawn_background_review", lambda self, *a, **k: None)
     reset_language_cache()
     yield
     reset_language_cache()
 
 
-def _run(agent, side_effect, *, fallback=False):
+def _run(agent, side_effect, *, fallback=False, explanation="", answer=None):
     statuses = []
     agent._emit_status = lambda text, *a, **k: statuses.append(text)
+    agent.clarify_callback = (lambda question, choices: choices[0] if answer == "yes" else choices[1]) if answer else None
     with (
         patch.object(agent, "_interruptible_api_call", side_effect=side_effect) as api,
+        patch.object(agent, "_request_toolless_answer", return_value=explanation),
         patch.object(agent, "_try_activate_fallback", return_value=fallback) as fb,
         patch("hermes_cli.auto_incidents.report_in_background") as incident,
         patch.object(agent, "_persist_session"),
@@ -82,19 +85,47 @@ def test_one_loop_is_retried_once_and_the_turn_continues():
     incident.assert_not_called()
 
 
-def test_second_loop_without_fallback_ends_the_turn_with_a_notice_and_one_incident():
+def test_second_loop_without_fallback_ends_the_turn_with_a_notice():
     agent = _make_agent()
     result, statuses, api, fb, incident = _run(agent, [_loop_error(), _loop_error(), _ok()])
 
     assert api.call_count == 2
     assert result["failed"] is True
     assert result["failure_reason"] == "degenerate_stream"
+    # No model explanation: the fixed, translated text; no user to ask: no report.
     assert result["final_response"].startswith("Die Antwort hat sich immer wieder wiederholt")
     assert result["messages"][-1] == {"role": "assistant", "content": result["final_response"]}
     fb.assert_called_once()
+    incident.assert_not_called()
+
+
+def test_the_model_explains_and_the_user_decides_about_the_report():
+    agent = _make_agent()
+    explanation = (
+        "Meine Antwort ist in eine Schleife geraten, deshalb habe ich abgebrochen. "
+        "Frag bitte noch einmal.\n---SUPPORT---\nReasoning degenerated into counting twice."
+    )
+    result, _, _, _, incident = _run(
+        agent, [_loop_error(), _loop_error()], explanation=explanation, answer="yes",
+    )
+    assert result["final_response"].startswith("Meine Antwort ist in eine Schleife geraten")
     incident.assert_called_once()
     assert incident.call_args.args[0].startswith("degenerate-stream-")
+    assert incident.call_args.args[2].startswith("Reasoning degenerated into counting twice")
     assert incident.call_args.kwargs["context_type"] == "degenerate_stream"
+
+
+def test_no_report_when_the_user_says_no():
+    agent = _make_agent()
+    _, _, _, _, incident = _run(agent, [_loop_error(), _loop_error()], answer="no")
+    incident.assert_not_called()
+
+
+def test_a_degenerated_explanation_falls_back_to_the_fixed_text():
+    agent = _make_agent()
+    looping = "Ich buche jetzt die Zeit. " * 200
+    result, *_ = _run(agent, [_loop_error(), _loop_error()], explanation=looping)
+    assert result["final_response"].startswith("Die Antwort hat sich immer wieder wiederholt")
 
 
 def test_second_loop_switches_to_the_fallback_model():

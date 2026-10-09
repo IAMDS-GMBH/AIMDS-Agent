@@ -113,28 +113,81 @@ _PERSONAL_CONTEXT_QUERY_PATTERNS: List[re.Pattern] = [
 ]
 
 
-def _report_degenerate_stream(agent: Any, error: DegenerateStreamError) -> None:
-    """One auto incident per model and pattern when a turn ends on a loop."""
+def _explain_guardrail_halt(agent: Any, messages: List[dict], decision: Any):
+    """User text + support summary for a turn the tool-loop guardrail ended."""
+    from agent.turn_end_report import explain_stopped_turn
+
+    tool = decision.tool_name or "a tool"
+    if decision.code == "same_error_halt":
+        reason = f"the step {tool} failed {decision.count} times with the same error: {decision.error_excerpt}"
+    else:
+        reason = f"the step {tool} was repeated {decision.count} times without progress"
+    return explain_stopped_turn(
+        agent,
+        messages,
+        reason=reason,
+        fallback_text=agent._toolguard_controlled_halt_response(decision),
+        fallback_support=(
+            f"Turn stopped by the tool-loop guardrail ({decision.code}) after {decision.count} "
+            f"attempts of {tool}. Last error: {decision.error_excerpt or '-'}"
+        ),
+    )
+
+
+def _offer_guardrail_report(agent: Any, decision: Any, explanation: Any) -> None:
     try:
-        from hermes_cli.auto_incidents import _slug, report_in_background
+        from agent.turn_end_report import offer_problem_report
+        from hermes_cli.auto_incidents import _slug
+
+        tool = decision.tool_name or "tool"
+        offer_problem_report(
+            agent,
+            kind=f"turn-stopped-{decision.code}-{_slug(tool)}",
+            summary=f"Turn stopped ({decision.code}) on {tool}",
+            explanation=explanation,
+            category="chat_issue",
+            context_type="turn_stopped",
+        )
+    except Exception as exc:
+        logger.debug("guardrail problem report offer failed: %s", exc)
+
+
+def _explain_degenerate_stream(agent: Any, messages: List[dict], error: DegenerateStreamError):
+    from agent.i18n import t as _t
+    from agent.turn_end_report import explain_stopped_turn
+
+    finding = error.finding
+    model = str(getattr(agent, "model", "") or "unknown")
+    return explain_stopped_turn(
+        agent,
+        messages,
+        reason="your previous answer kept repeating itself and was cut off twice",
+        fallback_text=_t("stream_guard.degenerate_final"),
+        fallback_support=(
+            f"The {finding.channel} stream of {model} ({getattr(agent, 'provider', '') or '?'}) "
+            f"degenerated into a repetition loop ({finding.describe()}); Hermes aborted it, "
+            "retried once and found no fallback model."
+        ),
+    )
+
+
+def _offer_degenerate_report(agent: Any, error: DegenerateStreamError, explanation: Any) -> None:
+    try:
+        from agent.turn_end_report import offer_problem_report
+        from hermes_cli.auto_incidents import _slug
 
         finding = error.finding
         model = str(getattr(agent, "model", "") or "unknown")
-        report_in_background(
-            f"degenerate-stream-{_slug(model)}-{finding.reason}",
-            f"Model output degenerated ({finding.reason}) on {model}",
-            f"The {finding.channel} stream of {model} "
-            f"({getattr(agent, 'provider', '') or '?'}) turned into a repetition loop "
-            f"({finding.describe()}); Hermes aborted it, retried once, found no "
-            "fallback and ended the turn with a notice to the user.",
+        offer_problem_report(
+            agent,
+            kind=f"degenerate-stream-{_slug(model)}-{finding.reason}",
+            summary=f"Model output degenerated ({finding.reason}) on {model}",
+            explanation=explanation,
             category="chat_issue",
             context_type="degenerate_stream",
-            severity="medium",
-            session_id=str(getattr(agent, "session_id", "") or ""),
-            transcript=True,
         )
     except Exception as exc:
-        logger.debug("degenerate stream incident failed: %s", exc)
+        logger.debug("degenerate stream problem report offer failed: %s", exc)
 
 
 def _is_personal_context_query(user_text: str) -> bool:
@@ -3601,9 +3654,19 @@ def run_conversation(
                         _retry.degenerate_retry_attempted = False
                         retry_count = 0
                         continue
-                    _report_degenerate_stream(agent, api_error)
-                    _final_response = _t("stream_guard.degenerate_final")
+                    _stop_explanation = _explain_degenerate_stream(agent, messages, api_error)
+                    _final_response = _stop_explanation.user_text
                     messages.append({"role": "assistant", "content": _final_response})
+                    # Like the guardrail halt (#30770): the user reads the
+                    # explanation before the report question appears.
+                    agent._safe_print(f"\n{_final_response}\n")
+                    if agent.stream_delta_callback:
+                        try:
+                            agent.stream_delta_callback(_final_response)
+                            agent.stream_delta_callback(None)
+                        except Exception:
+                            pass
+                    _offer_degenerate_report(agent, api_error, _stop_explanation)
                     agent._persist_session(messages, conversation_history)
                     logger.info(
                         "Turn exit diagnostic: early-persist reason=%s session=%s",
@@ -5841,10 +5904,14 @@ def run_conversation(
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
                     _turn_exit_reason = "guardrail_halt"
-                    final_response = agent._toolguard_controlled_halt_response(decision)
-                    agent._emit_status(
-                        f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
+                    logger.warning(
+                        "%sTool guardrail halted %s: %s (count=%s)",
+                        agent.log_prefix, decision.tool_name, decision.code, decision.count,
                     )
+                    # AIS-524: the model explains the stop to the user in
+                    # their words (fixed translated text as fallback).
+                    _stop_explanation = _explain_guardrail_halt(agent, messages, decision)
+                    final_response = _stop_explanation.user_text
                     messages.append({"role": "assistant", "content": final_response})
                     # Emit the halt message to the client so it's not
                     # indistinguishable from a crash.  The stream display
@@ -5859,6 +5926,7 @@ def run_conversation(
                                 agent.stream_delta_callback(None)
                             except Exception:
                                 pass
+                    _offer_guardrail_report(agent, decision, _stop_explanation)
                     break
 
                 # Reset per-turn retry counters after successful tool

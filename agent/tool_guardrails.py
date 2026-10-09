@@ -615,15 +615,26 @@ def tool_error_message(result: str | None) -> str:
     return ""
 
 
-def user_tool_label(tool_name: str) -> str:
-    """Readable tool name for end users: ``mcp_<Server>_mcp_openproject_pm_x`` → ``openproject_pm_x``."""
-    name = tool_name or ""
-    if name.startswith("mcp_"):
-        parts = name.split("_", 2)
-        name = parts[2] if len(parts) == 3 else name[4:]
-        if name.startswith("mcp_"):
-            name = name[4:]
-    return name or tool_name
+# A clause that tells the model which function to call next
+# ("— call pm_list_reference_data(kind=\"activities\") for valid names").
+_DEV_HINT_RE = re.compile(r"\b[A-Za-z_][\w.]*\([^()]*\)")
+_CLAUSE_SPLIT_RE = re.compile(r"\s+[—–]\s+|;\s+|(?<=[.!?])\s+")
+
+
+def user_error_text(error: str) -> str:
+    """A tool error as the end user should read it (AIS-524).
+
+    Drops the clauses that only speak to the model (function-call hints such
+    as ``call pm_list_reference_data(kind="activities")``) and trailing
+    punctuation; the system's own description of the problem stays.
+    """
+    flat = re.sub(r"\s+", " ", error or "").strip()
+    if flat.startswith("Error:"):
+        flat = flat[len("Error:"):].strip()
+    clauses = [c.strip() for c in _CLAUSE_SPLIT_RE.split(flat) if c.strip()]
+    kept = [c for c in clauses if not _DEV_HINT_RE.search(c)]
+    text = " — ".join(kept) if kept else flat
+    return text.rstrip(" .;—–")
 
 
 def _normalize_error(error: str) -> str:

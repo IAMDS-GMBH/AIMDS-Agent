@@ -377,10 +377,19 @@ api_error:
   server_cut_off: "Yapay zekâ hizmeti{target} erişilebilir, ancak bu isteği {attempts} denemeden sonra yanıtsız sonlandırdı — istek büyük olasılıkla çok büyük (ekler, uzun konuşma). Malzemeyi daha küçük parçalara böl veya daha az ekle yeni bir sohbet başlat."
 
 tool_guard:
-  # AIS-524: a tool returned the same error message again and again.
-  same_error_halt: "Durdurdum: {tool} aynı hatayı {count} kez döndürdü — \"{error}\". Başka değerlerle yeniden denemek bunu değiştirmez. Nedeni kontrol et (örneğin erişim hakları veya hatanın belirttiği değerler) ve tekrar sor."
+  # AIS-524: end-user texts when the tool-loop guardrail ends a turn —
+  # no tool names, codes or developer hints.
+  same_error_halt: "Durdurdum: aynı adım aynı hatayla {count} kez başarısız oldu — \"{error}\". Yeniden denemek bunu değiştirmezdi. Nedeni kontrol et (örneğin erişim hakları veya belirtilen değerler) ve tekrar sor."
+  loop_halt: "Bir adımda kısır döngüye girdiğim için durdurdum. Görevi biraz farklı ifade etmeyi veya daha küçük adımlara bölmeyi dene."
 
 stream_guard:
   # AIS-524: the model's output degenerated into a repetition loop.
   degenerate_retry: "♻️ Yanıt kendini tekrarlamaya başladı — durdurdum, bir kez daha deniyorum."
   degenerate_final: "Yanıt sürekli kendini tekrarladığı için durdurdum. Lütfen tekrar sor, mümkünse daha küçük adımlarla."
+
+turn_end:
+  # AIS-524: after Hermes stopped a turn it asks whether to report it.
+  report_question: "Bunu desteğe bildireyim mi? Bu sohbet de gönderilecek."
+  report_yes: "Evet, bildir"
+  report_no: "Hayır"
+  report_sent: "Teşekkürler — bildirim desteğe gönderildi."

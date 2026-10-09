@@ -9,7 +9,7 @@ from agent.tool_guardrails import (
     canonical_tool_args,
     classify_tool_failure,
     tool_error_message,
-    user_tool_label,
+    user_error_text,
 )
 
 
@@ -430,7 +430,12 @@ def test_tool_error_message_reads_structured_errors_only():
     assert tool_error_message(None) == ""
 
 
-def test_user_tool_label_strips_mcp_server_prefix():
-    assert user_tool_label("mcp_AIMDSSuiteMCP_mcp_openproject_pm_create_time_entry") == "openproject_pm_create_time_entry"
-    assert user_tool_label("mcp_MSOffice365MCP_m365_list_emails") == "m365_list_emails"
-    assert user_tool_label("web_search") == "web_search"
+def test_user_error_text_drops_developer_hints():
+    raw = (
+        'OpenProject time entry activity "Development" was not found — '
+        'call pm_list_reference_data(kind="activities") for valid names.'
+    )
+    assert user_error_text(raw) == 'OpenProject time entry activity "Development" was not found'
+    assert user_error_text("Error: Work package is locked.") == "Work package is locked"
+    # Nothing but a hint: keep the text rather than show nothing.
+    assert user_error_text("call foo(x=1)") == "call foo(x=1)"

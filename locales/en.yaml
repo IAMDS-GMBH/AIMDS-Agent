@@ -389,10 +389,19 @@ api_error:
   server_cut_off: "The AI service{target} is reachable, but it ended this request without an answer after {attempts} attempts — most likely the request is too large (attachments, long conversation). Split the material into smaller parts or start a new chat with fewer attachments."
 
 tool_guard:
-  # AIS-524: a tool returned the same error message again and again.
-  same_error_halt: "I stopped: {tool} returned the same error {count} times — \"{error}\". Trying again with other values won't change that. Check the cause (for example access rights or the values the error names) and ask again."
+  # AIS-524: end-user texts when the tool-loop guardrail ends a turn —
+  # no tool names, codes or developer hints.
+  same_error_halt: "I stopped: the same step failed {count} times with the same error — \"{error}\". Trying again would not change that. Check the cause (for example access rights or the values mentioned) and ask again."
+  loop_halt: "I stopped because I kept going round in circles on one step. Try phrasing the task a little differently or split it into smaller steps."
 
 stream_guard:
   # AIS-524: the model's output degenerated into a repetition loop.
   degenerate_retry: "♻️ The answer started repeating itself — stopped it and trying once more."
   degenerate_final: "The answer kept repeating itself, so I stopped it. Please ask again, ideally in smaller steps."
+
+turn_end:
+  # AIS-524: after Hermes stopped a turn it asks whether to report it.
+  report_question: "Should I report this to support? This chat will be sent along."
+  report_yes: "Yes, report it"
+  report_no: "No"
+  report_sent: "Thanks — the report has been sent to support."

@@ -377,10 +377,19 @@ api_error:
   server_cut_off: "AI 서비스{target}에는 연결되지만 {attempts}번 시도 후 응답 없이 이 요청을 종료했습니다 — 요청이 너무 클 가능성이 높습니다(첨부 파일, 긴 대화). 자료를 더 작은 부분으로 나누거나 첨부 파일을 줄여 새 채팅을 시작하세요."
 
 tool_guard:
-  # AIS-524: a tool returned the same error message again and again.
-  same_error_halt: "중단했습니다: {tool}이(가) 같은 오류를 {count}번 반환했습니다 — \"{error}\". 다른 값으로 다시 시도해도 달라지지 않습니다. 원인(예: 접근 권한이나 오류가 언급한 값)을 확인한 뒤 다시 질문해 주세요."
+  # AIS-524: end-user texts when the tool-loop guardrail ends a turn —
+  # no tool names, codes or developer hints.
+  same_error_halt: "중단했습니다: 같은 단계가 같은 오류로 {count}번 실패했습니다 — \"{error}\". 다시 시도해도 달라지지 않습니다. 원인(예: 접근 권한이나 언급된 값)을 확인한 뒤 다시 질문해 주세요."
+  loop_halt: "한 단계에서 같은 시도를 반복하고 있어 중단했습니다. 작업을 조금 다르게 표현하거나 더 작은 단계로 나누어 보세요."
 
 stream_guard:
   # AIS-524: the model's output degenerated into a repetition loop.
   degenerate_retry: "♻️ 답변이 반복되기 시작해 중단했습니다 — 한 번 더 시도합니다."
   degenerate_final: "답변이 계속 반복되어 중단했습니다. 가능하면 더 작은 단계로 나누어 다시 질문해 주세요."
+
+turn_end:
+  # AIS-524: after Hermes stopped a turn it asks whether to report it.
+  report_question: "이 문제를 지원팀에 보고할까요? 이 대화 내용이 함께 전송됩니다."
+  report_yes: "예, 보고하기"
+  report_no: "아니요"
+  report_sent: "감사합니다 — 보고가 지원팀에 전송되었습니다."
