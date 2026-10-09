@@ -1,6 +1,6 @@
 {
   "source": "IAMDS-GMBH/AIMDS-Suite container/go-mcp-openproject",
-  "commit": "dc8a6a0f",
+  "commit": "dae1bf4a",
   "tools": [
     {
       "description": "Get a one-time link_url where the user connects (or replaces) their own OpenProject account — they enter their personal access token on that page, never in the chat. pm_link_status already returns a link_url when the account is not linked; use this tool to replace an existing link or token. Give the user exactly the returned link_url — never build a link yourself and never send the user to the OpenProject instance or its API. It is valid for about 10 minutes and only once. Afterwards call pm_link_status. No arguments.",
@@ -141,7 +141,7 @@
             "type": "integer"
           },
           "open_only": {
-            "description": "Restrict to not-closed work packages (statuses with is_closed=false, see pm_list_reference_data). An explicit status still applies.",
+            "description": "Restrict to open work packages: statuses that are neither is_closed nor is_done (e.g. \"Done\" is finished even if not closed), see pm_list_reference_data. An explicit status still applies.",
             "type": "boolean"
           },
           "priority": {
@@ -167,7 +167,7 @@
             "type": "array"
           },
           "status": {
-            "description": "Status name (case-insensitive) or id, or \"open\"/\"closed\". Unknown names are rejected with the valid list.",
+            "description": "Status name (case-insensitive) or id, or \"open\"/\"closed\" (open = neither is_closed nor is_done, closed = the rest). Unknown names are rejected with the valid list.",
             "type": "string"
           },
           "type": {
@@ -236,7 +236,7 @@
             "type": "integer"
           },
           "open_only": {
-            "description": "Restrict to not-closed work packages (statuses with is_closed=false, see pm_list_reference_data). An explicit status still applies.",
+            "description": "Restrict to open work packages: statuses that are neither is_closed nor is_done (e.g. \"Done\" is finished even if not closed), see pm_list_reference_data. An explicit status still applies.",
             "type": "boolean"
           },
           "priority": {
@@ -266,7 +266,7 @@
             "type": "array"
           },
           "status": {
-            "description": "Status name (case-insensitive) or id, or \"open\"/\"closed\". Unknown names are rejected with the valid list.",
+            "description": "Status name (case-insensitive) or id, or \"open\"/\"closed\" (open = neither is_closed nor is_done, closed = the rest). Unknown names are rejected with the valid list.",
             "type": "string"
           },
           "type": {
