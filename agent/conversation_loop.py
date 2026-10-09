@@ -68,6 +68,7 @@ from agent.prompt_builder import (
 )
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.retry_utils import jittered_backoff
+from agent.stream_degeneration import DegenerateStreamError
 from agent.stream_diag import pre_first_byte_cut_elapsed
 from agent.session_bootstrap import (
     evaluate_session_bootstrap,
@@ -110,6 +111,30 @@ _PERSONAL_CONTEXT_QUERY_PATTERNS: List[re.Pattern] = [
     # Memory, vault, and rules query triggers
     re.compile(r"\b(was steht im (memory|vault)|welche regeln|regeln im (memory|vault)|memory (vault|mcp)|vault (mcp|memory)|my rules|user rules)\b", re.I),
 ]
+
+
+def _report_degenerate_stream(agent: Any, error: DegenerateStreamError) -> None:
+    """One auto incident per model and pattern when a turn ends on a loop."""
+    try:
+        from hermes_cli.auto_incidents import _slug, report_in_background
+
+        finding = error.finding
+        model = str(getattr(agent, "model", "") or "unknown")
+        report_in_background(
+            f"degenerate-stream-{_slug(model)}-{finding.reason}",
+            f"Model output degenerated ({finding.reason}) on {model}",
+            f"The {finding.channel} stream of {model} "
+            f"({getattr(agent, 'provider', '') or '?'}) turned into a repetition loop "
+            f"({finding.describe()}); Hermes aborted it, retried once, found no "
+            "fallback and ended the turn with a notice to the user.",
+            category="chat_issue",
+            context_type="degenerate_stream",
+            severity="medium",
+            session_id=str(getattr(agent, "session_id", "") or ""),
+            transcript=True,
+        )
+    except Exception as exc:
+        logger.debug("degenerate stream incident failed: %s", exc)
 
 
 def _is_personal_context_query(user_text: str) -> bool:
@@ -3556,6 +3581,44 @@ def run_conversation(
                     thinking_spinner = None
                 if agent.thinking_callback:
                     agent.thinking_callback("")
+
+                # AIS-524: the response degenerated into a repetition loop
+                # (SUP-20261007-172008: a growing number sequence in the
+                # reasoning until the user cancelled). Not a transport fault:
+                # one fresh attempt, then the fallback model, then a clear end.
+                if isinstance(api_error, DegenerateStreamError):
+                    from agent.i18n import t as _t
+
+                    try:
+                        agent._reset_stream_delivery_tracking()
+                    except Exception:
+                        pass
+                    if not _retry.degenerate_retry_attempted:
+                        _retry.degenerate_retry_attempted = True
+                        agent._emit_status(_t("stream_guard.degenerate_retry"))
+                        continue
+                    if agent._try_activate_fallback():
+                        _retry.degenerate_retry_attempted = False
+                        retry_count = 0
+                        continue
+                    _report_degenerate_stream(agent, api_error)
+                    _final_response = _t("stream_guard.degenerate_final")
+                    messages.append({"role": "assistant", "content": _final_response})
+                    agent._persist_session(messages, conversation_history)
+                    logger.info(
+                        "Turn exit diagnostic: early-persist reason=%s session=%s",
+                        "degenerate_stream", agent.session_id or "none",
+                    )
+                    return {
+                        "final_response": _final_response,
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "failed": True,
+                        "error": str(api_error),
+                        "failure_reason": "degenerate_stream",
+                        "turn_exit_reason": "degenerate_stream",
+                    }
 
                 # -----------------------------------------------------------
                 # UnicodeEncodeError recovery.  Two common causes:

@@ -29,6 +29,7 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.model_metadata import is_local_endpoint
+from agent.stream_degeneration import DegenerateStreamError, DegenerationDetector
 from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
@@ -1918,6 +1919,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         role = "assistant"
         reasoning_parts: list = []
         usage_obj = None
+        # AIS-524: abort a response that degenerated into a repetition loop
+        # instead of streaming it until the user gives up.
+        _degen_reasoning = DegenerationDetector("reasoning")
+        _degen_content = DegenerationDetector("content")
         for chunk in stream:
             last_chunk_time["t"] = time.time()
             agent._touch_activity("receiving stream response")
@@ -1961,9 +1966,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 reasoning_parts.append(reasoning_text)
                 _fire_first_delta()
                 agent._fire_reasoning_delta(reasoning_text)
+                _finding = _degen_reasoning.feed(reasoning_text)
+                if _finding is not None:
+                    raise DegenerateStreamError(_finding)
 
             # Accumulate text content — fire callback only when no tool calls
             if delta and delta.content:
+                _finding = _degen_content.feed(delta.content)
+                if _finding is not None:
+                    raise DegenerateStreamError(_finding)
                 content_parts.append(delta.content)
                 if not tool_calls_acc:
                     _fire_first_delta()
@@ -2210,6 +2221,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         sanitize_anthropic_kwargs(
             api_kwargs, log_prefix=getattr(agent, "log_prefix", "")
         )
+        _degen_reasoning = DegenerationDetector("reasoning")
+        _degen_content = DegenerationDetector("content")
         # Use the Anthropic SDK's streaming context manager
         with agent._anthropic_client.messages.stream(**api_kwargs) as stream:
             # The Anthropic SDK exposes the raw httpx response on
@@ -2264,6 +2277,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         delta_type = getattr(delta, "type", None)
                         if delta_type == "text_delta":
                             text = getattr(delta, "text", "")
+                            _finding = _degen_content.feed(text)
+                            if _finding is not None:
+                                raise DegenerateStreamError(_finding)
                             if text and not has_tool_use:
                                 _fire_first_delta()
                                 agent._fire_stream_delta(text)
@@ -2273,6 +2289,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             if thinking_text:
                                 _fire_first_delta()
                                 agent._fire_reasoning_delta(thinking_text)
+                                _finding = _degen_reasoning.feed(thinking_text)
+                                if _finding is not None:
+                                    raise DegenerateStreamError(_finding)
 
             # Return the native Anthropic Message for downstream processing
             return stream.get_final_message()
@@ -2314,6 +2333,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             "cancellation — exiting without retry.",
                             type(e).__name__,
                         )
+                        return
+                    if isinstance(e, DegenerateStreamError):
+                        logger.warning(
+                            "%sStream aborted: %s (model=%s)",
+                            getattr(agent, "log_prefix", ""), e.finding.describe(),
+                            getattr(agent, "model", "?"),
+                        )
+                        result["error"] = e
                         return
                     _is_timeout = isinstance(
                         e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout)
@@ -2678,6 +2705,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 pass
             raise InterruptedError("Agent interrupted during streaming API call")
     if result["error"] is not None:
+        if isinstance(result["error"], DegenerateStreamError):
+            raise result["error"]
         if deltas_were_sent["yes"]:
             # Streaming failed AFTER some tokens were already delivered to
             # the platform.  Re-raising would let the outer retry loop make

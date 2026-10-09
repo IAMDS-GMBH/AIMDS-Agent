@@ -26,6 +26,7 @@ EXPECTED_FIELDS = {
     "multimodal_tool_content_retry_attempted",
     "oauth_1m_beta_retry_attempted",
     "llama_cpp_grammar_retry_attempted",
+    "degenerate_retry_attempted",
     "primary_recovery_attempted",
     "has_retried_429",
     "restart_with_compressed_messages",
