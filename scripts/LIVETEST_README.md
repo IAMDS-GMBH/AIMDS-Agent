@@ -34,10 +34,9 @@ LIVETEST_MODEL=anthropic/claude-haiku-4.5 \
 OPENROUTER_API_KEY=... python3 scripts/tool_search_livetest.py
 ```
 
-These are the same names the test suite's `live_llm` fixture uses (repo
-variable `VLLM_IAMDS_BASE_URL`, repo secret `VLLM_IAMDS_API_KEY`). A CI job for
-this harness would only need that secret; base URL and model fall back to the
-defaults above. The harness is not wired into CI.
+These are the same names the test suite's `live_llm` fixture reads when it
+is opted into a real vLLM locally (`HERMES_LIVE_TESTS=1`; CI always uses the
+loopback mock, AIS-532). The harness is not wired into CI.
 
 ## What it verifies
 
