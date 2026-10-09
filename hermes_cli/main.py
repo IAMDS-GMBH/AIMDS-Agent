@@ -5120,9 +5120,12 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     bundle also inherits the com.apple.quarantine flag from the downloaded
     installer process chain. Both make the relaunch fail.
 
-    Clearing the quarantine xattrs and re-applying a clean deep ad-hoc signature
+    Clearing the quarantine xattrs and re-applying a clean deep signature
     (omitting the hardened-runtime flag, which is meaningless without a real
-    Developer ID) lets the rebuilt app relaunch. No-op when a real signing
+    Developer ID) lets the rebuilt app relaunch. Since AIS-481 that signature
+    comes from the machine's own local signing identity
+    (``hermes_cli.macos_local_signing``), so the code identity — and with it
+    macOS' folder grant — survives updates; ad-hoc only as a logged fallback. No-op when a real signing
     identity is configured (CSC_LINK / APPLE_SIGNING_IDENTITY) so a properly
     signed/notarized build is never clobbered. Best-effort: never raises.
     """
@@ -5142,6 +5145,22 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
         return
     try:
         subprocess.run(["xattr", "-cr", str(app)], check=False)
+    except Exception as exc:
+        print(f"  (warning: clearing quarantine skipped: {exc})")
+    # AIS-481: sign with the machine's own local identity, so the code
+    # identity stays the same across builds and macOS keeps its folder grant.
+    try:
+        from hermes_cli.macos_local_signing import ensure_local_identity, sign_app
+
+        identity = ensure_local_identity()
+        if identity is not None and sign_app(app, identity):
+            print(f"  ✓ Signed with the local signing identity ({identity.common_name})")
+            return
+        print("  ⚠ Local signing identity unavailable — ad-hoc signature; "
+              "macOS will ask again for folder access after this update.")
+    except Exception as exc:
+        print(f"  ⚠ Local signing failed ({exc}) — ad-hoc signature; macOS will ask again for folder access.")
+    try:
         subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
