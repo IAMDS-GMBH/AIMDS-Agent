@@ -179,3 +179,49 @@ class TestPreFirstByteCutElapsed:
 
     def test_ignores_missing_failure(self):
         assert pre_first_byte_cut_elapsed(None) is None
+
+
+# ── AIS-524: an empty 200 stream cut at the same point (SUP-20261008-131738) ──
+
+_EMPTY_200 = {
+    "error_type": "RuntimeError",
+    "chain": "RuntimeError(Provider returned an empty stream with no finish_reason "
+    "(possible upstream error or malformed SSE response).)",
+    "http_status": 200,
+}
+
+
+def test_empty_200_stream_counts_as_a_pre_first_byte_cut():
+    assert pre_first_byte_cut_elapsed(_cut_failure(elapsed=92.5, **_EMPTY_200)) == pytest.approx(92.5)
+    assert pre_first_byte_cut_elapsed(_cut_failure(elapsed=92.5, **{**_EMPTY_200, "bytes": 40})) is None
+    assert pre_first_byte_cut_elapsed(_cut_failure(elapsed=92.5, **{**_EMPTY_200, "http_status": 502})) is None
+
+
+def test_repeated_identical_cut_on_a_small_context_skips_the_third_attempt(agent):
+    """Two identical ~92 s cuts with nothing to compress: no third identical
+    request — the turn goes to the fallback/final handling right away."""
+    calls = []
+
+    def _call(*_a, **_k):
+        calls.append(1)
+        agent._last_stream_failure = _cut_failure(elapsed=92.5, **_EMPTY_200)
+        raise RuntimeError(
+            "Provider returned an empty stream with no finish_reason "
+            "(possible upstream error or malformed SSE response)."
+        )
+
+    agent.client.chat.completions.create.side_effect = _call
+    with (
+        patch.object(agent, "_compress_context") as mock_compress,
+        patch.object(agent, "_try_recover_primary_transport", return_value=False),
+        patch.object(agent, "_try_activate_fallback", return_value=False) as mock_fallback,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("ja")
+
+    mock_compress.assert_not_called()
+    assert len(calls) == 2, f"expected 2 identical attempts, got {len(calls)}"
+    mock_fallback.assert_called()
+    assert result.get("failed") is True

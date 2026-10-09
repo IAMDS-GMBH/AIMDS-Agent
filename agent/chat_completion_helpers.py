@@ -29,6 +29,7 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.model_metadata import is_local_endpoint
+from agent.stream_degeneration import DegenerateStreamError, DegenerationDetector
 from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
@@ -113,6 +114,11 @@ def _is_openai_codex_backend(agent) -> bool:
             and "/backend-api/codex" in base_url_lower
         )
     )
+
+
+#: A wall-clock jump this much larger than the monotonic clock between two
+#: polls means the machine slept (macOS: ``time.monotonic`` pauses in sleep).
+_SLEEP_GAP_S = 30.0
 
 
 def _env_float(name: str, default: float) -> float:
@@ -1363,15 +1369,32 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
 
 
-def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
-    """Request a summary when max iterations are reached. Returns the final response text."""
-    print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")
+def handle_max_iterations(
+    agent,
+    messages: list,
+    api_call_count: int,
+    *,
+    request: str | None = None,
+    transient: bool = False,
+) -> str:
+    """Request a summary when max iterations are reached. Returns the final response text.
 
-    summary_request = (
+    ``request``/``transient`` (AIS-524) reuse the same tool-less call for other
+    end-of-turn answers: ``transient`` works on a copy of ``messages`` (neither
+    the request nor the answer is persisted) and returns ``""`` when no answer
+    comes back, so the caller can fall back to its own text.
+    """
+    if not transient:
+        print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")
+
+    summary_request = request or (
         "You've reached the maximum number of tool-calling iterations allowed. "
         "Please provide a final response summarizing what you've found and accomplished so far, "
         "without calling any more tools."
     )
+    if transient:
+        messages = list(messages)
+    _no_summary = "" if transient else "I reached the iteration limit and couldn't generate a summary."
     messages.append({"role": "user", "content": summary_request})
 
     try:
@@ -1538,7 +1561,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             if final_response:
                 messages.append({"role": "assistant", "content": final_response})
             else:
-                final_response = "I reached the iteration limit and couldn't generate a summary."
+                final_response = _no_summary
         else:
             # Retry summary generation
             if agent.api_mode == "codex_responses":
@@ -1581,13 +1604,15 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 if final_response:
                     messages.append({"role": "assistant", "content": final_response})
                 else:
-                    final_response = "I reached the iteration limit and couldn't generate a summary."
+                    final_response = _no_summary
             else:
-                final_response = "I reached the iteration limit and couldn't generate a summary."
+                final_response = _no_summary
 
     except Exception as e:
         logger.warning(f"Failed to get summary response: {e}")
-        final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
+        final_response = "" if transient else (
+            f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
+        )
 
     return final_response
 
@@ -1918,6 +1943,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         role = "assistant"
         reasoning_parts: list = []
         usage_obj = None
+        # AIS-524: abort a response that degenerated into a repetition loop
+        # instead of streaming it until the user gives up.
+        _degen_reasoning = DegenerationDetector("reasoning")
+        _degen_content = DegenerationDetector("content")
         for chunk in stream:
             last_chunk_time["t"] = time.time()
             agent._touch_activity("receiving stream response")
@@ -1961,9 +1990,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 reasoning_parts.append(reasoning_text)
                 _fire_first_delta()
                 agent._fire_reasoning_delta(reasoning_text)
+                _finding = _degen_reasoning.feed(reasoning_text)
+                if _finding is not None:
+                    raise DegenerateStreamError(_finding)
 
             # Accumulate text content — fire callback only when no tool calls
             if delta and delta.content:
+                _finding = _degen_content.feed(delta.content)
+                if _finding is not None:
+                    raise DegenerateStreamError(_finding)
                 content_parts.append(delta.content)
                 if not tool_calls_acc:
                     _fire_first_delta()
@@ -2210,6 +2245,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         sanitize_anthropic_kwargs(
             api_kwargs, log_prefix=getattr(agent, "log_prefix", "")
         )
+        _degen_reasoning = DegenerationDetector("reasoning")
+        _degen_content = DegenerationDetector("content")
         # Use the Anthropic SDK's streaming context manager
         with agent._anthropic_client.messages.stream(**api_kwargs) as stream:
             # The Anthropic SDK exposes the raw httpx response on
@@ -2264,6 +2301,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         delta_type = getattr(delta, "type", None)
                         if delta_type == "text_delta":
                             text = getattr(delta, "text", "")
+                            _finding = _degen_content.feed(text)
+                            if _finding is not None:
+                                raise DegenerateStreamError(_finding)
                             if text and not has_tool_use:
                                 _fire_first_delta()
                                 agent._fire_stream_delta(text)
@@ -2273,6 +2313,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             if thinking_text:
                                 _fire_first_delta()
                                 agent._fire_reasoning_delta(thinking_text)
+                                _finding = _degen_reasoning.feed(thinking_text)
+                                if _finding is not None:
+                                    raise DegenerateStreamError(_finding)
 
             # Return the native Anthropic Message for downstream processing
             return stream.get_final_message()
@@ -2314,6 +2357,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             "cancellation — exiting without retry.",
                             type(e).__name__,
                         )
+                        return
+                    if isinstance(e, DegenerateStreamError):
+                        logger.warning(
+                            "%sStream aborted: %s (model=%s)",
+                            getattr(agent, "log_prefix", ""), e.finding.describe(),
+                            getattr(agent, "model", "?"),
+                        )
+                        result["error"] = e
                         return
                     _is_timeout = isinstance(
                         e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout)
@@ -2604,8 +2655,23 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     t.start()
     _last_heartbeat = time.time()
     _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
+    # AIS-524: the stale check runs on the wall clock on purpose — after the
+    # machine slept, the connection is dead and should be replaced at once.
+    # Track how much of the silence was sleep so the log says so instead of
+    # reporting a 928 s stall against a 300 s threshold.
+    _poll_wall, _poll_mono = time.time(), time.monotonic()
+    _slept_since_chunk = 0.0
+    _seen_chunk_t = last_chunk_time["t"]
     while t.is_alive():
         t.join(timeout=0.3)
+        _now_wall, _now_mono = time.time(), time.monotonic()
+        if last_chunk_time["t"] != _seen_chunk_t:
+            _seen_chunk_t = last_chunk_time["t"]
+            _slept_since_chunk = 0.0
+        _sleep_gap = (_now_wall - _poll_wall) - (_now_mono - _poll_mono)
+        if _sleep_gap > _SLEEP_GAP_S:
+            _slept_since_chunk += _sleep_gap
+        _poll_wall, _poll_mono = _now_wall, _now_mono
 
         # Periodic heartbeat: touch the agent's activity tracker so the
         # gateway's inactivity monitor knows we're alive while waiting
@@ -2629,18 +2695,29 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _stale_elapsed = time.time() - last_chunk_time["t"]
         if _stale_elapsed > _stream_stale_timeout:
             _est_ctx = estimate_request_context_tokens(api_kwargs)
-            logger.warning(
-                "Stream stale for %.0fs (threshold %.0fs) — no chunks received. "
-                "model=%s context=~%s tokens. Killing connection.",
-                _stale_elapsed, _stream_stale_timeout,
-                api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
-            )
-            agent._buffer_status(
-                f"⚠️ No response from provider for {int(_stale_elapsed)}s "
-                f"(model: {api_kwargs.get('model', 'unknown')}, "
-                f"context: ~{_est_ctx:,} tokens). "
-                f"Reconnecting..."
-            )
+            if _slept_since_chunk > _SLEEP_GAP_S:
+                logger.warning(
+                    "Stream dead after the machine slept ~%.0fs (%.0fs since the last chunk, "
+                    "threshold %.0fs). model=%s context=~%s tokens. Replacing the connection.",
+                    _slept_since_chunk, _stale_elapsed, _stream_stale_timeout,
+                    api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
+                )
+                agent._buffer_status(
+                    "⚠️ The connection was lost while the computer was asleep. Reconnecting..."
+                )
+            else:
+                logger.warning(
+                    "Stream stale for %.0fs (threshold %.0fs) — no chunks received. "
+                    "model=%s context=~%s tokens. Killing connection.",
+                    _stale_elapsed, _stream_stale_timeout,
+                    api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
+                )
+                agent._buffer_status(
+                    f"⚠️ No response from provider for {int(_stale_elapsed)}s "
+                    f"(model: {api_kwargs.get('model', 'unknown')}, "
+                    f"context: ~{_est_ctx:,} tokens). "
+                    f"Reconnecting..."
+                )
             try:
                 _close_request_client_once("stale_stream_kill")
             except Exception:
@@ -2678,6 +2755,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 pass
             raise InterruptedError("Agent interrupted during streaming API call")
     if result["error"] is not None:
+        if isinstance(result["error"], DegenerateStreamError):
+            raise result["error"]
         if deltas_were_sent["yes"]:
             # Streaming failed AFTER some tokens were already delivered to
             # the platform.  Re-raising would let the outer retry loop make

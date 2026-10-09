@@ -375,3 +375,21 @@ api_error:
   # with the attachments as a file manifest.
   attachments_as_files: "📎 La richiesta è stata interrotta dal server — nuovo tentativo con {count} allegato/i come elenco di file; i file vengono letti a parti."
   server_cut_off: "Il servizio di IA{target} è raggiungibile, ma ha chiuso questa richiesta senza risposta dopo {attempts} tentativi — probabilmente la richiesta è troppo grande (allegati, conversazione lunga). Dividi il materiale in parti più piccole o avvia una nuova chat con meno allegati."
+
+tool_guard:
+  # AIS-524: end-user texts when the tool-loop guardrail ends a turn —
+  # no tool names, codes or developer hints.
+  same_error_halt: "Mi sono fermato: lo stesso passaggio è fallito {count} volte con lo stesso errore — \"{error}\". Riprovare non cambierebbe nulla. Controlla la causa (ad esempio i permessi o i valori indicati) e chiedi di nuovo."
+  loop_halt: "Mi sono fermato perché stavo girando in tondo su un passaggio. Prova a formulare il compito in modo diverso o a dividerlo in passaggi più piccoli."
+
+stream_guard:
+  # AIS-524: the model's output degenerated into a repetition loop.
+  degenerate_retry: "♻️ La risposta ha iniziato a ripetersi — l'ho interrotta e riprovo una volta."
+  degenerate_final: "La risposta continuava a ripetersi, quindi l'ho interrotta. Chiedi di nuovo, meglio a piccoli passi."
+
+turn_end:
+  # AIS-524: after Hermes stopped a turn it asks whether to report it.
+  report_question: "Devo segnalarlo al supporto? Questa conversazione verrà allegata."
+  report_yes: "Sì, segnala"
+  report_no: "No"
+  report_sent: "Grazie — la segnalazione è stata inviata al supporto."

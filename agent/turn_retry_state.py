@@ -54,6 +54,8 @@ class TurnRetryState:
     multimodal_tool_content_retry_attempted: bool = False
     oauth_1m_beta_retry_attempted: bool = False
     llama_cpp_grammar_retry_attempted: bool = False
+    # AIS-524: one fresh attempt after the stream degenerated into a loop.
+    degenerate_retry_attempted: bool = False
 
     # ── Transport / rate-limit recovery ──────────────────────────────────
     primary_recovery_attempted: bool = False

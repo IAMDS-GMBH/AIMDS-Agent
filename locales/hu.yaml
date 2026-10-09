@@ -375,3 +375,21 @@ api_error:
   # with the attachments as a file manifest.
   attachments_as_files: "📎 A szerver megszakította a kérést — újrapróbálás {count} melléklettel fájllistaként; a fájlok részenként kerülnek beolvasásra."
   server_cut_off: "Az MI-szolgáltatás{target} elérhető, de {attempts} próbálkozás után válasz nélkül lezárta ezt a kérést — valószínűleg túl nagy a kérés (mellékletek, hosszú beszélgetés). Oszd fel az anyagot kisebb részekre, vagy indíts új csevegést kevesebb melléklettel."
+
+tool_guard:
+  # AIS-524: end-user texts when the tool-loop guardrail ends a turn —
+  # no tool names, codes or developer hints.
+  same_error_halt: "Leálltam: ugyanaz a lépés {count}-szor hiúsult meg ugyanazzal a hibával — „{error}”. Újabb próbálkozás ezen nem változtatna. Ellenőrizd az okát (például a jogosultságokat vagy az említett értékeket), majd kérdezz újra."
+  loop_halt: "Leálltam, mert egy lépésnél körbe-körbe jártam. Fogalmazd meg a feladatot kicsit másképp, vagy bontsd kisebb lépésekre."
+
+stream_guard:
+  # AIS-524: the model's output degenerated into a repetition loop.
+  degenerate_retry: "♻️ A válasz ismételni kezdte önmagát — leállítottam, és még egyszer megpróbálom."
+  degenerate_final: "A válasz folyamatosan ismételte önmagát, ezért leállítottam. Kérdezz újra, lehetőleg kisebb lépésekben."
+
+turn_end:
+  # AIS-524: after Hermes stopped a turn it asks whether to report it.
+  report_question: "Jelentsem ezt a támogatásnak? Ez a beszélgetés is elküldésre kerül."
+  report_yes: "Igen, jelentem"
+  report_no: "Nem"
+  report_sent: "Köszönöm — a jelentés elment a támogatásnak."

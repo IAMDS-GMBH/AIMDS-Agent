@@ -5216,13 +5216,23 @@ class AIAgent:
             self._tool_guardrail_halt_decision = decision
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
-        tool = decision.tool_name or "a tool"
-        return (
-            f"I stopped retrying {tool} because it hit the tool-call guardrail "
-            f"({decision.code}) after {decision.count} repeated non-progressing "
-            "attempts. The last tool result explains the blocker; the next step is "
-            "to change strategy instead of repeating the same call."
-        )
+        """End-user text for a turn the tool-loop guardrail ended (AIS-524).
+
+        Written for the person in the chat, in their language: no tool names,
+        guardrail codes or developer hints. The model-facing details stay in
+        the tool result.
+        """
+        from agent.i18n import t as _t
+
+        if decision.code == "same_error_halt":
+            from agent.tool_guardrails import user_error_text
+
+            return _t(
+                "tool_guard.same_error_halt",
+                count=decision.count,
+                error=user_error_text(decision.error_excerpt) or "?",
+            )
+        return _t("tool_guard.loop_halt")
 
     def _append_guardrail_observation(
         self,
@@ -5349,6 +5359,11 @@ class AIAgent:
         """Forwarder — see ``agent.chat_completion_helpers.handle_max_iterations``."""
         from agent.chat_completion_helpers import handle_max_iterations
         return handle_max_iterations(self, messages, api_call_count)
+
+    def _request_toolless_answer(self, messages: list, instruction: str) -> str:
+        """One answer without tools to *instruction*, nothing persisted ("" on failure)."""
+        from agent.chat_completion_helpers import handle_max_iterations
+        return handle_max_iterations(self, messages, 0, request=instruction, transient=True)
 
     def run_conversation(
         self,

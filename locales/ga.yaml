@@ -379,3 +379,21 @@ api_error:
   # with the attachments as a file manifest.
   attachments_as_files: "📎 Ghearr an freastalaí an t-iarratas — triail eile le {count} ceangaltán mar liosta comhad; léitear na comhaid ina gcodanna."
   server_cut_off: "Tá an tseirbhís AI{target} ar fáil, ach chríochnaigh sí an t-iarratas seo gan freagra tar éis {attempts} iarracht — is dócha go bhfuil an t-iarratas rómhór (ceangaltáin, comhrá fada). Roinn an t-ábhar ina phíosaí níos lú nó tosaigh comhrá nua le níos lú ceangaltán."
+
+tool_guard:
+  # AIS-524: end-user texts when the tool-loop guardrail ends a turn —
+  # no tool names, codes or developer hints.
+  same_error_halt: "Stop mé: theip ar an gcéim chéanna {count} uair leis an earráid chéanna — \"{error}\". Ní athródh triail eile é sin. Seiceáil an chúis (mar shampla cearta rochtana nó na luachanna a luadh) agus fiafraigh arís."
+  loop_halt: "Stop mé mar bhí mé ag dul timpeall i gciorcail ar chéim amháin. Cuir an tasc i bhfocail eile nó roinn é i gcéimeanna níos lú."
+
+stream_guard:
+  # AIS-524: the model's output degenerated into a repetition loop.
+  degenerate_retry: "♻️ Thosaigh an freagra á athrá féin — stop mé é agus déanfaidh mé iarracht amháin eile."
+  degenerate_final: "Bhí an freagra á athrá féin arís agus arís eile, mar sin stop mé é. Fiafraigh arís, i gcéimeanna níos lú más féidir."
+
+turn_end:
+  # AIS-524: after Hermes stopped a turn it asks whether to report it.
+  report_question: "Ar cheart dom é seo a thuairisciú don tacaíocht? Seolfar an comhrá seo leis."
+  report_yes: "Sea, tuairiscigh é"
+  report_no: "Ní hea"
+  report_sent: "Go raibh maith agat — seoladh an tuairisc chuig an tacaíocht."

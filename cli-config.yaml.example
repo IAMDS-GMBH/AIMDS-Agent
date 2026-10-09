@@ -339,14 +339,19 @@ browser:
 tool_loop_guardrails:
   warnings_enabled: true
   hard_stop_enabled: false
+  # A tool returning the same error message again ends the turn (with a
+  # notice to the user), independent of hard_stop_enabled.
+  same_error_halt_enabled: true
   warn_after:
     exact_failure: 2
     same_tool_failure: 3
     idempotent_no_progress: 2
+    same_error: 2
   hard_stop_after:
     exact_failure: 5
     same_tool_failure: 8
     idempotent_no_progress: 5
+    same_error: 3
 
 # =============================================================================
 # Context Compression (Auto-shrinks long conversations)

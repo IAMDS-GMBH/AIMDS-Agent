@@ -5,7 +5,18 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from run_agent import AIAgent
+
+
+@pytest.fixture(autouse=True)
+def _no_extra_model_calls(monkeypatch):
+    """Halts end with a tool-less explanation call (AIS-524) and turns with
+    tools spawn the post-turn review; both would build a real client here.
+    Tests that want an explanation patch ``_request_toolless_answer``."""
+    monkeypatch.setattr(AIAgent, "_request_toolless_answer", lambda self, messages, instruction: "")
+    monkeypatch.setattr(AIAgent, "_spawn_background_review", lambda self, *a, **k: None)
 
 
 def _make_tool_defs(*names: str) -> list[dict]:
@@ -70,6 +81,11 @@ def _seed_exact_failures(agent: AIAgent, tool_name: str, args: dict, count: int 
         )
 
 
+# The same-error halt (AIS-524) is on by default; tests that pin the plain
+# exact-failure warning path switch it off.
+_SAME_ERROR_OFF = {"tool_loop_guardrails": {"same_error_halt_enabled": False}}
+
+
 def _hard_stop_config(**overrides) -> dict:
     cfg = {
         "tool_loop_guardrails": {
@@ -87,7 +103,7 @@ def _hard_stop_config(**overrides) -> dict:
 
 
 def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_execution():
-    agent = _make_agent("web_search")
+    agent = _make_agent("web_search", config=_SAME_ERROR_OFF)
     args = {"query": "same"}
     _seed_exact_failures(agent, "web_search", args)
     starts = []
@@ -239,7 +255,7 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
 
 
 def test_default_run_conversation_warns_without_guardrail_halt():
-    agent = _make_agent("web_search", max_iterations=10)
+    agent = _make_agent("web_search", max_iterations=10, config=_SAME_ERROR_OFF)
     same_args = {"query": "same"}
     responses = [
         _mock_response(
@@ -295,7 +311,7 @@ def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_
     assert result["turn_exit_reason"] == "guardrail_halt"
     assert "error" not in result
     assert result["completed"] is True
-    assert "stopped retrying" in result["final_response"]
+    assert result["final_response"].startswith("I stopped because")
     assert result["guardrail"]["code"] == "repeated_exact_failure_block"
     assert result["guardrail"]["tool_name"] == "web_search"
 
@@ -344,7 +360,7 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
 
     assert result["turn_exit_reason"] == "guardrail_halt"
     halt_text = result["final_response"]
-    assert "stopped retrying" in halt_text
+    assert halt_text.startswith("I stopped because")
 
     # The halt message must have been pushed through the callback at least
     # once.  Empty-queue SSE writers were the bug — clients saw no content
@@ -353,3 +369,117 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+def test_same_error_with_changing_args_ends_the_turn_by_default_in_the_user_language(monkeypatch):
+    """AIS-524 / SUP-20261007-172008: a booking failed five times with the same
+    "activity not found" error while only the date changed. The third identical
+    error now ends the turn with a message the end user can read."""
+    monkeypatch.setenv("HERMES_LANGUAGE", "de")
+    from agent.i18n import reset_language_cache
+
+    reset_language_cache()
+    tool = "mcp_AIMDSSuiteMCP_mcp_openproject_pm_create_time_entry"
+    agent = _make_agent(tool, max_iterations=10)
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(tool, json.dumps({"spent_on": f"2026-10-0{d}"}), f"c{d}")],
+        )
+        for d in range(5, 10)
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+    error = json.dumps({"error": 'OpenProject time entry activity "Development" was not found.'})
+
+    try:
+        with (
+            patch("run_agent.handle_function_call", return_value=error) as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("buche meine Zeiten")
+    finally:
+        reset_language_cache()
+
+    assert mock_hfc.call_count == 3
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    final = result["final_response"]
+    # No usable model explanation in this mock: the fixed, translated text.
+    assert final.startswith("Ich habe abgebrochen")
+    assert "openproject" not in final and "pm_" not in final
+    assert "Development" in final
+    tool_contents = [m["content"] for m in result["messages"] if m.get("role") == "tool"]
+    assert any("same_error_warning" in c for c in tool_contents)
+
+
+def test_halt_explanation_comes_from_the_model_and_the_user_can_report_it():
+    """AIS-524: the model explains the stop in the user's words; Hermes then
+    asks Yes/No and sends the model's support summary as the case text."""
+    tool = "mcp_AIMDSSuiteMCP_mcp_openproject_pm_create_time_entry"
+    agent = _make_agent(tool, max_iterations=10)
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(tool, json.dumps({"spent_on": f"2026-10-0{d}"}), f"c{d}")],
+        )
+        for d in range(5, 8)
+    ]
+    explanation = (
+        "Ich konnte deine Zeiten nicht buchen: Die Tätigkeit „Development“ gibt es in OpenProject nicht. "
+        "Sag mir, welche Tätigkeit ich nehmen soll.\n---SUPPORT---\n"
+        "Booking 8h per day failed: activity Development not found (3x)."
+    )
+    questions = []
+
+    def _clarify(question, choices):
+        questions.append((question, choices))
+        return choices[0]
+
+    agent.clarify_callback = _clarify
+    error = json.dumps({"error": 'OpenProject time entry activity "Development" was not found.'})
+    with (
+        patch("run_agent.handle_function_call", return_value=error),
+        patch.object(agent, "_request_toolless_answer", return_value=explanation) as explain,
+        patch("hermes_cli.auto_incidents.report_in_background") as incident,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("buche meine Zeiten")
+
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["final_response"].startswith("Ich konnte deine Zeiten nicht buchen")
+    assert "---SUPPORT---" not in result["final_response"]
+    instruction = explain.call_args.args[1]
+    assert "never mention tool names" in instruction
+    assert len(questions) == 1 and len(questions[0][1]) == 2
+    incident.assert_called_once()
+    assert incident.call_args.args[0].startswith("turn-stopped-same_error_halt-")
+    assert incident.call_args.args[2].startswith("Booking 8h per day failed")
+    assert incident.call_args.kwargs["transcript"] is True
+
+
+def test_no_report_question_without_an_interactive_user():
+    tool = "mcp_X_book"
+    agent = _make_agent(tool, max_iterations=10)
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content="", finish_reason="tool_calls",
+                       tool_calls=[_mock_tool_call(tool, json.dumps({"n": i}), f"c{i}")])
+        for i in range(3)
+    ]
+    agent.clarify_callback = None
+    with (
+        patch("run_agent.handle_function_call", return_value=json.dumps({"error": "locked"})),
+        patch.object(agent, "_request_toolless_answer", return_value=""),
+        patch("hermes_cli.auto_incidents.report_in_background") as incident,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("book")
+
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    incident.assert_not_called()

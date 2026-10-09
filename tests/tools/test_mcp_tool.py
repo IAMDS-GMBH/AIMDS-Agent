@@ -5498,6 +5498,27 @@ class TestMonthByMonthCalls:
         assert out["result"].count("TempoWorklogId") == 2 and out["complete"] is True
         assert [(m["month"], m["count"]) for m in out["months"]] == [("2026-01", 2), ("2026-02", 0)]
 
+    def test_a_month_timeout_skips_the_remaining_months(self):
+        """AIS-524: one timed-out month costs one timeout, not one per month."""
+        from tools import mcp_tool as mt
+
+        chunks = mt._month_chunks({"from": "2026-01-01", "to": "2026-04-30"})
+        seen = []
+
+        def call_once(args):
+            seen.append(args["from"][:7])
+            if args["from"].startswith("2026-02"):
+                raise TimeoutError("MCP call timed out after 180.0s (configured timeout: 180.0s)")
+            return json.dumps({"result": [{"id": args["from"]}]})
+
+        out = json.loads(mt._call_split_by_month("mcp_X_list", chunks, call_once))["result"]
+        assert seen == ["2026-01", "2026-02"]
+        assert out["complete"] is False and out["count"] == 1
+        assert [(m["month"], m["complete"]) for m in out["months"]] == [
+            ("2026-01", True), ("2026-02", False), ("2026-03", False), ("2026-04", False),
+        ]
+        assert out["months"][3]["error"] == "skipped: the server timed out on 2026-02"
+
     def test_error_payload_marks_the_month_incomplete(self):
         from tools import mcp_tool as mt
 

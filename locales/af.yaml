@@ -375,3 +375,21 @@ api_error:
   # with the attachments as a file manifest.
   attachments_as_files: "📎 Die bediener het die versoek afgesny — probeer weer met {count} aanhangsel(s) as 'n lêerlys; die lêers word in dele gelees."
   server_cut_off: "Die KI-diens{target} is bereikbaar, maar het hierdie versoek ná {attempts} pogings sonder 'n antwoord beëindig — waarskynlik is die versoek te groot (aanhangsels, lang gesprek). Verdeel die materiaal in kleiner dele of begin 'n nuwe klets met minder aanhangsels."
+
+tool_guard:
+  # AIS-524: end-user texts when the tool-loop guardrail ends a turn —
+  # no tool names, codes or developer hints.
+  same_error_halt: "Ek het gestop: dieselfde stap het {count} keer met dieselfde fout misluk — \"{error}\". Weer probeer sou dit nie verander nie. Kyk na die oorsaak (byvoorbeeld toegangsregte of die genoemde waardes) en vra weer."
+  loop_halt: "Ek het gestop omdat ek by een stap in sirkels gedraai het. Probeer die taak bietjie anders stel of verdeel dit in kleiner stappe."
+
+stream_guard:
+  # AIS-524: the model's output degenerated into a repetition loop.
+  degenerate_retry: "♻️ Die antwoord het begin om homself te herhaal — gestop, ek probeer nog een keer."
+  degenerate_final: "Die antwoord het homself aanhoudend herhaal, so ek het dit gestop. Vra asseblief weer, verkieslik in kleiner stappe."
+
+turn_end:
+  # AIS-524: after Hermes stopped a turn it asks whether to report it.
+  report_question: "Moet ek dit by ondersteuning aanmeld? Hierdie gesprek word saamgestuur."
+  report_yes: "Ja, meld dit"
+  report_no: "Nee"
+  report_sent: "Dankie — die verslag is na ondersteuning gestuur."

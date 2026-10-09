@@ -1600,18 +1600,23 @@ DEFAULT_CONFIG = {
     # Tool loop guardrails nudge models when they repeat failed or
     # non-progressing tool calls. Soft warnings are always-on by default;
     # hard stops are opt-in so interactive CLI/TUI sessions keep flowing.
+    # Exception (AIS-524): a tool returning the *same error message* again
+    # ends the turn by default — no argument change fixes that blocker.
     "tool_loop_guardrails": {
         "warnings_enabled": True,
         "hard_stop_enabled": False,
+        "same_error_halt_enabled": True,
         "warn_after": {
             "exact_failure": 2,
             "same_tool_failure": 3,
             "idempotent_no_progress": 2,
+            "same_error": 2,
         },
         "hard_stop_after": {
             "exact_failure": 5,
             "same_tool_failure": 8,
             "idempotent_no_progress": 5,
+            "same_error": 3,
         },
     },
 

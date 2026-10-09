@@ -375,3 +375,21 @@ api_error:
   # with the attachments as a file manifest.
   attachments_as_files: "📎 Die Anfrage wurde serverseitig abgebrochen — neuer Versuch mit {count} Anhang/Anhängen als Dateiliste; die Dateien werden in Teilen gelesen."
   server_cut_off: "Der KI-Dienst{target} ist erreichbar, hat diese Anfrage aber nach {attempts} Versuchen ohne Antwort beendet — vermutlich ist die Anfrage zu groß (Anhänge, langer Verlauf). Teile das Material in kleinere Stücke oder starte einen neuen Chat mit weniger Anhängen."
+
+tool_guard:
+  # AIS-524: end-user texts when the tool-loop guardrail ends a turn —
+  # no tool names, codes or developer hints.
+  same_error_halt: "Ich habe abgebrochen: Derselbe Schritt ist {count}-mal mit demselben Fehler gescheitert — „{error}“. Ein weiterer Versuch hätte daran nichts geändert. Prüfe die Ursache (zum Beispiel Berechtigungen oder die genannten Werte) und frag dann noch einmal."
+  loop_halt: "Ich habe abgebrochen, weil ich mich bei einem Schritt im Kreis gedreht habe. Formuliere die Aufgabe gern etwas anders oder teile sie in kleinere Schritte."
+
+stream_guard:
+  # AIS-524: the model's output degenerated into a repetition loop.
+  degenerate_retry: "♻️ Die Antwort hat angefangen, sich zu wiederholen — abgebrochen, ich versuche es noch einmal."
+  degenerate_final: "Die Antwort hat sich immer wieder wiederholt, deshalb habe ich sie abgebrochen. Bitte frag noch einmal, am besten in kleineren Schritten."
+
+turn_end:
+  # AIS-524: after Hermes stopped a turn it asks whether to report it.
+  report_question: "Soll ich das als Problem an den Support melden? Dieser Chatverlauf wird mitgeschickt."
+  report_yes: "Ja, melden"
+  report_no: "Nein"
+  report_sent: "Danke — die Meldung ist an den Support gegangen."

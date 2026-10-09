@@ -375,3 +375,21 @@ api_error:
   # with the attachments as a file manifest.
   attachments_as_files: "📎 Сервер обірвав запит — повторна спроба з {count} вкладенням(и) як списком файлів; файли читаються частинами."
   server_cut_off: "Сервіс ШІ{target} доступний, але завершив цей запит без відповіді після {attempts} спроб — імовірно, запит завеликий (вкладення, довга розмова). Розділи матеріал на менші частини або почни новий чат із меншою кількістю вкладень."
+
+tool_guard:
+  # AIS-524: end-user texts when the tool-loop guardrail ends a turn —
+  # no tool names, codes or developer hints.
+  same_error_halt: "Я зупинився: той самий крок {count} разів завершився тією самою помилкою — «{error}». Нова спроба цього не змінила б. Перевір причину (наприклад, права доступу або згадані значення) і запитай ще раз."
+  loop_halt: "Я зупинився, бо ходив по колу на одному кроці. Спробуй сформулювати завдання трохи інакше або розбий його на менші кроки."
+
+stream_guard:
+  # AIS-524: the model's output degenerated into a repetition loop.
+  degenerate_retry: "♻️ Відповідь почала повторюватися — я її зупинив і спробую ще раз."
+  degenerate_final: "Відповідь постійно повторювалася, тому я її зупинив. Запитай ще раз, краще меншими кроками."
+
+turn_end:
+  # AIS-524: after Hermes stopped a turn it asks whether to report it.
+  report_question: "Повідомити про це в підтримку? Цю розмову буде надіслано разом із повідомленням."
+  report_yes: "Так, повідомити"
+  report_no: "Ні"
+  report_sent: "Дякую — повідомлення надіслано в підтримку."
