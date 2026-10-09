@@ -60,6 +60,9 @@ status/type/priority/assignee names, ``open``/``closed`` statuses and
 ``open_only`` that never drops an explicit status, ``groups`` for
 ``group_by``, ``exact_match`` in search, activity user names and reference
 data with ``is_closed``/``is_default`` (activities: ``{id, name}``, AIS-511).
+Since AIS-518/AIS-526: open = neither ``is_closed`` nor ``is_done``
+(``defaultDoneRatio`` 100, e.g. "Done" that an external job closes later);
+``open``/``closed``/``open_only`` filter by the matching status ids.
 
 Since 0.5.x (AIS-499): every ``project`` parameter resolves numeric id ->
 exact identifier -> identifier or name ignoring case, a work package key
@@ -554,17 +557,49 @@ def _ref_items(items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [{"id": int(i.get("id") or 0), "name": str(i.get("name") or "")} for i in items]
 
 
+def _status_is_done(item: Dict[str, Any]) -> bool:
+    """A finished status: ``defaultDoneRatio`` 100, even when it is
+    deliberately not ``isClosed`` ("Done" on IAMDS, closed later by an
+    external job — Go ``RefItem.IsDone``, AIS-518)."""
+    try:
+        return int(item.get("defaultDoneRatio") or 0) >= 100
+    except (TypeError, ValueError):
+        return False
+
+
+def _status_is_open(item: Dict[str, Any]) -> bool:
+    """What ``open_only`` and status ``open`` mean: neither closed nor done."""
+    return not item.get("isClosed") and not _status_is_done(item)
+
+
 def _ref_rows(items: Iterable[Dict[str, Any]], *, statuses: bool = False) -> List[Dict[str, Any]]:
     """Go ``refRows`` (AIS-494): snake_case rows with ``is_default``; statuses
-    also carry ``is_closed``, which tells what ``open_only`` means here."""
+    also carry ``is_closed`` and ``is_done`` — open is neither (AIS-518)."""
     rows = []
     for i in items:
         row: Dict[str, Any] = {"id": int(i.get("id") or 0), "name": str(i.get("name") or ""),
                                "is_default": bool(i.get("isDefault"))}
         if statuses:
             row["is_closed"] = bool(i.get("isClosed"))
+            row["is_done"] = _status_is_done(i)
         rows.append(_sorted(row))
     return rows
+
+
+def _status_filter(open_: bool) -> Dict[str, Any]:
+    """Status ids that are open (or, with ``open_=False``, the rest).
+
+    OpenProject's ``o``/``c`` only look at ``isClosed`` and counted "Done" as
+    open (AIS-518); they remain the fallback when the status list is
+    unavailable (Go ``statusIDs``)."""
+    try:
+        items = _statuses()
+    except Exception:
+        items = []
+    ids = [str(int(i.get("id") or 0)) for i in items if _status_is_open(i) == open_]
+    if not items:
+        return {"status": {"operator": "o" if open_ else "c", "values": []}}
+    return {"status": {"operator": "=", "values": ids}}
 
 
 def _statuses() -> List[Dict[str, Any]]:
@@ -1128,16 +1163,16 @@ def _wp_query(args: Dict[str, Any], *, query: str = "") -> Dict[str, Any]:
     # status and return every open work package).
     status, open_only = _arg_str(args, "status"), bool(_arg_bool(args, "open_only"))
     if status.casefold() == "open" or (open_only and not status):
-        filters.append({"status": {"operator": "o", "values": []}})
+        filters.append(_status_filter(True))
     elif status.casefold() == "closed":
         if open_only:
             raise ToolFailure("status \"closed\" contradicts open_only=true")
-        filters.append({"status": {"operator": "c", "values": []}})
+        filters.append(_status_filter(False))
     elif status:
         item = _resolve_ref_item("status", status)
-        if open_only and item.get("isClosed"):
+        if open_only and not _status_is_open(item):
             raise ToolFailure(
-                f"status {json.dumps(str(item.get('name') or ''), ensure_ascii=False)} is a closed status, "
+                f"status {json.dumps(str(item.get('name') or ''), ensure_ascii=False)} is a closed or finished status, "
                 "which contradicts open_only=true"
             )
         filters.append({"status": {"operator": "=", "values": [str(int(item.get("id") or 0))]}})
@@ -1713,10 +1748,12 @@ def pm_get_project(args: Dict[str, Any]) -> Any:
 def _filter_properties() -> Dict[str, Any]:
     return {
         "project": _project_param(" to scope results to"),
-        "status": _str("Status name (case-insensitive) or id, or \"open\"/\"closed\". Unknown names are rejected with the valid list."),
+        "status": _str("Status name (case-insensitive) or id, or \"open\"/\"closed\" (open = neither is_closed nor is_done, "
+                       "closed = the rest). Unknown names are rejected with the valid list."),
         "open_only": {
             "type": "boolean",
-            "description": "Restrict to not-closed work packages (statuses with is_closed=false, see pm_list_reference_data). "
+            "description": "Restrict to open work packages: statuses that are neither is_closed nor is_done "
+                           "(e.g. \"Done\" is finished even if not closed), see pm_list_reference_data. "
                            "An explicit status still applies.",
         },
         "assignee": _str("Assignee id, login, or \"me\"."),

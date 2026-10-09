@@ -30,11 +30,14 @@ PROJECTS = [
     {"_type": "Project", "id": 109, "identifier": "MOAP", "name": "Mother of all Projects", "active": True, "public": True},
 ]
 # Done is not a closed status on this instance; Rejected is (AIS-494: is_closed).
-STATUSES = [{"id": 15, "name": "Backlog", "isClosed": False, "isDefault": True},
-            {"id": 17, "name": "In Progress", "isClosed": False, "isDefault": False},
-            {"id": 18, "name": "In Review", "isClosed": False, "isDefault": False},
-            {"id": 12, "name": "Done", "isClosed": False, "isDefault": False},
-            {"id": 14, "name": "Rejected", "isClosed": True, "isDefault": False}]
+# Like the IAMDS instance: "Done" is finished (defaultDoneRatio 100) but
+# deliberately not closed — an external job closes it later (AIS-518).
+STATUSES = [{"id": 15, "name": "Backlog", "isClosed": False, "isDefault": True, "defaultDoneRatio": 0},
+            {"id": 17, "name": "In Progress", "isClosed": False, "isDefault": False, "defaultDoneRatio": 30},
+            {"id": 18, "name": "In Review", "isClosed": False, "isDefault": False, "defaultDoneRatio": 70},
+            {"id": 12, "name": "Done", "isClosed": False, "isDefault": False, "defaultDoneRatio": 100},
+            {"id": 14, "name": "Rejected", "isClosed": True, "isDefault": False, "defaultDoneRatio": 100}]
+OPEN_IDS = ["15", "17", "18"]
 TYPES = [{"id": 1, "name": "Task", "isDefault": True}, {"id": 7, "name": "Bug", "isDefault": False}]
 PRIORITIES = [{"id": 8, "name": "Normal", "isDefault": True}, {"id": 9, "name": "High", "isDefault": False}]
 ACTIVITIES = [{"id": 3, "name": "Development"}, {"id": 5, "name": "Support"}]
@@ -367,8 +370,9 @@ def test_reference_data_with_activity_fallback(op):
     server, fake = op
     data = ok(server, "pm_list_reference_data")
     assert list(data) == ["activities", "priorities", "statuses", "types"]
-    assert data["statuses"][0] == {"id": 15, "is_closed": False, "is_default": True, "name": "Backlog"}
+    assert data["statuses"][0] == {"id": 15, "is_closed": False, "is_default": True, "is_done": False, "name": "Backlog"}
     assert [s["name"] for s in data["statuses"] if s["is_closed"]] == ["Rejected"]  # Done is not closed here
+    assert [s["name"] for s in data["statuses"] if s["is_done"]] == ["Done", "Rejected"]  # but finished (AIS-518)
     assert data["types"][1] == {"id": 7, "is_default": False, "name": "Bug"}
     assert data["activities"] == ACTIVITIES  # global endpoint 404 -> project form
     assert requests(fake, "POST", "time_entries/form")
@@ -470,7 +474,7 @@ def test_search_sends_the_search_filter_and_requires_query(op):
     filters = json.loads(requests(fake, "GET", "work_packages")[-1][2]["filters"])
     assert {"search": {"operator": "**", "values": ["login timeout"]}} in filters
     assert {"assignee": {"operator": "=", "values": ["me"]}} in filters
-    assert {"status": {"operator": "o", "values": []}} in filters
+    assert {"status": {"operator": "=", "values": OPEN_IDS}} in filters
     assert fail(server, "pm_search_work_packages") == "query is required"
 
 
@@ -633,8 +637,8 @@ def test_search_exact_match_respects_the_read_list(monkeypatch):
 
 
 @pytest.mark.parametrize("status,expected", [
-    ("open", {"status": {"operator": "o", "values": []}}),
-    ("Closed", {"status": {"operator": "c", "values": []}}),
+    ("open", {"status": {"operator": "=", "values": OPEN_IDS}}),
+    ("Closed", {"status": {"operator": "=", "values": ["12", "14"]}}),
     ("in review", {"status": {"operator": "=", "values": ["18"]}}),
     ("12", {"status": {"operator": "=", "values": ["12"]}}),
 ])
@@ -653,10 +657,29 @@ def test_status_names_must_match_exactly(op):
 
 def test_open_only_never_drops_an_explicit_status(op):
     server, fake = op
-    ok(server, "pm_list_work_packages", status="Done", open_only=True)  # Done is not closed here
+    ok(server, "pm_list_work_packages", status="In Review", open_only=True)
     filters = json.loads(requests(fake, "GET", "work_packages")[-1][2]["filters"])
-    assert [f for f in filters if "status" in f] == [{"status": {"operator": "=", "values": ["12"]}}]
+    assert [f for f in filters if "status" in f] == [{"status": {"operator": "=", "values": ["18"]}}]
     ok(server, "pm_list_work_packages", status="open", open_only=True)
+    filters = json.loads(requests(fake, "GET", "work_packages")[-1][2]["filters"])
+    assert [f for f in filters if "status" in f] == [{"status": {"operator": "=", "values": OPEN_IDS}}]
+
+
+def test_open_only_excludes_done(op):
+    """AIS-518/526 (SUP-20261005-103125): "Done" is finished, not open, even
+    though OpenProject does not mark it closed."""
+    server, fake = op
+    ok(server, "pm_list_work_packages", project="PRO", open_only=True)
+    filters = json.loads(requests(fake, "GET", "work_packages")[-1][2]["filters"])
+    status_filter = [f for f in filters if "status" in f]
+    assert status_filter == [{"status": {"operator": "=", "values": OPEN_IDS}}]
+    assert "12" not in status_filter[0]["status"]["values"]
+
+
+def test_open_falls_back_to_openprojects_operator_without_status_data(op, monkeypatch):
+    server, fake = op
+    monkeypatch.setattr(server, "_statuses", lambda: [])
+    ok(server, "pm_list_work_packages", status="open")
     filters = json.loads(requests(fake, "GET", "work_packages")[-1][2]["filters"])
     assert [f for f in filters if "status" in f] == [{"status": {"operator": "o", "values": []}}]
 
@@ -665,7 +688,9 @@ def test_open_only_contradicts_a_closed_status(op):
     server, fake = op
     calls = len(requests(fake, "GET", "work_packages"))
     assert fail(server, "pm_list_work_packages", status="Rejected", open_only=True) == \
-        'status "Rejected" is a closed status, which contradicts open_only=true'
+        'status "Rejected" is a closed or finished status, which contradicts open_only=true'
+    assert fail(server, "pm_list_work_packages", status="Done", open_only=True) == \
+        'status "Done" is a closed or finished status, which contradicts open_only=true'
     assert fail(server, "pm_search_work_packages", query="x", status="closed", open_only=True) == \
         'status "closed" contradicts open_only=true'
     assert len(requests(fake, "GET", "work_packages")) == calls  # rejected before the request
