@@ -16,6 +16,7 @@ import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { quickModelOptions, sessionTitle, toRuntimeMessage } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { cn } from '@/lib/utils'
@@ -27,6 +28,7 @@ import {
   $awaitingResponse,
   $busy,
   $contextSuggestions,
+  $cronSessions,
   $currentCwd,
   $currentModel,
   $currentProvider,
@@ -35,11 +37,12 @@ import {
   $introPersonality,
   $introSeed,
   $messages,
+  $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
   sessionPinId
 } from '@/store/session'
-import type { ModelOptionsResponse } from '@/types/hermes'
+import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
 
 import { routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass } from '../shell/titlebar'
@@ -98,13 +101,24 @@ function ChatHeader({
   onToggleSelectedPin,
   selectedSessionId
 }: ChatHeaderProps) {
+  const { t } = useI18n()
   const sessions = useStore($sessions)
+  const cronSessions = useStore($cronSessions)
+  const messagingSessions = useStore($messagingSessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
 
-  const activeStoredSession =
-    sessions.find(session => session.id === selectedSessionId || session._lineage_root_id === selectedSessionId) || null
+  // Cron and messaging runs are kept out of the recents list, so look there
+  // too — otherwise an opened brief shows the placeholder title (AIS-554).
+  const activeStoredSession = useMemo(() => {
+    const matches = (session: SessionInfo) =>
+      session.id === selectedSessionId || session._lineage_root_id === selectedSessionId
 
-  const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New session'
+    return (
+      sessions.find(matches) || cronSessions.find(matches) || messagingSessions.find(matches) || null
+    )
+  }, [sessions, cronSessions, messagingSessions, selectedSessionId])
+
+  const title = activeStoredSession ? sessionTitle(activeStoredSession) : t.sidebar.nav['new-session']
 
   // Pins live on the durable lineage-root id, but selectedSessionId is the live
   // (tip) id — resolve through the loaded row so the menu reflects the pin
