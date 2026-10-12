@@ -37,12 +37,36 @@ class BriefItem:
         return f"{self.source}:{self.kind}:{self.key}"
 
 
+#: Service names as the user knows them — the model sees these, never the adapter ids (AIS-554).
+SOURCE_LABELS = {"m365": "Microsoft 365", "jira": "Jira", "tempo": "Tempo", "openproject": "OpenProject"}
+#: Sources that need no account; they never count as "an account is connected".
+LOCAL_SOURCES = frozenset({"workspace"})
+
+
 @dataclass
 class SourceStatus:
     name: str
     status: str  # active | skipped | failed
     detail: str = ""
     count: int = 0
+    partial: bool = False  # active, but some sub-sources failed
+
+    @property
+    def label(self) -> str:
+        return SOURCE_LABELS.get(self.name, self.name)
+
+    @property
+    def unavailable(self) -> bool:
+        """Set up by the user but not usable right now — the only skip worth telling them about.
+
+        ``not configured`` / ``disabled`` / ``tool not in tools.include`` are the
+        user's setup, not news; they stay in the log and the run record.
+        """
+        return self.status == "failed" or (self.status == "skipped" and self.detail == "not connected")
+
+    @property
+    def set_up(self) -> bool:
+        return self.status == "active" or self.unavailable
 
     def render(self) -> str:
         if self.status == "active":

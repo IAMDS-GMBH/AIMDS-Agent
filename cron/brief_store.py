@@ -235,6 +235,13 @@ class BriefStore:
         except Exception:
             return None
 
+    def run_mentions(self, job_id: str, mark: str) -> bool:
+        """True when a recorded run of ``job_id`` carries ``mark`` in its sources line."""
+        row = self._conn.execute(
+            "SELECT 1 FROM brief_runs WHERE job_id = ? AND instr(sources, ?) > 0 LIMIT 1", (job_id, mark)
+        ).fetchone()
+        return row is not None
+
     def target_hours(self, day: str) -> Optional[float]:
         """Target hours for ``YYYY-MM-DD`` from the materialised workday calendar, if present."""
         try:

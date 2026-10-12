@@ -1707,7 +1707,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None, collecte
             "saved as the journal file by the scheduler — do NOT send messages or "
             "write files yourself. You have NO tools: compose ONLY from the "
             "'## Collected Data' block below; never fetch, search or guess missing "
-            "data. If a source is marked skipped or failed, say so in one line. "
+            "data. If the data has a 'Source notes' line, pass it on in one short, "
+            "plain sentence; never quote internal status text and do not mention "
+            "services that are not in the data. "
             "Do not output YAML frontmatter; the scheduler adds it. "
             + (
                 "SILENT: If there is genuinely nothing new to report, respond with "

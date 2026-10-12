@@ -62,6 +62,9 @@ def test_compose_only_run_has_no_tools_and_writes_journal(env, caplog):
     assert prompt.count("LANGUAGE:") == 1 and "in German" in prompt
     assert prompt.index("LANGUAGE:") < prompt.index("## Collected Data")  # AIS-319: directive leads, not trails
     assert "TOOLS: If `tool_search`" not in prompt
+    # AIS-554: the model passes on plain source notes, never the raw status line
+    assert "'Source notes' line" in prompt and "skipped or failed" not in prompt
+    assert "Sources: m365=" not in prompt
 
     journal = vault / "journal" / "2026-09-08-morning-brief.md"
     assert journal.exists()
