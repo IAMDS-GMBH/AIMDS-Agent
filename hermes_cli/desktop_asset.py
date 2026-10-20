@@ -187,8 +187,13 @@ def install_desktop_asset(
     platform_key: Optional[str] = None,
     downloader: Optional[Callable[..., None]] = None,
     extractor: Optional[Callable[..., None]] = None,
+    signed: str = "pipeline",
 ) -> Optional[Path]:
     """Download, verify and swap in the release's desktop app.
+
+    ``signed`` records who signs the installed app: ``pipeline`` (release
+    installs keep the Developer-ID signature) or ``local`` (a ``main`` install
+    re-signs it with the machine's identity, AIS-545).
 
     Returns the app directory, or ``None`` when the release has no asset for
     this platform. Raises ``ReleaseFeedError`` on any failure — the previous
@@ -232,6 +237,8 @@ def install_desktop_asset(
                     "platform": key,
                     "name": asset.name,
                     "sha256": asset.sha256,
+                    "commit_sha": feed.commit_sha,
+                    "signed": signed,
                     "installed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
                 },
                 indent=2,
@@ -250,7 +257,7 @@ __all__ = [
     "PREBUILT_MARKER_NAME",
     "RELEASE_DIRS",
     "desktop_platform_key",
-    "expected_executable",
+    "find_app_executable",
     "install_desktop_asset",
     "prebuilt_desktop_current",
     "prebuilt_marker_path",

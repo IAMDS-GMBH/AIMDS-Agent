@@ -4898,6 +4898,91 @@ def _install_prebuilt_desktop_after_release(feed, channel: str) -> None:
     print(f"  ✓ Signed desktop app installed at {installed}")
 
 
+#: Paths whose content decides whether a desktop build differs (mirrors
+#: _compute_desktop_content_hash).
+_DESKTOP_INPUT_PATHS = ("apps/desktop", "package.json", "package-lock.json")
+
+
+def _git_ok(*args: str) -> Optional[subprocess.CompletedProcess]:
+    try:
+        return subprocess.run(["git", *args], cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _jump_to_prebuilt_desktop_on_main(desktop_dir: Path) -> bool:
+    """AIS-545: a ``main`` install takes the newest (pre-)release's signed desktop app.
+
+    Instead of `npm ci` + `npm run pack`, the pipeline-built app of the newest
+    release or pre-release is installed (sha256 verified) and, on macOS,
+    re-signed with the machine's local identity, so the code identity stays
+    the one local builds carry and macOS keeps its folder grant. Only when
+    the release is newer than the app installed last that way, its tag is
+    reachable from HEAD and the desktop code at HEAD equals the release's —
+    the app is never older than this checkout. Afterwards local builds take
+    over again (the build stamp is written) until the next release. Returns
+    True when the app was installed; every other outcome means "build
+    locally as before".
+    """
+    from hermes_cli.desktop_asset import (
+        desktop_os_unsupported,
+        desktop_platform_key,
+        find_app_executable,
+        install_desktop_asset,
+        read_prebuilt_marker,
+    )
+    from hermes_cli.release_channels import compare_release_tags
+    from hermes_cli.release_marker import read_release_marker
+    from hermes_cli.release_update import ReleaseFeedError, fetch_release_feed
+
+    if read_release_marker(PROJECT_ROOT) or desktop_os_unsupported():
+        return False  # release installs take their own channel's app (AIS-353)
+    key = desktop_platform_key()
+    if not key:
+        return False
+    if _desktop_packaged_executable(desktop_dir) is None and not _desktop_dist_exists(desktop_dir):
+        return False  # CLI-only install: no 150 MB download
+    branch = _git_ok("rev-parse", "--abbrev-ref", "HEAD")
+    if branch is None or branch.returncode != 0 or branch.stdout.strip() != "main":
+        return False
+    try:
+        feed = fetch_release_feed("preview")
+    except ReleaseFeedError as exc:
+        logger.debug("no release feed for the main desktop jump: %s", exc)
+        return False
+    if key not in feed.desktop:
+        return False
+    marker = read_prebuilt_marker(PROJECT_ROOT) or {}
+    if marker.get("tag") and compare_release_tags(str(marker["tag"]), feed.tag) >= 0:
+        return False  # already took this release's app; local builds since
+    reachable = _git_ok("merge-base", "--is-ancestor", feed.tag, "HEAD")
+    if reachable is None or reachable.returncode != 0:
+        return False  # tag unknown here or not part of this checkout
+    diff = _git_ok("diff", "--quiet", feed.tag, "HEAD", "--", *_DESKTOP_INPUT_PATHS)
+    if diff is None or diff.returncode != 0:
+        return False  # the desktop changed since the release: build it
+    print(f"→ Installing the signed desktop app of {feed.tag} instead of a local build ({key}, sha256 verified)...")
+    try:
+        installed = install_desktop_asset(feed, PROJECT_ROOT, signed="local" if key.startswith("mac") else "pipeline")
+    except ReleaseFeedError as exc:
+        print(f"  ⚠ Prebuilt desktop app not installed: {exc}")
+        print("    Building the desktop app locally instead.")
+        _report_update_incident(
+            "update-desktop-asset-failed",
+            f"installing the prebuilt desktop app of {feed.tag} on main failed: {exc}",
+            channel="main",
+        )
+        return False
+    if installed is None:
+        return False
+    exe = find_app_executable(installed, key)
+    if exe is not None and key.startswith("mac"):
+        _sign_desktop_app_locally(exe.parents[2])
+    _write_desktop_build_stamp(PROJECT_ROOT, source_mode=False)
+    print(f"  ✓ Desktop app {feed.version} installed (pipeline build, no local build needed)")
+    return True
+
+
 def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None:
     """Write the desktop build stamp after a successful build."""
     stamp_file = _desktop_stamp_path()
@@ -5128,18 +5213,30 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     """
     if sys.platform != "darwin":
         return
-    if os.environ.get("CSC_LINK") or os.environ.get("APPLE_SIGNING_IDENTITY"):
-        return
     exe = _desktop_packaged_executable(desktop_dir)
     if exe is None:
         return
-    # exe = .../Hermes.app/Contents/MacOS/Hermes  ->  app bundle = .../Hermes.app
-    app = exe.parents[2]
+    # exe = .../<App>.app/Contents/MacOS/<exe>  ->  app bundle = .../<App>.app
+    _sign_desktop_app_locally(exe.parents[2])
+
+
+def _sign_desktop_app_locally(app: Path) -> bool:
+    """Clear quarantine and sign ``app`` with the machine's local identity (AIS-481).
+
+    Ad-hoc only as a logged fallback. Used for local builds and for the
+    pipeline app a ``main`` install takes over (AIS-545), so both carry the
+    same code identity and macOS keeps its folder grant. No-op off macOS and
+    when a real signing identity is configured. Never raises.
+    """
+    if sys.platform != "darwin":
+        return False
+    if os.environ.get("CSC_LINK") or os.environ.get("APPLE_SIGNING_IDENTITY"):
+        return False
     if not str(app).endswith(".app") or not app.is_dir():
-        return
+        return False
     codesign = shutil.which("codesign")
     if not codesign:
-        return
+        return False
     try:
         subprocess.run(["xattr", "-cr", str(app)], check=False)
     except Exception as exc:
@@ -5152,7 +5249,7 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
         identity = ensure_local_identity()
         if identity is not None and sign_app(app, identity):
             print(f"  ✓ Signed with the local signing identity ({identity.common_name})")
-            return
+            return True
         print("  ⚠ Local signing identity unavailable — ad-hoc signature; "
               "macOS will ask again for folder access after this update.")
     except Exception as exc:
@@ -5161,6 +5258,7 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
         subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
+    return False
 
 
 def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
@@ -5237,6 +5335,12 @@ def cmd_gui(args: argparse.Namespace):
         print(f"✗ {unsupported}")
         sys.exit(EXIT_DESKTOP_OS_UNSUPPORTED)
 
+    # AIS-545: an update on main takes a newer release's signed app instead
+    # of building locally (no npm needed then).
+    prebuilt_jump = False
+    if getattr(args, "build_only", False) and not (source_mode or skip_build or force_build):
+        prebuilt_jump = skip_build = _jump_to_prebuilt_desktop_on_main(desktop_dir)
+
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
     if source_mode or not skip_build:
@@ -5266,7 +5370,7 @@ def cmd_gui(args: argparse.Namespace):
             print("  Pre-build first:  cd apps/desktop && npm run pack")
             print("  Or drop --skip-build to package automatically.")
             sys.exit(1)
-        else:
+        elif not prebuilt_jump:
             print(f"→ Skipping desktop package build (--skip-build); using {packaged_executable}")
     else:
         # Check the content-hash stamp before doing any build work.
