@@ -578,7 +578,7 @@ async fn wait_for_venv_free(install_root: &Path, app: &AppHandle) {
                 LogStream::Stdout,
                 "[update] Hermes still holding the venv shim; force-killing stragglers…",
             );
-            force_kill_other_hermes();
+            force_kill_other_hermes(install_root);
             let retry_deadline = Instant::now() + Duration::from_secs(5);
             while Instant::now() < retry_deadline {
                 tokio::time::sleep(Duration::from_millis(500)).await;
@@ -616,13 +616,26 @@ async fn wait_for_venv_free(install_root: &Path, app: &AppHandle) {
 /// are stragglers from the old desktop — exactly what we want gone. (`/FI PID
 /// ne <self>` also spares this Tauri process, though it isn't named
 /// hermes.exe.)
-fn force_kill_other_hermes() {
+fn force_kill_other_hermes(install_root: &Path) {
     if !cfg!(target_os = "windows") {
+        let _ = install_root;
         return;
     }
     #[cfg(target_os = "windows")]
     {
         let my_pid = std::process::id();
+        // AIS-476: the desktop exe by its real name — "hermes.exe" only
+        // matched it (case-insensitively) while the app was called Hermes.
+        if let Some(name) = crate::bootstrap::resolve_hermes_desktop_exe(install_root)
+            .and_then(|exe| exe.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .filter(|name| !name.eq_ignore_ascii_case("hermes.exe"))
+        {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/T", "/IM", &name, "/FI", &format!("PID ne {my_pid}")])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
         // /FI excludes our own PID; /T kills the tree; /F forces.
         let _ = std::process::Command::new("taskkill")
             .args([
@@ -850,12 +863,31 @@ async fn install_macos_app_update(
         ));
     }
 
+    let release_dir = install_root.join("apps").join("desktop").join("release");
     let rebuilt_app = crate::bootstrap::resolve_hermes_desktop_app(install_root).ok_or_else(|| {
         anyhow!(
-            "desktop rebuild succeeded but no Hermes.app was found under {}",
-            install_root.join("apps").join("desktop").join("release").display()
+            "desktop rebuild succeeded but no desktop app was found under {}",
+            release_dir.display()
         )
     })?;
+
+    // AIS-476: the rebuilt app may carry the new product name. An app that
+    // runs from the release dir was already replaced there — relaunch the new
+    // bundle from its own path. A copied app (e.g. /Applications/Hermes.app)
+    // is installed next to the old one under the new name.
+    let (target_app, replaced) = match plan_install_target(&rebuilt_app, target_app, &release_dir) {
+        InstallTarget::Relaunch(path) => {
+            emit_log(
+                app,
+                Some("install"),
+                LogStream::Stdout,
+                &format!("[update] rebuilt app is already in place: {}", path.display()),
+            );
+            return Ok(path);
+        }
+        InstallTarget::Copy { dest, replaces } => (dest, replaces),
+    };
+    let target_app = target_app.as_path();
 
     let same = match (rebuilt_app.canonicalize(), target_app.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
@@ -911,6 +943,10 @@ async fn install_macos_app_update(
     // (target is never left deleted-with-no-replacement) can be unit-tested
     // without ditto / a real .app bundle.
     swap_in_new_bundle(&tmp, target_app, &old).await?;
+    if let Some(previous) = replaced {
+        // The bundle under the old name is superseded by the renamed one.
+        remove_dir_if_exists(&previous).await;
+    }
 
     let _ = Command::new("/usr/bin/xattr")
         .arg("-dr")
@@ -921,6 +957,31 @@ async fn install_macos_app_update(
         .await;
 
     Ok(target_app.to_path_buf())
+}
+
+/// Where the rebuilt macOS app goes (AIS-476).
+#[derive(Debug, PartialEq)]
+#[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))]
+pub(crate) enum InstallTarget {
+    /// The running app lives in the release dir and was replaced there by the
+    /// rebuild / prebuilt swap: relaunch this (possibly renamed) bundle.
+    Relaunch(PathBuf),
+    /// Copy the rebuilt app to `dest`; `replaces` is the old bundle to remove
+    /// afterwards when the name changed.
+    Copy { dest: PathBuf, replaces: Option<PathBuf> },
+}
+
+#[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))]
+pub(crate) fn plan_install_target(rebuilt_app: &Path, target_app: &Path, release_dir: &Path) -> InstallTarget {
+    if target_app.starts_with(release_dir) {
+        return InstallTarget::Relaunch(rebuilt_app.to_path_buf());
+    }
+    let dest = match (target_app.parent(), rebuilt_app.file_name()) {
+        (Some(parent), Some(name)) => parent.join(name),
+        _ => target_app.to_path_buf(),
+    };
+    let replaces = if dest == target_app { None } else { Some(target_app.to_path_buf()) };
+    InstallTarget::Copy { dest, replaces }
 }
 
 /// Move a freshly-staged bundle (`tmp`) into place at `target`, parking any
@@ -1096,6 +1157,30 @@ mod tests {
             Some("main".to_string())
         );
         assert_eq!(update_branch_from_args(["--update"]), None);
+    }
+
+    // AIS-476: a renamed rebuild is relaunched in place or installed next to
+    // a copied app under its new name.
+    #[test]
+    fn plans_the_install_target_for_a_renamed_app() {
+        let release = Path::new("/u/.hermes/hermes-agent/apps/desktop/release");
+        let rebuilt = release.join("mac-arm64").join("AIMDS Agent.app");
+        assert_eq!(
+            plan_install_target(&rebuilt, &release.join("mac-arm64").join("Hermes.app"), release),
+            InstallTarget::Relaunch(rebuilt.clone())
+        );
+        assert_eq!(
+            plan_install_target(&rebuilt, Path::new("/Applications/Hermes.app"), release),
+            InstallTarget::Copy {
+                dest: PathBuf::from("/Applications/AIMDS Agent.app"),
+                replaces: Some(PathBuf::from("/Applications/Hermes.app")),
+            }
+        );
+        let same_name = release.join("mac").join("Hermes.app");
+        assert_eq!(
+            plan_install_target(&same_name, Path::new("/Applications/Hermes.app"), release),
+            InstallTarget::Copy { dest: PathBuf::from("/Applications/Hermes.app"), replaces: None }
+        );
     }
 
     #[test]

@@ -96,6 +96,7 @@ const {
   quarantineUpdaterBinary,
   resolveDetachedCheckoutChannel
 } = require('./update-apply.cjs')
+const { buildMacSwapScript, findBuiltMacApp, planMacSwap } = require('./update-swap.cjs')
 const { createNightlyRestarter } = require('./nightly-restart.cjs')
 const {
   buildKeycloakAuthUrl,
@@ -167,11 +168,23 @@ try {
   }
 }
 
+// AIS-476: the app's internal identity stays "Hermes" for good, whatever the
+// visible product name becomes. userData would otherwise follow productName
+// (connection.json, localStorage, Local State with the DPAPI key would be
+// orphaned), the macOS keychain item "<name> Safe Storage" follows app.name
+// at ready, and the Windows AppUserModelID (taskbar pins, notifications)
+// defaults to electron.app.<name>.
+const INTERNAL_APP_NAME = 'Hermes'
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 if (USER_DATA_OVERRIDE) {
   const resolvedUserData = path.resolve(USER_DATA_OVERRIDE)
   fs.mkdirSync(resolvedUserData, { recursive: true })
   app.setPath('userData', resolvedUserData)
+} else {
+  app.setPath('userData', path.join(app.getPath('appData'), INTERNAL_APP_NAME))
+}
+if (process.platform === 'win32') {
+  app.setAppUserModelId(`electron.app.${INTERNAL_APP_NAME}`)
 }
 
 const PORT_FLOOR = 9120
@@ -416,7 +429,16 @@ const BOOT_FAKE_STEP_MS = (() => {
   if (!Number.isFinite(raw) || raw <= 0) return 650
   return Math.max(120, raw)
 })()
-const APP_NAME = 'Hermes'
+// Visible name (About panel, window titles): the packaged productName, so the
+// rename release only changes package.json. Internal identity: see
+// INTERNAL_APP_NAME (AIS-476).
+const APP_NAME = (() => {
+  try {
+    return String(require('../package.json').productName || '').trim() || INTERNAL_APP_NAME
+  } catch {
+    return INTERNAL_APP_NAME
+  }
+})()
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 const WINDOW_BUTTON_POSITION = {
@@ -590,7 +612,7 @@ function previewFileMetadata(filePath, mimeType) {
   }
 }
 
-app.setName(APP_NAME)
+app.setName(INTERNAL_APP_NAME)
 // Seed the native About panel with the live Hermes version. This is refreshed
 // on every open via the explicit "About" menu handler (refreshAboutPanel), so
 // an in-place `hermes update` mid-session is reflected without an app restart;
@@ -2602,10 +2624,6 @@ function runningAppBundle() {
   return dir.endsWith('.app') ? dir : null
 }
 
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`
-}
-
 // macOS/Linux in-app update: backend (`hermes update`) + OS-aware GUI rebuild
 // (`hermes desktop --build-only`), then atomically swap the running .app bundle
 // with the freshly built one and relaunch. Degrades to "backend updated,
@@ -2715,10 +2733,10 @@ async function applyUpdatesPosixInApp() {
     return { ok: false, backendUpdated: true, error: 'desktop rebuild failed' }
   }
 
-  const rebuiltApp = [
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app'),
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
-  ].find(directoryExists)
+  // AIS-476: found by shape — the next release may ship the app under its
+  // new name, and this (old) code is what installs it.
+  const releaseDir = path.join(updateRoot, 'apps', 'desktop', 'release')
+  const rebuiltApp = findBuiltMacApp(releaseDir)
   const targetApp = runningAppBundle()
 
   // No bundle to swap (dev run, Linux AppImage, or unresolved paths): the
@@ -2735,27 +2753,10 @@ async function applyUpdatesPosixInApp() {
   emitUpdateProgress({ stage: 'restart', message: 'Installing the updated app and restarting…', percent: 95 })
 
   // Detached swapper: wait for THIS process to exit (so the bundle is free),
-  // ditto the rebuilt app over the running one, clear quarantine, relaunch.
-  const swapScript = `#!/bin/bash
-set -u
-APP_PID=${process.pid}
-SRC=${shellQuote(rebuiltApp)}
-DST=${shellQuote(targetApp)}
-for _ in $(seq 1 240); do
-  kill -0 "$APP_PID" 2>/dev/null || break
-  sleep 0.5
-done
-if [ "$SRC" != "$DST" ]; then
-  if /usr/bin/ditto "$SRC" "$DST.hermes-update-new"; then
-    rm -rf "$DST.hermes-update-old" 2>/dev/null || true
-    mv "$DST" "$DST.hermes-update-old" 2>/dev/null || rm -rf "$DST"
-    mv "$DST.hermes-update-new" "$DST"
-    rm -rf "$DST.hermes-update-old" 2>/dev/null || true
-  fi
-fi
-/usr/bin/xattr -dr com.apple.quarantine "$DST" 2>/dev/null || true
-/usr/bin/open "$DST"
-`
+  // install the rebuilt app (in place, or next to a copied one under its new
+  // name), clear quarantine, relaunch (update-swap.cjs).
+  const swapPlan = planMacSwap({ rebuiltApp, targetApp, releaseDir })
+  const swapScript = buildMacSwapScript({ pid: process.pid, plan: swapPlan })
   const scriptPath = path.join(app.getPath('temp'), `hermes-desktop-update-${Date.now()}.sh`)
   try {
     fs.writeFileSync(scriptPath, swapScript, { mode: 0o755 })
@@ -2771,7 +2772,7 @@ fi
 
   const child = spawn('/bin/bash', [scriptPath], { detached: true, stdio: 'ignore' })
   child.unref()
-  rememberLog(`[updates] launched mac swap+relaunch: ${scriptPath} (${rebuiltApp} -> ${targetApp})`)
+  rememberLog(`[updates] launched mac swap+relaunch: ${scriptPath} (${rebuiltApp} -> ${swapPlan.dst}, was ${targetApp})`)
 
   setTimeout(() => {
     void stopPrimaryBackendAndWait().finally(() => app.quit())
