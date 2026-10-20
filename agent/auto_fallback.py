@@ -145,11 +145,55 @@ def _other_provider() -> Optional[Dict[str, Any]]:
 #: request and fails the same way, so automatic entries are not tried.
 _REQUEST_BOUND_REASONS = frozenset({"format_error", "context_overflow", "payload_too_large", "image_too_large"})
 
+#: Failures of the endpoint's configuration — a rejected key, a URL that
+#: redirects. Every model behind the same key and host fails the same way, so
+#: only entries with their own endpoint or credential are tried (AIS-599).
+CONFIG_BOUND_REASONS = frozenset({"auth", "auth_permanent", "endpoint_redirect"})
+
+
+def _reason_value(reason: Any) -> str:
+    return str(getattr(reason, "value", reason) or "")
+
+
+def _endpoint_id(provider: Any, base_url: Any) -> tuple:
+    """(canonical provider, normalized base URL) — Suite legacy slugs fold onto their environment."""
+    provider = str(provider or "").strip().lower()
+    try:
+        from hermes_cli.iamds_suite import canonical_suite_provider
+
+        provider = canonical_suite_provider(provider) or provider
+    except Exception:
+        pass
+    return provider, str(base_url or "").strip().rstrip("/").lower()
+
+
+def shares_failing_endpoint(agent: Any, entry: Dict[str, Any], reason: Any) -> bool:
+    """Whether *entry* would reuse the key/URL that just failed for a configuration reason.
+
+    An entry with its own ``api_key``/``key_env`` is a different credential and
+    stays eligible; otherwise the same provider or the same base URL means the
+    same endpoint (AIS-599: a revoked Suite key failed through every model).
+    """
+    if _reason_value(reason) not in CONFIG_BOUND_REASONS:
+        return False
+    if entry.get(AUTO_KEY) in (SUITE_AUTO, SUITE_CHEAP):
+        return True
+    if any(str(entry.get(k) or "").strip() for k in ("api_key", "key_env", "api_key_env")):
+        return False
+    cur_provider, cur_url = _endpoint_id(getattr(agent, "provider", ""), getattr(agent, "base_url", ""))
+    fb_provider, fb_url = _endpoint_id(entry.get("provider"), entry.get("base_url"))
+    if fb_url and cur_url:
+        return fb_url == cur_url
+    return bool(fb_provider) and fb_provider == cur_provider
+
 
 def resolve_entry(agent: Any, entry: Dict[str, Any], *, reason: Any = None) -> Optional[Dict[str, Any]]:
     """A concrete chain entry for an automatic one, or None to skip it."""
     kind = entry.get(AUTO_KEY)
-    if kind and getattr(reason, "value", reason) in _REQUEST_BOUND_REASONS:
+    if kind and _reason_value(reason) in _REQUEST_BOUND_REASONS:
+        return None
+    if kind and shares_failing_endpoint(agent, entry, reason):
+        logger.info("[AIS-599] %s skipped: %s on the same endpoint", kind, _reason_value(reason))
         return None
     primary = _primary(agent)
     provider = str(entry.get("provider") or primary["provider"] or "")
@@ -181,10 +225,19 @@ def report(agent: Any, old_model: str, entry: Dict[str, Any], reason: str = "") 
     """Auto incident for an automatic fallback (deduplicated per 24 h by kind)."""
     if not entry.get(AUTO_KEY):
         return
+    primary = _primary(agent)
+    try:
+        from hermes_cli.iamds_suite import suite_reauth_pending
+
+        if suite_reauth_pending(primary["provider"]):
+            # AIS-599: the lost login already has its one case (auth-401);
+            # every cron run would otherwise add a fallback report.
+            return
+    except Exception:
+        pass
     try:
         from hermes_cli.auto_incidents import _slug, report_in_background
 
-        primary = _primary(agent)
         report_in_background(
             f"model-fallback-{_slug(primary['provider'])}-{_slug(old_model)}",
             f"Model fallback: {old_model} ({primary['provider']}) → {entry['model']} ({entry['provider']})",

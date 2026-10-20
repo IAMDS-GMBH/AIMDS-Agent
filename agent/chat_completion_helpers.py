@@ -1122,6 +1122,17 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if resolved is None:
             return agent._try_activate_fallback(reason)
         fb = resolved
+    else:
+        from agent.auto_fallback import shares_failing_endpoint
+
+        if shares_failing_endpoint(agent, fb, reason):
+            # AIS-599: a rejected key or a redirecting URL fails for every
+            # model behind it — only another endpoint/credential can help.
+            logger.warning(
+                "Fallback skip: chain entry %s/%s uses the endpoint that failed (%s)",
+                fb.get("provider"), fb.get("model"), getattr(reason, "value", reason),
+            )
+            return agent._try_activate_fallback(reason)
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:
