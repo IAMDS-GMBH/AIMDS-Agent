@@ -7536,6 +7536,8 @@ async function sendClientTelemetry(updateInfo = null) {
       channel,
       patch_level: patchLevel,
       commits_behind_main: commitsBehindMain,
+      // AIS-476: this client installs a renamed desktop app (rename bridge).
+      rename_bridge: 1,
       ...updateState,
       ...(lastUpdateFailure ? { last_apply_error: lastUpdateFailure.error, last_apply_at: lastUpdateFailure.at } : {})
     }

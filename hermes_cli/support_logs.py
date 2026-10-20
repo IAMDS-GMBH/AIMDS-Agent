@@ -32,6 +32,9 @@ from hermes_cli.support_signatures import (
 from hermes_cli.dump import run_dump
 from hermes_constants import display_hermes_home, get_hermes_home
 
+#: AIS-476: version of the desktop rename bridge this client carries (telemetry).
+RENAME_BRIDGE_VERSION = 1
+
 # Fixed set shipped in every support bundle. The three update logs were added
 # for AIS-331 (SUP-20260914-105316): a hand-off to the staged updater that left
 # the client on the old version arrived with no trace of what ``hermes update``
@@ -219,6 +222,9 @@ def send_client_telemetry(args: Any = None) -> dict[str, Any]:
             # AIS-527: how this install updates — "release" (marker) or
             # "git"; the desktop adds update_available/target_version.
             "update_source": _install_update_source(),
+            # AIS-476: this client installs a renamed desktop app; the rename
+            # release waits until (nearly) every client reports it.
+            "rename_bridge": RENAME_BRIDGE_VERSION,
         }
 
         data_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
