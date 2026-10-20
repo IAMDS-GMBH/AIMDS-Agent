@@ -164,3 +164,61 @@ class TestActivation:
             except Exception:
                 pytest.skip("switch_model needs a fuller runtime here")
         assert not any(e.get(af.AUTO_KEY) == af.SUITE_AUTO for e in agent._fallback_chain)
+
+
+class TestConfigBoundFailures:
+    """AIS-599: a rejected key or a redirecting URL fails for every model behind it."""
+
+    @pytest.mark.parametrize("reason", [FailoverReason.auth, FailoverReason.auth_permanent])
+    @pytest.mark.parametrize("kind", [af.SUITE_AUTO, af.SUITE_CHEAP])
+    def test_same_environment_entries_are_skipped(self, monkeypatch, reason, kind):
+        monkeypatch.setattr(af, "_key_models", lambda p: ["AIMDS-Suite-Auto", "gpt-5-mini"])
+        entry = {"provider": SUITE, "model": "AIMDS-Suite-Auto" if kind == af.SUITE_AUTO else "", af.AUTO_KEY: kind, "slot": 0}
+        assert af.resolve_entry(_agent(), entry, reason=reason) is None
+
+    def test_other_provider_stays_eligible(self, monkeypatch):
+        import hermes_cli.auth as auth
+
+        monkeypatch.setattr(auth, "is_provider_explicitly_configured", lambda p: p == "gemini")
+        entry = af.resolve_entry(_agent(), {"provider": "", "model": "", af.AUTO_KEY: af.OTHER_PROVIDER}, reason=FailoverReason.auth)
+        assert entry["provider"] == "gemini"
+
+    @pytest.mark.parametrize(
+        "entry, shared",
+        [
+            ({"provider": SUITE, "model": "gpt-5-mini"}, True),
+            ({"provider": "iamds-litellm", "model": "gpt-5-mini"}, True),  # legacy slug of the same environment
+            ({"provider": "custom", "model": "m", "base_url": SUITE_URL + "/"}, True),
+            ({"provider": SUITE, "model": "gpt-5-mini", "key_env": "OTHER_KEY"}, False),
+            ({"provider": "aimds-suite-staging", "model": "gpt-5-mini"}, False),
+            ({"provider": "anthropic", "model": "claude-haiku-4-5"}, False),
+        ],
+    )
+    def test_configured_entries_on_the_failing_endpoint(self, entry, shared):
+        assert af.shares_failing_endpoint(_agent(), entry, FailoverReason.auth) is shared
+
+    def test_other_reasons_keep_the_chain(self):
+        assert not af.shares_failing_endpoint(_agent(), {"provider": SUITE, "model": "gpt-5-mini"}, FailoverReason.model_not_found)
+
+    def test_no_fallback_incident_while_reauth_is_pending(self, monkeypatch):
+        import hermes_cli.iamds_suite as suite
+
+        monkeypatch.setattr(suite, "suite_reauth_pending", lambda p=None: True)
+        with patch("hermes_cli.auto_incidents.report_in_background") as incident:
+            af.report(_agent(), "gpt-5.4-mini", {"provider": "gemini", "model": "g", af.AUTO_KEY: af.OTHER_PROVIDER}, "auth")
+        incident.assert_not_called()
+
+    def test_auth_failure_activates_no_same_key_model(self, monkeypatch):
+        import agent.model_metadata as mm
+
+        monkeypatch.setattr(mm, "_fetch_litellm_model_info_contexts", lambda *a, **k: {})
+        agent = TestActivation()._suite_agent()
+        agent._fallback_chain = af.with_auto_fallbacks(SUITE, "vllm-custom", [{"provider": SUITE, "model": "gpt-5-mini"}])
+        monkeypatch.setattr(af, "_key_models", lambda p: ["AIMDS-Suite-Auto", "gpt-5-mini"])
+        import hermes_cli.auth as auth
+
+        monkeypatch.setattr(auth, "is_provider_explicitly_configured", lambda p: False)
+        with patch("agent.auxiliary_client.resolve_provider_client") as rpc:
+            assert not agent._try_activate_fallback(reason=FailoverReason.auth)
+        rpc.assert_not_called()
+        assert agent.model == "vllm-custom"

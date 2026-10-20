@@ -676,9 +676,12 @@ export interface Translations {
         saving: string
         saved: string
         checking: string
+        keyWrongEnvironment: string
+        keyRejected: string
         notifications: {
           reauthTitle: (envLabel: string) => string
           reauthBody: (domain: string) => string
+          signInNow: string
         }
         cli: {
           title: string

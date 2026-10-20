@@ -204,7 +204,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, prepare_next_day_prefetch, get_prefetched_cron_context
+from cron.jobs import get_due_jobs, mark_job_run, mark_job_waiting, save_job_output, advance_next_run, prepare_next_day_prefetch, get_prefetched_cron_context
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -1973,6 +1973,30 @@ def _cron_session_title(job_name: str, job_id: str, kind: Optional[str], lang: s
     return f"{base or f'cron {job_id}'} · {stamp}"
 
 
+def suite_reauth_blocking(job: dict) -> Optional[str]:
+    """The Suite environment this job would call while it waits for a re-login, else None (AIS-599).
+
+    A revoked key failed every 30-minute run, each with a model fallback and a
+    failure message in the chat. Pure script jobs (``no_agent``) never call a
+    model and keep running.
+    """
+    if job.get("no_agent"):
+        return None
+    try:
+        from hermes_cli.iamds_suite import canonical_suite_provider, suite_reauth_pending
+
+        provider = str(job.get("provider") or "").strip()
+        if not provider:
+            model_cfg = (load_config() or {}).get("model") or {}
+            provider = str(model_cfg.get("provider") or "") if isinstance(model_cfg, dict) else ""
+        canonical = canonical_suite_provider(provider)
+        if canonical and suite_reauth_pending(canonical):
+            return canonical
+    except Exception as exc:
+        logger.debug("cron: re-auth check failed for %s: %s", job.get("id"), exc)
+    return None
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -2871,6 +2895,12 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
+            waiting_for = suite_reauth_blocking(job)
+            if waiting_for:
+                if not job.get("waiting_reason"):
+                    logger.info("Job '%s': skipped until %s is signed in again", job.get("name", job["id"]), waiting_for)
+                mark_job_waiting(job["id"], f"reauth:{waiting_for}")
+                return True
             try:
                 success, output, final_response, error = run_job(job)
 

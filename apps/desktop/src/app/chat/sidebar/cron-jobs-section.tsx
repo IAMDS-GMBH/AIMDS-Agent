@@ -16,7 +16,7 @@ import { SidebarPanelLabel } from '../../shell/sidebar-label'
 
 import { SidebarLoadMoreRow } from './load-more-row'
 
-const INACTIVE_STATES = new Set(['completed', 'disabled', 'error', 'paused'])
+const INACTIVE_STATES = new Set(['completed', 'disabled', 'error', 'paused', 'waiting'])
 
 // Recent runs shown in the inline quick-peek — enough to glance at history
 // without turning the sidebar into the full Cron page.

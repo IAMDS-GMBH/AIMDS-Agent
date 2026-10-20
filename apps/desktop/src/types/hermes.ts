@@ -425,7 +425,7 @@ export interface CronJob {
   /** When the user last opened this job's output in the desktop. Older than
    *  {@link last_output_at} (or missing) means the output is unseen. */
   last_seen_at?: null | string
-  last_status?: 'error' | 'ok' | null
+  last_status?: 'error' | 'ok' | 'waiting_reauth' | null
   name?: null | string
   next_run_at?: null | string
   /** Seed provenance for the shipped brief jobs (`morning-brief`, …). */

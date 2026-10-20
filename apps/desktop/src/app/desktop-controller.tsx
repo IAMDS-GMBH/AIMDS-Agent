@@ -10,6 +10,7 @@ import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overla
 import { Pane, PaneMain } from '@/components/pane-shell'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { translateNow } from '@/i18n'
+import { signInToSuiteEnvironment } from '@/lib/suite-relogin'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
@@ -155,6 +156,13 @@ import type { StatusbarItem } from './shell/statusbar-controls'
 import type { TitlebarTool } from './shell/titlebar-controls'
 import { useGroupRegistry } from './shell/use-group-registry'
 import { UpdatesOverlay } from './updates-overlay'
+
+const SUITE_PROVIDER_LABELS: Record<string, string> = {
+  'aimds-suite-prod': 'AIMDS-Suite',
+  'aimds-suite-staging': 'AIMDS-Suite (Staging)',
+  'aimds-suite-dev': 'AIMDS-Suite (Development)',
+  'aimds-suite-localdev': 'AIMDS-Suite (Local Dev)'
+}
 
 const AgentsView = lazy(async () => ({ default: (await import('./agents')).AgentsView }))
 const ArtifactsView = lazy(async () => ({ default: (await import('./artifacts')).ArtifactsView }))
@@ -494,23 +502,25 @@ export function DesktopController() {
   const notifiedSuiteAuthRef = useRef<Record<string, number>>({})
 
   // AIS-286: /api/status.provider_auth carries runtime 401s of AIMDS-Suite
-  // environments (LLM or IAMDS MCP). Surface each new failure once so the
-  // user re-authenticates in Settings → Providers instead of hitting
-  // "no available entries" in silence.
+  // environments (LLM or IAMDS MCP). Surface each new failure once; the
+  // notice signs the user in again with one click (AIS-599).
   useEffect(() => {
     const flags = statusSnapshot?.provider_auth ?? {}
     const seen = notifiedSuiteAuthRef.current
 
     for (const [providerId, flag] of Object.entries(flags)) {
-      if (!flag || seen[providerId] === flag.since) {
+      if (!flag || seen[providerId] !== undefined) {
         continue
       }
 
       seen[providerId] = flag.since
+      const label = SUITE_PROVIDER_LABELS[providerId] ?? providerId
       notify({
-        kind: 'error',
-        message: `${providerId}: ${flag.source === 'mcp' ? 'AIMDS MCP' : 'LiteLLM'} rejected the stored API key (HTTP ${flag.http_status ?? 401}). Re-authenticate via Settings → Providers → AIMDS-Suite.`,
-        title: 'AIMDS-Suite: re-authentication required'
+        action: { label: translateNow('settings.providers.suite.notifications.signInNow'), onClick: () => void signInToSuiteEnvironment(providerId) },
+        durationMs: 0,
+        kind: 'warning',
+        message: translateNow('settings.providers.suite.notifications.reauthBody', label),
+        title: translateNow('settings.providers.suite.notifications.reauthTitle', label)
       })
     }
 
@@ -895,11 +905,24 @@ export function DesktopController() {
       event.domain || event.provider
     )
 
-    notify({ kind: 'warning', title, message: body, durationMs: 0 })
-
     if (window.hermesDesktop?.notify) {
       void window.hermesDesktop.notify({ title, body })
     }
+
+    // The status snapshot may already show this lost login (one notice per
+    // episode, AIS-599).
+    if (notifiedSuiteAuthRef.current[event.provider] !== undefined) {
+      return
+    }
+
+    notifiedSuiteAuthRef.current[event.provider] = Date.now()
+    notify({
+      action: { label: translateNow('settings.providers.suite.notifications.signInNow'), onClick: () => void signInToSuiteEnvironment(event.provider) },
+      durationMs: 0,
+      kind: 'warning',
+      message: body,
+      title
+    })
   }, [])
 
   useProviderEventsListener(handleSuiteAuthNeedsReauth)

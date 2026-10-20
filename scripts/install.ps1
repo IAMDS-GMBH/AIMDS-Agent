@@ -3138,18 +3138,21 @@ save_config(cfg)
         }
     }
     if ((Test-Path $envPath) -and (-not [string]::IsNullOrWhiteSpace($effectiveApiKey))) {
+        # Key and URL go to the selected environment's own variables. Writing a
+        # staging key into IAMDS_LITELLM_API_KEY gave the prod provider a key
+        # the prod Suite does not know (AIS-599: 401 token_not_found_in_db).
+        $envSuffix = switch ($selectedEndpoint) { "staging" { "_STAGING" } "dev" { "_DEV" } default { "" } }
         $envLines = @(
             "# Added by bootstrap installer"
-            "IAMDS_LITELLM_API_KEY=$effectiveApiKey"
+            "IAMDS_LITELLM${envSuffix}_API_KEY=$effectiveApiKey"
         )
-        # IAMDS_LITELLM_BASE_URL is the canonical iamds-litellm endpoint var.
         if (-not [string]::IsNullOrWhiteSpace($llmGatewayUrl)) {
-            $envLines += "IAMDS_LITELLM_BASE_URL=$llmGatewayUrl"
+            $envLines += "IAMDS_LITELLM${envSuffix}_BASE_URL=$llmGatewayUrl"
         }
-        if (-not [string]::IsNullOrWhiteSpace($stagingApiKey)) {
+        if ((-not [string]::IsNullOrWhiteSpace($stagingApiKey)) -and ($selectedEndpoint -ne "staging")) {
             $envLines += "IAMDS_LITELLM_STAGING_API_KEY=$stagingApiKey"
         }
-        if (-not [string]::IsNullOrWhiteSpace($devApiKey)) {
+        if ((-not [string]::IsNullOrWhiteSpace($devApiKey)) -and ($selectedEndpoint -ne "dev")) {
             $envLines += "IAMDS_LITELLM_DEV_API_KEY=$devApiKey"
         }
         $envContent = ($envLines -join "`n") + "`n"

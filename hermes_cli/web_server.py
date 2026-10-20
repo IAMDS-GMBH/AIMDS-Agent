@@ -1930,6 +1930,37 @@ async def complete_aimds_suite_reauth(env: str, request: Request, profile: Optio
     return {"ok": True, **result}
 
 
+@app.post("/api/providers/aimds-suite/{env}/key")
+async def store_aimds_suite_key(env: str, request: Request, profile: Optional[str] = None):
+    """Store a key from a Suite login after checking it belongs to *env* (AIS-599).
+
+    Body: ``{"api_key": "...", "base_url": "<where the login happened>"}``;
+    *env* may be ``auto`` (the environment of that host). A key from another
+    environment or one the Suite does not know is not stored (409 with
+    ``code``); on success the key becomes effective right away.
+    """
+    _require_token(request)
+    from hermes_cli.iamds_suite import SuiteKeyRejected, apply_reauth, store_suite_key
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    api_key = str((body or {}).get("api_key") or "")
+    base_url = str((body or {}).get("base_url") or "")
+
+    def _store() -> Dict[str, Any]:
+        stored = store_suite_key(env, api_key, base_url=base_url)
+        return {**apply_reauth(stored["provider"]), **stored}
+
+    with _profile_scope(profile):
+        try:
+            result = await asyncio.get_running_loop().run_in_executor(None, _store)
+        except SuiteKeyRejected as exc:
+            raise HTTPException(status_code=409, detail={"code": exc.code, "message": str(exc)})
+    return {"ok": True, **result}
+
+
 @app.get("/api/providers/aimds-suite/cli-targets")
 async def get_aimds_suite_cli_targets(request: Request, profile: Optional[str] = None):
     """Which local CLIs could host the Suite MCP, and whether they match (AIS-404).
@@ -7198,6 +7229,7 @@ def _start_iamds_keycloak_loopback_flow(env: str = "aimds-suite-prod") -> Dict[s
     sess["client_id"] = client_id
     sess["suite_env"] = env
     sess["target_key_env"] = SUITE_ENVIRONMENTS[env].key_env
+    sess["login_base_url"] = base_url
     sess["expires_at"] = time.time() + _IAMDS_KEYCLOAK_LOOPBACK_TIMEOUT_SECONDS
 
     threading.Thread(
@@ -7296,18 +7328,24 @@ def _iamds_keycloak_loopback_worker(session_id: str) -> None:
     if _cancelled():
         return
 
-    target_key_env = str(sess.get("target_key_env") or "IAMDS_LITELLM_API_KEY")
+    suite_env = str(sess.get("suite_env") or "aimds-suite-prod")
     try:
-        from hermes_cli.config import save_env_value
-        save_env_value(target_key_env, api_key)
+        # AIS-599: checked against the environment before it is stored — a
+        # staging key in the prod slot answered 401 on every call.
+        from hermes_cli.iamds_suite import SuiteKeyRejected, store_suite_key
+
+        store_suite_key(suite_env, api_key, base_url=str(sess.get("login_base_url") or ""))
+    except SuiteKeyRejected as exc:
+        _fail(str(exc))
+        return
     except Exception as exc:
-        _fail(f"Failed to save {target_key_env}: {exc}")
+        _fail(f"Failed to save the key for {suite_env}: {exc}")
         return
     # Make the new key effective right away: pool reset, MCP reconnect,
     # live sessions rebuild their client (AIS-286 self-healing).
     try:
         from hermes_cli.iamds_suite import apply_reauth
-        apply_reauth(str(sess.get("suite_env") or "aimds-suite-prod"))
+        apply_reauth(suite_env)
     except Exception:
         _log.debug("apply_reauth after Keycloak login failed", exc_info=True)
 

@@ -397,3 +397,4 @@ turn_end:
 suite_auth:
   # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
   reauth_needed: "A(z) {target} bejelentkezésed lejárt vagy alaphelyzetbe állt. Jelentkezz be újra: Beállítások → Fiókok → {target} → Újbóli bejelentkezés. Utána egyszerűen tedd fel újra a kérdésed."
+  endpoint_moved: "A(z) {target} egy másik címen válaszol ({location}). Ellenőrizd a szerver címét: Beállítások → Fiókok → {target}. Utána egyszerűen tedd fel újra a kérdésed."

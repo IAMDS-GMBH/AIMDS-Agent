@@ -791,9 +791,12 @@ export const de
         saving: 'Speichere…',
         saved: 'AIMDS-Suite-Anbieter-URLs gespeichert',
         checking: 'Prüfe…',
+        keyWrongEnvironment: 'Diese Anmeldung gehört zu einer anderen AIMDS-Suite-Umgebung. Bitte melde dich unter der Adresse dieser Umgebung an.',
+        keyRejected: 'Die AIMDS-Suite hat diese Anmeldung nicht angenommen. Bitte melde dich erneut an.',
         notifications: {
           reauthTitle: (envLabel: string) => `AIMDS-Suite: Anmeldung erforderlich (${envLabel})`,
-          reauthBody: (domain: string) => `Die Suite-Anmeldung für ${domain} ist abgelaufen. Bitte erneut anmelden.`
+          reauthBody: (domain: string) => `Die Suite-Anmeldung für ${domain} ist abgelaufen. Bitte erneut anmelden.`,
+          signInNow: 'Neu anmelden'
         },
         cli: {
           title: 'Lokale CLIs',
@@ -1122,6 +1125,7 @@ export const de
       scheduled: 'geplant',
       running: 'läuft',
       paused: 'pausiert',
+      waiting: 'wartet auf Anmeldung',
       disabled: 'deaktiviert',
       error: 'Fehler',
       completed: 'abgeschlossen'

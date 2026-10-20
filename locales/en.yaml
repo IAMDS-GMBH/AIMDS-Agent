@@ -409,3 +409,5 @@ turn_end:
 suite_auth:
   # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
   reauth_needed: "Your sign-in to {target} has expired or was reset. Please sign in again: Settings → Accounts → {target} → Re-authenticate. Then just ask your question again."
+  # AIS-599: the API URL redirects (e.g. http:// → https://).
+  endpoint_moved: "{target} answers at a different address ({location}). Please check the server address: Settings → Accounts → {target}. Then just ask your question again."

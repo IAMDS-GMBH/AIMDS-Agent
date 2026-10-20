@@ -460,6 +460,35 @@ export function completeAimdsSuiteReauth(env: string): Promise<{ ok: boolean }> 
   })
 }
 
+export interface AimdsSuiteKeyResult {
+  ok: boolean
+  provider: string
+  verified: boolean
+}
+
+// Store a key from a Suite login after the backend checked it belongs to
+// `env` (AIS-599); `env` may be 'auto' (the environment of `baseUrl`'s host).
+// Rejections throw an error whose message carries `{"code": …}`; see
+// suiteKeyRejectionCode.
+export function storeAimdsSuiteKey(env: string, apiKey: string, baseUrl: string): Promise<AimdsSuiteKeyResult> {
+  return window.hermesDesktop.api<AimdsSuiteKeyResult>({
+    ...profileScoped(),
+    path: `/api/providers/aimds-suite/${encodeURIComponent(env)}/key`,
+    method: 'POST',
+    body: { api_key: apiKey, base_url: baseUrl }
+  })
+}
+
+export function suiteKeyRejectionCode(err: unknown): 'invalid_key' | 'wrong_environment' | null {
+  const text = err instanceof Error ? err.message : String(err ?? '')
+
+  if (!text.startsWith('409')) {
+    return null
+  }
+
+  return text.includes('wrong_environment') ? 'wrong_environment' : text.includes('invalid_key') ? 'invalid_key' : null
+}
+
 export function getAimdsSuiteCliTargets(): Promise<AimdsSuiteCliTargetsResponse> {
   return window.hermesDesktop.api<AimdsSuiteCliTargetsResponse>({
     ...profileScoped(),

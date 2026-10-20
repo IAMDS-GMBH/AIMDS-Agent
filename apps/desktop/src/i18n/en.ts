@@ -790,9 +790,12 @@ export const en: Translations = {
         saving: 'Saving…',
         saved: 'AIMDS-Suite provider URLs saved',
         checking: 'Checking…',
+        keyWrongEnvironment: 'This sign-in belongs to a different AIMDS-Suite environment. Please sign in at the address of this environment.',
+        keyRejected: 'The AIMDS-Suite did not accept this sign-in. Please sign in again.',
         notifications: {
           reauthTitle: (envLabel: string) => `AIMDS-Suite: re-authentication required (${envLabel})`,
-          reauthBody: (domain: string) => `Suite sign-in for ${domain} has expired. Please sign in again.`
+          reauthBody: (domain: string) => `Suite sign-in for ${domain} has expired. Please sign in again.`,
+          signInNow: 'Sign in again'
         },
         cli: {
           title: 'Local CLIs',
@@ -1121,6 +1124,7 @@ export const en: Translations = {
       scheduled: 'scheduled',
       running: 'running',
       paused: 'paused',
+      waiting: 'waiting for sign-in',
       disabled: 'disabled',
       error: 'error',
       completed: 'completed'

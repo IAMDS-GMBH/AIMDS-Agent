@@ -357,8 +357,40 @@ def _truncate(secret: str, keep: int = 4) -> str:
     return "…" + secret[-keep:]
 
 
+def _is_local_host(host: str) -> bool:
+    host = (host or "").strip("[]").lower()
+    if not host or host == "localhost" or host.endswith((".localhost", ".local")) or "." not in host and ":" not in host:
+        return True
+    try:
+        import ipaddress
+
+        ip = ipaddress.ip_address(host)
+        return ip.is_loopback or ip.is_private or ip.is_link_local
+    except ValueError:
+        return False
+
+
+def _https_for_remote(url: str) -> str:
+    """``http://`` → ``https://`` for hosts that are not local (AIS-599).
+
+    The Suite's nginx answers ``308 → https`` on plain http and the OpenAI
+    client does not follow it, so every chat call failed while status probes
+    (urllib follows redirects) still said "connected". Local dev servers keep
+    their http URL.
+    """
+    if not url.lower().startswith("http://"):
+        return url
+    try:
+        from urllib.parse import urlsplit
+
+        host = urlsplit(url).hostname or ""
+    except ValueError:
+        return url
+    return url if _is_local_host(host) else "https://" + url[len("http://"):]
+
+
 def _norm_url(value: Any) -> str:
-    return str(value or "").strip().rstrip("/")
+    return _https_for_remote(str(value or "").strip().rstrip("/"))
 
 
 def _env_value(name: str) -> str:
@@ -432,6 +464,11 @@ def resolve_suite_endpoint(
         ep.base_url, ep.base_url_source = env.default_base_url, "default"
 
     key_env = str(entry.get("key_env") or "").strip() or env.key_env
+    if key_env != env.key_env and key_env in {e.key_env for e in SUITE_ENVIRONMENTS.values()}:
+        # AIS-599: a prod entry reading IAMDS_LITELLM_STAGING_API_KEY sends a
+        # key the prod LiteLLM does not know (401 token_not_found_in_db).
+        logger.warning("%s: providers key_env %s belongs to another Suite environment — using %s", canonical, key_env, env.key_env)
+        key_env = env.key_env
     ep.key_env = key_env
     api_key = _env_value(key_env)
     if api_key:
@@ -456,14 +493,18 @@ def sync_suite_env_from_providers(config: Optional[dict] = None) -> Dict[str, st
     for env in SUITE_ENVIRONMENTS.values():
         entry = _provider_entry(cfg, env)
         config_url = _norm_url(entry.get("base_url") or entry.get("api") or entry.get("url"))
-        current = _norm_url(_env_value(env.url_env))
+        current_raw = _env_value(env.url_env).rstrip("/")
+        current = _norm_url(current_raw)
         try:
-            if config_url and config_url != current:
+            if config_url and config_url != current_raw:
                 save_env_value(env.url_env, config_url)
                 changes[env.url_env] = "set"
             elif not config_url and current and _provider_entry_absent(cfg, env):
                 remove_env_value(env.url_env)
                 changes[env.url_env] = "removed"
+            elif not config_url and current != current_raw:
+                save_env_value(env.url_env, current)  # AIS-599: persist the https upgrade
+                changes[env.url_env] = "set"
         except Exception as exc:  # never break a config save over env sync
             logger.warning("suite env sync failed for %s: %s", env.url_env, exc)
     return changes
@@ -541,6 +582,96 @@ def suite_ntfy_url(base_url: str) -> str:
 def litellm_key_info_url(base_url: str) -> str:
     root = suite_root_url(base_url)
     return f"{root}/litellm/key/info" if root else ""
+
+
+KEY_OK = "ok"
+KEY_INVALID = "invalid"
+KEY_UNVERIFIED = "unreachable"
+
+
+def verify_suite_key(base_url: str, api_key: str, *, timeout: float = 8.0) -> str:
+    """Ask the Suite whether *api_key* exists there: ``ok``, ``invalid`` (401/403) or ``unreachable``.
+
+    ``GET <root>/litellm/key/info`` with the key itself — a key of another
+    environment or a deleted one answers 401 ``token_not_found_in_db``
+    (AIS-599). Anything else (offline, 404, 5xx) cannot decide.
+    """
+    url = litellm_key_info_url(base_url)
+    if not url or not api_key:
+        return KEY_UNVERIFIED
+    request = urllib.request.Request(
+        url, headers={"Accept": "application/json", "Authorization": f"Bearer {api_key}", "User-Agent": "hermes-agent/iamds-suite-key-check"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout):
+            return KEY_OK
+    except urllib.error.HTTPError as exc:
+        return KEY_INVALID if exc.code in (401, 403) else KEY_UNVERIFIED
+    except Exception:
+        return KEY_UNVERIFIED
+
+
+def _host(url: str) -> str:
+    try:
+        from urllib.parse import urlsplit
+
+        return (urlsplit(_norm_url(url)).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def suite_env_for_url(base_url: str, *, config: Optional[dict] = None) -> Optional[str]:
+    """The Suite environment whose resolved URL has *base_url*'s host, else None."""
+    host = _host(base_url)
+    if not host:
+        return None
+    cfg = _load_config_safe(config)
+    for provider_id in SUITE_ENVIRONMENTS:
+        if _host(resolve_suite_endpoint(provider_id, config=cfg).base_url) == host:
+            return provider_id
+    return None
+
+
+class SuiteKeyRejected(Exception):
+    """A key that must not be stored for the requested environment (AIS-599)."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def store_suite_key(env: str, api_key: str, *, base_url: str = "", config: Optional[dict] = None) -> Dict[str, Any]:
+    """Check a freshly issued key against its environment, then save it to that environment's slot.
+
+    *env* is a Suite provider id or ``auto`` (the environment whose host the
+    key came from; production for an unknown host). *base_url* is where the
+    login happened. Raises :class:`SuiteKeyRejected` when the host belongs to
+    another environment (``wrong_environment``) or the Suite does not know the
+    key (``invalid_key``); an unreachable Suite saves the key unverified.
+    """
+    cfg = _load_config_safe(config)
+    api_key = str(api_key or "").strip()
+    if not api_key:
+        raise SuiteKeyRejected("invalid_key", "No API key was returned by the login.")
+    target = canonical_suite_provider(env) if env != "auto" else (suite_env_for_url(base_url, config=cfg) or "aimds-suite-prod")
+    if not target:
+        raise SuiteKeyRejected("unknown_environment", f"{env!r} is not an AIMDS-Suite environment.")
+    ep = resolve_suite_endpoint(target, config=cfg)
+    url = _norm_url(base_url) or ep.base_url
+    if _host(url) != _host(ep.base_url):
+        owner = suite_env_for_url(url, config=cfg)
+        if owner and owner != target:
+            raise SuiteKeyRejected(
+                "wrong_environment",
+                f"The login at {_host(url)} belongs to {suite_label(owner)}, not {suite_label(target)}.",
+            )
+    status = verify_suite_key(url, api_key)
+    if status == KEY_INVALID:
+        raise SuiteKeyRejected("invalid_key", f"{suite_label(target)} does not accept this key.")
+    from hermes_cli.config import save_env_value
+
+    save_env_value(SUITE_ENVIRONMENTS[target].key_env, api_key)
+    return {"provider": target, "verified": status == KEY_OK}
 
 
 def active_suite_provider(config: Optional[dict] = None) -> Optional[str]:
@@ -1505,4 +1636,8 @@ __all__ = [
     "maybe_run_suite_health_check",
     "suite_health_check_enabled",
     "suite_health_check_interval_seconds",
+    "SuiteKeyRejected",
+    "store_suite_key",
+    "suite_env_for_url",
+    "verify_suite_key",
 ]

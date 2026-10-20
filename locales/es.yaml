@@ -397,3 +397,4 @@ turn_end:
 suite_auth:
   # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
   reauth_needed: "Tu inicio de sesión en {target} ha caducado o se ha restablecido. Vuelve a iniciar sesión: Ajustes → Cuentas → {target} → Volver a iniciar sesión. Después, vuelve a hacer tu pregunta."
+  endpoint_moved: "{target} responde en otra dirección ({location}). Revisa la dirección del servidor: Ajustes → Cuentas → {target}. Después, vuelve a hacer tu pregunta."

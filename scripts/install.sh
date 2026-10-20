@@ -2700,18 +2700,24 @@ PYEOF
         rm -f "$HERMES_HOME/.env.bak"
     fi
     if [ -n "${effective_api_key:-}" ] && [ -f "$HERMES_HOME/.env" ]; then
-        # Write API key
+        # Key and URL go to the selected environment's own variables. Writing a
+        # staging key into IAMDS_LITELLM_API_KEY gave the prod provider a key
+        # the prod Suite does not know (AIS-599: 401 token_not_found_in_db).
+        local env_suffix=""
+        case "$selected_endpoint" in
+            staging) env_suffix="_STAGING" ;;
+            dev) env_suffix="_DEV" ;;
+        esac
         {
             echo "# Added by bootstrap installer"
-            echo "IAMDS_LITELLM_API_KEY=${effective_api_key}"
-            # IAMDS_LITELLM_BASE_URL is the canonical iamds-litellm endpoint var.
+            echo "IAMDS_LITELLM${env_suffix}_API_KEY=${effective_api_key}"
             if [ -n "${llm_gateway_url:-}" ]; then
-                echo "IAMDS_LITELLM_BASE_URL=${llm_gateway_url}"
+                echo "IAMDS_LITELLM${env_suffix}_BASE_URL=${llm_gateway_url}"
             fi
-            if [ -n "${staging_api_key:-}" ]; then
+            if [ -n "${staging_api_key:-}" ] && [ "$selected_endpoint" != "staging" ]; then
                 echo "IAMDS_LITELLM_STAGING_API_KEY=${staging_api_key}"
             fi
-            if [ -n "${dev_api_key:-}" ]; then
+            if [ -n "${dev_api_key:-}" ] && [ "$selected_endpoint" != "dev" ]; then
                 echo "IAMDS_LITELLM_DEV_API_KEY=${dev_api_key}"
             fi
         } >> "$HERMES_HOME/.env"

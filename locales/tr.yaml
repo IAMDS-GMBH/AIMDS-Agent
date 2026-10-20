@@ -397,3 +397,4 @@ turn_end:
 suite_auth:
   # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
   reauth_needed: "{target} oturumunun süresi doldu veya sıfırlandı. Lütfen yeniden oturum aç: Ayarlar → Hesaplar → {target} → Yeniden oturum aç. Ardından sorunu tekrar sor."
+  endpoint_moved: "{target} farklı bir adreste yanıt veriyor ({location}). Lütfen sunucu adresini kontrol et: Ayarlar → Hesaplar → {target}. Ardından sorunu tekrar sor."

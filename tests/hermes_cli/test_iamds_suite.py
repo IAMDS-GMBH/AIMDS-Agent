@@ -79,6 +79,35 @@ class TestResolveSuiteEndpoint:
         assert ep.api_key == ""
         assert ep.key_source == ""
 
+    def test_key_env_of_another_environment_is_ignored(self, isolated_home, monkeypatch):
+        # AIS-599: the prod provider must never send the staging key.
+        monkeypatch.setenv("IAMDS_LITELLM_STAGING_API_KEY", "sk-staging-key-1234")
+        monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "sk-prod-key-1234")
+        cfg = {"providers": {"aimds-suite-prod": {"key_env": "IAMDS_LITELLM_STAGING_API_KEY"}}}
+        ep = suite.resolve_suite_endpoint("aimds-suite-prod", config=cfg)
+        assert (ep.key_env, ep.api_key) == ("IAMDS_LITELLM_API_KEY", "sk-prod-key-1234")
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("http://staging.suite.iamds.com/litellm/v1", "https://staging.suite.iamds.com/litellm/v1"),
+            ("HTTP://suite.iamds.com/litellm/v1/", "https://suite.iamds.com/litellm/v1"),
+            ("https://suite.iamds.com/litellm/v1", "https://suite.iamds.com/litellm/v1"),
+            ("http://localhost:8000/litellm/v1", "http://localhost:8000/litellm/v1"),
+            ("http://127.0.0.1:4000", "http://127.0.0.1:4000"),
+            ("http://192.168.1.20/litellm/v1", "http://192.168.1.20/litellm/v1"),
+            ("http://suite-dev/litellm/v1", "http://suite-dev/litellm/v1"),
+        ],
+    )
+    def test_remote_http_is_upgraded_to_https(self, raw, expected):
+        # AIS-599: nginx answers 308 on http and the chat client does not follow it.
+        assert suite._norm_url(raw) == expected
+
+    def test_http_staging_url_resolves_to_https(self, isolated_home, monkeypatch):
+        monkeypatch.setenv("IAMDS_LITELLM_STAGING_BASE_URL", "http://staging.suite.iamds.com/litellm/v1")
+        ep = suite.resolve_suite_endpoint("aimds-suite-staging", config={})
+        assert ep.base_url == "https://staging.suite.iamds.com/litellm/v1"
+
     def test_prod_openai_base_url_compat(self, isolated_home, monkeypatch):
         monkeypatch.setenv("OPENAI_BASE_URL", "https://suite.iamds.com/litellm/v1")
         assert suite.resolve_suite_endpoint("aimds-suite-prod", config={}).base_url_source == "env"
@@ -105,6 +134,19 @@ class TestSyncEnv:
         assert changes["IAMDS_LITELLM_STAGING_BASE_URL"] == "removed"
         assert ("set", "IAMDS_LITELLM_BASE_URL", "https://suite.iamds.com/litellm/v1") in calls
         assert ("rm", "IAMDS_LITELLM_STAGING_BASE_URL", "") in calls
+
+    def test_persists_the_https_upgrade(self, isolated_home, monkeypatch):
+        calls: list[tuple[str, str]] = []
+        monkeypatch.setattr("hermes_cli.config.save_env_value", lambda k, v: calls.append((k, v)))
+        monkeypatch.setattr("hermes_cli.config.remove_env_value", lambda k: pytest.fail("must not remove"))
+        monkeypatch.setenv("IAMDS_LITELLM_STAGING_BASE_URL", "http://staging.suite.iamds.com/litellm/v1")
+        cfg = {"providers": {
+            "aimds-suite-prod": {"base_url": "http://suite.iamds.com/litellm/v1"},
+            "aimds-suite-staging": {"name": "Staging"},
+        }}
+        suite.sync_suite_env_from_providers(cfg)
+        assert ("IAMDS_LITELLM_BASE_URL", "https://suite.iamds.com/litellm/v1") in calls
+        assert ("IAMDS_LITELLM_STAGING_BASE_URL", "https://staging.suite.iamds.com/litellm/v1") in calls
 
     def test_noop_when_in_sync(self, isolated_home, monkeypatch):
         monkeypatch.setenv("IAMDS_LITELLM_BASE_URL", "https://suite.iamds.com/litellm/v1")
@@ -733,3 +775,87 @@ class TestModelFamilies:
             "aimds-suite-prod", "claude-sonnet-5.5", tier="fast", available=self.AFTER, metadata={},
         )
         assert (model, reason) == ("claude-haiku-5.5", "preference")
+
+
+# --------------------------------------------------------------------------- AIS-599 key check
+
+class TestVerifySuiteKey:
+    def _urlopen(self, monkeypatch, outcome):
+        import urllib.error
+
+        calls = []
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake(request, timeout=None):
+            calls.append((request.full_url, request.get_header("Authorization")))
+            if isinstance(outcome, int):
+                raise urllib.error.HTTPError(request.full_url, outcome, "x", {}, None)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return _Resp()
+
+        monkeypatch.setattr(suite.urllib.request, "urlopen", fake)
+        return calls
+
+    def test_known_key(self, monkeypatch):
+        calls = self._urlopen(monkeypatch, "ok")
+        assert suite.verify_suite_key("https://suite.iamds.com/litellm/v1", "sk-a") == suite.KEY_OK
+        assert calls == [("https://suite.iamds.com/litellm/key/info", "Bearer sk-a")]
+
+    @pytest.mark.parametrize("code", [401, 403])
+    def test_unknown_key(self, monkeypatch, code):
+        self._urlopen(monkeypatch, code)
+        assert suite.verify_suite_key("https://suite.iamds.com", "sk-a") == suite.KEY_INVALID
+
+    @pytest.mark.parametrize("outcome", [404, 502, OSError("offline")])
+    def test_undecidable(self, monkeypatch, outcome):
+        self._urlopen(monkeypatch, outcome)
+        assert suite.verify_suite_key("https://suite.iamds.com", "sk-a") == suite.KEY_UNVERIFIED
+
+
+class TestStoreSuiteKey:
+    CFG = {"providers": {
+        "aimds-suite-prod": {"base_url": "https://suite.iamds.com/litellm/v1"},
+        "aimds-suite-staging": {"base_url": "https://staging.suite.iamds.com/litellm/v1"},
+    }}
+
+    @pytest.fixture
+    def saved(self, isolated_home, monkeypatch):
+        out: dict = {}
+        monkeypatch.setattr("hermes_cli.config.save_env_value", lambda k, v: out.__setitem__(k, v))
+        monkeypatch.setattr(suite, "verify_suite_key", lambda url, key, **k: suite.KEY_OK)
+        return out
+
+    def test_staging_login_is_not_stored_as_prod(self, saved):
+        # Michael's case: the prod provider ended up with his staging key.
+        with pytest.raises(suite.SuiteKeyRejected) as exc:
+            suite.store_suite_key("aimds-suite-prod", "sk-staging", base_url="https://staging.suite.iamds.com", config=self.CFG)
+        assert exc.value.code == "wrong_environment"
+        assert saved == {}
+
+    def test_auto_picks_the_environment_of_the_login_host(self, saved):
+        result = suite.store_suite_key("auto", "sk-staging", base_url="https://staging.suite.iamds.com", config=self.CFG)
+        assert result == {"provider": "aimds-suite-staging", "verified": True}
+        assert saved == {"IAMDS_LITELLM_STAGING_API_KEY": "sk-staging"}
+
+    def test_unknown_host_goes_to_production(self, saved):
+        assert suite.store_suite_key("auto", "sk-c", base_url="https://suite.customer.example", config={})["provider"] == "aimds-suite-prod"
+
+    def test_key_the_suite_does_not_know_is_rejected(self, saved, monkeypatch):
+        monkeypatch.setattr(suite, "verify_suite_key", lambda url, key, **k: suite.KEY_INVALID)
+        with pytest.raises(suite.SuiteKeyRejected) as exc:
+            suite.store_suite_key("aimds-suite-prod", "sk-old", base_url="https://suite.iamds.com", config=self.CFG)
+        assert exc.value.code == "invalid_key"
+        assert saved == {}
+
+    def test_offline_stores_unverified(self, saved, monkeypatch):
+        monkeypatch.setattr(suite, "verify_suite_key", lambda url, key, **k: suite.KEY_UNVERIFIED)
+        result = suite.store_suite_key("aimds-suite-prod", "sk-p", config=self.CFG)
+        assert result == {"provider": "aimds-suite-prod", "verified": False}
+        assert saved == {"IAMDS_LITELLM_API_KEY": "sk-p"}
