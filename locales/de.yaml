@@ -397,3 +397,4 @@ turn_end:
 suite_auth:
   # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
   reauth_needed: "Deine Anmeldung bei {target} ist abgelaufen oder wurde zurückgesetzt. Bitte melde dich neu an: Einstellungen → Konten → {target} → Neu anmelden. Danach kannst du deine Frage einfach noch einmal stellen."
+  endpoint_moved: "{target} antwortet unter einer anderen Adresse ({location}). Bitte prüfe die Server-Adresse: Einstellungen → Konten → {target}. Danach kannst du deine Frage einfach noch einmal stellen."

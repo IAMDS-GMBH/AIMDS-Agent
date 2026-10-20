@@ -4200,7 +4200,7 @@ def run_conversation(
                             pass
                         agent._buffer_vprint(
                             f"🔐 AIMDS-Suite {status_code}: the virtual key was rejected by LiteLLM. "
-                            "Re-authenticate via Settings → Providers → AIMDS-Suite → Re-authenticate (Keycloak SSO)."
+                            "Re-authenticate via Settings → Accounts → AIMDS-Suite → Re-authenticate (Keycloak SSO)."
                         )
                 if (
                     agent.provider == "copilot"
@@ -5156,6 +5156,38 @@ def run_conversation(
                                 _final_text = _t(
                                     "suite_auth.reauth_needed", target=suite_label(agent.provider)
                                 )
+                        except Exception:
+                            pass
+                    elif classified.reason == FailoverReason.endpoint_redirect:
+                        # AIS-599: the configured URL redirects (http:// → https://
+                        # answered 308 on every turn) — name the new address once,
+                        # one case per endpoint instead of a fallback per model.
+                        _location = ""
+                        try:
+                            _location = str(api_error.response.headers.get("location") or "")
+                        except Exception:
+                            pass
+                        try:
+                            from agent.i18n import t as _t
+                            from hermes_cli.iamds_suite import is_suite_provider, suite_label
+
+                            _target = suite_label(_provider) if is_suite_provider(_provider) else str(_provider or _base)
+                            _final_text = _t("suite_auth.endpoint_moved", target=_target, location=_location or "?")
+                        except Exception:
+                            pass
+                        try:
+                            from hermes_cli.auto_incidents import _slug, report_in_background
+
+                            report_in_background(
+                                f"endpoint-redirect-{_slug(str(_provider or 'provider'))}",
+                                f"API URL redirects (HTTP {status_code}) on {_provider}",
+                                f"base_url {_base} answered HTTP {status_code} → {_location or 'unknown location'} "
+                                f"(model {_model}). No fallback on the same URL; the user was told to check the address.",
+                                category="connection_error",
+                                context_type="endpoint_redirect",
+                                severity="medium",
+                                session_id=str(getattr(agent, "session_id", "") or ""),
+                            )
                         except Exception:
                             pass
                     return {

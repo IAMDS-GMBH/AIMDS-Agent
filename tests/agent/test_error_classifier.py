@@ -53,7 +53,7 @@ class TestFailoverReason:
     def test_enum_members_exist(self):
         expected = {
             "auth", "auth_permanent", "billing", "rate_limit",
-            "overloaded", "server_error", "timeout",
+            "overloaded", "server_error", "timeout", "endpoint_redirect",
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
             "invalid_encrypted_content",
@@ -1654,3 +1654,19 @@ class TestMultimodalToolContentUnsupported:
         e = MockAPIError("bad request: missing field 'model'", status_code=400)
         result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
         assert result.reason != FailoverReason.multimodal_tool_content_unsupported
+
+
+class TestEndpointRedirect:
+    """AIS-599: http://staging… answered 308 on every turn and ran the fallback chain."""
+
+    @pytest.mark.parametrize("status", [301, 302, 307, 308])
+    def test_3xx_is_a_configuration_error(self, status):
+        e = MockAPIError("308 Permanent Redirect", status_code=status)
+        result = classify_api_error(e, provider="aimds-suite-staging")
+        assert result.reason == FailoverReason.endpoint_redirect
+        assert result.retryable is False
+        assert result.should_rotate_credential is False
+
+    def test_401_stays_auth(self):
+        e = MockAPIError("token_not_found_in_db", status_code=401)
+        assert classify_api_error(e, provider="aimds-suite-prod").reason == FailoverReason.auth

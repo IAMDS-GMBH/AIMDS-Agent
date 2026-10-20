@@ -38,6 +38,7 @@ class FailoverReason(enum.Enum):
 
     # Transport
     timeout = "timeout"                  # Connection/read timeout — rebuild client + retry
+    endpoint_redirect = "endpoint_redirect"  # 3xx on the API URL (e.g. http:// → https://) — configuration, abort
 
     # Context / payload
     context_overflow = "context_overflow"  # Context too large — compress, not failover
@@ -778,6 +779,13 @@ def _classify_by_status(
             should_rotate_credential=True,
             should_fallback=True,
         )
+
+    if 300 <= status_code < 400:
+        # AIS-599: the SDK client does not follow redirects, so a base URL
+        # like http://host answers 308 on every request. Another model on the
+        # same URL fails identically; retrying or switching models only hides
+        # the misconfigured endpoint.
+        return result_fn(FailoverReason.endpoint_redirect, retryable=False, should_fallback=True)
 
     if status_code == 403:
         # OpenRouter 403 "key limit exceeded" is actually billing. Other

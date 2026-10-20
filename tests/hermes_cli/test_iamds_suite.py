@@ -79,6 +79,35 @@ class TestResolveSuiteEndpoint:
         assert ep.api_key == ""
         assert ep.key_source == ""
 
+    def test_key_env_of_another_environment_is_ignored(self, isolated_home, monkeypatch):
+        # AIS-599: the prod provider must never send the staging key.
+        monkeypatch.setenv("IAMDS_LITELLM_STAGING_API_KEY", "sk-staging-key-1234")
+        monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "sk-prod-key-1234")
+        cfg = {"providers": {"aimds-suite-prod": {"key_env": "IAMDS_LITELLM_STAGING_API_KEY"}}}
+        ep = suite.resolve_suite_endpoint("aimds-suite-prod", config=cfg)
+        assert (ep.key_env, ep.api_key) == ("IAMDS_LITELLM_API_KEY", "sk-prod-key-1234")
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("http://staging.suite.iamds.com/litellm/v1", "https://staging.suite.iamds.com/litellm/v1"),
+            ("HTTP://suite.iamds.com/litellm/v1/", "https://suite.iamds.com/litellm/v1"),
+            ("https://suite.iamds.com/litellm/v1", "https://suite.iamds.com/litellm/v1"),
+            ("http://localhost:8000/litellm/v1", "http://localhost:8000/litellm/v1"),
+            ("http://127.0.0.1:4000", "http://127.0.0.1:4000"),
+            ("http://192.168.1.20/litellm/v1", "http://192.168.1.20/litellm/v1"),
+            ("http://suite-dev/litellm/v1", "http://suite-dev/litellm/v1"),
+        ],
+    )
+    def test_remote_http_is_upgraded_to_https(self, raw, expected):
+        # AIS-599: nginx answers 308 on http and the chat client does not follow it.
+        assert suite._norm_url(raw) == expected
+
+    def test_http_staging_url_resolves_to_https(self, isolated_home, monkeypatch):
+        monkeypatch.setenv("IAMDS_LITELLM_STAGING_BASE_URL", "http://staging.suite.iamds.com/litellm/v1")
+        ep = suite.resolve_suite_endpoint("aimds-suite-staging", config={})
+        assert ep.base_url == "https://staging.suite.iamds.com/litellm/v1"
+
     def test_prod_openai_base_url_compat(self, isolated_home, monkeypatch):
         monkeypatch.setenv("OPENAI_BASE_URL", "https://suite.iamds.com/litellm/v1")
         assert suite.resolve_suite_endpoint("aimds-suite-prod", config={}).base_url_source == "env"
@@ -105,6 +134,19 @@ class TestSyncEnv:
         assert changes["IAMDS_LITELLM_STAGING_BASE_URL"] == "removed"
         assert ("set", "IAMDS_LITELLM_BASE_URL", "https://suite.iamds.com/litellm/v1") in calls
         assert ("rm", "IAMDS_LITELLM_STAGING_BASE_URL", "") in calls
+
+    def test_persists_the_https_upgrade(self, isolated_home, monkeypatch):
+        calls: list[tuple[str, str]] = []
+        monkeypatch.setattr("hermes_cli.config.save_env_value", lambda k, v: calls.append((k, v)))
+        monkeypatch.setattr("hermes_cli.config.remove_env_value", lambda k: pytest.fail("must not remove"))
+        monkeypatch.setenv("IAMDS_LITELLM_STAGING_BASE_URL", "http://staging.suite.iamds.com/litellm/v1")
+        cfg = {"providers": {
+            "aimds-suite-prod": {"base_url": "http://suite.iamds.com/litellm/v1"},
+            "aimds-suite-staging": {"name": "Staging"},
+        }}
+        suite.sync_suite_env_from_providers(cfg)
+        assert ("IAMDS_LITELLM_BASE_URL", "https://suite.iamds.com/litellm/v1") in calls
+        assert ("IAMDS_LITELLM_STAGING_BASE_URL", "https://staging.suite.iamds.com/litellm/v1") in calls
 
     def test_noop_when_in_sync(self, isolated_home, monkeypatch):
         monkeypatch.setenv("IAMDS_LITELLM_BASE_URL", "https://suite.iamds.com/litellm/v1")

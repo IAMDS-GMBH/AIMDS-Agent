@@ -397,3 +397,4 @@ turn_end:
 suite_auth:
   # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
   reauth_needed: "Ta connexion à {target} a expiré ou a été réinitialisée. Reconnecte-toi : Paramètres → Comptes → {target} → Se reconnecter. Pose ensuite simplement ta question à nouveau."
+  endpoint_moved: "{target} répond à une autre adresse ({location}). Vérifie l'adresse du serveur : Paramètres → Comptes → {target}. Pose ensuite simplement ta question à nouveau."

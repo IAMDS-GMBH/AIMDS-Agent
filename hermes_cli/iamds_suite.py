@@ -357,8 +357,40 @@ def _truncate(secret: str, keep: int = 4) -> str:
     return "…" + secret[-keep:]
 
 
+def _is_local_host(host: str) -> bool:
+    host = (host or "").strip("[]").lower()
+    if not host or host == "localhost" or host.endswith((".localhost", ".local")) or "." not in host and ":" not in host:
+        return True
+    try:
+        import ipaddress
+
+        ip = ipaddress.ip_address(host)
+        return ip.is_loopback or ip.is_private or ip.is_link_local
+    except ValueError:
+        return False
+
+
+def _https_for_remote(url: str) -> str:
+    """``http://`` → ``https://`` for hosts that are not local (AIS-599).
+
+    The Suite's nginx answers ``308 → https`` on plain http and the OpenAI
+    client does not follow it, so every chat call failed while status probes
+    (urllib follows redirects) still said "connected". Local dev servers keep
+    their http URL.
+    """
+    if not url.lower().startswith("http://"):
+        return url
+    try:
+        from urllib.parse import urlsplit
+
+        host = urlsplit(url).hostname or ""
+    except ValueError:
+        return url
+    return url if _is_local_host(host) else "https://" + url[len("http://"):]
+
+
 def _norm_url(value: Any) -> str:
-    return str(value or "").strip().rstrip("/")
+    return _https_for_remote(str(value or "").strip().rstrip("/"))
 
 
 def _env_value(name: str) -> str:
@@ -432,6 +464,11 @@ def resolve_suite_endpoint(
         ep.base_url, ep.base_url_source = env.default_base_url, "default"
 
     key_env = str(entry.get("key_env") or "").strip() or env.key_env
+    if key_env != env.key_env and key_env in {e.key_env for e in SUITE_ENVIRONMENTS.values()}:
+        # AIS-599: a prod entry reading IAMDS_LITELLM_STAGING_API_KEY sends a
+        # key the prod LiteLLM does not know (401 token_not_found_in_db).
+        logger.warning("%s: providers key_env %s belongs to another Suite environment — using %s", canonical, key_env, env.key_env)
+        key_env = env.key_env
     ep.key_env = key_env
     api_key = _env_value(key_env)
     if api_key:
@@ -456,14 +493,18 @@ def sync_suite_env_from_providers(config: Optional[dict] = None) -> Dict[str, st
     for env in SUITE_ENVIRONMENTS.values():
         entry = _provider_entry(cfg, env)
         config_url = _norm_url(entry.get("base_url") or entry.get("api") or entry.get("url"))
-        current = _norm_url(_env_value(env.url_env))
+        current_raw = _env_value(env.url_env).rstrip("/")
+        current = _norm_url(current_raw)
         try:
-            if config_url and config_url != current:
+            if config_url and config_url != current_raw:
                 save_env_value(env.url_env, config_url)
                 changes[env.url_env] = "set"
             elif not config_url and current and _provider_entry_absent(cfg, env):
                 remove_env_value(env.url_env)
                 changes[env.url_env] = "removed"
+            elif not config_url and current != current_raw:
+                save_env_value(env.url_env, current)  # AIS-599: persist the https upgrade
+                changes[env.url_env] = "set"
         except Exception as exc:  # never break a config save over env sync
             logger.warning("suite env sync failed for %s: %s", env.url_env, exc)
     return changes

@@ -397,3 +397,4 @@ turn_end:
 suite_auth:
   # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
   reauth_needed: "Il tuo accesso a {target} è scaduto o è stato reimpostato. Accedi di nuovo: Impostazioni → Account → {target} → Accedi di nuovo. Poi rifai semplicemente la domanda."
+  endpoint_moved: "{target} risponde a un altro indirizzo ({location}). Controlla l'indirizzo del server: Impostazioni → Account → {target}. Poi rifai semplicemente la domanda."

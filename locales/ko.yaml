@@ -397,3 +397,4 @@ turn_end:
 suite_auth:
   # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
   reauth_needed: "{target} 로그인이 만료되었거나 초기화되었습니다. 다시 로그인해 주세요: 설정 → 계정 → {target} → 다시 로그인. 그런 다음 질문을 다시 해 주세요."
+  endpoint_moved: "{target}이(가) 다른 주소({location})에서 응답합니다. 서버 주소를 확인해 주세요: 설정 → 계정 → {target}. 그런 다음 질문을 다시 해 주세요."

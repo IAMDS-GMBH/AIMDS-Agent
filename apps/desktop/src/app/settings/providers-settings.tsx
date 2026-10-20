@@ -115,7 +115,19 @@ function buildIamdsLiteLlmKeyGroup(vars: Record<string, EnvVarInfo>): ProviderKe
   return groups
 }
 
-function normalizeProviderBaseUrl(raw: string): string {
+// AIS-599: plain http on a remote Suite host answers 308 and every chat call
+// fails; local dev servers keep http.
+function isLocalHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase()
+
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || (!host.includes('.') && !host.includes(':'))) {
+    return true
+  }
+
+  return /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/.test(host) || host === '::1'
+}
+
+export function normalizeProviderBaseUrl(raw: string): string {
   const trimmed = raw.trim()
 
   if (!trimmed) {return ''}
@@ -130,6 +142,10 @@ function normalizeProviderBaseUrl(raw: string): string {
 
   if (!parsed.hostname || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
     return ''
+  }
+
+  if (parsed.protocol === 'http:' && !isLocalHost(parsed.hostname)) {
+    parsed.protocol = 'https:'
   }
 
   parsed.hash = ''
