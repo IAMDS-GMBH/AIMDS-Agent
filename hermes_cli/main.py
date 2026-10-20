@@ -5378,6 +5378,12 @@ def cmd_gui(args: argparse.Namespace):
             sys.exit(1)
         else:
             print(f"✓ Desktop packaged app ready: {packaged_executable} (not launching; --build-only)")
+            # AIS-476: Start-menu/Desktop shortcuts and taskbar pins follow
+            # the exe, also when the release renamed it (Windows only).
+            from hermes_cli.desktop_shortcuts import repair_desktop_shortcuts
+
+            for change in repair_desktop_shortcuts(packaged_executable):
+                print(f"  ✓ shortcut {change}")
         return
 
     if source_mode:
