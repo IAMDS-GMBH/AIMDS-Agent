@@ -1707,7 +1707,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None, collecte
             "saved as the journal file by the scheduler — do NOT send messages or "
             "write files yourself. You have NO tools: compose ONLY from the "
             "'## Collected Data' block below; never fetch, search or guess missing "
-            "data. If a source is marked skipped or failed, say so in one line. "
+            "data. If the data has a 'Source notes' line, pass it on in one short, "
+            "plain sentence; never quote internal status text and do not mention "
+            "services that are not in the data. "
             "Do not output YAML frontmatter; the scheduler adds it. "
             + (
                 "SILENT: If there is genuinely nothing new to report, respond with "
@@ -1955,6 +1957,21 @@ def _wait_for_cron_result(
                 return None, "provider_unreachable"
         if inactivity_limit is not None and idle_secs >= inactivity_limit:
             return None, "inactivity"
+
+def _cron_session_title(job_name: str, job_id: str, kind: Optional[str], lang: str, now: datetime) -> str:
+    """Sidebar title of a cron run: job name (shipped briefs: localized heading) + run time.
+
+    The run time keeps it unique against the sessions.title index across runs;
+    German gets a numeric date (AIS-554), everything else the short English month.
+    """
+    base = " ".join(str(job_name or "").split())[:60].strip()
+    if kind:
+        from cron.brief_collector import HEADINGS
+
+        base = HEADINGS.get(lang, HEADINGS["en"]).get(kind) or base
+    stamp = now.strftime("%d.%m. %H:%M") if lang == "de" else now.strftime("%b %d %H:%M")
+    return f"{base or f'cron {job_id}'} · {stamp}"
+
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
@@ -2743,8 +2760,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             # system_prompt; this only UPDATEs the title column. The run-time
             # suffix keeps it unique against the sessions.title index across runs.
             try:
-                _title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
-                _cron_title = f"{_title_base} · {_hermes_now().strftime('%b %d %H:%M')}"
+                _cron_title = _cron_session_title(job_name, job_id, collector_kind, brief_lang, _hermes_now())
                 _session_db.set_session_title(_cron_session_id, _cron_title)
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to set cron session title: %s", job_id, e)

@@ -21,12 +21,13 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from cron.brief_sources.base import (
-    BriefItem, SourceAdapter, SourceContext, SourceStatus, Window, clip, parse_dt, to_local,
+    LOCAL_SOURCES, BriefItem, SourceAdapter, SourceContext, SourceStatus, Window, clip, parse_dt, to_local,
 )
 
 logger = logging.getLogger(__name__)
 
 COLLECTOR_FIELD = "collector"
+ACCOUNTS_HINT_MARK = "hint=accounts"  # recorded in brief_runs.sources once the hint was given
 KINDS = ("morning-brief", "weekly-review", "mail-check", "teams-check")
 _SEED_KEY_TO_KIND = {
     "morning-brief": "morning-brief",
@@ -51,13 +52,13 @@ HEADINGS = {
         "morning-brief": "Morning Brief", "weekly-review": "Weekly Review",
         "mail-check": "Mail Check", "teams-check": "Teams Check",
         "preview": "Preview: next working day", "changed": "Changed since the last brief",
-        "latest": "Latest briefs",
+        "latest": "Latest briefs", "accounts": "Settings → Accounts",
     },
     "de": {
         "morning-brief": "Tages-Briefing", "weekly-review": "Wochen-Rückblick",
         "mail-check": "Mail-Check", "teams-check": "Teams-Check",
         "preview": "Vorschau: nächster Arbeitstag", "changed": "Seit dem letzten Briefing geändert",
-        "latest": "Letzte Briefings",
+        "latest": "Letzte Briefings", "accounts": "Einstellungen → Konten",
     },
 }
 
@@ -189,13 +190,38 @@ class CollectorResult:
     pending_items: List[BriefItem] = field(default_factory=list)  # committed after a successful LLM run
     counts: Dict[str, int] = field(default_factory=dict)
     elapsed_s: float = 0.0
+    accounts_hint: bool = False  # no account connected; tell the user once where to connect one
 
     @property
     def compose_only(self) -> bool:
         return True
 
     def sources_line(self) -> str:
-        return "Sources: " + " | ".join(s.render() for s in self.sources)
+        """Raw per-source status for logs, the run record and support — never for the model."""
+        line = "Sources: " + " | ".join(s.render() for s in self.sources)
+        return line + (" | " + ACCOUNTS_HINT_MARK if self.accounts_hint else "")
+
+    def source_notes(self) -> str:
+        """What the user should hear about the sources, in plain words (AIS-554).
+
+        Sources the user never set up are not news and are left out; only a set-up
+        source that failed is named, by its service name. Empty when all is well.
+        """
+        down = [s.label for s in self.sources if s.unavailable]
+        partly = [s.label for s in self.sources if s.status == "active" and s.partial]
+        notes: List[str] = []
+        if down:
+            notes.append(f"{_join(down)} could not be reached just now.")
+        if partly:
+            notes.append(f"{_join(partly)} could only be read in part just now.")
+        if self.accounts_hint:
+            where = HEADINGS.get(self.lang, HEADINGS["en"])["accounts"]
+            notes.append(f"No accounts are connected yet; they can be connected under {where}.")
+        return ("Source notes: " + " ".join(notes)) if notes else ""
+
+    def shows(self, *names: str) -> bool:
+        """True when one of these sources is set up (a section for them is worth showing)."""
+        return any(s.name in names and s.set_up for s in self.sources)
 
     def commit(self, store: Any, seen_at: Optional[datetime] = None) -> None:
         """Persist watermark items (mail/teams) after the brief was delivered."""
@@ -331,7 +357,7 @@ def collect(
             detail = str(len(got))
             if errors:
                 detail += ", " + "; ".join(errors)[:80]
-            statuses.append(SourceStatus(adapter.name, "active", detail, len(got)))
+            statuses.append(SourceStatus(adapter.name, "active", detail, len(got), partial=bool(errors)))
             items.extend(got)
             logger.info("[AIS-161] collector source=%s status=active count=%d ms=%d",
                         adapter.name, len(got), int((time.monotonic() - t1) * 1000))
@@ -346,6 +372,7 @@ def collect(
                     pass
 
     result = CollectorResult(kind=kind, text="", sources=statuses, window=window, lang=lang)
+    result.accounts_hint = _accounts_hint_due(job.get("id", ""), kind, statuses, store)
     result.items = items
     result.counts = _counts(items)
 
@@ -391,6 +418,23 @@ def collect(
             store.close()
     result.elapsed_s = round(time.monotonic() - t0, 2)
     return result
+
+
+def _join(labels: Sequence[str]) -> str:
+    return labels[0] if len(labels) == 1 else ", ".join(labels[:-1]) + " and " + labels[-1]
+
+
+def _accounts_hint_due(job_id: str, kind: str, statuses: Sequence[SourceStatus], store: Any) -> bool:
+    """No account is set up and this job has not said so yet (within the run retention)."""
+    if kind not in ("morning-brief", "weekly-review"):
+        return False
+    if any(s.set_up for s in statuses if s.name not in LOCAL_SOURCES):
+        return False
+    try:
+        return store is None or not store.run_mentions(job_id, ACCOUNTS_HINT_MARK)
+    except Exception as exc:
+        logger.debug("brief store run_mentions failed: %s", exc)
+        return False
 
 
 def _counts(items: Sequence[BriefItem]) -> Dict[str, int]:
@@ -489,29 +533,36 @@ def _render_brief(kind: str, items: Sequence[BriefItem], changed: Sequence[Brief
         + "\n"
     )
     sections: List[str] = []
+
+    def add(title: str, lines: List[str], cap: int, *sources: str) -> None:
+        # A section for sources the user never set up is not news (AIS-554).
+        if lines or not sources or result.shows(*sources):
+            sections.append(_section(title, lines, cap))
+
     cal_title = "Calendar (this week)" if kind == "weekly-review" else "Calendar today"
-    sections.append(_section(cal_title, [_fmt_event(i, tz) for i in events_today], 12))
-    sections.append(_section(f"Calendar {window.preview_day.isoformat()} (preview)" if kind != "weekly-review" else "Calendar next working day",
-                             [_fmt_event(i, tz) for i in events_preview], 8))
-    sections.append(_section("My tickets (Jira)", [_fmt_ticket(i) for i in tickets], 12))
-    sections.append(_section("To Do", [_fmt_task(i) for i in todos + ws_tasks], 12))
-    sections.append(_section("Unread mail", [_fmt_mail(i, tz) for i in mails], 15))
-    sections.append(_section("Teams", [_fmt_chat(i, tz) for i in chats], 10))
-    sections.append(_section("Time tracking", [_fmt_worklog(i) for i in worklogs], 6))
+    add(cal_title, [_fmt_event(i, tz) for i in events_today], 12, "m365")
+    add(f"Calendar {window.preview_day.isoformat()} (preview)" if kind != "weekly-review" else "Calendar next working day",
+        [_fmt_event(i, tz) for i in events_preview], 8, "m365")
+    add("My tickets (Jira)", [_fmt_ticket(i) for i in tickets], 12, "jira")
+    add("To Do", [_fmt_task(i) for i in todos + ws_tasks], 12, "m365", "workspace")
+    add("Unread mail", [_fmt_mail(i, tz) for i in mails], 15, "m365")
+    add("Teams", [_fmt_chat(i, tz) for i in chats], 10, "m365")
+    add("Time tracking", [_fmt_worklog(i) for i in worklogs], 6, "tempo", "openproject")
     changed_lines = [f"- {i.key or i.title}: {i.prev_status or '?'} → {i.status} ({i.kind})" for i in changed]
-    sections.append(_section("Changed since the last brief", changed_lines, 10))
+    add("Changed since the last brief", changed_lines, 10)
     ws_lines = [f"- open question: {n.title}" for n in open_q] + [f"- finding: {n.title}" for n in findings]
     if prev:
         ws_lines.append(f"- previous brief preview: {clip(prev[0].title, 600)}")
-    sections.append(_section("Workspace", ws_lines, 12))
+    add("Workspace", ws_lines, 12, "workspace")
 
-    text = header + "\n" + "\n".join(sections) + "\n" + result.sources_line() + "\n"
-    return _fit(header, sections, result.sources_line(), budget) if len(text) > budget else text
+    notes = result.source_notes()
+    text = header + "\n" + "\n".join(sections) + ("\n" + notes if notes else "") + "\n"
+    return _fit(header, sections, notes, budget) if len(text) > budget else text
 
 
 def _fit(header: str, sections: List[str], footer: str, budget: int) -> str:
     """Trim from the bottom (workspace first, calendar last) until under budget."""
-    fixed = len(header) + len(footer) + 4
+    fixed = len(header) + len(footer) + 4  # footer: the source notes, may be empty
     sections = list(sections)
     idx = len(sections) - 1
     while idx >= 0 and fixed + sum(len(s) for s in sections) > budget:
@@ -524,7 +575,7 @@ def _fit(header: str, sections: List[str], footer: str, budget: int) -> str:
             sections[idx] = f"{title}\n" + "\n".join(keep) + f"\n… (+{dropped} more)\n"
         else:
             idx -= 1
-    text = header + "\n" + "\n".join(sections) + "\n" + footer + "\n"
+    text = header + "\n" + "\n".join(sections) + ("\n" + footer if footer else "") + "\n"
     if len(text) > budget:
         text = text[: budget - 20].rstrip() + "\n… (truncated)\n"
     return text
@@ -534,10 +585,11 @@ def _render_poll(kind: str, new_items: Sequence[BriefItem], window: Window, resu
     tz = window.tz
     title = "New unread mail" if kind == "mail-check" else "New Teams messages"
     lines = [(_fmt_mail(i, tz) if i.kind == "mail" else _fmt_chat(i, tz)) for i in new_items]
+    notes = result.source_notes()
     return (
         f"## Collected Data (LLM-free collector, {window.now.strftime('%Y-%m-%d %H:%M')})\n\n"
         + _section(title, lines, 20)
-        + "\n" + result.sources_line() + "\n"
+        + ("\n" + notes + "\n" if notes else "")
     )
 
 

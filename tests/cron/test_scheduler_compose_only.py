@@ -62,6 +62,9 @@ def test_compose_only_run_has_no_tools_and_writes_journal(env, caplog):
     assert prompt.count("LANGUAGE:") == 1 and "in German" in prompt
     assert prompt.index("LANGUAGE:") < prompt.index("## Collected Data")  # AIS-319: directive leads, not trails
     assert "TOOLS: If `tool_search`" not in prompt
+    # AIS-554: the model passes on plain source notes, never the raw status line
+    assert "'Source notes' line" in prompt and "skipped or failed" not in prompt
+    assert "Sources: m365=" not in prompt
 
     journal = vault / "journal" / "2026-09-08-morning-brief.md"
     assert journal.exists()
@@ -190,3 +193,20 @@ def test_process_job_records_output_path_and_summary(env, monkeypatch):
     # mark seen
     cron_jobs.mark_job_seen(created["id"])
     assert cron_jobs.get_job(created["id"])["last_seen_at"] >= saved["last_output_at"]
+
+
+@pytest.mark.parametrize("kind, lang, expected", [
+    ("morning-brief", "de", "Tages-Briefing · 09.10. 08:11"),
+    ("morning-brief", "en", "Morning Brief · Oct 09 08:11"),
+    (None, "de", "Daily Task Reminder · 09.10. 08:11"),
+    (None, "en", "Daily Task Reminder · Oct 09 08:11"),
+])
+def test_cron_session_title_is_localized(kind, lang, expected):
+    from datetime import datetime
+
+    from cron import scheduler
+
+    now = datetime(2026, 10, 9, 8, 11)
+    name = "Morning Brief" if kind else "Daily  Task Reminder"
+    assert scheduler._cron_session_title(name, "job", kind, lang, now) == expected
+    assert scheduler._cron_session_title("", "abc", None, "en", now) == "cron abc · Oct 09 08:11"

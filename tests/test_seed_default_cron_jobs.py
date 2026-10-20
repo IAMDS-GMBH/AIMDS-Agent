@@ -312,3 +312,34 @@ def test_v11_upgrade_sets_collector_prompts_and_normalizes_brief_skills(tmp_path
     # deleted defaults are not recreated
     assert "aimds-m365-mail-check" not in jobs and "aimds-vault-curator" not in jobs
     assert len(jobs) == 4
+
+
+def test_v12_upgrade_swaps_only_the_source_sentence(tmp_path):
+    """AIS-554: an edited brief prompt keeps its edits; only the status sentence changes."""
+    home = tmp_path / ".hermes"
+    (home / "cron").mkdir(parents=True)
+    jobs_path = home / "cron" / "jobs.json"
+    edited = "My own intro. Never invent items; name skipped or failed sources in one line. My own outro."
+    jobs_path.write_text(json.dumps({"jobs": [
+        {
+            "id": "aimds-morning-brief", "name": "Morning Brief", "prompt": edited,
+            "origin": {"source": "aimds-default-cron", "seed_key": "morning-brief"},
+            "schedule": {"kind": "cron", "expr": "0 8 * * 1-5", "display": "0 8 * * 1-5"},
+            "collector": "morning-brief", "skills": [], "skill": None, "enabled": True,
+        },
+        {
+            "id": "user-job", "name": "Mine", "prompt": "name skipped or failed sources in one line. ",
+            "schedule": {"kind": "cron", "expr": "0 9 * * *", "display": "0 9 * * *"}, "enabled": True,
+        },
+    ]}), encoding="utf-8")
+    _write_state(home, 11)
+
+    assert CURRENT_DEFAULT_CRON_VERSION >= 12
+    assert seed_default_cron_jobs(home)["status"] == "upgraded"
+    jobs = {job["id"]: job for job in _read_jobs(jobs_path)}
+    assert jobs["aimds-morning-brief"]["prompt"] == (
+        "My own intro. Never invent items; pass on the 'Source notes' line in plain words if there is one. My own outro."
+    )
+    assert jobs["user-job"]["prompt"] == "name skipped or failed sources in one line. "
+    for spec in _MODULE._DEFAULT_SPECS:
+        assert "skipped or failed" not in spec["prompt"]

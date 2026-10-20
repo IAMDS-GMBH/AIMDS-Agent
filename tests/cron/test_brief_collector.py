@@ -166,7 +166,7 @@ def test_collect_fits_char_budget(store):
                      adapters=[_Adapter("m365", [i for i in many if i.source == "m365"]), _Adapter("jira", [i for i in many if i.source == "jira"])],
                      mcp_status=[], tool_names=[], vault_root=None, holidays={})
     assert len(res.text) <= 3000
-    assert "more)" in res.text and res.text.rstrip().endswith(res.sources_line()) or "(truncated)" in res.text
+    assert "more)" in res.text and "Sources:" not in res.text or "(truncated)" in res.text
 
 
 def test_mail_check_watermark_and_first_run_baseline(store):
@@ -196,3 +196,69 @@ def test_collect_never_raises_when_store_and_status_unavailable(monkeypatch):
     res = bc.collect({"id": "j"}, "morning-brief", now=_now(), cfg={}, store=None, adapters=[_Adapter("jira", boom=True)],
                      mcp_status=None, tool_names=None, vault_root=None, holidays={})
     assert "jira=failed(upstream 503)" in res.sources_line()
+
+
+# --- AIS-554: source notes instead of the raw status line --------------------
+_NOT_SET_UP = [
+    _Adapter("m365", skip=SourceStatus("m365", "skipped", "not configured")),
+    _Adapter("jira", skip=SourceStatus("jira", "skipped", "not configured")),
+    _Adapter("tempo", skip=SourceStatus("tempo", "skipped", "disabled")),
+]
+
+
+def test_sources_not_set_up_are_not_news(store):
+    note = BriefItem("workspace", "note", "open-question:1", "Which release first?")
+    adapters = _NOT_SET_UP + [_Adapter("workspace", [note])]
+    res = bc.collect({"id": "brief"}, "morning-brief", now=_now(), cfg={}, store=store, adapters=adapters,
+                     mcp_status=[], tool_names=[], vault_root=None, holidays={})
+    for raw in ("Sources:", "m365", "skipped", "not configured", "Jira", "Tempo"):
+        assert raw not in res.text
+    for section in ("### Calendar today", "### Unread mail", "### Teams", "### My tickets", "### Time tracking"):
+        assert section not in res.text
+    assert "### Workspace\n- open question: Which release first?" in res.text
+    # the raw status stays in the run record for support
+    assert "m365=skipped(not configured)" in res.sources_line()
+
+
+def test_accounts_hint_is_given_once_per_job(store):
+    kw = dict(now=_now(), cfg={"display": {"language": "de"}}, store=store, adapters=_NOT_SET_UP,
+              mcp_status=[], tool_names=[], vault_root=None, holidays={})
+    first = bc.collect({"id": "brief"}, "morning-brief", **kw)
+    assert first.accounts_hint and "Source notes: No accounts are connected yet" in first.text
+    assert "Einstellungen → Konten" in first.text
+    assert store.run_mentions("brief", bc.ACCOUNTS_HINT_MARK)
+    second = bc.collect({"id": "brief"}, "morning-brief", **kw)
+    assert not second.accounts_hint and "Source notes" not in second.text
+    # polls never carry it
+    poll = bc.collect({"id": "mail"}, "mail-check", **kw)
+    assert not poll.accounts_hint
+
+
+def test_set_up_sources_that_fail_are_named_in_plain_words(store):
+    class _Partial(_Adapter):
+        def fetch(self, window, ctx):
+            self.partial_errors = ["mail: timeout"]
+            return []
+
+    adapters = [
+        _Partial("m365"),
+        _Adapter("jira", boom=True),
+        _Adapter("tempo", skip=SourceStatus("tempo", "skipped", "not connected")),
+        _Adapter("openproject", skip=SourceStatus("openproject", "skipped", "not configured")),
+    ]
+    res = bc.collect({"id": "brief"}, "morning-brief", now=_now(), cfg={}, store=store, adapters=adapters,
+                     mcp_status=[], tool_names=[], vault_root=None, holidays={})
+    assert "Source notes: Jira and Tempo could not be reached just now. " \
+           "Microsoft 365 could only be read in part just now." in res.text
+    assert "upstream 503" not in res.text and "OpenProject" not in res.text and not res.accounts_hint
+    # a set-up source keeps its (empty) section
+    assert "### My tickets (Jira)\n(none)" in res.text and "### Time tracking\n(none)" in res.text
+    assert "jira=failed(upstream 503)" in res.sources_line()
+
+
+def test_all_good_has_no_source_notes(store):
+    ev = BriefItem("m365", "event", "e1", "Daily", starts_at="2026-09-08T08:45+02:00", ends_at="2026-09-08T08:50+02:00")
+    res = bc.collect({"id": "brief"}, "morning-brief", now=_now(), cfg={}, store=store,
+                     adapters=[_Adapter("m365", [ev]), _Adapter("jira", [])],
+                     mcp_status=[], tool_names=[], vault_root=None, holidays={})
+    assert "Source notes" not in res.text and "Sources:" not in res.text

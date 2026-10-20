@@ -36,7 +36,11 @@ LEGACY_MARKER_FILE = ".aimds-default-cron-seeded"
 # Version 11: AIS-305 — LLM-free collector: briefs/polls carry `collector`, compose-only
 #             prompts (scheduler injects '## Collected Data', writes the journal file and
 #             the language line), Teams check every 30 min, brief skills normalised to [].
-CURRENT_DEFAULT_CRON_VERSION = 11
+# Version 12: AIS-554 — briefs pass on the collector's plain 'Source notes' line instead of
+#             naming skipped/failed sources (users saw the raw status of unset services).
+CURRENT_DEFAULT_CRON_VERSION = 12
+_OLD_SOURCES_SENTENCE = "name skipped or failed sources in one line. "
+_NEW_SOURCES_SENTENCE = "pass on the 'Source notes' line in plain words if there is one. "
 JOBS_FILE_REL = Path("cron") / "jobs.json"
 _SOURCE = "aimds-default-cron"
 
@@ -51,7 +55,7 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
             "Structure: 1) What matters today (hard cap 3), 2) Meetings today and on the next working day, "
             "3) My tickets due or updated (max 5) and changes since the last brief, 4) Mail and Teams items that need action (max 5), "
             "5) Open tasks and the time-tracking gap, 6) Preview for the next working day. "
-            "Omit empty sections; if nothing is relevant say 'nothing urgent'. Never invent items; name skipped or failed sources in one line. "
+            "Omit empty sections; if nothing is relevant say 'nothing urgent'. Never invent items; pass on the 'Source notes' line in plain words if there is one. "
             "Plain headings without emoji; status markers only in lists. The scheduler writes journal/YYYY-MM-DD-morning-brief.md and its frontmatter from your reply — do not write files. "
             "Finish your response with exactly this block on separate lines: 'FINDING: <one line - the single most important thing noticed>', 'NEXT: <one line - the recommended next action>', and, only if a decision or input from the user is missing, 'OPEN_QUESTION: <one line>'. Never leave the FINDING line out."
         ),
@@ -67,7 +71,7 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
             "Compose a concise weekly review from the '## Collected Data' and '## Stale Project Check' blocks only, in this exact structure: "
             "1) Key outcomes this week, 2) Carry-over items, 3) Next week top 3 priorities, "
             "4) Stale active projects (>=14 days inactivity), 5) Risks/open questions needing decisions. "
-            "Hard cap 5 items per section. Never invent items; name skipped or failed sources in one line. "
+            "Hard cap 5 items per section. Never invent items; pass on the 'Source notes' line in plain words if there is one. "
             "Plain headings without emoji. The scheduler writes journal/YYYY-MM-DD-weekly-review.md and its frontmatter from your reply — do not write files. "
             "Finish your response with exactly this block on separate lines: 'FINDING: <one line - the single most important thing noticed>', 'NEXT: <one line - the recommended next action>', and, only if a decision or input from the user is missing, 'OPEN_QUESTION: <one line>'. Never leave the FINDING line out."
         ),
@@ -443,6 +447,17 @@ def _upgrade_jobs_for_version(
                         schedule["display"] = target_schedule
                         job["schedule_display"] = target_schedule
                         updated += 1
+
+    # v12 migration (AIS-554): swap only the source-status sentence, so prompts the
+    # user edited keep their edits.
+    if from_version < 12 <= to_version:
+        for job in jobs:
+            if not _job_is_aimds_default(job):
+                continue
+            prompt = str(job.get("prompt") or "")
+            if _OLD_SOURCES_SENTENCE in prompt:
+                job["prompt"] = prompt.replace(_OLD_SOURCES_SENTENCE, _NEW_SOURCES_SENTENCE)
+                updated += 1
 
     return updated
 
