@@ -26,6 +26,9 @@ def tree(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     monkeypatch.setattr(da, "desktop_platform_key", lambda: KEY)
     monkeypatch.setattr(da, "desktop_os_unsupported", lambda: None)
+    # The jump needs an existing desktop app; the lookup is OS-specific, the
+    # test runs on Linux CI too.
+    monkeypatch.setattr(cli_main, "_desktop_packaged_executable", lambda d: exe)
     return root
 
 
