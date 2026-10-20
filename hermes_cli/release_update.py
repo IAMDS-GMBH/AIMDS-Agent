@@ -65,11 +65,12 @@ MANIFEST_FORMAT = "hermes-release-v1"
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
-#: AIS-353: prebuilt desktop app per platform, `Hermes-<version>-<os>-<arch>.zip`
+#: AIS-353: prebuilt desktop app per platform, `<Product>-<version>-<os>-<arch>.zip`
 #: (electron-builder artifactName). Keep in sync with
 #: scripts/release_manifest_desktop.py and apps/desktop/electron/update-channels.cjs.
+#: AIS-476: any product prefix — this client installs the renamed release.
 _DESKTOP_ASSET_RE = re.compile(
-    r"^Hermes-(?P<version>\d+\.\d+\.\d+(?:-rc\.\d+)?)-(?P<platform>(?:mac|win|linux)-(?:arm64|x64|ia32))\.zip$"
+    r"^[A-Za-z][A-Za-z0-9-]*?-(?P<version>\d+\.\d+\.\d+(?:-rc\.\d+)?)-(?P<platform>(?:mac|win|linux)-(?:arm64|x64|ia32))\.zip$"
 )
 
 # A manifest is a handful of short scalars; anything larger is not one.

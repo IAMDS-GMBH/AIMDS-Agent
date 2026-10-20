@@ -109,33 +109,38 @@ def source_built_gui_artifacts(hermes_home: Path) -> "list[Path]":
     ]
 
 
+#: Product names the desktop app has shipped under: "Hermes" and the AIMDS
+#: product name of the rename release (AIS-476). Uninstall knows both.
+DESKTOP_PRODUCT_NAMES = ("Hermes", "AIMDS Agent")
+
+
 def packaged_gui_app_paths() -> "list[Path]":
     """Standard install locations of the packaged desktop distributable.
 
     Returns every candidate for the current OS; the caller filters to those
     that actually exist. We never glob system-wide — only the well-known
-    electron-builder output locations for the "Hermes" product.
+    electron-builder output locations for the product names in
+    :data:`DESKTOP_PRODUCT_NAMES`.
     """
     home = Path.home()
     paths: list[Path] = []
     if sys.platform == "darwin":
-        paths += [
-            Path("/Applications/Hermes.app"),
-            home / "Applications" / "Hermes.app",
-        ]
+        for name in DESKTOP_PRODUCT_NAMES:
+            paths += [
+                Path("/Applications") / f"{name}.app",
+                home / "Applications" / f"{name}.app",
+            ]
     elif sys.platform == "win32":
         local = os.environ.get("LOCALAPPDATA")
         local_base = Path(local) if local else (home / "AppData" / "Local")
-        paths += [
-            # NSIS per-user install (perMachine=false → Programs\Hermes).
-            local_base / "Programs" / "Hermes",
-            # Older / alternate layout some builds used.
-            local_base / "hermes-desktop",
-        ]
+        # NSIS per-user install (perMachine=false → Programs\<Product>).
+        paths += [local_base / "Programs" / name for name in DESKTOP_PRODUCT_NAMES]
+        # Older / alternate layout some builds used.
+        paths.append(local_base / "hermes-desktop")
         program_files = os.environ.get("ProgramFiles")
         if program_files:
             # NSIS per-machine fallback (needs admin to remove).
-            paths.append(Path(program_files) / "Hermes")
+            paths += [Path(program_files) / name for name in DESKTOP_PRODUCT_NAMES]
     else:
         # Linux: AppImage is a single file the user placed somewhere; we can
         # only reliably clean the desktop entry + icon we know the name of.
@@ -148,6 +153,7 @@ def packaged_gui_app_paths() -> "list[Path]":
         paths += [
             data_base / "applications" / "hermes.desktop",
             data_base / "applications" / "Hermes.desktop",
+            data_base / "applications" / "aimds-agent.desktop",
         ]
     return paths
 

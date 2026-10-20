@@ -92,6 +92,12 @@ test('resolveRemovableAppPath finds the install dir on Windows', () => {
 
 test('resolveRemovableAppPath returns null for an unrecognized Windows dir', () => {
   assert.equal(resolveRemovableAppPath('C:\\Temp\\foo\\Hermes.exe', 'win32'), null)
+  // AIS-476: the renamed product installs to Programs\\<Product>\\<Product>.exe.
+  assert.equal(
+    resolveRemovableAppPath('C:\\Users\\x\\AppData\\Local\\Programs\\AIMDS Agent\\AIMDS Agent.exe', 'win32'),
+    'C:\\Users\\x\\AppData\\Local\\Programs\\AIMDS Agent'
+  )
+  assert.equal(resolveRemovableAppPath('C:\\Users\\x\\AppData\\Local\\Programs\\Other\\Tool.exe', 'win32'), null)
 })
 
 test('resolveRemovableAppPath uses APPIMAGE on Linux when set', () => {

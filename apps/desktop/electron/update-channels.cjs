@@ -34,7 +34,9 @@ const COMMIT_SHA_RE = /^[0-9a-f]{40}$/
 const SHA256_RE = /^[0-9a-f]{64}$/
 // AIS-353: prebuilt desktop app per platform — keep in sync with
 // hermes_cli/release_update.py (_DESKTOP_ASSET_RE) and scripts/release_manifest_desktop.py.
-const DESKTOP_ASSET_RE = /^Hermes-(\d+\.\d+\.\d+(?:-rc\.\d+)?)-((?:mac|win|linux)-(?:arm64|x64|ia32))\.zip$/
+// AIS-476: any product prefix (Hermes-…, AIMDS-Agent-…): this client's code
+// installs the renamed release, so it must not reject the new asset name.
+const DESKTOP_ASSET_RE = /^[A-Za-z][A-Za-z0-9-]*?-(\d+\.\d+\.\d+(?:-rc\.\d+)?)-((?:mac|win|linux)-(?:arm64|x64|ia32))\.zip$/
 
 function normalizeChannel(name) {
   const value = String(name || '').trim()

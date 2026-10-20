@@ -1467,6 +1467,45 @@ except Exception:
 PY
 }
 
+# AIS-476: the desktop app is found by shape, not by the literal "Hermes"
+# name, so a renamed release installs through this script too.
+# macOS: the *.app in DIR whose CFBundleExecutable exists; Linux: the
+# executable Electron binary in DIR (not the sandbox/crashpad helpers).
+find_desktop_app_bundle() {
+    local dir="$1" cand
+    for cand in "$dir"/*.app; do
+        [ -d "$cand" ] && [ -n "$(find_desktop_app_executable "$cand")" ] && { printf '%s\n' "$cand"; return 0; }
+    done
+    return 1
+}
+
+find_desktop_app_executable() {
+    local bundle="$1" exe=""
+    if [ -f "$bundle/Contents/Info.plist" ] && [ -x /usr/libexec/PlistBuddy ]; then
+        exe="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$bundle/Contents/Info.plist" 2>/dev/null || true)"
+    fi
+    if [ -n "$exe" ] && [ -x "$bundle/Contents/MacOS/$exe" ]; then
+        printf '%s\n' "$bundle/Contents/MacOS/$exe"
+        return 0
+    fi
+    for exe in "$bundle"/Contents/MacOS/*; do
+        [ -f "$exe" ] && [ -x "$exe" ] && { printf '%s\n' "$exe"; return 0; }
+    done
+    return 1
+}
+
+find_linux_desktop_executable() {
+    local dir="$1" cand base
+    for cand in "$dir"/*; do
+        base="${cand##*/}"
+        case "$base" in
+            *.*|chrome-sandbox|chrome_crashpad_handler) continue ;;
+        esac
+        [ -f "$cand" ] && [ -x "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+    done
+    return 1
+}
+
 install_prebuilt_desktop() {
     local desktop_dir="$INSTALL_DIR/apps/desktop"
     [ -f "$INSTALL_DIR/$RELEASE_MARKER_FILE" ] || return 1
@@ -1493,14 +1532,17 @@ install_prebuilt_desktop() {
     read -r name sha size <<EOF
 $entry
 EOF
+    # Any product prefix (Hermes-…, AIMDS-Agent-…; AIS-476), never spaces.
+    local name_ok=0
     case "$name" in
-        Hermes-*-"$key".zip) ;;
-        *)
-            log_warn "Unexpected desktop asset name $name; building the desktop app locally"
-            rm -rf "$tmp"
-            return 1
-            ;;
+        *[!A-Za-z0-9.-]*) name_ok=0 ;;
+        [A-Za-z]*-*-"$key".zip) name_ok=1 ;;
     esac
+    if [ "$name_ok" != 1 ]; then
+        log_warn "Unexpected desktop asset name $name; building the desktop app locally"
+        rm -rf "$tmp"
+        return 1
+    fi
     log_info "Downloading the signed desktop app $name ($tag) ..."
     if ! curl -fL --retry 3 --progress-bar -o "$tmp/$name" "https://github.com/$RELEASE_REPO/releases/download/$tag/$name"; then
         log_warn "Desktop asset download failed; building the desktop app locally"
@@ -1525,8 +1567,8 @@ EOF
         rm -rf "$tmp"
         return 1
     fi
-    if [ ! -x "$tmp/unpacked/Hermes.app/Contents/MacOS/Hermes" ]; then
-        log_warn "$name does not contain Hermes.app; building the desktop app locally"
+    if [ -z "$(find_desktop_app_bundle "$tmp/unpacked")" ]; then
+        log_warn "$name does not contain the desktop app; building the desktop app locally"
         rm -rf "$tmp"
         return 1
     fi
@@ -5183,21 +5225,9 @@ install_desktop() {
 
     local app=""
     if [ "$OS" = "linux" ]; then
-        if [ -x "$desktop_dir/release/linux-unpacked/Hermes" ]; then
-            app="$desktop_dir/release/linux-unpacked/Hermes"
-        elif [ -x "$desktop_dir/release/linux-unpacked/hermes" ]; then
-            app="$desktop_dir/release/linux-unpacked/hermes"
-        fi
+        app="$(find_linux_desktop_executable "$desktop_dir/release/linux-unpacked" || true)"
     else
-        local cand
-        for cand in \
-            "$desktop_dir/release/mac-arm64/Hermes.app" \
-            "$desktop_dir/release/mac/Hermes.app"; do
-            if [ -d "$cand" ]; then
-                app="$cand"
-                break
-            fi
-        done
+        app="$(find_desktop_app_bundle "$desktop_dir/release/mac-arm64" || find_desktop_app_bundle "$desktop_dir/release/mac" || true)"
     fi
     if [ -z "$app" ]; then
         log_error "Desktop build completed but no app was found under $desktop_dir/release/"

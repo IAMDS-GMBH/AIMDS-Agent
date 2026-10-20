@@ -144,7 +144,8 @@ def test_desktop_build_is_skipped_for_a_current_prebuilt_app(tmp_path, monkeypat
 
     root = tmp_path / "hermes-agent"
     desktop_dir = root / "apps" / "desktop"
-    exe = da.expected_executable(desktop_dir / "release" / da.RELEASE_DIRS[key], key)
+    app_dir = desktop_dir / "release" / da.RELEASE_DIRS[key]
+    exe = app_dir / ("Hermes.app/Contents/MacOS/Hermes" if key.startswith("mac") else "Hermes.exe")
     exe.parent.mkdir(parents=True)
     exe.write_bytes(b"signed")
     write_release_marker(root, channel="stable", tag="v1.2.3", version="1.2.3", commit_sha=COMMIT, sha256="a" * 64, build_id="b")
@@ -175,3 +176,35 @@ def test_desktop_os_unsupported_only_below_macos_13():
     assert desktop_os_unsupported("Linux", "") is None
     # An unreadable version never blocks.
     assert desktop_os_unsupported("Darwin", "unknown") is None
+
+
+@pytest.mark.parametrize(
+    "key, files, expected",
+    [
+        ("mac-arm64", {"AIMDS Agent.app/Contents/MacOS/AIMDS Agent": b"x"}, "AIMDS Agent.app/Contents/MacOS/AIMDS Agent"),
+        ("mac-arm64", {"Hermes.app/Contents/MacOS/Hermes": b"x"}, "Hermes.app/Contents/MacOS/Hermes"),
+        ("win-x64", {"AIMDS Agent.exe": b"x", "Uninstall AIMDS Agent.exe": b"x", "resources/app.asar": b"a"}, "AIMDS Agent.exe"),
+        ("win-x64", {"README.txt": b"x"}, None),
+        ("linux-x64", {"aimds-agent": b"x", "chrome-sandbox": b"x", "libffmpeg.so": b"x"}, "aimds-agent"),
+    ],
+)
+def test_app_is_found_by_shape_not_by_name(tmp_path, key, files, expected):
+    # AIS-476: this client installs the renamed release, so the lookup must
+    # not depend on the literal Hermes name.
+    for rel, data in files.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    found = da.find_app_executable(tmp_path, key)
+    assert (found.relative_to(tmp_path).as_posix() if found else None) == expected
+
+
+def test_mac_executable_comes_from_the_bundle_plist(tmp_path):
+    import plistlib
+
+    bundle = tmp_path / "AIMDS Agent.app"
+    (bundle / "Contents" / "MacOS").mkdir(parents=True)
+    (bundle / "Contents" / "MacOS" / "AIMDS Agent").write_bytes(b"x")
+    (bundle / "Contents" / "MacOS" / "AAA helper").write_bytes(b"x")
+    (bundle / "Contents" / "Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "AIMDS Agent"}))
+    assert da.find_app_executable(tmp_path, "mac-arm64") == bundle / "Contents" / "MacOS" / "AIMDS Agent"

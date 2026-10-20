@@ -69,5 +69,5 @@ def test_rejects_a_foreign_version_or_name(tmp_path):
     odd_name = tmp_path / "HermesSetup.dmg"
     odd_name.write_bytes(b"x")
     result = _run(str(manifest), str(odd_name))
-    assert result.returncode == 1 and "not a Hermes-<version>-<os>-<arch>.zip" in result.stderr
+    assert result.returncode == 1 and "not a <Product>-<version>-<os>-<arch>.zip" in result.stderr
     assert "desktop" not in json.loads(manifest.read_text(encoding="utf-8"))

@@ -233,31 +233,69 @@ pub async fn launch_hermes_desktop(
     Ok(())
 }
 
-/// Walks the well-known electron-builder unpacked-app paths under
-/// `install_root`. Mirrors the resolver in `cmd_gui` (apps/desktop/release/
-/// <os>-unpacked/<exe>).
+/// Walks the electron-builder unpacked-app dirs under `install_root`
+/// (apps/desktop/release/<os>-unpacked, mac{,-arm64}) and finds the app by
+/// shape, not by the literal "Hermes" name (AIS-476): this installer updates
+/// to the renamed release, so it must find `AIMDS Agent.app` / `.exe` too.
+/// Mirrors `find_app_executable` in hermes_cli/desktop_asset.py.
 pub(crate) fn resolve_hermes_desktop_exe(install_root: &std::path::Path) -> Option<PathBuf> {
     let release_dir = install_root.join("apps").join("desktop").join("release");
-    let candidates: &[(&str, &str)] = if cfg!(target_os = "windows") {
-        &[
-            ("win-unpacked", "Hermes.exe"),
-            ("win-arm64-unpacked", "Hermes.exe"),
-        ]
+    let subdirs: &[&str] = if cfg!(target_os = "windows") {
+        &["win-unpacked", "win-arm64-unpacked"]
     } else if cfg!(target_os = "macos") {
-        &[
-            ("mac/Hermes.app/Contents/MacOS", "Hermes"),
-            ("mac-arm64/Hermes.app/Contents/MacOS", "Hermes"),
-        ]
+        &["mac", "mac-arm64"]
     } else {
-        &[("linux-unpacked", "hermes")]
+        &["linux-unpacked", "linux-arm64-unpacked"]
     };
-    for (subdir, exe) in candidates {
-        let p = release_dir.join(subdir).join(exe);
-        if p.exists() {
-            return Some(p);
-        }
+    subdirs
+        .iter()
+        .find_map(|sub| find_app_executable(&release_dir.join(sub)))
+}
+
+/// Sorted directory entries (deterministic choice when several match).
+fn sorted_entries(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).collect())
+        .unwrap_or_default();
+    entries.sort();
+    entries
+}
+
+/// The app executable in one unpacked build dir for this OS:
+/// macOS — the file in `<X>.app/Contents/MacOS` (Electron keeps only the main
+/// binary there); Windows — the top-level `*.exe` that is not the uninstaller
+/// or the elevate helper; Linux — the extension-less top-level file that is
+/// not an Electron helper.
+pub(crate) fn find_app_executable(dir: &std::path::Path) -> Option<PathBuf> {
+    find_app_executable_for(dir, std::env::consts::OS)
+}
+
+pub(crate) fn find_app_executable_for(dir: &std::path::Path, os: &str) -> Option<PathBuf> {
+    let file_name = |p: &PathBuf| p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+    match os {
+        "macos" => sorted_entries(dir)
+            .into_iter()
+            .filter(|p| p.is_dir() && p.extension().and_then(|e| e.to_str()) == Some("app"))
+            .find_map(|bundle| {
+                sorted_entries(&bundle.join("Contents").join("MacOS"))
+                    .into_iter()
+                    .find(|p| p.is_file())
+            }),
+        "windows" => sorted_entries(dir).into_iter().find(|p| {
+            let name = file_name(p).to_ascii_lowercase();
+            p.is_file()
+                && name.ends_with(".exe")
+                && !name.starts_with("uninstall")
+                && name != "elevate.exe"
+        }),
+        _ => sorted_entries(dir).into_iter().find(|p| {
+            let name = file_name(p);
+            p.is_file()
+                && p.extension().is_none()
+                && name != "chrome-sandbox"
+                && name != "chrome_crashpad_handler"
+        }),
     }
-    None
 }
 
 #[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))]
@@ -265,7 +303,7 @@ pub(crate) fn resolve_hermes_desktop_app(install_root: &std::path::Path) -> Opti
     let exe = resolve_hermes_desktop_exe(install_root)?;
     #[cfg(target_os = "macos")]
     {
-        // .../Hermes.app/Contents/MacOS/Hermes -> .../Hermes.app
+        // .../<Name>.app/Contents/MacOS/<exe> -> .../<Name>.app
         let app = exe.parent()?.parent()?.parent()?.to_path_buf();
         if app.extension().and_then(|e| e.to_str()) == Some("app") && app.is_dir() {
             return Some(app);
@@ -1073,6 +1111,33 @@ mod tests {
         {
             assert_eq!(resolved, expected);
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // AIS-476: the renamed release is found by shape on every OS.
+    #[test]
+    fn find_app_executable_finds_a_renamed_app() {
+        let root = unique_tmp_dir("renamed");
+        let mac = root.join("mac");
+        let macos = mac.join("AIMDS Agent.app").join("Contents").join("MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        std::fs::write(macos.join("AIMDS Agent"), b"x").unwrap();
+        assert_eq!(find_app_executable_for(&mac, "macos"), Some(macos.join("AIMDS Agent")));
+
+        let win = root.join("win-unpacked");
+        std::fs::create_dir_all(&win).unwrap();
+        for name in ["AIMDS Agent.exe", "Uninstall AIMDS Agent.exe", "elevate.exe", "ffmpeg.dll"] {
+            std::fs::write(win.join(name), b"x").unwrap();
+        }
+        assert_eq!(find_app_executable_for(&win, "windows"), Some(win.join("AIMDS Agent.exe")));
+
+        let linux = root.join("linux-unpacked");
+        std::fs::create_dir_all(&linux).unwrap();
+        for name in ["aimds-agent", "chrome-sandbox", "libffmpeg.so"] {
+            std::fs::write(linux.join(name), b"x").unwrap();
+        }
+        assert_eq!(find_app_executable_for(&linux, "linux"), Some(linux.join("aimds-agent")));
+        assert_eq!(find_app_executable_for(&root.join("missing"), "linux"), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 

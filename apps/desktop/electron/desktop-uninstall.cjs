@@ -90,9 +90,12 @@ function resolveRemovableAppPath(execPath, platform, env = {}) {
   }
 
   if (platform === 'win32') {
-    // NSIS per-user installs Hermes.exe directly in the install dir.
+    // NSIS per-user installs <Product>.exe directly in Programs\<Product>
+    // (Hermes, later the renamed product — AIS-476).
     const dir = p.dirname(exe)
     if (/[\\/]Hermes$/i.test(dir) || /[\\/]hermes-desktop$/i.test(dir)) return dir
+    const inPrograms = /[\\/]Programs$/i.test(p.dirname(dir))
+    if (inPrograms && p.basename(dir).toLowerCase() === p.basename(exe, p.extname(exe)).toLowerCase()) return dir
     return null
   }
 
