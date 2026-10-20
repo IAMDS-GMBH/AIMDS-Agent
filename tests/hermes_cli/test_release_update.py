@@ -497,3 +497,17 @@ def test_desktop_assets_are_optional_and_resolved_to_download_urls():
 def test_malformed_desktop_assets_fail_the_manifest(desktop, message):
     with pytest.raises(ReleaseFeedError, match=message):
         _validate(_manifest(desktop=desktop))
+
+
+@pytest.mark.parametrize("name", ["Hermes-1.2.3-mac-arm64.zip", "AIMDS-Agent-1.2.3-mac-arm64.zip", "AIMDSAgent-1.2.3-mac-arm64.zip"])
+def test_renamed_desktop_asset_is_accepted(name):
+    # AIS-476: this client installs the renamed release; rejecting its asset
+    # name would fail the whole manifest and stop every update.
+    feed = _validate(_manifest(desktop={"mac-arm64": {"name": name, "sha256": "b" * 64, "size": 1}}))
+    assert feed.desktop["mac-arm64"].name == name
+
+
+@pytest.mark.parametrize("name", ["AIMDS Agent-1.2.3-mac-arm64.zip", "-1.2.3-mac-arm64.zip", "1.2.3-mac-arm64.zip"])
+def test_desktop_asset_prefix_has_no_spaces(name):
+    with pytest.raises(ReleaseFeedError, match="unexpected name"):
+        _validate(_manifest(desktop={"mac-arm64": {"name": name, "sha256": "b" * 64, "size": 1}}))

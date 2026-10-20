@@ -110,4 +110,8 @@ def test_install_ps1_prefers_the_prebuilt_desktop_app(ps1: str) -> None:
     assert "Get-FileHash -Algorithm SHA256" in ps1
     assert "hermes-prebuilt-desktop-v1" in ps1
     body = ps1[ps1.index("function Install-Desktop {") :]
-    assert "if (Install-PrebuiltDesktop) { return }" in body[:400]
+    head = body[:900]
+    assert "if (Install-PrebuiltDesktop) {" in head
+    # AIS-476: the prebuilt path also creates the shortcuts, then returns
+    # before the local build.
+    assert head.index("New-DesktopShortcuts") < head.index("\n        return\n")

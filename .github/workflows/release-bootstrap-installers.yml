@@ -959,7 +959,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          app="$(ls -d apps/desktop/release/mac*/Hermes.app | head -1)"
+          # AIS-476: the bundle by shape, not by the literal Hermes.app.
+          shopt -s nullglob
+          apps=(apps/desktop/release/mac*/*.app)
+          if [ ${#apps[@]} -eq 0 ]; then
+            echo "::error::electron-builder produced no .app under apps/desktop/release/mac*/"
+            exit 1
+          fi
+          app="${apps[0]}"
           codesign --verify --deep --strict --verbose=2 "$app"
           # codesign -dv at the default verbosity never prints Authority=
           # lines at all (confirmed locally against a real Developer-ID-signed
@@ -967,7 +974,7 @@ jobs:
           # permanent false negative regardless of whether signing was
           # correct, unreached until the AIS-389/390 fixes got this far.
           if ! codesign -dv --verbose=4 "$app" 2>&1 | grep -q "Authority=Developer ID Application"; then
-            echo "::error::Hermes.app is not signed with a Developer ID certificate"
+            echo "::error::$app is not signed with a Developer ID certificate"
             exit 1
           fi
           xcrun stapler validate "$app"
@@ -1005,9 +1012,13 @@ jobs:
         if: runner.os == 'Windows' && github.ref == 'refs/heads/main' && inputs.skip_signing != true
         shell: powershell
         run: |
-          $sig = Get-AuthenticodeSignature -FilePath "apps/desktop/release/win-unpacked/Hermes.exe"
-          Write-Host "Hermes.exe: $($sig.Status) ($($sig.SignerCertificate.Subject))"
-          if ($sig.Status -ne 'Valid') { throw "Hermes.exe signature status is '$($sig.Status)' (expected 'Valid')" }
+          # AIS-476: the app exe by shape, not by the literal Hermes.exe.
+          $exe = Get-ChildItem -Path "apps/desktop/release/win-unpacked" -Filter *.exe -File |
+            Where-Object { $_.Name -notlike 'Uninstall*' -and $_.Name -ne 'elevate.exe' } | Select-Object -First 1
+          if (-not $exe) { throw "no desktop exe in apps/desktop/release/win-unpacked" }
+          $sig = Get-AuthenticodeSignature -FilePath $exe.FullName
+          Write-Host "$($exe.Name): $($sig.Status) ($($sig.SignerCertificate.Subject))"
+          if ($sig.Status -ne 'Valid') { throw "$($exe.Name) signature status is '$($sig.Status)' (expected 'Valid')" }
 
       - name: Collect macOS desktop asset
         if: runner.os == 'macOS'
@@ -1016,9 +1027,9 @@ jobs:
           set -euo pipefail
           mkdir -p release-artifacts
           shopt -s nullglob
-          zips=(apps/desktop/release/Hermes-*-mac-*.zip)
+          zips=(apps/desktop/release/*-mac-*.zip)
           if [ ${#zips[@]} -eq 0 ]; then
-            echo "::error::electron-builder produced no Hermes-<version>-mac-<arch>.zip"
+            echo "::error::electron-builder produced no <Product>-<version>-mac-<arch>.zip"
             exit 1
           fi
           cp -v "${zips[@]}" release-artifacts/
@@ -1033,9 +1044,11 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
           $src = "apps/desktop/release/win-unpacked"
-          if (-not (Test-Path "$src/Hermes.exe")) { throw "no unpacked Windows app at $src" }
+          if (-not (Test-Path "$src/resources/app.asar")) { throw "no unpacked Windows app at $src" }
           New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
-          $zip = "release-artifacts/Hermes-$env:RELEASE_VERSION-win-$arch.zip"
+          # Same prefix as electron-builder's artifactName for the mac zip (AIS-476).
+          $prefix = (Get-Content apps/desktop/package.json -Raw | ConvertFrom-Json).build.artifactName -replace '-\$\{version\}.*$', ''
+          $zip = "release-artifacts/$prefix-$env:RELEASE_VERSION-win-$arch.zip"
           Compress-Archive -Path "$src/*" -DestinationPath $zip -CompressionLevel Optimal
           Get-Item $zip | Format-List Name, Length
 
@@ -1315,13 +1328,13 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           manifests=(release-assets/*/hermes-release.json)
-          assets=(release-assets/*/Hermes-*.zip)
+          assets=(release-assets/*/*-mac-*.zip release-assets/*/*-win-*.zip release-assets/*/*-linux-*.zip)
           if [ ${#manifests[@]} -ne 1 ]; then
             echo "::error::expected exactly one hermes-release.json among the artifacts, found ${#manifests[@]}"
             exit 1
           fi
           if [ ${#assets[@]} -eq 0 ]; then
-            echo "::error::no Hermes-<version>-<os>-<arch>.zip desktop assets among the artifacts"
+            echo "::error::no <Product>-<version>-<os>-<arch>.zip desktop assets among the artifacts"
             exit 1
           fi
           python3 scripts/release_manifest_desktop.py "${manifests[0]}" "${assets[@]}"
@@ -1337,7 +1350,8 @@ jobs:
           shopt -s nullglob
           files=(release-assets/**/HermesSetup.dmg release-assets/**/HermesSetup.exe release-assets/**/HermesSetup.AppImage release-assets/**/HermesSetup.deb release-assets/**/HermesSetup.rpm release-assets/**/HermesSetup-debug.dmg release-assets/**/HermesSetup-debug.exe)
           files+=(release-assets/**/hermes-source-*.zip release-assets/**/hermes-source-*.zip.sha256 release-assets/**/hermes-release.json)
-          files+=(release-assets/**/Hermes-*.zip release-assets/**/Hermes-*.zip.sha256)
+          files+=(release-assets/**/*-mac-*.zip release-assets/**/*-win-*.zip release-assets/**/*-linux-*.zip)
+          files+=(release-assets/**/*-mac-*.zip.sha256 release-assets/**/*-win-*.zip.sha256 release-assets/**/*-linux-*.zip.sha256)
           if [ ${#files[@]} -eq 0 ]; then
             files=(release-assets/**/*.dmg release-assets/**/*.exe release-assets/**/*.AppImage release-assets/**/*.deb release-assets/**/*.rpm)
           fi
@@ -1412,7 +1426,7 @@ jobs:
             gh release create "$TAG" --target "$target" "${flags[@]}"
           fi
           shopt -s nullglob globstar
-          files=("$ASSET_DIR"/**/HermesSetup* "$ASSET_DIR"/**/hermes-source-* "$ASSET_DIR"/**/hermes-release.json "$ASSET_DIR"/**/Hermes-*.zip "$ASSET_DIR"/**/Hermes-*.zip.sha256)
+          files=("$ASSET_DIR"/**/HermesSetup* "$ASSET_DIR"/**/hermes-source-* "$ASSET_DIR"/**/hermes-release.json "$ASSET_DIR"/**/*-mac-*.zip* "$ASSET_DIR"/**/*-win-*.zip* "$ASSET_DIR"/**/*-linux-*.zip*)
           if [ ${#files[@]} -eq 0 ]; then
             echo "::error::No assets found under $ASSET_DIR to mirror"
             exit 1

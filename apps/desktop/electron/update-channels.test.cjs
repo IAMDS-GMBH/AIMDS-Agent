@@ -383,4 +383,16 @@ test('validateReleaseManifest: desktop assets are optional, resolved to download
   )
   assert.match(badHash.error, /sha256/)
   assert.equal(validateReleaseManifest(manifest({ desktop: [] }), { channel: 'stable' }).ok, false)
+
+  // AIS-476: the renamed release's asset must not fail this client's manifest.
+  const renamed = validateReleaseManifest(
+    manifest({ desktop: { 'mac-arm64': { name: 'AIMDS-Agent-0.7.6-mac-arm64.zip', sha256: 'b'.repeat(64), size: 1 } } }),
+    { channel: 'stable' }
+  )
+  assert.equal(renamed.ok, true, renamed.error)
+  const spaced = validateReleaseManifest(
+    manifest({ desktop: { 'mac-arm64': { name: 'AIMDS Agent-0.7.6-mac-arm64.zip', sha256: 'b'.repeat(64), size: 1 } } }),
+    { channel: 'stable' }
+  )
+  assert.equal(spaced.ok, false)
 })

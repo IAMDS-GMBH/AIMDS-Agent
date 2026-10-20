@@ -3,7 +3,7 @@
 
 Usage: release_manifest_desktop.py <hermes-release.json> <asset>...
 
-Each asset is a ``Hermes-<version>-<os>-<arch>.zip`` produced by the
+Each asset is a ``<Product>-<version>-<os>-<arch>.zip`` (``Hermes-…``, later ``AIMDS-Agent-…``) produced by the
 ``build-desktop`` job (electron-builder ``artifactName``). The manifest gets a
 ``desktop`` map::
 
@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 
 ASSET_RE = re.compile(
-    r"^Hermes-(?P<version>\d+\.\d+\.\d+(?:-rc\.\d+)?)-(?P<platform>(?:mac|win|linux)-(?:arm64|x64|ia32))\.zip$"
+    r"^[A-Za-z][A-Za-z0-9-]*?-(?P<version>\d+\.\d+\.\d+(?:-rc\.\d+)?)-(?P<platform>(?:mac|win|linux)-(?:arm64|x64|ia32))\.zip$"
 )
 
 
@@ -54,7 +54,7 @@ def main(argv: list[str]) -> int:
     for asset in assets:
         match = ASSET_RE.match(asset.name)
         if not match:
-            print(f"error: {asset.name} is not a Hermes-<version>-<os>-<arch>.zip desktop asset", file=sys.stderr)
+            print(f"error: {asset.name} is not a <Product>-<version>-<os>-<arch>.zip desktop asset", file=sys.stderr)
             return 1
         if match.group("version") != version:
             print(

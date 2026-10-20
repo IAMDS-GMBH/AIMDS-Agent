@@ -4040,6 +4040,20 @@ function Clear-ElectronBuildCache {
     return $removed
 }
 
+function Find-DesktopExe {
+    # AIS-476: the packed desktop app found by shape, not by the literal
+    # "Hermes.exe", so a renamed release installs through this script too:
+    # the top-level *.exe beside resources\app.asar (not the uninstaller or
+    # the elevate helper).
+    param([Parameter(Mandatory = $true)][string]$Dir)
+    if (-not (Test-Path (Join-Path $Dir "resources\app.asar"))) { return $null }
+    $exe = Get-ChildItem -Path $Dir -Filter *.exe -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notlike 'Uninstall*' -and $_.Name -ne 'elevate.exe' } |
+        Select-Object -First 1
+    if ($exe) { return $exe.FullName }
+    return $null
+}
+
 function Install-PrebuiltDesktop {
     # AIS-353: release channels ship the pipeline-signed desktop app as
     # Hermes-<version>-win-<arch>.zip (the unpacked app, exe Authenticode-signed).
@@ -4068,7 +4082,8 @@ function Install-PrebuiltDesktop {
         }
         $name = [string]$entry.Value.name
         $expected = ([string]$entry.Value.sha256).ToLower()
-        if ($name -notmatch "^Hermes-.+-$key\.zip$" -or $expected.Length -ne 64) {
+        # Any product prefix (Hermes-..., AIMDS-Agent-...; AIS-476), never spaces.
+        if ($name -cnotmatch "^[A-Za-z][A-Za-z0-9-]*-.+-$key\.zip$" -or $name -match '\s' -or $expected.Length -ne 64) {
             Write-Warn "Unexpected desktop asset $name; building the desktop app locally"
             return $false
         }
@@ -4082,8 +4097,8 @@ function Install-PrebuiltDesktop {
         }
         $staging = Join-Path $tmp "unpacked"
         Expand-Archive -Path $zip -DestinationPath $staging -Force
-        if (-not (Test-Path (Join-Path $staging "Hermes.exe"))) {
-            Write-Warn "$name does not contain Hermes.exe; building the desktop app locally"
+        if (-not (Find-DesktopExe -Dir $staging)) {
+            Write-Warn "$name does not contain the desktop app; building the desktop app locally"
             return $false
         }
         New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
@@ -4111,7 +4126,14 @@ function Install-PrebuiltDesktop {
 
 function Install-Desktop {
     # AIS-353: release-managed installs take the pipeline-signed app.
-    if (Install-PrebuiltDesktop) { return }
+    if (Install-PrebuiltDesktop) {
+        # The prebuilt path used to return without shortcuts (AIS-476).
+        $releaseDir = Join-Path (Join-Path $InstallDir "apps\desktop") "release"
+        $prebuiltExe = (Find-DesktopExe -Dir (Join-Path $releaseDir "win-unpacked"))
+        if (-not $prebuiltExe) { $prebuiltExe = (Find-DesktopExe -Dir (Join-Path $releaseDir "win-arm64-unpacked")) }
+        if ($prebuiltExe) { New-DesktopShortcuts -TargetExe $prebuiltExe }
+        return
+    }
     # Build apps/desktop into a launchable Hermes.exe. Only called from
     # Stage-Desktop, which is itself only included in the manifest when
     # -IncludeDesktop was passed to install.ps1.
@@ -4346,23 +4368,15 @@ function Install-Desktop {
 
     # 3. Sanity-check the produced binary. Probe both arches so this works
     # on x64 and arm64 build machines.
-    $exeCandidates = @(
-        "$desktopDir\release\win-unpacked\Hermes.exe",
-        "$desktopDir\release\win-arm64-unpacked\Hermes.exe"
-    )
-    $found = $false
     $desktopExe = $null
-    foreach ($cand in $exeCandidates) {
-        if (Test-Path $cand) {
-            Write-Success "Desktop ready: $cand"
-            $desktopExe = $cand
-            $found = $true
-            break
-        }
+    foreach ($unpacked in @("$desktopDir\release\win-unpacked", "$desktopDir\release\win-arm64-unpacked")) {
+        $desktopExe = Find-DesktopExe -Dir $unpacked
+        if ($desktopExe) { break }
     }
-    if (-not $found) {
-        throw "Desktop build completed but no Hermes.exe was found under $desktopDir\release\*-unpacked\"
+    if (-not $desktopExe) {
+        throw "Desktop build completed but no desktop app was found under $desktopDir\release\*-unpacked\"
     }
+    Write-Success "Desktop ready: $desktopExe"
 
     # 3b. The Hermes icon + identity are stamped onto Hermes.exe by the
     #     electron-builder `afterPack` hook (apps/desktop/scripts/after-pack.cjs)
@@ -4403,10 +4417,24 @@ function New-DesktopShortcuts {
             $iconLocation = "$TargetExe,0"
         }
 
-        $targets = @(
-            (Join-Path ([Environment]::GetFolderPath('Programs')) 'Hermes.lnk'),
-            (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Hermes.lnk')
-        )
+        # The shortcut carries the app's own name (Hermes.lnk, later the
+        # renamed product); stale shortcuts of this install that point at a
+        # previous exe name are replaced, not left dangling (AIS-476).
+        $appName = [System.IO.Path]::GetFileNameWithoutExtension($TargetExe)
+        $folders = @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop'))
+        $targets = @($folders | ForEach-Object { Join-Path $_ "$appName.lnk" })
+        $releaseRoot = Split-Path -Parent $workDir
+        foreach ($folder in $folders) {
+            Get-ChildItem -Path $folder -Filter *.lnk -File -ErrorAction SilentlyContinue | ForEach-Object {
+                try {
+                    $old = $shell.CreateShortcut($_.FullName)
+                    if ($old.TargetPath -and $old.TargetPath.StartsWith($releaseRoot, [StringComparison]::OrdinalIgnoreCase) -and $_.Name -ne "$appName.lnk") {
+                        Remove-Item -Force $_.FullName
+                        Write-Info "Removed old shortcut $($_.FullName)"
+                    }
+                } catch { }
+            }
+        }
 
         foreach ($lnkPath in $targets) {
             try {
@@ -4418,7 +4446,7 @@ function New-DesktopShortcuts {
                 $sc.TargetPath = $TargetExe
                 $sc.WorkingDirectory = $workDir
                 $sc.IconLocation = $iconLocation
-                $sc.Description = 'Hermes Agent'
+                $sc.Description = if ($appName -eq 'Hermes') { 'Hermes Agent' } else { $appName }
                 $sc.Save()
                 Write-Success "Shortcut created: $lnkPath"
             } catch {
