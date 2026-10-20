@@ -146,3 +146,34 @@ def test_remote_health_summary_lists_document_services():
         {"model": {"provider": "openai", "base_url": "https://suite.example.test/litellm/v1"}}
     )
     assert (provider, url) == ("openai", "https://suite.example.test/uptime/health")
+
+
+def test_key_endpoint_rejects_a_key_of_another_environment(suite_env, monkeypatch):
+    # AIS-599: a staging login must not land in the prod slot.
+    from hermes_cli import iamds_suite
+
+    cfg = {"providers": {
+        "aimds-suite-prod": {"base_url": "https://suite.iamds.com/litellm/v1"},
+        "aimds-suite-staging": {"base_url": "https://staging.suite.iamds.com/litellm/v1"},
+    }}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr(iamds_suite, "verify_suite_key", lambda url, key, **k: iamds_suite.KEY_OK)
+    saved = {}
+    monkeypatch.setattr("hermes_cli.config.save_env_value", lambda k, v: saved.__setitem__(k, v))
+    monkeypatch.setattr(iamds_suite, "apply_reauth", lambda provider: {"provider": provider})
+
+    resp = client.post(
+        "/api/providers/aimds-suite/aimds-suite-prod/key", headers=HEADERS,
+        json={"api_key": "sk-staging", "base_url": "https://staging.suite.iamds.com"},
+    )
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "wrong_environment"
+    assert saved == {}
+
+    resp = client.post(
+        "/api/providers/aimds-suite/auto/key", headers=HEADERS,
+        json={"api_key": "sk-staging", "base_url": "https://staging.suite.iamds.com"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["provider"] == "aimds-suite-staging" and resp.json()["verified"] is True
+    assert saved == {"IAMDS_LITELLM_STAGING_API_KEY": "sk-staging"}

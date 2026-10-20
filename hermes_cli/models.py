@@ -2259,20 +2259,16 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if not base_raw:
                 base_raw = os.getenv("IAMDS_LITELLM_STAGING_BASE_URL", "").strip() or "https://staging.suite.iamds.com/litellm/v1"
             if not api_key:
-                api_key = (
-                    os.getenv("IAMDS_LITELLM_STAGING_API_KEY", "").strip()
-                    or os.getenv("IAMDS_LITELLM_API_KEY", "").strip()
-                    or os.getenv("OPENAI_API_KEY", "").strip()
-                )
+                # Own key only (AIS-599): the prod key on staging/dev answers
+                # 401 token_not_found_in_db and lists nothing useful.
+                api_key = os.getenv("IAMDS_LITELLM_STAGING_API_KEY", "").strip()
         elif normalized == "aimds-suite-dev":
             if not base_raw:
                 base_raw = os.getenv("IAMDS_LITELLM_DEV_BASE_URL", "").strip() or "https://dev.suite.iamds.com/litellm/v1"
             if not api_key:
-                api_key = (
-                    os.getenv("IAMDS_LITELLM_DEV_API_KEY", "").strip()
-                    or os.getenv("IAMDS_LITELLM_API_KEY", "").strip()
-                    or os.getenv("OPENAI_API_KEY", "").strip()
-                )
+                # Own key only (AIS-599): the prod key on staging/dev answers
+                # 401 token_not_found_in_db and lists nothing useful.
+                api_key = os.getenv("IAMDS_LITELLM_DEV_API_KEY", "").strip()
         else:
             if not base_raw:
                 base_raw = (

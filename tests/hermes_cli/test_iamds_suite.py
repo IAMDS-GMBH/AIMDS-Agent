@@ -775,3 +775,87 @@ class TestModelFamilies:
             "aimds-suite-prod", "claude-sonnet-5.5", tier="fast", available=self.AFTER, metadata={},
         )
         assert (model, reason) == ("claude-haiku-5.5", "preference")
+
+
+# --------------------------------------------------------------------------- AIS-599 key check
+
+class TestVerifySuiteKey:
+    def _urlopen(self, monkeypatch, outcome):
+        import urllib.error
+
+        calls = []
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake(request, timeout=None):
+            calls.append((request.full_url, request.get_header("Authorization")))
+            if isinstance(outcome, int):
+                raise urllib.error.HTTPError(request.full_url, outcome, "x", {}, None)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return _Resp()
+
+        monkeypatch.setattr(suite.urllib.request, "urlopen", fake)
+        return calls
+
+    def test_known_key(self, monkeypatch):
+        calls = self._urlopen(monkeypatch, "ok")
+        assert suite.verify_suite_key("https://suite.iamds.com/litellm/v1", "sk-a") == suite.KEY_OK
+        assert calls == [("https://suite.iamds.com/litellm/key/info", "Bearer sk-a")]
+
+    @pytest.mark.parametrize("code", [401, 403])
+    def test_unknown_key(self, monkeypatch, code):
+        self._urlopen(monkeypatch, code)
+        assert suite.verify_suite_key("https://suite.iamds.com", "sk-a") == suite.KEY_INVALID
+
+    @pytest.mark.parametrize("outcome", [404, 502, OSError("offline")])
+    def test_undecidable(self, monkeypatch, outcome):
+        self._urlopen(monkeypatch, outcome)
+        assert suite.verify_suite_key("https://suite.iamds.com", "sk-a") == suite.KEY_UNVERIFIED
+
+
+class TestStoreSuiteKey:
+    CFG = {"providers": {
+        "aimds-suite-prod": {"base_url": "https://suite.iamds.com/litellm/v1"},
+        "aimds-suite-staging": {"base_url": "https://staging.suite.iamds.com/litellm/v1"},
+    }}
+
+    @pytest.fixture
+    def saved(self, isolated_home, monkeypatch):
+        out: dict = {}
+        monkeypatch.setattr("hermes_cli.config.save_env_value", lambda k, v: out.__setitem__(k, v))
+        monkeypatch.setattr(suite, "verify_suite_key", lambda url, key, **k: suite.KEY_OK)
+        return out
+
+    def test_staging_login_is_not_stored_as_prod(self, saved):
+        # Michael's case: the prod provider ended up with his staging key.
+        with pytest.raises(suite.SuiteKeyRejected) as exc:
+            suite.store_suite_key("aimds-suite-prod", "sk-staging", base_url="https://staging.suite.iamds.com", config=self.CFG)
+        assert exc.value.code == "wrong_environment"
+        assert saved == {}
+
+    def test_auto_picks_the_environment_of_the_login_host(self, saved):
+        result = suite.store_suite_key("auto", "sk-staging", base_url="https://staging.suite.iamds.com", config=self.CFG)
+        assert result == {"provider": "aimds-suite-staging", "verified": True}
+        assert saved == {"IAMDS_LITELLM_STAGING_API_KEY": "sk-staging"}
+
+    def test_unknown_host_goes_to_production(self, saved):
+        assert suite.store_suite_key("auto", "sk-c", base_url="https://suite.customer.example", config={})["provider"] == "aimds-suite-prod"
+
+    def test_key_the_suite_does_not_know_is_rejected(self, saved, monkeypatch):
+        monkeypatch.setattr(suite, "verify_suite_key", lambda url, key, **k: suite.KEY_INVALID)
+        with pytest.raises(suite.SuiteKeyRejected) as exc:
+            suite.store_suite_key("aimds-suite-prod", "sk-old", base_url="https://suite.iamds.com", config=self.CFG)
+        assert exc.value.code == "invalid_key"
+        assert saved == {}
+
+    def test_offline_stores_unverified(self, saved, monkeypatch):
+        monkeypatch.setattr(suite, "verify_suite_key", lambda url, key, **k: suite.KEY_UNVERIFIED)
+        result = suite.store_suite_key("aimds-suite-prod", "sk-p", config=self.CFG)
+        assert result == {"provider": "aimds-suite-prod", "verified": False}
+        assert saved == {"IAMDS_LITELLM_API_KEY": "sk-p"}

@@ -13,7 +13,6 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   applyAimdsSuiteCliTarget,
-  completeAimdsSuiteReauth,
   disconnectOAuthProvider,
   getActionStatus,
   getAimdsSuiteCliTargets,
@@ -26,7 +25,8 @@ import {
   listOAuthProviders,
   removeMcpServer,
   saveHermesConfig,
-  setEnvVar
+  storeAimdsSuiteKey,
+  suiteKeyRejectionCode
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertCircle, Check, ChevronRight, ExternalLink, KeyRound, Loader2, ShieldCheck } from '@/lib/icons'
@@ -200,6 +200,8 @@ const SUITE_ENV_NAMES: Record<SuiteEnvId, string> = {
   'aimds-suite-localdev': 'AIMDS-Suite (Local Dev)'
 }
 
+const SUITE_KEY_ENV_IDS: Record<string, SuiteEnvId> = Object.fromEntries(SUITE_ENVS.map(env => [env.keyEnv, env.id]))
+
 function suiteReasonText(t: ReturnType<typeof useI18n>['t'], status: AimdsSuiteEnvStatus | undefined): string {
   if (!status) {
     return ''
@@ -341,15 +343,10 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
       const result = await keycloakLogin({ baseUrl: rootDomain, realm: DEFAULT_REALM, redirectUri, forceLogin: true })
 
       // Persist the URL for this environment first so the key and the host
-      // are stored as a pair, then the key, then make both effective.
+      // are stored as a pair; the backend checks the key belongs to this
+      // environment before it stores it and makes it effective (AIS-599).
       await persistUrls({ ...urls, [env.id]: baseUrl }, { silent: true })
-      await setEnvVar(env.keyEnv, result.apiKey)
-
-      try {
-        await completeAimdsSuiteReauth(env.id)
-      } catch {
-        // The next 401 self-heals via the credential refresh path.
-      }
+      await storeAimdsSuiteKey(env.id, result.apiKey, rootDomain)
 
       if (env.id === 'aimds-suite-prod') {
         try {
@@ -367,7 +364,17 @@ function IamdsExtraProvidersPanel({ onRefreshCreds }: { onRefreshCreds?: () => v
       await loadStatuses(true)
       notify({ kind: 'success', message: `${SUITE_ENV_NAMES[env.id]}: ${labels.connected}`, title: labels.connected })
     } catch (err) {
-      notifyError(err, 'Keycloak SSO failed')
+      const rejected = suiteKeyRejectionCode(err)
+
+      if (rejected) {
+        notify({
+          kind: 'error',
+          message: rejected === 'wrong_environment' ? labels.keyWrongEnvironment : labels.keyRejected,
+          title: SUITE_ENV_NAMES[env.id]
+        })
+      } else {
+        notifyError(err, 'Keycloak SSO failed')
+      }
     } finally {
       setBusyEnv(null)
     }
@@ -669,7 +676,7 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
     setIsKeycloakLoading(true)
     setKeycloakConnected(false)
 
-    const targetKey = targetKeyEnv || 'IAMDS_LITELLM_API_KEY'
+    const targetKey = targetKeyEnv || ''
     let baseUrl = (overrideBaseUrl || DEFAULT_BASE_URL).trim()
 
     if (!baseUrl) {
@@ -707,30 +714,31 @@ function IamdsAccountPanel({ onWantApiKey, onRefreshCreds }: { onWantApiKey: () 
         forceLogin: true,
       })
 
-      await setEnvVar(targetKey, result.apiKey)
-
-      try {
-        await completeAimdsSuiteReauth('aimds-suite-prod')
-      } catch {
-        // The next 401 self-heals via the credential refresh path.
-      }
+      // The key goes to the environment of the login host, checked by the
+      // backend — this panel used to write every login into the prod slot,
+      // also a staging one (AIS-599).
+      const stored = await storeAimdsSuiteKey(SUITE_KEY_ENV_IDS[targetKey] ?? 'auto', result.apiKey, rootDomain)
 
       try {
         const config = await getHermesConfigRecord()
 
         if (!config.model) {
-          await saveHermesConfig({ ...config, model: 'aimds-suite-prod/AIMDS-Suite-Auto' })
+          await saveHermesConfig({ ...config, model: `${stored.provider}/AIMDS-Suite-Auto` })
         }
       } catch {
         // Best-effort model selection
       }
 
       setKeycloakConnected(true)
-      const label = targetKey === 'IAMDS_LITELLM_STAGING_API_KEY' ? 'AIMDS-Suite Staging' : targetKey === 'IAMDS_LITELLM_DEV_API_KEY' ? 'AIMDS-Suite Development' : 'AIMDS-Suite'
-      notify({ kind: 'success', message: `API key obtained via Keycloak SSO (${label})`, title: 'Connected' })
+      notify({ kind: 'success', message: `API key obtained via Keycloak SSO (${SUITE_ENV_NAMES[stored.provider as keyof typeof SUITE_ENV_NAMES] ?? 'AIMDS-Suite'})`, title: 'Connected' })
       onRefreshCreds?.()
     } catch (err) {
-      setKeycloakError(err instanceof Error ? err.message : String(err))
+      const rejected = suiteKeyRejectionCode(err)
+      const labels = t.settings.providers.suite
+
+      setKeycloakError(
+        rejected === 'wrong_environment' ? labels.keyWrongEnvironment : rejected ? labels.keyRejected : err instanceof Error ? err.message : String(err)
+      )
     } finally {
       setIsKeycloakLoading(false)
     }

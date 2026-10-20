@@ -584,6 +584,96 @@ def litellm_key_info_url(base_url: str) -> str:
     return f"{root}/litellm/key/info" if root else ""
 
 
+KEY_OK = "ok"
+KEY_INVALID = "invalid"
+KEY_UNVERIFIED = "unreachable"
+
+
+def verify_suite_key(base_url: str, api_key: str, *, timeout: float = 8.0) -> str:
+    """Ask the Suite whether *api_key* exists there: ``ok``, ``invalid`` (401/403) or ``unreachable``.
+
+    ``GET <root>/litellm/key/info`` with the key itself — a key of another
+    environment or a deleted one answers 401 ``token_not_found_in_db``
+    (AIS-599). Anything else (offline, 404, 5xx) cannot decide.
+    """
+    url = litellm_key_info_url(base_url)
+    if not url or not api_key:
+        return KEY_UNVERIFIED
+    request = urllib.request.Request(
+        url, headers={"Accept": "application/json", "Authorization": f"Bearer {api_key}", "User-Agent": "hermes-agent/iamds-suite-key-check"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout):
+            return KEY_OK
+    except urllib.error.HTTPError as exc:
+        return KEY_INVALID if exc.code in (401, 403) else KEY_UNVERIFIED
+    except Exception:
+        return KEY_UNVERIFIED
+
+
+def _host(url: str) -> str:
+    try:
+        from urllib.parse import urlsplit
+
+        return (urlsplit(_norm_url(url)).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def suite_env_for_url(base_url: str, *, config: Optional[dict] = None) -> Optional[str]:
+    """The Suite environment whose resolved URL has *base_url*'s host, else None."""
+    host = _host(base_url)
+    if not host:
+        return None
+    cfg = _load_config_safe(config)
+    for provider_id in SUITE_ENVIRONMENTS:
+        if _host(resolve_suite_endpoint(provider_id, config=cfg).base_url) == host:
+            return provider_id
+    return None
+
+
+class SuiteKeyRejected(Exception):
+    """A key that must not be stored for the requested environment (AIS-599)."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def store_suite_key(env: str, api_key: str, *, base_url: str = "", config: Optional[dict] = None) -> Dict[str, Any]:
+    """Check a freshly issued key against its environment, then save it to that environment's slot.
+
+    *env* is a Suite provider id or ``auto`` (the environment whose host the
+    key came from; production for an unknown host). *base_url* is where the
+    login happened. Raises :class:`SuiteKeyRejected` when the host belongs to
+    another environment (``wrong_environment``) or the Suite does not know the
+    key (``invalid_key``); an unreachable Suite saves the key unverified.
+    """
+    cfg = _load_config_safe(config)
+    api_key = str(api_key or "").strip()
+    if not api_key:
+        raise SuiteKeyRejected("invalid_key", "No API key was returned by the login.")
+    target = canonical_suite_provider(env) if env != "auto" else (suite_env_for_url(base_url, config=cfg) or "aimds-suite-prod")
+    if not target:
+        raise SuiteKeyRejected("unknown_environment", f"{env!r} is not an AIMDS-Suite environment.")
+    ep = resolve_suite_endpoint(target, config=cfg)
+    url = _norm_url(base_url) or ep.base_url
+    if _host(url) != _host(ep.base_url):
+        owner = suite_env_for_url(url, config=cfg)
+        if owner and owner != target:
+            raise SuiteKeyRejected(
+                "wrong_environment",
+                f"The login at {_host(url)} belongs to {suite_label(owner)}, not {suite_label(target)}.",
+            )
+    status = verify_suite_key(url, api_key)
+    if status == KEY_INVALID:
+        raise SuiteKeyRejected("invalid_key", f"{suite_label(target)} does not accept this key.")
+    from hermes_cli.config import save_env_value
+
+    save_env_value(SUITE_ENVIRONMENTS[target].key_env, api_key)
+    return {"provider": target, "verified": status == KEY_OK}
+
+
 def active_suite_provider(config: Optional[dict] = None) -> Optional[str]:
     """``model.provider`` as a canonical Suite slug, or ``None`` if the active
     model does not run on an AIMDS-Suite environment.
@@ -1546,4 +1636,8 @@ __all__ = [
     "maybe_run_suite_health_check",
     "suite_health_check_enabled",
     "suite_health_check_interval_seconds",
+    "SuiteKeyRejected",
+    "store_suite_key",
+    "suite_env_for_url",
+    "verify_suite_key",
 ]
