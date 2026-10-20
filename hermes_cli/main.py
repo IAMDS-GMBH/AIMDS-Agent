@@ -4918,24 +4918,21 @@ def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None
 
 def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     """Return the current platform's unpacked Electron app executable."""
-    release_dir = desktop_dir / "release"
-    if sys.platform == "darwin":
-        candidates = list(release_dir.glob("mac*/Hermes.app/Contents/MacOS/Hermes"))
-    elif sys.platform == "win32":
-        candidates = [
-            release_dir / "win-unpacked" / "Hermes.exe",
-            release_dir / "win-ia32-unpacked" / "Hermes.exe",
-            release_dir / "win-arm64-unpacked" / "Hermes.exe",
-        ]
-    else:
-        candidates = [
-            release_dir / "linux-unpacked" / "hermes",
-            release_dir / "linux-unpacked" / "Hermes",
-            release_dir / "linux-arm64-unpacked" / "hermes",
-            release_dir / "linux-arm64-unpacked" / "Hermes",
-        ]
+    import re as _re
 
-    existing = [p for p in candidates if p.exists()]
+    from hermes_cli.desktop_asset import find_app_executable
+
+    release_dir = desktop_dir / "release"
+    # Found by shape, not by the literal "Hermes" name (AIS-476): this code
+    # locates the renamed app the next release ships.
+    if sys.platform == "darwin":
+        key, pattern = "mac", r"^mac(-[a-z0-9]+)?$"
+    elif sys.platform == "win32":
+        key, pattern = "win", r"^win(-[a-z0-9]+)?-unpacked$"
+    else:
+        key, pattern = "linux", r"^linux(-[a-z0-9]+)?-unpacked$"
+    dirs = [d for d in release_dir.glob("*") if d.is_dir() and _re.match(pattern, d.name)] if release_dir.is_dir() else []
+    existing = [exe for exe in (find_app_executable(d, key) for d in dirs) if exe is not None]
     if not existing:
         return None
     return max(existing, key=lambda p: p.stat().st_mtime)

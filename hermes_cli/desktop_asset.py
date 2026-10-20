@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import platform as _platform
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -109,10 +110,51 @@ def read_prebuilt_marker(project_root: Path) -> Optional[dict]:
     return data
 
 
-def expected_executable(app_dir: Path, platform_key: str) -> Path:
+#: Helper binaries next to the app in an unpacked Electron build.
+_NON_APP_EXECUTABLES = frozenset({"chrome-sandbox", "chrome_crashpad_handler", "elevate.exe"})
+
+
+def find_app_executable(app_dir: Path, platform_key: str) -> Optional[Path]:
+    """The desktop app's executable in an unpacked build dir, found by shape (AIS-476).
+
+    The running client installs the next release with this code, so it must
+    find a renamed app (``AIMDS Agent.app``) as well as ``Hermes.app``:
+
+    - macOS: a ``*.app`` bundle, executable from its ``CFBundleExecutable``;
+    - Windows: the top-level ``*.exe`` that is not the uninstaller or a helper;
+    - Linux: the extension-less top-level file that is not an Electron helper.
+    """
+    if not app_dir.is_dir():
+        return None
     if platform_key.startswith("mac"):
-        return app_dir / "Hermes.app" / "Contents" / "MacOS" / "Hermes"
-    return app_dir / "Hermes.exe"
+        for bundle in sorted(app_dir.glob("*.app")):
+            macos = bundle / "Contents" / "MacOS"
+            name = ""
+            try:
+                with (bundle / "Contents" / "Info.plist").open("rb") as fh:
+                    name = str(plistlib.load(fh).get("CFBundleExecutable") or "")
+            except (OSError, ValueError, plistlib.InvalidFileException):
+                pass
+            if name and (macos / name).is_file():
+                return macos / name
+            found = sorted(p for p in macos.glob("*") if p.is_file()) if macos.is_dir() else []
+            if found:
+                return found[0]
+        return None
+    if platform_key.startswith("win"):
+        exes = sorted(
+            p for p in app_dir.glob("*.exe")
+            if p.is_file() and p.name.lower() not in _NON_APP_EXECUTABLES and not p.name.lower().startswith("uninstall")
+        )
+        return exes[0] if exes else None
+    for candidate in sorted(app_dir.iterdir()):
+        if (
+            candidate.is_file()
+            and not candidate.suffix
+            and candidate.name not in _NON_APP_EXECUTABLES
+        ):
+            return candidate
+    return None
 
 
 def prebuilt_desktop_current(project_root: Path, release_tag: Optional[str], platform_key: Optional[str] = None) -> bool:
@@ -123,7 +165,7 @@ def prebuilt_desktop_current(project_root: Path, release_tag: Optional[str], pla
     marker = read_prebuilt_marker(project_root)
     if not marker or marker.get("tag") != release_tag or marker.get("platform") != key:
         return False
-    return expected_executable(release_root(project_root) / RELEASE_DIRS[key], key).exists()
+    return find_app_executable(release_root(project_root) / RELEASE_DIRS[key], key) is not None
 
 
 def _extract_asset(zip_path: Path, dest: Path, *, platform_key: str) -> None:
@@ -170,9 +212,8 @@ def install_desktop_asset(
         (downloader or download_verified)(asset.url, sha256=asset.sha256, size=asset.size, dest=zip_path, timeout=timeout)
         staging.mkdir(parents=True)
         (extractor or _extract_asset)(zip_path, staging, platform_key=key)
-        exe = expected_executable(staging, key)
-        if not exe.exists():
-            raise ReleaseFeedError(f"{asset.name} does not contain the desktop app ({exe.relative_to(staging)})")
+        if find_app_executable(staging, key) is None:
+            raise ReleaseFeedError(f"{asset.name} does not contain the desktop app")
         if target.exists():
             target.rename(backup)
         try:
