@@ -58,6 +58,7 @@ const STATE_TONE: Record<string, 'good' | 'muted' | 'warn' | 'bad'> = {
   scheduled: 'good',
   running: 'good',
   paused: 'warn',
+  waiting: 'warn',
   disabled: 'muted',
   error: 'bad',
   completed: 'muted'

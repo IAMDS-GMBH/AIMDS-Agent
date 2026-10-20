@@ -1033,6 +1033,27 @@ def remove_job(job_id: str) -> bool:
     return False
 
 
+def mark_job_waiting(job_id: str, reason: str) -> None:
+    """Record a run that was skipped because the job's provider needs a re-login (AIS-599).
+
+    Not a failure: no error, no delivery, no repeat count. ``next_run_at``
+    moves on to the next regular slot, so the run after the re-login is the
+    next scheduled one — no catch-up burst.
+    """
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        for job in jobs:
+            if job["id"] == job_id:
+                now = _hermes_now().isoformat()
+                job["last_status"] = "waiting_reauth"
+                job["waiting_reason"] = reason
+                job["waiting_since"] = job.get("waiting_since") or now
+                job["manual_triggered_at"] = None
+                job["next_run_at"] = compute_next_run(job["schedule"], now) or job.get("next_run_at")
+                save_jobs(jobs)
+                return
+
+
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                  delivery_error: Optional[str] = None, *,
                  output_path: Optional[str] = None, session_id: Optional[str] = None,
@@ -1054,6 +1075,8 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_run_at"] = now
                 job["last_status"] = "ok" if success else "error"
                 job["last_error"] = error if not success else None
+                job.pop("waiting_reason", None)
+                job.pop("waiting_since", None)
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
                 # Clear any explicit manual-trigger marker once the run finished.

@@ -8,15 +8,18 @@ export const STATE_DOT: Record<string, string> = {
   enabled: 'bg-primary',
   error: 'bg-destructive',
   paused: 'bg-amber-500',
+  waiting: 'bg-amber-500',
   running: 'bg-primary',
   scheduled: 'bg-primary'
 }
 
 // Effective state: explicit state wins; otherwise infer from the enabled flag.
+// A scheduled job whose last run was skipped for a pending re-login shows
+// `waiting` (AIS-599) — it runs again by itself once the account is back.
 export function jobState(job: CronJob): string {
-  const state = typeof job.state === 'string' ? job.state.trim() : ''
+  const state = (typeof job.state === 'string' ? job.state.trim() : '') || (job.enabled === false ? 'disabled' : 'scheduled')
 
-  return state || (job.enabled === false ? 'disabled' : 'scheduled')
+  return state === 'scheduled' && job.last_status === 'waiting_reauth' ? 'waiting' : state
 }
 
 // Human label for a job: name → first 60 of prompt → first 60 of script → id.

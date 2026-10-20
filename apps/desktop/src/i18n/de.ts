@@ -1122,6 +1122,7 @@ export const de
       scheduled: 'geplant',
       running: 'läuft',
       paused: 'pausiert',
+      waiting: 'wartet auf Anmeldung',
       disabled: 'deaktiviert',
       error: 'Fehler',
       completed: 'abgeschlossen'

@@ -1121,6 +1121,7 @@ export const en: Translations = {
       scheduled: 'scheduled',
       running: 'running',
       paused: 'paused',
+      waiting: 'waiting for sign-in',
       disabled: 'disabled',
       error: 'error',
       completed: 'completed'
