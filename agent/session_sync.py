@@ -264,11 +264,11 @@ def sync_session(db: Any, remote: SessionRemote, row: Dict[str, Any]) -> int:
 def run_once(db: Any, remote: SessionRemote, *, max_sessions: int = RUN_MAX_SESSIONS) -> Dict[str, int]:
     """Send pending deletes, then up to *max_sessions* dirty sessions.
 
-    A timeout ends the run (AIS-524): the abandoned call keeps running for up
-    to the MCP timeout and holds the server's request lock, so every further
-    session in the same run only queued behind it — eight 60 s waits per tick
-    while the Suite hung, delaying the user's own memory calls. The sessions
-    not tried stay due and go out with the next tick.
+    A timeout ends the run (AIS-524): a backend that just timed out will not
+    answer the next session either. Since AIS-744 the call itself ends at the
+    facade's timeout and HTTP servers no longer serialize requests, so the
+    user's own memory calls do not queue behind it. The sessions not tried
+    stay due and go out with the next tick.
     """
     stats = {"sessions": 0, "messages": 0, "deletes": 0, "errors": 0}
     for tomb in db.sync_tombstones_due():

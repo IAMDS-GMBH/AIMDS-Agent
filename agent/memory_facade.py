@@ -291,13 +291,23 @@ class MemoryFacade:
 
         A hung memory backend held a turn for the MCP tool timeout (180 s)
         before the model was even called; the user saw nothing and restarted.
-        Past *timeout* the turn continues without memory — the call keeps
-        running on its daemon thread and its result is dropped.
+        Past *timeout* the turn continues without memory. The MCP call
+        itself is capped at the same *timeout* (AIS-744): an abandoned call
+        that ran on to the server's tool timeout kept foreground calls to the
+        same server waiting behind it.
         """
         import concurrent.futures as _cf
 
+        def _bounded_call():
+            try:
+                from tools.mcp_tool import mcp_call_timeout
+            except Exception:
+                return self._call(tool_name, args)
+            with mcp_call_timeout(timeout):
+                return self._call(tool_name, args)
+
         pool = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="memory-read")
-        future = pool.submit(self._call, tool_name, args)
+        future = pool.submit(_bounded_call)
         pool.shutdown(wait=False)
         try:
             return future.result(timeout=timeout)
