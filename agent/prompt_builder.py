@@ -696,7 +696,23 @@ STEER_CHANNEL_NOTE = (
 # message representation stays consistent ("system" everywhere).
 DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 
+# Desktop app and terminal UI (AIS-744): the user watches the turn live but
+# sees each tool step only as a one-line label, so a long tool run without a
+# word left them unsure whether the agent understood them and was still busy.
+_LIVE_CHAT_HINT = (
+    "You are in the Hermes desktop app or terminal UI; the user watches your "
+    "work live and sees each tool step only as a short line. When a request "
+    "needs tools, begin with one short sentence in the user's language that "
+    "states what you understood and what you will check, and make the tool "
+    "calls in the same response. During longer work add at most one short "
+    "line when you change course or a step takes long; no running commentary "
+    "and no tool names. If the request is ambiguous in a way that would change "
+    "the result, ask with clarify before working instead of guessing."
+)
+
 PLATFORM_HINTS = {
+    "tui": _LIVE_CHAT_HINT,
+    "desktop": _LIVE_CHAT_HINT,
     "whatsapp": (
         "You are on a text messaging communication platform, WhatsApp. "
         "Please do not use markdown as it does not render. "
