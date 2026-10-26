@@ -395,6 +395,45 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     assert "result_text" not in events[1][2]
 
 
+def test_tool_start_carries_mcp_origin_and_heartbeats_until_complete(monkeypatch):
+    """AIS-744: readable labels need the MCP origin; long tools get heartbeats."""
+    import threading as _threading
+
+    from tools import mcp_tool
+
+    events: list[tuple[str, str, dict]] = []
+    beat = _threading.Event()
+
+    def _emit(event_type, sid, payload):
+        events.append((event_type, sid, payload))
+        if event_type == "tool.progress":
+            beat.set()
+
+    monkeypatch.setattr(server, "_emit", _emit)
+    monkeypatch.setattr(server, "_TOOL_HEARTBEAT_S", 0.05)
+    monkeypatch.setitem(server._sessions, "hb-test", {"tool_progress_mode": "all", "tool_started_at": {}})
+    name = "mcp_AIMDSSuiteMCP_mcp_memory_memory_search"
+    monkeypatch.setitem(mcp_tool._mcp_tool_origins, name, ("AIMDSSuiteMCP", "mcp_memory-memory_search"))
+    monkeypatch.setattr(mcp_tool, "is_mcp_server_reconnecting", lambda server_name: server_name == "AIMDSSuiteMCP")
+
+    server._on_tool_start("hb-test", "tool-1", name, {"query": "Urlaub"})
+    assert beat.wait(2), "no tool.progress heartbeat"
+    server._on_tool_complete("hb-test", "tool-1", name, {"query": "Urlaub"}, "{}")
+
+    start = events[0][2]
+    assert start["mcp_server"] == "AIMDSSuiteMCP"
+    assert start["mcp_tool"] == "mcp_memory-memory_search"
+    progress = next(payload for kind, _sid, payload in events if kind == "tool.progress")
+    assert progress["tool_id"] == "tool-1"
+    assert progress["state"] == "reconnecting"
+    assert progress["elapsed_s"] >= 0
+
+    # Once complete, the heartbeat chain stops.
+    count = sum(1 for kind, *_ in events if kind == "tool.progress")
+    _threading.Event().wait(0.2)
+    assert sum(1 for kind, *_ in events if kind == "tool.progress") <= count + 1
+
+
 def test_tool_summary_for_memory_context_is_compact_and_non_leaky():
     result = json.dumps(
         {

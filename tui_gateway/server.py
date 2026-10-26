@@ -2813,6 +2813,53 @@ def _tool_summary(name: str, result: str, duration_s: float | None) -> str | Non
     return f"{text}{suffix}" if text else None
 
 
+def _mcp_tool_origin(name: str) -> tuple[str, str] | None:
+    try:
+        from tools.mcp_tool import get_mcp_tool_origin
+
+        return get_mcp_tool_origin(name)
+    except Exception:
+        return None
+
+
+# AIS-744: a tool still running after this long gets a tool.progress heartbeat
+# (and again every interval), so the desktop can say "still waiting" or
+# "reconnecting" instead of showing a silent row for minutes.
+_TOOL_HEARTBEAT_S = 10.0
+
+
+def _schedule_tool_heartbeat(sid: str, tool_call_id: str, name: str, mcp_server: str | None):
+    def _beat():
+        session = _sessions.get(sid)
+        started_at = (session or {}).get("tool_started_at", {}).get(tool_call_id)
+        if not started_at:
+            return
+        state = "waiting"
+        if mcp_server:
+            try:
+                from tools.mcp_tool import is_mcp_server_reconnecting
+
+                if is_mcp_server_reconnecting(mcp_server):
+                    state = "reconnecting"
+            except Exception:
+                pass
+        _emit(
+            "tool.progress",
+            sid,
+            {
+                "tool_id": tool_call_id,
+                "name": name,
+                "elapsed_s": round(time.time() - started_at, 1),
+                "state": state,
+            },
+        )
+        _schedule_tool_heartbeat(sid, tool_call_id, name, mcp_server)
+
+    timer = threading.Timer(_TOOL_HEARTBEAT_S, _beat)
+    timer.daemon = True
+    timer.start()
+
+
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
     session = _sessions.get(sid)
     if session is not None:
@@ -2831,6 +2878,10 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             "name": name,
             "context": _tool_ctx(name, args),
         }
+        origin = _mcp_tool_origin(name)
+        if origin:
+            payload["mcp_server"], payload["mcp_tool"] = origin
+        _schedule_tool_heartbeat(sid, tool_call_id, name, origin[0] if origin else None)
         if _session_verbose(sid):
             args_text = _tool_args_text(args)
             if args_text:
