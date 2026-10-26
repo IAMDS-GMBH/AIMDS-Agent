@@ -254,7 +254,9 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
       >
         {hoistedTodos.length > 0 && <HoistedTodoPanel todos={hoistedTodos} />}
         <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
-        {messageStatus === 'running' && <StreamStallIndicator activity={`${content.length}:${messageText.length}`} />}
+        {messageStatus === 'running' && !toolStepRunning(content) && (
+          <StreamStallIndicator activity={`${content.length}:${messageText.length}`} />
+        )}
         {previewTargets.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {previewTargets.map(target => (
@@ -332,7 +334,16 @@ const STREAM_STALL_S = 2
 // provider stall) nothing signals that work continues. Watch a per-render
 // activity signal; when it hasn't changed for STREAM_STALL_S, re-show the
 // dither + a timer counting from the last activity.
+// A running tool step shows its own live line and timer (AIS-744), so the
+// stall indicator would only add a second, wordless timer under it.
+function toolStepRunning(content: readonly unknown[]): boolean {
+  const last = content.at(-1) as { result?: unknown; type?: string } | undefined
+
+  return last?.type === 'tool-call' && last.result === undefined
+}
+
 const StreamStallIndicator: FC<{ activity: string }> = ({ activity }) => {
+  const { t } = useI18n()
   const [stalled, setStalled] = useState(false)
 
   useEffect(() => {
@@ -349,9 +360,11 @@ const StreamStallIndicator: FC<{ activity: string }> = ({ activity }) => {
   }
 
   return (
-    <StatusRow className="mt-1.5" data-slot="aui_stream-stall" label="Hermes is thinking">
+    <StatusRow className="mt-1.5" data-slot="aui_stream-stall" label={t.assistant.tool.activity.working}>
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
-      <ActivityTimerText seconds={elapsed} />
+      <span className="min-w-0">
+        {t.assistant.tool.activity.working} … <ActivityTimerText seconds={elapsed} />
+      </span>
     </StatusRow>
   )
 }

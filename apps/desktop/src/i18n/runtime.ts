@@ -34,6 +34,10 @@ export function setRuntimeI18nLocale(locale: Locale) {
   runtimeLocale = locale
 }
 
+export function getRuntimeI18nLocale(): Locale {
+  return runtimeLocale
+}
+
 export function translateNow(key: string, ...args: unknown[]): string {
   const active = renderTranslation(resolvePath(TRANSLATIONS[runtimeLocale], key), args)
 

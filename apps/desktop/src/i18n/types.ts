@@ -1696,6 +1696,7 @@ export interface Translations {
       statusError: string
       statusRecovered: string
       statusDone: string
+      activity: ToolActivityCopy
     }
   }
 
@@ -1816,4 +1817,49 @@ export interface Translations {
       toggle: string
     }
   }
+}
+
+/** Readable step labels and the per-turn activity block (AIS-744). */
+export interface ToolActivityPlace {
+  /** "in OpenProject" / "im Gedächtnis" */
+  in: string
+  /** "from OpenProject" / "aus dem Gedächtnis" */
+  from: string
+  /** Bare name for the summary line: "OpenProject", "Gedächtnis". */
+  name: string
+  /** What this place holds when a tool names no object ("notes"). */
+  object?: string
+}
+
+export interface ToolActivityVerb {
+  pending: (object: string, place: ToolActivityPlace) => string
+  done: (object: string, place: ToolActivityPlace) => string
+}
+
+export interface ToolActivityStep {
+  pending: string
+  done: string
+}
+
+export interface ToolActivityCopy {
+  areas: Record<string, ToolActivityPlace>
+  verbs: Record<'search' | 'list' | 'read' | 'create' | 'update' | 'delete' | 'other', ToolActivityVerb>
+  /** Plural object nouns keyed by the normalized tool noun (work_packages, time_entries …). */
+  objects: Record<string, string>
+  /** Object used when a tool names none ("entries" / "Einträge"). */
+  defaultObject: string
+  /** Place for a service without its own entry, from its display name. */
+  customPlace: (name: string) => ToolActivityPlace
+  /** Built-in and internal tools keyed by tool name. */
+  steps: Record<string, ToolActivityStep>
+  prepare: ToolActivityStep
+  analyze: ToolActivityStep
+  withDetail: (label: string, detail: string) => string
+  stepCount: (count: number) => string
+  working: string
+  slow: (place: string) => string
+  slowGeneric: string
+  reconnecting: (place: string) => string
+  showSteps: string
+  hideSteps: string
 }
