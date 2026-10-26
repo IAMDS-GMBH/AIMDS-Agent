@@ -1,5 +1,6 @@
 import { translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
+import { toolLabel, toolTitle } from '@/lib/tool-labels'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
 
 export type ToolTone = 'agent' | 'browser' | 'default' | 'file' | 'image' | 'terminal' | 'web'
@@ -571,6 +572,80 @@ export function toolPartDisclosureId(part: ToolPart): string {
   }
 
   return `tool:${part.toolName}:${stableHash(JSON.stringify(part.args ?? ''))}`
+}
+
+// Tools that stay their own row instead of joining the per-message activity
+// block (AIS-744): they carry UI the user acts on or reviews (questions,
+// todos, generated images, file diffs).
+const UNGROUPED_TOOLS = new Set(['clarify', 'edit_file', 'image_generate', 'patch', 'todo', 'write_file'])
+
+export function isGroupableToolName(name: string): boolean {
+  return !UNGROUPED_TOOLS.has(name)
+}
+
+/** Groupable tool parts of a message, in order — independent of how
+ *  assistant-ui slices the content into ranges. */
+export function groupableToolParts(content: readonly unknown[]): ToolPart[] {
+  const parts: ToolPart[] = []
+
+  for (const entry of content) {
+    if (!isRecord(entry) || entry.type !== 'tool-call' || typeof entry.toolName !== 'string') {
+      continue
+    }
+
+    if (!isGroupableToolName(entry.toolName)) {
+      continue
+    }
+
+    parts.push({
+      args: entry.args,
+      isError: entry.isError === true,
+      result: entry.result,
+      toolCallId: typeof entry.toolCallId === 'string' ? entry.toolCallId : undefined,
+      toolName: entry.toolName,
+      type: 'tool-call'
+    })
+  }
+
+  return parts
+}
+
+export interface ActivitySummary {
+  areas: string[]
+  failed: number
+  seconds: number
+  steps: number
+}
+
+export function activitySummary(parts: readonly ToolPart[]): ActivitySummary {
+  const areas: string[] = []
+  let failed = 0
+  let seconds = 0
+
+  for (const part of parts) {
+    const result = parseMaybeObject(part.result)
+    const duration = numberValue(result.duration_s)
+
+    if (duration !== null && duration > 0) {
+      seconds += duration
+    }
+
+    if (part.result !== undefined && toolStatus(part, result) === 'error') {
+      failed += 1
+    }
+
+    const area = toolLabel(part.toolName, part.args)?.area
+
+    if (area && !areas.includes(area)) {
+      areas.push(area)
+    }
+  }
+
+  return { areas, failed, seconds, steps: parts.length }
+}
+
+export function formatActivityDuration(seconds: number): string {
+  return seconds >= 1 ? formatDurationSeconds(seconds) : ''
 }
 
 export function toolGroupDisclosureId(parts: ToolPart[]): string {
@@ -1272,6 +1347,16 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
   return { label: copy.generic, text: view.title }
 }
 
+// Shell/code rows show the command itself, and the local-mirror memory save
+// keeps its explicit marker; every other tool gets a readable label (AIS-744).
+function keepsOwnTitle(part: ToolPart, args: Record<string, unknown>, result: Record<string, unknown>): boolean {
+  if (part.toolName === 'terminal' || part.toolName === 'execute_code') {
+    return true
+  }
+
+  return args.__local_mirror === true || result.local_mirror === true
+}
+
 function dynamicTitle(
   part: ToolPart,
   args: Record<string, unknown>,
@@ -1324,7 +1409,13 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   const status = toolStatus(part, resultRecord)
   const error = toolErrorText(part, resultRecord)
   const baseTitle = part.result === undefined ? meta.pending : meta.done
-  const title = dynamicTitle(part, argsRecord, resultRecord, baseTitle)
+
+  const title =
+    (keepsOwnTitle(part, argsRecord, resultRecord)
+      ? null
+      : toolTitle(part.toolName, argsRecord, part.result === undefined)) ??
+    dynamicTitle(part, argsRecord, resultRecord, baseTitle)
+
   const titleEnriched = title !== baseTitle
   const baseSubtitle = error || toolSubtitle(part, argsRecord, resultRecord)
   const keepSubtitleWithTitle = part.toolName === 'terminal' || part.toolName === 'execute_code'

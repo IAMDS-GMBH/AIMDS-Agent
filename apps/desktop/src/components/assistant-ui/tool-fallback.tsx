@@ -19,6 +19,7 @@ import { ToolIcon } from '@/components/ui/tool-icon'
 import { useI18n } from '@/i18n'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
+import { serviceDisplayName, toolLabel } from '@/lib/tool-labels'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $toolInlineDiffs } from '@/store/tool-diffs'
@@ -26,8 +27,11 @@ import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/sto
 
 import { PendingToolApproval } from './tool-approval'
 import {
+  activitySummary,
   buildToolView,
   cleanVisibleText,
+  formatActivityDuration,
+  groupableToolParts,
   inlineDiffFromResult,
   isPreviewableTarget,
   looksRedundant,
@@ -453,14 +457,134 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   )
 }
 
+// A running step this long without an answer gets a "still waiting" hint.
+const ACTIVITY_SLOW_S = 15
+
+function stringArg(args: unknown, key: string): string {
+  const value = args && typeof args === 'object' ? (args as Record<string, unknown>)[key] : undefined
+
+  return typeof value === 'string' ? value : ''
+}
+
+function numberArg(args: unknown, key: string): number {
+  const value = args && typeof args === 'object' ? (args as Record<string, unknown>)[key] : undefined
+
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
 /**
- * Per-tool fallback. Now strictly returns a single ToolEntry — the
- * grouping decision lives in ToolGroupSlot above, so this never swaps
- * its return type and the underlying ToolEntry stays mounted across
- * group-shape changes.
+ * One block for all tool steps of a message (AIS-744). While the turn runs it
+ * says in one line what is happening right now, with a timer and a hint when
+ * a service is slow or reconnecting; afterwards it collapses to a summary
+ * ("7 steps · 3m 12s · OpenProject, Memory"). The rows stay one click away.
+ *
+ * The parts come from the whole message content, not from the assistant-ui
+ * range this block happens to be rendered in, so the block does not reshuffle
+ * when a fragmented live stream settles into one range (see ToolGroupSlot).
+ */
+function ActivityBlock({ parts }: { parts: ToolPart[] }) {
+  const { t } = useI18n()
+  const copy = t.assistant.tool
+  const activity = copy.activity
+  const messageId = useAuiState(s => s.message.id)
+  const messageRunning = useAuiState(selectMessageRunning)
+  const toolViewMode = useStore($toolViewMode)
+  const disclosureId = `activity:${messageId}`
+  const open = useDisclosureOpen(disclosureId, toolViewMode === 'technical')
+  const enterRef = useEnterAnimation(messageRunning, `activity:${messageId}`)
+  const pendingParts = messageRunning ? parts.filter(part => part.result === undefined) : []
+  const current = pendingParts.at(-1)
+  const currentKey = current ? toolPartDisclosureId(current) : 'idle'
+  const stepElapsed = useElapsedSeconds(Boolean(current), `activity-step:${messageId}:${currentKey}`)
+  const summary = useMemo(() => activitySummary(parts), [parts])
+  const lastPart = parts.at(-1)
+
+  const headline = useMemo(() => {
+    if (current) {
+      return buildToolView(current, '').title
+    }
+
+    if (messageRunning) {
+      return lastPart ? `${activity.working} · ${buildToolView({ ...lastPart, result: lastPart.result ?? {} }, '').title}` : activity.working
+    }
+
+    return [activity.stepCount(summary.steps), formatActivityDuration(summary.seconds), summary.areas.slice(0, 3).join(', ')]
+      .filter(Boolean)
+      .join(' · ')
+  }, [activity, current, lastPart, messageRunning, summary])
+
+  let hint = ''
+
+  if (current) {
+    const waited = Math.max(stepElapsed, numberArg(current.args, 'progress_elapsed_s'))
+    const label = toolLabel(current.toolName, current.args)
+    const server = stringArg(current.args, 'mcp_server')
+
+    if (stringArg(current.args, 'progress_state') === 'reconnecting') {
+      hint = activity.reconnecting(server ? serviceDisplayName(server) : label?.place?.name || '')
+    } else if (waited >= ACTIVITY_SLOW_S) {
+      hint = label?.place ? activity.slow(label.place.name) : activity.slowGeneric
+    }
+  }
+
+  const status: ToolStatus | undefined = current ? 'running' : summary.failed > 0 ? 'warning' : undefined
+
+  return (
+    <div
+      className={cn(
+        'min-w-0 max-w-full overflow-hidden text-[length:var(--conversation-tool-font-size)] text-(--ui-text-tertiary)',
+        open && 'rounded-[0.625rem] border border-(--ui-stroke-tertiary)'
+      )}
+      data-activity-block=""
+      data-slot="tool-block"
+      ref={enterRef}
+    >
+      <div
+        className={cn(open && 'border-b border-(--ui-stroke-tertiary) px-2 py-1.5')}
+        title={open ? activity.hideSteps : activity.showSteps}
+      >
+        <DisclosureRow
+          onToggle={() => setToolDisclosureOpen(disclosureId, !open)}
+          open={open}
+          trailing={current ? <ActivityTimerText className={TOOL_HEADER_DURATION_CLASS} seconds={stepElapsed} /> : undefined}
+        >
+          <span aria-live={messageRunning ? 'polite' : undefined} className="flex min-w-0 items-center gap-1.5">
+            <ToolGlyph copy={copy} icon={current ? undefined : 'tools'} status={status} />
+            <FadeText className={cn(TOOL_HEADER_TITLE_CLASS, current && 'shimmer text-(--ui-text-tertiary)')}>
+              {headline}
+            </FadeText>
+          </span>
+          {hint && <span className={TOOL_HEADER_SUBTITLE_CLASS}>{hint}</span>}
+        </DisclosureRow>
+      </div>
+      {pendingParts.map(part => (
+        <PendingToolApproval key={toolPartDisclosureId(part)} part={part} />
+      ))}
+      {open && (
+        <div className="grid min-w-0 max-w-full gap-(--tool-row-gap) overflow-hidden p-1.5">
+          {parts.map(part => (
+            <ToolEntry key={toolPartDisclosureId(part)} part={part} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Per-tool fallback. A message with two or more groupable tool steps shows
+ * them as one ActivityBlock, rendered in place of the first step; the other
+ * steps render nothing here. Single steps and ungrouped tools keep their row.
  */
 export const ToolFallback = ({ toolCallId, toolName, args, isError, result }: ToolCallMessagePartProps) => {
   const part: ToolPart = { args, isError, result, toolCallId, toolName, type: 'tool-call' }
+  const content = useAuiState(s => s.message.content)
+  const group = useMemo(() => groupableToolParts(content), [content])
+  const inGroup = group.length > 1 && group.some(entry => entry.toolCallId === toolCallId)
 
-  return <ToolEntry part={part} />
+  if (!inGroup) {
+    return <ToolEntry part={part} />
+  }
+
+  return group[0]?.toolCallId === toolCallId ? <ActivityBlock parts={group} /> : null
 }

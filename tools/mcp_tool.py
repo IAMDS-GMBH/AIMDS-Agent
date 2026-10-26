@@ -79,6 +79,8 @@ Thread safety:
 
 import asyncio
 import concurrent.futures
+import contextlib
+import contextvars
 import inspect
 import json
 import logging
@@ -363,6 +365,55 @@ _MAX_BACKOFF_SECONDS = 60
 # A session that stayed up this long counts as healthy: its drop starts a new
 # reconnect streak instead of continuing the previous one.
 _STABLE_SESSION_SECONDS = 60
+
+# Call-local ceiling for MCP tool calls (AIS-744). A caller that stops waiting
+# early (memory facade, session sync) sets it so the call itself ends at the
+# same moment instead of running on for the server's full tool timeout.
+_call_timeout_ceiling: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(
+    "mcp_call_timeout_ceiling", default=None
+)
+
+
+@contextlib.contextmanager
+def mcp_call_timeout(seconds: float):
+    """Cap every MCP tool call made in this context at *seconds*."""
+    token = _call_timeout_ceiling.set(float(seconds))
+    try:
+        yield
+    finally:
+        _call_timeout_ceiling.reset(token)
+
+
+def _effective_tool_timeout(tool_timeout: float) -> float:
+    ceiling = _call_timeout_ceiling.get()
+    if ceiling is None or ceiling <= 0:
+        return tool_timeout
+    return min(float(tool_timeout), ceiling) if tool_timeout else ceiling
+
+
+class _NoRpcGuard:
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+_NO_RPC_GUARD = _NoRpcGuard()
+
+
+def _rpc_guard(server):
+    """The per-server RPC lock, for stdio transports only (AIS-744).
+
+    A stdio session is one JSON-RPC stream and must not interleave requests.
+    Streamable HTTP sends every request as its own POST, so serializing it
+    only made a hung background call (session sync, 180 s) block every
+    foreground tool call to the same server.
+    """
+    config = getattr(server, "_config", None) or {}
+    if isinstance(config, dict) and "url" in config:
+        return _NO_RPC_GUARD
+    return server._rpc_lock
 
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset(
@@ -1436,8 +1487,8 @@ class MCPServerTask:
         # list_changed notifications during startup; if the notification
         # handler calls list_tools while a normal tool call is in flight, the
         # stream can wedge and the user-visible tool call times out. Serialize
-        # client-initiated RPCs per server. The lock is also applied to HTTP
-        # transports for conservative per-server ordering.
+        # client-initiated RPCs per stdio server; HTTP transports run
+        # concurrently (see _rpc_guard).
         self._rpc_lock = asyncio.Lock()
         self._pending_refresh_tasks: set[asyncio.Task] = set()
         # Captures the ``InitializeResult`` returned by
@@ -1538,7 +1589,7 @@ class MCPServerTask:
 
             # 1. Fetch current tool list from server
             if self.session is not None and hasattr(self.session, "list_tools"):
-                async with self._rpc_lock:
+                async with _rpc_guard(self):
                     call_res = self.session.list_tools()
                     if inspect.isawaitable(call_res):
                         tools_result = await call_res
@@ -2072,7 +2123,7 @@ class MCPServerTask:
             return
         if hasattr(self.session, "list_tools"):
             try:
-                async with self._rpc_lock:
+                async with _rpc_guard(self):
                     call_res = self.session.list_tools()
                     if inspect.isawaitable(call_res):
                         tools_result = await call_res
@@ -2103,7 +2154,7 @@ class MCPServerTask:
                 )
                 await asyncio.sleep(backoff_seconds)
                 try:
-                    async with self._rpc_lock:
+                    async with _rpc_guard(self):
                         call_res = self.session.list_tools()
                         if inspect.isawaitable(call_res):
                             tools_result = await asyncio.wait_for(
@@ -2982,6 +3033,10 @@ _parallel_safe_servers: set = set()
 # captured at registration time so parallel safety never relies on prefix
 # guessing.
 _mcp_tool_server_names: Dict[str, str] = {}
+# AIS-744: registered name → (server config key, the server's own tool name),
+# so UIs can describe a call ("search work packages in OpenProject") without
+# reverse-parsing the sanitized, possibly prefixed registered name.
+_mcp_tool_origins: Dict[str, Tuple[str, str]] = {}
 
 # AIS-330: ``tools.include`` / manifest ``default_enabled`` entries the server
 # did NOT advertise at registration time, keyed by server name. An OpenProject
@@ -4257,7 +4312,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, pr
 
         async def _call_checked(call_args: Any):
             clean_args = _clean_mcp_args(server, tool_name, call_args)
-            async with server._rpc_lock:
+            async with _rpc_guard(server):
                 result = await server.session.call_tool(tool_name, arguments=clean_args)
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
@@ -4320,7 +4375,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, pr
             return json.dumps({"result": text_result}, ensure_ascii=False)
 
         def _call_once(call_args: Optional[dict] = None):
-            return _run_on_mcp_loop(lambda: _call(call_args), timeout=tool_timeout)
+            return _run_on_mcp_loop(
+                lambda: _call(call_args), timeout=_effective_tool_timeout(tool_timeout)
+            )
 
         try:
             # Month by month (AIS-344): a date window longer than one calendar
@@ -4394,7 +4451,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             )
 
         async def _call():
-            async with server._rpc_lock:
+            async with _rpc_guard(server):
                 result = await server.session.list_resources()
             resources = []
             for r in (result.resources if hasattr(result, "resources") else []):
@@ -4470,7 +4527,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             return tool_error("Missing required parameter 'uri'")
 
         async def _call():
-            async with server._rpc_lock:
+            async with _rpc_guard(server):
                 result = await server.session.read_resource(uri)
             # read_resource returns ReadResourceResult with .contents list
             parts: List[str] = []
@@ -4538,7 +4595,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             )
 
         async def _call():
-            async with server._rpc_lock:
+            async with _rpc_guard(server):
                 result = await server.session.list_prompts()
             prompts = []
             for p in (result.prompts if hasattr(result, "prompts") else []):
@@ -4628,7 +4685,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
         arguments = args.get("arguments", {})
 
         async def _call():
-            async with server._rpc_lock:
+            async with _rpc_guard(server):
                 result = await server.session.get_prompt(name, arguments=arguments)
             # GetPromptResult has .messages list
             messages = []
@@ -5353,11 +5410,26 @@ _UTILITY_CAPABILITY_ATTRS = {
 }
 
 
-def _track_mcp_tool_server(tool_name: str, server_name: str) -> None:
+def _track_mcp_tool_server(tool_name: str, server_name: str, mcp_name: str = "") -> None:
     """Remember the exact MCP server that registered *tool_name*."""
     safe_server_name = sanitize_mcp_name_component(server_name)
     with _lock:
         _mcp_tool_server_names[tool_name] = safe_server_name
+        if mcp_name:
+            _mcp_tool_origins[tool_name] = (str(server_name), str(mcp_name))
+
+
+def get_mcp_tool_origin(tool_name: str) -> Optional[Tuple[str, str]]:
+    """``(server, tool)`` as the MCP server names them, or None (AIS-744)."""
+    with _lock:
+        return _mcp_tool_origins.get(str(tool_name or ""))
+
+
+def is_mcp_server_reconnecting(server_name: str) -> bool:
+    """True while a configured server has no live session (reconnect pending)."""
+    with _lock:
+        server = _servers.get(str(server_name or ""))
+    return server is not None and getattr(server, "session", None) is None
 
 
 def get_mcp_server_for_tool(tool_name: str) -> Optional[str]:
@@ -5491,6 +5563,7 @@ def _forget_mcp_tool_server(tool_name: str) -> None:
     """Forget MCP server provenance for a deregistered tool."""
     with _lock:
         _mcp_tool_server_names.pop(tool_name, None)
+        _mcp_tool_origins.pop(tool_name, None)
 
 
 # ---------------------------------------------------------------------------
@@ -5971,7 +6044,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             is_async=False,
             description=full_description,
         )
-        _track_mcp_tool_server(tool_name_prefixed, name)
+        _track_mcp_tool_server(tool_name_prefixed, name, mcp_tool.name)
         registered_names.append(tool_name_prefixed)
 
     _record_missing_include_tools(name, server, include_set, safe_server_name)

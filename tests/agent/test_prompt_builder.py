@@ -795,6 +795,14 @@ class TestPromptBuilderConstants:
         assert "api_server" in PLATFORM_HINTS
         assert "webui" in PLATFORM_HINTS
 
+    def test_live_chat_hint_asks_for_a_goal_sentence(self):
+        # AIS-744: desktop/TUI users saw minutes of tool rows without a word.
+        for platform in ("tui", "desktop"):
+            hint = PLATFORM_HINTS[platform]
+            assert "what you understood" in hint
+            assert "same response" in hint
+            assert "clarify" in hint
+
     def test_cli_hint_does_not_suggest_media_tags(self):
         # Regression: MEDIA:/path tags are intercepted only by messaging
         # gateway platforms. On the CLI they render as literal text and

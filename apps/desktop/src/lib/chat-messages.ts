@@ -33,6 +33,12 @@ export type GatewayEventPayload = {
   args?: unknown
   arguments?: unknown
   context?: string
+  /** AIS-744: the MCP server and its own tool name, for readable labels. */
+  mcp_server?: string
+  mcp_tool?: string
+  /** AIS-744: tool.progress heartbeat of a long-running tool. */
+  elapsed_s?: number
+  state?: string
   input?: unknown
   preview?: string
   result?: unknown
@@ -477,6 +483,11 @@ function toolArgs(payload: GatewayEventPayload | undefined, prevArgs?: unknown):
     ...eventArgs,
     ...(payload?.context ? { context: payload.context } : {}),
     ...(payload?.preview ? { preview: payload.preview } : {}),
+    ...(payload?.mcp_server ? { mcp_server: payload.mcp_server } : {}),
+    ...(payload?.mcp_tool ? { mcp_tool: payload.mcp_tool } : {}),
+    ...(typeof payload?.elapsed_s === 'number'
+      ? { progress_elapsed_s: payload.elapsed_s, progress_state: payload.state || 'waiting' }
+      : {}),
     ...carryTodos(payload, prevArgs)
   }
 }
