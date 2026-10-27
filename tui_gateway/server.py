@@ -4355,11 +4355,24 @@ def _(rid, params: dict) -> dict:
                 found = tip_row
     except Exception:
         pass
+    # Every id of this chat: the resolved tip, the requested id and the
+    # compression ancestors. A live session holding any of them is this chat
+    # — re-bind to it instead of building a second agent next to a running
+    # turn (AIS-735: the second agent's view never saw the turn's events).
+    lineage = [target]
+    if requested_id != target:
+        lineage.append(requested_id)
+    lineage += [i for i in _compression_lineage_ids(db, target) if i not in lineage]
     # Fast path: if the session is already live, reuse it under the lock.
     with _session_resume_lock:
-        live = _find_live_session_by_key(target)
-        if live is None and requested_id != target:
-            live = _find_live_session_by_key(requested_id)
+        live = _find_live_session_by_ids(lineage)
+        logger.info(
+            "session.resume: requested=%s tip=%s live=%s running=%s",
+            requested_id,
+            target,
+            live[0] if live else "none",
+            bool(live and live[1].get("running")),
+        )
         if live is not None:
             sid, session = live
             payload = _live_session_payload(
@@ -4378,6 +4391,16 @@ def _(rid, params: dict) -> dict:
     # (MCP discovery, prompt/skill build, AIAgent construction). Holding
     # _session_resume_lock across it would stall session.close on the main
     # dispatch thread (it's not a _LONG_HANDLER), blocking fast-path RPCs.
+    closing = any(
+        session.get("_finalized") and set(lineage) & _live_session_ids(session)
+        for session in list(_sessions.values())
+    )
+    logger.info(
+        "session.resume: building a new agent for %s (requested=%s): %s",
+        target,
+        requested_id,
+        "its live session is shutting down" if closing else "no live session holds this chat",
+    )
     sid = uuid.uuid4().hex[:8]
     lease, limit_message = _claim_active_session_slot(target, live_session_id=sid)
     if limit_message is not None:
@@ -4452,8 +4475,9 @@ def _(rid, params: dict) -> dict:
     # live session while we were building. Re-check under the lock; if it won,
     # discard our just-built agent and reuse theirs (no worker/poller wired yet).
     with _session_resume_lock:
-        live = _find_live_session_by_key(target)
+        live = _find_live_session_by_ids(lineage)
         if live is not None:
+            logger.info("session.resume: %s went live meanwhile — reusing %s", target, live[0])
             try:
                 if hasattr(agent, "close"):
                     agent.close()
@@ -4595,17 +4619,59 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     }
 
 
+def _live_session_ids(session: dict) -> set[str]:
+    """Every DB id a live session answers to.
+
+    ``session_key`` plus the keys compression rotated away from (AIS-275),
+    plus the agent's own ``session_id``: a compression inside a running turn
+    rotates the agent first and the gateway key only when the turn ends, so
+    until then the continuation id is known only to the agent (AIS-735).
+    """
+    ids = {str(session.get("session_key") or "")}
+    ids.update(str(alias) for alias in (session.get("session_key_aliases") or ()))
+    agent_sid = getattr(session.get("agent"), "session_id", None)
+    if isinstance(agent_sid, str):
+        ids.add(agent_sid)
+    ids.discard("")
+    return ids
+
+
 def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
+    return _find_live_session_by_ids([session_key])
+
+
+def _find_live_session_by_ids(session_ids: list[str]) -> tuple[str, dict] | None:
+    wanted = {str(i) for i in session_ids if i}
+    if not wanted:
+        return None
     for sid, session in list(_sessions.items()):
         if session.get("_finalized"):
             continue
-        if str(session.get("session_key") or "") == session_key:
-            return sid, session
-        # Compression rotated this live session away from session_key; a
-        # resume by any lineage id must still hit it (AIS-275).
-        if session_key in (session.get("session_key_aliases") or ()):
+        if wanted & _live_session_ids(session):
             return sid, session
     return None
+
+
+def _compression_lineage_ids(db, session_id: str) -> list[str]:
+    """``session_id`` and every ancestor it continues after a compression.
+
+    Only compression parents count: a branch also has a parent, but it is a
+    different chat and must never re-bind to the parent's live session.
+    """
+    ids = [session_id]
+    current = session_id
+    try:
+        for _ in range(100):
+            parent = (db.get_session(current) or {}).get("parent_session_id")
+            if not parent or parent in ids:
+                break
+            if (db.get_session(parent) or {}).get("end_reason") != "compression":
+                break
+            ids.append(parent)
+            current = parent
+    except Exception:
+        logger.debug("session lineage walk failed for %s", session_id, exc_info=True)
+    return ids
 
 
 def _fallback_session_info(session: dict) -> dict:
@@ -6317,6 +6383,15 @@ def _run_prompt_submit(
             if home_token is not None:
                 reset_hermes_home_override(home_token)
             _clear_session_context(session_tokens)
+            # A turn that died after an in-turn compression still rotated the
+            # agent; re-anchor the key so a later resume finds this session
+            # (AIS-735; a no-op when the success path already synced).
+            try:
+                _sync_session_key_after_compress(
+                    sid, session, clear_pending_title=False, restart_slash_worker=True,
+                )
+            except Exception:
+                logger.debug("session key sync after turn failed", exc_info=True)
             with session["history_lock"]:
                 session["running"] = False
                 session["last_active"] = time.time()

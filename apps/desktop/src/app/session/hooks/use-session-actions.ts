@@ -8,6 +8,7 @@ import {
   type ChatMessage,
   chatMessageArraysEquivalent,
   chatMessageText,
+  mergeStoredIntoBusyTranscript,
   preserveLocalAssistantErrors,
   toChatMessages
 } from '@/lib/chat-messages'
@@ -473,6 +474,11 @@ export function useSessionActions({
 
       const cachedRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
       const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
+      // A reconnect re-resumes the chat that is on screen. While its turn is
+      // still running the store lags behind the view, so nothing below may
+      // replace the view with the stored copy (AIS-735).
+      const turnWasRunning = !isSessionSwitch && Boolean(cachedState && cachedState.busy)
+      let resumedBusy = false
 
       if (!forceFullResume && cachedRuntimeId && cachedState) {
         const stored = $sessions.get().find(session => session.id === storedSessionId)
@@ -576,7 +582,11 @@ export function useSessionActions({
 
           if (isCurrentResume()) {
             const previousMessages = isSessionSwitch ? [] : $messages.get()
-            localSnapshot = preserveLocalAssistantErrors(toChatMessages(storedMessages.messages), previousMessages)
+            const storedSnapshot = toChatMessages(storedMessages.messages)
+
+            localSnapshot = turnWasRunning
+              ? mergeStoredIntoBusyTranscript(storedSnapshot, previousMessages)
+              : preserveLocalAssistantErrors(storedSnapshot, previousMessages)
 
             if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
               setMessages(localSnapshot)
@@ -670,7 +680,14 @@ export function useSessionActions({
                 ? currentMessages
                 : resumedMessages
 
-        const messagesForView = preserveLocalAssistantErrors(preferredMessages, previousMessages)
+        // The gateway re-bound us to a session whose turn is still running:
+        // keep the live view (its events resume on this connection) and
+        // stay busy instead of showing an idle, older transcript (AIS-735).
+        resumedBusy = Boolean(resumed.running)
+
+        const messagesForView = resumedBusy
+          ? mergeStoredIntoBusyTranscript(preferredMessages, previousMessages)
+          : preserveLocalAssistantErrors(preferredMessages, previousMessages)
 
         setActiveSessionId(resumed.session_id)
         activeSessionIdRef.current = resumed.session_id
@@ -684,8 +701,8 @@ export function useSessionActions({
             ...state,
             ...(runtimeInfo ?? {}),
             messages: messagesForView,
-            busy: false,
-            awaitingResponse: false
+            busy: resumedBusy,
+            awaitingResponse: resumedBusy ? state.awaitingResponse : false
           }),
           storedSessionId
         )
@@ -725,9 +742,12 @@ export function useSessionActions({
         notifyError(err, copy.resumeFailed)
       } finally {
         if (isCurrentResume()) {
-          busyRef.current = false
-          setBusy(false)
-          setAwaitingResponse(false)
+          busyRef.current = resumedBusy
+          setBusy(resumedBusy)
+
+          if (!resumedBusy) {
+            setAwaitingResponse(false)
+          }
         }
       }
     },
