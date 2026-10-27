@@ -101,6 +101,47 @@ _SUMMARY_RATIO = 0.20
 # Absolute ceiling for summary tokens (even on very large context windows)
 _SUMMARY_TOKENS_CEILING = 12_000
 
+# AIS-740: absolute prompt budget for the compaction trigger. The Suite reports
+# every request with >= 100k prompt tokens as a large prompt, and its router
+# (AIMDS-Suite-Auto) advertises the largest routable window (200k), so a
+# percentage of that window compacted only at ~150k. Every Suite model shares
+# the deployment's cost and latency, so the budget applies to the whole class.
+SUITE_PROMPT_BUDGET_TOKENS = 80_000
+# Below this the fixed prompt (system prompt + tool schemas + summary) leaves
+# too little room and compaction would thrash.
+MIN_PROMPT_BUDGET_TOKENS = 32_000
+
+
+def resolve_prompt_budget(setting: Any, model: str = "", provider: str = "") -> Optional[int]:
+    """Absolute compaction budget in prompt tokens, or ``None`` for none.
+
+    ``setting`` is ``compression.max_prompt_tokens``: ``"auto"`` (default)
+    bounds the AIMDS Suite class (Suite provider or Suite router model) to
+    :data:`SUITE_PROMPT_BUDGET_TOKENS` and leaves other providers on the
+    percentage of their window; a positive number bounds every model;
+    ``0`` / ``"off"`` disables the bound.
+    """
+    if setting is None or (isinstance(setting, str) and setting.strip().lower() in {"", "auto"}):
+        try:
+            from hermes_cli.iamds_suite import is_suite_auto_model, is_suite_provider
+
+            if is_suite_provider(provider) or is_suite_auto_model(model):
+                return SUITE_PROMPT_BUDGET_TOKENS
+        except Exception:
+            pass
+        return None
+    if isinstance(setting, str) and setting.strip().lower() in {"off", "none", "false", "no"}:
+        return None
+    try:
+        value = int(float(setting))
+    except (TypeError, ValueError):
+        logger.warning("compression.max_prompt_tokens=%r is not a number — ignored", setting)
+        return None
+    if value <= 0:
+        return None
+    return max(value, MIN_PROMPT_BUDGET_TOKENS)
+
+
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
@@ -582,6 +623,22 @@ class ContextCompressor(ContextEngine):
         """
         self._previous_summary = None
 
+    def _derive_threshold_tokens(self, context_length: int) -> int:
+        """Compaction trigger for *context_length*.
+
+        Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if the
+        percentage would suggest a lower value — this prevents premature
+        compression on large-context models while keeping the % sane for
+        models right at the minimum. The absolute prompt budget (AIS-740)
+        then caps it: the largest routable window is not what a request
+        should grow to.
+        """
+        threshold = max(int(context_length * self.threshold_percent), MINIMUM_CONTEXT_LENGTH)
+        budget = getattr(self, "prompt_budget_tokens", None)
+        if budget:
+            threshold = min(threshold, budget)
+        return threshold
+
     def update_model(
         self,
         model: str,
@@ -598,10 +655,11 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
-        self.threshold_tokens = max(
-            int(context_length * self.threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
+        # A switch between the Suite and another provider changes the class.
+        self.prompt_budget_tokens = resolve_prompt_budget(
+            getattr(self, "max_prompt_tokens", "auto"), model, provider,
         )
+        self.threshold_tokens = self._derive_threshold_tokens(context_length)
         # Recalculate token budgets for the new context length so the
         # compressor stays calibrated after a model switch (e.g. 200K → 32K).
         target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
@@ -625,6 +683,7 @@ class ContextCompressor(ContextEngine):
         provider: str = "",
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
+        max_prompt_tokens: Any = "auto",
     ):
         self.model = model
         self.base_url = base_url
@@ -647,14 +706,11 @@ class ContextCompressor(ContextEngine):
             config_context_length=config_context_length,
             provider=provider,
         )
-        # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
-        # the percentage would suggest a lower value.  This prevents premature
-        # compression on large-context models at 50% while keeping the % sane
-        # for models right at the minimum.
-        self.threshold_tokens = max(
-            int(self.context_length * threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
-        )
+        # AIS-740: an absolute budget caps the trigger (``auto`` = the Suite
+        # class) — see resolve_prompt_budget.
+        self.max_prompt_tokens = max_prompt_tokens
+        self.prompt_budget_tokens = resolve_prompt_budget(max_prompt_tokens, model, provider)
+        self.threshold_tokens = self._derive_threshold_tokens(self.context_length)
         self.compression_count = 0
 
         # Derive token budgets: ratio is relative to the threshold, not total context
@@ -667,10 +723,11 @@ class ContextCompressor(ContextEngine):
         if not quiet_mode:
             logger.info(
                 "Context compressor initialized: model=%s context_length=%d "
-                "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
+                "threshold=%d (%.0f%%, budget=%s) target_ratio=%.0f%% tail_budget=%d "
                 "provider=%s base_url=%s",
                 model, self.context_length, self.threshold_tokens,
-                threshold_percent * 100, self.summary_target_ratio * 100,
+                threshold_percent * 100, self.prompt_budget_tokens or "none",
+                self.summary_target_ratio * 100,
                 self.tail_token_budget,
                 provider or "none", base_url or "none",
             )

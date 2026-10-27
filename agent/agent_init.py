@@ -1432,6 +1432,9 @@ def init_agent(
     compression_abort_on_summary_failure = str(
         _compression_cfg.get("abort_on_summary_failure", False)
     ).lower() in {"true", "1", "yes"}
+    # Absolute compaction budget in prompt tokens (AIS-740): "auto" bounds the
+    # AIMDS Suite class, a number bounds every model, 0 turns it off.
+    compression_max_prompt_tokens = _compression_cfg.get("max_prompt_tokens", "auto")
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -1649,6 +1652,7 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
+            max_prompt_tokens=compression_max_prompt_tokens,
         )
     agent.compression_enabled = compression_enabled
 
@@ -1789,7 +1793,9 @@ def init_agent(
 
     if not agent.quiet_mode:
         if compression_enabled:
-            print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {agent.context_compressor.threshold_tokens:,})")
+            _budget = getattr(agent.context_compressor, "prompt_budget_tokens", None)
+            _budget_note = f", prompt budget {_budget:,}" if _budget else ""
+            print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}%{_budget_note} = {agent.context_compressor.threshold_tokens:,})")
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
         # One-time notice when the Codex gpt-5.5 autoraise kicked in, with the

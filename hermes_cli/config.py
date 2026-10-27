@@ -1623,6 +1623,10 @@ DEFAULT_CONFIG = {
     "compression": {
         "enabled": True,
         "threshold": 0.75,            # compress when context usage exceeds this ratio (raised from 0.50 — AIS-272 slashed the fixed per-turn cost, 0.50 caused compression thrash and 5-deep session chains, AIS-275)
+        "max_prompt_tokens": "auto",  # absolute compaction trigger in prompt tokens, capping `threshold`
+                                      # (AIS-740): "auto" = 80k for the AIMDS Suite class (its router
+                                      # advertises the largest routable window, 200k, and the Suite flags
+                                      # every request >= 100k); a number caps every model; 0 = off
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
@@ -2279,6 +2283,10 @@ DEFAULT_CONFIG = {
         # If a successful memory_context call occurred within the last N
         # memory_context tool results, skip the forced refresh.
         "personal_query_freshness_turns": 3,
+        # Upper bound for one memory_context result in the history (AIS-740):
+        # entry texts shrink first, then low-priority list entries; every
+        # top-level field stays. 0 = unbounded.
+        "context_max_chars": 20000,
         # Claude-like managed memory layer (additive, backward-compatible).
         # disabled by default in phase-1 rollout.
         "managed_memory": {

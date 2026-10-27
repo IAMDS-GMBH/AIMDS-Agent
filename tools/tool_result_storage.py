@@ -287,6 +287,19 @@ def maybe_persist_tool_result(
             )
         except Exception as exc:
             logger.debug("Result shaping failed for %s: %s", tool_use_id, exc)
+        # The memory server's session briefing is not a data tool (the shaper
+        # leaves it alone) but stays in the history for the whole session:
+        # bound it on its own terms, keeping every top-level field (AIS-740).
+        try:
+            from tools.memory_context_shaper import (
+                bound_memory_context_result,
+                is_memory_context_tool,
+            )
+
+            if is_memory_context_tool(tool_name):
+                content = bound_memory_context_result(content)
+        except Exception as exc:
+            logger.debug("memory_context bounding failed for %s: %s", tool_use_id, exc)
 
     ingest_hint = ""
     if ingest_count > 0:

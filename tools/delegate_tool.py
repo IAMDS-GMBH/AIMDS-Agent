@@ -30,7 +30,7 @@ from concurrent.futures import (
 )
 from typing import Any, Dict, List, Optional
 
-from toolsets import TOOLSETS
+from toolsets import HARD_DISABLED_TOOLSETS, TOOLSETS
 
 # Sentinel value used by the runtime provider system for providers that are
 # not natively known (named custom providers, third-party aggregators, etc.).
@@ -120,10 +120,14 @@ def _get_subagent_approval_callback():
 # delegation is role='orchestrator', which re-adds "delegation" in
 # _build_child_agent regardless of this exclusion.
 _EXCLUDED_TOOLSET_NAMES = frozenset({"debugging", "safe", "delegation", "moa", "rl"})
+# Hard-disabled toolsets (browser, vision, spotify, …) are stripped from every
+# schema at runtime; listing them only cost prompt space and invited calls
+# that cannot work (AIS-740).
 _SUBAGENT_TOOLSETS = sorted(
     name
     for name, defn in TOOLSETS.items()
     if name not in _EXCLUDED_TOOLSET_NAMES
+    and name not in HARD_DISABLED_TOOLSETS
     and not name.startswith("hermes-")
     and not all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
 )
@@ -2892,13 +2896,19 @@ def _build_top_level_description() -> str:
         "back the content — before telling the user the operation succeeded.\n"
         "- Leaf subagents (role='leaf', the default) CANNOT call: "
         "delegate_task, clarify, memory, send_message, execute_code.\n"
-        "- Orchestrator subagents (role='orchestrator') retain "
-        "delegate_task so they can spawn their own workers, but still "
-        "cannot use clarify, memory, send_message, or execute_code. "
-        f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
-        f"user and can be disabled globally via "
-        "delegation.orchestrator_enabled=false.\n"
-        "- Each subagent gets its own terminal session (separate working directory and state).\n"
+        + (
+            # Only where nesting can happen — otherwise the clause above
+            # already says every child is a leaf (AIS-740: schema bytes).
+            "- Orchestrator subagents (role='orchestrator') retain "
+            "delegate_task so they can spawn their own workers, but still "
+            "cannot use clarify, memory, send_message, or execute_code. "
+            f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
+            f"user and can be disabled globally via "
+            "delegation.orchestrator_enabled=false.\n"
+            if max_depth >= 2 and orchestrator_on
+            else ""
+        )
+        + "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
     )
 
@@ -3046,8 +3056,8 @@ DELEGATE_TASK_SCHEMA = {
                     "Default: inherits your enabled toolsets. "
                     f"Available toolsets: {_TOOLSET_LIST_STR}. "
                     "Common patterns: ['terminal', 'file'] for code work, "
-                    "['web'] for research, ['browser'] for web interaction, "
-                    "['terminal', 'file', 'web'] for full-stack tasks."
+                    "['web'] for research, ['terminal', 'file', 'web'] for "
+                    "full-stack tasks."
                 ),
             },
             "tasks": {
@@ -3063,20 +3073,19 @@ DELEGATE_TASK_SCHEMA = {
                         "toolsets": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
+                            "description": "Toolsets for this specific task (same choices as the top-level 'toolsets').",
                         },
                         "acp_command": {
                             "type": "string",
                             "description": (
-                                "Per-task ACP command override (e.g. 'copilot'). "
-                                "Overrides the top-level acp_command for this task only. "
-                                "Do NOT set unless the user explicitly told you an ACP CLI is installed."
+                                "Per-task override of acp_command. Do NOT set unless the user "
+                                "explicitly told you an ACP CLI is installed."
                             ),
                         },
                         "acp_args": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Per-task ACP args override. Leave empty unless acp_command is set.",
+                            "description": "Per-task override of the top-level acp_args.",
                         },
                         "role": {
                             "type": "string",
@@ -3107,24 +3116,15 @@ DELEGATE_TASK_SCHEMA = {
             "acp_command": {
                 "type": "string",
                 "description": (
-                    "Override ACP command for child agents (e.g. 'copilot'). "
-                    "When set, children use ACP subprocess transport instead of inheriting "
-                    "the parent's transport. Requires an ACP-compatible CLI "
-                    "(currently GitHub Copilot CLI via 'copilot --acp --stdio'). "
-                    "See agent/copilot_acp_client.py for the implementation. "
-                    "IMPORTANT: Do NOT set this unless the user has explicitly told you "
-                    "a specific ACP-compatible CLI is installed and configured. "
-                    "Leave empty to use the parent's default transport (Hermes subagents)."
+                    "ACP CLI that runs the children instead of Hermes subagents "
+                    "(e.g. 'copilot'). Do NOT set unless the user explicitly told "
+                    "you such a CLI is installed; leave empty otherwise."
                 ),
             },
             "acp_args": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": (
-                    "Arguments for the ACP command (default: ['--acp', '--stdio']). "
-                    "Only used when acp_command is set. "
-                    "Leave empty unless acp_command is explicitly provided."
-                ),
+                "description": "Arguments for acp_command (default ['--acp', '--stdio']).",
             },
         },
         "required": [],
