@@ -60,7 +60,9 @@ import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assista
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { VirtualizedThread } from '@/components/assistant-ui/thread-virtualizer'
 import { HoistedTodoPanel, todosFromMessageContent } from '@/components/assistant-ui/todo-tool'
+import { PendingApprovalNotice } from '@/components/assistant-ui/tool-approval'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
+import { runningStepAtEnd } from '@/components/assistant-ui/tool-fallback-model'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { UserMessageText } from '@/components/assistant-ui/user-message-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
@@ -95,6 +97,7 @@ import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
+import { $approvalRequest } from '@/store/prompts'
 import { $connection } from '@/store/session'
 import { $tipMode, detectIsIamds, resolveIsNerdyMode } from '@/store/tip-mode'
 import { $turnPhaseBySession } from '@/store/turn-phase'
@@ -233,6 +236,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
   }, [messageText])
 
   const messageStatus = useAuiState(s => s.message.status?.type)
+  const approvalPending = useStore($approvalRequest) !== null
   const isPlaceholder = messageStatus === 'running' && content.length === 0
   const enterRef = useEnterAnimation(messageStatus === 'running', `assistant-message:${messageId}`)
 
@@ -254,7 +258,8 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
       >
         {hoistedTodos.length > 0 && <HoistedTodoPanel todos={hoistedTodos} />}
         <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
-        {messageStatus === 'running' && !toolStepRunning(content) && (
+        {messageStatus === 'running' && <PendingApprovalNotice />}
+        {messageStatus === 'running' && !approvalPending && !runningStepAtEnd(content) && (
           <StreamStallIndicator activity={`${content.length}:${messageText.length}`} />
         )}
         {previewTargets.length > 0 && (
@@ -335,12 +340,8 @@ const STREAM_STALL_S = 2
 // activity signal; when it hasn't changed for STREAM_STALL_S, re-show the
 // dither + a timer counting from the last activity.
 // A running tool step shows its own live line and timer (AIS-744), so the
-// stall indicator would only add a second, wordless timer under it.
-function toolStepRunning(content: readonly unknown[]): boolean {
-  const last = content.at(-1) as { result?: unknown; type?: string } | undefined
-
-  return last?.type === 'tool-call' && last.result === undefined
-}
+// stall indicator would only add a second, wordless timer under it — unless
+// that line sits further up the message (AIS-746, see runningStepAtEnd).
 
 const StreamStallIndicator: FC<{ activity: string }> = ({ activity }) => {
   const { t } = useI18n()

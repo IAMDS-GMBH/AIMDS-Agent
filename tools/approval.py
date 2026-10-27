@@ -1213,6 +1213,13 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         surface=surface,
     )
 
+    # AIS-746: the agent thread is about to block for minutes; without a log
+    # line a stuck-looking session is indistinguishable from a hang.
+    logger.info(
+        "approval requested: session=%s surface=%s pattern=%s command=%s",
+        session_key, surface, primary_key or description, command[:200],
+    )
+
     # Notify the user (bridges sync agent thread → async gateway)
     try:
         notify_cb(approval_data)
@@ -1257,6 +1264,11 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     # mean the user never responded; report that explicitly so plugins can
     # distinguish timeout from explicit deny.
     _outcome = "timeout" if not resolved else (choice if choice else "timeout")
+    logger.info(
+        "approval %s: session=%s surface=%s waited=%.0fs",
+        "timed out" if _outcome == "timeout" else f"answered ({_outcome})",
+        session_key, surface, time.monotonic() - _now,
+    )
     _fire_approval_hook(
         "post_approval_response",
         command=command,

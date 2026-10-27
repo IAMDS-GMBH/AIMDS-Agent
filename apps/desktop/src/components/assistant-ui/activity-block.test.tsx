@@ -2,7 +2,7 @@ import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime }
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { clearAllPrompts } from '@/store/prompts'
+import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
 import { $toolDisclosureStates } from '@/store/tool-view'
 
@@ -180,5 +180,34 @@ describe('activity block', () => {
       expect(container.textContent).toContain('Tickets in OpenProject gesucht: „Urlaub 2026“')
     })
     expect(container.textContent).not.toContain('Schritt')
+  })
+
+  // AIS-746 (session 20261027_170015_2d955b): grouped steps, then a file edit,
+  // then a terminal step waiting for approval. The block sits above the edit
+  // row, so the approval must render at the end of the message.
+  it('shows a pending approval at the end of the message, after later file-edit rows', async () => {
+    setApprovalRequest({ command: 'rm -f /tmp/b13.txt', description: 'delete in root path', sessionId: 'sess-1' })
+
+    const turn = [
+      ...SESSION_TOOLS.slice(0, 2),
+      { id: 'p-1', name: 'patch', args: { path: '/tmp/changelog.md' }, result: { success: true } },
+      { id: 't-1', name: 'terminal', args: { command: 'wc -l changelog.md && rm -f /tmp/b13.txt' } }
+    ]
+
+    const { container } = render(<Harness value={message(turn, true)} />)
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-slot="tool-approval-notice"]')).toBeTruthy()
+    })
+
+    const content = container.querySelector('[data-slot="aui_assistant-message-content"]')!
+    const notice = container.querySelector('[data-slot="tool-approval-notice"]')!
+    const block = container.querySelector('[data-activity-block]')!
+
+    expect(container.querySelectorAll('[data-slot="tool-approval-inline"]')).toHaveLength(1)
+    expect(content.lastElementChild?.contains(notice) || content.lastElementChild === notice).toBe(true)
+    expect(block.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(block.textContent).toContain('Wartet auf deine Freigabe')
+    expect(block.querySelector('.shimmer')).toBeNull()
   })
 })

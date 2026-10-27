@@ -1654,6 +1654,12 @@ export interface Translations {
       alwaysTitle: string
       alwaysDescription: (pattern: string) => string
       alwaysAllow: string
+      /** AIS-746: notice at the end of the running message. */
+      waitingTitle: string
+      waitingBody: string
+      showCommand: string
+      notificationTitle: string
+      notificationBody: string
     }
     clarify: {
       notReady: string
@@ -1857,6 +1863,8 @@ export interface ToolActivityCopy {
   withDetail: (label: string, detail: string) => string
   stepCount: (count: number) => string
   working: string
+  /** AIS-746: headline while a step waits for the user's approval. */
+  waitingApproval: string
   slow: (place: string) => string
   slowGeneric: string
   reconnecting: (place: string) => string

@@ -25,7 +25,7 @@ import { cn } from '@/lib/utils'
 import { $toolInlineDiffs } from '@/store/tool-diffs'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
 
-import { PendingToolApproval } from './tool-approval'
+import { useAwaitingApproval } from './tool-approval'
 import {
   activitySummary,
   buildToolView,
@@ -324,7 +324,6 @@ function ToolEntry({ part }: ToolEntryProps) {
           </span>
         </DisclosureRow>
       </div>
-      {isPending && <PendingToolApproval part={part} />}
       {open && (
         <div className="grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
           {!embedded && view.previewTarget && isPreviewableTarget(view.previewTarget) && (
@@ -498,8 +497,15 @@ function ActivityBlock({ parts }: { parts: ToolPart[] }) {
   const stepElapsed = useElapsedSeconds(Boolean(current), `activity-step:${messageId}:${currentKey}`)
   const summary = useMemo(() => activitySummary(parts), [parts])
   const lastPart = parts.at(-1)
+  // The approval itself renders at the end of the message (AIS-746); the
+  // block only says that it waits instead of looking busy.
+  const awaitingApproval = useAwaitingApproval(current?.toolName)
 
   const headline = useMemo(() => {
+    if (awaitingApproval) {
+      return activity.waitingApproval
+    }
+
     if (current) {
       return buildToolView(current, '').title
     }
@@ -511,11 +517,11 @@ function ActivityBlock({ parts }: { parts: ToolPart[] }) {
     return [activity.stepCount(summary.steps), formatActivityDuration(summary.seconds), summary.areas.slice(0, 3).join(', ')]
       .filter(Boolean)
       .join(' · ')
-  }, [activity, current, lastPart, messageRunning, summary])
+  }, [activity, awaitingApproval, current, lastPart, messageRunning, summary])
 
   let hint = ''
 
-  if (current) {
+  if (current && !awaitingApproval) {
     const waited = Math.max(stepElapsed, numberArg(current.args, 'progress_elapsed_s'))
     const label = toolLabel(current.toolName, current.args)
     const server = stringArg(current.args, 'mcp_server')
@@ -550,16 +556,19 @@ function ActivityBlock({ parts }: { parts: ToolPart[] }) {
         >
           <span aria-live={messageRunning ? 'polite' : undefined} className="flex min-w-0 items-center gap-1.5">
             <ToolGlyph copy={copy} icon={current ? undefined : 'tools'} status={status} />
-            <FadeText className={cn(TOOL_HEADER_TITLE_CLASS, current && 'shimmer text-(--ui-text-tertiary)')}>
+            <FadeText
+              className={cn(
+                TOOL_HEADER_TITLE_CLASS,
+                current && !awaitingApproval && 'shimmer text-(--ui-text-tertiary)',
+                awaitingApproval && 'text-primary'
+              )}
+            >
               {headline}
             </FadeText>
           </span>
           {hint && <span className={TOOL_HEADER_SUBTITLE_CLASS}>{hint}</span>}
         </DisclosureRow>
       </div>
-      {pendingParts.map(part => (
-        <PendingToolApproval key={toolPartDisclosureId(part)} part={part} />
-      ))}
       {open && (
         <div className="grid min-w-0 max-w-full gap-(--tool-row-gap) overflow-hidden p-1.5">
           {parts.map(part => (

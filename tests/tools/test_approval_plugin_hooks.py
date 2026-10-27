@@ -150,3 +150,34 @@ class TestGatewayPathFiresHooks:
     thread."""
 
 
+
+
+class TestGatewayWaitIsLogged:
+    """AIS-746: a session blocked on an approval must be visible in the logs —
+    session 20261027_170015_2d955b waited 5 minutes without a single line."""
+
+    def _decide(self, monkeypatch, caplog, *, timeout, answer=None):
+        monkeypatch.setattr(approval_module, "_get_approval_config", lambda: {"gateway_timeout": timeout})
+        session_key = "test:session:approval_log"
+
+        def notify(_data):
+            if answer:
+                approval_module.resolve_gateway_approval(session_key, answer)
+
+        data = {"command": "rm -f /tmp/b13.txt", "description": "delete in root path", "pattern_key": "delete in root path"}
+        with caplog.at_level("INFO", logger="tools.approval"):
+            return approval_module._await_gateway_decision(session_key, notify, data)
+
+    def test_request_and_timeout_are_logged(self, monkeypatch, caplog):
+        result = self._decide(monkeypatch, caplog, timeout=0)
+
+        assert result["resolved"] is False
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("approval requested: session=test:session:approval_log" in m and "rm -f /tmp/b13.txt" in m for m in messages)
+        assert any(m.startswith("approval timed out: session=test:session:approval_log") for m in messages)
+
+    def test_answer_is_logged(self, monkeypatch, caplog):
+        result = self._decide(monkeypatch, caplog, timeout=5, answer="deny")
+
+        assert result == {"resolved": True, "choice": "deny"}
+        assert any(r.getMessage().startswith("approval answered (deny):") for r in caplog.records)

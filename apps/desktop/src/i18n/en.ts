@@ -1921,7 +1921,12 @@ export const en: Translations = {
       alwaysTitle: 'Always allow this command?',
       alwaysDescription: pattern =>
         `This adds the “${pattern}” pattern to your permanent allowlist (~/.hermes/config.yaml). Hermes won’t ask again for commands like this — in this session or any future one.`,
-      alwaysAllow: 'Always allow'
+      alwaysAllow: 'Always allow',
+      waitingTitle: 'Waiting for your approval',
+      waitingBody: 'Hermes wants to run a command on your computer that can change or delete files. Check it and decide whether it may run.',
+      showCommand: 'Show command',
+      notificationTitle: 'Hermes is waiting for your approval',
+      notificationBody: 'A command needs your OK before Hermes can continue.'
     },
     clarify: {
       notReady: 'Clarify request is not ready yet',
@@ -2050,6 +2055,7 @@ export const en: Translations = {
         withDetail: (label, detail) => `${label}: “${detail}”`,
         stepCount: count => (count === 1 ? '1 step' : `${count} steps`),
         working: 'Working on it',
+        waitingApproval: 'Waiting for your approval',
         slow: place => `${place} is responding slowly – still waiting.`,
         slowGeneric: 'This is taking longer – still waiting.',
         reconnecting: place => `Reconnecting to ${place} …`,

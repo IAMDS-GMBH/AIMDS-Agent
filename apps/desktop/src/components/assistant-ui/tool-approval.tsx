@@ -20,21 +20,15 @@ import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $approvalRequest, type ApprovalRequest, clearApprovalRequest } from '@/store/prompts'
 
-import type { ToolPart } from './tool-fallback-model'
-
-// Inline approval control. Rendered as a compact button strip
-// under the pending tool row that raised the approval (the row already shows
-// the command, so the strip deliberately doesn't repeat it) instead of as a
-// modal overlay.
-//
-// Binding is POSITIONAL, not command-matched: the desktop `tool.start` payload
-// carries no structured args (only tool_id/name/context — see
-// tui_gateway/server.py::_on_tool_start), so we cannot join the approval to the
-// row by command string. But `approval.request` only ever fires from the
-// `terminal` / `execute_code` guards and the agent thread blocks on exactly one
-// approval at a time, so the single pending row of those tools IS the row that
-// raised it. The command/description text comes from `$approvalRequest` (the
-// event payload), which is the only place that data reliably exists.
+// Approval notice (AIS-746). The gateway blocks the agent thread on exactly one
+// approval per session until approval.respond lands (5 min, then the tool is
+// BLOCKED), so the request must be impossible to miss. It used to be an inline
+// strip under the pending tool row, but since the activity block (AIS-744)
+// that row can sit far up in a long turn — above later file-edit rows — and the
+// chat looked stuck. The notice therefore renders once, at the end of the
+// running assistant message, with a plain-language reason and the command
+// behind a disclosure. `$approvalRequest` is already scoped to the active
+// session; the event payload is the only place the command reliably exists.
 export const APPROVAL_TOOLS = new Set([
   'terminal',
   'execute_code',
@@ -50,17 +44,47 @@ export const APPROVAL_TOOLS = new Set([
   'mcp_tool'
 ])
 
+/** Whether `toolName` is the running step that waits for the user's approval. */
+export function useAwaitingApproval(toolName: string | undefined): boolean {
+  const request = useStore($approvalRequest)
+
+  return Boolean(request && toolName && APPROVAL_TOOLS.has(toolName))
+}
+
 // Canonical gateway choices (ui-tui/src/components/prompts.tsx).
 type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
 
-export const PendingToolApproval: FC<{ part: ToolPart }> = ({ part }) => {
+export const PendingApprovalNotice: FC = () => {
+  const { t } = useI18n()
+  const copy = t.assistant.approval
   const request = useStore($approvalRequest)
 
-  if (!request || !APPROVAL_TOOLS.has(part.toolName)) {
+  if (!request) {
     return null
   }
 
-  return <ApprovalBar request={request} />
+  const command = request.command.trim()
+
+  return (
+    <div
+      aria-live="assertive"
+      className="mt-2 grid max-w-full gap-1.5 rounded-[0.625rem] border border-primary/30 bg-primary/5 px-3 py-2"
+      data-slot="tool-approval-notice"
+      role="alert"
+    >
+      <div className="text-sm font-medium text-foreground">{copy.waitingTitle}</div>
+      <p className="text-xs leading-snug text-(--ui-text-secondary)">{copy.waitingBody}</p>
+      {command && (
+        <details className="text-xs text-(--ui-text-tertiary)">
+          <summary className="cursor-pointer select-none">{copy.showCommand}</summary>
+          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-2.5 py-1.5 font-mono text-xs leading-snug text-foreground">
+            {command}
+          </pre>
+        </details>
+      )}
+      <ApprovalBar request={request} />
+    </div>
+  )
 }
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
@@ -136,7 +160,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
   }, [confirmAlways, respond])
 
   return (
-    <div className="mt-1 flex items-center gap-2.5 ps-5" data-slot="tool-approval-inline">
+    <div className="flex items-center gap-2.5" data-slot="tool-approval-inline">
       <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
         <Button
           className="h-full gap-1 rounded-none px-2 text-xs font-medium text-primary hover:bg-primary/15 hover:text-primary"
