@@ -238,7 +238,8 @@ def test_v10_upgrade_rewrites_brief_prompts_with_marker_block(tmp_path):
     assert "NEXT: <one line" in brief
     assert "do not write files" in brief  # v11: the scheduler writes the journal
     curator = jobs["aimds-vault-curator"]["prompt"]
-    assert "_inbox/_archive/" in curator
+    # v13 (AIS-748): Hermes archives old _inbox entries itself; the prompt covers broken links only
+    assert "_inbox" in curator and "## Collected Data" in curator
 
 
 def _write_state(home, version):
@@ -343,3 +344,27 @@ def test_v12_upgrade_swaps_only_the_source_sentence(tmp_path):
     assert jobs["user-job"]["prompt"] == "name skipped or failed sources in one line. "
     for spec in _MODULE._DEFAULT_SPECS:
         assert "skipped or failed" not in spec["prompt"]
+
+
+def test_v13_upgrade_shrinks_an_unchanged_curator_prompt_and_keeps_edits(tmp_path):
+    """AIS-748: the mechanical steps moved into cron/vault_curator.py."""
+    home = tmp_path / ".hermes"
+    jobs_path = home / _MODULE.JOBS_FILE_REL
+    jobs_path.parent.mkdir(parents=True, exist_ok=True)
+    origin = {"source": "aimds-default-cron", "seed_key": "vault-curator"}
+    schedule = {"kind": "cron", "expr": "0 12 * * 5", "display": "0 12 * * 5"}
+    jobs_path.write_text(json.dumps({"jobs": [
+        {"id": "aimds-vault-curator", "name": "Vault & Memory Curator", "prompt": _MODULE._OLD_CURATOR_PROMPT,
+         "origin": origin, "schedule": schedule, "enabled": True},
+        {"id": "aimds-vault-curator-2", "name": "Vault & Memory Curator", "prompt": "My own curator rules",
+         "origin": origin, "schedule": schedule, "enabled": True},
+    ]}), encoding="utf-8")
+    _write_state(home, 12)
+
+    seed_default_cron_jobs(home)
+
+    jobs = {job["id"]: job for job in _read_jobs(jobs_path)}
+    assert "broken wikilink" in jobs["aimds-vault-curator"]["prompt"]
+    assert "Never delete" in jobs["aimds-vault-curator"]["prompt"]
+    assert jobs["aimds-vault-curator-2"]["prompt"] == "My own curator rules"
+

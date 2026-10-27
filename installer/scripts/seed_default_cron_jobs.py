@@ -38,7 +38,19 @@ LEGACY_MARKER_FILE = ".aimds-default-cron-seeded"
 #             the language line), Teams check every 30 min, brief skills normalised to [].
 # Version 12: AIS-554 — briefs pass on the collector's plain 'Source notes' line instead of
 #             naming skipped/failed sources (users saw the raw status of unset services).
-CURRENT_DEFAULT_CRON_VERSION = 12
+# Version 13: AIS-748 — the curator's mechanical steps run deterministically before the
+#             agent (cron/vault_curator.py); its prompt only covers broken wikilinks.
+CURRENT_DEFAULT_CRON_VERSION = 13
+# The curator prompt from v10 to v12, replaced in v13 only when unchanged.
+_OLD_CURATOR_PROMPT = (
+    "Perform periodic background maintenance on the Vault (AIMDS-Suite-Vault) and memories:\n"
+    "1) Clean up any stray HermesMemory symlinks/junctions in Vault or legacy Documents locations.\n"
+    "2) Migrate any loose project or user files from ~/.hermes/memories/ into AIMDS-Suite-Vault/projects/ or /users/.\n"
+    "3) Ensure Vault notes follow a clean 3–4 level deep hierarchy (projects/<area>/<project>/<topic>.md, users/<user>/<category>/<topic>.md, knowledge/<area>/<topic>.md).\n"
+    "4) Clean up stale backup directories (HermesMemory.backup.*) and broken links.\n"
+    "5) Trigger incremental vault re-indexing so hybrid search recall remains fast and up to date.\n"
+    "6) Move _inbox/ entries older than 7 days into _inbox/_archive/ (never delete)."
+)
 _OLD_SOURCES_SENTENCE = "name skipped or failed sources in one line. "
 _NEW_SOURCES_SENTENCE = "pass on the 'Source notes' line in plain words if there is one. "
 JOBS_FILE_REL = Path("cron") / "jobs.json"
@@ -108,13 +120,11 @@ _DEFAULT_SPECS: tuple[dict[str, Any], ...] = (
         "name": "Vault & Memory Curator",
         "schedule": "0 12 * * 5",
         "prompt": (
-            "Perform periodic background maintenance on the Vault (AIMDS-Suite-Vault) and memories:\n"
-            "1) Clean up any stray HermesMemory symlinks/junctions in Vault or legacy Documents locations.\n"
-            "2) Migrate any loose project or user files from ~/.hermes/memories/ into AIMDS-Suite-Vault/projects/ or /users/.\n"
-            "3) Ensure Vault notes follow a clean 3–4 level deep hierarchy (projects/<area>/<project>/<topic>.md, users/<user>/<category>/<topic>.md, knowledge/<area>/<topic>.md).\n"
-            "4) Clean up stale backup directories (HermesMemory.backup.*) and broken links.\n"
-            "5) Trigger incremental vault re-indexing so hybrid search recall remains fast and up to date.\n"
-            "6) Move _inbox/ entries older than 7 days into _inbox/_archive/ (never delete)."
+            "Weekly vault maintenance. Hermes has already done the mechanical part (memory links, backup "
+            "directories, old _inbox entries, re-indexing) and lists what is left in the '## Collected Data' "
+            "block. For each broken wikilink, find the note it most likely means with the vault tools and fix "
+            "the link; if no such note exists, keep the text and remove the brackets. Never delete notes or "
+            "files. Reply with a short list of what you changed."
         ),
         "deliver": "local",
         "enabled": True,
@@ -458,6 +468,19 @@ def _upgrade_jobs_for_version(
             if _OLD_SOURCES_SENTENCE in prompt:
                 job["prompt"] = prompt.replace(_OLD_SOURCES_SENTENCE, _NEW_SOURCES_SENTENCE)
                 updated += 1
+
+    # v13 migration (AIS-748): the curator prompt shrinks to the broken links; a
+    # prompt the user edited stays as it is.
+    if from_version < 13 <= to_version:
+        spec = next((sp for sp in _DEFAULT_SPECS if _canonical_seed_key(sp["seed_key"]) == "vault-curator"), None)
+        if spec is not None:
+            target_prompt = str(spec.get("prompt") or "").strip()
+            for job in jobs:
+                if not _job_is_aimds_default(job) or not _job_matches_alias(job, _aliases("vault-curator")):
+                    continue
+                if str(job.get("prompt") or "").strip() == _OLD_CURATOR_PROMPT.strip():
+                    job["prompt"] = target_prompt
+                    updated += 1
 
     return updated
 
