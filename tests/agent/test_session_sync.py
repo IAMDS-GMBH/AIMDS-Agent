@@ -533,7 +533,10 @@ def test_memory_reads_do_not_wait_on_a_hanging_sync_call(monkeypatch):
     try:
         started = time.monotonic()
         assert facade._call_read("memory_context", {}, timeout=2) == {"ok": "memory_context"}
-        assert time.monotonic() - started < 0.5
+        # The read came back while the sync call is still hanging (it holds
+        # for 5 s); a wall-clock bound well below that stays stable on slow CI.
+        assert sync.is_alive()
+        assert time.monotonic() - started < 2.5
     finally:
         release.set()
         sync.join(2)
