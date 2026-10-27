@@ -1,9 +1,9 @@
 {
   "source": "IAMDS-GMBH/AIMDS-Suite container/go-mcp-openproject",
-  "commit": "dae1bf4a",
+  "commit": "4b733506",
   "tools": [
     {
-      "description": "Get a one-time link_url where the user connects (or replaces) their own OpenProject account — they enter their personal access token on that page, never in the chat. pm_link_status already returns a link_url when the account is not linked; use this tool to replace an existing link or token. Give the user exactly the returned link_url — never build a link yourself and never send the user to the OpenProject instance or its API. It is valid for about 10 minutes and only once. Afterwards call pm_link_status. No arguments.",
+      "description": "Only to replace an existing link or token: returns a one-time link_url (10 min) where the user enters a new personal access token. Give the user exactly that URL — never build one or send them to the API. No arguments.",
       "inputSchema": {
         "properties": {},
         "type": "object"
@@ -11,7 +11,7 @@
       "name": "pm_link_account"
     },
     {
-      "description": "Check whether the user's OpenProject account is linked. Linked: tell the user the linked name/login so they can spot a wrong account. Not linked: the result contains a one-time link_url — give the user exactly that URL (never build one yourself); they enter their personal access token there, never in the chat, and the page shows right away whether it worked. Then call pm_link_status again. No arguments.",
+      "description": "Call only after a tool answered action_required=link_account, or when the user asks which account is linked. Not linked: give the user exactly the returned link_url (they enter their access token there, never in the chat). No arguments.",
       "inputSchema": {
         "properties": {},
         "type": "object"
@@ -27,7 +27,7 @@
       "name": "pm_unlink_account"
     },
     {
-      "description": "List OpenProject's statuses, types, priorities, and time-entry activities in one call — the values needed to fill in status/type/priority fields on pm_create_work_package/pm_update_work_package, or the activity field on pm_create_time_entry/pm_update_time_entry. Served from a cache refreshed every ~30 minutes. Optional: kind (\"statuses\"|\"types\"|\"priorities\"|\"activities\"|\"all\", default \"all\").",
+      "description": "List valid statuses, types, priorities and time-entry activities (kind, default all). Names are also matched partially, so look up only when unsure.",
       "inputSchema": {
         "properties": {
           "kind": {
@@ -47,11 +47,11 @@
       "name": "pm_list_reference_data"
     },
     {
-      "description": "Resolve people by name/email for assignee/responsible fields, or list a project's members. Served from a cached directory refreshed every ~5 minutes. Optional: query (free-text name/email match), project (id or identifier, scopes to that project's members).",
+      "description": "Find people by name/email (query) or list a project's members (project). Assignee fields also accept a name or \"me\" directly.",
       "inputSchema": {
         "properties": {
           "project": {
-            "description": "Project identifier (e.g. \"AIS\"), name or numeric id to list that project's members. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
+            "description": "Project identifier (e.g. \"AIS\"), name or numeric id to list that project's members; a key like \"AIS-499\" names its project.",
             "type": "string"
           },
           "query": {
@@ -77,7 +77,7 @@
       "name": "pm_list_projects"
     },
     {
-      "description": "Get one project's summary, optionally including its members (who's on it). Required: project (id or identifier). Optional: include_members (bool, default false).",
+      "description": "Get one project's summary; include_members adds who is on it. Required: project.",
       "inputSchema": {
         "properties": {
           "include_members": {
@@ -85,7 +85,7 @@
             "type": "boolean"
           },
           "project": {
-            "description": "Project identifier (e.g. \"AIS\"), name or numeric id. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
+            "description": "Project identifier (e.g. \"AIS\"), name or numeric id; a key like \"AIS-499\" names its project.",
             "type": "string"
           }
         },
@@ -97,7 +97,7 @@
       "name": "pm_get_project"
     },
     {
-      "description": "List work packages with structured filters (project, status, assignee, type, priority, date ranges). Use pm_search_work_packages instead for free-text relevance search. No required arguments (an empty call lists everything visible). Each row carries `key` (e.g. \"AIS-499\" — name work packages by it towards users and pass it to other tools; its prefix is the project identifier) and the numeric `id`.",
+      "description": "List or search work packages (free-text query and/or filters, all optional). A query that is a key (\"AIS-499\") or id also returns that work package as exact_match. Date filters created_/updated_/due_ + on (exact day), from, to (inclusive). Rows carry `key` (name work packages by it, pass it to other tools) and the main fields; select [\"*\"] returns all.",
       "inputSchema": {
         "properties": {
           "assignee": {
@@ -105,27 +105,27 @@
             "type": "string"
           },
           "created_from": {
-            "description": "Creation date range start, YYYY-MM-DD.",
+            "description": "YYYY-MM-DD",
             "type": "string"
           },
           "created_on": {
-            "description": "Exact creation date, YYYY-MM-DD.",
+            "description": "YYYY-MM-DD",
             "type": "string"
           },
           "created_to": {
-            "description": "Creation date range end, YYYY-MM-DD.",
+            "description": "YYYY-MM-DD",
             "type": "string"
           },
           "due_from": {
-            "description": "Due date range start, YYYY-MM-DD.",
+            "description": "YYYY-MM-DD",
             "type": "string"
           },
           "due_on": {
-            "description": "Exact due date, YYYY-MM-DD.",
+            "description": "YYYY-MM-DD",
             "type": "string"
           },
           "due_to": {
-            "description": "Due date range end, YYYY-MM-DD.",
+            "description": "YYYY-MM-DD",
             "type": "string"
           },
           "group_by": {
@@ -141,7 +141,7 @@
             "type": "integer"
           },
           "open_only": {
-            "description": "Restrict to open work packages: statuses that are neither is_closed nor is_done (e.g. \"Done\" is finished even if not closed), see pm_list_reference_data. An explicit status still applies.",
+            "description": "Only open work packages: status neither is_closed nor is_done (\"Done\" counts as finished). An explicit status still applies.",
             "type": "boolean"
           },
           "priority": {
@@ -149,11 +149,15 @@
             "type": "string"
           },
           "project": {
-            "description": "Project identifier (e.g. \"AIS\"), name or numeric id to scope results to. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
+            "description": "Project identifier (e.g. \"AIS\"), name or numeric id to scope results to; a key like \"AIS-499\" names its project.",
+            "type": "string"
+          },
+          "query": {
+            "description": "Free text, or a key/id for exact_match.",
             "type": "string"
           },
           "select": {
-            "description": "Restrict each result to these field names (id, subject, status, type, priority, assignee, project, due_date, ...).",
+            "description": "Fields per row; [\"*\"] = all (adds id, author, responsible, created_at, updated_at).",
             "items": {
               "type": "string"
             },
@@ -167,7 +171,7 @@
             "type": "array"
           },
           "status": {
-            "description": "Status name (case-insensitive) or id, or \"open\"/\"closed\" (open = neither is_closed nor is_done, closed = the rest). Unknown names are rejected with the valid list.",
+            "description": "Status name or id, or \"open\"/\"closed\" (as in open_only).",
             "type": "string"
           },
           "type": {
@@ -175,15 +179,15 @@
             "type": "string"
           },
           "updated_from": {
-            "description": "Update date range start, YYYY-MM-DD.",
+            "description": "YYYY-MM-DD",
             "type": "string"
           },
           "updated_on": {
-            "description": "Exact update date, YYYY-MM-DD.",
+            "description": "YYYY-MM-DD",
             "type": "string"
           },
           "updated_to": {
-            "description": "Update date range end, YYYY-MM-DD.",
+            "description": "YYYY-MM-DD",
             "type": "string"
           }
         },
@@ -192,97 +196,10 @@
       "name": "pm_list_work_packages"
     },
     {
-      "description": "Search work packages by free text, optionally combined with the same structured filters as pm_list_work_packages. Required: query. A query that is a key (\"AIS-499\") or id also returns that work package as exact_match. Rows carry `key` and the numeric `id`.",
+      "description": "DEPRECATED — use pm_list_work_packages(query=…), which takes the same arguments.",
       "inputSchema": {
         "properties": {
-          "assignee": {
-            "description": "Assignee id, login, or \"me\".",
-            "type": "string"
-          },
-          "created_from": {
-            "description": "Creation date range start, YYYY-MM-DD.",
-            "type": "string"
-          },
-          "created_on": {
-            "description": "Exact creation date, YYYY-MM-DD.",
-            "type": "string"
-          },
-          "created_to": {
-            "description": "Creation date range end, YYYY-MM-DD.",
-            "type": "string"
-          },
-          "due_from": {
-            "description": "Due date range start, YYYY-MM-DD.",
-            "type": "string"
-          },
-          "due_on": {
-            "description": "Exact due date, YYYY-MM-DD.",
-            "type": "string"
-          },
-          "due_to": {
-            "description": "Due date range end, YYYY-MM-DD.",
-            "type": "string"
-          },
-          "group_by": {
-            "description": "Field to group results by, e.g. \"status\": adds groups [{value, count}] over the whole result.",
-            "type": "string"
-          },
-          "limit": {
-            "description": "Max results per page (default 50, hard ceiling 200).",
-            "type": "integer"
-          },
-          "offset": {
-            "description": "1-based page offset for pagination.",
-            "type": "integer"
-          },
-          "open_only": {
-            "description": "Restrict to open work packages: statuses that are neither is_closed nor is_done (e.g. \"Done\" is finished even if not closed), see pm_list_reference_data. An explicit status still applies.",
-            "type": "boolean"
-          },
-          "priority": {
-            "description": "Priority name (case-insensitive) or id.",
-            "type": "string"
-          },
-          "project": {
-            "description": "Project identifier (e.g. \"AIS\"), name or numeric id to scope results to. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
-            "type": "string"
-          },
           "query": {
-            "description": "Free-text search query.",
-            "type": "string"
-          },
-          "select": {
-            "description": "Restrict each result to these field names (id, subject, status, type, priority, assignee, project, due_date, ...).",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "sort_by": {
-            "description": "Sort criteria, e.g. [\"status:desc\",\"priority:asc\"].",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "status": {
-            "description": "Status name (case-insensitive) or id, or \"open\"/\"closed\" (open = neither is_closed nor is_done, closed = the rest). Unknown names are rejected with the valid list.",
-            "type": "string"
-          },
-          "type": {
-            "description": "Work package type name (case-insensitive) or id.",
-            "type": "string"
-          },
-          "updated_from": {
-            "description": "Update date range start, YYYY-MM-DD.",
-            "type": "string"
-          },
-          "updated_on": {
-            "description": "Exact update date, YYYY-MM-DD.",
-            "type": "string"
-          },
-          "updated_to": {
-            "description": "Update date range end, YYYY-MM-DD.",
             "type": "string"
           }
         },
@@ -294,7 +211,7 @@
       "name": "pm_search_work_packages"
     },
     {
-      "description": "Get one work package by key (e.g. \"AIS-469\") or numeric id, including its full description. Required: id. Optional: text_limit (truncate the description).",
+      "description": "Get one work package by key (e.g. \"AIS-469\") or numeric id, including its description. Required: id. Optional: text_limit.",
       "inputSchema": {
         "properties": {
           "id": {
@@ -309,7 +226,7 @@
             "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
           },
           "text_limit": {
-            "description": "Truncate the description to this many characters.",
+            "description": "Truncate the description to this many characters (default 6000, 0 = full).",
             "type": "integer"
           }
         },
@@ -321,10 +238,14 @@
       "name": "pm_get_work_package"
     },
     {
-      "description": "Create a work package. Required: project (id or identifier), type (name or id), subject. Optional: description, status, priority, assignee (id, login, or \"me\"), parent (key like \"AIS-469\" or numeric id), start_date, due_date (YYYY-MM-DD), estimated_time (ISO-8601 duration, e.g. \"PT8H\").",
+      "description": "Create a work package. Required: project, type (name or id), subject. assignee: id, login or \"me\"; parent: key or id; date: milestones; estimated_time: ISO-8601 (e.g. \"PT8H\"). Dates are YYYY-MM-DD. A milestone (e.g. weekly goal) cannot be a parent — pass it in relates_to instead.",
       "inputSchema": {
         "properties": {
           "assignee": {
+            "type": "string"
+          },
+          "date": {
+            "description": "YYYY-MM-DD; the single date of a milestone type.",
             "type": "string"
           },
           "description": {
@@ -351,8 +272,23 @@
             "type": "string"
           },
           "project": {
-            "description": "Project identifier (e.g. \"AIS\"), name or numeric id. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
+            "description": "Project identifier (e.g. \"AIS\"), name or numeric id; a key like \"AIS-499\" names its project.",
             "type": "string"
+          },
+          "relates_to": {
+            "description": "Keys to link with a relates relation right away (e.g. the weekly goal).",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
+            },
+            "type": "array"
           },
           "start_date": {
             "type": "string"
@@ -377,10 +313,14 @@
       "name": "pm_create_work_package"
     },
     {
-      "description": "Update fields on an existing work package (status, priority, assignee, subject, description, dates). Required: id. At least one other field should be set. lock_version is fetched automatically if omitted.",
+      "description": "Update a work package's fields. Required: id (or ids for several) plus one field; lock_version is fetched if omitted. Milestones (e.g. weekly goals) have one date: set date. Unapplied fields come back in warnings; a status change returns next_statuses. If the workflow forbids a direct status change, the answer has updated=false, allowed_next and usually retry — pass retry as the next call's arguments.",
       "inputSchema": {
         "properties": {
           "assignee": {
+            "type": "string"
+          },
+          "date": {
+            "description": "YYYY-MM-DD; the single date of a milestone type.",
             "type": "string"
           },
           "description": {
@@ -400,6 +340,21 @@
             ],
             "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
           },
+          "ids": {
+            "description": "Instead of id: apply the same change to these (max 25).",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
+            },
+            "type": "array"
+          },
           "lock_version": {
             "description": "Optional; fetched automatically if omitted.",
             "type": "integer"
@@ -413,13 +368,17 @@
           "status": {
             "type": "string"
           },
+          "status_path": {
+            "description": "Statuses to walk in order, last = target, e.g. [\"In Review\",\"Closed\"]; every hop is saved, other fields go with the first. Max 4.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "subject": {
             "type": "string"
           }
         },
-        "required": [
-          "id"
-        ],
         "type": "object"
       },
       "name": "pm_update_work_package"
@@ -455,7 +414,7 @@
       "name": "pm_comment_work_package"
     },
     {
-      "description": "List the comment/activity log for a work package, oldest first (limit keeps the most recent entries). Required: id (key like \"AIS-469\" or numeric id). Optional: limit, text_limit (truncate each entry).",
+      "description": "A work package's comment/activity log, oldest first (limit keeps the newest). Required: id. Optional: limit, text_limit (per entry).",
       "inputSchema": {
         "properties": {
           "id": {
@@ -507,7 +466,7 @@
       "name": "pm_list_work_package_relations"
     },
     {
-      "description": "Create a relation between two work packages. Required: id, related_to_id, relation_type (one of relates, blocks, blocked, precedes, follows, duplicates, duplicated, includes, partof, requires, required).",
+      "description": "Relate two work packages (id → related_to_id). An existing pair is returned with already_exists=true.",
       "inputSchema": {
         "properties": {
           "id": {
@@ -519,7 +478,7 @@
                 "type": "string"
               }
             ],
-            "description": "The work package the relation is created from (key like \"AIS-469\" or numeric id)."
+            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
           },
           "related_to_id": {
             "anyOf": [
@@ -530,9 +489,22 @@
                 "type": "string"
               }
             ],
-            "description": "The work package to relate to (key like \"AIS-469\" or numeric id)."
+            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
           },
           "relation_type": {
+            "enum": [
+              "relates",
+              "blocks",
+              "blocked",
+              "precedes",
+              "follows",
+              "duplicates",
+              "duplicated",
+              "includes",
+              "partof",
+              "requires",
+              "required"
+            ],
             "type": "string"
           }
         },
@@ -546,11 +518,45 @@
       "name": "pm_create_work_package_relation"
     },
     {
-      "description": "List saved boards (work package views). Optional: project (id or identifier, scopes to that project's boards), search (name match).",
+      "description": "Delete a relation by relation_id, or by the pair id + related_to_id (either direction).",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
+          },
+          "related_to_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
+          },
+          "relation_id": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "pm_delete_work_package_relation"
+    },
+    {
+      "description": "List boards (optionally of one project, search by name); pass the id to pm_get_board.",
       "inputSchema": {
         "properties": {
           "project": {
-            "description": "Project identifier (e.g. \"AIS\"), name or numeric id. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
+            "description": "Project identifier (e.g. \"AIS\"), name or numeric id; a key like \"AIS-499\" names its project.",
             "type": "string"
           },
           "search": {
@@ -562,7 +568,7 @@
       "name": "pm_list_boards"
     },
     {
-      "description": "Get a board's definition (columns/filters/group_by) and, by default, the work packages it currently matches — OpenProject boards are saved filtered views, not separate swimlane resources. Required: id. Optional: include_work_packages (default true), limit.",
+      "description": "A board's columns in order with their work packages. Required: id. Optional: include_work_packages (default true), limit per column.",
       "inputSchema": {
         "properties": {
           "id": {
@@ -583,7 +589,7 @@
       "name": "pm_get_board"
     },
     {
-      "description": "List meetings. Optional: project (identifier, name or id), from/to (YYYY-MM-DD, filtered client-side — the OpenProject API has no server-side date filter for meetings yet), state (open|draft|in_progress|cancelled|closed).",
+      "description": "List meetings, optionally by project, date range (from/to, YYYY-MM-DD) and state.",
       "inputSchema": {
         "properties": {
           "from": {
@@ -596,7 +602,6 @@
             "type": "integer"
           },
           "project": {
-            "description": "Project identifier (e.g. \"AIS\"), name or numeric id to filter by. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
             "type": "string"
           },
           "state": {
@@ -618,7 +623,7 @@
       "name": "pm_list_meetings"
     },
     {
-      "description": "Get a meeting with its full agenda, flattened: sections → agenda items → outcomes (minutes/action items) in one readable tree. Required: id. Note: OpenProject's current API exposes no participants/attendees relation — attendee lists are not available here.",
+      "description": "Get a meeting with its agenda: sections → items → outcomes (minutes, action items). No attendee list (not in the API). Required: id.",
       "inputSchema": {
         "properties": {
           "id": {
@@ -633,7 +638,7 @@
       "name": "pm_get_meeting"
     },
     {
-      "description": "Create a one-time meeting (recurring meetings are not supported by this tool). Required: project, title. Optional: start_time (ISO-8601 datetime), duration (ISO-8601 duration, e.g. \"PT1H\"), location.",
+      "description": "Create a one-time meeting. Required: project, title. Optional: start_time (ISO-8601), duration (e.g. \"PT1H\"), location.",
       "inputSchema": {
         "properties": {
           "duration": {
@@ -643,7 +648,6 @@
             "type": "string"
           },
           "project": {
-            "description": "Project identifier (e.g. \"AIS\"), name or numeric id. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
             "type": "string"
           },
           "start_time": {
@@ -662,7 +666,7 @@
       "name": "pm_create_meeting"
     },
     {
-      "description": "Add an agenda item to a meeting, or record an outcome (minutes/action item) on an existing agenda item. Required: meeting_id, and either title (creates a new item) or agenda_item_id (attaches an outcome to that item). Optional: work_package_id (links the new item to a work package), notes (item notes, or the outcome text when targeting agenda_item_id), outcome_kind (\"information\"|\"work_package\", only meaningful with agenda_item_id).",
+      "description": "Add an agenda item (title, optional work_package_id, notes) to a meeting, or record an outcome on agenda_item_id (notes = outcome text, outcome_kind). Required: meeting_id plus title or agenda_item_id.",
       "inputSchema": {
         "properties": {
           "agenda_item_id": {
@@ -692,8 +696,7 @@
               {
                 "type": "string"
               }
-            ],
-            "description": "Work package to link the new agenda item to (key like \"AIS-469\" or numeric id)."
+            ]
           }
         },
         "required": [
@@ -704,27 +707,37 @@
       "name": "pm_add_meeting_agenda_item"
     },
     {
-      "description": "List logged time entries with structured filters. No required arguments: without project/work_package_id it lists every entry the user can read across all projects (scope with spent_on_from/spent_on_to). Optional: project, work_package_id (key like \"AIS-469\" or numeric id), user (id, login, or \"me\"), spent_on_from/spent_on_to (YYYY-MM-DD range), limit, offset (page number). work_package_id is filtered client-side (OpenProject's API has no server-side filter for it), so scope with project/spent_on_from/spent_on_to when possible to keep the scan small.",
+      "description": "List logged time entries (hours as decimal). Without project it covers every project the user can read — for a day/week overview call it ONCE with spent_on_from/spent_on_to and group_by, never per project. group_by returns total_hours and per-group sums instead of the entries.",
       "inputSchema": {
         "properties": {
+          "group_by": {
+            "enum": [
+              "project",
+              "work_package",
+              "spent_on",
+              "activity",
+              "user"
+            ],
+            "type": "string"
+          },
           "limit": {
-            "description": "Max results per page (default 50, hard ceiling 200).",
+            "description": "Entries per page (default 50, max 200).",
             "type": "integer"
           },
           "offset": {
-            "description": "1-based page offset for pagination.",
+            "description": "Page number.",
             "type": "integer"
           },
           "project": {
-            "description": "Project identifier (e.g. \"AIS\"), name or numeric id. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
+            "description": "Project identifier (e.g. \"AIS\"), name or numeric id; a key like \"AIS-499\" names its project.",
             "type": "string"
           },
           "spent_on_from": {
-            "description": "Date range start, YYYY-MM-DD.",
+            "description": "YYYY-MM-DD",
             "type": "string"
           },
           "spent_on_to": {
-            "description": "Date range end, YYYY-MM-DD.",
+            "description": "YYYY-MM-DD",
             "type": "string"
           },
           "user": {
@@ -748,42 +761,42 @@
       "name": "pm_list_time_entries"
     },
     {
-      "description": "Log time spent on a work package or project. Required: activity, spent_on (YYYY-MM-DD), and at least one of work_package_id/project, plus either hours (ISO-8601 duration, e.g. \"PT8H\") or both start_time and end_time (hours is computed locally from the clock times; OpenProject always derives the end time itself and never accepts it directly). Optional: comment, user (log on behalf of another user — id, login, or \"me\"), start_time alongside hours to also record when the work began, ongoing (bool, only valid with start_time and no end_time — marks the entry as still running). start_time/end_time only work if the OpenProject instance has \"allow tracking of start and end times\" enabled.",
+      "description": "Log time on a work package or project. Required: activity, spent_on, work_package_id or project, and hours OR start_time+end_time (never both: hours is computed from the clock times). Clock times need the instance setting \"track start and end times\".",
       "inputSchema": {
         "properties": {
           "activity": {
-            "description": "Activity name or id — see pm_list_reference_data(kind=\"activities\").",
+            "description": "Name or id (pm_list_reference_data kind=activities).",
             "type": "string"
           },
           "comment": {
             "type": "string"
           },
           "end_time": {
-            "description": "ISO-8601 date-time work ended — used only to compute hours locally, never sent to OpenProject.",
+            "description": "ISO-8601 date-time; replaces hours.",
             "type": "string"
           },
           "hours": {
-            "description": "ISO-8601 duration, e.g. \"PT8H\" or \"PT1H30M\".",
+            "description": "ISO-8601 duration, e.g. \"PT1H30M\".",
             "type": "string"
           },
           "ongoing": {
-            "description": "Mark as still running. Only valid with start_time and no end_time.",
+            "description": "Still running (start_time, no end_time).",
             "type": "boolean"
           },
           "project": {
-            "description": "Project identifier (e.g. \"AIS\"), name or numeric id. A work package key such as \"AIS-499\" names its project by the prefix. Unknown values return the closest projects.",
+            "description": "Project identifier (e.g. \"AIS\"), name or numeric id; a key like \"AIS-499\" names its project.",
             "type": "string"
           },
           "spent_on": {
-            "description": "Date the time was spent, YYYY-MM-DD.",
+            "description": "YYYY-MM-DD",
             "type": "string"
           },
           "start_time": {
-            "description": "ISO-8601 date-time work began (instance-setting-dependent).",
+            "description": "ISO-8601 date-time.",
             "type": "string"
           },
           "user": {
-            "description": "Log time on behalf of this user (id, login, or \"me\"). Defaults to the caller.",
+            "description": "On behalf of this user (id, login, \"me\").",
             "type": "string"
           },
           "work_package_id": {
@@ -807,7 +820,7 @@
       "name": "pm_create_time_entry"
     },
     {
-      "description": "Update an existing time entry. Required: id. Optional: activity, spent_on, hours, comment, ongoing, start_time+end_time together (to recompute hours from clock times), user. lock_version is fetched automatically if omitted.",
+      "description": "Update a time entry. Required: id. Change hours OR start_time+end_time (recomputes hours); spent_on follows start_time.",
       "inputSchema": {
         "properties": {
           "activity": {
@@ -817,17 +830,13 @@
             "type": "string"
           },
           "end_time": {
-            "description": "Requires start_time in the same call; hours is recomputed locally.",
+            "description": "With start_time; replaces hours.",
             "type": "string"
           },
           "hours": {
             "type": "string"
           },
           "id": {
-            "type": "integer"
-          },
-          "lock_version": {
-            "description": "Optional; fetched automatically if omitted.",
             "type": "integer"
           },
           "ongoing": {

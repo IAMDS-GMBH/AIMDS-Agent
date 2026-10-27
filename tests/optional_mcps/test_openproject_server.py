@@ -32,11 +32,11 @@ PROJECTS = [
 # Done is not a closed status on this instance; Rejected is (AIS-494: is_closed).
 # Like the IAMDS instance: "Done" is finished (defaultDoneRatio 100) but
 # deliberately not closed — an external job closes it later (AIS-518).
-STATUSES = [{"id": 15, "name": "Backlog", "isClosed": False, "isDefault": True, "defaultDoneRatio": 0},
-            {"id": 17, "name": "In Progress", "isClosed": False, "isDefault": False, "defaultDoneRatio": 30},
-            {"id": 18, "name": "In Review", "isClosed": False, "isDefault": False, "defaultDoneRatio": 70},
-            {"id": 12, "name": "Done", "isClosed": False, "isDefault": False, "defaultDoneRatio": 100},
-            {"id": 14, "name": "Rejected", "isClosed": True, "isDefault": False, "defaultDoneRatio": 100}]
+STATUSES = [{"id": 15, "name": "Backlog", "isClosed": False, "isDefault": True, "defaultDoneRatio": 0, "position": 1},
+            {"id": 17, "name": "In Progress", "isClosed": False, "isDefault": False, "defaultDoneRatio": 30, "position": 2},
+            {"id": 18, "name": "In Review", "isClosed": False, "isDefault": False, "defaultDoneRatio": 70, "position": 3},
+            {"id": 12, "name": "Done", "isClosed": False, "isDefault": False, "defaultDoneRatio": 100, "position": 4},
+            {"id": 14, "name": "Rejected", "isClosed": True, "isDefault": False, "defaultDoneRatio": 100, "position": 5}]
 OPEN_IDS = ["15", "17", "18"]
 TYPES = [{"id": 1, "name": "Task", "isDefault": True}, {"id": 7, "name": "Bug", "isDefault": False}]
 PRIORITIES = [{"id": 8, "name": "Normal", "isDefault": True}, {"id": 9, "name": "High", "isDefault": False}]
@@ -117,6 +117,16 @@ class FakeOpenProject:
         self.hidden_ids = set()  # work packages the key batch lookup does not return
         self.global_activities = None  # the instance-wide activity collection (404 when None)
         self.agenda_items = [{"id": 27, "title": "Discuss", "notes": {"raw": "Some notes."}, "itemType": "simple", "_links": {}}]
+        self.types = list(TYPES)
+        self.workflow = None  # {from status id: [allowed status ids]}; None = every transition allowed
+        self.status_of = {}  # work package id -> status id saved by a PATCH
+        self.saved_fields = {}  # work package id -> fields saved by a PATCH
+
+    def _status(self, wid):
+        if wid in self.status_of:
+            return self.status_of[wid]
+        wp = self.work_packages.get(str(wid))
+        return int(wp["_links"]["status"]["href"].rsplit("/", 1)[-1]) if wp else 17
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         url = urlparse(str(request.url))
@@ -150,7 +160,7 @@ class FakeOpenProject:
         if (method, path) == ("GET", "statuses"):
             return ok(_collection(STATUSES))
         if (method, path) == ("GET", "types"):
-            return ok(_collection(TYPES))
+            return ok(_collection(self.types))
         if (method, path) == ("GET", "priorities"):
             return ok(_collection(PRIORITIES))
         if (method, path) == ("GET", "time_entries/activities"):
@@ -180,7 +190,9 @@ class FakeOpenProject:
         if method == "GET" and path.startswith("work_packages/") and path.count("/") == 1:
             ref = path.split("/", 1)[1]
             if ref in self.work_packages:
-                return ok(self.work_packages[ref])
+                wp = self.work_packages[ref]
+                sid = self.status_of.get(wp["id"])
+                return ok(_with_status(wp, sid) if sid else wp)
             return err(404, "The requested resource could not be found.")
         if method == "POST" and path.startswith("projects/") and path.endswith("/work_packages"):
             pid = int(path.split("/")[1])
@@ -192,9 +204,26 @@ class FakeOpenProject:
                 return err(409, "Your changes could not be saved.")
             wid = int(path.split("/")[1])
             project = self.patch_project or int((body.get("_links", {}).get("project", {}).get("href") or "/107").rsplit("/", 1)[-1])
-            return ok(_wp(wid, project, lock=body["lockVersion"] + 1))
+            current = self._status(wid)
+            status_href = (body.get("_links") or {}).get("status", {}).get("href")
+            if status_href:
+                target = int(status_href.rsplit("/", 1)[-1])
+                if self.workflow is not None and target not in self.workflow.get(current, []):
+                    return httpx.Response(422, json={
+                        "_type": "Error", "message": "Status is invalid because no valid transition exists from old to new status.",
+                        "_embedded": {"details": {"attribute": "status"}}})
+                self.status_of[wid] = current = target
+            base = self.work_packages.get(str(wid)) or _wp(wid)
+            fields = self.saved_fields.setdefault(wid, {})
+            fields.update({k: body[k] for k in ("subject", "startDate", "dueDate", "date") if k in body})
+            saved = _with_status(_wp(wid, project, subject=base["subject"], display=base["displayId"], lock=body["lockVersion"] + 1), current)
+            saved.update(fields)
+            return ok(saved)
         if method == "POST" and path.endswith("/form") and path.startswith("work_packages/"):
-            return ok({"_embedded": {"payload": body, "schema": {"status": {"_embedded": {"allowedValues": [STATUSES[2]]}}},
+            wid = int(path.split("/")[1])
+            allowed = [STATUSES[2]] if self.workflow is None else [
+                s for s in STATUSES if s["id"] in self.workflow.get(self._status(wid), [])]
+            return ok({"_embedded": {"payload": body, "schema": {"status": {"_embedded": {"allowedValues": allowed}}},
                                      "validationErrors": {}}})
         if method == "POST" and path.endswith("/activities"):
             return ok({}, 201)
@@ -217,6 +246,12 @@ class FakeOpenProject:
         if method == "POST" and path.endswith("/relations"):
             return ok({"id": 6, "type": body["type"], "_links": {
                 "from": {"href": f"/api/v3/{path.rsplit('/', 1)[0]}", "title": "x"}, "to": dict(body["_links"]["to"], title="y")}}, 201)
+        if method == "GET" and path.startswith("relations/"):
+            if path == "relations/5":
+                return ok({"id": 5, "type": "blocks", "_links": {
+                    "from": {"href": "/api/v3/work_packages/17699", "title": "Own server"},
+                    "to": {"href": "/api/v3/work_packages/17054", "title": "EVN Ongoing"}}})
+            return err(404, "The requested resource could not be found.")
         if method == "DELETE":
             return httpx.Response(204)
         if (method, path) == ("GET", "queries"):
@@ -271,6 +306,13 @@ class FakeOpenProject:
                 return err(409, "stale")
             return ok(_time_entry(int(path.split("/")[1]), body.get("spentOn", "2026-09-24"), body.get("hours", "PT1H")))
         return ok({"message": f"unexpected {method} {path}"}, 500)
+
+
+def _with_status(wp, status_id):
+    out = json.loads(json.dumps(wp))
+    name = next(s["name"] for s in STATUSES if s["id"] == status_id)
+    out["_links"]["status"] = {"href": f"/api/v3/statuses/{status_id}", "title": name}
+    return out
 
 
 @pytest.fixture
@@ -627,6 +669,21 @@ def test_search_returns_an_exact_match_for_a_key_or_id(op):
     assert not [c for c in fake.calls[calls:] if c[1].startswith("work_packages/")]  # no lookup for free text
 
 
+def test_list_takes_the_query_and_search_is_its_deprecated_alias(op):
+    """go-mcp-openproject 0.6.0 (AIS-709): free-text search is
+    pm_list_work_packages(query); pm_search_work_packages answers the same."""
+    server, fake = op
+    listed = ok(server, "pm_list_work_packages", query="AIS-408", assignee="me")
+    filters = json.loads(requests(fake, "GET", "work_packages")[-1][2]["filters"])
+    assert {"search": {"operator": "**", "values": ["AIS-408"]}} in filters
+    assert listed["exact_match"]["key"] == "AIS-408"
+    assert ok(server, "pm_search_work_packages", query="AIS-408", assignee="me") == listed
+    descriptions = {t["name"]: t["description"] for t in server.tool_definitions()}
+    assert descriptions["pm_search_work_packages"].startswith("DEPRECATED")
+    assert "exact_match" not in ok(server, "pm_list_work_packages")
+    assert ok(server, "pm_list_work_packages", select=["*"])["work_packages"][0]["created_at"]
+
+
 def test_search_exact_match_respects_the_read_list(monkeypatch):
     server = _load(monkeypatch, read="AIS,PRO")
     fake = FakeOpenProject()
@@ -649,10 +706,18 @@ def test_status_names_and_open_closed_operators(op, status, expected):
     assert [f for f in filters if "status" in f] == [expected]
 
 
-def test_status_names_must_match_exactly(op):
-    server, _ = op
-    assert fail(server, "pm_list_work_packages", status="Progress").startswith('Unknown OpenProject status "Progress".')
-    assert fail(server, "pm_create_work_package", project="PRO", type="Bu", subject="x").startswith('Unknown OpenProject type "Bu".')
+def test_status_names_match_exactly_or_one_partial_match(op):
+    """go-mcp-openproject 0.6.0 (AIS-709): a unique partial name is taken
+    ("review" -> "In Review"), several candidates stay an error naming them."""
+    server, fake = op
+    ok(server, "pm_list_work_packages", status="Progress")
+    filters = json.loads(requests(fake, "GET", "work_packages")[-1][2]["filters"])
+    assert {"status": {"operator": "=", "values": ["17"]}} in filters
+    assert fail(server, "pm_list_work_packages", status="e").startswith('OpenProject status "e" is ambiguous: In Progress, In Review,')
+    ok(server, "pm_create_work_package", project="PRO", type="Bu", subject="x")
+    assert requests(fake, "POST", "projects/46/work_packages")[-1][3]["_links"]["type"] == {"href": "/api/v3/types/7"}
+    assert fail(server, "pm_create_work_package", project="PRO", type="Feature", subject="x").startswith(
+        'Unknown OpenProject type "Feature". Allowed: Task, Bug — see pm_list_reference_data(kind="types").')
 
 
 def test_open_only_never_drops_an_explicit_status(op):
@@ -936,12 +1001,111 @@ def test_update_conflict_twice_maps_to_retry_message(op):
     assert text.startswith("The work package changed concurrently; please retry:")
 
 
-def test_update_validation_error_names_allowed_next_statuses(op):
+def test_refused_transition_answers_with_allowed_next_and_retry(op):
+    """A workflow that forbids the direct change is an expected answer, not
+    an error: updated=false, allowed_next and a ready-made retry (AIS-605/709)."""
     server, fake = op
-    fake.errors[("PATCH", "work_packages/17699")] = (422, {"message": "Status is invalid", "_embedded": {"details": {"attribute": "status"}}})
-    text = fail(server, "pm_update_work_package", id=17699, status="Done")
-    assert text.startswith("OpenProject rejected the request: Status is invalid")
-    assert "Allowed next: In Review" in text and text.endswith('(details: {"attribute":"status"})')
+    fake.workflow = {17: [18], 18: [12]}
+    data = ok(server, "pm_update_work_package", id=17699, status="Done", subject="Renamed", description="long text")
+    assert data["updated"] is False and data["reason"] == "status_transition_invalid"
+    assert data["current_status"] == "In Progress" and data["allowed_next"] == ["In Review"]
+    assert data["suggested_path"] == ["In Review", "Done"] and data["path_source"] == "guess"
+    assert data["retry"] == {"id": "AIS-408", "status_path": ["In Review", "Done"], "subject": "Renamed"}
+    assert "Add your description" in data["note"]
+    retried = ok(server, "pm_update_work_package", **data["retry"])
+    assert retried["status"] == "Done" and retried["steps"] == ["In Review", "Done"] and retried["subject"] == "Renamed"
+    assert "warnings" not in retried
+
+
+def test_a_non_status_validation_error_stays_an_error(op):
+    server, fake = op
+    fake.errors[("PATCH", "work_packages/17699")] = (422, {"message": "Subject is too long", "_embedded": {"details": {"attribute": "subject"}}})
+    assert fail(server, "pm_update_work_package", id=17699, subject="x" * 300, status="In Review").startswith(
+        "OpenProject rejected the request: Subject is too long")
+
+
+def test_status_path_saves_every_hop_and_the_other_fields_with_the_first(op):
+    server, fake = op
+    fake.workflow = {17: [18], 18: [12, 17], 12: [18]}
+    row = ok(server, "pm_update_work_package", id="AIS-408", status_path=["In Progress", "In Review", "Done"], subject="x")
+    patches = [c[3] for c in requests(fake, "PATCH", "work_packages/17699")]
+    assert [p["_links"]["status"]["href"] for p in patches] == ["/api/v3/statuses/18", "/api/v3/statuses/12"]
+    assert patches[0]["subject"] == "x" and "subject" not in patches[1]
+    assert patches[1]["lockVersion"] == patches[0]["lockVersion"] + 1
+    assert row["status"] == "Done" and row["steps"] == ["In Review", "Done"] and row["next_statuses"] == ["In Review"]
+    assert "disagree" in fail(server, "pm_update_work_package", id=17699, status="Done", status_path=["In Review"])
+    assert "at most 4" in fail(server, "pm_update_work_package", id=17699, status_path=["Backlog"] * 5)
+
+
+def test_a_refused_later_hop_reports_the_saved_steps(op):
+    server, fake = op
+    fake.workflow = {17: [18], 18: []}
+    data = ok(server, "pm_update_work_package", id=17699, status_path=["In Review", "Done"], subject="kept")
+    assert data["updated"] is True and data["steps_saved"] == ["In Review"]
+    assert data["current_status"] == "In Review" and data["allowed_next"] == []
+    assert "retry" not in data and "No known path" in data["note"]
+
+
+def test_update_several_work_packages_with_ids(op):
+    server, _ = op
+    data = ok(server, "pm_update_work_package", ids=["AIS-408", 17054, 999], status="In Review")
+    assert data["updated"] == 2 and data["failed"] == 1
+    by_key = {r["key"]: r for r in data["results"]}
+    assert by_key["AIS-408"]["status"] == "In Review" and by_key["17054"]["status"] == "In Review"
+    assert by_key["999"]["error"].startswith("Not found in OpenProject")
+    assert fail(server, "pm_update_work_package", status="Done") == "id (or ids) is required"
+    assert fail(server, "pm_update_work_package", id=1, ids=[2], status="Done") == "pass either id or ids, not both"
+    assert "at most 25" in fail(server, "pm_update_work_package", ids=list(range(1, 27)), status="Done")
+
+
+def test_bulk_update_passes_refused_transitions_through(op):
+    server, fake = op
+    fake.workflow = {17: [18], 18: [12]}
+    data = ok(server, "pm_update_work_package", ids=["AIS-408"], status="Done")
+    entry = data["results"][0]
+    assert data["updated"] == 0 and entry["updated"] is False
+    assert entry["retry"] == {"id": "AIS-408", "status_path": ["In Review", "Done"]}
+
+
+def test_create_links_relates_to_right_away(op):
+    server, fake = op
+    row = ok(server, "pm_create_work_package", project="PRO", type="Task", subject="Follow-up", relates_to=["AIS-408", "17054"])
+    assert row["relations"] == [{"to": "AIS-408", "id": 6}, {"to": "17054", "id": 6}]
+    posts = [c[3] for c in requests(fake, "POST", "work_packages/17710/relations")]
+    assert posts == [{"type": "relates", "_links": {"to": {"href": "/api/v3/work_packages/17699"}}},
+                     {"type": "relates", "_links": {"to": {"href": "/api/v3/work_packages/17054"}}}]
+    # A relation that fails does not undo the create.
+    row = ok(server, "pm_create_work_package", project="PRO", type="Task", subject="Other", relates_to=["AIS-1"])
+    assert row["id"] == 17710 and row["relations"][0]["error"].startswith("Not found in OpenProject")
+
+
+def test_milestones_take_one_date_and_cannot_be_a_parent(op):
+    server, fake = op
+    fake.types.append({"id": 2, "name": "Milestone", "isDefault": False, "isMilestone": True})
+    ok(server, "pm_create_work_package", project="AIS", type="Milestone", subject="Week goal", due_date="2026-10-30")
+    post = requests(fake, "POST", "projects/107/work_packages")[-1][3]
+    assert post["date"] == "2026-10-30" and "dueDate" not in post
+    assert "milestone" in fail(server, "pm_create_work_package", project="AIS", type="Milestone", subject="x",
+                               start_date="2026-10-01", due_date="2026-10-02")
+    assert "only for milestone" in fail(server, "pm_create_work_package", project="AIS", type="Task", subject="x", date="2026-10-02")
+    fake.errors[("POST", "projects/107/work_packages")] = (
+        422, {"message": "Parent is invalid", "_embedded": {"details": {"attribute": "parent"}}})
+    text = fail(server, "pm_create_work_package", project="AIS", type="Task", subject="x", parent="AIS-408")
+    assert text.startswith("OpenProject rejected the request: Parent is invalid") and "pass the milestone in relates_to" in text
+
+
+def test_relation_pairs_are_idempotent_and_deletable(op):
+    server, fake = op
+    fake.errors[("POST", "work_packages/17699/relations")] = (422, {"message": "Relation already exists"})
+    row = ok(server, "pm_create_work_package_relation", id=17699, related_to_id=17054, relation_type="relates")
+    assert row["already_exists"] is True and row["id"] == 5
+    deleted = ok(server, "pm_delete_work_package_relation", relation_id=5)
+    assert deleted["deleted"] is True and deleted["from_key"] == "AIS-408"
+    assert requests(fake, "DELETE", "relations/5")
+    assert ok(server, "pm_delete_work_package_relation", id="AIS-408", related_to_id=17054)["deleted"] is True
+    assert ok(server, "pm_delete_work_package_relation", relation_id=77) == {"deleted": False, "reason": "not_found", "relation_id": 77}
+    assert ok(server, "pm_delete_work_package_relation", id=17699, related_to_id=17695)["reason"] == "not_found"
+    assert fail(server, "pm_delete_work_package_relation") == "relation_id, or id and related_to_id, are required"
 
 
 def test_move_to_another_project_and_ignored_move(op, monkeypatch):
@@ -1132,6 +1296,25 @@ def test_list_time_entries_contract_fields_and_extras(op):
     assert row["work_package_key"] == "EXT-17054" and "work_package_display_id" not in row
     assert data["by_work_package"] == [{"work_package_key": "EXT-17054", "work_package_id": 17054, "subject": "EVN Ongoing",
                                         "hours": 5.5, "booked_days": 2}]
+
+
+def test_list_time_entries_group_by_sums_every_project_in_one_call(op):
+    """A day/week overview is one grouped call across all projects, not one
+    listing per project (go-mcp-openproject 0.6.0, AIS-709)."""
+    server, fake = op
+    fake.time_entries = [_time_entry(1, "2026-10-26", "PT4H"), _time_entry(2, "2026-10-26", "PT1H30M", project=46),
+                         _time_entry(3, "2026-10-27", "PT2H", wp=17699)]
+    data = ok(server, "pm_list_time_entries", user="me", spent_on_from="2026-10-26", spent_on_to="2026-10-27", group_by="spent_on")
+    assert len(requests(fake, "GET", "time_entries")) == 1
+    filters = json.loads(requests(fake, "GET", "time_entries")[-1][2]["filters"])
+    assert not [f for f in filters if "project" in f]  # read "*": no project scope at all
+    assert data == {"total_hours": 7.5, "count": 3, "group_by": "spent_on",
+                    "groups": [{"value": "2026-10-26", "hours": 5.5, "count": 2}, {"value": "2026-10-27", "hours": 2.0, "count": 1}]}
+    by_wp = ok(server, "pm_list_time_entries", group_by="work_package")["groups"]
+    assert by_wp[0] == {"value": "EXT-17054", "subject": "EVN Ongoing", "hours": 5.5, "count": 2}
+    assert by_wp[1]["value"] == "AIS-408"
+    assert ok(server, "pm_list_time_entries", group_by="project")["groups"][0] == {"value": "AIMDS Suite", "hours": 7.5, "count": 3}
+    assert fail(server, "pm_list_time_entries", group_by="month").startswith("group_by must be one of project")
 
 
 def test_list_time_entries_paginates_by_page_number(op):

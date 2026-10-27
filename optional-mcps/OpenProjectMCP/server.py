@@ -1,7 +1,7 @@
 """OpenProject MCP server bundled with Hermes (AIS-408, contract since AIS-479).
 
 The tool surface is the AIMDS Suite's ``go-mcp-openproject`` contract: the same
-26 ``pm_*`` tools with the same names, parameters, required fields, result
+27 ``pm_*`` tools with the same names, parameters, required fields, result
 shapes (one text block of pretty-printed JSON) and error texts, so the model
 works the same whether the Suite or this local server answers. The vendored
 snapshot ``contract/go-mcp-openproject.tools.json`` (refreshed by
@@ -30,7 +30,7 @@ Local differences to the Suite server, by design:
   token: like the Suite (AIS-486) every tool then answers
   ``{linked: false, action_required: "configure_account", next_step}``
   without ``isError`` — an expected state, not a failed call.
-- All 26 contract tools are always registered (the tool list matches the
+- All 27 contract tools are always registered (the tool list matches the
   Suite). A read-only setup (empty ``OPENPROJECT_WRITE_PROJECTS``) or a
   project outside the write list makes the write tools return a clear error
   naming the setting, instead of hiding them (the pre-AIS-479 behaviour).
@@ -74,6 +74,18 @@ next to the numeric ``id``: rows carry ``key``/``parent_key``, relations
 ``display_id``/``parent_display_id`` and the local ``work_package_display_id``.
 An assignee/user name falls back to the caller's own login, name or e-mail
 (``users/me``) when the directory (principals for non-admins) lacks it.
+
+Since 0.6.x (Suite AIS-709/AIS-720, here AIS-711): free-text search is
+``pm_list_work_packages(query)`` (``pm_search_work_packages`` is a deprecated
+alias, removed from the Suite in 2.18.0); ``pm_list_time_entries(group_by)``
+sums a whole range across projects in one call; ``pm_create_work_package``
+takes ``relates_to`` and a milestone ``date``; ``pm_update_work_package``
+takes ``ids`` (max 25) and ``status_path`` (max 4 hops) and answers a refused
+transition with ``updated: false``, ``allowed_next`` and a ready-made
+``retry``; ``pm_delete_work_package_relation``; a unique partial
+status/type/priority name is taken. Not ported: the Suite's learned
+transition graph (the local suggestion is a direct hop or a guess by status
+position) and its compact list rows/decimal hours (local rows stay complete).
 """
 
 from __future__ import annotations
@@ -114,6 +126,10 @@ _STATIC_TTL_S = 30 * 60.0  # statuses, types, priorities, activities
 _DYNAMIC_TTL_S = 5 * 60.0  # projects, user directory
 _DUPLICATE_WINDOW_S = 15 * 60
 _TIME_ENTRY_SCAN_LIMIT = 2000
+_DESCRIPTION_LIMIT = 6000
+_MAX_STATUS_HOPS = 4
+_MAX_BULK_UPDATE = 25
+_TIME_ENTRY_GROUPS = ("project", "work_package", "spent_on", "activity", "user")
 _SETTINGS_HINT = "the Hermes settings (desktop: Settings -> MCP -> OpenProjectMCP; CLI: hermes mcp configure OpenProjectMCP)"
 _RELATION_TYPES = (
     "relates", "blocks", "blocked", "precedes", "follows", "duplicates", "duplicated",
@@ -187,10 +203,11 @@ class RequestFailed(OPError):
 
 
 class Validation(OPError):
-    def __init__(self, message: str, details: Any = None):
+    def __init__(self, message: str, details: Any = None, nested_details: Optional[List[Any]] = None):
         super().__init__(f"openproject: validation failed: {message}")
         self.message = message
         self.details = details
+        self.nested_details = nested_details or []
 
 
 def _map_error(err: OPError) -> str:
@@ -247,20 +264,23 @@ def _http() -> httpx.Client:
         return _client
 
 
-def _error_message(resp: httpx.Response) -> Tuple[str, Any]:
-    """OpenProject's HAL error ``message`` (+ nested messages) and ``details``."""
+def _error_message(resp: httpx.Response) -> Tuple[str, Any, List[Any]]:
+    """OpenProject's HAL error ``message`` (+ nested messages), ``details``
+    and the nested errors' ``details`` (which attribute each one names)."""
     try:
         body = resp.json()
     except ValueError:
-        return resp.text.strip()[:300], None
+        return resp.text.strip()[:300], None, []
     if not isinstance(body, dict):
-        return resp.text.strip()[:300], None
+        return resp.text.strip()[:300], None, []
     message = str(body.get("message") or "").strip()
     embedded = body.get("_embedded") or {}
-    nested = [str(e.get("message")) for e in (embedded.get("errors") or []) if isinstance(e, dict) and e.get("message")]
+    errors = [e for e in (embedded.get("errors") or []) if isinstance(e, dict)]
+    nested = [str(e.get("message")) for e in errors if e.get("message")]
     if nested:
         message = f"{message} ({'; '.join(nested)})" if message else "; ".join(nested)
-    return message or resp.text.strip()[:300], embedded.get("details")
+    nested_details = [(e.get("_embedded") or {}).get("details") for e in errors]
+    return message or resp.text.strip()[:300], embedded.get("details"), [d for d in nested_details if d]
 
 
 def _request(
@@ -296,7 +316,7 @@ def _request(
         except ValueError as exc:
             raise RequestFailed(f"openproject: decode response: {exc}") from exc
         return data if isinstance(data, dict) else {"_embedded": {"elements": data}}
-    message, details = _error_message(resp)
+    message, details, nested_details = _error_message(resp)
     status = resp.status_code
     if status == 404:
         raise NotFound(f"openproject: not found: {message}")
@@ -307,7 +327,7 @@ def _request(
     if status == 409:
         raise Conflict(f"openproject: conflict (stale lockVersion): {message}")
     if status == 422:
-        raise Validation(message, details)
+        raise Validation(message, details, nested_details)
     raise RequestFailed(f"openproject: unexpected status {status}: {message}")
 
 
@@ -741,6 +761,16 @@ def _resolve_ref_item(kind: str, value: str) -> Dict[str, Any]:
     found = next((i for i in items if str(i.get("name") or "").casefold() == folded), None)
     if found:
         return found
+    # A unique partial match is taken ("review" -> "In Review", go-mcp-openproject
+    # 0.6.0, AIS-709); several candidates stay an error that names them.
+    partial = [i for i in items if folded and folded in str(i.get("name") or "").casefold()]
+    if len(partial) == 1:
+        return partial[0]
+    if partial:
+        raise ToolFailure(
+            f"OpenProject {kind} {json.dumps(value, ensure_ascii=False)} is ambiguous: "
+            + ", ".join(str(i.get("name") or "") for i in partial) + "."
+        )
     allowed = ", ".join(str(i.get("name") or "") for i in items)
     raise ToolFailure(
         f"Unknown OpenProject {kind} {json.dumps(value, ensure_ascii=False)}. Allowed: {allowed} — "
@@ -1125,8 +1155,10 @@ def _wp_row(wp: Dict[str, Any], select: Optional[List[str]] = None) -> Dict[str,
         "created_at": str(wp.get("createdAt") or ""),
         "updated_at": str(wp.get("updatedAt") or ""),
     }
+    if wp.get("date"):
+        full["date"] = str(wp.get("date"))  # milestones carry one date (AIS-604)
     full = _sorted(full)
-    if not select:
+    if not select or select == ["*"]:
         return full
     out = {f: full[f] for f in select if f in full}
     if not out:
@@ -1274,14 +1306,6 @@ def _recent_duplicate(project_id: int, subject: str) -> Optional[Dict[str, Any]]
         if created >= since:
             return wp
     return None
-
-
-def _allowed_next_statuses(wp_id: int, lock_version: int) -> str:
-    try:
-        form = _request("POST", f"work_packages/{wp_id}/form", body={"lockVersion": lock_version, "_links": {}})
-        return ", ".join(str(s.get("name")) for s in _schema_allowed(form, "status") if s.get("name"))
-    except OPError:
-        return ""
 
 
 def _patch_wp(wp_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -1509,6 +1533,52 @@ def _list_time_entries(filters, wp_id: int, offset: int, limit: int):
     return _scan_time_entries_for_wp(filters, wp_id, offset, limit)
 
 
+def _time_entry_summary(filters: List[Dict[str, Any]], wp_id: int, group_by: str) -> Dict[str, Any]:
+    """Go ``timeEntrySummary`` (AIS-709): every matching entry (up to the scan
+    limit) summed per group — one call answers a day/week overview that
+    models used to assemble with one listing per project."""
+    entries: List[Dict[str, Any]] = []
+    truncated = False
+    page = 1
+    while True:
+        batch, _ = _list_time_entries(filters, wp_id, page, _MAX_LIMIT)
+        entries.extend(batch)
+        if len(entries) >= _TIME_ENTRY_SCAN_LIMIT:
+            entries, truncated = entries[:_TIME_ENTRY_SCAN_LIMIT], True
+            break
+        if len(batch) < _MAX_LIMIT:
+            break
+        page += 1
+    keys = _link_keys(_entry_wp_link(e) for e in entries) if group_by == "work_package" else {}
+    groups: Dict[str, Dict[str, Any]] = {}
+    total = 0.0
+    for entry in entries:
+        hours = _iso_to_hours(entry.get("hours"))
+        total += hours
+        subject = ""
+        if group_by == "project":
+            value = _link_title(entry, "project")
+        elif group_by == "work_package":
+            link = _entry_wp_link(entry)
+            value, subject = _link_key(link, keys), str(link.get("title") or "")
+        elif group_by == "spent_on":
+            value = str(entry.get("spentOn") or "")
+        elif group_by == "activity":
+            value = _link_title(entry, "activity")
+        else:
+            value = _link_title(entry, "user")
+        bucket = groups.setdefault(value, {"value": value, "subject": subject, "hours": 0.0, "count": 0})
+        bucket["hours"] += hours
+        bucket["count"] += 1
+    order = sorted(groups.values(), key=(lambda g: g["value"]) if group_by == "spent_on" else (lambda g: -g["hours"]))
+    rows = [_sorted({k: v for k, v in dict(g, hours=round(g["hours"], 2)).items() if v not in ("", 0, 0.0, None)})
+            for g in order]
+    out: Dict[str, Any] = {"total_hours": round(total, 2), "count": len(entries), "group_by": group_by, "groups": rows}
+    if truncated:
+        out["truncated"] = True
+    return _sorted(out)
+
+
 def _patch_time_entry(entry_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
     """Go ``UpdateTimeEntry``: on 409 refetch the lockVersion and retry once."""
     path = f"time_entries/{entry_id}"
@@ -1577,10 +1647,7 @@ def _wp_ref(description: str = "") -> Dict[str, Any]:
 
 def _project_param(scope: str = "") -> Dict[str, Any]:
     """Go ``projectSchema``: every ``project`` parameter (AIS-499)."""
-    return _str(
-        f"Project identifier (e.g. \"AIS\"), name or numeric id{scope}. A work package key such as \"AIS-499\" "
-        "names its project by the prefix. Unknown values return the closest projects."
-    )
+    return _str(f"Project identifier (e.g. \"AIS\"), name or numeric id{scope}; a key like \"AIS-499\" names its project.")
 
 
 # ─── Identity ─────────────────────────────────────────────────────────────────
@@ -1605,8 +1672,8 @@ _LOCAL_TOKEN_TEXT = (
 
 @tool(
     "pm_link_account",
-    "Account linking of the AIMDS Suite. This local server uses the API token from the Hermes settings "
-    "(desktop: Settings -> MCP -> OpenProjectMCP) instead — the result explains where the user changes it. No arguments.",
+    "Only to replace the account or token: this local server uses the API token from the Hermes settings (desktop: "
+    "Settings -> MCP -> OpenProjectMCP) — the result explains where the user changes it. No arguments.",
     {},
 )
 def pm_link_account(_args: Dict[str, Any]) -> Any:
@@ -1615,9 +1682,9 @@ def pm_link_account(_args: Dict[str, Any]) -> Any:
 
 @tool(
     "pm_link_status",
-    "Check which OpenProject account this server works as. Configured: tell the user the name/login so they can "
-    "spot a wrong account. Not configured or token rejected: the result says where the user enters the OpenProject "
-    "URL and API token (Hermes settings). No arguments.",
+    "Call only after a tool answered action_required=configure_account, or when the user asks which account is used. "
+    "Configured: the name/login of the token's OpenProject user. Not configured or token rejected: where the user "
+    "enters the OpenProject URL and API token (Hermes settings). No arguments.",
     {},
 )
 def pm_link_status(_args: Dict[str, Any]) -> Any:
@@ -1650,10 +1717,8 @@ def pm_unlink_account(_args: Dict[str, Any]) -> Any:
 
 @tool(
     "pm_list_reference_data",
-    "List OpenProject's statuses, types, priorities, and time-entry activities in one call — the values needed to fill in "
-    "status/type/priority fields on pm_create_work_package/pm_update_work_package, or the activity field on "
-    "pm_create_time_entry/pm_update_time_entry. Served from a cache refreshed every ~30 minutes. Optional: kind "
-    "(\"statuses\"|\"types\"|\"priorities\"|\"activities\"|\"all\", default \"all\").",
+    "List valid statuses, types, priorities and time-entry activities (kind, default all). Names are also matched "
+    "partially, so look up only when unsure.",
     {
         "kind": {
             "type": "string",
@@ -1678,9 +1743,8 @@ def pm_list_reference_data(args: Dict[str, Any]) -> Any:
 
 @tool(
     "pm_list_users",
-    "Resolve people by name/email for assignee/responsible fields, or list a project's members. Served from a cached "
-    "directory refreshed every ~5 minutes. Optional: query (free-text name/email match), project (id or identifier, "
-    "scopes to that project's members).",
+    "Find people by name/email (query) or list a project's members (project). Assignee fields also accept a name or "
+    "\"me\" directly.",
     {
         "query": _str("Free-text match against name or email."),
         "project": _project_param(" to list that project's members"),
@@ -1722,8 +1786,7 @@ def pm_list_projects(args: Dict[str, Any]) -> Any:
 
 @tool(
     "pm_get_project",
-    "Get one project's summary, optionally including its members (who's on it). "
-    "Required: project (id or identifier). Optional: include_members (bool, default false).",
+    "Get one project's summary; include_members adds who is on it. Required: project.",
     {
         "project": _project_param(),
         "include_members": {"type": "boolean", "description": "When true, also return the project's members and their roles."},
@@ -1746,33 +1809,27 @@ def pm_get_project(args: Dict[str, Any]) -> Any:
 
 
 def _filter_properties() -> Dict[str, Any]:
+    date = _str("YYYY-MM-DD")
     return {
+        "query": _str("Free text, or a key/id for exact_match."),
         "project": _project_param(" to scope results to"),
-        "status": _str("Status name (case-insensitive) or id, or \"open\"/\"closed\" (open = neither is_closed nor is_done, "
-                       "closed = the rest). Unknown names are rejected with the valid list."),
+        "status": _str("Status name or id, or \"open\"/\"closed\" (as in open_only)."),
         "open_only": {
             "type": "boolean",
-            "description": "Restrict to open work packages: statuses that are neither is_closed nor is_done "
-                           "(e.g. \"Done\" is finished even if not closed), see pm_list_reference_data. "
+            "description": "Only open work packages: status neither is_closed nor is_done (\"Done\" counts as finished). "
                            "An explicit status still applies.",
         },
         "assignee": _str("Assignee id, login, or \"me\"."),
         "type": _str("Work package type name (case-insensitive) or id."),
         "priority": _str("Priority name (case-insensitive) or id."),
-        "created_on": _str("Exact creation date, YYYY-MM-DD."),
-        "created_from": _str("Creation date range start, YYYY-MM-DD."),
-        "created_to": _str("Creation date range end, YYYY-MM-DD."),
-        "updated_on": _str("Exact update date, YYYY-MM-DD."),
-        "updated_from": _str("Update date range start, YYYY-MM-DD."),
-        "updated_to": _str("Update date range end, YYYY-MM-DD."),
-        "due_on": _str("Exact due date, YYYY-MM-DD."),
-        "due_from": _str("Due date range start, YYYY-MM-DD."),
-        "due_to": _str("Due date range end, YYYY-MM-DD."),
+        "created_on": date, "created_from": date, "created_to": date,
+        "updated_on": date, "updated_from": date, "updated_to": date,
+        "due_on": date, "due_from": date, "due_to": date,
         "sort_by": {"type": "array", "items": {"type": "string"}, "description": "Sort criteria, e.g. [\"status:desc\",\"priority:asc\"]."},
         "group_by": _str("Field to group results by, e.g. \"status\": adds groups [{value, count}] over the whole result."),
         "select": {
             "type": "array", "items": {"type": "string"},
-            "description": "Restrict each result to these field names (id, subject, status, type, priority, assignee, project, due_date, ...).",
+            "description": "Fields per row; [\"*\"] = all (adds id, author, responsible, created_at, updated_at).",
         },
         "limit": _int("Max results per page (default 50, hard ceiling 200)."),
         "offset": _int("1-based page offset for pagination."),
@@ -1781,37 +1838,38 @@ def _filter_properties() -> Dict[str, Any]:
 
 @tool(
     "pm_list_work_packages",
-    "List work packages with structured filters (project, status, assignee, type, priority, date ranges). "
-    "Use pm_search_work_packages instead for free-text relevance search. No required arguments (an empty call lists everything visible). "
-    "Each row carries `key` (e.g. \"AIS-499\" — name work packages by it towards users and pass it to other tools; its prefix is "
-    "the project identifier) and the numeric `id`.",
+    "List or search work packages (free-text query and/or filters, all optional). A query that is a key (\"AIS-499\") or id "
+    "also returns that work package as exact_match. Date filters created_/updated_/due_ + on (exact day), from, to (inclusive). "
+    "Rows carry `key` (name work packages by it, pass it to other tools) and the main fields; select [\"*\"] returns all.",
     _filter_properties(),
 )
 def pm_list_work_packages(args: Dict[str, Any]) -> Any:
-    return _list_wps(args)
+    # go-mcp-openproject 0.6.0 (AIS-709): the free-text search moved here.
+    return _list_wps(args, query=_arg_str(args, "query"))
 
 
 @tool(
     "pm_search_work_packages",
-    "Search work packages by free text, optionally combined with the same structured filters as pm_list_work_packages. Required: query. "
-    "A query that is a key (\"AIS-499\") or id also returns that work package as exact_match. Rows carry `key` and the numeric `id`.",
-    {**_filter_properties(), "query": _str("Free-text search query.")},
+    "DEPRECATED — use pm_list_work_packages(query=…), which takes the same arguments.",
+    _filter_properties(),
     ["query"],
 )
 def pm_search_work_packages(args: Dict[str, Any]) -> Any:
+    """The deprecated name (AIS-709, removed from the Suite in 2.18.0): same
+    arguments, same answer as pm_list_work_packages."""
     query = _arg_str(args, "query")
     if not query:
         raise ToolFailure("query is required")
+    logger.warning("deprecated tool called: pm_search_work_packages, use pm_list_work_packages(query)")
     return _list_wps(args, query=query)
 
 
 @tool(
     "pm_get_work_package",
-    "Get one work package by key (e.g. \"AIS-469\") or numeric id, including its full description. Required: id. "
-    "Optional: text_limit (truncate the description).",
+    "Get one work package by key (e.g. \"AIS-469\") or numeric id, including its description. Required: id. Optional: text_limit.",
     {
         "id": _wp_ref(),
-        "text_limit": _int("Truncate the description to this many characters."),
+        "text_limit": _int("Truncate the description to this many characters (default 6000, 0 = full)."),
     },
     ["id"],
 )
@@ -1820,7 +1878,10 @@ def pm_get_work_package(args: Dict[str, Any]) -> Any:
     if not ref:
         raise ToolFailure("id is required")
     wp = _readable_wp(ref)
-    desc, truncated, length = _text_limit(_raw(wp.get("description")), _arg_int(args, "text_limit"))
+    # Go defaultDescriptionLimit (AIS-605): long specs otherwise fill the
+    # context on every lookup; 0 asks for the full text.
+    limit = _arg_int(args, "text_limit") if "text_limit" in args and args["text_limit"] not in (None, "") else _DESCRIPTION_LIMIT
+    desc, truncated, length = _text_limit(_raw(wp.get("description")), limit)
     row = _wp_row(wp)
     row.update({
         "description": desc,
@@ -1831,16 +1892,196 @@ def pm_get_work_package(args: Dict[str, Any]) -> Any:
     return _sorted(row)
 
 
+def _date_param() -> Dict[str, Any]:
+    return _str("YYYY-MM-DD; the single date of a milestone type.")
+
+
+_PARENT_HINT = (
+    "A milestone (e.g. a weekly goal) cannot be a parent. Create the work package without parent and pass the "
+    "milestone in relates_to."
+)
+
+
+def _milestone_dates(milestone: bool, date: str, start: str, due: str) -> Dict[str, str]:
+    """Go ``milestoneDates`` (AIS-604): a milestone has one ``date`` (its
+    start/due date alone are ignored by OpenProject), every other type has
+    start and due date."""
+    if not milestone:
+        if date:
+            raise ToolFailure("date is only for milestone types; use start_date/due_date for this work package.")
+        out = {}
+        if start:
+            out["startDate"] = start
+        if due:
+            out["dueDate"] = due
+        return out
+    for value in (start, due):
+        if not value:
+            continue
+        if date and value != date:
+            raise ToolFailure("This is a milestone: it has a single date. Pass only date (start_date/due_date differ from it).")
+        date = value
+    if start and due and start != due:
+        raise ToolFailure("This is a milestone: it has a single date, but start_date and due_date differ. Pass date.")
+    return {"date": date} if date else {}
+
+
+def _is_milestone(wp: Dict[str, Any]) -> bool:
+    type_id = _href_id(_link(wp, "type"))
+    try:
+        return any(int(t.get("id") or 0) == type_id and bool(t.get("isMilestone")) for t in _types())
+    except OPError:
+        return False
+
+
+def _validation_attributes(exc: "Validation") -> set:
+    """Attribute names a 422 names: ``details.attribute`` of the error and of
+    its nested errors (OpenProject's MultipleErrors)."""
+    found = set()
+    for details in [exc.details] + list(getattr(exc, "nested_details", None) or []):
+        if isinstance(details, dict) and details.get("attribute"):
+            found.add(str(details["attribute"]))
+    return found
+
+
+def _is_status_error(exc: "Validation") -> bool:
+    attrs = _validation_attributes(exc)
+    return "status" in attrs or (not attrs and "status" in str(exc.message).casefold())
+
+
+def _allowed_next(wp: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The statuses the work package may move to from its saved status."""
+    form = _request("POST", f"work_packages/{int(wp.get('id') or 0)}/form",
+                    body={"lockVersion": int(wp.get("lockVersion") or 0), "_links": {}})
+    current = _href_id(_link(wp, "status"))
+    out = []
+    for item in _schema_allowed(form, "status"):
+        sid = int(item.get("id") or 0) or _href_id(_link(item, "self"))
+        if sid and sid != current:
+            out.append({"id": sid, "name": str(item.get("name") or "")})
+    return out
+
+
+def _suggest_status_path(wp: Dict[str, Any], allowed: List[Dict[str, Any]], target: Dict[str, Any]) -> Tuple[List[str], str]:
+    """Go ``suggestStatusPath`` without the learned edges: a direct hop, else
+    the allowed status closest to the target by position, then the target."""
+    target_id = int(target.get("id") or 0)
+    for item in allowed:
+        if item["id"] == target_id:
+            return [item["name"]], "allowed"
+    try:
+        positions = {int(s.get("id") or 0): int(s.get("position") or 0) for s in _statuses()}
+    except OPError:
+        return [], ""
+    start, goal = positions.get(_href_id(_link(wp, "status")), 0), positions.get(target_id, 0)
+    if not start or not goal or start == goal:
+        return [], ""
+    best, best_dist = None, 0
+    for item in allowed:
+        pos = positions.get(item["id"], 0)
+        between = (start < pos < goal) or (goal < pos < start)
+        if between and (best is None or abs(goal - pos) < best_dist):
+            best, best_dist = item, abs(goal - pos)
+    if best is None:
+        return [], ""
+    return [best["name"], str(target.get("name") or "")], "guess"
+
+
+def _transition_feedback(args: Dict[str, Any], wp: Dict[str, Any], remaining: List[Dict[str, Any]], steps: List[str]) -> Dict[str, Any]:
+    """Go ``transitionFeedback``: a refused transition answers with the
+    allowed next statuses and a ready-made ``retry`` (status_path)."""
+    target = remaining[-1]
+    wp_id = int(wp.get("id") or 0)
+    key = _wp_key(wp.get("displayId"), wp_id)
+    out: Dict[str, Any] = {
+        "updated": bool(steps),
+        "reason": "status_transition_invalid",
+        "key": key,
+        "current_status": _link_title(wp, "status"),
+        "requested_status": str(remaining[0].get("name") or ""),
+    }
+    if steps:
+        out["steps_saved"] = steps
+    try:
+        allowed = _allowed_next(wp)
+    except OPError as exc:
+        out["note"] = "OpenProject refused this status change; the allowed statuses could not be loaded: " + _map_error(exc)
+        return _sorted(out)
+    out["allowed_next"] = [a["name"] for a in allowed]
+    path, source = _suggest_status_path(wp, allowed, target)
+    target_name = str(target.get("name") or "")
+    if not path:
+        out["note"] = (f"No known path to {json.dumps(target_name, ensure_ascii=False)}; pick one of allowed_next and pass "
+                       f"status_path ending in {json.dumps(target_name, ensure_ascii=False)}.")
+        return _sorted(out)
+    out["suggested_path"], out["path_source"] = path, source
+    retry: Dict[str, Any] = {"id": key, "status_path": path}
+    if not steps:
+        for field in ("subject", "priority", "assignee", "start_date", "due_date", "date",
+                      "project", "type", "parent", "estimated_time"):
+            if args.get(field) not in (None, ""):
+                retry[field] = args[field]
+    out["retry"] = retry
+    out["note"] = "Pass retry as the arguments of pm_update_work_package; every hop is saved."
+    if not steps and args.get("description") is not None:
+        out["note"] += " Add your description to retry again (left out to save tokens)."
+    return _sorted(out)
+
+
+def _unapplied_fields(payload: Dict[str, Any], status: Optional[Dict[str, Any]], wp: Dict[str, Any]) -> List[str]:
+    """Go ``unappliedFields`` (AIS-604): a field OpenProject accepted but did
+    not change used to be reported as success."""
+    out = []
+
+    def check(field: str, requested: Any, got: Any) -> None:
+        if requested not in (None, "") and str(requested) != str(got or ""):
+            out.append(f"{field} was not applied: requested {requested}, OpenProject kept {got or ''}")
+
+    check("subject", payload.get("subject"), wp.get("subject"))
+    if status is not None:
+        check("status", status.get("name"), _link_title(wp, "status"))
+    check("start_date", payload.get("startDate"), wp.get("startDate"))
+    check("due_date", payload.get("dueDate"), wp.get("dueDate"))
+    check("date", payload.get("date"), wp.get("date"))
+    return out
+
+
+def _relate_created(from_id: int, targets: List[Any]) -> List[Dict[str, Any]]:
+    """Go ``relateCreated`` (AIS-709): link a just-created work package with
+    ``relates`` to each target. A failed relation does not undo the create;
+    its entry carries the error."""
+    out = []
+    for target in targets:
+        entry: Dict[str, Any] = {"to": str(target)}
+        try:
+            to_id = _arg_wp_id({"ref": target}, "ref")
+            rel = _request("POST", f"work_packages/{from_id}/relations",
+                           body={"type": "relates", "_links": {"to": _ref_href("work_packages", to_id)}})
+            entry["id"] = int(rel.get("id") or 0)
+        except ToolFailure as exc:
+            entry["error"] = str(exc)
+        except NotConfigured:
+            raise
+        except OPError as exc:
+            entry["error"] = _map_error(exc)
+        out.append(entry)
+    return out
+
+
 @tool(
     "pm_create_work_package",
-    "Create a work package. Required: project (id or identifier), type (name or id), subject. "
-    "Optional: description, status, priority, assignee (id, login, or \"me\"), parent (key like \"AIS-469\" or numeric id), start_date, due_date (YYYY-MM-DD), "
-    "estimated_time (ISO-8601 duration, e.g. \"PT8H\"). If the same subject was created in this project within the last "
-    "15 minutes, the result carries a warning and possible_duplicate — check it before creating again.",
+    "Create a work package. Required: project, type (name or id), subject. assignee: id, login or \"me\"; parent: key or id; "
+    "date: milestones; estimated_time: ISO-8601 (e.g. \"PT8H\"). Dates are YYYY-MM-DD. A milestone (e.g. weekly goal) cannot "
+    "be a parent — pass it in relates_to instead. If the same subject was created in this project within the last 15 minutes, "
+    "the result carries a warning and possible_duplicate — check it before creating again.",
     {
         "project": _project_param(), "type": _S, "subject": _S, "description": _S, "status": _S, "priority": _S,
         "assignee": _S, "parent": _wp_ref("Parent work package key (e.g. \"AIS-8\") or numeric id."), "start_date": _S, "due_date": _S,
-        "estimated_time": _S,
+        "date": _date_param(), "estimated_time": _S,
+        "relates_to": {
+            "type": "array", "items": _wp_ref(),
+            "description": "Keys to link with a relates relation right away (e.g. the weekly goal).",
+        },
     },
     ["project", "type", "subject"],
 )
@@ -1852,14 +2093,14 @@ def pm_create_work_package(args: Dict[str, Any]) -> Any:
     project = _resolve_project(project_ref)
     _require_writable(project)
     project_id = int(project.get("id") or 0)
+    type_item = _resolve_ref_item("type", wp_type)
     payload: Dict[str, Any] = {"subject": subject}
-    links: Dict[str, Any] = {"type": _ref_href("types", _resolve_ref("type", wp_type))}
+    links: Dict[str, Any] = {"type": _ref_href("types", int(type_item.get("id") or 0))}
     description = args.get("description")
     if description not in (None, ""):
         payload["description"] = {"raw": str(description)}
-    for key, field in (("start_date", "startDate"), ("due_date", "dueDate")):
-        if _arg_str(args, key):
-            payload[field] = _arg_str(args, key)
+    payload.update(_milestone_dates(bool(type_item.get("isMilestone")), _arg_str(args, "date"),
+                                    _arg_str(args, "start_date"), _arg_str(args, "due_date")))
     if _arg_str(args, "estimated_time"):
         payload["estimatedTime"] = _hours_iso(_arg_str(args, "estimated_time"))
     if _arg_str(args, "status"):
@@ -1879,8 +2120,17 @@ def pm_create_work_package(args: Dict[str, Any]) -> Any:
         duplicate = _recent_duplicate(project_id, subject)
     except OPError:
         duplicate = None
-    created = _request("POST", f"projects/{project_id}/work_packages", body=payload)
+    try:
+        created = _request("POST", f"projects/{project_id}/work_packages", body=payload)
+    except Validation as exc:
+        if parent > 0 and "parent" in _validation_attributes(exc):
+            raise ToolFailure(f"{_map_error(exc)}\n{_PARENT_HINT}") from None
+        raise
     row = _wp_row(created)
+    row["lock_version"] = int(created.get("lockVersion") or 0)
+    relates_to = args.get("relates_to")
+    if isinstance(relates_to, (list, tuple)) and relates_to:
+        row["relations"] = _relate_created(int(created.get("id") or 0), list(relates_to))
     if duplicate:
         row["warning"] = (
             "A work package with the same subject was created in this project within the last 15 minutes "
@@ -1892,45 +2142,119 @@ def pm_create_work_package(args: Dict[str, Any]) -> Any:
 
 @tool(
     "pm_update_work_package",
-    "Update fields on an existing work package (status, priority, assignee, subject, description, dates). "
-    "Required: id. At least one other field should be set. lock_version is fetched automatically if omitted. "
+    "Update a work package's fields. Required: id (or ids for several) plus one field; lock_version is fetched if omitted. "
+    "Milestones (e.g. weekly goals) have one date: set date. Unapplied fields come back in warnings; a status change returns "
+    "next_statuses. If the workflow forbids a direct status change, the answer has updated=false, allowed_next and usually "
+    "retry — pass retry as the next call's arguments. "
     "Local extras: project (move it to another project), type, parent (key or id; 0 clears), estimated_time; assignee \"none\" clears it.",
     {
-        "id": _wp_ref(), "subject": _S, "description": _S, "status": _S, "priority": _S, "assignee": _S,
-        "start_date": _S, "due_date": _S,
+        "id": _wp_ref(),
+        "ids": {
+            "type": "array", "items": _wp_ref(),
+            "description": f"Instead of id: apply the same change to these (max {_MAX_BULK_UPDATE}).",
+        },
+        "subject": _S, "description": _S, "status": _S, "priority": _S, "assignee": _S,
+        "start_date": _S, "due_date": _S, "date": _date_param(),
+        "status_path": {
+            "type": "array", "items": {"type": "string"},
+            "description": "Statuses to walk in order, last = target, e.g. [\"In Review\",\"Closed\"]; every hop is saved, "
+                           f"other fields go with the first. Max {_MAX_STATUS_HOPS}.",
+        },
         "lock_version": _int("Optional; fetched automatically if omitted."),
         "project": _str("Local extension: move the work package to this project (identifier, name or numeric id)."),
         "type": _str("Local extension: new work package type (name or id)."),
         "parent": _wp_ref("Local extension: new parent work package key or numeric id; 0 removes the parent."),
         "estimated_time": _str("Local extension: ISO-8601 duration, e.g. \"PT8H\"."),
     },
-    ["id"],
 )
 def pm_update_work_package(args: Dict[str, Any]) -> Any:
+    ids = args.get("ids")
+    has_id = args.get("id") not in (None, "")
+    if not has_id and not ids:
+        raise ToolFailure("id (or ids) is required")
+    if has_id and ids:
+        raise ToolFailure("pass either id or ids, not both")
+    if ids and not isinstance(ids, (list, tuple)):
+        raise ToolFailure("ids must be a list of work package keys or ids")
+    if ids and len(ids) > _MAX_BULK_UPDATE:
+        raise ToolFailure(f"ids has {len(ids)} entries; at most {_MAX_BULK_UPDATE} per call")
+    _require_writes_enabled()
+    if ids:
+        return _bulk_update(args, list(ids))
+    return _update_one(args)
+
+
+def _bulk_update(args: Dict[str, Any], ids: List[Any]) -> Dict[str, Any]:
+    """Go ``bulkUpdateWorkPackages`` (AIS-709): one change for several work
+    packages, each through ``_update_one`` (status walk included); one short
+    entry per work package."""
+    results: List[Dict[str, Any]] = []
+    updated = 0
+    for ref in ids:
+        one = {k: v for k, v in args.items() if k not in ("ids", "lock_version")}
+        one["id"] = ref
+        entry: Dict[str, Any] = {"key": str(ref)}
+        try:
+            body = _update_one(one)
+        except ToolFailure as exc:
+            entry["error"] = str(exc)
+        except NotConfigured:
+            raise
+        except OPError as exc:
+            entry["error"] = _map_error(exc)
+        else:
+            if body.get("updated") is False:
+                for key in ("current_status", "allowed_next", "retry", "note"):
+                    if key in body:
+                        entry[key] = body[key]
+                entry["updated"] = False
+            else:
+                updated += 1
+                for key in ("key", "status", "warnings", "date", "due_date", "assignee"):
+                    if body.get(key) not in (None, ""):
+                        entry[key] = body[key]
+        results.append(_sorted(entry))
+    return {"updated": updated, "failed": len(ids) - updated, "results": results}
+
+
+def _update_one(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Go ``updateWorkPackage``: the other fields go with the first save, then
+    every hop of the status path is saved (AIS-605). A refused transition is
+    an expected, actionable answer (``updated: false`` + ``retry``), not an
+    error."""
     ref = _arg_wp_ref(args, "id")
     if not ref:
         raise ToolFailure("id is required")
-    _require_writes_enabled()
-    # One fetch covers the lock_version, the write check and a display id.
+    path = [p for p in _arg_list(args, "status_path") if p.strip()]
+    status = _arg_str(args, "status")
+    if not path and status:
+        path = [status]
+    elif status and path and status.casefold() != path[-1].strip().casefold():
+        raise ToolFailure("status and status_path disagree: status_path must end in status (or pass only status_path).")
+    if len(path) > _MAX_STATUS_HOPS:
+        raise ToolFailure(f"status_path has {len(path)} hops; at most {_MAX_STATUS_HOPS} are walked in one call.")
+    # One fetch covers the lock_version, the write check, a display id, the
+    # milestone type and the status a walk starts from.
     current = _get_wp(ref)
     wp_id = int(current.get("id") or 0)
     source = _wp_project(current)
     _require_writable(source)
     lock_version = _arg_int(args, "lock_version") or int(current.get("lockVersion") or 0)
-    payload: Dict[str, Any] = {"lockVersion": lock_version}
+    payload: Dict[str, Any] = {}
     links: Dict[str, Any] = {}
     if _arg_str(args, "subject"):
         payload["subject"] = _arg_str(args, "subject")
     if "description" in args and args["description"] is not None:
         payload["description"] = {"raw": str(args["description"])}
-    for key, field in (("start_date", "startDate"), ("due_date", "dueDate")):
-        if _arg_str(args, key):
-            payload[field] = _arg_str(args, key)
+    dates = _milestone_dates(_is_milestone(current), _arg_str(args, "date"), _arg_str(args, "start_date"), _arg_str(args, "due_date"))
+    payload.update(dates)
     if _arg_str(args, "estimated_time"):
         payload["estimatedTime"] = _hours_iso(_arg_str(args, "estimated_time"))
-    status = _arg_str(args, "status")
-    if status:
-        links["status"] = _ref_href("statuses", _resolve_ref("status", status))
+    hops = [_resolve_ref_item("status", name) for name in path]
+    # A path may start at the current status ("In Progress, In Review, …").
+    current_status = _href_id(_link(current, "status"))
+    while len(hops) > 1 and int(hops[0].get("id") or 0) == current_status:
+        hops = hops[1:]
     if _arg_str(args, "priority"):
         links["priority"] = _ref_href("priorities", _resolve_ref("priority", _arg_str(args, "priority")))
     if _arg_str(args, "type"):
@@ -1953,25 +2277,52 @@ def pm_update_work_package(args: Dict[str, Any]) -> Any:
             links["project"] = _ref_href("projects", target.get("id"))
         else:
             target = None
-    if links:
-        payload["_links"] = links
-    try:
-        updated = _patch_wp(wp_id, payload)
-    except Validation as exc:
-        if status:
-            allowed = _allowed_next_statuses(wp_id, lock_version)
-            if allowed:
-                exc.message = (
-                    f"{exc.message} — status '{status}' may not be reachable from '{_link_title(current, 'status')}' "
-                    f"in this workflow. Allowed next: {allowed}. Change it one step at a time."
-                )
-        raise
-    if target is not None and _href_id(_link(updated, "project")) != int(target.get("id") or 0):
+
+    wp: Dict[str, Any] = dict(current, lockVersion=lock_version)
+    steps: List[str] = []
+    for i in range(max(1, len(hops))):
+        body: Dict[str, Any] = dict(payload) if i == 0 else {}
+        hop_links: Dict[str, Any] = dict(links) if i == 0 else {}
+        if i < len(hops):
+            hop_links["status"] = _ref_href("statuses", int(hops[i].get("id") or 0))
+        if hop_links:
+            body["_links"] = hop_links
+        body["lockVersion"] = int(wp.get("lockVersion") or 0)
+        try:
+            saved = _patch_wp(wp_id, body)
+        except Validation as exc:
+            if i < len(hops) and _is_status_error(exc):
+                return _transition_feedback(args, wp, hops[i:], steps)
+            if steps:
+                raise ToolFailure(f"Saved status {' → '.join(steps)}, then: {_map_error(exc)}") from None
+            raise
+        except OPError as exc:
+            if steps:
+                raise ToolFailure(f"Saved status {' → '.join(steps)}, then: {_map_error(exc)}") from None
+            raise
+        if i < len(hops):
+            steps.append(str(hops[i].get("name") or ""))
+        wp = saved
+
+    if target is not None and _href_id(_link(wp, "project")) != int(target.get("id") or 0):
         raise ToolFailure(
             "OpenProject saved the other changes but did not move the work package; the user needs the "
             "'Move work packages' permission in both projects."
         )
-    return _wp_row(updated)
+    row = _wp_row(wp)
+    row["lock_version"] = int(wp.get("lockVersion") or 0)
+    warnings = _unapplied_fields(payload, hops[-1] if hops else None, wp)
+    if warnings:
+        row["warnings"] = warnings
+    if len(steps) > 1:
+        row["steps"] = steps
+    if hops:
+        # The next possible statuses save the model a lookup for the next step.
+        try:
+            row["next_statuses"] = [str(s.get("name") or "") for s in _allowed_next(wp)]
+        except OPError:
+            pass
+    return _sorted(row)
 
 
 @tool(
@@ -1996,8 +2347,8 @@ def pm_comment_work_package(args: Dict[str, Any]) -> Any:
 
 @tool(
     "pm_list_work_package_activity",
-    "List the comment/activity log for a work package, oldest first (limit keeps the most recent entries). "
-    "Required: id (key like \"AIS-469\" or numeric id). Optional: limit, text_limit (truncate each entry).",
+    "A work package's comment/activity log, oldest first (limit keeps the newest). Required: id. Optional: limit, "
+    "text_limit (per entry).",
     {"id": _wp_ref(), "limit": _I, "text_limit": _I},
     ["id"],
 )
@@ -2065,12 +2416,11 @@ def pm_list_work_package_relations(args: Dict[str, Any]) -> Any:
 
 @tool(
     "pm_create_work_package_relation",
-    "Create a relation between two work packages. Required: id, related_to_id, relation_type "
-    "(one of relates, blocks, blocked, precedes, follows, duplicates, duplicated, includes, partof, requires, required).",
+    "Relate two work packages (id → related_to_id). An existing pair is returned with already_exists=true.",
     {
-        "id": _wp_ref("The work package the relation is created from (key like \"AIS-469\" or numeric id)."),
-        "related_to_id": _wp_ref("The work package to relate to (key like \"AIS-469\" or numeric id)."),
-        "relation_type": _S,
+        "id": _wp_ref(),
+        "related_to_id": _wp_ref(),
+        "relation_type": {"type": "string", "enum": list(_RELATION_TYPES)},
     },
     ["id", "related_to_id", "relation_type"],
 )
@@ -2086,12 +2436,70 @@ def pm_create_work_package_relation(args: Dict[str, Any]) -> Any:
     wp_id = int(current.get("id") or 0)
     _require_writable(_wp_project(current))
     related = _arg_wp_id(args, "related_to_id")
-    rel = _request(
-        "POST",
-        f"work_packages/{wp_id}/relations",
-        body={"type": relation_type, "_links": {"to": _ref_href("work_packages", related)}},
-    )
+    try:
+        rel = _request(
+            "POST",
+            f"work_packages/{wp_id}/relations",
+            body={"type": relation_type, "_links": {"to": _ref_href("work_packages", related)}},
+        )
+    except Validation:
+        # OpenProject allows one relation per pair; repeating it is a no-op
+        # for the caller, not a failure (Go AIS-604).
+        existing = _existing_relation(wp_id, related)
+        if existing is None:
+            raise
+        row = _relation_row(existing)
+        row["already_exists"] = True
+        return _sorted(row)
     return _relation_row(rel)
+
+
+def _existing_relation(a: int, b: int) -> Optional[Dict[str, Any]]:
+    """A relation between ``a`` and ``b`` in either direction, None when none."""
+    try:
+        items = _collect(f"work_packages/{a}/relations", limit=500)
+    except OPError:
+        return None
+    for rel in items:
+        ends = {_href_id(_link(rel, "from")), _href_id(_link(rel, "to"))}
+        if ends == {a, b}:
+            return rel
+    return None
+
+
+@tool(
+    "pm_delete_work_package_relation",
+    "Delete a relation by relation_id, or by the pair id + related_to_id (either direction).",
+    {"relation_id": _I, "id": _wp_ref(), "related_to_id": _wp_ref()},
+)
+def pm_delete_work_package_relation(args: Dict[str, Any]) -> Any:
+    """Go ``deleteRelation`` (AIS-720): a relation that is already gone answers
+    deleted=false, reason=not_found — the caller's goal holds either way."""
+    relation_id = _arg_int(args, "relation_id")
+    if not relation_id and not (_arg_wp_ref(args, "id") and _arg_wp_ref(args, "related_to_id")):
+        raise ToolFailure("relation_id, or id and related_to_id, are required")
+    _require_writes_enabled()
+    not_found: Dict[str, Any] = {"deleted": False, "reason": "not_found"}
+    if relation_id:
+        try:
+            rel = _request("GET", f"relations/{relation_id}")
+        except NotFound:
+            return _sorted(dict(not_found, relation_id=relation_id))
+    else:
+        from_id, to_id = _arg_wp_id(args, "id"), _arg_wp_id(args, "related_to_id")
+        rel = _existing_relation(from_id, to_id)
+        if rel is None:
+            return _sorted(dict(not_found, from_id=from_id, to_id=to_id))
+    from_id = _href_id(_link(rel, "from"))
+    if from_id:
+        _require_writable(_wp_project(_get_wp(from_id)))
+    try:
+        _request("DELETE", f"relations/{int(rel.get('id') or 0)}")
+    except NotFound:
+        return _sorted(dict(not_found, relation_id=int(rel.get("id") or 0)))
+    row = _relation_row(rel)
+    row["deleted"] = True
+    return _sorted(row)
 
 
 @tool(
@@ -2155,7 +2563,7 @@ def _query_filter_params(q: Dict[str, Any]) -> Optional[str]:
 
 @tool(
     "pm_list_boards",
-    "List saved boards (work package views). Optional: project (id or identifier, scopes to that project's boards), search (name match).",
+    "List boards (optionally of one project, search by name); pass the id to pm_get_board.",
     {"project": _project_param(), "search": _S},
 )
 def pm_list_boards(args: Dict[str, Any]) -> Any:
@@ -2230,8 +2638,7 @@ def _meeting_project_writable(meeting_id: int) -> None:
 
 @tool(
     "pm_list_meetings",
-    "List meetings. Optional: project (identifier, name or id), from/to (YYYY-MM-DD, filtered client-side — the OpenProject API "
-    "has no server-side date filter for meetings yet), state (open|draft|in_progress|cancelled|closed).",
+    "List meetings, optionally by project, date range (from/to, YYYY-MM-DD) and state.",
     {
         "project": _project_param(" to filter by"), "from": _S, "to": _S,
         "state": {"type": "string", "enum": ["open", "draft", "in_progress", "cancelled", "closed"]},
@@ -2266,8 +2673,8 @@ def pm_list_meetings(args: Dict[str, Any]) -> Any:
 
 @tool(
     "pm_get_meeting",
-    "Get a meeting with its full agenda, flattened: sections → agenda items → outcomes (minutes/action items) in one readable tree. "
-    "Required: id. Note: OpenProject's current API exposes no participants/attendees relation — attendee lists are not available here.",
+    "Get a meeting with its agenda: sections → items → outcomes (minutes, action items). No attendee list (not in the "
+    "API). Required: id.",
     {"id": _I},
     ["id"],
 )
@@ -2323,8 +2730,8 @@ def pm_get_meeting(args: Dict[str, Any]) -> Any:
 
 @tool(
     "pm_create_meeting",
-    "Create a one-time meeting (recurring meetings are not supported by this tool). "
-    "Required: project, title. Optional: start_time (ISO-8601 datetime), duration (ISO-8601 duration, e.g. \"PT1H\"), location.",
+    "Create a one-time meeting. Required: project, title. Optional: start_time (ISO-8601), duration (e.g. \"PT1H\"), "
+    "location.",
     {"project": _project_param(), "title": _S, "start_time": _S, "duration": _S, "location": _S},
     ["project", "title"],
 )
@@ -2344,10 +2751,8 @@ def pm_create_meeting(args: Dict[str, Any]) -> Any:
 
 @tool(
     "pm_add_meeting_agenda_item",
-    "Add an agenda item to a meeting, or record an outcome (minutes/action item) on an existing agenda item. "
-    "Required: meeting_id, and either title (creates a new item) or agenda_item_id (attaches an outcome to that item). "
-    "Optional: work_package_id (links the new item to a work package), notes (item notes, or the outcome text when targeting agenda_item_id), "
-    "outcome_kind (\"information\"|\"work_package\", only meaningful with agenda_item_id).",
+    "Add an agenda item (title, optional work_package_id, notes) to a meeting, or record an outcome on agenda_item_id "
+    "(notes = outcome text, outcome_kind). Required: meeting_id plus title or agenda_item_id.",
     {
         "meeting_id": _I, "title": _S, "agenda_item_id": _I,
         "work_package_id": _wp_ref("Work package to link the new agenda item to (key like \"AIS-469\" or numeric id)."), "notes": _S,
@@ -2390,24 +2795,25 @@ def pm_add_meeting_agenda_item(args: Dict[str, Any]) -> Any:
 
 @tool(
     "pm_list_time_entries",
-    "List logged time entries with structured filters. No required arguments: without project/work_package_id it lists "
-    "every entry the user can read across all projects (scope with spent_on_from/spent_on_to). Optional: project, "
-    "work_package_id (key like \"AIS-469\" or numeric id), user (id, login, or \"me\"), spent_on_from/spent_on_to (YYYY-MM-DD range), limit, "
-    "offset (page number). "
-    "Scope with project/spent_on_from/spent_on_to when possible to keep the scan small. Besides the contract fields each "
-    "entry has duration_seconds and work_package_subject; total_hours, booked_days and by_work_package sum up the "
-    "returned page, complete says whether that page is the whole result.",
+    "List logged time entries. Without project it covers every project the user can read — for a day/week overview call "
+    "it ONCE with spent_on_from/spent_on_to and group_by, never per project. group_by returns total_hours and per-group "
+    "sums instead of the entries. Without group_by each entry also has duration_seconds; total_hours, booked_days and "
+    "by_work_package sum up the returned page, complete says whether that page is the whole result.",
     {
         "project": _project_param(),
         "work_package_id": _wp_ref(),
         "user": _str("User id, login, or \"me\"."),
-        "spent_on_from": _str("Date range start, YYYY-MM-DD."),
-        "spent_on_to": _str("Date range end, YYYY-MM-DD."),
-        "limit": _int("Max results per page (default 50, hard ceiling 200)."),
-        "offset": _int("1-based page offset for pagination."),
+        "spent_on_from": _str("YYYY-MM-DD"),
+        "spent_on_to": _str("YYYY-MM-DD"),
+        "group_by": {"type": "string", "enum": list(_TIME_ENTRY_GROUPS)},
+        "limit": _int("Entries per page (default 50, max 200)."),
+        "offset": _int("Page number."),
     },
 )
 def pm_list_time_entries(args: Dict[str, Any]) -> Any:
+    group_by = _arg_str(args, "group_by")
+    if group_by and group_by not in _TIME_ENTRY_GROUPS:
+        raise ToolFailure("group_by must be one of " + ", ".join(_TIME_ENTRY_GROUPS))
     project_ref = _arg_str(args, "project")
     wp_id = _arg_wp_id(args, "work_package_id")
     if project_ref:
@@ -2419,6 +2825,8 @@ def pm_list_time_entries(args: Dict[str, Any]) -> Any:
             _readable_wp(wp_id)
         project_ids = None if wp_id else _readable_project_ids()
     filters = _time_entry_filters(project_ids, _arg_str(args, "user"), _arg_str(args, "spent_on_from"), _arg_str(args, "spent_on_to"))
+    if group_by:
+        return _time_entry_summary(filters, wp_id, group_by)
     items, page = _list_time_entries(filters, wp_id, _arg_int(args, "offset"), _arg_int(args, "limit"))
     keys = _link_keys(_entry_wp_link(e) for e in items)
     rows = [_time_entry_row(e, keys) for e in items]
@@ -2456,13 +2864,11 @@ def _time_entry_project(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 @tool(
     "pm_create_time_entry",
-    "Log time spent on a work package or project. Required: activity, spent_on (YYYY-MM-DD), and at least one of work_package_id/project, "
-    "plus either hours (ISO-8601 duration, e.g. \"PT8H\"; 1.5 or \"1h30m\" work too) or both start_time and end_time (hours is computed "
-    "locally from the clock times; OpenProject always derives the end time itself and never accepts it directly). "
-    "Optional: comment, user (log on behalf of another user — id, login, or \"me\"), start_time alongside hours to also record when the work began, "
-    "ongoing (bool, only valid with start_time and no end_time — marks the entry as still running). "
-    "start_time/end_time take ISO-8601 date-times or local clock times (\"09:00\") on spent_on; they only work if the OpenProject "
-    "instance has \"allow tracking of start and end times\" enabled (otherwise the duration is booked and the result warns).",
+    "Log time on a work package or project. Required: activity, spent_on, work_package_id or project, and hours OR "
+    "start_time+end_time (never both: hours is computed from the clock times). hours also takes 1.5 or \"1h30m\"; "
+    "start_time/end_time also take local clock times (\"09:00\") on spent_on. Clock times need the instance setting "
+    "\"track start and end times\"; ongoing marks an entry with start_time and no end_time as still running. Optional: "
+    "comment, user (on behalf of this user — id, login or \"me\").",
     {
         "activity": _str("Activity name or id — see pm_list_reference_data(kind=\"activities\")."),
         "spent_on": _str("Date the time was spent, YYYY-MM-DD."),
@@ -2547,8 +2953,8 @@ def pm_create_time_entry(args: Dict[str, Any]) -> Any:
 
 @tool(
     "pm_update_time_entry",
-    "Update an existing time entry. Required: id. Optional: activity, spent_on, hours, comment, ongoing, "
-    "start_time+end_time together (to recompute hours from clock times), user. lock_version is fetched automatically if omitted.",
+    "Update a time entry. Required: id. Change hours OR start_time+end_time (recomputes hours); spent_on follows "
+    "start_time. Optional: activity, comment, ongoing, user; lock_version is fetched automatically if omitted.",
     {
         "id": _I, "activity": _S, "spent_on": _S, "hours": _S, "start_time": _S,
         "end_time": _str("Requires start_time in the same call; hours is recomputed locally."),
