@@ -92,6 +92,7 @@ const {
   noStableReleasePublished,
   openUpdaterLogStdio,
   describeNoReleaseError,
+  transientGitFailure,
   transientNetworkError,
   quarantineUpdaterBinary,
   resolveDetachedCheckoutChannel
@@ -1971,10 +1972,12 @@ async function checkUpdates() {
     // (empty mirror, offline) the remote's tags decide, as before — logged,
     // never silently.
     let manifest = null
+    let feedOffline = false
     try {
       manifest = await fetchReleaseManifest(branch)
     } catch (error) {
       const code = error?.code === 'rate-limited' ? 'rate-limited' : 'fetch-failed'
+      feedOffline = transientNetworkError(error)
       if (noStableReleasePublished(error, branch)) {
         // AIS-345 / AIS-350: `releases/latest` is 404 while only pre-releases
         // exist, or the preview feed holds no manifest yet. The tags of the
@@ -2000,14 +2003,21 @@ async function checkUpdates() {
       // tag that may be stale or missing.
       const lsTags = await runGit(['ls-remote', '--tags', remote], { cwd: updateRoot })
       if (lsTags.code !== 0 || !lsTags.stdout.trim()) {
-        // AIS-527: no manifest and no tags — this install cannot see any
-        // update (e.g. a checkout of the private source repository without
-        // credentials).
-        reportUpdateApplyFailure(
-          'update-check-no-target',
-          `desktop update check: no ${branch} release manifest and git ls-remote --tags failed`,
-          firstLine(lsTags.stderr) || `exit ${lsTags.code}`
-        )
+        if (feedOffline || transientGitFailure(lsTags.stderr)) {
+          // AIS-738: offline — neither source is reachable right now. The
+          // release feed's streak tracker reports it if it lasts; a check
+          // that fails while the machine has no network is no support case.
+          rememberLogOnce(`release-target:${branch}:offline`, `[updates] offline: no ${branch} release manifest and git ls-remote failed (${firstLine(lsTags.stderr) || `exit ${lsTags.code}`})`)
+        } else {
+          // AIS-527: no manifest and no tags — this install cannot see any
+          // update (e.g. a checkout of the private source repository without
+          // credentials).
+          reportUpdateApplyFailure(
+            'update-check-no-target',
+            `desktop update check: no ${branch} release manifest and git ls-remote --tags failed`,
+            firstLine(lsTags.stderr) || `exit ${lsTags.code}`
+          )
+        }
         return {
           supported: true,
           branch,
@@ -4381,6 +4391,8 @@ function registerPowerResumeListeners() {
     powerMonitor.on('resume', sendPowerResume)
     powerMonitor.on('unlock-screen', sendPowerResume)
     powerMonitor.on('resume', () => nightlyRestarter.onResume())
+    // AIS-738: time asleep is no outage of the release feed.
+    powerMonitor.on('resume', () => releaseFeedTransientFailures.restart())
   } catch {
     // powerMonitor is unavailable before app 'ready' on some platforms; the
     // caller registers after 'ready', so this should not normally throw.

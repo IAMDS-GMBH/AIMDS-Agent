@@ -12,6 +12,7 @@ const {
   resolveDetachedCheckoutChannel,
   describeNoReleaseError,
   createTransientFailureTracker,
+  transientGitFailure,
   transientNetworkError
 } = require('./update-apply.cjs')
 
@@ -207,7 +208,7 @@ test('transientNetworkError: timeouts, network changes and DNS only', () => {
 
 test('createTransientFailureTracker: reports once per streak after the window, success resets', () => {
   let now = 0
-  const tracker = createTransientFailureTracker({ windowMs: 1000, now: () => now })
+  const tracker = createTransientFailureTracker({ windowMs: 1000, minFailures: 1, now: () => now })
   assert.equal(tracker.failure('stable'), false)
   now = 999
   assert.equal(tracker.failure('stable'), false)
@@ -222,3 +223,33 @@ test('createTransientFailureTracker: reports once per streak after the window, s
   now = 7000
   assert.equal(tracker.failure('stable'), true)
 })
+
+test('createTransientFailureTracker: needs several failed checks, not one after a long gap (AIS-738)', () => {
+  let now = 0
+  const tracker = createTransientFailureTracker({ windowMs: 1000, minFailures: 3, now: () => now })
+  assert.equal(tracker.failure('preview'), false)
+  now = 5000
+  assert.equal(tracker.failure('preview'), false, 'two checks are not enough')
+  now = 5100
+  assert.equal(tracker.failure('preview'), true)
+})
+
+test('createTransientFailureTracker: time asleep does not count (AIS-738, SUP-20261026-023539)', () => {
+  let now = 0
+  const tracker = createTransientFailureTracker({ windowMs: 1000, minFailures: 1, now: () => now })
+  assert.equal(tracker.failure('preview'), false, 'last check before the lid closes')
+  now = 200000
+  tracker.restart() // wake from sleep
+  assert.equal(tracker.failure('preview'), false, 'first check after wake: ERR_NETWORK_CHANGED is no 24 h outage')
+  now = 201000
+  assert.equal(tracker.failure('preview'), true, 'still failing a full window after wake')
+})
+
+test('transientGitFailure: git without network, not a missing repository (AIS-738)', () => {
+  assert.equal(transientGitFailure("fatal: unable to access 'https://github.com/IAMDS-GMBH/hermes-agent.git/': Could not resolve host: github.com"), true)
+  assert.equal(transientGitFailure("fatal: unable to access 'https://github.com/x.git/': Failed to connect to github.com port 443 after 75000 ms: Couldn't connect to server"), true)
+  assert.equal(transientGitFailure('fatal: Authentication failed for https://github.com/x.git/'), false)
+  assert.equal(transientGitFailure("remote: Repository not found.\nfatal: repository 'https://github.com/x.git/' not found"), false)
+  assert.equal(transientGitFailure(''), false)
+})
+
