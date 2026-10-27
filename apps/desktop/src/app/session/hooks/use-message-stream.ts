@@ -2,6 +2,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
+import { translateNow } from '@/i18n'
 import {
   appendAssistantTextPart,
   appendInterimTextPart,
@@ -1107,6 +1108,15 @@ export function useMessageStream({
 
         if (sessionId) {
           updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+        }
+
+        // AIS-746: the turn stands still until the user answers, so say so
+        // even when Hermes is not the window in front.
+        if (document.hidden || !document.hasFocus()) {
+          void window.hermesDesktop?.notify({
+            title: translateNow('assistant.approval.notificationTitle'),
+            body: translateNow('assistant.approval.notificationBody')
+          })
         }
       } else if (event.type === 'sudo.request') {
         // Sudo password capture (tools/terminal_tool.py). Blocked on

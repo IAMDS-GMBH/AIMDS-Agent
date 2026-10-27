@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildToolView, type ToolPart } from './tool-fallback-model'
+import { buildToolView, runningStepAtEnd, type ToolPart } from './tool-fallback-model'
 
 const part = (overrides: Partial<ToolPart>): ToolPart => ({
   args: {},
@@ -77,5 +77,29 @@ describe('buildToolView MCP memory-save title', () => {
     )
 
     expect(view.title).toBe('mcp_IAMDS_mcp_memory_memory_save + Local')
+  })
+})
+
+describe('runningStepAtEnd (AIS-746)', () => {
+  const step = (toolName: string, done = true) => ({ type: 'tool-call', toolName, ...(done ? { result: {} } : {}) })
+  const text = (value: string) => ({ type: 'text', text: value })
+
+  it('is false when the last part is not a running tool step', () => {
+    expect(runningStepAtEnd([step('terminal'), text('done')])).toBe(false)
+    expect(runningStepAtEnd([step('terminal')])).toBe(false)
+  })
+
+  it('is true for a running step rendered as its own row', () => {
+    expect(runningStepAtEnd([text('Let me check'), step('terminal', false)])).toBe(true)
+    expect(runningStepAtEnd([step('read_file'), step('patch', false)])).toBe(true)
+  })
+
+  it('is true while the activity block is the last thing in the message', () => {
+    expect(runningStepAtEnd([text('Goal'), step('read_file'), text(' '), step('terminal', false)])).toBe(true)
+  })
+
+  it('is false when a file-edit row or text follows the block position', () => {
+    expect(runningStepAtEnd([step('read_file'), step('patch'), step('terminal', false)])).toBe(false)
+    expect(runningStepAtEnd([step('read_file'), text('Now the changelog'), step('terminal', false)])).toBe(false)
   })
 })

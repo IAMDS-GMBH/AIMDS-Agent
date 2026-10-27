@@ -1923,7 +1923,12 @@ export const de
       alwaysTitle: 'Diesen Befehl immer erlauben?',
       alwaysDescription: pattern =>
         `Dies fügt das Muster „${pattern}" zu deiner permanenten Allowlist (~/.hermes/config.yaml) hinzu. Hermes fragt nicht mehr nach Befehlen wie diesem — weder in dieser noch in zukünftigen Sitzungen.`,
-      alwaysAllow: 'Immer erlauben'
+      alwaysAllow: 'Immer erlauben',
+      waitingTitle: 'Wartet auf deine Freigabe',
+      waitingBody: 'Hermes möchte einen Befehl auf deinem Rechner ausführen, der Dateien ändern oder löschen kann. Prüfe ihn und entscheide, ob er laufen darf.',
+      showCommand: 'Befehl anzeigen',
+      notificationTitle: 'Hermes wartet auf deine Freigabe',
+      notificationBody: 'Ein Befehl braucht dein OK, bevor Hermes weitermachen kann.'
     },
     clarify: {
       notReady: 'Klärungsanfrage ist noch nicht bereit',
@@ -2052,6 +2057,7 @@ export const de
         withDetail: (label, detail) => `${label}: „${detail}“`,
         stepCount: count => (count === 1 ? '1 Schritt' : `${count} Schritte`),
         working: 'Ich arbeite daran',
+        waitingApproval: 'Wartet auf deine Freigabe',
         slow: place => `${place} antwortet gerade langsam – ich warte noch.`,
         slowGeneric: 'Das dauert gerade länger – ich warte noch.',
         reconnecting: place => `Die Verbindung zu ${place} wird neu aufgebaut …`,

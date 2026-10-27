@@ -610,6 +610,33 @@ export function groupableToolParts(content: readonly unknown[]): ToolPart[] {
   return parts
 }
 
+function isGroupedStep(entry: unknown): boolean {
+  return isRecord(entry) && entry.type === 'tool-call' && typeof entry.toolName === 'string' && isGroupableToolName(entry.toolName)
+}
+
+function isBlankText(entry: unknown): boolean {
+  return isRecord(entry) && entry.type === 'text' && (typeof entry.text !== 'string' || !entry.text.trim())
+}
+
+/** Whether the message's running tool step is rendered at its bottom (AIS-746).
+ *  Two or more grouped steps render as one block at the position of the first,
+ *  so a running grouped step only shows at the bottom when nothing but grouped
+ *  steps follows that position — a later file-edit row or text pushes the
+ *  block, and its live line, up and out of view. */
+export function runningStepAtEnd(content: readonly unknown[]): boolean {
+  const last = content.at(-1)
+
+  if (!isRecord(last) || last.type !== 'tool-call' || last.result !== undefined) {
+    return false
+  }
+
+  if (!isGroupedStep(last) || content.filter(isGroupedStep).length < 2) {
+    return true
+  }
+
+  return content.slice(content.findIndex(isGroupedStep)).every(entry => isGroupedStep(entry) || isBlankText(entry))
+}
+
 export interface ActivitySummary {
   areas: string[]
   failed: number

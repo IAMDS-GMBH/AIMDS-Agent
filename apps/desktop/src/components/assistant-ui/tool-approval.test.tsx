@@ -6,12 +6,7 @@ import { $gateway } from '@/store/gateway'
 import { $approvalRequest, clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
 
-import { PendingToolApproval } from './tool-approval'
-import type { ToolPart } from './tool-fallback-model'
-
-function part(toolName: string): ToolPart {
-  return { toolName, type: `tool-${toolName}` } as unknown as ToolPart
-}
+import { PendingApprovalNotice } from './tool-approval'
 
 function setRequest(command = 'rm -rf /tmp/x') {
   $activeSessionId.set('sess-1')
@@ -32,47 +27,36 @@ afterEach(() => {
   $gateway.set(null)
 })
 
-describe('PendingToolApproval', () => {
+describe('PendingApprovalNotice', () => {
   it('renders nothing when there is no pending approval', () => {
-    const { container } = render(<PendingToolApproval part={part('terminal')} />)
+    const { container } = render(<PendingApprovalNotice />)
 
     expect(container.innerHTML).toBe('')
   })
 
-  it('renders nothing for tools that never raise approval', () => {
+  it('renders nothing for an approval of another session', () => {
     setRequest()
-    const { container } = render(<PendingToolApproval part={part('read_file')} />)
+    $activeSessionId.set('sess-2')
+    const { container } = render(<PendingApprovalNotice />)
 
     expect(container.innerHTML).toBe('')
   })
 
-  it('renders the inline run/reject controls on the pending terminal row', () => {
-    setRequest('chmod -R 777 /tmp/x')
-    render(<PendingToolApproval part={part('terminal')} />)
+  it('says that it waits, in plain words, with the command behind a disclosure', () => {
+    setRequest('rm -f /tmp/b13.txt')
+    render(<PendingApprovalNotice />)
 
+    expect(screen.getByRole('alert').textContent).toMatch(/Waiting for your approval|Wartet auf deine Freigabe/)
+    expect(screen.getByText(/Show command|Befehl anzeigen/)).toBeTruthy()
+    expect(screen.getByText('rm -f /tmp/b13.txt')).toBeTruthy()
     expect(screen.getByRole('button', { name: /Run|Ausführen/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Reject|Ablehnen/ })).toBeTruthy()
-  })
-
-  it('renders inline approval controls for bash, powershell and edit_file tools', () => {
-    setRequest('chmod -R 777 /tmp/x')
-    const { unmount: u1 } = render(<PendingToolApproval part={part('bash')} />)
-    expect(screen.getByRole('button', { name: /Run|Ausführen/ })).toBeTruthy()
-    u1()
-
-    const { unmount: u2 } = render(<PendingToolApproval part={part('powershell')} />)
-    expect(screen.getByRole('button', { name: /Run|Ausführen/ })).toBeTruthy()
-    u2()
-
-    const { unmount: u3 } = render(<PendingToolApproval part={part('edit_file')} />)
-    expect(screen.getByRole('button', { name: /Run|Ausführen/ })).toBeTruthy()
-    u3()
   })
 
   it('sends approval.respond {choice: "once"} and clears the request on Run', async () => {
     const request = mockGateway()
     setRequest()
-    render(<PendingToolApproval part={part('terminal')} />)
+    render(<PendingApprovalNotice />)
 
     fireEvent.click(screen.getByRole('button', { name: /Run|Ausführen/ }))
 
@@ -85,7 +69,7 @@ describe('PendingToolApproval', () => {
   it('sends choice "deny" on Reject', async () => {
     const request = mockGateway()
     setRequest()
-    render(<PendingToolApproval part={part('terminal')} />)
+    render(<PendingApprovalNotice />)
 
     fireEvent.click(screen.getByRole('button', { name: /Reject|Ablehnen/ }))
 
