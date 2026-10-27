@@ -859,3 +859,46 @@ class TestStoreSuiteKey:
         result = suite.store_suite_key("aimds-suite-prod", "sk-p", config=self.CFG)
         assert result == {"provider": "aimds-suite-prod", "verified": False}
         assert saved == {"IAMDS_LITELLM_API_KEY": "sk-p"}
+
+
+class TestModelAccessDenied:
+    """AIS-747: LiteLLM refused one model for a valid key (SUP-20261027-091112)."""
+
+    CASE = 'Error code: 403 - {\'error\': {\'message\': "key not allowed to access model. This key can only access models=[\'gpt-5-mini\', \'claude-haiku-5.5\', \'AIMDS-Suite-Auto\']. Tried to access gpt-5.4-mini", \'type\': \'key_model_access_denied\', \'param\': \'model\', \'code\': \'403\'}}'
+
+    def test_allowed_models_are_read_from_the_error(self):
+        assert suite.allowed_models_from_error(self.CASE) == ["gpt-5-mini", "claude-haiku-5.5", "AIMDS-Suite-Auto"]
+        assert suite.allowed_models_from_error("Forbidden") == []
+
+    def test_a_model_denial_never_flags_a_re_login(self, isolated_home):
+        assert suite.mark_suite_auth_failure("aimds-suite-prod", 403, self.CASE, source="llm") is False
+        assert suite.suite_reauth_pending("aimds-suite-prod") is False
+
+    def test_flags_older_clients_set_for_a_denial_heal_on_read(self, isolated_home):
+        path = isolated_home / "state" / "iamds_suite_auth.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"aimds-suite-prod": {
+            "state": "needs_reauth", "http_status": 403, "message": self.CASE[:300], "source": "llm", "since": 1.0,
+        }}), encoding="utf-8")
+        assert suite.suite_reauth_pending("aimds-suite-prod") is False
+        assert json.loads(path.read_text(encoding="utf-8")) == {}
+
+    def test_background_picks_skip_a_denied_model(self, isolated_home):
+        available = ["gpt-5.4-mini", "gpt-5-mini", "AIMDS-Suite-Auto"]
+        assert _pick("AIMDS-Suite-Auto", tier="fast", metadata={}, available=available, api_key="sk-a") == ("gpt-5.4-mini", "preference")
+        suite.record_denied_model("aimds-suite-prod", "gpt-5.4-mini", api_key="sk-a", message=self.CASE)
+        assert _pick("AIMDS-Suite-Auto", tier="fast", metadata={}, available=available, api_key="sk-a") == ("gpt-5-mini", "preference")
+        # another key keeps its own list
+        assert _pick("AIMDS-Suite-Auto", tier="fast", metadata={}, available=available, api_key="sk-b") == ("gpt-5.4-mini", "preference")
+
+    def test_the_key_list_from_the_error_bounds_the_choice(self, isolated_home):
+        suite.record_denied_model("aimds-suite-prod", "gpt-5.4-mini", api_key="sk-a", message=self.CASE)
+        models = ["gpt-5.4-nano", "gpt-5-mini", "AIMDS-Suite-Auto"]
+        assert suite.usable_suite_models("aimds-suite-prod", models, api_key="sk-a") == ["gpt-5-mini", "AIMDS-Suite-Auto"]
+
+    def test_denials_expire(self, isolated_home, monkeypatch):
+        suite.record_denied_model("aimds-suite-prod", "gpt-5.4-mini", api_key="sk-a", message="")
+        later = suite.time.time() + suite.DENIED_MODEL_TTL_S + 60
+        monkeypatch.setattr(suite.time, "time", lambda: later)
+        assert suite.usable_suite_models("aimds-suite-prod", ["gpt-5.4-mini"], api_key="sk-a") == ["gpt-5.4-mini"]
+

@@ -83,14 +83,16 @@ _CATEGORY_LOGS: dict[str, tuple[str, ...]] = {
     "llm-timeout": ("agent.log", "errors.log", "gateway.log"),
     "wrong-response": ("agent.log", "errors.log"),
     "agent-stuck": ("agent.log", "errors.log", "gateway.log"),
-    "connection_error": ("agent.log", "gateway.log", "errors.log"),
+    # AIS-747: the Keycloak sign-in runs in the desktop app and the dashboard
+    # backend — "Login geht nicht" arrived without either log.
+    "connection_error": ("agent.log", "gateway.log", "errors.log", "desktop.log", "gui.log"),
     "performance": ("agent.log", "desktop.log", "errors.log"),
     "ui_bug": ("desktop.log", "gui.log", "errors.log"),
     "ui-bug": ("desktop.log", "gui.log", "errors.log"),
     "other": ("agent.log", "errors.log", "desktop.log"),
     # AIS-420: automatic runtime cases (hermes_cli.auto_incidents)
     "agent_python_fallback": ("agent.log", "errors.log", "mcp-stderr.log"),
-    "auth_error": ("agent.log", "errors.log", "gateway.log", "mcp-stderr.log"),
+    "auth_error": ("agent.log", "errors.log", "gateway.log", "mcp-stderr.log", "desktop.log", "gui.log"),
     "mcp_failure": ("agent.log", "errors.log", "mcp-stderr.log"),
     "state_db_error": ("agent.log", "errors.log", "gui.log", "desktop.log"),
 }

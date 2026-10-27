@@ -77,11 +77,14 @@ def _primary(agent: Any) -> Dict[str, Any]:
     }
 
 
-def _key_models(provider: str) -> List[str]:
+def _key_models(provider: str, api_key: Any = "") -> List[str]:
+    """The key's models, without the ones it was denied (AIS-747)."""
     try:
+        from hermes_cli.iamds_suite import usable_suite_models
         from hermes_cli.models import cached_provider_model_ids
 
-        return [str(m).strip() for m in (cached_provider_model_ids(provider) or []) if str(m).strip()]
+        models = [str(m).strip() for m in (cached_provider_model_ids(provider) or []) if str(m).strip()]
+        return usable_suite_models(provider, models, api_key=api_key)
     except Exception:
         return []
 
@@ -98,7 +101,7 @@ def suite_cheap_candidates(
     """Cheap models of the key, cheapest first, without *exclude* and the router."""
     from hermes_cli.iamds_suite import is_suite_auto_model, preferred_fast_models, rank_models_by_cost
 
-    available = list(available if available is not None else _key_models(provider))
+    available = list(available if available is not None else _key_models(provider, api_key))
     if metadata is None:
         try:
             from agent.model_metadata import fetch_endpoint_model_metadata
@@ -203,7 +206,7 @@ def resolve_entry(agent: Any, entry: Dict[str, Any], *, reason: Any = None) -> O
         if isinstance(primary["api_key"], str) and primary["api_key"]:
             same_env["api_key"] = primary["api_key"]
         if kind == SUITE_AUTO:
-            listed = _key_models(provider)
+            listed = _key_models(provider, primary["api_key"])
             if listed and entry["model"].lower() not in {m.lower() for m in listed}:
                 logger.info("[AIS-503] %s is not offered to this key on %s — skipping", entry["model"], provider)
                 return None

@@ -337,8 +337,20 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
     return normalized
 
 
+def _model_access_denial(entry: PooledCredential) -> bool:
+    """The entry was parked for a model its key may not use, not for the key (AIS-747)."""
+    from agent.error_classifier import _MODEL_ACCESS_DENIED_PATTERNS
+
+    text = f"{getattr(entry, 'last_error_reason', '') or ''} {getattr(entry, 'last_error_message', '') or ''}".lower()
+    return any(p in text for p in _MODEL_ACCESS_DENIED_PATTERNS)
+
+
 def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     if entry.last_status != STATUS_EXHAUSTED:
+        return None
+    if _model_access_denial(entry):
+        # Older clients parked the whole key for an hour after one model was
+        # denied; the key itself is fine, so it is available again at once.
         return None
     reset_at = _parse_absolute_timestamp(getattr(entry, "last_error_reset_at", None))
     if reset_at is not None:
