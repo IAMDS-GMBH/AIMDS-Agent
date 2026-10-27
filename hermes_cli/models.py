@@ -2291,8 +2291,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             live = fetch_api_models(api_key, base_raw)
             if live:
                 return live
-        # Keep picker usable when IAMDS discovery is temporarily unavailable.
-        return list(_PROVIDER_MODELS.get("openai-api", []))
+        # Discovery failed: no list rather than OpenAI's catalog. That list was
+        # cached as the key's own and background jobs picked gpt-5.4-mini from
+        # it, which the key may not use (AIS-747). The cache wrapper falls back
+        # to the last real list of this key.
+        return []
 
     if normalized in ("openai", "openai-api"):
         api_key = os.getenv("OPENAI_API_KEY", "").strip()

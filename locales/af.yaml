@@ -398,3 +398,4 @@ suite_auth:
   # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
   reauth_needed: "Jou aanmelding by {target} het verval of is teruggestel. Meld asseblief weer aan: Instellings → Rekeninge → {target} → Meld weer aan. Vra dan net jou vraag weer."
   endpoint_moved: "{target} antwoord by 'n ander adres ({location}). Kontroleer asseblief die bedieneradres: Instellings → Rekeninge → {target}. Vra dan net jou vraag weer."
+  model_not_allowed: "{model} is nie vir jou {target}-toegang geaktiveer nie. Kies ’n ander model (Instellings → Model) of vra jou administrateur om dit te aktiveer. Vra dan net weer jou vraag."

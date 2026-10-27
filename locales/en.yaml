@@ -411,3 +411,5 @@ suite_auth:
   reauth_needed: "Your sign-in to {target} has expired or was reset. Please sign in again: Settings → Accounts → {target} → Re-authenticate. Then just ask your question again."
   # AIS-599: the API URL redirects (e.g. http:// → https://).
   endpoint_moved: "{target} answers at a different address ({location}). Please check the server address: Settings → Accounts → {target}. Then just ask your question again."
+  # AIS-747: valid key, but this model is not on its list.
+  model_not_allowed: "{model} is not enabled for your {target} access. Pick another model (Settings → Model) or ask your administrator to enable it. Then just ask your question again."

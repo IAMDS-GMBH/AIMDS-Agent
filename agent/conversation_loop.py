@@ -4168,7 +4168,23 @@ def run_conversation(
                     print(f"{agent.log_prefix}     • Check credits / billing: https://portal.nousresearch.com")
                     print(f"{agent.log_prefix}     • Verify stored credentials: {_dhh}/auth.json")
                     print(f"{agent.log_prefix}     • Switch providers temporarily: /model <model> --provider openrouter")
-                if status_code in (401, 403) and not _retry.iamds_auth_retry_attempted:
+                if classified.reason == FailoverReason.model_access_denied:
+                    # AIS-747: the key is fine, this model is not on its list.
+                    # Remember the denial so background jobs and the automatic
+                    # fallback chain stop picking it; never flag a re-login.
+                    try:
+                        from hermes_cli.iamds_suite import is_suite_provider as _is_suite, record_denied_model
+
+                        if _is_suite(getattr(agent, "provider", "")):
+                            record_denied_model(
+                                agent.provider,
+                                getattr(agent, "model", ""),
+                                api_key=getattr(agent, "api_key", ""),
+                                message=str(api_error),
+                            )
+                    except Exception:
+                        pass
+                elif status_code in (401, 403) and not _retry.iamds_auth_retry_attempted:
                     try:
                         from hermes_cli.iamds_suite import is_suite_provider as _is_suite
                     except Exception:
@@ -5144,7 +5160,23 @@ def run_conversation(
                         }
                     _summary = agent._summarize_api_error(api_error)
                     _final_text = f"⚠️ API call failed (HTTP {status_code}): {_summary}"
-                    if status_code in (401, 403):
+                    if classified.reason == FailoverReason.model_access_denied:
+                        # AIS-747: name the model and how to go on — signing in
+                        # again would not change the key's model list.
+                        try:
+                            from hermes_cli.iamds_suite import is_suite_provider, suite_label
+
+                            if is_suite_provider(getattr(agent, "provider", "")):
+                                from agent.i18n import t as _t
+
+                                _final_text = _t(
+                                    "suite_auth.model_not_allowed",
+                                    model=getattr(agent, "model", "") or "",
+                                    target=suite_label(agent.provider),
+                                )
+                        except Exception:
+                            pass
+                    elif status_code in (401, 403):
                         # AIS-525: a rejected Suite key needs the user to sign
                         # in again — tell them that, not the proxy's key hash.
                         try:

@@ -100,3 +100,48 @@ def test_lost_suite_login_tells_the_user_to_sign_in_again_and_reports_once():
     iamds_suite.clear_suite_auth_failure("aimds-suite-staging")
     _, _, report_new = _run(_agent())
     report_new.assert_called_once()
+
+
+_MODEL_DENIED = (
+    "key not allowed to access model. This key can only access models=['gpt-5-mini', 'AIMDS-Suite-Auto']. "
+    "Tried to access gpt-5.4-mini"
+)
+
+
+def _model_denied_error() -> openai.PermissionDeniedError:
+    request = httpx.Request("POST", "https://staging.suite.iamds.com/litellm/v1/chat/completions")
+    body = {"error": {"message": _MODEL_DENIED, "type": "key_model_access_denied", "code": "403"}}
+    response = httpx.Response(403, request=request, json=body)
+    return openai.PermissionDeniedError(_MODEL_DENIED, response=response, body=body)
+
+
+def test_a_model_the_key_may_not_use_is_no_lost_login():
+    """AIS-747 (SUP-20261027-091112): the morning brief's model was refused for a valid
+    key; the user was sent to a Keycloak re-login that could not help."""
+    from hermes_cli import iamds_suite
+
+    iamds_suite.clear_suite_auth_failure()
+    agent = _agent()
+    agent.model = "gpt-5.4-mini"
+    statuses = []
+    agent._emit_status = lambda text, *a, **k: statuses.append(text)
+    with (
+        patch.object(agent, "_interruptible_api_call", side_effect=_model_denied_error()),
+        patch.object(agent, "_try_refresh_iamds_client_credentials") as refresh,
+        patch.object(agent, "_try_activate_fallback", return_value=False),
+        patch("hermes_cli.auto_incidents.report_auth_401") as report,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("Hallo")
+
+    assert result["failed"] is True
+    assert result["final_response"].startswith("gpt-5.4-mini ist für deinen Zugang zu AIMDS-Suite (Staging) nicht freigegeben")
+    assert not any("Neu anmelden" in s for s in statuses)
+    refresh.assert_not_called()
+    report.assert_not_called()
+    assert not iamds_suite.suite_reauth_pending("aimds-suite-staging")
+    assert iamds_suite.usable_suite_models(
+        "aimds-suite-staging", ["gpt-5.4-mini", "gpt-5-mini"], api_key=agent.api_key
+    ) == ["gpt-5-mini"]

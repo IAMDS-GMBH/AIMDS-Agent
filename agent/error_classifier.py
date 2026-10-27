@@ -47,6 +47,7 @@ class FailoverReason(enum.Enum):
 
     # Model / provider policy
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
+    model_access_denied = "model_access_denied"  # Valid key, but this model is not allowed for it (LiteLLM 401/403) — other model, same key
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator (e.g. OpenRouter) blocked the only endpoint due to account data/privacy policy
     content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — deterministic per-request, don't retry unchanged
 
@@ -251,6 +252,15 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "no such model",
     "unknown model",
     "unsupported model",
+]
+
+# A valid key that may not use the requested model (LiteLLM key/team model
+# lists). Arrives as 401 or 403 but is not a lost login: another model on the
+# same key works, a re-login changes nothing (AIS-747).
+_MODEL_ACCESS_DENIED_PATTERNS = [
+    "key_model_access_denied",
+    "team_model_access_denied",
+    "not allowed to access model",
 ]
 
 # Request-validation patterns — the request is malformed and will fail
@@ -766,6 +776,13 @@ def _classify_by_status(
     result_fn,
 ) -> Optional[ClassifiedError]:
     """Classify based on HTTP status code with message-aware refinement."""
+
+    if status_code in (401, 403) and any(p in error_msg for p in _MODEL_ACCESS_DENIED_PATTERNS):
+        return result_fn(
+            FailoverReason.model_access_denied,
+            retryable=False,
+            should_fallback=True,
+        )
 
     if status_code == 401:
         # Not retryable on its own — credential pool rotation and

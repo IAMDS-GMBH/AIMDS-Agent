@@ -58,21 +58,21 @@ def _agent(model="vllm-custom"):
 
 class TestResolve:
     def test_router_uses_the_same_environment(self, monkeypatch):
-        monkeypatch.setattr(af, "_key_models", lambda p: ["AIMDS-Suite-Auto", "vllm-custom"])
+        monkeypatch.setattr(af, "_key_models", lambda p, *_a: ["AIMDS-Suite-Auto", "vllm-custom"])
         entry = af.resolve_entry(_agent(), {"provider": SUITE, "model": "AIMDS-Suite-Auto", af.AUTO_KEY: af.SUITE_AUTO})
         assert entry["model"] == "AIMDS-Suite-Auto"
         assert entry["base_url"] == SUITE_URL and entry["api_key"] == "sk-suite-key-123456"
 
     def test_router_not_offered_to_the_key_is_skipped(self, monkeypatch):
-        monkeypatch.setattr(af, "_key_models", lambda p: ["gpt-5-mini"])
+        monkeypatch.setattr(af, "_key_models", lambda p, *_a: ["gpt-5-mini"])
         assert af.resolve_entry(_agent(), {"provider": SUITE, "model": "AIMDS-Suite-Auto", af.AUTO_KEY: af.SUITE_AUTO}) is None
 
     def test_unknown_key_list_still_tries_the_router(self, monkeypatch):
-        monkeypatch.setattr(af, "_key_models", lambda p: [])
+        monkeypatch.setattr(af, "_key_models", lambda p, *_a: [])
         assert af.resolve_entry(_agent(), {"provider": SUITE, "model": "AIMDS-Suite-Auto", af.AUTO_KEY: af.SUITE_AUTO})
 
     def test_cheap_slots_follow_cost_without_failed_model(self, monkeypatch):
-        monkeypatch.setattr(af, "_key_models", lambda p: ["AIMDS-Suite-Auto", "claude-sonnet-5", "gpt-5-mini", "claude-haiku-4.5"])
+        monkeypatch.setattr(af, "_key_models", lambda p, *_a: ["AIMDS-Suite-Auto", "claude-sonnet-5", "gpt-5-mini", "claude-haiku-4.5"])
         meta = {
             "claude-sonnet-5": {"mode": "chat", "supports_function_calling": True, "pricing": {"prompt": 3, "completion": 15}},
             "gpt-5-mini": {"mode": "chat", "supports_function_calling": True, "pricing": {"prompt": 0.25, "completion": 2}},
@@ -86,7 +86,7 @@ class TestResolve:
         assert (first["model"], second["model"]) == ("claude-sonnet-5", "claude-haiku-4.5")
 
     def test_no_cheap_model_left_skips(self, monkeypatch):
-        monkeypatch.setattr(af, "_key_models", lambda p: ["AIMDS-Suite-Auto", "vllm-custom"])
+        monkeypatch.setattr(af, "_key_models", lambda p, *_a: ["AIMDS-Suite-Auto", "vllm-custom"])
         import agent.model_metadata as mm
 
         monkeypatch.setattr(mm, "fetch_endpoint_model_metadata", lambda url, api_key="": {})
@@ -94,7 +94,7 @@ class TestResolve:
 
     @pytest.mark.parametrize("reason", [FailoverReason.format_error, FailoverReason.context_overflow])
     def test_request_bound_failures_do_not_switch_models(self, monkeypatch, reason):
-        monkeypatch.setattr(af, "_key_models", lambda p: [])
+        monkeypatch.setattr(af, "_key_models", lambda p, *_a: [])
         entry = {"provider": SUITE, "model": "AIMDS-Suite-Auto", af.AUTO_KEY: af.SUITE_AUTO}
         assert af.resolve_entry(_agent(), entry, reason=reason) is None
         assert af.resolve_entry(_agent(), entry, reason=FailoverReason.model_not_found) is not None
@@ -140,7 +140,7 @@ class TestActivation:
     def test_switches_to_the_router_and_reports(self, monkeypatch):
         agent = self._suite_agent()
         assert agent._fallback_chain[0][af.AUTO_KEY] == af.SUITE_AUTO
-        monkeypatch.setattr(af, "_key_models", lambda p: ["AIMDS-Suite-Auto", "gpt-5-mini"])
+        monkeypatch.setattr(af, "_key_models", lambda p, *_a: ["AIMDS-Suite-Auto", "gpt-5-mini"])
         client = MagicMock(base_url=SUITE_URL + "/", api_key="sk-suite-key-123456")
         statuses = []
         monkeypatch.setattr(agent, "_buffer_status", statuses.append)
@@ -172,7 +172,7 @@ class TestConfigBoundFailures:
     @pytest.mark.parametrize("reason", [FailoverReason.auth, FailoverReason.auth_permanent])
     @pytest.mark.parametrize("kind", [af.SUITE_AUTO, af.SUITE_CHEAP])
     def test_same_environment_entries_are_skipped(self, monkeypatch, reason, kind):
-        monkeypatch.setattr(af, "_key_models", lambda p: ["AIMDS-Suite-Auto", "gpt-5-mini"])
+        monkeypatch.setattr(af, "_key_models", lambda p, *_a: ["AIMDS-Suite-Auto", "gpt-5-mini"])
         entry = {"provider": SUITE, "model": "AIMDS-Suite-Auto" if kind == af.SUITE_AUTO else "", af.AUTO_KEY: kind, "slot": 0}
         assert af.resolve_entry(_agent(), entry, reason=reason) is None
 
@@ -214,7 +214,7 @@ class TestConfigBoundFailures:
         monkeypatch.setattr(mm, "_fetch_litellm_model_info_contexts", lambda *a, **k: {})
         agent = TestActivation()._suite_agent()
         agent._fallback_chain = af.with_auto_fallbacks(SUITE, "vllm-custom", [{"provider": SUITE, "model": "gpt-5-mini"}])
-        monkeypatch.setattr(af, "_key_models", lambda p: ["AIMDS-Suite-Auto", "gpt-5-mini"])
+        monkeypatch.setattr(af, "_key_models", lambda p, *_a: ["AIMDS-Suite-Auto", "gpt-5-mini"])
         import hermes_cli.auth as auth
 
         monkeypatch.setattr(auth, "is_provider_explicitly_configured", lambda p: False)
@@ -222,3 +222,21 @@ class TestConfigBoundFailures:
             assert not agent._try_activate_fallback(reason=FailoverReason.auth)
         rpc.assert_not_called()
         assert agent.model == "vllm-custom"
+
+    def test_model_access_denied_keeps_the_same_key_chain(self, monkeypatch):
+        """AIS-747: the key is fine — Suite-Auto and cheap models on it stay eligible."""
+        monkeypatch.setattr(af, "_key_models", lambda p, *_a: ["AIMDS-Suite-Auto", "gpt-5-mini"])
+        entry = {"provider": SUITE, "model": "AIMDS-Suite-Auto", af.AUTO_KEY: af.SUITE_AUTO}
+        resolved = af.resolve_entry(_agent("gpt-5.4-mini"), entry, reason=FailoverReason.model_access_denied)
+        assert resolved["model"] == "AIMDS-Suite-Auto"
+
+    def test_denied_models_leave_the_key_models(self, monkeypatch, tmp_path):
+        import hermes_cli.iamds_suite as suite
+        import hermes_cli.models as models
+
+        monkeypatch.setattr(suite, "_flag_path", lambda: tmp_path / "state" / "iamds_suite_auth.json")
+        monkeypatch.setattr(models, "cached_provider_model_ids", lambda p, **k: ["gpt-5.4-mini", "gpt-5-mini", "AIMDS-Suite-Auto"])
+        suite.record_denied_model(SUITE, "gpt-5.4-mini", api_key="sk-suite-key-123456", message="")
+        assert af._key_models(SUITE, "sk-suite-key-123456") == ["gpt-5-mini", "AIMDS-Suite-Auto"]
+        assert af._key_models(SUITE, "sk-other-key") == ["gpt-5.4-mini", "gpt-5-mini", "AIMDS-Suite-Auto"]
+

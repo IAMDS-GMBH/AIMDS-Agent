@@ -630,3 +630,11 @@ def test_support_litellm_url_defaults_to_prod_for_a_non_suite_model(monkeypatch)
     cfg = {"model": {"provider": "anthropic"}}
 
     assert support_logs._support_litellm_url(cfg, "anthropic") == "https://suite.iamds.com/litellm/v1"
+
+
+def test_login_reports_ship_the_desktop_and_dashboard_logs():
+    """AIS-747: "Login mit Keycloak geht nicht" arrived without the logs of the sign-in."""
+    for category in ("connection_error", "auth_error"):
+        names = support_logs._CATEGORY_LOGS[category]
+        assert "desktop.log" in names and "gui.log" in names
+

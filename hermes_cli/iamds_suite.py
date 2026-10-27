@@ -286,6 +286,7 @@ def pick_child_suite_model(
             available = [str(m) for m in (cached_provider_model_ids(provider) or [])]
         except Exception:
             available = []
+    available = usable_suite_models(provider, available, api_key=api_key)
     by_lower = {m.strip().lower(): m.strip() for m in available if str(m).strip()}
 
     wanted = str(explicit or "").strip()
@@ -896,6 +897,9 @@ def mark_suite_auth_failure(provider: str, http_status: Optional[int], message: 
     canonical = canonical_suite_provider(provider)
     if canonical is None:
         return False
+    if is_model_access_denial(message):
+        # AIS-747: a model the key may not use is no lost login.
+        return False
     with _FLAG_LOCK:
         flags = _read_flags()
         previous = flags.get(canonical) if isinstance(flags.get(canonical), dict) else {}
@@ -944,9 +948,114 @@ def clear_suite_auth_failure(provider: Optional[str] = None) -> None:
 
 
 def suite_auth_failures() -> Dict[str, Dict[str, Any]]:
-    """Current runtime auth-failure flags keyed by canonical provider id."""
+    """Current runtime auth-failure flags keyed by canonical provider id.
+
+    Flags that older clients set for a denied model (AIS-747) are dropped on
+    read, so the provider card stops asking for a re-login after the update.
+    """
     with _FLAG_LOCK:
-        return {k: v for k, v in _read_flags().items() if isinstance(v, dict)}
+        flags = _read_flags()
+        stale = [k for k, v in flags.items() if isinstance(v, dict) and is_model_access_denial(v.get("message"))]
+        if stale:
+            for key in stale:
+                flags.pop(key, None)
+            _write_flags(flags)
+            logger.info("suite auth flag cleared (model access denial, not a lost login): %s", ", ".join(stale))
+        return {k: v for k, v in flags.items() if isinstance(v, dict)}
+
+
+# --------------------------------------------------------------------------- model denials (AIS-747)
+
+#: How long a denied model stays excluded. An administrator can add it to the
+#: key later; after this it is tried once more.
+DENIED_MODEL_TTL_S = 7 * 24 * 3600
+_ALLOWED_MODELS_RE = re.compile(r"can only access models\s*=\s*\[([^\]]*)\]", re.I)
+
+
+def is_model_access_denial(message: Any) -> bool:
+    """Whether *message* is LiteLLM refusing a model for a valid key."""
+    from agent.error_classifier import _MODEL_ACCESS_DENIED_PATTERNS
+
+    text = str(message or "").lower()
+    return any(p in text for p in _MODEL_ACCESS_DENIED_PATTERNS)
+
+
+def allowed_models_from_error(message: Any) -> List[str]:
+    """The key's model list LiteLLM names in a model-access 403, else []."""
+    match = _ALLOWED_MODELS_RE.search(str(message or ""))
+    if not match:
+        return []
+    return [m for m in (part.strip().strip("'\"") for part in match.group(1).split(",")) if m]
+
+
+def _denials_path() -> Path:
+    return _flag_path().with_name("iamds_suite_model_denials.json")
+
+
+def _denials_key(provider: Optional[str], api_key: Any) -> str:
+    canonical = canonical_suite_provider(provider) or str(provider or "")
+    key = api_key if isinstance(api_key, str) else ""
+    return f"{canonical}:{hashlib.sha256(key.encode()).hexdigest()[:16] if key else '-'}"
+
+
+def _read_denials() -> Dict[str, Any]:
+    try:
+        data = json.loads(_denials_path().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def record_denied_model(provider: str, model: str, *, api_key: Any = "", message: Any = "") -> None:
+    """Remember that the key behind *provider* may not use *model* (AIS-747).
+
+    The key's own list from the error message is kept too, so background
+    jobs and the automatic fallback chain choose from what the key can use.
+    """
+    model = str(model or "").strip()
+    if not model or canonical_suite_provider(provider) is None:
+        return
+    allowed = allowed_models_from_error(message)
+    now = time.time()
+    with _FLAG_LOCK:
+        data = _read_denials()
+        key = _denials_key(provider, api_key)
+        entry = data.get(key) if isinstance(data.get(key), dict) else {}
+        denied = entry.get("denied") if isinstance(entry.get("denied"), dict) else {}
+        denied[model.lower()] = now
+        entry = {"denied": denied, "allowed": allowed or entry.get("allowed") or [], "at": now}
+        data[key] = entry
+        path = _denials_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            os.replace(tmp, path)
+        except Exception as exc:  # advisory — never raise into the agent loop
+            logger.debug("could not write %s: %s", path, exc)
+    logger.info(
+        "suite model denied provider=%s model=%s key_models=%d",
+        canonical_suite_provider(provider), model, len(entry["allowed"]),
+    )
+
+
+def usable_suite_models(provider: Optional[str], models: List[str], *, api_key: Any = "") -> List[str]:
+    """*models* without the ones this key was denied, within its known list."""
+    with _FLAG_LOCK:
+        entry = _read_denials().get(_denials_key(provider, api_key))
+    if not isinstance(entry, dict):
+        return list(models)
+    now = time.time()
+    if now - float(entry.get("at") or 0) > DENIED_MODEL_TTL_S:
+        return list(models)
+    denied = {m for m, at in (entry.get("denied") or {}).items() if now - float(at or 0) <= DENIED_MODEL_TTL_S}
+    out = [m for m in models if str(m).strip().lower() not in denied]
+    allowed = {str(m).strip().lower() for m in entry.get("allowed") or []}
+    if allowed:
+        within = [m for m in out if str(m).strip().lower() in allowed]
+        if within:
+            return within
+    return out
 
 
 # --------------------------------------------------------------------------- status

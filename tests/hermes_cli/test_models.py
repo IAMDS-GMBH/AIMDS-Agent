@@ -913,6 +913,15 @@ class TestNousRecommendedModels:
 
 
 class TestAimdsSuiteModelDiscovery:
+    def test_failed_discovery_lists_nothing_instead_of_the_openai_catalog(self):
+        """AIS-747: the OpenAI list was cached as the key's own; cron picked gpt-5.4-mini from it."""
+        from hermes_cli.models import provider_model_ids
+
+        with patch("hermes_cli.models.fetch_litellm_model_info_models", return_value=None), \
+             patch("hermes_cli.models.fetch_api_models", return_value=None), \
+             patch.dict("os.environ", {"IAMDS_LITELLM_API_KEY": "prod-key"}, clear=True):
+            assert provider_model_ids("aimds-suite-prod") == []
+
     def test_aimds_suite_staging_and_dev_endpoints(self):
         from hermes_cli.models import provider_model_ids
 

@@ -224,6 +224,42 @@ def test_exhausted_entry_resets_after_ttl(tmp_path, monkeypatch):
     assert entry.last_status == "ok"
 
 
+def test_entry_parked_for_a_denied_model_is_available_at_once(tmp_path, monkeypatch):
+    """AIS-747: one model the key may not use parked the whole Suite key for an hour."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-1",
+                        "label": "IAMDS_LITELLM_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-suite",
+                        "base_url": "https://openrouter.ai/api/v1",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 60,
+                        "last_error_code": 403,
+                        "last_error_reason": "key_model_access_denied",
+                        "last_error_message": "key not allowed to access model. Tried to access gpt-5.4-mini",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    entry = load_pool("openrouter").select()
+
+    assert entry is not None
+    assert entry.id == "cred-1"
+
+
 def test_exhausted_402_entry_resets_after_one_hour(tmp_path, monkeypatch):
     """402-exhausted credentials recover after 1 hour, not 24."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

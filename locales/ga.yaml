@@ -402,3 +402,4 @@ suite_auth:
   # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
   reauth_needed: "Tá do shíniú isteach chuig {target} imithe in éag nó athshocraithe. Sínigh isteach arís: Socruithe → Cuntais → {target} → Sínigh isteach arís. Ansin cuir do cheist arís."
   endpoint_moved: "Freagraíonn {target} ag seoladh eile ({location}). Seiceáil seoladh an fhreastalaí: Socruithe → Cuntais → {target}. Ansin cuir do cheist arís."
+  model_not_allowed: "Níl {model} cumasaithe do do rochtain ar {target}. Roghnaigh samhail eile (Socruithe → Samhail) nó iarr ar do riarthóir é a chumasú. Ansin cuir do cheist arís."

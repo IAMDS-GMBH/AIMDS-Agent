@@ -55,7 +55,7 @@ class TestFailoverReason:
             "auth", "auth_permanent", "billing", "rate_limit",
             "overloaded", "server_error", "timeout", "endpoint_redirect",
             "context_overflow", "payload_too_large", "image_too_large",
-            "model_not_found", "format_error",
+            "model_not_found", "model_access_denied", "format_error",
             "invalid_encrypted_content",
             "multimodal_tool_content_unsupported",
             "provider_policy_blocked",
@@ -233,6 +233,17 @@ class TestClassifyApiError:
         result = classify_api_error(e, provider="anthropic")
         assert result.reason == FailoverReason.auth
         assert result.should_fallback is True
+
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_model_access_denied_is_not_auth(self, status):
+        """AIS-747: a valid key that may not use this model — no rotation, no re-login, other model."""
+        e = MockAPIError('Error code: 403 - {\'error\': {\'message\': "key not allowed to access model. This key can only access models=[\'gpt-5-mini\', \'claude-haiku-5.5\', \'AIMDS-Suite-Auto\']. Tried to access gpt-5.4-mini", \'type\': \'key_model_access_denied\', \'param\': \'model\', \'code\': \'403\'}}', status_code=status)
+        result = classify_api_error(e, provider="aimds-suite-prod", model="gpt-5.4-mini")
+        assert result.reason == FailoverReason.model_access_denied
+        assert result.is_auth is False
+        assert result.should_rotate_credential is False
+        assert result.should_fallback is True
+        assert result.retryable is False
 
     def test_403_key_limit_classified_as_billing(self):
         """OpenRouter 403 'key limit exceeded' is billing, not auth."""
