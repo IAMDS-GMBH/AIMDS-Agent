@@ -217,21 +217,34 @@ function transientNetworkError(error) {
   return TRANSIENT_NETWORK_PATTERN.test(String(error.message || ''))
 }
 
+// AIS-738: git's own wording when the machine has no network. The fallback
+// `ls-remote` after a failed release feed hit this on every offline check and
+// filed "no release manifest and git ls-remote --tags failed" at once.
+const TRANSIENT_GIT_PATTERN = /could not resolve host|failed to connect to|connection timed out|operation timed out|connection refused|network is unreachable|recv failure|ssl_error_syscall|ssl_connect: .*(?:reset|closed)/i
+
+function transientGitFailure(stderr) {
+  return TRANSIENT_GIT_PATTERN.test(String(stderr || ''))
+}
+
 // AIS-414: transient failures stay log-only until they persist. The tracker
 // remembers when the current streak of failures for a key started; `failure`
-// answers true exactly once per streak, when it has lasted `windowMs`.
-// `success` ends the streak.
-function createTransientFailureTracker({ windowMs = 24 * 60 * 60 * 1000, now = () => Date.now() } = {}) {
+// answers true exactly once per streak, when it has lasted `windowMs` and
+// counted at least `minFailures` checks. `success` ends the streak.
+// AIS-738: `restart` (on wake from sleep) moves every streak's start to now —
+// a laptop closed over the weekend is not a release feed down for 24 h, and
+// the first check after wake (often net::ERR_NETWORK_CHANGED) filed exactly that.
+function createTransientFailureTracker({ windowMs = 24 * 60 * 60 * 1000, minFailures = 3, now = () => Date.now() } = {}) {
   const streaks = new Map()
   return {
     failure(key) {
       const at = now()
       const streak = streaks.get(key)
       if (!streak) {
-        streaks.set(key, { since: at, reported: false })
+        streaks.set(key, { since: at, count: 1, reported: false })
         return false
       }
-      if (!streak.reported && at - streak.since >= windowMs) {
+      streak.count += 1
+      if (!streak.reported && streak.count >= minFailures && at - streak.since >= windowMs) {
         streak.reported = true
         return true
       }
@@ -239,6 +252,13 @@ function createTransientFailureTracker({ windowMs = 24 * 60 * 60 * 1000, now = (
     },
     success(key) {
       streaks.delete(key)
+    },
+    restart() {
+      const at = now()
+      for (const streak of streaks.values()) {
+        streak.since = at
+        streak.count = 0
+      }
     }
   }
 }
@@ -246,6 +266,7 @@ function createTransientFailureTracker({ windowMs = 24 * 60 * 60 * 1000, now = (
 module.exports = {
   TRANSIENT_NETWORK_PATTERN,
   createTransientFailureTracker,
+  transientGitFailure,
   transientNetworkError,
   UPDATER_LAUNCH_LOG,
   describeUpdaterLaunchFailure,
